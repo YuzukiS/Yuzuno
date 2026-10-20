@@ -1839,7 +1839,9 @@ impl Workspace {
                     params["_changes"] = changes;
                 }
             }
-            let replayed = self.store.detail(id).ok().and_then(|d| d.pending.into_iter().find(|old|
+            // Only the pending requests are read and written (T-120): not the
+            // whole record, which a long conversation makes large.
+            let replayed = self.store.pending(id).ok().and_then(|pending| pending.into_iter().find(|old|
                 old.method == method && old.params["turnId"] == p["turnId"]
                     && old.params["itemId"] == p["itemId"]
                     && (p["itemId"].is_string() || old.params["_rpcId"] == message["id"])));
@@ -1862,7 +1864,7 @@ impl Workspace {
                 stale: false,
             };
             let event_kind = if replayed.is_some() { "request/replayed" } else { "request" };
-            let _ = self.store.update(id, event_kind, p, |d| {
+            let _ = self.store.update_meta(id, event_kind, p, |d| {
                 // Native replay replaces only its matching historical request.
                 // Unreplayed stale approvals remain visible until the harness
                 // confirms completion/resolution; reconnect is not dismissal.
@@ -1943,14 +1945,15 @@ impl Workspace {
             let connection = self.rpcs.lock().unwrap().get(&a.id).cloned();
             let (agent, request_id, response) = (a.id.clone(), request_id.to_owned(), response.clone());
             let sent = self.stored_owned(owned, move |store| {
-                let detail = store.detail(&agent)?;
-                let Some(p) = detail.pending.iter().find(|p| p.id == request_id) else {
+                // The pending requests only, not the whole record (T-120).
+                let pending = store.pending(&agent)?;
+                let Some(p) = pending.iter().find(|p| p.id == request_id) else {
                     return Ok(None);
                 };
                 let connection = connection.context("会话已断开，请求未发送")?;
                 validate_request_connection(p, connection.generation)?;
                 validate_response(p, &response)?;
-                store.update(
+                store.update_meta(
                     &agent,
                     "request/replied",
                     &json!({"requestId":request_id}),
@@ -1964,7 +1967,7 @@ impl Workspace {
                     .rpc
                     .try_send(json!({"id":p.params["_rpcId"],"result":response}))
                 {
-                    let _ = store.update(
+                    let _ = store.update_meta(
                         &agent,
                         "request/notSent",
                         &json!({"requestId":request_id}),

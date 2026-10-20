@@ -1,4 +1,4 @@
-use crate::model::{now, Agent, AgentDetail, MessageReceipt};
+use crate::model::{now, Agent, AgentDetail, MessageReceipt, PendingRequest};
 use crate::record_rows::{self, Damaged, Dirty, Layout, Recovery};
 use crate::remote::RemoteMachine;
 use anyhow::{bail, ensure, Context, Result};
@@ -270,11 +270,14 @@ fn send_turn(turn: &Value) -> Value {
 pub struct Meta<'a> {
     pub agent: &'a mut Agent,
     pub message_receipts: &'a mut Vec<MessageReceipt>,
+    /// Pending native requests are metadata too: a request arriving, its
+    /// answer and its replay change them and the Agent's status only.
+    pub pending: &'a mut Vec<PendingRequest>,
 }
 
 impl<'a> Meta<'a> {
     fn of(detail: &'a mut AgentDetail) -> Self {
-        Self { agent: &mut detail.agent, message_receipts: &mut detail.message_receipts }
+        Self { agent: &mut detail.agent, message_receipts: &mut detail.message_receipts, pending: &mut detail.pending }
     }
 }
 
@@ -1255,6 +1258,16 @@ impl Store {
         };
         view.agent.project_id = self.agent_project(id)?;
         Ok(view)
+    }
+
+    /// The Agent's pending native requests, without copying the rest of the
+    /// record: from the held copy under its read lock, else from its rows
+    /// without payloads (pending requests are metadata, as for `send_view`).
+    pub fn pending(&self, id: &str) -> Result<Vec<PendingRequest>> {
+        match self.held(id) {
+            Some(held) => Ok(held.read().pending.clone()),
+            None => Ok(self.current(id, false, &mut || {})?.pending),
+        }
     }
 
     /// `detail`, running `unlocked` after a record is assembled and before
