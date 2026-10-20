@@ -28,6 +28,8 @@ import {
 import { ArtifactsCard, ReportedLines, RunCard, PendingAnalysisRuns, type Artifact, type Cost, type Progress } from "./JobRun";
 import { openTaskReview, ReviewJobs, type ReviewOpen } from "./ReviewJobs";
 import type { Agent } from "./types";
+import { SendToAgentButton } from "./SendToAgent";
+import type { HandoffSource } from "./handoff";
 import "./jobs.css";
 import {
   CiJobs,
@@ -67,9 +69,9 @@ type Job = {
   guardGit?: boolean;
   timeoutSeconds?: number;
   snapshot?: { scope: string };
-  machine: { name: string };
+  machine: { id?: string; name: string };
   /** Where it runs when not on this host: an SSH machine or Windows (T-108). */
-  executor?: { kind: string } | null;
+  executor?: { kind: string; machineId?: string; machineName?: string } | null;
   resources: Resources;
   exclusive?: boolean;
   reservation: Resources;
@@ -963,6 +965,7 @@ export function Jobs({
                             onPause={(resume) => void pause(detail, resume)}
                             onRerun={() => rerun(detail)}
                             onOpen={setSelected}
+                            onSent={() => setOpen(false)}
                           />
                         ) : (
                           <p className="jobs-empty">
@@ -1083,6 +1086,26 @@ function JobsBudget({
   );
 }
 
+/** A Job for Send to Agent (T-152): where its files stay decides what another Agent can open. */
+function jobHandoff(job: Job): HandoffSource {
+  const executor = job.executor;
+  return {
+    kind: "job",
+    jobId: job.id,
+    name: job.name,
+    status: job.status,
+    reason: job.result?.reason || job.reason || null,
+    finishedAt: job.finishedAt,
+    machine:
+      executor?.kind === "ssh" && executor.machineId
+        ? { kind: "ssh", id: executor.machineId, name: executor.machineName || job.machine.name }
+        : executor?.kind === "windows"
+          ? { kind: "windows", name: executor.machineName || job.machine.name }
+          : { kind: "core" },
+    artifacts: job.result?.artifacts?.map(a => a.absolutePath || a.path) ?? (job.artifacts || []).map(a => a.path),
+  };
+}
+
 function JobDetail({
   job,
   log,
@@ -1093,6 +1116,7 @@ function JobDetail({
   onPause,
   onRerun,
   onOpen,
+  onSent,
 }: {
   job: Job;
   log: Log | null;
@@ -1104,6 +1128,8 @@ function JobDetail({
   onPause: (resume: boolean) => void;
   onRerun: () => void;
   onOpen: (jobId: string) => void;
+  /** After Send to Agent added it to a draft: the Agent is shown, not this. */
+  onSent: () => void;
 }) {
   const pause = pauseOf(job);
   const ends = deadline(job);
@@ -1165,6 +1191,7 @@ function JobDetail({
             </button>
           )
         )}
+        <SendToAgentButton draggable={false} source={() => jobHandoff(job)} onSent={onSent} />
       </JobDetailHeading>
       {pause ? (
         <p className="job-pause-note">
