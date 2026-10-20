@@ -4,14 +4,18 @@ tests/opencode_transport.rs. It reads only its arguments and the environment
 Core starts it with, and keeps its state in memory. It writes what it saw to
 the folder of OPENCODE_DB (start.json, calls.jsonl), where a test may leave a
 switch before it starts: `host` (the address it reports), `version` (the
-version it reports), `exit` (exit before listening) or `noise` (a long line
-that is not UTF-8 before listening). Routes under
+version it reports), `exit` (exit before listening), `noise` (a long line
+that is not UTF-8 before listening), `mcp` (the MCP status it reports) or
+`stubborn` (it and a child of its own ignore SIGTERM).
+Sessions and messages are kept in state.json there, as OpenCode keeps them
+in its database; pending requests, as in OpenCode, live only in the process. Routes under
 /__fixture/ are the test's own controls and need no password.
 """
 import base64
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -28,7 +32,7 @@ AUTHORIZATION = 'Basic ' + base64.b64encode(f'{USERNAME}:{PASSWORD}'.encode()).d
 lock = threading.Lock()
 counter = [0]
 sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], {}
-modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'heartbeat': 0.2}
+modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'heartbeat': 0.2, 'abortEvidence': True, 'refuseEventsUntil': 0}
 streams = []
 generation = [0]  # a new generation ends every open event stream
 
@@ -56,6 +60,20 @@ def log(entry):
         out.write(json.dumps(entry) + '\n')
 
 
+def save():
+    with lock:
+        (ROOT / 'state.json').write_text(json.dumps({'sessions': sessions, 'messages': messages, 'counter': counter[0]}))
+
+
+def load():
+    path = ROOT / 'state.json'
+    if path.exists():
+        state = json.loads(path.read_text())
+        sessions.update(state['sessions'])
+        messages.update(state['messages'])
+        counter[0] = state['counter']
+
+
 def store(session, message_id, text):
     info = {'id': message_id, 'sessionID': session, 'role': 'user', 'time': {'created': int(time.time() * 1000)}}
     message = {'info': info, 'parts': [{'id': new_id('prt'), 'sessionID': session, 'messageID': message_id,
@@ -63,8 +81,40 @@ def store(session, message_id, text):
     with lock:
         # As in OpenCode, the same ID replaces the stored message.
         messages.setdefault(session, {})[message_id] = message
+    save()
     publish('message.updated', {'sessionID': session, 'info': info})
     return message
+
+
+def last_prompt(session):
+    users = [m for m in messages.get(session, {}).values() if m['info']['role'] == 'user']
+    return max(users, key=lambda m: m['info']['time']['created'])['info']['id'] if users else None
+
+
+def answer_prompt(session, text=None, error=None, completed=True):
+    """An assistant message answering the session's last prompt, with a text part."""
+    now = int(time.time() * 1000)
+    info = {'id': new_id('msg'), 'sessionID': session, 'role': 'assistant', 'parentID': last_prompt(session),
+            'time': {'created': now}, 'finish': 'stop'}
+    if completed:
+        info['time']['completed'] = now
+    if error:
+        info['error'] = error
+    parts = []
+    if text is not None:
+        parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'text', 'text': text})
+    with lock:
+        messages.setdefault(session, {})[info['id']] = {'info': info, 'parts': parts}
+    save()
+    publish('message.updated', {'sessionID': session, 'info': info})
+    for part in parts:
+        publish('message.part.updated', {'sessionID': session, 'part': part, 'time': now})
+    return info
+
+
+def go_idle(session):
+    statuses.pop(session, None)
+    publish('session.status', {'sessionID': session, 'status': {'type': 'idle'}})
 
 
 def without(pending, gone):
@@ -99,6 +149,25 @@ def control(name, body):
         return True
     if name == 'store':
         return store(body['sessionID'], body['messageID'], body.get('text', ''))
+    if name == 'reply':
+        info = answer_prompt(body['sessionID'], body.get('text'), body.get('error'), body.get('completed', True))
+        if body.get('idle', True):
+            go_idle(body['sessionID'])
+        return info
+    if name == 'idle':
+        go_idle(body['sessionID'])
+        return True
+    if name == 'error':
+        # As OpenCode's session.error: it names no message.
+        publish('session.error', {'sessionID': body['sessionID'],
+                                  'error': {'name': 'UnknownError', 'data': {'message': 'fixture: session error'}}})
+        return True
+    if name == 'die':
+        threading.Timer(0.1, lambda: os._exit(9)).start()
+        return True
+    if name == 'refuseEvents':
+        modes['refuseEventsUntil'] = time.time() + body['seconds']
+        return True
     if name == 'print':
         # Output that is not UTF-8, more than a pipe holds; it fails if Core stopped draining.
         sys.stdout.buffer.write(b'\xff' * body['bytes'] + b'\n')
@@ -122,6 +191,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.route('POST')
+
+    def do_PATCH(self):
+        self.route('PATCH')
+
+    def do_DELETE(self):
+        self.route('DELETE')
 
     def reply(self, code, value=None):
         data = b'' if value is None else json.dumps(value).encode()
@@ -154,11 +229,14 @@ class Handler(BaseHTTPRequestHandler):
         if key == ('GET', 'global', 'health'):
             return self.reply(200, {'healthy': True, 'version': switch('version') or '1.19.3'})
         if key == ('GET', 'event'):
+            if time.time() < modes['refuseEventsUntil']:
+                return self.reply(503, {'name': 'UnknownError', 'data': {'message': 'fixture: not now'}})
             return self.stream()
         if key == ('POST', 'session'):
             session = {'id': new_id('ses'), 'title': (body or {}).get('title', ''),
                        'directory': parse_qs(url.query).get('directory', [''])[0]}
             sessions[session['id']] = session
+            save()
             publish('session.created', {'sessionID': session['id'], 'info': session})
             return self.reply(200, session)
         if key == ('GET', 'session', 'status'):
@@ -197,13 +275,17 @@ class Handler(BaseHTTPRequestHandler):
             found = messages.get(session, {}).get(rest[1])
             return self.reply(200, found) if found else self.missing(f'Message {rest[1]}')
         if (method, *rest) == ('POST', 'abort'):
-            # The run ends; its pending requests go with it.
+            # The run ends; its pending requests go with it, and (as OpenCode
+            # does) its answer is marked aborted.
+            running = session in statuses
             with lock:
-                statuses.pop(session, None)
                 without(permissions, [p for p in permissions if p['sessionID'] == session])
                 without(questions, [q for q in questions if q['sessionID'] == session])
-            publish('session.status', {'sessionID': session, 'status': {'type': 'idle'}})
-            return self.reply(200, True)
+            self.reply(200, True)
+            if running and modes['abortEvidence']:
+                answer_prompt(session, error={'name': 'MessageAbortedError', 'data': {'message': 'The operation was aborted.'}})
+            go_idle(session)
+            return None
         return self.missing('/'.join(rest))
 
     def prompt(self, session, body):
@@ -212,7 +294,11 @@ class Handler(BaseHTTPRequestHandler):
         mode = modes['prompt']
         if mode == 'store':
             store(session, message_id, text)
-            return self.reply(204)
+            self.reply(204)
+            # The run starts: OpenCode is busy until it ends.
+            statuses[session] = {'type': 'busy'}
+            publish('session.status', {'sessionID': session, 'status': {'type': 'busy'}})
+            return None
         if mode == 'unstored':
             # Answered, then storing failed; OpenCode's session.error names no message.
             self.reply(204)
@@ -283,12 +369,20 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     argv = sys.argv[1:]
+    load()
+    modes['mcp'] = switch('mcp') or 'connected'
     # Stands in for OpenCode's own children (language servers, MCP servers).
     child = subprocess.Popen(['sleep', '600'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
     seen = {'argv': argv, 'cwd': os.getcwd(), 'pid': os.getpid(), 'pgid': os.getpgid(0), 'child': child.pid,
             'database': os.environ.get('OPENCODE_DB'), 'username': USERNAME, 'passwordLength': len(PASSWORD),
             'passwordInArgv': bool(PASSWORD) and any(PASSWORD in arg for arg in argv)}
+    if switch('stubborn'):
+        # As a server, or a tool it runs, that does not stop on SIGTERM.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        seen['stubborn'] = subprocess.Popen(
+            [sys.executable, '-c', 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid
     if switch('exit'):
         (ROOT / 'start.json').write_text(json.dumps(seen))
         sys.exit(3)

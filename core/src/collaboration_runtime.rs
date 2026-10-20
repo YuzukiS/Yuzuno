@@ -315,7 +315,7 @@ impl Workspace {
         // it uncertain, not silently replay the native start on service restart.
         let (agent, sending) = (id.to_owned(), priority.to_owned());
         let detail_json = json!({"agentId":id,"afterSeq":after,"mode":mode,"clientMessageId":client_id,"turnId":expected_turn,"priority":priority,
-            "sessionId":detail.agent.thread_id.as_ref().or(detail.agent.claude_session_id.as_ref())});
+            "sessionId":detail.agent.thread_id.as_ref().or(detail.agent.claude_session_id.as_ref()).or(detail.agent.opencode_session_id.as_ref())});
         let reserved = self.stored(move |store| store.set_peer_delivery_for_priority(
             &agent,
             through,
@@ -336,6 +336,10 @@ impl Workspace {
             }
             PeerDeliveryTarget::Start if detail.agent.harness == "claude" => {
                 self.claude_send_locked(id, text).await
+            }
+            // Ok only once OpenCode stored it under its message ID.
+            PeerDeliveryTarget::Start if detail.agent.harness == "opencode" => {
+                self.opencode_send_locked(id, text, Some(&client_id)).await
             }
             PeerDeliveryTarget::Start => self.send_locked(id, text, Some(&client_id)).await,
         };
@@ -370,7 +374,7 @@ impl Workspace {
                         "delivered",
                         json!({
                             "agentId":agent,"turnId":value["turnId"],"mode":mode,"clientMessageId":client,"priority":sending,
-                            "sessionId":current.agent.thread_id.or(current.agent.claude_session_id)
+                            "sessionId":current.agent.thread_id.or(current.agent.claude_session_id).or(current.agent.opencode_session_id)
                         }),
                     )
                 }).await?;
