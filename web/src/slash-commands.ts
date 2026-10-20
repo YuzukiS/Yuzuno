@@ -25,14 +25,15 @@ export type SlashCommand = {
   description: string;
   argumentHint: string;
   aliases: string[];
-  source: "builtin" | "skill" | "custom";
+  source: "builtin" | "skill" | "custom" | "control";
 };
 export type CommandList =
   | {
       state: "ready";
       reason: string;
-      /** The running session's list, or its folder's while none runs. */
-      source: "session" | "folder";
+      /** The running session's list, or its folder's while none runs;
+       * or Yuzuno's own controls for a Codex Agent, which lists none. */
+      source: "session" | "folder" | "controls";
       sessionId: string | null;
       commands: SlashCommand[];
       total: number;
@@ -40,6 +41,55 @@ export type CommandList =
       skillsKnown: boolean;
     }
   | { state: "unavailable" | "unsupported" | "failed"; reason: string };
+
+/** `/model`: this Agent's model settings, never a prompt. */
+const modelControl: SlashCommand = {
+  name: "model",
+  description: "Opens this Agent's model settings; a change applies from the next turn",
+  argumentHint: "<model>",
+  aliases: [],
+  source: "control",
+};
+
+/**
+ * What a Codex Agent offers: Codex's app-server lists no commands, so only
+ * the controls Yuzuno runs through Codex itself (`thread/compact/start`)
+ * or through this Agent's settings.
+ */
+export const codexControls: CommandList = {
+  state: "ready",
+  reason: "controls",
+  source: "controls",
+  sessionId: null,
+  commands: [
+    { name: "compact", description: "Compacts this conversation now with Codex's own compaction, not a prompt", argumentHint: "", aliases: [], source: "control" },
+    modelControl,
+  ],
+  total: 2,
+  truncated: false,
+  skillsKnown: false,
+};
+
+/** Claude Code's list, with `/model` as the settings control it is here. */
+export function withModelControl(list: CommandList): CommandList {
+  if (list.state !== "ready") return list;
+  const others = list.commands.filter((c) => c.name !== "model");
+  const replaced = list.commands.length - others.length;
+  return { ...list, commands: [...others, modelControl], total: list.total - replaced + 1 };
+}
+
+/**
+ * A draft that is exactly one of Yuzuno's controls, run on Send instead of
+ * being sent as a prompt: `/model [name]` for any Agent, and `/compact` for
+ * a Codex Agent (Claude Code runs its own `/compact` as a native command).
+ * `args` is whatever follows the name.
+ */
+export function nativeControl(text: string, harness: string): { command: "compact" | "model"; args: string } | null {
+  const match = /^\/(compact|model)(?:\s+([\s\S]*))?$/.exec(text.trim());
+  if (!match) return null;
+  if (match[1] === "compact" && harness !== "codex") return null;
+  return { command: match[1] as "compact" | "model", args: (match[2] ?? "").trim() };
+}
 
 /**
  * The command a draft starts with: "/" as its very first character, then
@@ -131,6 +181,10 @@ const menuField = StateField.define<Menu>({
 const loadFacet = Facet.define<() => Promise<CommandList>, (() => Promise<CommandList>) | null>({
   combine: (values) => values[0] ?? null,
 });
+/** Whose list this composer shows, for the menu's own wording. */
+const kindFacet = Facet.define<"claude" | "codex", "claude" | "codex">({
+  combine: (values) => values[0] ?? "claude",
+});
 
 function list(menu: Menu) {
   if (!menu.listing) return null;
@@ -157,7 +211,7 @@ function choose(view: EditorView, command: SlashCommand) {
 }
 
 const sourceLabel = (c: SlashCommand, skillsKnown: boolean) =>
-  c.source === "builtin" ? "Claude Code" : c.source === "skill" ? "Skill" : skillsKnown ? "Command" : "Custom";
+  c.source === "control" ? "Yuzuno control" : c.source === "builtin" ? "Claude Code" : c.source === "skill" ? "Skill" : skillsKnown ? "Command" : "Custom";
 const unavailable: Record<string, string> = {
   closed: "This Agent is closed.",
   remote: "Commands of a Claude on another machine are not listed here.",
@@ -193,8 +247,10 @@ function createMenuView(view: EditorView): TooltipView {
       p.textContent = text;
       dom.append(p);
     };
+    const codex = view.state.facet(kindFacet) === "codex";
+    box.setAttribute("aria-label", codex ? "Codex controls" : "Claude commands");
     if (!current) {
-      note("Reading Claude's commands…");
+      note(codex ? "Reading Codex controls…" : "Reading Claude's commands…");
       return;
     }
     if (current.state !== "ready") {
@@ -244,7 +300,9 @@ function createMenuView(view: EditorView): TooltipView {
       });
     }
     note(
-      `${current.source === "session" ? "Listed by this conversation's Claude Code" : "Listed by Claude Code for this folder; the conversation may add more once it runs"}${current.truncated ? `; ${current.total} in all, the first ${current.commands.length} shown` : ""}. Choosing one only fills it in.`,
+      current.source === "controls"
+        ? "Codex lists no commands here. Yuzuno runs these itself, never as a prompt: choosing one fills it in, and Send runs it."
+        : `${current.source === "session" ? "Listed by this conversation's Claude Code" : "Listed by Claude Code for this folder; the conversation may add more once it runs"}${current.truncated ? `; ${current.total} in all, the first ${current.commands.length} shown` : ""}. Choosing one only fills it in.`,
       "is-source",
     );
     if (menu.listing?.status === "loading") note("Checking for changes…", "is-loading");
@@ -341,6 +399,6 @@ const keys = Prec.highest(
  * the draft lists the commands `load` reads for that Agent. Choosing one
  * fills in its name and keeps the rest of the draft; nothing is sent or run.
  */
-export function slashCommands(load: () => Promise<CommandList>): Extension {
-  return [menuField, loader, keys, loadFacet.of(load)];
+export function slashCommands(load: () => Promise<CommandList>, kind: "claude" | "codex" = "claude"): Extension {
+  return [menuField, loader, keys, loadFacet.of(load), kindFacet.of(kind)];
 }

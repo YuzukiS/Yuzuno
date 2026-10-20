@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, LoaderCircle, Settings2 } from "lucide-react";
 import { api, errorText, post } from "./api";
 import { Modal } from "./components";
@@ -24,6 +24,8 @@ export function AgentSettings({
   observedPermissionMode,
   observedEffort,
   observedContextUsage,
+  request,
+  onRequestOpened,
 }: {
   agent: Agent;
   disabled?: boolean;
@@ -34,8 +36,15 @@ export function AgentSettings({
   /** Effort Claude Code reported for a turn, and whether that is the latest. */
   observedEffort?: { level: string; latest: boolean } | null;
   observedContextUsage?: ContextUsage | null;
+  /** The composer's `/model [name]`: open, preselecting that model. */
+  request?: { model: string; nonce: number } | null;
+  /** Called once the dialog has actually opened for `request`. */
+  onRequestOpened?: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const requested = useRef("");
+  // A request made before this mount (for another Agent) is not this one's.
+  const seen = useRef(request?.nonce);
   const claude = agent.harness === "claude";
   const [reload, setReload] = useState(0);
   const [models, setModels] = useState<Model[]>([]);
@@ -77,6 +86,17 @@ export function AgentSettings({
         setModels(models);
         setPermissions(permissions);
         setContext(context);
+        const wanted = requested.current;
+        requested.current = "";
+        if (wanted) {
+          const row = models.find((m) => m.model === wanted || m.id === wanted);
+          // Chosen exactly as its chip would choose it; only Save keeps it.
+          if (row && (row.model || row.id) !== agent.model) {
+            selectModel(row.model || row.id, models, agent.settings?.reasoningEffort || "");
+            return;
+          }
+          if (!row) setError(`“${wanted}” is not a model this Agent's ${agent.harness === "claude" ? "Claude Code" : "Codex"} offers; choose one below.`);
+        }
         // A Claude effort is only ever the user's choice; no default fills it.
         if (agent.harness === "claude") return;
         const selected = models.find((m) => (m.model || m.id) === agent.model);
@@ -105,6 +125,17 @@ export function AgentSettings({
     setOpen(next);
     onOpenChange?.(next);
   }
+  useEffect(() => {
+    if (!request || request.nonce === seen.current || disabled) return;
+    seen.current = request.nonce;
+    requested.current = request.model;
+    // Already open: read the catalog again so the requested model is chosen.
+    if (open) setReload((n) => n + 1);
+    else if (saving) return;
+    else changeOpen(true);
+    onRequestOpened?.();
+    // Only a new request opens it; nothing else here reopens the dialog.
+  }, [request?.nonce]);
   const selected = models.find((m) => (m.model || m.id) === model);
   const efforts = selected?.supportedReasoningEfforts || [];
   // Claude's levels come from the chosen model's catalog row; no model is
@@ -119,6 +150,30 @@ export function AgentSettings({
   // Without the model's row (catalog loading or failed) the saved effort
   // can be neither offered nor refused; Core checks it again on save.
   const effortUnlisted = !!claudeEffort && !effortLevels.includes(claudeEffort);
+  // Choosing a model, from its chip or from the composer's /model: the same
+  // switch either way, against `catalog` and the effort chosen so far.
+  // Nothing is saved until Save.
+  function selectModel(value: string, catalog: Model[], effort: string) {
+    setModel(value);
+    if (claude) {
+      // A chosen effort survives a model switch only if the new model takes
+      // it; otherwise say so and fall back to default.
+      const row = catalog.find((r) => (r.model || r.id) === (value || "default"));
+      if (effort && !levelsFor(row).includes(effort)) {
+        setSettings((s) => ({ ...s, reasoningEffort: null }));
+        setEffortNote(
+          `${row?.displayName || value || "This model"} does not take reasoning effort ${effort}; it is back to Claude Code default.`,
+        );
+      } else setEffortNote("");
+      return;
+    }
+    setContextWindow(""); setCompactLimit("");
+    setContextNote("Context overrides reset to automatic for the new model. Save, then apply when idle.");
+    setSettings((s) => ({
+      ...s,
+      reasoningEffort: catalog.find((m) => (m.model || m.id) === value)?.defaultReasoningEffort || null,
+    }));
+  }
   const effortRefused = effortUnlisted && !!claudeEffortRow;
   async function save() {
     if (saving) return;
@@ -244,29 +299,7 @@ export function AgentSettings({
               name="agent-model"
               value={model}
               disabled={loading || saving}
-              onChange={(value) => {
-                setModel(value);
-                if (claude) {
-                  // A chosen effort survives a model switch only if the new
-                  // model takes it; otherwise say so and fall back to default.
-                  const row = effortRow(value);
-                  if (claudeEffort && !levelsFor(row).includes(claudeEffort)) {
-                    setSettings((s) => ({ ...s, reasoningEffort: null }));
-                    setEffortNote(
-                      `${row?.displayName || value || "This model"} does not take reasoning effort ${claudeEffort}; it is back to Claude Code default.`,
-                    );
-                  } else setEffortNote("");
-                  return;
-                }
-                setContextWindow(""); setCompactLimit("");
-                setContextNote("Context overrides reset to automatic for the new model. Save, then apply when idle.");
-                setSettings((s) => ({
-                  ...s,
-                  reasoningEffort:
-                    models.find((m) => (m.model || m.id) === value)
-                      ?.defaultReasoningEffort || null,
-                }));
-              }}
+              onChange={(value) => selectModel(value, models, claudeEffort)}
               choices={[
                 ...(claude ? [{ value: "", label: "Harness default" }] : []),
                 // The model in use stays shown while the catalog loads, or
