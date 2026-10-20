@@ -4,14 +4,15 @@ Every pull request to `main` and every push to `main` runs [the CI workflow](../
 
 | Job | What it checks |
 | --- | --- |
-| Core (build and test) | the launcher, CI-script and release-flow tests, the desktop health rule, `cargo build --all-targets` and a serial `cargo test` |
+| Core (build and test) | the launcher, CI-script and release-flow tests, the desktop health rule, `cargo build --all-targets`, every Core test and the doc tests. Each test process runs one test at a time; up to one process per CPU runs at once, and `.github/scripts/core_tests.py` checks that every listed test ran |
 | Lint (report-only) | `cargo fmt --check` and `cargo clippy`, reported as warnings that do not fail the run |
-| Web UI (typecheck, build, test) | typecheck, build, every `web/tools/*.test.mjs` and the desktop connection page |
+| Web UI (typecheck, build, test 1/2 and 2/2) | typecheck, build, and half of the `web/tools/*.test.mjs` files each, one at a time on its own VM; shard 1 also runs the desktop connection page |
 | Claude bridge (unit tests) | the bridge's unit tests. The pinned Claude Agent SDK is installed from npm and loaded; no Claude process starts |
 
 - **Permissions:** the token is read-only and the workflow uses no secrets. It runs on `pull_request`, never `pull_request_target`, so a fork's pull request also gets a read-only token and no secrets.
 - **Forks:** a fork's pull request runs the same checks. A first-time contributor's run waits until a maintainer approves it; see [Pull requests from forks](../CONTRIBUTING.md#pull-requests-from-forks).
-- **Caches:** only Cargo's. The Rust cache keeps compiled dependencies, not this repository's own crates; every run restores it and only a push to `main` saves it. npm caches nothing, so no `node_modules` or package archive is kept between runs.
+- **Caches:** only Cargo's. The Rust cache keeps compiled dependencies, not this repository's own crates; every run restores it and only a push to `main` saves it. Its key depends on the pinned toolchain alone, since the jobs install it in a `RUSTUP_HOME` of their own. npm caches nothing, so no `node_modules` or package archive is kept between runs.
+- **Disk:** Core and Lint remove preinstalled SDKs they do not use only when `/` has less free space than they need (`.github/scripts/free-disk.sh`).
 - **No artifacts:** CI uploads no build output, package or `node_modules`, and builds no release packages.
 - **Cancelling:** a newer push to a pull request cancels its older run. A run on `main` that has started finishes.
 

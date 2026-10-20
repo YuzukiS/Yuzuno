@@ -37,7 +37,7 @@ Start with the checks for the part you changed:
 | The Claude bridge | `npm --prefix runtimes/claude test` |
 | `scripts/` | `python3 -m unittest discover --start-directory scripts --pattern 'test_*.py'` |
 
-The full set in [Development](README.md#development) is what CI runs, and it is heavy. It builds all of Core and runs every test serially; CI gives it up to 6 GiB of memory for Rust and 3 GiB for the UI, and Core's build output takes several GiB of disk. Run one heavy check at a time, and limit parallel builds if memory is tight (for example `cargo test --locked -j2 -- --test-threads=1`). An Agent working inside Yuzuno should submit heavy checks as managed Jobs; see [Jobs](.agents/skills/yuzuno/references/jobs.md).
+The full set in [Development](README.md#development) is what CI runs, and it is heavy. It builds all of Core and runs each test process one test at a time; CI gives it up to 6 GiB of memory for Rust and 3 GiB for the UI, and Core's build output takes several GiB of disk. Run one heavy check at a time, and limit parallel builds if memory is tight (for example `cargo test --locked -j2 -- --test-threads=1`). An Agent working inside Yuzuno should submit heavy checks as managed Jobs; see [Jobs](.agents/skills/yuzuno/references/jobs.md).
 
 ### Several worktrees, one target directory
 
