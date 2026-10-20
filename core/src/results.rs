@@ -701,8 +701,12 @@ impl Workspace {
         let Ok(Ok(mut published)) = answer else { return answer };
         // A result shows only in this turn. For a content editor, say where an
         // outcome worth keeping goes on Home; nothing is written there.
-        if let Some(hint) = ws.stored(move |store| crate::project_brief::own_home_hint(store, &*store.db.read()?, &actor)).await? {
-            published["homeHint"] = hint.into();
+        // Advice only: the result is already published, so a failed lookup
+        // leaves the hint out rather than reporting an error.
+        match ws.stored(move |store| crate::project_brief::own_home_hint(store, &*store.db.read()?, &actor)).await {
+            Ok(Some(hint)) => published["homeHint"] = hint.into(),
+            Ok(None) => {}
+            Err(error) => eprintln!("Home hint for a published result: {error:#}"),
         }
         Ok(Ok(published))
     }

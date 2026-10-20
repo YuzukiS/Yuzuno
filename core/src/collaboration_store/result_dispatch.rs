@@ -196,10 +196,15 @@ pub(super) fn notify(store: &Store, db: &Connection, task: &SharedTask, event: &
         result["id"].as_str().unwrap_or_default(), result["dispatchId"].as_str().unwrap_or_default(),
         excerpt, if excerpt.len() < summary.len() { "…" } else { "" }, seq - 1);
     // The recipient may be the one who keeps the Project's Home: advice only.
+    // A failed lookup leaves the advice out; it never fails the result.
     if let Some(recipient) = notification["recipient"]["id"].as_str() {
-        if let Some(hint) = crate::project_brief::home_hint(store, db, &task.id, recipient)? {
-            body.push('\n');
-            body.push_str(hint);
+        match crate::project_brief::home_hint(store, db, &task.id, recipient) {
+            Ok(Some(hint)) => {
+                body.push('\n');
+                body.push_str(hint);
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("Home hint for {number}'s result mail: {error:#}"),
         }
     }
     let message = insert_message(

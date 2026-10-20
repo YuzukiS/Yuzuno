@@ -967,10 +967,13 @@ fn task_submit_result(
     let message = result_dispatch::notify(store, db, &task, &event)?;
     let mut output = json!({"task":task,"activity":event});
     if let Some(message) = message { output["message"] = message; }
-    // Advice for a Home content editor of the task's Project; nothing more.
+    // Advice for a Home content editor of the task's Project; nothing more,
+    // so a failed lookup leaves it out instead of failing the result.
     if actor.kind == "agent" {
-        if let Some(hint) = crate::project_brief::home_hint(store, db, &task.id, &actor.id)? {
-            output["homeHint"] = hint.into();
+        match crate::project_brief::home_hint(store, db, &task.id, &actor.id) {
+            Ok(Some(hint)) => output["homeHint"] = hint.into(),
+            Ok(None) => {}
+            Err(error) => eprintln!("Home hint for {}'s result: {error:#}", task.id),
         }
     }
     Ok(output)
