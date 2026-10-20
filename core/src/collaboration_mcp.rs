@@ -216,7 +216,7 @@ impl ServerHandler for CollaborationHandler {
         let tool = self
             .get_tool(&request.name)
             .ok_or_else(|| ErrorData::invalid_params("Unknown collaboration tool", None))?;
-        let arguments = request.arguments.unwrap_or_default();
+        let mut arguments = request.arguments.unwrap_or_default();
         // These tools have a closed set of top-level parameters. Reject unknown
         // keys (including source/actor overrides), rather than silently accepting
         // a claimed sender. Domain validation remains in the shared Store path.
@@ -267,12 +267,18 @@ impl ServerHandler for CollaborationHandler {
             }
             .into());
         }
+        // An Agent's default views and short receipts (mcp_views.rs).
+        let review_view = match crate::mcp_views::prepare(&request.name, &mut arguments) {
+            Ok(view) => view,
+            Err(error) => return Ok(CallToolResult::structured_error(json!({"error": error})).into()),
+        };
         match self
             .ws
             .collaboration_call(Some(&self.actor), &request.name, Value::Object(arguments))
             .await
         {
-            Ok(mut result) => {
+            Ok(result) => {
+                let mut result = crate::mcp_views::answer(&request.name, result, review_view.as_deref());
                 // Probe provenance is public identity, never a credential.
                 // Readiness requires a successful tool call through this Core
                 // epoch, not a cached tool catalog from a previous process.
@@ -589,6 +595,47 @@ mod tests {
             config !=
             agent_http_config(&reopened, "agent-a", "http://127.0.0.1:4321").unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn an_agent_reads_the_current_task_and_short_receipts_while_the_gui_keeps_whole_records() {
+        let (_directory, ws) = fixture();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token = ws.store.collaboration_mcp_token("agent-a").unwrap();
+        let app = router(ws.clone(), port);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let transport = StreamableHttpClientTransport::with_client(
+            reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap(),
+            StreamableHttpClientTransportConfig::with_uri(format!("http://127.0.0.1:{port}/mcp/agent-a")).auth_header(token),
+        );
+        let client = tokio::time::timeout(Duration::from_secs(10), ().serve(transport)).await.unwrap().unwrap();
+        let call = |name: &'static str, arguments: Value| {
+            CallToolRequestParams::new(name).with_arguments(arguments.as_object().unwrap().clone())
+        };
+        let created = client.call_tool(call("task_create", json!({"requestId":"c","title":"Ship it","description":"d".repeat(3000)})))
+            .await.unwrap().structured_content.unwrap();
+        assert_eq!((created["task"]["id"].clone(), created["task"]["version"].clone()), (json!("T-1"), json!(1)));
+        assert!(created["task"].get("description").is_none(), "a receipt, not the task: {created}");
+        let note = call("task_comment", json!({"requestId":"n","taskId":"T-1","body":"progress"}));
+        let first = client.call_tool(note.clone()).await.unwrap().structured_content.unwrap();
+        let again = client.call_tool(note).await.unwrap().structured_content.unwrap();
+        assert_eq!(first, again, "a retry is answered from the stored receipt, the same way");
+        assert_eq!(first["activity"]["kind"], "comment");
+        let current = client.call_tool(call("task_get", json!({"taskId":"T-1"}))).await.unwrap().structured_content.unwrap();
+        assert_eq!(current["current"]["version"], 1);
+        assert_eq!(current["current"]["latestActivity"]["seq"], first["activity"]["seq"]);
+        let full = client.call_tool(call("task_get", json!({"taskId":"T-1","view":"full"}))).await.unwrap().structured_content.unwrap();
+        assert!(full["task"]["description"].as_str().unwrap().len() == 3000 && full["executions"].is_array());
+        let page = client.call_tool(call("task_get", json!({"taskId":"T-1","limit":1}))).await.unwrap().structured_content.unwrap();
+        assert_eq!((page["activities"].as_array().unwrap().len(), page["hasMore"].clone()), (1, json!(true)));
+        // The GUI (no Agent) keeps the whole record and the whole receipt.
+        let gui = ws.collaboration_call(None, "task_get", json!({"taskId":"T-1"})).await.unwrap();
+        assert!(gui["task"]["description"].is_string() && gui["activities"].is_array());
+        let gui_note = ws.collaboration_call(None, "task_comment", json!({"requestId":"g","taskId":"T-1","body":"x"})).await.unwrap();
+        assert!(gui_note["task"]["description"].is_string());
+        let _ = client.cancel().await;
+        server.abort();
     }
 
     #[tokio::test]

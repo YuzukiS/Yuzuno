@@ -15,6 +15,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS ci_subscriptions(id TEXT PRIMARY KEY,watch_id TEXT NOT NULL REFERENCES ci_watches(id),agent_id TEXT NOT NULL,task_id TEXT NOT NULL REFERENCES collaboration_tasks(id),active INTEGER NOT NULL,expires INTEGER NOT NULL,data TEXT NOT NULL,UNIQUE(watch_id,agent_id,task_id));
         CREATE INDEX IF NOT EXISTS ci_subscriptions_scope ON ci_subscriptions(agent_id,task_id,active);
         CREATE INDEX IF NOT EXISTS ci_subscriptions_watch ON ci_subscriptions(watch_id,active,expires);
+        CREATE INDEX IF NOT EXISTS ci_subscriptions_task ON ci_subscriptions(task_id);
         CREATE INDEX IF NOT EXISTS ci_watches_due ON ci_watches(next_poll);
         CREATE TABLE IF NOT EXISTS ci_runs(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS ci_watch_runs(watch_id TEXT NOT NULL REFERENCES ci_watches(id),run_id TEXT NOT NULL REFERENCES ci_runs(id),PRIMARY KEY(watch_id,run_id));
@@ -45,7 +46,7 @@ fn watch(db: &Connection, id: &str) -> Result<Value> {
         .context("CI watch not found")?;
     Ok(serde_json::from_str(&raw)?)
 }
-fn subscription(db: &Connection, id: &str) -> Result<Value> {
+pub(crate) fn subscription(db: &Connection, id: &str) -> Result<Value> {
     let (raw, active, expires): (String, bool, i64) = db
         .query_row(
             "SELECT data,active,expires FROM ci_subscriptions WHERE id=?1",

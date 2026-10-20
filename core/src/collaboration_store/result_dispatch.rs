@@ -33,14 +33,25 @@ impl TaskDispatch {
     }
 }
 
+/// The task's newest dispatch, read through collaboration_activity_dispatched.
+pub(super) const LATEST_DISPATCH: &str = "SELECT seq,json_extract(data,'$.dispatch') FROM collaboration_task_activity
+     WHERE task_id=?1 AND json_extract(data,'$.kind')='dispatched' ORDER BY seq DESC LIMIT 1";
+/// The edits after it that can end it (archived, cancelled, another assignee),
+/// read through collaboration_activity_dispatch_end: the task's other history
+/// (notes, mail, results, other edits) is never read for it.
+pub(super) const DISPATCH_ENDS: &str = "SELECT json_extract(data,'$.changes'),COALESCE(json_extract(data,'$.dispatchInvalidatedAt'),json_extract(data,'$.at'))
+     FROM collaboration_task_activity WHERE task_id=?1 AND seq>?2
+     AND json_extract(data,'$.kind') IN ('updated','claimed') AND (json_type(data,'$.changes.archived') IS NOT NULL
+     OR json_extract(data,'$.changes.status')='cancelled' OR json_type(data,'$.changes.assigneeAgentId') IS NOT NULL)
+     ORDER BY seq";
+
 /// Append-only activity is the authority. An older Core may rewrite the typed
 /// task JSON without our cached field, but it preserves dispatched activities
 /// and records subsequent assignment/status edits in the same transaction.
 pub(super) fn project(db: &Connection, task: &SharedTask) -> Result<Option<TaskDispatch>> {
     let latest: Option<(i64, Option<String>)> = db
         .query_row(
-            "SELECT seq,json_extract(data,'$.dispatch') FROM collaboration_task_activity
-         WHERE task_id=?1 AND json_extract(data,'$.kind')='dispatched' ORDER BY seq DESC LIMIT 1",
+            LATEST_DISPATCH,
             [&task.id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -50,10 +61,7 @@ pub(super) fn project(db: &Connection, task: &SharedTask) -> Result<Option<TaskD
         return Ok(None);
     };
     let mut dispatch: TaskDispatch = serde_json::from_str(&raw)?;
-    let mut query = db.prepare(
-        "SELECT json_extract(data,'$.changes'),COALESCE(json_extract(data,'$.dispatchInvalidatedAt'),json_extract(data,'$.at'))
-         FROM collaboration_task_activity WHERE task_id=?1 AND seq>?2
-         AND json_extract(data,'$.kind') IN ('updated','claimed') ORDER BY seq")?;
+    let mut query = db.prepare(DISPATCH_ENDS)?;
     let rows = query.query_map(params![task.id, seq], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
     })?;
