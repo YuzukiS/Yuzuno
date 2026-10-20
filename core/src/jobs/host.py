@@ -241,8 +241,15 @@ def snapshot(spec):
         if len(value) > 2 * 1024 * 1024:
             raise RuntimeError('Guarded input grew beyond the size limit')
         hashes.append({'path': str(path), 'sha256': hashlib.sha256(value).hexdigest()})
-    return {'cwd': str(cwd), 'git': git, 'files': hashes,
-            'scope': 'Frozen argv/env/resources; optional Git HEAD and changed tracked files plus explicit small inputs. Untracked/ignored data, submodule contents and changes after launch are not frozen.'}
+    value = {'cwd': str(cwd), 'git': git, 'files': hashes,
+             'scope': 'Frozen argv/env/resources; optional Git HEAD and changed tracked files plus explicit small inputs. Untracked/ignored data, submodule contents and changes after launch are not frozen.'}
+    source = spec.get('checkpointFrom')
+    if source:
+        # A resumed attempt (T-109). A wrapper from before checkpoints computes
+        # no such entry, so it finds the snapshot changed and rejects the
+        # attempt before the command starts, instead of running it from scratch.
+        value['resumeFrom'] = {key: source.get(key) for key in ('jobId', 'attempt', 'manifestSha256')}
+    return value
 
 def check_artifact(cwd, artifact):
     """A declared artifact as it is now: its digest, or why it is not acceptable.
@@ -332,6 +339,8 @@ def guard_reason(spec, current):
     before = {f['path']: f['sha256'] for f in frozen.get('files', [])}
     after = {f['path']: f['sha256'] for f in current.get('files', [])}
     changed += [p for p in sorted(set(before) | set(after)) if before.get(p) != after.get(p)]
+    if frozen.get('resumeFrom') != current.get('resumeFrom'):
+        changed.append('the checkpoint it resumes from')
     if not changed:
         changed.append('the list of changed tracked files')
     shown = ', '.join(changed[:5]) + (f' and {len(changed) - 5} more' if len(changed) > 5 else '')

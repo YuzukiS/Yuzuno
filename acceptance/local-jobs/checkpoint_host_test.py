@@ -141,6 +141,19 @@ class Source(Lab):
         (self.dir / 'manifest.json').unlink()
         self.assertIn('has no manifest', host.checkpoint_source_problem(source))
 
+    def test_a_resumed_attempts_snapshot_names_its_checkpoint_so_an_older_wrapper_rejects_it(self):
+        source = {**self.verified(), 'jobId': 'job-1', 'attempt': 'attempt-1'}
+        plain = {**self.spec, 'guardGit': False, 'inputs': []}
+        resumed = {**plain, 'attempt': 'attempt-2', 'checkpointFrom': source}
+        frozen = host.snapshot(resumed)
+        self.assertEqual(frozen['resumeFrom'], {'jobId': 'job-1', 'attempt': 'attempt-1', 'manifestSha256': source['manifestSha256']})
+        self.assertEqual(host.snapshot(resumed), frozen, 'this wrapper starts it')
+        self.assertNotIn('resumeFrom', host.snapshot(plain), 'other jobs keep the snapshot every Core computes')
+        # A wrapper from before checkpoints ignores checkpointFrom: what it computes differs.
+        older = {k: v for k, v in frozen.items() if k != 'resumeFrom'}
+        self.assertNotEqual(older, frozen)
+        self.assertIn('the checkpoint it resumes from', host.guard_reason({**resumed, 'snapshot': frozen}, older))
+
     def test_the_resumed_attempt_is_told_where_it_resumes_from(self):
         source = self.verified()
         resumed = {**self.spec, 'attempt': 'attempt-2', 'checkpointFrom': source}
