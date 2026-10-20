@@ -531,6 +531,28 @@ test("stored approvals keep suggestions visible and unknown reports expose reaso
   } finally { p.close(); }
 });
 
+test("a continuation names the round it continues and the reads of each round", async () => {
+  const reviews = [
+    { ...run, id: "child", round: 2, kind: "continuation", conclusion: "no_findings", policyVersion: 3, reasonCodes: [],
+      continuation: { parentReviewId: "parent", parentRound: 1, targets: [{ path: "b.rs", state: "not_read" }] },
+      coverage: { version: 3, fileCount: 3, coveredFileCount: 3, deliveredCompleteDiffs: 2, fullAddedSourceCount: 0, inheritedCoveredCount: 1 } },
+    { ...run, id: "parent", round: 1, conclusion: "unknown", policyVersion: 3, reasonCodes: ["coverage_incomplete"],
+      coverage: { version: 3, fileCount: 3, coveredFileCount: 1, deliveredCompleteDiffs: 1, fullAddedSourceCount: 0 } },
+  ];
+  const p = mount(() => page(reviews));
+  try {
+    p.window.renderReviews({ taskId: "T-1", links: [link], disabled: false });
+    await waitFor(() => p.doc.querySelector(".pr-review-continuation"));
+    const [child, parent] = [...p.doc.querySelectorAll("article")];
+    assert.match(child.querySelector("header strong").textContent, /Round 2 · continues round 1$/);
+    assert.match(child.textContent, /3 of 3 files covered · 2 by complete diff · 0 by complete added-file source · 1 read by round 1/);
+    assert.equal(child.querySelector(".pr-review-continuation").textContent,
+      "Continues round 1 for the 1 path it left unread: a new reviewer run with its own cost, within what that round left of its budget. Coverage and conclusion are over both rounds; that round's findings are kept as it recorded them.");
+    assert.equal(parent.querySelector(".pr-review-continuation"), null);
+    assert.doesNotMatch(parent.textContent, /continues round|read by round/);
+  } finally { p.close(); }
+});
+
 test("a review's scope names every path it couldn't cover and why; older reviews show none", async () => {
   const blob = (c) => c.repeat(40);
   const head = (c) => ({ blobSha: blob(c), mode: "100644" });

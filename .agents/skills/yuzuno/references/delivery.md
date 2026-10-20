@@ -63,6 +63,24 @@ The order below is the usual shape; your project's instructions decide who may p
   - After a new head it shows as another candidate's. Add it again with `previousEvidenceId` to bind it to the new review; the old record stays.
   - Core fetches and verifies nothing, and the note is yours. "Bound to this candidate" is an identity match only. `artifactMatchesHeadContent` says only that the registered SHA-256 equals the hash of the fixed Git content Core read, not that the referenced Job's or link's artifact was retrieved or checked. Evidence never changes a review's conclusion or whether it passes.
   - The permanent gaps are paths no further round of the same head can cover. That says nothing about whether any other gap may be retried or continued.
+- **Continuing a round** (source update; requires a containing Core release). `review_continue` asks for a bounded continuation of one completed round of the same frozen snapshot, for the changed paths it left `not_read` or `read_failed`.
+  - It is a new isolated reviewer run with its own record, round number and cost, not a resumed session. It gets only what the parent round left of its 160 calls, 1.5 MB and 900 000 ms, to the exact millisecond; nothing is refilled.
+  - A PR gets at most two started review rounds when one of them is a continuation, counted across every task linked to that PR. Only a round recorded with a ledger that failed before its native start was recorded provably started nothing; older rounds and unknown ones count.
+  - Core refuses it before it exists, starting no model, when the parent:
+    - isn't `completed` with `ledger.nativeCompletion: "confirmed"` (its native run completed and shut down, and its report was stored before the check after the review);
+    - predates usage ledgers (every round recorded before such a Core);
+    - is itself a continuation or already has one;
+    - stopped at a terminal limit or has nothing left to read;
+    - was judged with another snapshot, policy or reviewer setting;
+    - left too little of its budget.
+  - Paths no review of the snapshot can cover need `acknowledgeUnreviewable: true`; the result then can't pass.
+  - Before its reviewer starts, Core re-fetches the snapshot and checks that it is the parent's, that every response the parent delivered still matches its recorded `responseSha256`, and that the unread paths fit the remaining bytes. Otherwise it ends `failed` with `continuation_refused` and `nativeStartedAt` unset: no model ran, and the parent's one continuation remains.
+  - Under an authorized delivery of this candidate it must be one of the delivery's attempts, so use `delivery_continue` first. Manually it is a counted round like any other, and your project's round limit applies.
+  - Its reviewer gets the parent's conclusion, findings and coverage as an earlier model's untrusted output, never as instructions. Re-sent material counts against the remaining bytes.
+  - Its coverage, scope and conclusion are over both rounds. Each covered path names the review whose reads proved it (`byReview`). The parent's unresolved requests stay unresolved until it covers their path. The parent's findings are carried unchanged with their `origin`, and a blocking finding from either round blocks; one not repeated isn't resolved. The parent's own record never changes.
+  - `ledger` records each run's calls, bytes, operation time and the harness's own usage report, and for a continuation the `cumulative` total. Claude's reported cost is its own estimate, not a bill; Codex reports none, so it is `unknown`, never 0.
+  - A round whose native run completed and shut down but which Core restarted during the check after the review finishes as `completed` with `scope.checkAfterReview: "interrupted"`; without that confirmation it is unknown, as before.
+  - After a lost reply, repeat the same requestId. A continuation left unknown by a restart is never run again; reconcile it from its record.
 
 - Check `review_list` for the same base and head first, so a round is not started twice.
 - Start it yourself with `review_start` on the task's PR link and the fixed base and head, once the candidate is frozen and your targeted checks pass. It may run while CI runs. Finish the turn; the report arrives by mail and `review_get` reads it.

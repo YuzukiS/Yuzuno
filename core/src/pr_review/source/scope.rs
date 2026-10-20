@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 /// The shape of `run.scope`.
-pub(super) const VERSION: u64 = 1;
+pub(crate) const VERSION: u64 = 1;
 /// The repository's explicit scope policy, read only at the PR's frozen base,
 /// so a head can't add or widen an exclusion for itself.
 pub(super) const POLICY_PATH: &str = ".yuzuno/review-scope.json";
@@ -158,7 +158,12 @@ impl Preflight {
             }
             let mut facts = Vec::new();
             if let Some(proof) = covered.iter().find(|c| c["path"] == path) {
-                facts.push(json!({"kind":"covered","evidenceKind":proof["evidenceKind"]}));
+                let mut fact = json!({"kind":"covered","evidenceKind":proof["evidenceKind"]});
+                // A continuation's union: the review whose reads proved it.
+                if let Some(review) = proof.get("byReview") {
+                    fact["byReview"] = review.clone();
+                }
+                facts.push(fact);
             }
             if let Some(rule) = self.excluded.get(path) {
                 facts.push(json!({"kind":"excluded","rule":rule["path"],"reason":rule["reason"],"policyBlobSha":self.policy["blobSha"]}));
@@ -176,7 +181,13 @@ impl Preflight {
             let failed: Vec<_> = failures
                 .iter()
                 .filter(|f| f["resolved"] != true && f["kind"] != "terminal_limit" && f["requested"]["path"] == path)
-                .map(|f| json!({"receipt":f["receipt"],"kind":f["kind"],"tool":f["tool"]}))
+                .map(|f| {
+                    let mut request = json!({"receipt":f["receipt"],"kind":f["kind"],"tool":f["tool"]});
+                    if let Some(review) = f.get("byReview") {
+                        request["byReview"] = review.clone();
+                    }
+                    request
+                })
                 .collect();
             if !failed.is_empty() {
                 facts.push(json!({"kind":"read_failed","requests":failed}));
@@ -224,6 +235,8 @@ fn budget(limit: &str) -> bool {
     [
         "Review context budget exhausted",
         "Review context byte budget exhausted",
+        "Continuation budget exhausted",
+        "Continuation byte budget exhausted",
         "Review object storage budget",
         "Local diff cache budget",
         "Fixed source operation exceeded its byte budget",

@@ -1,6 +1,7 @@
 //! Manual, fixed-revision PR reviews. This is deliberately separate from
 //! collaborative Agents: no mailbox credentials or task mutation tools exist.
 mod claude;
+mod continuation;
 mod evidence;
 pub(crate) mod policy;
 mod reviewer;
@@ -164,6 +165,9 @@ pub async fn call(
     if operation == "review_start" {
         return launch(ws, actor, serde_json::from_value(input)?).await;
     }
+    if operation == "review_continue" {
+        return launch_continuation(ws, actor, serde_json::from_value(input)?).await;
+    }
     if operation == "review_evidence_add" {
         let _admission = ws.admission.enter_work()?;
         let added = ws.stored(move |s| s.add_review_evidence(actor.as_deref(), input)).await?;
@@ -212,7 +216,8 @@ async fn launch(ws: Arc<Workspace>, actor: Option<String>, input: Start) -> Resu
     }
     // A SHA that cannot be the PR's is refused before a round exists: it
     // could only fail against GitHub's PR after the round was counted.
-    fixed_sha_problem(&input).map_or(Ok(()), |problem| Err(anyhow::anyhow!("{problem} No review was started.")))?;
+    fixed_sha_problem(input.base_sha.as_deref(), input.head_sha.as_deref())
+        .map_or(Ok(()), |problem| Err(anyhow::anyhow!("{problem} No review was started.")))?;
     let slot = ws
         .pr_reviews
         .slots
@@ -222,13 +227,65 @@ async fn launch(ws: Arc<Workspace>, actor: Option<String>, input: Start) -> Resu
     let id = uuid::Uuid::new_v4().to_string();
     let create_id = id.clone();
     let create = input.clone();
-    let (mut run, created) = ws
+    let (run, created) = ws
         .stored(move |s| s.create_pr_review(actor.as_deref(), &create, &create_id))
         .await?;
     if !created {
         return Ok(run);
     }
     announce(&ws);
+    Ok(spawn(ws, admission, slot, id, run, input.base_sha, input.head_sha, None))
+}
+
+/// A bounded continuation of one completed round of the same snapshot: a
+/// new native run, admitted from the parent's stored record before it
+/// exists, within what the parent left of its budget (continuation.rs).
+async fn launch_continuation(ws: Arc<Workspace>, actor: Option<String>, input: continuation::Continue) -> Result<Value> {
+    ensure!(
+        !input.request_id.trim().is_empty() && input.request_id.len() <= 128,
+        "requestId must contain 1–128 bytes"
+    );
+    let admission = ws.admission.enter_work()?;
+    let lookup = input.clone();
+    let lookup_actor = actor.clone();
+    if let Some(run) = ws
+        .stored(move |s| s.previous_pr_review_continuation(lookup_actor.as_deref(), &lookup))
+        .await?
+    {
+        return Ok(run);
+    }
+    fixed_sha_problem(Some(&input.base_sha), Some(&input.head_sha))
+        .map_or(Ok(()), |problem| Err(anyhow::anyhow!("{problem} No continuation was started.")))?;
+    let slot = ws
+        .pr_reviews
+        .slots
+        .clone()
+        .try_acquire_owned()
+        .context("Two PR reviews are already running; retry when one finishes")?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let create_id = id.clone();
+    let create = input.clone();
+    let (run, parent, created) = ws
+        .stored(move |s| s.create_pr_review_continuation(actor.as_deref(), &create, &create_id))
+        .await?;
+    if !created {
+        return Ok(run);
+    }
+    announce(&ws);
+    Ok(spawn(ws, admission, slot, id, run, Some(input.base_sha), Some(input.head_sha), parent))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn(
+    ws: Arc<Workspace>,
+    admission: crate::updates::admission::Permit,
+    slot: tokio::sync::OwnedSemaphorePermit,
+    id: String,
+    mut run: Value,
+    base_sha: Option<String>,
+    head_sha: Option<String>,
+    parent: Option<Value>,
+) -> Value {
     let response = run.clone();
     let (tx, mut cancellation) = watch::channel(false);
     ws.pr_reviews.jobs.lock().unwrap().insert(id.clone(), tx);
@@ -240,21 +297,36 @@ async fn launch(ws: Arc<Workspace>, actor: Option<String>, input: Start) -> Resu
         let mut claude = None;
         let mut raw = String::new();
         let mut reviewed_context = None;
+        // A continuation's operation gets exactly the milliseconds its parent
+        // left of the 900 s; nothing is rounded up.
+        let budget = parent
+            .as_ref()
+            .and_then(|_| run["continuation"]["reservation"]["milliseconds"].as_u64())
+            .map_or(Duration::from_millis(continuation::MAX_MILLISECONDS), Duration::from_millis);
+        let started = std::time::Instant::now();
         let operation = async {
             tokio::fs::create_dir_all(&directory).await?;
-            let (evidence, mut context) = source::collect(
+            let (mut evidence, mut context) = source::collect(
                 &ws.github.client,
                 &mut run,
                 &directory,
-                input.base_sha.as_deref(),
-                input.head_sha.as_deref(),
+                base_sha.as_deref(),
+                head_sha.as_deref(),
             )
             .await?;
+            if let Some(parent) = &parent {
+                evidence = prepare_continuation(&ws, parent, &mut run, &mut context).await.inspect_err(|_| {
+                    policy::execution_reason(&mut run, "continuation_refused");
+                })?;
+            }
             tokio::fs::write(directory.join("source.json"), &evidence).await?;
             run["phase"] = json!(format!(
                 "Starting isolated {} reviewer",
                 run["requestedHarness"].as_str().unwrap_or("unknown")
             ));
+            // Persisted before any native process exists: without it, no
+            // model can have started for this run.
+            run["nativeStartedAt"] = json!(now());
             persist(&ws, &run, None).await?;
             let reviewed = if run["requestedHarness"] == "claude" {
                 claude::review(
@@ -285,10 +357,21 @@ async fn launch(ws: Arc<Workspace>, actor: Option<String>, input: Start) -> Resu
         let outcome = tokio::select! {
             biased;
             _=cancellation.changed()=>Err(anyhow::anyhow!("cancelled")),
-            result=tokio::time::timeout(Duration::from_secs(900),operation)=>match result {
+            result=tokio::time::timeout(budget,operation)=>match result {
                 Ok(r)=>r, Err(_)=>Err(anyhow::anyhow!("Review deadline exceeded; completion is unknown")),
             },
         };
+        // What the operation used, before the check after the review: its
+        // own time, calls and bytes, and the native harness's usage report.
+        if continuation::ledger(&run) {
+            run["ledger"]["operationMs"] = json!(started.elapsed().as_millis() as u64);
+            run["ledger"]["calls"] = json!(run["contextReads"].as_array().map_or(0, Vec::len));
+            run["ledger"]["bytes"] = json!(run["contextBytes"].as_u64().unwrap_or(0));
+            run["ledger"]["nativeUsage"] = continuation::native_usage(&run, &raw);
+            if parent.is_some() {
+                run["ledger"]["cumulative"] = continuation::cumulative(&run);
+            }
+        }
         // Owned process only. No existing Agent or shared app-server is touched.
         let cleanup = if let Some(bridge) = claude {
             bridge.close_and_wait().await
@@ -297,24 +380,7 @@ async fn launch(ws: Arc<Workspace>, actor: Option<String>, input: Start) -> Resu
         } else {
             Ok(())
         };
-        // Once the reviewer has finished, and outside its deadline and its
-        // cancellation: what it left uncovered is checked within a bound of
-        // its own. Running out of time or a cancellation only stops that
-        // check; the completed result stands and gains nothing but scope.
-        if outcome.is_ok() && run["status"] == "completed" {
-            if let Some(mut context) = reviewed_context.take() {
-                let deadline = std::time::Instant::now() + Duration::from_secs(120);
-                let finished = tokio::select! {
-                    biased;
-                    _ = cancellation.changed() => false,
-                    checked = tokio::time::timeout(Duration::from_secs(150), context.postflight(&mut run, deadline)) => checked.is_ok(),
-                };
-                if !finished {
-                    run["scope"]["checkAfterReview"] = json!("stopped");
-                }
-                reviewer::rescope(&mut run);
-            }
-        }
+        let succeeded = outcome.is_ok();
         if let Err(error) = outcome {
             let cancelled = *cancellation.borrow();
             run["status"] = json!(if cancelled {
@@ -332,7 +398,7 @@ async fn launch(ws: Arc<Workspace>, actor: Option<String>, input: Start) -> Resu
             } else {
                 "execution_unconfirmed"
             };
-            if run["reasonCodes"].as_array().is_none_or(|codes| !codes.iter().any(|code| code == "invalid_report" || code == "execution_failed")) {
+            if run["reasonCodes"].as_array().is_none_or(|codes| !codes.iter().any(|code| code == "invalid_report" || code == "execution_failed" || code == "continuation_refused")) {
                 policy::execution_reason(&mut run, reason);
             }
             run["error"] = json!(if cancelled {
@@ -341,11 +407,43 @@ async fn launch(ws: Arc<Workspace>, actor: Option<String>, input: Start) -> Resu
                 error.to_string()
             });
         }
+        let shut_down = cleanup.is_ok();
         if let Err(error) = cleanup {
             run["status"] = json!("unknown");
             run["conclusion"] = json!("unknown");
             run["error"] = json!(format!("Reviewer shutdown could not be confirmed: {error}"));
             policy::execution_reason(&mut run, "execution_unconfirmed");
+        }
+        // A native run that completed and whose process shut down is durable
+        // first: its report and usage are stored, marked as confirmed, before
+        // anything that can be stopped. A restart from here on finishes it as
+        // completed with the check after the review interrupted.
+        if succeeded && shut_down && run["status"] == "completed" {
+            if continuation::ledger(&run) {
+                run["ledger"]["nativeCompletion"] = json!("confirmed");
+            }
+            let mut stored = run.clone();
+            stored["status"] = json!("running");
+            stored["phase"] = json!("Checking what the review left uncovered");
+            if let Err(error) = persist(&ws, &stored, Some(&raw)).await {
+                eprintln!("Review {id} completed-report persistence failed: {error}");
+            }
+            // Outside its deadline and its cancellation: what it left
+            // uncovered is checked within a bound of its own. Running out of
+            // time or a cancellation only stops that check; the completed
+            // result stands and gains nothing but scope.
+            if let Some(mut context) = reviewed_context.take() {
+                let deadline = std::time::Instant::now() + Duration::from_secs(120);
+                let finished = tokio::select! {
+                    biased;
+                    _ = cancellation.changed() => false,
+                    checked = tokio::time::timeout(Duration::from_secs(150), context.postflight(&mut run, deadline)) => checked.is_ok(),
+                };
+                if !finished {
+                    run["scope"]["checkAfterReview"] = json!("stopped");
+                }
+                reviewer::rescope(&mut run);
+            }
         }
         // The object cache is temporary, while every delivered page and its
         // fixed revision/blob receipt remains beside the durable report.
@@ -363,7 +461,39 @@ async fn launch(ws: Arc<Workspace>, actor: Option<String>, input: Start) -> Resu
         ws.pr_reviews.jobs.lock().unwrap().remove(&id);
         // Retain fixed source evidence with the report, including context reads.
     });
-    Ok(response)
+    response
+}
+
+/// Everything a continuation relies on, checked before any model starts:
+/// the re-fetched snapshot is the parent's, every response the parent
+/// delivered still has its recorded hash, and every unread path can be
+/// delivered within the reserved bytes. Its evidence replaces the manifest.
+async fn prepare_continuation(
+    ws: &Workspace,
+    parent: &Value,
+    run: &mut Value,
+    context: &mut source::ContextStore,
+) -> Result<String> {
+    run["phase"] = json!("Checking the earlier round's snapshot and receipts");
+    continuation::same_snapshot(parent, run)?;
+    let parent_id = parent["id"].as_str().context("Parent review id missing")?;
+    continuation::verify_receipts(parent, &ws.data_dir.join("pr-reviews").join(parent_id)).await?;
+    let reservation = run["continuation"]["reservation"].clone();
+    let (proofs, failures) = continuation::inherited(parent);
+    context.inherit(proofs, failures);
+    context.reserve(
+        reservation["calls"].as_u64().unwrap_or(0) as usize,
+        reservation["bytes"].as_u64().unwrap_or(0) as usize,
+    );
+    context.refresh(run);
+    let outside = source::scope::permanent_gaps(&run["scope"]);
+    let evidence = continuation::evidence(run, &outside, json!({"maxCalls":reservation["calls"],"maxContextBytes":reservation["bytes"],"deadlineMilliseconds":reservation["milliseconds"],"reservedFrom":"the earlier round's remaining budget"}))?;
+    context.set_evidence_bytes(evidence.len());
+    run["evidenceBytes"] = json!(evidence.len());
+    // The ledger counts this evidence even if the reviewer reads nothing.
+    context.refresh(run);
+    continuation::check_targets(run, context).await?;
+    Ok(evidence)
 }
 
 async fn persist(ws: &Workspace, run: &Value, raw: Option<&str>) -> Result<()> {
@@ -387,9 +517,9 @@ fn announce(ws: &Workspace) {
 
 /// The PR's base and head as GitHub shows them: 40 lowercase hexadecimal
 /// characters (source.rs compares them exactly).
-fn fixed_sha_problem(input: &Start) -> Option<String> {
-    [("baseSha", &input.base_sha), ("headSha", &input.head_sha)].into_iter().find_map(|(key, sha)| {
-        let sha = sha.as_deref()?;
+fn fixed_sha_problem(base: Option<&str>, head: Option<&str>) -> Option<String> {
+    [("baseSha", base), ("headSha", head)].into_iter().find_map(|(key, sha)| {
+        let sha = sha?;
         if !crate::commit_sha::Form::GitHub.accepts(sha) {
             Some(crate::commit_sha::problem(key, sha, crate::commit_sha::Form::GitHub))
         } else if sha.bytes().any(|b| b.is_ascii_uppercase()) {
@@ -414,8 +544,12 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         "baseSha":fixed("Optional: the PR base as github_links shows it, in lowercase. A malformed one is refused before any round starts; one that is no longer the PR's ends its round before a reviewer runs."),
         "headSha":fixed("Optional: the PR head as github_links shows it, in lowercase. A malformed one is refused before any round starts; one that is no longer the PR's ends its round before a reviewer runs."),
         "acknowledgeUnreviewable":{"type":"boolean","description":"Optional. When the latest completed round of this exact base and head found changed paths no round can cover (unsupported, too large, or excluded by the base's .yuzuno/review-scope.json), a new round is refused before it is created. true reviews the other paths anyway. It only acknowledges that those paths stay unreviewed: not an approval, not a lifted round limit, and the result is judged the same way."}}), &["requestId","taskId","linkId"]),
+      definition("review_continue","Explicitly request a bounded continuation of one completed review round of the same fixed snapshot, for the changed paths it left unread (not_read or read_failed in its scope). It is a new isolated reviewer run with its own record, round number and cost, not a resumed session, and it never refills a budget: it gets only what the parent round left of its 160 calls, 1.5 MB and 900 000 ms. A PR gets at most two started review rounds when one is a continuation, counted across tasks; rounds that can't be shown to have started nothing count. Core admits it from the parent's stored record before it exists and refuses, without starting any model, a parent that isn't completed with a confirmed native completion, predates usage ledgers, is itself a continuation or already has one, stopped at a terminal limit, has nothing left to read, or whose snapshot, policy or reviewer settings changed. Before the reviewer starts Core re-fetches the snapshot and checks it is the parent's, that every response the parent delivered still matches its recorded hash, and that the unread paths can be delivered within the remaining budget. Under an authorized delivery of this candidate it must be one of the delivery's attempts (delivery_continue first). The parent's report, findings and receipts stay unchanged; the continuation's coverage, scope and conclusion are over both rounds, each covered path naming the review that read it, and a blocking finding from either round blocks. Returns reviewId at once and notifies you at the end; do not poll. Reuse requestId only for an identical retry.",json!({"requestId":text,"taskId":task,"reviewId":{"type":"string","description":"The completed round to continue."},
+        "baseSha":fixed("The parent round's fixed base, in lowercase."),
+        "headSha":fixed("The parent round's fixed head, in lowercase."),
+        "acknowledgeUnreviewable":{"type":"boolean","description":"Optional. Required when the parent also found paths no review of this snapshot can cover; it only acknowledges that they stay unreviewed, so the result can't pass."}}), &["requestId","taskId","reviewId","baseSha","headSha"]),
       definition("review_list","List retained review runs for an existing task, newest first. Use nextBefore while hasMore. Outdated compares both fixed base and head; null means the current version is unverified.",json!({"taskId":task,"before":{"type":"integer"}}), &["taskId"]),
-      definition("review_get","Read the same durable review shown in task details, including original report, model, fixed range, findings, policyVersion, coveragePolicyVersion, per-file coverage evidence, reasonCodes and, from coverage policy 3, scope: every changed path with its frozen revision, blob and modes and one state (covered with its evidenceKind, excluded, unsupported with its reason such as binary, symlink or submodule, budget_exhausted as diff_exceeds_context or context_exhausted, read_failed, or not_read). Links, submodules and paths the base's .yuzuno/review-scope.json excludes are known before the reviewer starts; binary or non-UTF-8 sources and diffs larger than the review context are recorded when the reviewer meets them or by Core's bounded check after it finishes. They keep the review incomplete; another round of the same head can't cover them. A complete correct review with only P3 suggestions can be approved_with_notes; unknown is never passing and approval never merges the PR.",json!({"taskId":task,"reviewId":text}), &["taskId","reviewId"]),
+      definition("review_get","Read the same durable review shown in task details, including original report, model, fixed range, findings, policyVersion, coveragePolicyVersion, per-file coverage evidence, reasonCodes and, from coverage policy 3, scope: every changed path with its frozen revision, blob and modes and one state (covered with its evidenceKind, excluded, unsupported with its reason such as binary, symlink or submodule, budget_exhausted as diff_exceeds_context or context_exhausted, read_failed, or not_read). A continuation's (review_continue) coverage, scope and conclusion are over both rounds, and each covered path names the review that read it. Links, submodules and paths the base's .yuzuno/review-scope.json excludes are known before the reviewer starts; binary or non-UTF-8 sources and diffs larger than the review context are recorded when the reviewer meets them or by Core's bounded check after it finishes. They keep the review incomplete; another round of the same head can't cover them. A complete correct review with only P3 suggestions can be approved_with_notes; unknown is never passing and approval never merges the PR.",json!({"taskId":task,"reviewId":text}), &["taskId","reviewId"]),
       definition("review_evidence_add","Record evidence for one changed path of a review that couldn't cover it (for example a prebuilt binary): a source review, build provenance, an artifact hash, a signature or a behaviour test, by reference to another review or Job of this task, a CI run of the reviewed repository (its ci_list runKey), or an https link. It is bound to that review's frozen base, head, merge base and the path's blobs and modes, and shown beside reviews as bound to this candidate only when all of them match; after a new head it shows as another candidate's. Core records the reference without fetching or checking it, and the note is yours; nothing here verifies the evidence or changes any review's conclusion, scope or whether it passes. To bind it to a newer review, add it again with previousEvidenceId; the old record stays. Reuse requestId only to retry the same call.",json!({"requestId":text,"taskId":task,"reviewId":text,"path":text,
         "kind":{"type":"string","enum":evidence::KINDS},
         "reference":{"type":"object","additionalProperties":false,"description":"Exactly one of reviewId, jobId, ciRunKey or url.","properties":{"reviewId":text,"jobId":text,"ciRunKey":text,"url":{"type":"string","maxLength":500}}},
