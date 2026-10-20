@@ -76,7 +76,7 @@ Each attempt carries its declared CPU, RAM and swap and the machine's mode, boun
 | Admission | This host's budget, slots, disk reserve and GPUs | Per machine: `maxJobs` attempts at once (2 unless set), within the machine's own `budget` when set; this host's budget is not used | This host's budget, which Windows and this WSL share (one PC: never counted twice nor added), and at most Windows' `maxJobs` attempts at once (2 unless set, 1–64, in this host's Jobs settings: `POST /api/jobs/windows`); only a ceiling, never extra budget |
 | GPU admission | By device UUID (T-106) | Not available. A request with `gpu` is refused | Not available. A request with `gpu` is refused |
 | Exclusive | Alone among this host's jobs | Not available. Refused | Not available. Refused |
-| Pause and resume | Freezes the job's cgroup (T-107) | Not available. A pause is refused with the reason | Not available. A pause is refused with the reason |
+| Pause and resume | Freezes the job's cgroup (T-107) | Only for an attempt that runs in a scope of its own there (its limits are held: strict, or limited on an account that lingers): the scope is frozen through the account's systemd and read back from its cgroup. Otherwise refused with the reason (see Pause and resume) | Not available. A pause is refused with the reason |
 | Git guard | Checked on this host | Not available. Set `guardGit` to `false` | Not available. Set `guardGit` to `false` |
 | Inputs | Small files on this host, frozen by SHA-256 at submit and checked again before the command starts; one missing at submit is recorded as missing | Small files on that machine, frozen there at submit and checked again there before the command starts; one missing, unreadable or too large refuses the submit (see Inputs and artifacts) | Not available. Refused |
 | Artifacts | Checked on this host after a clean exit; downloadable from the job panel | Checked on that machine after a clean exit by the same rules; recorded with the machine and its path there, never copied or downloadable here (see Inputs and artifacts) | Not available. Refused |
@@ -145,6 +145,22 @@ On an SSH machine both are files on that machine, named from the job's `cwd` the
   That Core reports the outcome and its reason, without the per-file artifact details.
 - **Bound at submit.** A job with inputs or artifacts is bound when it is submitted, not when it starts: its digest (the v3 request, with the limits mode the machine has then) is recorded with the job and marked `prebound`. This is what a Core that knows data roots but not inputs and artifacts (a build from T-137 slice A up to the one before them; no release was cut in between) does with such a job if it opens the Workspace while the job is still queued, as after a rollback: it pins the machine as usual but keeps the recorded digest (it records a digest only where none is), sends its own shorter request with it, and the machine refuses that start before writing anything. The job ends as not started, with that reason, and its command never runs without its checks. This is a **safe fail**, not support for running such a job on that Core. Core builds from before data roots (core.11 and earlier) cannot open the Workspace while it is queued (above).
 - **Its mode is the one it was bound with.** If the machine's limits mode changes while the job waits, it is not started (the reason says to submit it again): it is neither run in the mode it was bound with nor bound again. Its slot and budget are admitted when it starts, as for every job.
+
+## Pause and resume
+
+The user can pause a remote job as a local one (T-107), only when its attempt runs in a scope of its own on the machine: the transient systemd scope that holds its limits there (a strict machine, or a limited one whose account lingers).
+
+- **What is frozen.** Only that scope, and only once the helper has proven it is this attempt's:
+  - the unit named for the attempt (`yuzuno-remote-job-<attempt>.scope`), as its supervisor recorded it with its cgroup;
+  - which the account's systemd still describes as this attempt's, with that cgroup;
+  - in the boot its processes started in.
+
+  No path in a request is used, and the account's session scope or another job is never touched.
+- **Read back.** The freeze or thaw goes through the account's systemd (`systemctl --user freeze`/`thaw`), and the job is `paused` only once the scope's own `cgroup.events` reads frozen. One that has not taken hold after 8 s is `requested` (pausing) or `resuming`.
+- **What stays.** Memory and the machine's reservation stay, and the job keeps `status: running` and its slot. Its timeout keeps counting: the supervisor, outside the scope, stops a paused job that reaches it.
+- **Cancel and timeouts while paused.** The scope is thawed first, so its processes act on TERM, then its process group is stopped as usual. The same happens when the supervisor is gone and cancel stops what is left, except that nothing reads the attempt's output any more: a process that writes output after the TERM (a shell reporting the child the TERM ended, for instance) ends on SIGPIPE before its own handler runs.
+- **A lost reply.** A pause or resume whose reply does not come back is `unknown`, never taken for paused or running. Each status reply carries the scope's freezer state, which settles it. A scope frozen or thawed outside Yuzuno is shown as such.
+- **No scope of its own.** A record-only machine, or a limited machine whose account does not linger, cannot pause: the pause is refused with the reason and nothing is changed. Nothing is stopped with signals instead, and the account's linger or sshd is never changed to make it possible.
 
 ## Windows on this PC
 

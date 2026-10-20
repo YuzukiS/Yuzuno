@@ -26,6 +26,8 @@ root that Core recorded for the attempt and names in each of its requests
                        that process may run the command
   log-0.bin, log-1.bin the output ring (2 MiB, as for local jobs)
   cancel.json          cancellation intent
+  paused.json, resumed.json
+                       the last pause or resume this helper confirmed
   artifacts.json       the declared artifacts as checked after a clean exit,
                        with this attempt's id
   result.json          the outcome, written once, and only when nothing of
@@ -54,6 +56,16 @@ plans before the commit point: strict refuses unless every limit is held and
 outlives the account's sessions; limited holds what it can and names what
 is only declared. Held limits are applied to the command's process in its
 own transient scope before it may run, and read back from its cgroup.
+
+Pause and resume (as local jobs, T-107) freeze or thaw that scope through
+the account's systemd and read the result back from its cgroup.events, only
+once the scope is proven to be this attempt's (its name, systemd's
+description and cgroup, the boot). An attempt with no scope of its own (a
+record-only machine, or an account that does not linger) cannot be paused:
+nothing is ever stopped with signals instead. The supervisor, outside the
+scope, keeps counting the timeout while it is frozen; cancel and timeouts
+thaw it before stopping its process group.
+
 YUZUNO_JOBS_MACHINE_ID_FILE and YUZUNO_JOBS_BOOT_ID_FILE replace the
 system's files, YUZUNO_JOBS_CAPABILITIES_FILE what the account can enforce
 and YUZUNO_JOBS_BUSCTL the busctl program, for tests only.
@@ -74,6 +86,7 @@ import os
 from pathlib import Path
 import signal
 import stat
+import subprocess
 import time
 import uuid
 
@@ -380,6 +393,93 @@ def cgroup_of(pid):
     except OSError:
         pass
     return None
+
+
+# Pause and resume freeze or thaw the attempt's own transient scope through
+# this account's systemd, as local jobs do (T-107): memory and the machine's
+# reservation stay, the supervisor (outside the scope) keeps counting the
+# timeout, and cancel and timeouts thaw the scope before stopping it.
+# Each step is bounded so that a pause or resume answers within Core's 30 s
+# for one SSH call: two systemd reads (5 s), the freeze or thaw (8 s) and the
+# wait for the cgroup to report it (8 s).
+PAUSE_WAIT = 8
+
+
+def freezer_of(cgroup):
+    """The cgroup's own report of being frozen (cgroup.events), or None if
+    it is gone. systemd's FreezerState is not evidence: only this is."""
+    try:
+        values = dict(line.split() for line in read_text("/sys/fs/cgroup" + cgroup + "/cgroup.events").splitlines())
+    except (OSError, ValueError):
+        return None
+    return {"populated": values.get("populated") == "1", "frozen": values.get("frozen") == "1"}
+
+
+def wait_freezer(cgroup, frozen, seconds):
+    deadline = time.monotonic() + seconds
+    while True:
+        now = freezer_of(cgroup)
+        if now is None or now["frozen"] == frozen or time.monotonic() >= deadline:
+            return now
+        time.sleep(0.02)
+
+
+def own_scope(root, intent):
+    """The attempt's own transient scope, proven before anything is frozen or
+    thawed: the unit named for this attempt, recorded by its supervisor
+    (limits.json) with its cgroup, which this account's systemd still
+    describes as this attempt's with that cgroup, in the boot its processes
+    started in. Nothing named by a request is ever used. (scope, None), or
+    (None, why) when there is none: then nothing may be frozen."""
+    unit = "yuzuno-remote-job-%s.scope" % intent["attempt"]
+    held = read_json(Path(root) / "limits.json")
+    if not held:
+        return None, ("this attempt runs without a scope of its own on this machine "
+                      "(no limits are held for it here: a record-only machine, or an account that does not linger)")
+    group = held.get("cgroup")
+    if not (held.get("unit") == unit and isinstance(group, str) and group.startswith("/") and group.endswith("/" + unit)
+            and "/../" not in group + "/" and "/./" not in group + "/"):
+        return None, "the scope it recorded is not this attempt's"
+    started = read_json(Path(root) / "started.json")
+    if not started or started.get("bootId") != boot_id():
+        return None, "its processes are not from this boot of the machine"
+    try:
+        shown = subprocess.run(["systemctl", "--user", "show", "-p", "Description", "-p", "ControlGroup",
+                                "-p", "ActiveState", "--", unit],
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, "this account's systemd could not be asked about its scope (%s)" % error
+    props = dict(line.split("=", 1) for line in shown.stdout.splitlines() if "=" in line)
+    if (shown.returncode != 0 or props.get("Description") != "Yuzuno job " + intent["attempt"]
+            or props.get("ControlGroup") != group):
+        return None, "this account's systemd does not describe %s as this attempt's scope with %s" % (unit, group)
+    return {"unit": unit, "cgroup": group, "activeState": props.get("ActiveState")}, None
+
+
+def scope_control(scope, verb):
+    """systemctl --user freeze or thaw of the attempt's own scope:
+    (return code, error text)."""
+    try:
+        done = subprocess.run(["systemctl", "--user", verb, "--", scope["unit"]], stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=8)
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, str(error)[:300]
+    return done.returncode, done.stderr.strip()[:500]
+
+
+def thaw_for_stop(root, intent):
+    """Processes in a frozen scope act on TERM only once thawed: thaw the
+    attempt's own scope before it is stopped (its processes may run briefly
+    while they handle the signal). None when it was not frozen."""
+    scope, _ = own_scope(root, intent)
+    if scope is None:
+        return None
+    now = freezer_of(scope["cgroup"])
+    if not (now and now["frozen"]):
+        return None
+    code, error = scope_control(scope, "thaw")
+    return {"wasFrozen": True, "thawReturnCode": code, "thawError": error,
+            "freezer": wait_freezer(scope["cgroup"], False, 3)}
 '''
 
 exec(COMMON)
@@ -660,6 +760,7 @@ deadline = time.monotonic() + spec["timeoutSeconds"]
 why = None
 seen = {}
 sampled = 0.0
+thawed = None
 while True:
     if held and time.monotonic() - sampled >= 1:
         sample(held, seen)
@@ -671,14 +772,19 @@ while True:
         if (root / "cancel.json").exists():
             why = "cancel"
         elif time.monotonic() > deadline:
+            # The timeout counts while the job is paused, as for local jobs.
             why = "timeout"
         if why:
+            # A paused job is thawed first, so its processes can act on TERM.
+            thawed = thaw_for_stop(root, intent) if held else None
             # Until nothing of the group is left; the leader is then a zombie.
             stop(group)
     time.sleep(0.2)
 # The command has exited; nothing of its group may outlive it, and the
 # outcome is written only once nothing is left.
 leftovers = len(members(group))
+if held and leftovers:
+    thawed = thaw_for_stop(root, intent) or thawed
 stop(group)
 reader.join(5)
 if held:
@@ -708,6 +814,8 @@ if plan:
         if seen.get("oomKills") and code < 0:
             note += "; out of memory: its limit is %d MiB" % plan["memoryMiB"]
     extra = {"limits": used}
+if thawed:
+    extra = dict(extra or {}, thawedToStop=thawed)
 if why == "cancel" or (root / "cancel.json").exists():
     outcome(root, intent, "cancelled", "Cancelled; its process group was stopped", code, signum, extra)
 elif why == "timeout":
@@ -1182,7 +1290,79 @@ def status(request, host):
         return reply
     with locked(root):
         intent, reply = checked(root, bound, fence)
-        return reply or state(root, intent)
+        if reply:
+            return reply
+        reply = state(root, intent)
+        if reply["status"] in ("running", "stopping") and (root / "limits.json").exists():
+            # Whether its own scope is frozen, so Core settles a pause or
+            # resume whose reply was lost, and sees one made outside Yuzuno.
+            scope, _ = own_scope(root, intent)
+            if scope is not None:
+                reply["freezer"] = freezer_of(scope["cgroup"])
+        return reply
+
+
+def control(request, host, freeze):
+    """Pause (freeze) or resume (thaw) the attempt's own scope and read it
+    back from its cgroup. Only a scope proven to be this attempt's is ever
+    touched (own_scope); without one nothing is changed and the reply says
+    why. Repeating one that already took hold changes nothing."""
+    root, bound, reply = find(request, host, False)
+    if reply:
+        return reply
+    verb, not_done = ("paused", "notPaused") if freeze else ("resumed", "notResumed")
+    with locked(root):
+        intent, reply = checked(root, bound, False)
+        if reply:
+            return reply
+
+        def answer(state, reason, evidence=None):
+            return dict({"status": "control", "state": state, "reason": reason},
+                        **({"evidence": evidence} if evidence else {}))
+        finished = read_json(root / "result.json")
+        if finished:
+            return answer(not_done, "The job has already finished; nothing was %s" % verb)
+        if freeze and (root / "cancel.json").exists():
+            return answer(not_done, "Cancellation was requested; nothing was paused")
+        now_state = state(root, intent)
+        if now_state["status"] != "running":
+            return answer(not_done, "The job is not running here (%s); nothing was %s" % (now_state["status"], verb))
+        scope, why = own_scope(root, intent)
+        if scope is None:
+            return answer(not_done, "Pause freezes only an attempt's own scope, and %s; nothing was %s" % (why, verb))
+        now = freezer_of(scope["cgroup"])
+        if now is None:
+            return answer(not_done, "Its scope no longer exists; nothing was %s" % verb)
+        evidence = {"unit": scope["unit"], "cgroup": scope["cgroup"], "freezer": now, "at": time.time()}
+        if now["frozen"] == freeze:
+            return answer("paused" if freeze else "running", "Already paused" if freeze else "Already running", evidence)
+        code, error = scope_control(scope, "freeze" if freeze else "thaw")
+        now = wait_freezer(scope["cgroup"], freeze, PAUSE_WAIT)
+        after, _ = own_scope(root, intent)
+        evidence = dict(evidence, freezer=now, returnCode=code, error=error, at=time.time())
+        if after is None or now is None:
+            return answer("unknown", "The scope changed or ended while it was being %s" % verb, evidence)
+        if now["frozen"] == freeze:
+            atomic(root / ("paused.json" if freeze else "resumed.json"), dict(evidence, attempt=intent["attempt"]))
+            if freeze:
+                return answer("paused", "Paused: every process in its scope on this machine is frozen; "
+                                        "its memory and the machine's reservation are kept", evidence)
+            return answer("running", "Resumed: the same processes continue", evidence)
+        if code:
+            return answer(not_done, "This account's systemd did not %s it: %s" % ("freeze" if freeze else "thaw",
+                                                                               error[:300] or code), evidence)
+        return answer("pausing" if freeze else "resuming",
+                      "%s requested, but its scope was not %s after %d s%s" % (
+                          "Freeze" if freeze else "Thaw", "frozen" if freeze else "thawed", PAUSE_WAIT,
+                          " (a process may be inside a kernel call)" if freeze else ""), evidence)
+
+
+def pause(request, host):
+    return control(request, host, True)
+
+
+def resume(request, host):
+    return control(request, host, False)
 
 
 def cancel(request, host):
@@ -1205,10 +1385,14 @@ def cancel(request, host):
             while time.monotonic() < deadline and not (root / "result.json").exists():
                 time.sleep(0.1)
             return state(root, intent)
-        if reply["status"] == "lost" and stop(reply["started"], limit=4):
-            outcome(root, intent, "cancelled",
-                    "Cancelled; its supervisor was gone, so what was left of its process group was stopped here")
-            return state(root, intent)
+        if reply["status"] == "lost":
+            # Its supervisor is gone: a paused scope is thawed first, so its
+            # processes act on TERM (frozen, they would stop only at KILL).
+            thaw_for_stop(root, intent)
+            if stop(reply["started"], limit=4):
+                outcome(root, intent, "cancelled",
+                        "Cancelled; its supervisor was gone, so what was left of its process group was stopped here")
+                return state(root, intent)
         return reply
 
 
@@ -1244,7 +1428,8 @@ def logs(request, host):
             "text": out.decode("utf-8", "replace"), "retainedBytesLimit": 2 * SEGMENT}
 
 
-ACTIONS = {"hello": hello, "inspect": inspect, "start": start, "status": status, "cancel": cancel, "logs": logs}
+ACTIONS = {"hello": hello, "inspect": inspect, "start": start, "status": status, "cancel": cancel, "logs": logs,
+           "pause": pause, "resume": resume}
 
 
 def main():

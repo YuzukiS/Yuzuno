@@ -16,6 +16,13 @@
 //! unit's RuntimeMaxSec, and a paused Job that reaches it is stopped.
 //! Only the user pauses or resumes; Core never resumes a Job by itself,
 //! also not after a restart.
+//!
+//! A Job on an SSH machine (T-108) is paused the same way there: its
+//! attempt's own transient scope is frozen through that account's systemd
+//! and read back from its cgroup (remote_job.py `control`), and the
+//! machine's status replies settle a lost answer. Only an attempt that runs
+//! in a scope of its own can be paused (remote.rs `pause_refusal`); Windows
+//! has no pause.
 use super::{
     changed, host,
     store::{get, notify_message, save},
@@ -53,11 +60,17 @@ pub(super) async fn control(
         return Ok(job);
     }
     let mode = if resume { "resume" } else { "pause" };
-    let answer = host::control(&ws.data_dir, &job, mode)
-        .await
-        .unwrap_or_else(|error| {
-            json!({"state":"unknown","reason":format!("The host helper did not confirm the {mode}: {error:#}")})
-        });
+    // A remote attempt's own scope, frozen on its machine (remote.rs);
+    // request_job_pause refused every other remote job.
+    let answer = if job["executor"]["kind"] == super::remote::SSH {
+        super::remote::control(ws, &job, mode).await
+    } else {
+        host::control(&ws.data_dir, &job, mode)
+            .await
+            .unwrap_or_else(|error| {
+                json!({"state":"unknown","reason":format!("The host helper did not confirm the {mode}: {error:#}")})
+            })
+    };
     let attempt = job["attempt"].clone();
     let job = ws
         .stored(move |s| s.record_job_pause(&id, &attempt, resume, &answer))
@@ -174,11 +187,16 @@ fn tell(db: &Connection, job: &Value, event: &str) -> Result<()> {
     let public_task = format!("T-{}", collaboration::task_key(db, task)?.1);
     let name = job["name"].as_str().unwrap_or("");
     let id = job["id"].as_str().unwrap_or("");
+    // A remote attempt's scope is frozen on its machine (remote.rs).
+    let (what, kept) = match job["executor"]["machineName"].as_str() {
+        Some(machine) => (format!("Job {name} ({id}) on {machine}"), "its memory and the machine's reservation are kept"),
+        None => (format!("Local job {name} ({id})"), "its memory, GPU memory and reservation are kept"),
+    };
     let body = if event == "paused" {
-        format!("Local job {name} ({id}) was paused by the user. Its processes are frozen; its memory, GPU memory and reservation are kept, and its timeout still counts{}. Only the user resumes it. Do not resubmit it or read its silence as a failure. Task {public_task}. job_get(jobId={id}) shows the pause.",
+        format!("{what} was paused by the user. Its processes are frozen; {kept}, and its timeout still counts{}. Only the user resumes it. Do not resubmit it or read its silence as a failure. Task {public_task}. job_get(jobId={id}) shows the pause.",
             deadline(job).map(|d| format!(" (it is stopped at {d} if still running)")).unwrap_or_default())
     } else {
-        format!("Local job {name} ({id}) was resumed by the user; the same processes continue. Network connections or leases may have expired while it was paused. Task {public_task}.")
+        format!("{what} was resumed by the user; the same processes continue. Network connections or leases may have expired while it was paused. Task {public_task}.")
     };
     let run = job["run"]["id"].as_str().unwrap_or("");
     notify_message(db, &job["agent"], task, job, event, name, run, body)?;
@@ -219,14 +237,15 @@ impl Store {
         let tx = db.transaction()?;
         let mut job = get(&tx, id)?;
         let verb = if resume { "resumed" } else { "paused" };
-        if let Some(machine) = job["executor"]["machineName"].as_str() {
-            anyhow::bail!("Pause is not available for jobs on {machine}: this executor has no pause, so nothing was changed");
-        }
         ensure!(
             job["reserved"] == true && job["status"] == "running",
             "Only a running job can be {verb}; this one is {}",
             job["status"].as_str().unwrap_or("unknown")
         );
+        // On another machine: only an attempt in a scope of its own there.
+        if let Some(why) = super::remote::pause_refusal(&job) {
+            anyhow::bail!(why);
+        }
         ensure!(
             job["cancelRequestedAt"].is_null(),
             "Cancellation was requested; the job is being stopped"
@@ -296,6 +315,20 @@ impl Store {
     /// when the Job was frozen or thawed outside Yuzuno. Never thaws or
     /// freezes anything itself. True when the Job changed.
     pub(super) fn reconcile_job_pause(&self, id: &str, attempt: &Value, freezer: &Value) -> Result<bool> {
+        self.reconcile_pause(id, attempt, None, freezer)
+    }
+
+    /// The same for a remote attempt, whose freezer a status call read without
+    /// the jobs gate (remote.rs answered): a pause or resume of the user's may
+    /// have changed the job while that call was out, so the reading is applied
+    /// only while the job's pause and earlier pauses are as they were when the
+    /// call was sent (`seen`); otherwise the next status call reads it again.
+    pub(super) fn reconcile_remote_pause(&self, seen: &Value, freezer: &Value) -> Result<bool> {
+        let id = seen["id"].as_str().context("Missing job")?;
+        self.reconcile_pause(id, &seen["attempt"], Some(seen), freezer)
+    }
+
+    fn reconcile_pause(&self, id: &str, attempt: &Value, seen: Option<&Value>, freezer: &Value) -> Result<bool> {
         let Some(frozen) = freezer["frozen"].as_bool() else {
             return Ok(false);
         };
@@ -303,6 +336,9 @@ impl Store {
         let tx = db.transaction()?;
         let mut job = get(&tx, id)?;
         if job["attempt"] != *attempt || job["status"] != "running" {
+            return Ok(false);
+        }
+        if seen.is_some_and(|seen| job["pause"] != seen["pause"] || job["pauses"] != seen["pauses"]) {
             return Ok(false);
         }
         let intent = job["pause"]["intent"].as_str().map(str::to_owned);
