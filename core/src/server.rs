@@ -442,9 +442,8 @@ async fn close_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>)
     Ok(Json(ws.close_service(&id).await?))
 }
 async fn delete_project(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
-    let project = id.clone();
-    ws.stored(move |store| store.delete_project(&project)).await?;
-    ws.projects_changed();
+    // Its services' open ways end with it (services.rs).
+    ws.delete_project(&id).await?;
     Ok(Json(json!({"deleted":true,"projectId":id})))
 }
 #[derive(Deserialize)]

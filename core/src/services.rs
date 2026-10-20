@@ -366,6 +366,12 @@ impl Runtime {
         }
     }
 
+    /// `stop`, for a service that no longer exists.
+    fn forget(&self, id: &str) {
+        self.stop(id);
+        self.assigned.lock().unwrap().remove(id);
+    }
+
     /// A port of the range for this service: the one it had last if it is
     /// free, else the first free one. Never the service's own port (a service
     /// on this host whose port is in the range would be relayed to itself).
@@ -567,9 +573,28 @@ impl Workspace {
     /// Closes its way (never the service itself), then forgets it.
     pub async fn delete_service(&self, id: &str) -> Result<()> {
         let _gate = self.services.gate.lock().await;
-        self.services.stop(id);
+        self.services.forget(id);
         let id = id.to_owned();
         self.stored(move |s| s.delete_service(&id)).await?;
+        self.projects_changed();
+        Ok(())
+    }
+
+    /// Deletes a project. Its services go with it (their rows by cascade), so
+    /// whatever is open for them ends too, once the project is gone. The gate
+    /// is held throughout: none of them opens meanwhile. A project that cannot
+    /// be deleted keeps its services as they are.
+    pub async fn delete_project(&self, project: &str) -> Result<()> {
+        let _gate = self.services.gate.lock().await;
+        let project = project.to_owned();
+        let ids = self.stored(move |s| {
+            let ids: Vec<String> = s.services(&project)?.into_iter().map(|service| service.id).collect();
+            s.delete_project(&project)?;
+            Ok(ids)
+        }).await?;
+        for id in ids {
+            self.services.forget(&id);
+        }
         self.projects_changed();
         Ok(())
     }

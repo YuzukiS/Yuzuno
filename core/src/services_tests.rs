@@ -503,3 +503,25 @@ async fn agents_register_and_list_in_their_project_but_never_open() {
     let names: Vec<_> = tool_definitions().iter().map(|t| t["name"].clone()).collect();
     assert_eq!(names, vec![json!(LIST), json!(REGISTER)], "no tool opens, closes or deletes");
 }
+
+#[tokio::test]
+async fn deleting_a_project_ends_what_is_open_for_its_services_and_only_then() {
+    let lab = lab();
+    let (port, running) = service(false).await;
+    let id = register(&lab, "m1", port).await;
+    let local = open(&lab, &id).await["localPort"].as_u64().unwrap() as u16;
+    // A project an Agent still belongs to is not deleted: its service stays open.
+    let agent: AgentDetail = serde_json::from_value(json!({"agent":{"id":"a","name":"Mori","cwd":"/tmp","model":"test","color":"sage","status":"idle","createdAt":"now","updatedAt":"now","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    lab.ws.store.insert(&agent).unwrap();
+    lab.ws.store.set_agent_project("a", Some(&lab.project)).unwrap();
+    assert!(lab.ws.delete_project(&lab.project).await.is_err());
+    assert!(answers(local).await, "still open");
+    // Once it is deleted, its service's listener and SSH end with it.
+    lab.ws.store.set_agent_project("a", None).unwrap();
+    lab.ws.delete_project(&lab.project).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(TcpStream::connect(("127.0.0.1", local)).await.is_err(), "nothing listens for it");
+    assert!(lab.ws.services.open.lock().unwrap().is_empty() && lab.ws.services.assigned.lock().unwrap().is_empty());
+    assert!(answers(port).await, "the service itself keeps running");
+    running.abort();
+}
