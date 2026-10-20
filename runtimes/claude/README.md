@@ -13,6 +13,13 @@ npm ci --ignore-scripts --omit=optional
 node bridge.mjs
 ```
 
+A public release leaves the SDK out of this folder: it carries
+`claude-agent-sdk.json` (the locked version, source, integrity and files) and a
+placeholder `package.json` where the package was. Core prepares a copy of the
+runtime with the SDK in place before running it (`core/src/claude_sdk.rs`),
+from another installed release or, through `fetch-claude-sdk.mjs`, from the
+locked source. A source checkout installs the SDK with `npm ci` as above.
+
 Optional bundled binaries are omitted because the bridge explicitly selects the
 installed executable. No global CLI is installed, upgraded, or replaced. `PATH`
 lookup uses filesystem checks, never a shell. The existing environment and

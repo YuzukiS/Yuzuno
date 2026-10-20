@@ -52,7 +52,7 @@ Release bundles carry notices for the Core binaries, the web UI, the result vali
 
 - **The Windows installer of desktop 0.2.0,** a release of the private repository. It was made before the desktop notices, and `tools/desktop_installer_check.py` finds none of them in it. Installers made with `scripts/desktop.ps1 -Bundle` now install them ([how](../desktop/README.md#building-and-publishing-a-desktop-release)). For the `nsis_tauri_utils` plug-in, the versions of its crates are inferred (its release was built without a lock file), and its Rust `core` library's notices come from the app's toolchain. The app has no npm dependencies; its connection page is plain HTML, CSS and JavaScript.
 - **Other targets and optional features:** the notices describe an `x86_64-unknown-linux-gnu` build with default features only.
-- **Whether the Claude Agent SDK may be redistributed** in a public release. The runtime notices reproduce its terms as its package declares them; see [The Claude Agent SDK](#the-claude-agent-sdk).
+- **The Claude Agent SDK** is not in public releases: Core obtains it on the user's machine, and the runtime notices name its source and integrity without reproducing its texts; see [The Claude Agent SDK](#the-claude-agent-sdk).
 - **Anything the Zig linker adds** to the Core binaries.
 - **Packages that ship no license text.**
   - They are listed with only their declared license: `rmcp` in the Core notices, `react-remove-scroll-bar` and `victory-vendor` in the web notices.
@@ -66,8 +66,10 @@ Release bundles carry notices for the Core binaries, the web UI, the result vali
 
 **Where its files are:**
 - **The source, and so the public snapshot: none.** `runtimes/claude/package.json` and its lock file only name the version, 0.3.296. Nothing under `node_modules/` is in Git.
-- **Core release bundles: all 19 of its files,** under `runtimes/claude/node_modules/`. Every release so far carries them. That is 11 published (core.2 to core.12) and 2 drafts, read from each release's manifest on 2026-10-20. All are releases of the private repository and stay there; none becomes a release of the public one.
-- **SSH machines:** when a Claude Agent runs on one, Core uploads these files to it.
+- **Private release bundles: all 19 of its files,** under `runtimes/claude/node_modules/`. Every private release carries them: 11 published (core.2 to core.12) and 2 drafts, read from each release's manifest on 2026-10-20. They stay releases of the private repository; none becomes a release of the public one.
+- **Public release bundles: none of its files** (T-159). The Claude runtime carries `claude-agent-sdk.json` instead: the locked version, source and sha512 integrity, and each file's size and SHA-256. At the package's path there is one file Yuzuno writes, `package.json` marked `yuzunoPlaceholder`, saying it is not the SDK; installed Cores (core.12 and earlier) refuse a release without a file there, so a public release keeps it to stay installable from them.
+- **The user's machine:** before Core first runs a Claude Agent, a review or a session read, it prepares a copy of the runtime with the SDK in place, in `claude-runtime/` in its data folder. It takes the SDK's files from another installed release or prepared copy when every file matches the manifest, else downloads the package from the locked source with Node and checks it against the locked integrity and the manifest. Nothing incomplete is run; a failure is shown on the Agent and can be retried.
+- **SSH machines:** when a Claude Agent runs on one, Core uploads the prepared copy, as it uploaded a release's runtime before.
 - **Not carried anywhere: the native `claude` program.** Users install and sign in to Claude Code themselves. The build leaves out the per-platform packages that hold it (`--omit=optional`).
 
 The bundle's other runtime packages declare open-source licenses (`@anthropic-ai/sdk`, for example, is MIT). The question below therefore concerns only public binary packages that would carry the SDK's files, not the source.
@@ -85,21 +87,19 @@ The bundle's other runtime packages declare open-source licenses (`@anthropic-ai
 - **Redistribution:** none of these pages, nor the [legal page](https://code.claude.com/docs/en/legal-and-compliance), mentions redistributing or sublicensing the package.
 
 **Not established, and not decided here:**
-- **That a public package may carry the SDK's files.** No text read grants it, so the repository does not claim it.
+- **That a public package may carry the SDK's files.** No text read grants it, so the repository does not claim it, and public packages leave them out (below).
 - **Sign-in.** Yuzuno runs the Claude Code the user installed, with that program's own sign-in. Two sentences bear on this, and which one covers it is not established:
   - The SDK overview says Anthropic does not allow third-party developers "to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK" unless previously approved.
   - The legal page says this does not "prevent an end user from signing in to the unmodified Claude Code binary with their own Claude subscription".
 - **Naming.** The legal page allows saying in plain text that a product "runs Claude Code". The SDK's branding guidelines list "Claude Code" among names not permitted when referencing Claude in a product. The UI calls the harness "Claude Code".
 
-**Choices for public packages,** once there are any; the first public version has none (the owner decides; the Lead asks):
-1. **Proposed: install it on the user's machine.**
-   - Public bundles leave the SDK out. When a Claude Agent first starts, Core installs it from the npm registry into its data folder, at the version and sha512 the lock file pins. Users then get it from Anthropic's own publication.
-   - This needs new Core and bridge code and a release.
-   - The first Claude start needs npm and access to `registry.npmjs.org`. Node is already required.
-   - An SSH machine installs its own copy the same way.
-   - Codex is unaffected.
-2. **The SDK only in private builds.** Public packages then have no Claude support.
-3. **Public bundles keep it,** with written permission from Anthropic recorded in the repository.
+**The choice for public packages:** the owner chose, on 2026-10-20, that the user's machine obtains the SDK (T-159), as described above under where its files are. What it means for users:
+- **From an installed release with the same SDK** (core.12 has 0.3.296), Core copies it from there once every file matches: no network. This is the intent; each release checks it in its isolated upgrade test.
+- **Otherwise** the first Claude start needs access to `registry.npmjs.org`: about 1.6 MB, checked against the locked sha512. npm is not needed; Node already is.
+- **Behind a proxy,** the download uses `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`, which Node's own `fetch()` honours from 22.21.0 on the 22 line and from 24.0.0. With an older Node and a proxy set, it stops and says so rather than connecting around the proxy; Core never installs or upgrades Node.
+- **Codex is unaffected.** A prepared copy takes about as much space as the runtime, roughly 53 MB; releases whose runtimes are the same share one.
+
+The other choices were the SDK only in private builds (public packages without Claude), or keeping it in public bundles with written permission from Anthropic recorded in the repository.
 
 None of this is a legal assessment.
 

@@ -13,6 +13,7 @@ import sys
 import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from release_common import archive_tree, command, digest, write
+import claude_sdk_release
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = 'x86_64-unknown-linux-gnu'
@@ -105,6 +106,9 @@ def build(out):
         # its lock file's production set (T-90).
         run([sys.executable, ROOT / 'tools/runtime_notices.py', '--runtime', runtime,
              '--out', inputs / 'licenses/THIRD_PARTY_NOTICES-claude-runtime.txt'])
+        # The SDK is not shipped: Core obtains it on the user's machine, as
+        # claude-agent-sdk.json names it (T-159; docs/public-readiness.md).
+        claude_sdk_release.leave_out_sdk(runtime)
         packager.copy_tree(runtime, inputs / 'claude')
         packager.copy_tree(ROOT / 'runtimes/result-validator', inputs / 'result-validator')
         # Built on Windows from a fixed commit and committed (T-108): only if

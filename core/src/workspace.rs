@@ -90,6 +90,7 @@ pub struct Workspace {
     pub(crate) session_reads: tokio::sync::Semaphore,
     pub(crate) rpcs: std::sync::Mutex<HashMap<String, Connection>>,
     pub(crate) claudes: std::sync::Mutex<HashMap<String, crate::claude::Connection>>,
+    pub(crate) opencodes: std::sync::Mutex<HashMap<String, crate::opencode_agent::Connection>>,
     pub(crate) claude_mcp: crate::claude_mcp::State,
     gates: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     owners: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
@@ -122,6 +123,7 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(data_dir: PathBuf, cwd: String, program: String) -> Result<Arc<Self>> {
         std::fs::create_dir_all(&data_dir)?;
+        crate::claude_sdk::set_cache(&data_dir);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -151,6 +153,7 @@ impl Workspace {
             runtime: Mutex::new(json!({"connected":false})),
             rpcs: std::sync::Mutex::new(HashMap::new()),
             claudes: std::sync::Mutex::new(HashMap::new()),
+            opencodes: std::sync::Mutex::new(HashMap::new()),
             claude_mcp: Default::default(),
             gates: Mutex::new(HashMap::new()),
             owners: std::sync::Mutex::new(HashMap::new()),
@@ -401,6 +404,7 @@ impl Workspace {
             color: colors[count % colors.len()].into(),
             harness: "codex".into(),
             claude_session_id: None,
+            opencode_session_id: None,
             thread_id: None,
             status: "offline".into(),
             closed_at: None,
@@ -836,6 +840,7 @@ impl Workspace {
     pub(crate) fn collaboration_generation(&self, id: &str) -> Option<u64> {
         let codex = self.rpcs.lock().unwrap().get(id).map(|c| c.generation);
         codex.or_else(|| self.claudes.lock().unwrap().get(id).map(|c| c.generation))
+            .or_else(|| self.opencodes.lock().unwrap().get(id).map(|c| c.generation))
     }
 
     async fn reconcile(self: &Arc<Self>, id: &str) -> Result<()> {
@@ -916,8 +921,10 @@ impl Workspace {
 
     pub(crate) async fn reconnect_accepted(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit) -> Result<AgentDetail> {
         permit.validate(&self.admission)?;
-        if self.detail(id).await?.agent.harness == "claude" {
-            return self.claude_reconnect_accepted(id, permit).await;
+        match self.detail(id).await?.agent.harness.as_str() {
+            "claude" => return self.claude_reconnect_accepted(id, permit).await,
+            "opencode" => return self.opencode_reconnect_accepted(id, permit).await,
+            _ => {}
         }
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
@@ -968,6 +975,8 @@ impl Workspace {
         if detail.agent.closed_at.is_some() { return Ok(detail); }
         if detail.agent.harness == "claude" {
             self.claude_close_runtime(id).await?;
+        } else if detail.agent.harness == "opencode" {
+            self.opencode_close_runtime(id).await?;
         } else {
             // A detached remote turn may still be running. Reconcile native
             // history first, without sending/replaying any task.
@@ -1132,8 +1141,10 @@ impl Workspace {
     }
 
     pub async fn send(self: &Arc<Self>, id: &str, text: String) -> Result<Value> {
-        if self.detail(id).await?.agent.harness == "claude" {
-            return self.claude_send(id, text).await;
+        match self.detail(id).await?.agent.harness.as_str() {
+            "claude" => return self.claude_send(id, text).await,
+            "opencode" => return self.opencode_send(id, text).await,
+            _ => {}
         }
         let _permit = self.admission.enter_work()?;
         if text.trim().is_empty() || text.len() > 100_000 {
@@ -1252,6 +1263,9 @@ impl Workspace {
 
     async fn admit_message(self: &Arc<Self>, id: &str, input: &MessageInput, detail: &AgentDetail) -> Result<()> {
         self.ensure_rewind_settled(id).await?;
+        if detail.agent.harness == "opencode" {
+            return self.opencode_admit(id, input, detail).await;
+        }
         if detail.agent.harness == "claude" {
             if input.clarification.is_some() { return self.claude_admit_form(id).await; }
             if input.expected_turn_id.is_none() {
@@ -1333,7 +1347,7 @@ impl Workspace {
                     && detail.turns.iter().any(|t| t["id"] == expected.as_str() && t["status"] == "inProgress"),
                     "原 Turn 已结束或发生变化；消息仍保留，请确认后作为新消息发送");
             }
-            if !claude {
+            if !claude && detail.agent.harness != "opencode" {
                 let agent = id.to_owned();
                 self.stored(move |store| store.activate_codex_import(&agent)).await?;
             }
@@ -1351,7 +1365,9 @@ impl Workspace {
         let receipt = MessageReceipt { binding: None, input: input.clone(), status: "sending".into(), turn_id: None, error: None };
         self.record_meta(id, "message/requested", serde_json::to_value(&receipt)?, move |m| m.message_receipts.push(receipt)).await?;
         self.changed(id);
-        let result = if claude && (input.clarification.is_some() || input.expected_turn_id.is_none()) {
+        let result = if detail.agent.harness == "opencode" {
+            self.opencode_send_locked(id, input.text.clone(), Some(&input.client_message_id)).await
+        } else if claude && (input.clarification.is_some() || input.expected_turn_id.is_none()) {
             self.claude_answer_form_locked(id, &input).await
         } else if input.question.is_some() || input.clarification.is_some() {
             self.answer_locked(id, &input).await
@@ -1648,10 +1664,84 @@ impl Workspace {
         Ok(detail.agent)
     }
 
+    /// The user's explicit `/compact` for a Codex Agent: Codex's own context
+    /// compaction of this thread (`thread/compact/start`), never a prompt.
+    /// It runs only between turns, on the connection already serving this
+    /// thread: nothing is connected, resumed, retried or reconciled for it,
+    /// and an unconfirmed earlier send or turn refuses it.
+    ///
+    /// Codex's empty answer only accepts the request. The Agent stays
+    /// uncertain from before the request until Codex's own events for the
+    /// thread (its compaction turn) say otherwise, so neither a second
+    /// `/compact` nor a message can slip in; a lost answer leaves it
+    /// uncertain, to be checked, never sent again. Only a Codex without the
+    /// method (JSON-RPC -32601, refused before anything runs) provably ran
+    /// nothing; any other error says nothing about whether it had begun, so
+    /// the Agent stays uncertain too. A state Codex's own events already set
+    /// is never rolled back.
+    pub async fn codex_compact(self: &Arc<Self>, id: &str) -> Result<Value> {
+        let _permit = self.admission.enter_work()?;
+        let gate = self.gate(id).await;
+        let _held = gate.lock().await;
+        self.ensure_rewind_settled(id).await?;
+        let detail = self.send_view(id).await?;
+        ensure_agent_open(&detail.agent)?;
+        anyhow::ensure!(detail.agent.harness == "codex", "Claude 的 /compact 是原生命令：作为消息发送，由 Claude Code 自己执行");
+        let thread = detail.agent.thread_id.clone().context("会话 ID 尚未确认；没有执行 /compact")?;
+        if detail.agent.status == "uncertain"
+            || detail.message_receipts.iter().any(|r| matches!(r.status.as_str(), "sending" | "uncertain")) {
+            bail!("上一次发送、执行或 /compact 的结果尚未确认；请先重新连接核对，没有执行 /compact");
+        }
+        if turn_busy(&detail) || detail.turns.iter().any(|t| t["status"] == "inProgress") {
+            bail!("当前 Turn 尚未结束或正在等待回应；没有执行 /compact");
+        }
+        let connection = self.rpcs.lock().unwrap().get(id).cloned()
+            .filter(|c| !c.closing && detail.agent.connection_state == "connected")
+            .context("没有连接到这个原生会话；请先重新连接，没有执行 /compact")?;
+        anyhow::ensure!(connection.attachment.lock().await.is_none() && !self.codex_context.needs_resume(id, connection.generation),
+            "原生会话正在接续；完成后再执行 /compact");
+        anyhow::ensure!(same_generation(self.rpcs.lock().unwrap().get(id), connection.generation), "连接已变化；没有执行 /compact");
+        let before = detail.agent.status.clone();
+        self.record_meta(id, "compact/requested", json!({"threadId":thread,"generation":connection.generation}), |m| {
+            m.agent.status = "uncertain".into();
+        }).await?;
+        self.changed(id);
+        let result = connection.rpc.request("thread/compact/start", json!({"threadId":thread})).await;
+        let current = same_generation(self.rpcs.lock().unwrap().get(id), connection.generation);
+        match result {
+            Ok(_) if current => Ok(json!({"accepted":true,"threadId":thread})),
+            Ok(_) => bail!("Codex 接受了 /compact，但连接随后已变化；请重新连接核对结果，不要重复执行"),
+            Err(error) => match error.downcast_ref::<RpcError>() {
+                // An unknown method is refused before any handler runs:
+                // nothing ran, so the Agent is as it was, unless Codex's own
+                // events have said otherwise meanwhile.
+                Some(refused) if refused.code == -32601 => {
+                    let message = "这台机器上的 Codex 不提供原生压缩（thread/compact/start）；没有执行".to_owned();
+                    self.record_meta(id, "compact/rejected", json!({"message":message,"code":refused.code}), move |m| {
+                        if m.agent.status == "uncertain" { m.agent.status = before; }
+                    }).await?;
+                    self.changed(id);
+                    bail!(message)
+                }
+                // Any other error doesn't show whether Codex had begun: the
+                // Agent stays as its events leave it, uncertain until checked.
+                Some(refused) => {
+                    let message = format!("Codex 对 /compact 返回了错误：{}；是否已开始压缩无法确认，请重新连接核对，不要重复执行", refused.message);
+                    self.record_meta(id, "compact/failed", json!({"message":message,"code":refused.code}), |_| {}).await?;
+                    self.changed(id);
+                    bail!(message)
+                }
+                None => bail!("/compact 的结果无法确认：{error}；请重新连接核对，不要重复执行"),
+            },
+        }
+    }
+
     pub async fn interrupt(&self, id: &str) -> Result<()> {
         let _permit = self.admission.enter_completion()?;
-        if self.detail(id).await?.agent.harness == "claude" {
-            return self.claude_interrupt(id).await;
+        match self.detail(id).await?.agent.harness.as_str() {
+            "claude" => return self.claude_interrupt(id).await,
+            "opencode" => return self.opencode_interrupt(id).await,
+            _ => {}
         }
         let d = self.detail(id).await?;
         ensure_agent_open(&d.agent)?;
@@ -1839,7 +1929,9 @@ impl Workspace {
                     params["_changes"] = changes;
                 }
             }
-            let replayed = self.store.detail(id).ok().and_then(|d| d.pending.into_iter().find(|old|
+            // Only the pending requests are read and written (T-120): not the
+            // whole record, which a long conversation makes large.
+            let replayed = self.store.pending(id).ok().and_then(|pending| pending.into_iter().find(|old|
                 old.method == method && old.params["turnId"] == p["turnId"]
                     && old.params["itemId"] == p["itemId"]
                     && (p["itemId"].is_string() || old.params["_rpcId"] == message["id"])));
@@ -1862,7 +1954,7 @@ impl Workspace {
                 stale: false,
             };
             let event_kind = if replayed.is_some() { "request/replayed" } else { "request" };
-            let _ = self.store.update(id, event_kind, p, |d| {
+            let _ = self.store.update_meta(id, event_kind, p, |d| {
                 // Native replay replaces only its matching historical request.
                 // Unreplayed stale approvals remain visible until the harness
                 // confirms completion/resolution; reconnect is not dismissal.
@@ -1937,20 +2029,25 @@ impl Workspace {
                 if self.claude_respond(&a.id, request_id, &response).await? { return Ok(()); }
                 continue;
             }
+            if a.harness == "opencode" {
+                if self.opencode_respond(&a.id, request_id, &response).await? { return Ok(()); }
+                continue;
+            }
             // Re-read Pending under the same lock as disconnect; reply and
             // record it in one job, so it cannot be left half-done.
             let owned = self.owner(&a.id).await;
             let connection = self.rpcs.lock().unwrap().get(&a.id).cloned();
             let (agent, request_id, response) = (a.id.clone(), request_id.to_owned(), response.clone());
             let sent = self.stored_owned(owned, move |store| {
-                let detail = store.detail(&agent)?;
-                let Some(p) = detail.pending.iter().find(|p| p.id == request_id) else {
+                // The pending requests only, not the whole record (T-120).
+                let pending = store.pending(&agent)?;
+                let Some(p) = pending.iter().find(|p| p.id == request_id) else {
                     return Ok(None);
                 };
                 let connection = connection.context("会话已断开，请求未发送")?;
                 validate_request_connection(p, connection.generation)?;
                 validate_response(p, &response)?;
-                store.update(
+                store.update_meta(
                     &agent,
                     "request/replied",
                     &json!({"requestId":request_id}),
@@ -1964,7 +2061,7 @@ impl Workspace {
                     .rpc
                     .try_send(json!({"id":p.params["_rpcId"],"result":response}))
                 {
-                    let _ = store.update(
+                    let _ = store.update_meta(
                         &agent,
                         "request/notSent",
                         &json!({"requestId":request_id}),
@@ -2428,6 +2525,10 @@ mod concurrency_tests;
 #[cfg(all(test, unix))]
 #[path = "collaboration_admission_tests.rs"]
 mod collaboration_admission_tests;
+
+#[cfg(all(test, unix))]
+#[path = "native_compact_tests.rs"]
+mod native_compact_tests;
 
 #[cfg(all(test, unix))]
 #[path = "subagent_requests_tests.rs"]

@@ -311,6 +311,7 @@ impl Workspace {
                 id: uuid::Uuid::new_v4().to_string(), name: input.name.trim().into(), goal: String::new(),
                 work_summary: None, project_id: None, cwd, model, settings, color: "sage".into(), harness: "codex".into(),
                 claude_session_id: None, thread_id: Some(input.thread_id), status: "offline".into(),
+                opencode_session_id: None,
                 closed_at: None, created_at: now(), updated_at: now(), unread_count: 0, pending_count: 0,
                 last_message: None, last_seq: 0, reviewed_seq: 0, rev: 0, error: None, remote: None,
                 connection_state: "disconnected".into(),
@@ -675,7 +676,7 @@ impl Workspace {
             agent: Agent {
                 id: agent_id.clone(), name: name.into(), goal: String::new(), work_summary: None, project_id: None,
                 cwd: source.agent.cwd.clone(), model: model?, settings: source.agent.settings.clone(),
-                color: source.agent.color.clone(), harness: "codex".into(), claude_session_id: None,
+                color: source.agent.color.clone(), harness: "codex".into(), claude_session_id: None, opencode_session_id: None,
                 thread_id: Some(fork_thread.clone()), status: "offline".into(), closed_at: None,
                 created_at: at.clone(), updated_at: at.clone(), unread_count: 0, pending_count: 0, last_message: None,
                 last_seq: 0, reviewed_seq: 0, rev: 0, error: None, remote: None, connection_state: "disconnected".into(),

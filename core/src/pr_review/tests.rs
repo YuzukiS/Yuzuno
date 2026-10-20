@@ -122,6 +122,7 @@ fn input(task: &str, key: &str) -> Start {
         base_sha: None,
         head_sha: None,
         acknowledge_unreviewable: None,
+        previous_review_id: None,
     }
 }
 

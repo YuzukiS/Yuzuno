@@ -38,10 +38,10 @@ fn blocked_activity(agent: &Agent, activity: Activity) -> Option<String> {
     None
 }
 fn native_id(detail: &AgentDetail) -> Option<&str> {
-    if detail.agent.harness == "claude" {
-        detail.agent.claude_session_id.as_deref()
-    } else {
-        detail.agent.thread_id.as_deref()
+    match detail.agent.harness.as_str() {
+        "claude" => detail.agent.claude_session_id.as_deref(),
+        "opencode" => detail.agent.opencode_session_id.as_deref(),
+        _ => detail.agent.thread_id.as_deref(),
     }
 }
 
@@ -148,10 +148,10 @@ impl Runtime for WorkspaceRuntime {
                 let result = async {
                 let before = self.0.detail(&session.agent_id).await?;
                 ensure!(before.agent.closed_at.is_none() && before.agent.harness == session.harness && native_id(&before) == Some(&session.native_id), "Stored native session identity changed for {}", before.agent.name);
-                let connected = if before.agent.harness == "claude" {
-                    self.0.claudes.lock().unwrap().contains_key(&session.agent_id)
-                } else {
-                    self.0.codex_connection(&session.agent_id).is_some()
+                let connected = match before.agent.harness.as_str() {
+                    "claude" => self.0.claudes.lock().unwrap().contains_key(&session.agent_id),
+                    "opencode" => self.0.opencodes.lock().unwrap().contains_key(&session.agent_id),
+                    _ => self.0.codex_connection(&session.agent_id).is_some(),
                 };
                 // During an intentional detach the stored connected projection
                 // can survive until Core exits. Aborting in the same Core must

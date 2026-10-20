@@ -806,6 +806,7 @@ async fn shared_harness_entry_stops_on_third_failure_after_persisting_its_receip
                 base_sha: None,
                 head_sha: None,
                 acknowledge_unreviewable: None,
+                previous_review_id: None,
             };
             Ok(s.create_pr_review(None, &input, "repeat-fixture")?.0)
         })

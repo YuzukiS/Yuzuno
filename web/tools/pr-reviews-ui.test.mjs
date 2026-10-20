@@ -553,6 +553,29 @@ test("a continuation names the round it continues and the reads of each round", 
   } finally { p.close(); }
 });
 
+test("an incremental round names the earlier round, what it read again and what it settled", async () => {
+  const reviews = [
+    { ...run, id: "now", round: 2, kind: "incremental", conclusion: "no_findings", policyVersion: 3, reasonCodes: [],
+      incremental: { previousReviewId: "earlier", previousRound: 1, targets: [{ path: "b.rs", why: "changed" }], carriedPaths: ["a.rs", "c.rs"], leftThePr: [] },
+      settledFindings: [{ title: "Bug", body: "Fixed", priority: 1, path: "b.rs", startLine: 1, endLine: 1 }],
+      coverage: { version: 3, fileCount: 3, coveredFileCount: 3, deliveredCompleteDiffs: 1, fullAddedSourceCount: 0, inheritedCoveredCount: 2 } },
+    { ...run, id: "earlier", round: 1, conclusion: "changes_requested", policyVersion: 3, reasonCodes: [],
+      coverage: { version: 3, fileCount: 3, coveredFileCount: 3, deliveredCompleteDiffs: 3, fullAddedSourceCount: 0 } },
+  ];
+  const p = mount(() => page(reviews));
+  try {
+    p.window.renderReviews({ taskId: "T-1", links: [link], disabled: false });
+    await waitFor(() => p.doc.querySelector(".pr-review-incremental"));
+    const [now, earlier] = [...p.doc.querySelectorAll("article")];
+    assert.match(now.querySelector("header strong").textContent, /Round 2 · new head after round 1$/);
+    assert.match(now.textContent, /3 of 3 files covered · 1 by complete diff · 0 by complete added-file source · 2 unchanged since round 1/);
+    assert.equal(now.querySelector(".pr-review-incremental").textContent,
+      "Reviews a new head after round 1: it reads the 1 path that changed or wasn't read before, and keeps that round's proofs only for paths identical on both sides. A new round with its own budget and cost. That round's findings stay unless this one shows them fixed by its own reads (1 settled).");
+    assert.equal(earlier.querySelector(".pr-review-incremental"), null);
+    assert.doesNotMatch(earlier.textContent, /new head after round|unchanged since round/);
+  } finally { p.close(); }
+});
+
 test("a review's scope names every path it couldn't cover and why; older reviews show none", async () => {
   const blob = (c) => c.repeat(40);
   const head = (c) => ({ blobSha: blob(c), mode: "100644" });
