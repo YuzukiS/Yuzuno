@@ -70,11 +70,14 @@ export class RemoteHost {
 
   async listen() {
     rmSync(this.socketPath, { force: true });
+    // Before the socket accepts anyone: the helper takes a socket that answers
+    // as this host being ready and then reads state.json, which must be this
+    // host's own, not what an earlier one left (T-156).
+    this.state();
     this.server = net.createServer(socket => this.connection(socket));
     await new Promise((resolve, reject) => { this.server.once('error', reject); this.server.listen(this.socketPath, resolve); });
     chmodSync(this.socketPath, 0o600);
     this.log('listening', { pid: process.pid });
-    this.state();
     this.firstClient = setTimeout(() => { if (!this.client && !this.started) this.shutdown('no client came'); }, FIRST_CLIENT_MS);
   }
 
