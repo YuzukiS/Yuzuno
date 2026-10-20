@@ -1,5 +1,6 @@
 import { DeliveryFlow, type DeliveryCandidate } from "./DeliveryFlow";
 import { openJobs } from "./Jobs";
+import { SendToAgentButton } from "./SendToAgent";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -1601,6 +1602,19 @@ function TaskPane({
             </div>
             <div className="collab-task-actions">
               <button className="secondary-button" onClick={() => openJobs({taskId:task.id})}>Related jobs</button>
+              {/* A reference in an Agent's draft (T-152), unlike Give to agent below. */}
+              <SendToAgentButton
+                draggable={false}
+                source={() => ({
+                  kind: "task",
+                  taskId: task.id,
+                  title: task.title,
+                  status: task.status,
+                  assignee: task.assignee?.name || null,
+                  version: task.version,
+                  summary: task.result?.summary || task.progress || task.description || "",
+                })}
+              />
               <button
                 className="primary-button"
                 disabled={mutation.pending}

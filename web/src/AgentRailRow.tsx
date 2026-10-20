@@ -5,6 +5,7 @@ import { MachineBadge } from "./RemoteControls";
 import type { Agent, WorkSummary } from "./types";
 import { useAgentJobs } from "./live-jobs";
 import { useAgentCI, waitingSummary } from "./live-ci";
+import { useHandoffDrop } from "./SendToAgent";
 import "./reading.css";
 
 export function workingFolder(cwd: string): string {
@@ -45,10 +46,13 @@ export function AgentRailRow({
   // Two waits or checks at once ("Waiting · Job / CI") take their own line
   // under the name; one ("Waiting · CI") fits beside it like any status.
   const combined = !!waiting && (label.includes("/") || label.split(" · ").length > 2);
+  // Something dragged with "Send to Agent" can be dropped here (T-152).
+  const drop = useHandoffDrop(agent);
   return (
     <article
-      className={`agent-row${selected ? " selected" : ""}`}
+      className={`agent-row${selected ? " selected" : ""}${drop.state ? ` handoff-${drop.state}` : ""}`}
       data-agent-id={agent.id}
+      {...drop.handlers}
     >
       <button
         className="agent-select agent-row-top"
@@ -98,6 +102,11 @@ export function AgentRailRow({
           )}
           <RequestSummary agentId={agent.id} summary={summary} />
         </div>
+      )}
+      {drop.state && (
+        <p className="handoff-hint" role="status">
+          {drop.state === "accept" ? `Drop to add it to ${agent.name}’s draft` : drop.refusal}
+        </p>
       )}
       {agent.pendingCount > 0 && (
         <div className="agent-row-bottom">

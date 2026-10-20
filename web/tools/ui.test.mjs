@@ -3403,3 +3403,147 @@ test("a sub-agent's approvals show which sub-agent asks and what it would change
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
+
+// Send to Agent (T-152): a stand-in DataTransfer, since JSDOM has none.
+function dragData() {
+  const data = new Map();
+  return {
+    types: [],
+    dropEffect: "none",
+    effectAllowed: "uninitialized",
+    setData(type, value) {
+      data.set(type, value);
+      if (!this.types.includes(type)) this.types.push(type);
+    },
+    getData: (type) => data.get(type) ?? "",
+  };
+}
+function fireDrag(page, target, type, dataTransfer) {
+  const event = new page.window.Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+  target.dispatchEvent(event);
+  return event;
+}
+const railRow = (page, id) => page.document.querySelector(`article.agent-row[data-agent-id="${id}"]`);
+const handoffDraft = (page, name) =>
+  until(() => page.document.querySelector(`[data-composer-input][aria-label="Message ${name}"]`), `${name}'s composer opens`);
+const hanaNote = JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "Hana's own note." }] });
+
+test("Send to Agent adds a reply after another Agent's existing draft and opens it, without sending or dispatching", async () => {
+  const page = await mount({ stored: { "yuzuno.composer.v1:b": hanaNote } });
+  try {
+    const send = await until(() => page.document.querySelector(".final-message .send-to-agent-button"), "the reply offers Send to Agent");
+    send.click();
+    await pause();
+    const items = [...page.document.querySelectorAll('[role="menu"] [role="menuitem"]')];
+    // Its own Agent is not offered.
+    assert.deepEqual(items.map((item) => item.querySelector(".send-to-agent-name")?.textContent), ["Hana"]);
+    assert.ok(page.document.activeElement === items[0], "the first Agent has focus");
+    items[0].click();
+    const composer = await handoffDraft(page, "Hana");
+    await pause();
+    const text = composerText(composer);
+    assert.ok(text.startsWith("Hana's own note.\n\nForwarded from Mori’s conversation: Mori’s reply"), text);
+    assert.ok(text.includes("Mori wrote it; I am passing it on."), text);
+    assert.ok(text.endsWith("> A real-looking test reply."), text);
+    assert.equal(savedDraftText(page.window.localStorage, "b"), text);
+    assert.match(page.document.querySelector(".toast").textContent, /Added a message from Mori’s conversation to Hana’s draft\. Edit it, then send\./);
+    assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a reply dragged onto an Agent in the rail lands in its draft; its own Agent, outside text and a cancelled drag change nothing", async () => {
+  const page = await mount();
+  try {
+    const send = await until(() => page.document.querySelector(".final-message .send-to-agent-button"), "the reply offers Send to Agent");
+    // Text from outside Yuzuno is not a handoff: no row takes it.
+    const outside = dragData();
+    outside.setData("text/plain", "outside text");
+    assert.equal(fireDrag(page, railRow(page, "b"), "dragover", outside).defaultPrevented, false);
+    await pause();
+    assert.ok(!railRow(page, "b").className.includes("handoff"));
+    // A drag let go nowhere (Escape, or outside) leaves no highlight and no draft.
+    const cancelled = dragData();
+    fireDrag(page, send, "dragstart", cancelled);
+    fireDrag(page, railRow(page, "b"), "dragover", cancelled);
+    await pause();
+    assert.ok(railRow(page, "b").classList.contains("handoff-accept"));
+    fireDrag(page, send, "dragend", cancelled);
+    await pause();
+    assert.ok(!railRow(page, "b").className.includes("handoff"));
+    assert.equal(savedDraftText(page.window.localStorage, "b"), "");
+
+    const drag = dragData();
+    fireDrag(page, send, "dragstart", drag);
+    assert.deepEqual(drag.types, ["application/x-yuzuno-handoff"]);
+    // Its own Agent refuses it and says why.
+    assert.equal(fireDrag(page, railRow(page, "a"), "dragover", drag).defaultPrevented, false);
+    await pause();
+    assert.ok(railRow(page, "a").classList.contains("handoff-refuse"));
+    assert.match(railRow(page, "a").querySelector(".handoff-hint").textContent, /already comes from Mori’s conversation/);
+    fireDrag(page, railRow(page, "a"), "dragleave", drag);
+    assert.equal(fireDrag(page, railRow(page, "b"), "dragover", drag).defaultPrevented, true);
+    await pause();
+    assert.ok(railRow(page, "b").classList.contains("handoff-accept"));
+    assert.match(railRow(page, "b").querySelector(".handoff-hint").textContent, /Drop to add it to Hana’s draft/);
+    fireDrag(page, railRow(page, "b"), "drop", drag);
+    const composer = await handoffDraft(page, "Hana");
+    await pause();
+    assert.match(composerText(composer), /^Forwarded from Mori’s conversation: Mori’s reply/);
+    assert.ok(!railRow(page, "b").className.includes("handoff"));
+    assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("selected text dragged out of a reply keeps the browser's text and lands as a sourced excerpt", async () => {
+  const page = await mount();
+  try {
+    const reply = await until(() => page.document.querySelector(".final-message .prose"), "the reply is shown");
+    const walker = page.document.createTreeWalker(reply, page.window.NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node && !node.textContent.includes("real-looking")) node = walker.nextNode();
+    const range = page.document.createRange();
+    const start = node.textContent.indexOf("real-looking");
+    range.setStart(node, start);
+    range.setEnd(node, start + "real-looking".length);
+    const selection = page.window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const drag = dragData();
+    drag.setData("text/plain", "real-looking");
+    fireDrag(page, node.parentElement, "dragstart", drag);
+    assert.equal(drag.getData("text/plain"), "real-looking");
+    const source = JSON.parse(drag.getData("application/x-yuzuno-handoff"));
+    assert.deepEqual([source.kind, source.agentName, source.author.kind, source.text, source.excerpt], ["message", "Mori", "agent", "real-looking", true]);
+    fireDrag(page, railRow(page, "b"), "dragover", drag);
+    fireDrag(page, railRow(page, "b"), "drop", drag);
+    const composer = await handoffDraft(page, "Hana");
+    await pause();
+    assert.match(composerText(composer), /: an excerpt of Mori’s reply[^]*\n\n> real-looking$/);
+    assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
+  } finally { page.close(); }
+});
+
+test("the Send to Agent menu closes on Escape with nothing added, and a damaged draft is never overwritten", async () => {
+  const page = await mount({ stored: { "yuzuno.composer.v1:b": "{damaged" } });
+  try {
+    const send = await until(() => page.document.querySelector(".final-message .send-to-agent-button"), "the reply offers Send to Agent");
+    send.click();
+    await pause();
+    const menu = page.document.querySelector('[role="menu"]');
+    menu.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await pause();
+    assert.ok(!page.document.querySelector('[role="menu"]'), "the menu closed");
+    assert.ok(page.document.activeElement === send, "focus returns to the button");
+    send.click();
+    await pause();
+    page.document.querySelector('[role="menu"] [role="menuitem"]').click();
+    await pause();
+    assert.match(page.document.querySelector(".toast").textContent, /Hana’s saved draft needs recovering first; nothing was added/);
+    assert.equal(page.window.localStorage.getItem("yuzuno.composer.v1:b"), "{damaged");
+    assert.ok(page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), "Mori stays open");
+    assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
+  } finally { page.close(); }
+});
