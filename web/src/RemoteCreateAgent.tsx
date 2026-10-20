@@ -491,8 +491,9 @@ export function RemoteCreateAgent({
             {isOpenCode ? (
               <p className="remote-field-note">
                 Uses OpenCode’s own default model, login and permission rules on
-                your Core host. Experimental: no images or rewind, and a message
-                waits until the current turn ends.
+                your Core host; OpenCode may download or update its own
+                dependencies when it starts. Experimental: no images, rewind or
+                slash commands, and a message waits until the current turn ends.
               </p>
             ) : remote ? (
               <label>

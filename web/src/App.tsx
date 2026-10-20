@@ -2110,7 +2110,7 @@ export function App() {
                     }
                     draft={draft}
                     readOnly={previewMode || draftBlocked}
-                    slashCommands={previewMode ? false : isClaude ? "claude" : "codex"}
+                    slashCommands={previewMode || isOpenCode ? false : isClaude ? "claude" : "codex"}
                     onChange={next => setDraft(selected, next)}
                     onImages={files => void imageUploads.add(files)}
                     onSubmit={() => void send()}

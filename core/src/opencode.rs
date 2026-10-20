@@ -239,6 +239,8 @@ impl Server {
         let mut command = Command::new(&launch.program);
         // Every network option is explicit: the user's `server` settings
         // (hostname, port, mDNS) apply only to options not given (cli/network.ts).
+        // OpenCode reads port 0 as 4096 when free, else any free port
+        // (server/server.ts); the address is taken from what it prints.
         command
             .args(["serve", "--hostname", "127.0.0.1", "--port", "0", "--mdns=false"])
             .current_dir(&launch.directory)

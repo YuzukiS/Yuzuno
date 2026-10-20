@@ -97,6 +97,7 @@ test("OpenCode is offered only when Core creates it, on the Core host, with Open
     assert.equal(group(page, "Model"), null, "no model choice");
     assert.doesNotMatch(page.document.body.textContent, /Loading|Couldn’t load models/);
     assert.match(page.document.body.textContent, /OpenCode’s own default model, login and permission rules/);
+    assert.match(page.document.body.textContent, /OpenCode may download or update its own\s+dependencies when it starts/);
     assert.equal(page.calls.some((call) => /harness=opencode/.test(call.url)), false, "no model list is asked for");
     await value(page, [...page.document.querySelectorAll("label")].find((l) => l.textContent.trim().startsWith("Name")).querySelector("input"), "Ocean");
     page.document.querySelector("form").dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }));
