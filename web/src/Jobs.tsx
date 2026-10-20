@@ -28,7 +28,7 @@ import {
 import { ArtifactsCard, ReportedLines, RunCard, PendingAnalysisRuns, type Artifact, type Cost, type Progress } from "./JobRun";
 import { openTaskReview, ReviewJobs, type ReviewOpen } from "./ReviewJobs";
 import type { Agent } from "./types";
-import { SendToAgentButton } from "./SendToAgent";
+import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
 import type { HandoffSource } from "./handoff";
 import "./jobs.css";
 import {
@@ -518,7 +518,13 @@ export function Jobs({
       setOpen(true);
     };
     window.addEventListener("yuzuno:open-job", listener);
-    return () => window.removeEventListener("yuzuno:open-job", listener);
+    // Send to Agent added a Job to a draft and opened that Agent (T-152).
+    const sent = () => setOpen(false);
+    window.addEventListener("yuzuno:handoff-sent", sent);
+    return () => {
+      window.removeEventListener("yuzuno:open-job", listener);
+      window.removeEventListener("yuzuno:handoff-sent", sent);
+    };
   }, []);
   useEffect(() => {
     generation.current++;
@@ -937,6 +943,10 @@ export function Jobs({
                             moments={queuedAndFinished(job)}
                             selected={selected === job.id}
                             onSelect={() => setSelected(job.id)}
+                            onDragStart={(event) => {
+                              event.dataTransfer.effectAllowed = "copy";
+                              startHandoffDrag(event, jobHandoff(job));
+                            }}
                           />
                         )}
                       >
@@ -965,7 +975,6 @@ export function Jobs({
                             onPause={(resume) => void pause(detail, resume)}
                             onRerun={() => rerun(detail)}
                             onOpen={setSelected}
-                            onSent={() => setOpen(false)}
                           />
                         ) : (
                           <p className="jobs-empty">
@@ -1097,8 +1106,9 @@ function jobHandoff(job: Job): HandoffSource {
     reason: job.result?.reason || job.reason || null,
     finishedAt: job.finishedAt,
     machine:
-      executor?.kind === "ssh" && executor.machineId
-        ? { kind: "ssh", id: executor.machineId, name: executor.machineName || job.machine.name }
+      // An SSH machine without a recorded id still is not this host.
+      executor?.kind === "ssh"
+        ? { kind: "ssh", id: executor.machineId || "", name: executor.machineName || job.machine.name }
         : executor?.kind === "windows"
           ? { kind: "windows", name: executor.machineName || job.machine.name }
           : { kind: "core" },
@@ -1116,7 +1126,6 @@ function JobDetail({
   onPause,
   onRerun,
   onOpen,
-  onSent,
 }: {
   job: Job;
   log: Log | null;
@@ -1128,8 +1137,6 @@ function JobDetail({
   onPause: (resume: boolean) => void;
   onRerun: () => void;
   onOpen: (jobId: string) => void;
-  /** After Send to Agent added it to a draft: the Agent is shown, not this. */
-  onSent: () => void;
 }) {
   const pause = pauseOf(job);
   const ends = deadline(job);
@@ -1191,7 +1198,7 @@ function JobDetail({
             </button>
           )
         )}
-        <SendToAgentButton draggable={false} source={() => jobHandoff(job)} onSent={onSent} />
+        <SendToAgentButton source={() => jobHandoff(job)} />
       </JobDetailHeading>
       {pause ? (
         <p className="job-pause-note">

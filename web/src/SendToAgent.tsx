@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
+import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type DragEvent, type KeyboardEvent } from "react";
 import { Forward } from "lucide-react";
 import type { Agent } from "./types";
 import { HANDOFF_TYPE, handoffRefusal, readHandoff, type HandoffSource } from "./handoff";
@@ -16,19 +16,56 @@ export const HandoffContext = createContext<HandoffApi | null>(null);
 /**
  * The handoff this window is dragging, frozen when the drag began. The type on
  * a drag proves nothing (any page can set it), so a drop is taken only when it
- * carries exactly this snapshot.
+ * carries exactly this snapshot. `dialog`: it began in a dialog, which covers
+ * the rail.
  */
-let dragging: { source: HandoffSource; raw: string } | null = null;
+let dragging: { source: HandoffSource; raw: string; dialog: boolean } | null = null;
+const watchers = new Set<() => void>();
+let lastDragEvent = 0;
+function setDragging(next: typeof dragging) {
+  dragging = next;
+  for (const watch of watchers) watch();
+}
 function endDrag() {
-  dragging = null;
+  window.removeEventListener("dragend", endDrag);
+  window.removeEventListener("drop", endAfterDrop);
+  window.removeEventListener("dragover", markDragging);
+  window.removeEventListener("mousemove", endIfIdle);
+  if (dragging) setDragging(null);
+}
+/** After the drop target has read the snapshot. */
+function endAfterDrop() {
+  setTimeout(endDrag, 0);
+}
+function markDragging() {
+  lastDragEvent = Date.now();
+}
+/**
+ * A dragged element that unmounts gets its dragend where no one hears it.
+ * Browsers send no mouse moves during a drag, so one with no drag event for a
+ * while means it is over.
+ */
+function endIfIdle() {
+  if (Date.now() - lastDragEvent > 300) endDrag();
 }
 
 /** Adds a handoff to a drag that is starting, beside whatever text it already carries. */
 export function startHandoffDrag(event: DragEvent, source: HandoffSource) {
   const raw = JSON.stringify(source);
   event.dataTransfer.setData(HANDOFF_TYPE, raw);
-  dragging = { source, raw };
-  window.addEventListener("dragend", endDrag, { once: true });
+  endDrag();
+  markDragging();
+  setDragging({ source, raw, dialog: !!(event.currentTarget as Element).closest?.('[role="dialog"]') });
+  window.addEventListener("dragend", endDrag);
+  window.addEventListener("drop", endAfterDrop);
+  window.addEventListener("dragover", markDragging);
+  window.addEventListener("mousemove", endIfIdle);
+}
+function subscribe(watch: () => void) {
+  watchers.add(watch);
+  return () => {
+    watchers.delete(watch);
+  };
 }
 
 /** A rail row as a drop target: only a handoff from this window, and never one it refuses. */
@@ -90,20 +127,16 @@ export function useHandoffDrop(agent: Agent) {
 
 /**
  * "Send to Agent": a menu of Agents that adds `source` to the chosen Agent's
- * draft, and a handle to drag it onto an Agent in the rail instead.
+ * draft, and a handle to drag it onto an Agent in the rail (or, from a
+ * dialog, the drop strip) instead.
  */
 export function SendToAgentButton({
   source,
   label = "Send to Agent",
-  draggable = true,
-  onSent,
 }: {
   /** Built when used, so it is a snapshot of that moment. */
   source: () => HandoffSource | null;
   label?: string;
-  /** False in a dialog, which covers the rail it would be dropped on. */
-  draggable?: boolean;
-  onSent?: () => void;
 }) {
   const api = useContext(HandoffContext);
   const [open, setOpen] = useState(false);
@@ -151,8 +184,8 @@ export function SendToAgentButton({
         className="quiet-button send-to-agent-button"
         aria-haspopup="menu"
         aria-expanded={open}
-        title={`${label}: choose an Agent${draggable ? ", or drag this onto one in the list" : ""}. It is added to that Agent’s draft; you send it.`}
-        draggable={draggable}
+        title={`${label}: choose an Agent, or drag this onto one. It is added to that Agent’s draft; you send it.`}
+        draggable
         onDragStart={event => {
           const value = source();
           if (!value) {
@@ -179,7 +212,7 @@ export function SendToAgentButton({
                 onClick={() => {
                   const value = source();
                   close(false);
-                  if (value && api.send(value, agent.id)) onSent?.();
+                  if (value) api.send(value, agent.id);
                 }}
               >
                 <span className="send-to-agent-name">{agent.name}</span>
@@ -193,6 +226,38 @@ export function SendToAgentButton({
           )}
         </div>
       )}
+    </span>
+  );
+}
+
+/**
+ * While a handoff dragged out of a dialog is in the air: the open Agents to
+ * drop it on, over the dialog that covers the rail. Each takes a drop like a
+ * rail row. It shows nothing otherwise, and leaves the page's layout alone.
+ */
+export function HandoffDropStrip() {
+  const api = useContext(HandoffContext);
+  const active = useSyncExternalStore(subscribe, () => !!dragging?.dialog);
+  if (!api || !active) return null;
+  const agents = api.agents().filter(agent => !agent.closedAt);
+  return (
+    <div className="handoff-strip" role="group" aria-label="Agents to drop it on">
+      <span className="handoff-strip-label">Drop on an Agent to add it to their draft</span>
+      {agents.length ? agents.map(agent => <HandoffChip key={agent.id} agent={agent} />) : <span className="handoff-strip-label">No open Agent</span>}
+    </div>
+  );
+}
+function HandoffChip({ agent }: { agent: Agent }) {
+  const drop = useHandoffDrop(agent);
+  return (
+    <span
+      className={`handoff-chip${drop.state ? ` handoff-${drop.state}` : ""}`}
+      data-agent-id={agent.id}
+      title={drop.refusal || `Add it to ${agent.name}’s draft`}
+      {...drop.handlers}
+    >
+      <span className="send-to-agent-name">{agent.name}</span>
+      <small>{agent.remote?.machine.name || "Core host"}</small>
     </span>
   );
 }
