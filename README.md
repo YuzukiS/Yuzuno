@@ -117,11 +117,11 @@ Stopping Core differs from closing the client: it ends local runtime connections
 
 Yuzuno is an early alpha in active development, published as source only for now. This README describes the current source.
 
-Commits, pull requests, CI runs and releases that the docs and acceptance records cite (for example `f5626f7`, `#164` or core.12) are from the private development repository, `YuzukiS/Yuzuno-dev`. They are not part of this repository's history.
+Commits, pull requests, CI runs and releases that the docs and acceptance records cite (for example `f5626f7`, `#164` or core.12) are from the former private development repository, `YuzukiS/Yuzuno-dev`. They are not part of this repository's history.
 
 The next deployment milestone is a Linux Core with independently chosen clients. macOS Core support is [being scoped](docs/macos-core.md); Windows Core is not planned. Installation coverage and remaining gaps are recorded in the [install guide](docs/independent-core.md#what-was-tested).
 
-Bug reports and focused contributions are welcome; start with [Contributing](CONTRIBUTING.md). Report a security problem privately through GitHub's [private vulnerability reporting](https://github.com/YuzukiS/Yuzuno/security/advisories/new), as [Security](docs/SECURITY.md) describes; do not include secrets or vulnerability details in a public issue. What remains before the public repository opens is listed in [Before the public repository opens](docs/public-readiness.md).
+Bug reports and focused contributions are welcome; start with [Contributing](CONTRIBUTING.md). Report a security problem privately through GitHub's [private vulnerability reporting](https://github.com/YuzukiS/Yuzuno/security/advisories/new), as [Security](docs/SECURITY.md) describes; do not include secrets or vulnerability details in a public issue. [Publication status and remaining release work](docs/public-readiness.md) records the source-only scope, repository settings and package boundaries.
 
 ## Development
 
