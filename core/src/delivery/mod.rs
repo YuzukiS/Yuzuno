@@ -87,7 +87,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         ("delivery_continue", "Explicitly authorize the next fixed candidate within the original cap after the previous review ended. A changed head alone is not authorization. This may start another paid review after a matching result submission. Unknown reviews must first be reconciled manually; this operation cannot replace them.", next, vec!["requestId","taskId","flowId","expectedRound","linkId","baseSha","headSha","settings"]),
         ("delivery_stop", "Idempotently stop automatic delivery, including after task closure. Releases only this flow's CI interests; retains manual subscriptions, terminal outcome, evidence and running native work. Does not cancel reviews or remote CI.", json!({"requestId":string,"taskId":string,"flowId":string}), vec!["requestId","taskId","flowId"]),
     ].into_iter().map(|(name,description,mut properties,required)| {
-        properties["taskId"]["description"] = json!("Existing task ID returned by Yuzuno, for example T-1. Reuse this task across delivery, review and retries.");
+        properties["taskId"]["description"] = json!(crate::collaboration_store::TASK_ID);
         json!({"name":name,"description":description,"inputSchema":{"type":"object","additionalProperties":false,"properties":properties,"required":required}})
     }).collect()
 }

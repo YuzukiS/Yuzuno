@@ -780,6 +780,27 @@ fn run_tools_are_listed_with_the_job_tools() {
 }
 
 #[test]
+fn only_job_submit_describes_machines_and_keeps_their_limits() {
+    let tools = tool_definitions();
+    let find = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap().clone();
+    let job = find("job_submit")["inputSchema"]["properties"].clone();
+    let stage = find("job_run_submit")["inputSchema"]["properties"]["stages"]["items"]["properties"].clone();
+    let text = |schema: &Value, field: &str| schema[field]["description"].as_str().unwrap().to_owned();
+    // A run's stages run on this host: none of their text is about other machines.
+    for field in ["inputs", "artifacts"] {
+        assert!(!text(&stage, field).contains("machineId"), "{field}");
+        assert!(text(&job, field).starts_with(&text(&stage, field)), "{field}");
+        assert!(text(&job, field).contains("With machineId"), "{field}");
+    }
+    let machine = text(&job, "machineId");
+    for kept in ["never on the machine your Agent itself runs on", "Not available with machineId: gpu, exclusive, outputs",
+        "guardGit (set it to false)", "never starts it twice", "not processes that leave it", "yuzuno_guide topic jobs"] {
+        assert!(machine.contains(kept), "{kept}");
+    }
+    assert!(text(&job, "artifacts").contains("minBytes (default 1)"));
+}
+
+#[test]
 fn host_artifact_cost_and_upstream_checks() {
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../acceptance/local-jobs/run_host_test.py");
