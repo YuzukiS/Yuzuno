@@ -1460,7 +1460,7 @@ impl Workspace {
             }
             Some("brief_policy") => {
                 let (Some(request), Some(turn)) = (message["requestId"].as_str(), message["turnId"].as_str()) else { return };
-                let required = match crate::project_brief::agent_requires_brief(&self.store, id) {
+                let required = match crate::project_brief::agent_must_update_brief(&self.store, id) {
                     Ok(project) => project.is_some(),
                     Err(error) => {
                         eprintln!("Workspace Claude Brief policy: {error:#}");

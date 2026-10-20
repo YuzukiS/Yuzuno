@@ -170,7 +170,7 @@ pub(super) fn notification(
     )
 }
 
-pub(super) fn notify(db: &Connection, task: &SharedTask, event: &Value) -> Result<Option<Value>> {
+pub(super) fn notify(store: &Store, db: &Connection, task: &SharedTask, event: &Value) -> Result<Option<Value>> {
     let result = task.result.as_ref().context("Missing submitted result")?;
     let notification = &result["notification"];
     let Some(message_id) = notification["messageId"].as_str() else {
@@ -182,11 +182,18 @@ pub(super) fn notify(db: &Connection, task: &SharedTask, event: &Value) -> Resul
         .context("Missing result activity sequence")?;
     let summary = result["summary"].as_str().unwrap_or_default();
     let excerpt = summary.chars().take(1_200).collect::<String>();
-    let body = format!("{number}: {} ({}) submitted a result with status {}. Result {} for dispatch {}.\n{}{}\nRead task_get(taskId={number}, afterSeq={}) for this result's full summary, evidence links and original author/source. Submission is the author's report, not independent review, acceptance, merging or deployment.",
+    let mut body = format!("{number}: {} ({}) submitted a result with status {}. Result {} for dispatch {}.\n{}{}\nRead task_get(taskId={number}, afterSeq={}) for this result's full summary, evidence links and original author/source. Submission is the author's report, not independent review, acceptance, merging or deployment.",
         result["reportedBy"]["name"].as_str().unwrap_or("Agent"),
         result["reportedBy"]["id"].as_str().unwrap_or("unknown"), task.status,
         result["id"].as_str().unwrap_or_default(), result["dispatchId"].as_str().unwrap_or_default(),
         excerpt, if excerpt.len() < summary.len() { "…" } else { "" }, seq - 1);
+    // The recipient may be the one who keeps the Project's Home: advice only.
+    if let Some(recipient) = notification["recipient"]["id"].as_str() {
+        if let Some(hint) = crate::project_brief::home_hint(store, db, &task.id, recipient)? {
+            body.push('\n');
+            body.push_str(hint);
+        }
+    }
     let message = insert_message(
         db,
         json!({"id":message_id,"seq":0,

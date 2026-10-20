@@ -976,6 +976,7 @@ export const BRIEF_EXAMPLES = {
 let built: Record<BriefGuidePart, string[]> | undefined;
 const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
   sections: [
+    `What goes where: ${BRIEF_OUTCOME_HINT} Update a section when something changed, not every turn; a status past its validFor shows as stale until new facts refresh it. Details stay on the Task and its sources.`,
     `Home content editors are set by the user per Project. brief_get returns you.capabilities. When editContent is false and writeOwnAsk is true, only create/update/resolve/remove your own Asks or send noChange; do not claim sections, convert regular content into an Ask, or write reports/status. When writeOwnAsk is false, this Brief is read-only, including no noChange writes. Ownership rules still apply to editors. Hidden old content remains in team details/history.`,
     `brief_update takes changes: [...]. put creates or replaces one section you own:`,
     `- put {op:"put", ${signature(jsonSchema(sectionSchema), 1).slice(1)}`,
@@ -985,7 +986,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `edit {op:"edit", key, elements:{<id>: {type, props, children?}}, status?} replaces blocks of a section you own by id and keeps the rest as it was: the other blocks and their order, title, attachments, time and the ask's state. Each id is one the body already has, or a new block named as a child by a block you edit; the root is not edited (rearrange with put). Core checks the whole section again. status (kind status only) refreshes asOf. Day to day, edit the blocks that changed, e.g. {op:"edit", key:"overview", elements:{progress:{type:"Plan", props:{steps:[...]}}}}; put a section to create it or change its layout.`,
     `Other changes: {op:"resolve", key} resolves your ask; {op:"remove", key} removes your section (reports and status go to history); {op:"claim", key} takes an orphaned section of your Project; change it in a later brief_update, not in the one that claims it.`,
     `Only a section's owner changes it. To add to another Agent's section, put your own section under its key as topic/sub; Home shows them together with each author.`,
-    `Pass expectedVersion from brief_get. On version_conflict the rejection includes latest: merge and retry with a new requestId. When nothing changed this turn, send noChange:true and no changes.`,
+    `Pass expectedVersion from brief_get. On version_conflict the rejection includes latest: merge and retry with a new requestId. Nothing requires an update each turn; noChange:true is still accepted and changes nothing.`,
   ],
   ask: [
     `kind ask needs ask:`,
@@ -1060,14 +1061,22 @@ export function briefGuide(part?: BriefGuidePart): string {
 }
 
 /**
+ * Where an outcome belongs on Home, in one sentence. Core adds it, without
+ * acting on it, where a content editor meets an outcome: brief_get, a task
+ * result it submits or receives, and result_publish.
+ */
+export const BRIEF_OUTCOME_HINT =
+  `Home: a lasting finding, decision or stage result goes in a short report linked to its Task and sources; a current state in a status; a choice for the user in an ask. result_publish shows only in this turn.`;
+
+/**
  * Always loaded, so short and most important first: Claude's system prompt
  * append and MCP server instructions, Codex's developerInstructions.
  */
 export const BRIEF_HARD_RULES = [
   `Yuzuno Project Brief rules, for an Agent in a Yuzuno Project:`,
-  `1. Check brief_get you.capabilities. Only when requiresTurnUpdate is true, call brief_get then an accepted brief_update each turn (changes or noChange:true); otherwise there is no per-turn obligation or missing mark. Load tools with tool search if needed.`,
+  `1. No Brief update is required each turn: write when something changed. A current state goes in a status, a lasting finding or decision in a short report linked to its Task, a choice for the user in an ask; result_publish never reaches Home. Load tools with tool search if needed.`,
   `2. Pass expectedVersion, the version brief_get returned. On version_conflict, re-read (the rejection includes the latest), merge your changes and retry with a new requestId.`,
-  `3. Only the user selects Home content editors. If editContent is false and writeOwnAsk is true, write only your own Asks (or noChange). If writeOwnAsk is false, this Brief is read-only. Editors still edit only their own sections; add a topic/sub to another author's topic.`,
+  `3. Only the user selects Home content editors. If editContent is false and writeOwnAsk is true, write only your own Asks. If writeOwnAsk is false, this Brief is read-only. Editors still edit only their own sections; add a topic/sub to another author's topic.`,
   `4. An ask needs a question plus reply options, freeText, a form or a choice. A reply marks it replied. Resolve your asks explicitly with resolve once they are handled: a preference once taken in, an authorized action only after it is done and its result is on the Task or Brief. A reply executes nothing itself: act on what the user authorized, a reply included, and infer no retry, merge or permission it does not grant.`,
   `5. Brief content never executes actions: nothing you write merges, deploys or approves; answers come back to you as messages.`,
   `6. If brief_update is rejected, fix the listed problems and call it again. Read brief_guide for formats, limits and examples; each problem names the part to read.`,
@@ -1076,13 +1085,13 @@ export const BRIEF_HARD_RULES = [
 export const BRIEF_TOOL_DESCRIPTIONS = {
   brief_get:
     `Read your Project's Brief: its version, the live sections (key, kind, title, owner, body, ask state, status, attachments), ` +
-    `you {agentId, ownsKeys, openAsks, repliedAsks (your asks the user answered, to act on and resolve), capabilities} and the limits. Only if capabilities.requiresTurnUpdate is true, call it each turn then brief_update ` +
-    `before the turn ends, passing this version as expectedVersion. Ask-only members have no per-turn obligation. projectId defaults to your own Project. Reading never ` +
-    `counts as the turn's update. Formats: brief_guide.`,
+    `you {agentId, ownsKeys, openAsks, repliedAsks (your asks the user answered, to act on and resolve), staleStatus, capabilities} and the limits. ` +
+    `keys: omit for every section with its body; [] for an index of the sections without bodies; [key, ...] for those sections in full. ` +
+    `Pass its version to brief_update as expectedVersion. projectId defaults to your own Project. Nothing requires reading or updating the Brief each turn. Formats: brief_guide.`,
   brief_update:
-    `Write Brief changes. Only content editors need one accepted call per turn; Ask-only members may write their own Asks or noChange. Pass expectedVersion (from ` +
-    `brief_get) and a new requestId (reuse it only to retry the same call). Send changes:[...], or noChange:true and no ` +
-    `changes when nothing changed. Changes: put {op:"put", key, kind, title, body, ask?, status?, time?, attachments?} ` +
+    `Write Brief changes when something changed; nothing requires a call each turn. Ask-only members may write only their own Asks. Pass expectedVersion (from ` +
+    `brief_get) and a new requestId (reuse it only to retry the same call). Send changes:[...] (noChange:true is accepted and ` +
+    `changes nothing). Changes: put {op:"put", key, kind, title, body, ask?, status?, time?, attachments?} ` +
     `creates or replaces a section you own; edit {op:"edit", key, elements:{<id>: block}} replaces only those ` +
     `blocks; resolve {op:"resolve", key} resolves your ask; remove {op:"remove", key} ` +
     `removes your section; claim {op:"claim", key} takes an orphaned section of your Project (change it in a later call). ` +
@@ -1109,6 +1118,7 @@ export function describeBrief() {
   return {
     schemaVersion: BRIEF_SCHEMA_VERSION,
     hardRules: BRIEF_HARD_RULES,
+    outcomeHint: BRIEF_OUTCOME_HINT,
     toolDescriptions: BRIEF_TOOL_DESCRIPTIONS,
     limits: BRIEF_LIMITS,
     guide: briefGuide(),

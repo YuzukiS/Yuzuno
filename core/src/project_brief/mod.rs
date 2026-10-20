@@ -69,10 +69,9 @@ fn contract_text(value: &'static Value) -> Option<&'static str> {
     value.as_str().filter(|text| !text.trim().is_empty())
 }
 
-const FALLBACK_RULES: &str = "Project Brief rules (Yuzuno). Check brief_get you.capabilities: only requiresTurnUpdate=true needs an accepted brief_update every Turn. \
-Only the user selects content editors. When editContent=false and writeOwnAsk=true, only your own Asks or noChange are allowed, with no per-turn obligation or missing mark. When writeOwnAsk=false the Brief is read-only. \
-Call brief_get, then brief_update with the expectedVersion it returned: put, resolve, remove or claim your sections, \
-or send noChange:true when nothing of yours changed. A rejected call does not count: fix the listed problems \
+const FALLBACK_RULES: &str = "Project Brief rules (Yuzuno). Nothing requires a Brief update each Turn: update it when something changed. \
+Only the user selects content editors. When editContent=false and writeOwnAsk=true, only your own Asks are allowed. When writeOwnAsk=false the Brief is read-only. \
+Call brief_get, then brief_update with the expectedVersion it returned: put, resolve, remove or claim your sections. A rejected call changes nothing: fix the listed problems \
 (on version_conflict use the latest Brief attached) and call again with a new requestId. \
 Only a section's owner changes it; to add to another Agent's topic, put a sub-topic such as topic/review. \
 Kinds: ask (a question with options, freeText, form or choice; a reply marks it replied and it stays until you resolve it once handled), \
@@ -94,8 +93,16 @@ attachments: up to 12 per section, {name, path (absolute, on the Core host) or u
 charts read only snapshot data files (CSV, JSON, JSONL).\n\
 errors: a rejection lists problems with a code, a path and the guide part to read; nothing was changed.";
 
-/// The hard rules, at most 1500 characters: Claude's system prompt append,
-/// Codex's developer instructions, on start and resume.
+/// Where an outcome belongs on Home, in one sentence (BRIEF_OUTCOME_HINT in
+/// brief-contract.ts): shown to content editors only, and only as advice.
+pub fn outcome_hint() -> &'static str {
+    brief_contract().and_then(|brief| contract_text(&brief["outcomeHint"])).unwrap_or(FALLBACK_HINT)
+}
+
+const FALLBACK_HINT: &str = "Home: a lasting finding, decision or stage result goes in a short report linked to its Task and sources; \
+a current state in a status; a choice for the user in an ask. result_publish shows only in this turn.";
+
+/// The hard rules, at most 1500 characters, in the MCP server instructions.
 pub fn hard_rules() -> &'static str {
     brief_contract().and_then(|brief| contract_text(&brief["hardRules"])).unwrap_or(FALLBACK_RULES)
 }
@@ -120,7 +127,8 @@ fn guide_parts() -> Vec<String> {
 pub(crate) fn tool_definition(name: &str) -> Value {
     let project = json!({"type":"string","description":"Project ID from projects_list. Omit for your own Project."});
     let (properties, required): (Value, &[&str]) = match name {
-        "brief_get" => (json!({"projectId":project}), &[]),
+        "brief_get" => (json!({"projectId":project,"keys":{"type":"array","maxItems":MAX_KEYS,"items":{"type":"string"},
+            "description":"Omit for every section with its body. [] for an index of the sections without bodies; [key, ...] for those sections in full, with the index."}}), &[]),
         "brief_update" => (update_properties(project), &["requestId", "expectedVersion"]),
         "brief_guide" => (
             json!({"part":{"type":"string","enum":guide_parts(),"description":"One part of the guide; omit for all of it."}}),
@@ -280,15 +288,40 @@ pub(crate) fn delete_agent(db: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// The Project whose Brief this Agent keeps: Some while it belongs to a
-/// Project that is not archived.
-pub fn agent_requires_brief(store: &Store, agent_id: &str) -> Result<Option<String>> {
+/// The Project whose Brief this Agent may edit: Some while it belongs to a
+/// Project that is not archived and the user chose it as a content editor.
+pub fn agent_edits_brief(store: &Store, agent_id: &str) -> Result<Option<String>> {
     let db = store.db.read()?;
     let Some(project) = crate::projects::agent_project(&db, agent_id)? else { return Ok(None) };
     Ok(match crate::projects::project_labels(&db)?.get(&project) {
         Some((_, false)) if editors::can_edit(store, &db, &project, agent_id)? => Some(project),
         _ => None,
     })
+}
+
+/// The outcome hint (outcome_hint) for an Agent that may edit the Brief of
+/// this task's Project; None for anyone else, Ask-only members included.
+pub fn home_hint(store: &Store, db: &Connection, task_id: &str, agent: &str) -> Result<Option<&'static str>> {
+    Ok(match crate::projects::task_projects(db, &[task_id])?.get(task_id) {
+        Some(project) if editors::can_edit(store, db, project, agent)? => Some(outcome_hint()),
+        _ => None,
+    })
+}
+
+/// The outcome hint for an Agent that may edit its own Project's Brief.
+pub fn own_home_hint(store: &Store, db: &Connection, agent: &str) -> Result<Option<&'static str>> {
+    Ok(match crate::projects::agent_project(db, agent)? {
+        Some(project) if editors::can_edit(store, db, &project, agent)? => Some(outcome_hint()),
+        _ => None,
+    })
+}
+
+/// The Project whose Brief this Agent must update before each Turn ends:
+/// none (T-154). An editor updates its sections when something changed,
+/// and no Turn is held or reminded for want of an update; the turn-end
+/// check (brief_turns) and the Claude Stop hook therefore never act.
+pub fn agent_must_update_brief(_store: &Store, _agent_id: &str) -> Result<Option<String>> {
+    Ok(None)
 }
 
 /// The kind of the receipt Core gave this Turn: "updated" if any accepted
@@ -405,11 +438,23 @@ fn replied_ask(row: &sections::Row) -> Value {
     json!({"key":row.key,"title":row.data["title"],"repliedAt":row.replied_at,"reply":reply,"updatedSinceReply":updated})
 }
 
+/// At most this many keys in one brief_get: the topics and their subs.
+const MAX_KEYS: usize = 60;
+
 /// `brief_get`: the live Brief of the caller's Project, or of `projectId`.
 fn get(store: &Store, actor: Option<&str>, input: &Value) -> Result<Value> {
-    if let Some(key) = input.as_object().and_then(|o| o.keys().find(|key| *key != "projectId")) {
+    if let Some(key) = input.as_object().and_then(|o| o.keys().find(|key| !matches!(key.as_str(), "projectId" | "keys"))) {
         bail!("invalid_input: unknown argument {key}");
     }
+    // None: every section in full. Some: an index of all, and these in full.
+    let keys: Option<Vec<String>> = match input.get("keys") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(keys)) if keys.len() <= MAX_KEYS => Some(keys.iter().map(|key| match key.as_str() {
+            Some(key) if !key.is_empty() && key.len() <= 97 => Ok(key.to_owned()),
+            _ => bail!("invalid_input: keys are section keys such as plan or plan/review"),
+        }).collect::<Result<_>>()?),
+        Some(_) => bail!("invalid_input: keys is a list of at most {MAX_KEYS} section keys; [] lists sections without bodies"),
+    };
     let db = store.db.read()?;
     let own = match actor {
         Some(actor) => crate::projects::agent_project(&db, actor)?,
@@ -424,13 +469,22 @@ fn get(store: &Store, actor: Option<&str>, input: &Value) -> Result<Value> {
     };
     let labels = crate::projects::project_labels(&db)?;
     let (name, _) = labels.get(&project).context("project_not_found: no Project has this ID")?;
-    let rows = sections::live(&db, &project)?;
+    // With keys, every section is read without its body (the index) and
+    // only the named ones in full.
+    let rows = match &keys {
+        None => sections::live(&db, &project)?,
+        Some(_) => sections::live_index(&db, &project)?,
+    };
+    let full = match &keys {
+        None => None,
+        Some(keys) => Some(sections::live_keys(&db, &project, keys)?),
+    };
     let seen = sections::seen(&db, &project)?;
     let mut owners = sections::Owners::default();
     let mut refs = refs::Refs::new(store, &db);
     let at = chrono::Utc::now();
-    let mut listed = Vec::with_capacity(rows.len());
-    for row in &rows {
+    let mut listed = vec![];
+    for row in full.as_ref().unwrap_or(&rows) {
         let owner = owners.get(store, &db, row)?;
         listed.push(sections::section_json(row, &owner, seen.get(&row.key), refs.of(&row.data["body"]), at));
     }
@@ -438,12 +492,31 @@ fn get(store: &Store, actor: Option<&str>, input: &Value) -> Result<Value> {
         let owned: Vec<&str> = rows.iter().filter(|row| row.owner_id == actor).map(|row| row.key.as_str()).collect();
         let open = rows.iter().filter(|row| row.owner_id == actor && row.unresolved_ask()).count();
         let replied: Vec<Value> = rows.iter().filter(|row| row.owner_id == actor && row.replied_ask()).map(replied_ask).collect();
+        // Advice, never a requirement: a stale status is refreshed when
+        // there are new facts, not to make it look current.
+        let stale: Vec<&str> = rows.iter()
+            .filter(|row| row.owner_id == actor && row.kind == "status" && sections::stale(&row.data["status"], at))
+            .map(|row| row.key.as_str()).collect();
         let can_edit = editors::can_edit(store, &db, &project, actor)?;
-        Ok(json!({"agentId":actor,"ownsKeys":owned,"openAsks":open,"repliedAsks":replied,
-            "capabilities":{"editContent":can_edit,"requiresTurnUpdate":can_edit,
+        let mut you = json!({"agentId":actor,"ownsKeys":owned,"openAsks":open,"repliedAsks":replied,"staleStatus":stale,
+            "capabilities":{"editContent":can_edit,"requiresTurnUpdate":false,
                 "writeOwnAsk":own.as_deref() == Some(project.as_str()) && !crate::projects::is_archived(&db, &project)?
-                    && store.brief_in(&db, actor)?.is_some_and(|a| a.agent.closed_at.is_none())}}))
+                    && store.brief_in(&db, actor)?.is_some_and(|a| a.agent.closed_at.is_none())}});
+        if can_edit {
+            you["homeHint"] = outcome_hint().into();
+        }
+        Ok(you)
     }).transpose()?;
-    Ok(json!({"projectId":project,"projectName":name,"version":sections::brief_version(&db, &project)?,
-        "sections":listed,"you":you,"contentEditors":editors::policy(&db, &project)?,"limits":limits()}))
+    let mut brief = json!({"projectId":project,"projectName":name,"version":sections::brief_version(&db, &project)?,
+        "sections":listed,"you":you,"contentEditors":editors::policy(&db, &project)?,"limits":limits()});
+    if let Some(keys) = &keys {
+        let mut index = Vec::with_capacity(rows.len());
+        for row in &rows {
+            index.push(sections::index_json(row, &owners.get(store, &db, row)?, seen.get(&row.key), at));
+        }
+        let missing: Vec<&String> = keys.iter().filter(|key| !rows.iter().any(|row| &row.key == *key)).collect();
+        brief["index"] = index.into();
+        brief["missingKeys"] = json!(missing);
+    }
+    Ok(brief)
 }

@@ -87,21 +87,21 @@ async fn home_filters_sources_without_seen_and_keeps_asks_approvals_and_totals()
 fn editor_policy_is_project_scoped_persistent_and_explicit_empty_is_not_default() {
     let (dir, ws, project) = lab();
     assert_eq!(editors::get(&ws.store, &project).unwrap().editor_agent_ids, None);
-    assert_eq!(agent_requires_brief(&ws.store, "b").unwrap(), Some(project.clone()));
+    assert_eq!(agent_edits_brief(&ws.store, "b").unwrap(), Some(project.clone()));
     let other = ws.store.create_project("Other", BTreeMap::new()).unwrap().id;
     ws.store.set_agent_project("d", Some(&other)).unwrap();
     assert!(editors::save(&ws.store, &project, 0, Some(vec!["d".into()])).is_err());
     assert!(editors::save(&ws.store, &project, 0, Some(vec!["a".into(), "a".into()])).is_err());
     editors::save(&ws.store, &project, 0, Some(vec![])).unwrap();
-    assert_eq!(agent_requires_brief(&ws.store, "a").unwrap(), None);
-    assert_eq!(agent_requires_brief(&ws.store, "d").unwrap(), Some(other.clone()));
+    assert_eq!(agent_edits_brief(&ws.store, "a").unwrap(), None);
+    assert_eq!(agent_edits_brief(&ws.store, "d").unwrap(), Some(other.clone()));
     ws.store.insert(&agent("new")).unwrap();
     ws.store.set_agent_project("new", Some(&project)).unwrap();
-    assert_eq!(agent_requires_brief(&ws.store, "new").unwrap(), None);
+    assert_eq!(agent_edits_brief(&ws.store, "new").unwrap(), None);
     assert!(editors::save(&ws.store, &project, 0, None).is_err(), "stale settings must not overwrite");
     editors::save(&ws.store, &project, 1, Some(vec!["a".into()])).unwrap();
     close(&ws, "a", true);
-    assert_eq!(agent_requires_brief(&ws.store, "a").unwrap(), None);
+    assert_eq!(agent_edits_brief(&ws.store, "a").unwrap(), None);
     assert!(editors::save(&ws.store, &project, 2, Some(vec!["a".into()])).is_err());
     close(&ws, "a", false);
     ws.store.set_agent_project("a", Some(&other)).unwrap();
@@ -110,5 +110,5 @@ fn editor_policy_is_project_scoped_persistent_and_explicit_empty_is_not_default(
     drop(ws);
     let reopened = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused-harness".into()).unwrap();
     assert_eq!(editors::get(&reopened.store, &project).unwrap().editor_agent_ids, Some(vec!["a".into()]));
-    assert_eq!(agent_requires_brief(&reopened.store, "new").unwrap(), None);
+    assert_eq!(agent_edits_brief(&reopened.store, "new").unwrap(), None);
 }

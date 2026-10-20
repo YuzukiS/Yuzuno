@@ -690,12 +690,21 @@ impl Workspace {
         let (ws, actor) = (self.clone(), actor.to_owned());
         // MCP requests can be dropped mid-call. The result, its receipt and
         // its announcement still complete together.
-        tokio::spawn(async move {
+        let answer = tokio::spawn(async move {
             let _permit = permit;
             let validator = ws.results.clone();
-            publish(&ws, &validator, &actor, input).await
+            let answer = publish(&ws, &validator, &actor, input).await;
+            (ws, actor, answer)
         })
-        .await?
+        .await?;
+        let (ws, actor, answer) = answer;
+        let Ok(Ok(mut published)) = answer else { return answer };
+        // A result shows only in this turn. For a content editor, say where an
+        // outcome worth keeping goes on Home; nothing is written there.
+        if let Some(hint) = ws.stored(move |store| crate::project_brief::own_home_hint(store, &*store.db.read()?, &actor)).await? {
+            published["homeHint"] = hint.into();
+        }
+        Ok(Ok(published))
     }
 }
 
@@ -962,6 +971,21 @@ mod tests {
 
     fn code(error: anyhow::Error) -> String {
         error.to_string().split(':').next().unwrap().to_owned()
+    }
+
+    /// T-154: a published result shows only in this turn. A content editor
+    /// is told where an outcome worth keeping goes on Home; others are not.
+    #[tokio::test]
+    async fn a_content_editor_publishing_a_result_learns_where_outcomes_go() {
+        let (_dir, ws) = fixture();
+        let project = ws.store.create_project("Code", Default::default()).unwrap().id;
+        ws.store.set_agent_project("a", Some(&project)).unwrap();
+        let editor = ws.result_publish("a", input("hint-a", "t1", spec(None))).await.unwrap().unwrap();
+        assert_eq!(editor["homeHint"], crate::project_brief::outcome_hint());
+        // In no Project, so no Brief of its own.
+        let outside = ws.result_publish("b", input("hint-b", "t1", spec(None))).await.unwrap().unwrap();
+        assert!(outside.get("homeHint").is_none(), "{outside}");
+        assert_eq!(rows(&ws, "interactive_results"), 2);
     }
 
     #[test]

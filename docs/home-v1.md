@@ -125,7 +125,7 @@ Home 的内容分两类：
 1. **Brief 端到端，加上本机的 Machine Load**：
    - Home 取代 Catch Up
    - Brief 的存储、`brief_get` / `brief_update` / `brief_guide`、校验和上限
-   - 回合末检查：Claude 用 Stop hook，Codex 用提醒回合
+   - 回合末检查：Claude 用 Stop hook，Codex 用提醒回合（T-154 起不再要求编辑者每轮更新 Brief，这项检查不再拦截或提醒）
    - 规则送达，按上面的四层
    - 全局"需要你"条，以及按 Project Priority 排列的面板和 Core Widget
    - Seen、两种回复、在 Home 上处理审批

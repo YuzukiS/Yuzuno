@@ -1,6 +1,11 @@
-//! The turn-end Brief check (Home V1, T-85). Every Turn of an Agent that
-//! belongs to a live Project should end with one `brief_update` Core accepted
-//! (a valid "no change" included). This module only records whether it did,
+//! The turn-end Brief check (Home V1, T-85). It held Turns of a Project's
+//! content editors to end with one `brief_update` Core accepted (a valid
+//! "no change" included). Since T-154 no Agent must
+//! (`project_brief::agent_must_update_brief`): editors update the Brief when
+//! something changed, so the check below finds no Agent to remind and Turns
+//! end as they are. Outcomes recorded for earlier Turns stay readable.
+//!
+//! When an Agent must update, this module only records whether it did,
 //! from Core's own receipts (`project_brief`), and starts at most one bounded
 //! remedy. It never writes Brief content and never judges what a Turn said.
 //!
@@ -70,7 +75,7 @@ impl Seam for ProjectBrief {
         crate::project_brief::hard_rules().to_owned()
     }
     fn requires(&self, store: &Store, agent: &str) -> Result<Option<String>> {
-        crate::project_brief::agent_requires_brief(store, agent)
+        crate::project_brief::agent_must_update_brief(store, agent)
     }
     fn receipt(&self, store: &Store, agent: &str, turn: &str) -> Result<Option<String>> {
         crate::project_brief::turn_receipt(store, agent, turn)
@@ -835,6 +840,37 @@ for line in sys.stdin:
         assert_eq!(outcome(&fake, "t-next"), set("updated", 1));
         assert_eq!(starts(&dir).len(), 1);
         ws.close_agent("a").await.unwrap();
+    }
+
+    /// T-154, with the real policy: a content editor's Turn that ends without
+    /// a Brief update is neither held, reminded nor marked, on either harness.
+    #[tokio::test]
+    async fn no_agent_must_update_the_brief_and_a_turn_without_one_ends_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused-harness".into()).unwrap();
+        let project = ws.store.create_project("Code", Default::default()).unwrap().id;
+        for (id, harness) in [("a", "codex"), ("b", "claude")] {
+            let detail: AgentDetail = serde_json::from_value(json!({"agent":{"id":id,"name":id,"cwd":"/tmp","model":"",
+                "color":"sage","harness":harness,"status":"idle","createdAt":"","updatedAt":"","unreadCount":0,
+                "pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
+            ws.store.insert(&detail).unwrap();
+            ws.store.set_agent_project(id, Some(&project)).unwrap();
+            // A content editor of a live Project, as the user's default makes it.
+            assert_eq!(crate::project_brief::agent_edits_brief(&ws.store, id).unwrap(), Some(project.clone()));
+            let seam = ws.brief_turns.seam();
+            assert_eq!(seam.requires(&ws.store, id).unwrap(), None);
+            let end = TurnEnd { seq: 1, agent: id.into(), turn: "quiet".into(), status: "completed".into() };
+            assert_eq!(decide(&*seam, &ws.store, &end).unwrap(), Decision::Done);
+            assert_eq!(seam.outcome(&ws.store, id, "quiet").unwrap(), None, "nothing is marked missing");
+            assert_eq!(claude_start_option(&ws, id).await.unwrap(), json!({"required":false,"recheck":true,"hardRules":""}));
+            // The rules stay in the MCP server instructions; the session text
+            // no longer carries a second copy.
+            let params = json!({"developerInstructions":"Configured by the user.\n\nNotice."});
+            assert_eq!(with_hard_rules(&ws, id, params.clone()).await, params);
+        }
+        let reminders: i64 = ws.store.db.read().unwrap()
+            .query_row("SELECT COUNT(*) FROM project_brief_reminders", [], |r| r.get(0)).unwrap();
+        assert_eq!(reminders, 0);
     }
 
     #[tokio::test]
