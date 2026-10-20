@@ -301,3 +301,22 @@ fn after_a_continuation_used_the_second_round_no_incremental_round_fits() {
     let refused = store.create_pr_review(None, &start(&task, "r3", D, Some("earlier")), "third").unwrap_err().to_string();
     assert!(refused.contains("already has 2 review rounds"), "{refused}");
 }
+
+#[test]
+fn a_restart_leaves_an_unfinished_incremental_round_unknown_counted_and_never_run_again() {
+    let (_dir, store, task) = setup();
+    let (run, _) = store.create_pr_review(None, &start(&task, "r1", B, None), "earlier").unwrap();
+    complete(&store, run);
+    let (mut run, _) = store.create_pr_review(None, &start(&task, "r2", D, Some("earlier")), "now").unwrap();
+    run["status"] = json!("running");
+    run["nativeStartedAt"] = json!("2026-10-20T06:00:00Z");
+    store.save_pr_review(&run, None).unwrap();
+    store.recover_pr_reviews().unwrap();
+    let after = store.pr_review_report(&task, "now").unwrap();
+    assert_eq!((after["status"].as_str(), after["conclusion"].as_str(), after["kind"].as_str()), (Some("unknown"), Some("unknown"), Some("incremental")));
+    // Its requestId returns the same record; nothing is started again.
+    let (again, created) = store.create_pr_review(None, &start(&task, "r2", D, Some("earlier")), "other").unwrap();
+    assert!(!created && again["id"] == "now");
+    // It may have started a model, so it counts.
+    assert!(store.create_pr_review(None, &start(&task, "r3", D, Some("earlier")), "third").unwrap_err().to_string().contains("already has 2"));
+}
