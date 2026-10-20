@@ -308,13 +308,18 @@ for line in sys.stdin:
     assert!(events[first_stream..].iter().all(|e| e["type"] != "agent.changed"),
         "no refetch notice while only progress arrives: {events:#?}");
 
-    // The Turn ending is a change clients refetch.
+    // The Turn ending is a change clients refetch, announced with the read
+    // position. The background-terminal check that Turn's end starts announces
+    // the same Agent from async code, where `announce_changed` sends no
+    // `lastSeq`; it can come first. Any `lastSeq` sent is the stored one.
     let before = ws.changes.head();
     std::fs::write(dir.path().join("release"), "").unwrap();
     let mut ended = vec![];
-    collect_until(&mut live, &mut ended, |e| e.iter().any(|e| e["type"] == "agent.changed" && e["agentId"] == "a")).await;
-    let changed = ended.iter().find(|e| e["type"] == "agent.changed").unwrap();
-    assert_eq!(changed["lastSeq"], ws.store.detail("a").unwrap().agent.last_seq);
+    collect_until(&mut live, &mut ended, |e| e.iter().any(|e| e["type"] == "agent.changed" && e["agentId"] == "a" && !e["lastSeq"].is_null())).await;
+    let last_seq = ws.store.detail("a").unwrap().agent.last_seq;
+    let changed: Vec<&Value> = ended.iter().filter(|e| e["type"] == "agent.changed" && e["agentId"] == "a").collect();
+    assert!(changed.iter().all(|e| e["lastSeq"].is_null() || e["lastSeq"] == last_seq), "{changed:#?}");
+    assert_eq!(changed.iter().filter(|e| !e["lastSeq"].is_null()).count(), 1, "{changed:#?}");
     assert!(ws.changes.head() > before);
 }
 
