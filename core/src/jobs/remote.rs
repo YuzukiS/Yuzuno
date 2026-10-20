@@ -384,10 +384,10 @@ pub(super) fn spec(job: &Value) -> Value {
         spec["limits"] = json!({"mode": mode.unwrap_or(STRICT),
             "cpuMillis": declared["cpuMillis"], "memoryMiB": declared["memoryMiB"], "swapMiB": declared["swapMiB"]});
     }
-    // On an SSH machine, the inputs frozen at submit and the declared
-    // artifacts go with the start (v3): the supervisor checks the inputs
-    // again before the command runs and the artifacts after it exits.
-    if kind == Some(SSH) {
+    // On an SSH machine or Windows, the inputs frozen at submit and the
+    // declared artifacts go with the start (v3): the supervisor checks the
+    // inputs again before the command runs and the artifacts after it exits.
+    if matches!(kind, Some(SSH | WINDOWS)) {
         if let Some(files) = job["snapshot"]["files"].as_array().filter(|files| !files.is_empty()) {
             spec["inputs"] = files
                 .iter()
@@ -1189,23 +1189,31 @@ pub(super) async fn logs_with(ws: &Arc<Workspace>, job: &Value, offset: Option<u
 /// What a remote Job freezes at submit. Its inputs are files on its machine:
 /// that machine's helper reads them there now (inspect, which writes
 /// nothing) and they are frozen by SHA-256 with the machine that answered.
-/// No path is ever resolved on this host. Any input that is missing, not a
-/// regular file, unreadable or too large refuses the submit, as does a
-/// machine that does not answer.
+/// No path is ever resolved on this host (for Windows on this PC, nothing is
+/// read through /mnt either: its native helper reads them). Any input that is
+/// missing, not a regular file, unreadable or too large refuses the submit, as
+/// does a machine that does not answer.
 pub(super) async fn remote_snapshot(ws: &Arc<Workspace>, programs: &Programs<'_>, machine_id: &str, cwd: &str,
     inputs: &[String]) -> Result<Value> {
     if inputs.is_empty() {
         return Ok(json!({"cwd": cwd, "remote": true,
             "scope": "Nothing is frozen on the remote machine: Core does not see its files"}));
     }
-    let id = machine_id.to_owned();
-    let machine = ws.stored(move |s| s.machine(&id)).await?;
-    let (name, frozen_on) = (machine.name.clone(), machine_snapshot(&machine));
+    let (machine, frozen_on) = if machine_id == WINDOWS {
+        (Machine::Windows, windows_snapshot())
+    } else {
+        let id = machine_id.to_owned();
+        let machine = ws.stored(move |s| s.machine(&id)).await?;
+        let frozen_on = machine_snapshot(&machine);
+        (Machine::Ssh(machine), frozen_on)
+    };
+    let name = machine.name().to_owned();
+    let windows = matches!(machine, Machine::Windows);
     // Nothing of the Store is held while the machine answers (at most 30
     // seconds, and the SSH process is ended with the call); the Job is
     // inserted after, only with the machine still registered as it was here
     // (store.rs create_job).
-    let reply = match call(programs, &Machine::Ssh(machine), json!({"action": "inspect", "cwd": cwd, "inputs": inputs})).await {
+    let reply = match call(programs, &machine, json!({"action": "inspect", "cwd": cwd, "inputs": inputs})).await {
         Reply::Answer(reply) if reply["status"] == "inspected" && reply["hostId"].is_string() => reply,
         Reply::Answer(reply) => anyhow::bail!("The inputs could not be read on {name}, so nothing was submitted: {}",
             reply["status"].as_str().unwrap_or("no status")),
@@ -1220,14 +1228,25 @@ pub(super) async fn remote_snapshot(ws: &Arc<Workspace>, programs: &Programs<'_>
         .collect();
     problems.extend(reply["problem"].as_str().map(str::to_owned));
     anyhow::ensure!(problems.is_empty(), "Inputs on {name} cannot be frozen, so nothing was submitted: {}", problems.join("; "));
-    // One entry per input, in order, each a file there with its digest.
+    // One entry per input, in order, each a file there with its digest, at
+    // that machine's own kind of absolute path (on Windows, the final path
+    // Windows gave: a drive path, or a network one a mapped drive leads to).
+    let absolute = |path: &str| if windows { windows_final_path(path) } else { path.starts_with('/') };
     let frozen = files.len() == inputs.len() && files.iter().zip(inputs).all(|(file, given)| {
-        file["path"] == given.as_str() && file["absolutePath"].as_str().is_some_and(|path| path.starts_with('/'))
+        file["path"] == given.as_str() && file["absolutePath"].as_str().is_some_and(absolute)
             && file["sha256"].as_str().is_some_and(|sha| sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
     });
     anyhow::ensure!(frozen, "The inputs could not be read on {name}, so nothing was submitted: its reply does not name each input with its digest");
     Ok(json!({"cwd": cwd, "remote": true, "hostId": reply["hostId"], "frozenOn": frozen_on, "files": files, "totalBytes": reply["totalBytes"],
         "scope": format!("Inputs are files on {name}, frozen there by SHA-256 at submit with the machine that answered, and checked again there before the command runs. Nothing on this host is read for them")}))
+}
+
+/// A final path as Windows names a file: C:\... or \\server\share\...
+fn windows_final_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    let drive = bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\';
+    (drive || path.starts_with(r"\\") && !path.starts_with(r"\\?\") && !path.starts_with(r"\\.\"))
+        && !path.chars().any(char::is_control)
 }
 
 /// What this executor can and cannot do, recorded with each remote job.
@@ -1258,7 +1277,9 @@ pub(super) fn windows_capabilities() -> Value {
         "slots": SLOTS,
         "gpu": "unavailable",
         "pause": "unavailable",
-        "artifacts": "unavailable",
+        "inputs": "Files on this PC's Windows, read by the native helper there (never through /mnt): frozen by SHA-256 and their final path at submit, and checked again while the command is still suspended, before it runs; one that changed stops the start. A check before the start, not a read-only snapshot while it runs",
+        "artifacts": "Checked by the native helper on Windows after a clean exit, by the same rules as local jobs (json and jsonl by a syntax check of its own that follows Python's json reading, with stated bounds: nesting deeper than 1000 levels or an integer of more than 4300 digits leaves the check not completed); recorded with the final path, size and SHA-256, and whether a file was already at the path; never copied here",
+        "outputs": "unavailable",
         "processes": "Each attempt's command runs in its own Windows Job Object, which its child processes join; cancel and timeouts terminate that Job Object, and the outcome is written only once it holds no process. What is still in it 5 s after the command exits (Windows' console host closes by then) is stopped and reported",
         "bootId": null,
     })
