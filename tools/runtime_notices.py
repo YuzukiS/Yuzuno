@@ -19,6 +19,10 @@ recorded name, version and lock integrity, and only if its SHA-256 matches;
 for any other version the package stays listed without a text. Nothing is
 fetched over the network.
 
+The Claude Agent SDK is checked against the lock like the others but is not
+shipped (T-159): Core obtains it on the user's machine. It is listed with its
+declared license, source and integrity, and none of its texts is reproduced.
+
 Usage: runtime_notices.py --runtime DIR --out FILE [--sources DIR]
 (exits 1 on a mismatch).
 """
@@ -32,6 +36,8 @@ import sys
 LICENSE_FILE = re.compile(r'^(licen[cs]e|copying|notice|copyright|unlicense)([-._]|$)', re.I)
 SEE_LICENSE = re.compile(r'^SEE LICENSE IN (\S+)$')
 SOURCES = Path(__file__).resolve().parent / 'runtime-license-sources'
+# Installed to check them, then left out of the release (claude_sdk_release).
+OBTAINED_ON_THE_MACHINE = ('@anthropic-ai/claude-agent-sdk',)
 
 
 def recorded_sources(folder):
@@ -128,12 +134,15 @@ def notices(runtime, have, lock=None, sources=None):
               'dependencies of runtimes/claude/package-lock.json, as `npm ci --omit=dev',
               '--omit=optional` installs them for the release (tools/runtime_notices.py',
               'checked every path and version against the lock file). Each package keeps',
-              'its own license; the Claude Agent SDK is under Anthropic\'s terms, as its',
-              'package declares. Where a package offers a choice of licenses, every text',
-              'it ships is reproduced and no choice is made here. A package that ships no',
-              'license text is reproduced with the text of its exact source only where that',
-              'is recorded in tools/runtime-license-sources (with its evidence), and is',
-              'marked as not shipped in the package.',
+              'its own license. The Claude Agent SDK is not in the release: Core obtains',
+              'it on the user\'s machine from the source its entry names, checked against',
+              'the locked integrity; it is under Anthropic\'s terms, as its package',
+              'declares, and none of its texts is reproduced here. Where a package offers',
+              'a choice of licenses, every text it ships is reproduced and no choice is',
+              'made here. A package that ships no license text is reproduced with the',
+              'text of its exact source only where that is recorded in',
+              'tools/runtime-license-sources (with its evidence), and is marked as not',
+              'shipped in the package.',
               '', f'Packages ({len(have)})', '']
     for path in sorted(have, key=lambda p: (have[p][0], have[p][1], p)):
         name, version = have[path]
@@ -141,6 +150,14 @@ def notices(runtime, have, lock=None, sources=None):
         license = declared(manifest)
         repository = manifest.get('repository')
         repository = repository.get('url') if isinstance(repository, dict) else repository
+        if name in OBTAINED_ON_THE_MACHINE:
+            locked = lock['packages'].get(path, {})
+            lines += [f'{name} {version}' + ('' if path == f'node_modules/{name}' else f' (at {path})'),
+                      f'  License (as declared): {license}',
+                      f"  Repository: {repository or manifest.get('homepage') or 'not declared'}",
+                      f"  Not in this release: Core obtains it on the user's machine from "
+                      f"{locked.get('resolved', 'the registry')}, checked against {locked.get('integrity', 'its locked integrity')}", '']
+            continue
         refs = []
         for file, text in license_texts(runtime / path, license):
             key = hashlib.sha256(text.encode()).hexdigest()

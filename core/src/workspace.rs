@@ -123,6 +123,7 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(data_dir: PathBuf, cwd: String, program: String) -> Result<Arc<Self>> {
         std::fs::create_dir_all(&data_dir)?;
+        crate::claude_sdk::set_cache(&data_dir);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

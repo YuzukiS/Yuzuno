@@ -9,6 +9,7 @@ pub mod claude_commands;
 pub mod claude_mcp;
 pub mod claude_quota;
 pub mod claude_sessions;
+mod claude_sdk;
 pub mod client_view;
 pub mod conversation_window;
 pub mod codex_sessions;
