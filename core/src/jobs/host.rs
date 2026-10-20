@@ -346,9 +346,10 @@ pub(super) async fn observe(data: &Path, job: &Value) -> Result<Option<Value>> {
     ))
 }
 
-/// Pause or resume this attempt's own worker (host.py `pause`/`resume`).
+/// Pause or resume this attempt's own worker (host.py `pause`/`resume`), or
+/// ask its wrapper to stop the command at a checkpoint (`checkpoint`).
 pub(super) async fn control(data: &Path, job: &Value, mode: &str) -> Result<Value> {
-    ensure!(matches!(mode, "pause" | "resume"), "Unknown job control");
+    ensure!(matches!(mode, "pause" | "resume" | "checkpoint"), "Unknown job control");
     let script = helper(data).await?;
     let spec = folder(data, job)?.join("spec.json");
     ensure!(

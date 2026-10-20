@@ -3,6 +3,7 @@ pub(crate) mod disk;
 mod gpu;
 #[cfg(test)]
 mod gpu_tests;
+mod checkpoint;
 mod host;
 mod list;
 #[cfg(test)]
@@ -20,6 +21,8 @@ mod runs;
 pub(crate) mod store;
 #[cfg(test)]
 mod pause_tests;
+#[cfg(test)]
+mod checkpoint_tests;
 #[cfg(test)]
 mod run_tests;
 #[cfg(test)]
@@ -143,6 +146,29 @@ pub(crate) struct Submit {
     /// A registered SSH machine (Linux) to run on instead of this host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     machine_id: Option<String>,
+    /// How the command saves and exits when the user stops it at a
+    /// checkpoint (T-109). This host's standalone Jobs only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint: Option<Checkpoint>,
+    /// The verified checkpoint a resumed Job continues from: set only by the
+    /// user's resume (checkpoint.rs), never accepted in a submission.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    checkpoint_from: Option<Value>,
+}
+
+/// A command's own stop protocol: on the user's stop its wrapper sends it
+/// `signal`; it saves into the attempt's checkpoint folder, writes the
+/// manifest last and exits `stoppedExitCode` within `graceSeconds`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Checkpoint {
+    #[serde(default = "default_checkpoint_signal")]
+    signal: String,
+    grace_seconds: u64,
+    stopped_exit_code: i32,
+}
+fn default_checkpoint_signal() -> String {
+    "SIGTERM".into()
 }
 
 /// A file a command must produce. Only its structure is checked (a complete
@@ -216,6 +242,24 @@ impl Submit {
             !self.request_id.trim().is_empty() && self.request_id.len() <= 128,
             "requestId must contain 1–128 bytes"
         );
+        if let Some(checkpoint) = &self.checkpoint {
+            ensure!(
+                self.machine_id.is_none(),
+                "Stop at a checkpoint is available for Jobs on this Core's host only; omit checkpoint with machineId"
+            );
+            ensure!(
+                matches!(checkpoint.signal.as_str(), "SIGTERM" | "SIGINT" | "SIGUSR1"),
+                "checkpoint.signal must be SIGTERM, SIGINT or SIGUSR1"
+            );
+            ensure!(
+                (10..=900).contains(&checkpoint.grace_seconds) && checkpoint.grace_seconds < self.timeout_seconds,
+                "checkpoint.graceSeconds must be 10–900 and shorter than timeoutSeconds"
+            );
+            ensure!(
+                (1..=125).contains(&checkpoint.stopped_exit_code),
+                "checkpoint.stoppedExitCode must be 1–125, never 0: a stop must not look like a finished run"
+            );
+        }
         if let Some(machine) = &self.machine_id {
             // What Core can enforce or see on this host does not exist there.
             ensure!(!machine.trim().is_empty() && machine.len() <= 128, "machineId must contain 1–128 bytes");
@@ -384,6 +428,8 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/jobs/{id}/cancel", post(cancel))
         .route("/api/jobs/{id}/pause", post(pause_job))
         .route("/api/jobs/{id}/resume", post(resume_job))
+        .route("/api/jobs/{id}/checkpoint", post(checkpoint_stop))
+        .route("/api/jobs/{id}/resume-checkpoint", post(checkpoint_resume))
         .route("/api/jobs/gpus/{uuid}/pause", post(pause_gpu))
         .route("/api/jobs/gpus/{uuid}/resume", post(resume_gpu))
         .route("/api/jobs/{id}/logs", get(logs))
@@ -456,6 +502,22 @@ async fn resume_job(
 ) -> Result<Json<Value>, ApiError> {
     Ok(Json(
         call(ws, None, "job_resume".into(), json!({"jobId":id})).await?,
+    ))
+}
+async fn checkpoint_stop(
+    AppState(ws): AppState<Arc<Workspace>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(
+        call(ws, None, "job_checkpoint_stop".into(), json!({"jobId":id})).await?,
+    ))
+}
+async fn checkpoint_resume(
+    AppState(ws): AppState<Arc<Workspace>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(
+        call(ws, None, "job_checkpoint_resume".into(), json!({"jobId":id})).await?,
     ))
 }
 #[derive(Deserialize)]
@@ -817,6 +879,14 @@ pub async fn call(
             let q: Reference = serde_json::from_value(input)?;
             pause::control(&ws, actor, q.job_id, operation == "job_resume").await
         }
+        "job_checkpoint_stop" => {
+            let q: Reference = serde_json::from_value(input)?;
+            checkpoint::stop(&ws, actor, q.job_id).await
+        }
+        "job_checkpoint_resume" => {
+            let q: Reference = serde_json::from_value(input)?;
+            checkpoint::resume(&ws, actor, q.job_id).await
+        }
         "job_gpu_pause" | "job_gpu_resume" => {
             let uuid = input["uuid"].as_str().context("uuid is required")?.to_owned();
             let value = pause::device(&ws, actor, uuid, operation == "job_gpu_resume").await?;
@@ -1006,6 +1076,10 @@ async fn tick(ws: &Arc<Workspace>) -> Result<()> {
     let Ok(_completion) = ws.admission.enter_completion() else {
         return Ok(());
     };
+    // A stop at a checkpoint past its grace period becomes a cancel first.
+    if ws.stored(|s| s.expire_checkpoint_stops()).await? {
+        changed(ws);
+    }
     let active = ws.stored(|s| s.active_jobs()).await?;
     for job in active {
         let evidence = host::observe(&ws.data_dir, &job).await;
@@ -1172,6 +1246,15 @@ const MACHINE: &str = "Run on a registered machine from the Machines list instea
     connection leaves the job unknown with its slot held: Core checks the same attempt again and never starts it twice, so do not \
     resubmit it. How each machine runs, limits and checks a job: yuzuno_guide topic jobs.";
 
+/// checkpoint in short; the guide's jobs topic has the whole protocol.
+const CHECKPOINT: &str = "For a command that can save and exit at a safe point when the user asks (Stop at checkpoint), on this \
+    Core's host only: not with machineId, not in a run's stages. On the user's stop the attempt's wrapper sends signal to the command \
+    itself (not through a shell around it). It saves into $YUZUNO_CHECKPOINT_DIR (new for each attempt), writes manifest.json there \
+    last ({\"attempt\": $YUZUNO_JOB_ATTEMPT, \"nonce\": the nonce in the JSON file at $YUZUNO_CHECKPOINT_REQUEST, \"files\": [{\"path\"}]}) \
+    and exits stoppedExitCode within graceSeconds. Only then, with Core's own SHA-256 of every file, is it resumable; otherwise it is \
+    stopped like a cancel and is not. Resuming is the user's choice: a new attempt of the same command with $YUZUNO_RESUME_FROM set to \
+    that manifest. Unlike pause, this frees the job's memory.";
+
 pub(crate) fn tool_definitions() -> Vec<Value> {
     let string = json!({"type":"string"});
     let task_reference = json!({"type":"string","description":crate::collaboration_store::TASK_ID});
@@ -1190,12 +1273,18 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     properties["gpu"] = json!({"type":"object","description":"Local NVIDIA GPUs the command needs, admitted with its CPU and RAM: devices by UUID (any device when omitted), the GPU memory it needs in MiB, and mode exclusive (default: the only managed GPU job on the device) or shared (only on a device the user opened for sharing). The job gets CUDA_VISIBLE_DEVICES set to the reserved UUIDs. It waits, with the device and the shortfall named, while the device is busy, closed to new jobs, short of memory or not freshly sampled. Free memory is the whole card's, other programs included; this is admission, not memory isolation or a compute share.",
         "properties":{"count":{"type":"integer","minimum":1,"maximum":8,"default":1},"devices":{"type":"array","items":{"type":"string"},"maxItems":8},"memoryMiB":{"type":"integer","minimum":64},"mode":{"type":"string","enum":["exclusive","shared"],"default":"exclusive"}},
         "required":["memoryMiB"],"additionalProperties":false});
+    properties["checkpoint"] = json!({"type":"object","description":CHECKPOINT,
+        "properties":{"signal":{"type":"string","enum":["SIGTERM","SIGINT","SIGUSR1"],"default":"SIGTERM"},
+            "graceSeconds":{"type":"integer","minimum":10,"maximum":900},"stoppedExitCode":{"type":"integer","minimum":1,"maximum":125}},
+        "required":["graceSeconds","stoppedExitCode"],"additionalProperties":false});
     let mut stage = properties.clone();
     if let Some(map) = stage.as_object_mut() {
         map.remove("requestId");
         map.remove("taskId");
         // A run's stages run on this host in this version.
         map.remove("machineId");
+        // A stage's retry repeats its command; it never resumes one.
+        map.remove("checkpoint");
     }
     // Only job_submit takes machineId; a run's stages keep the host-only text.
     properties["inputs"]["description"] = format!("{INPUTS} {REMOTE_INPUTS}").into();

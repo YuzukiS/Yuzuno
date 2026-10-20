@@ -250,6 +250,8 @@ impl RunSubmit {
             artifacts: stage.artifacts.clone(),
             gpu: stage.gpu.clone(),
             machine_id: None,
+            checkpoint: None,
+            checkpoint_from: None,
         }
     }
 }

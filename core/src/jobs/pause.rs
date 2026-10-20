@@ -250,6 +250,10 @@ impl Store {
             job["cancelRequestedAt"].is_null(),
             "Cancellation was requested; the job is being stopped"
         );
+        ensure!(
+            !super::checkpoint::stopping(&job),
+            "The job is being stopped at a checkpoint (checkpoint.rs); it ends instead"
+        );
         let state = job["pause"]["state"].as_str().map(str::to_owned);
         // Repeating a confirmed pause or resume is a no-op.
         if resume && state.is_none() || !resume && state.as_deref() == Some("paused") {
