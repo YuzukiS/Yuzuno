@@ -707,14 +707,22 @@ async fn remote_requests_are_checked_and_pause_and_stages_are_unavailable() {
         (json!({"exclusive":true}), "exclusive applies to this host"),
         (json!({"guardGit":true}), "set guardGit to false"),
         (json!({"outputs":["a.txt"]}), "on a remote machine they stay there, so declare them as artifacts instead"),
-        (json!({"machineId":"windows","inputs":["C:\\a.txt"]}), "inputs and artifacts are not available on Windows"),
-        (json!({"machineId":"windows","artifacts":[{"path":"a.json"}]}), "inputs and artifacts are not available on Windows"),
+        // On Windows, paths of that PC with its separators (T-108).
+        (json!({"machineId":"windows","cwd":"C:\\work","inputs":["..\\a.txt"]}), "inputs on Windows are drive paths"),
+        (json!({"machineId":"windows","cwd":"C:\\work","inputs":["\\a.txt"]}), "inputs on Windows are drive paths"),
+        (json!({"machineId":"windows","cwd":"C:\\work","inputs":["D:a.txt"]}), "inputs on Windows are drive paths"),
+        (json!({"machineId":"windows","cwd":"C:\\work","artifacts":[{"path":"C:\\a.json"}]}), "artifacts on Windows are paths relative to cwd"),
+        (json!({"machineId":"windows","cwd":"C:\\work","artifacts":[{"path":"out\\..\\..\\a.json"}]}), "artifacts on Windows are paths relative to cwd"),
+        (json!({"machineId":"windows","cwd":"C:\\work","artifacts":[{"path":"a.json:stream"}]}), "artifacts on Windows are paths relative to cwd"),
     ] {
         let error = input(&lab, "bad", "true", extra).validate().unwrap_err().to_string();
         assert!(error.contains(message), "{error}");
     }
     // On an SSH machine inputs and artifacts are files there (T-108).
     input(&lab, "ok", "true", json!({"inputs":["a.txt"],"artifacts":[{"path":"a.json","format":"json"}]})).validate().unwrap();
+    // And on Windows, files of that PC.
+    input(&lab, "ok", "true", json!({"machineId":"windows","cwd":"C:\\work","inputs":["a.txt","data\\b.bin","D:\\shared\\c.txt"],
+        "artifacts":[{"path":"out\\result.json","format":"json"},{"path":"out/lines.jsonl","format":"jsonl"}]})).validate().unwrap();
     let run: runs::RunSubmit = serde_json::from_value(json!({"requestId":"run","taskId":"T-1","name":"Remote run",
         "stages":[{"key":"a","cwd":"/workspace","argv":["/usr/bin/true"],"machineId":"m1",
             "resources":{"cpuMillis":200,"memoryMiB":64,"swapMiB":0}}]}))
@@ -901,6 +909,63 @@ async fn a_windows_helper_of_another_protocol_never_gets_a_start() {
     assert_eq!(ended["reason"],
         "Not started on Windows on this PC: its helper speaks protocol 0, and this Core needs 1; nothing was sent there", "{ended}");
     assert!(ended["remote"]["startSentAt"].is_null() && ended["remote"]["hostId"].is_null(), "{ended}");
+}
+
+/// Answers inspect as windows_job.cs does: each input's final path on
+/// Windows, or a problem (paths naming one: "missing…", "linux…" for a reply
+/// with a Linux path).
+const INSPECTING: &str = r#"
+import json, sys
+request = json.load(sys.stdin)
+mark = "YUZUNO-JOBS-REPLY %s " % request["replyNonce"]
+if request.get("action") != "inspect":
+    print(mark + json.dumps({"error": "this stand-in only inspects"}))
+    sys.exit(3)
+files = []
+for path in request["inputs"]:
+    if path.startswith("missing"):
+        files.append({"path": path, "problem": "missing"})
+    else:
+        final = "/home/u/" + path if path.startswith("linux") else request["cwd"] + "\\" + path
+        files.append({"path": path, "absolutePath": final, "sha256": "a" * 64, "bytes": 1})
+print(mark + json.dumps({"status": "inspected", "cwd": request["cwd"], "files": files, "totalBytes": len(files), "hostId": "w" * 64}))
+"#;
+
+/// Inputs on Windows are files of that PC, read by its own helper at submit
+/// (inspect), never on this host or through /mnt: frozen with the final path
+/// Windows gave, and the submit refused when one cannot be. The start then
+/// carries them and the declared artifacts (v3).
+#[tokio::test]
+async fn windows_inputs_are_frozen_by_its_own_helper_and_go_with_the_start() {
+    let lab = lab();
+    let helper = remote::WindowsHelper::trusting(&windows_helper(&lab, "windows-inspect", INSPECTING));
+    let programs = remote::Programs { ssh: &lab.ssh, windows: Some(&helper) };
+    let snapshot = remote::remote_snapshot(&lab.ws, &programs, "windows", r"C:\work", &["a.txt".into()]).await.unwrap();
+    assert_eq!((snapshot["frozenOn"]["kind"].as_str(), snapshot["hostId"].as_str()), (Some("windows"), Some("w".repeat(64).as_str())));
+    assert_eq!(snapshot["files"][0]["absolutePath"], r"C:\work\a.txt");
+    let error = remote::remote_snapshot(&lab.ws, &programs, "windows", r"C:\work", &["missing.txt".into()]).await.unwrap_err().to_string();
+    assert_eq!(error, "Inputs on Windows on this PC cannot be frozen, so nothing was submitted: missing.txt: missing");
+    let error = remote::remote_snapshot(&lab.ws, &programs, "windows", r"C:\work", &["linux.txt".into()]).await.unwrap_err().to_string();
+    assert!(error.ends_with("its reply does not name each input with its digest"), "{error}");
+    // No helper in this Core: nothing is read anywhere, and nothing is submitted.
+    let none = remote::Programs { ssh: &lab.ssh, windows: None };
+    let error = remote::remote_snapshot(&lab.ws, &none, "windows", r"C:\work", &["a.txt".into()]).await.unwrap_err().to_string();
+    assert!(error.starts_with("The inputs could not be read on Windows on this PC, so nothing was submitted"), "{error}");
+    // The start carries the frozen inputs and the artifacts, so its digest is v3.
+    let mut input = windows_input("io", r"C:\work");
+    input.inputs = vec!["a.txt".into()];
+    input.artifacts = serde_json::from_value(json!([{"path": "out\\r.json", "format": "json"}])).unwrap();
+    input.validate().unwrap();
+    let job = lab.ws.store.create_job(Some("a"), input, snapshot, Value::Null, remote::windows_capabilities()).unwrap();
+    // Bound at submit, as on an SSH machine: an older Core never starts it unchecked.
+    assert!(job["remote"]["prebound"].is_object(), "{job}");
+    let spec = remote::spec(&job);
+    assert_eq!(job["remote"]["digest"].as_str(), Some(remote::digest(&spec).as_str()));
+    assert_eq!(spec["inputs"], json!([{"path": "a.txt", "absolutePath": r"C:\work\a.txt", "sha256": "a".repeat(64)}]));
+    assert_eq!(spec["artifacts"], json!([{"path": "out\\r.json", "format": "json", "minBytes": 1}]));
+    let mut without = spec.clone();
+    without.as_object_mut().unwrap().retain(|key, _| key != "inputs" && key != "artifacts");
+    assert_ne!(remote::digest(&spec), remote::digest(&without));
 }
 
 /// One pass with this Core's Windows helper, or none.

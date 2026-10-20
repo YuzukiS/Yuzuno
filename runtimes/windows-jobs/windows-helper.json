@@ -1,14 +1,14 @@
 {
   "format": 1,
   "file": "yuzuno-jobs-helper.exe",
-  "sha256": "f31ac69d2f2ad43ede72ca66dc686c089eed8be411b2a5e00b4efb2022dc8927",
-  "bytes": 43520,
+  "sha256": "2b3607b0d9700ba099a8ea4bc2fad10f94e117e364128e9cccd3b32033c18921",
+  "bytes": 61440,
   "protocol": 1,
   "source": {
-    "commit": "e3cfbdf1ed86a2cded30387fbf4eb98d9df9be21",
+    "commit": "7ebde06499a99023652aff7d6cda582fc48d365a",
     "path": "core/src/jobs/windows_job.cs",
-    "sha256": "85ae44ec5f32d0c57bb042e368e56798119960a72675010c8bcf1529db766085",
-    "blob": "7881b370b48c21f65436355f4da2bb718c20f686"
+    "sha256": "5db26dcbd8e5f93d0b1d4c480b807f77d0d3bb3fcf22a89ede50100eb5946344",
+    "blob": "dc01ea7a8c0f9967d425131c583fc47b32bb7878"
   },
   "compiler": {
     "path": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe",
@@ -26,6 +26,6 @@
     ]
   },
   "requires": "Windows x64 with .NET Framework 4 (v4.0.30319, part of Windows), started by a Core in WSL with Windows interop on",
-  "builtAt": "2026-10-19T02:17:43+00:00",
+  "builtAt": "2026-10-20T05:30:52+00:00",
   "builtOn": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.44"
 }

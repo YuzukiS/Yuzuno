@@ -23,8 +23,16 @@
 // (held open, unshared, by the supervisor for its whole life),
 // supervisor.json, started.json, log-0.bin/log-1.bin (the 2 MiB output ring),
 // cancel.json and result.json (written once, and only when the attempt's Job
-// Object holds no process). Every call reads MachineGuid (registry) and
+// Object holds no process), and artifacts.json (the declared artifacts as
+// checked after a clean exit). Every call reads MachineGuid (registry) and
 // LastBootUpTime (WMI) afresh.
+//
+// Inputs and artifacts are files of this PC (Files, below): inspect (reads
+// only, no attempt) reads a job's inputs for Core to freeze at submit; a start
+// carries them with their final paths and digests and the declared artifacts
+// (digest v3); the supervisor checks the inputs again while the command is
+// still suspended, and the artifacts after a clean exit (JsonSyntax for json
+// and jsonl, as Python's json reads them, with stated bounds).
 //
 // The command runs in its own Job Object, named after the attempt and 128
 // random bits (recorded in started.json; a name that already exists is
@@ -401,6 +409,7 @@ static class Program
                 switch (action)
                 {
                     case "hello": reply = Hello(); break;
+                    case "inspect": reply = Inspect(request); break;
                     case "start": reply = Start(request, host); break;
                     case "status": reply = Status(request, host); break;
                     case "cancel": reply = Cancel(request, host); break;
@@ -631,8 +640,12 @@ static class Program
     }
 
     /// What the attempt runs, encoded without ambiguity exactly as Core and
-    /// remote_job.py do (environment keys in code point order).
-    static string Digest(IList argv, string cwd, Dictionary<string, object> env, int timeout, Dictionary<string, object> limits)
+    /// remote_job.py do (environment keys in code point order). A start that
+    /// carries limits is v2 and binds them too; one with frozen inputs or
+    /// declared artifacts is v3 and binds those as well. Without either, v1
+    /// and v2 are byte for byte as before.
+    static string Digest(IList argv, string cwd, Dictionary<string, object> env, int timeout, Dictionary<string, object> limits,
+        IList inputs, IList artifacts)
     {
         MemoryStream data = new MemoryStream();
         Action<string> put = delegate(string text)
@@ -643,8 +656,8 @@ static class Program
             data.Write(bytes, 0, bytes.Length);
             data.WriteByte((byte)',');
         };
-        // A start that carries limits is v2 and binds them too.
-        put(limits != null ? "yuzuno-remote-job-v2" : "yuzuno-remote-job-v1");
+        bool v3 = (inputs != null && inputs.Count > 0) || (artifacts != null && artifacts.Count > 0);
+        put(v3 ? "yuzuno-remote-job-v3" : limits != null ? "yuzuno-remote-job-v2" : "yuzuno-remote-job-v1");
         put(argv.Count.ToString());
         foreach (object item in argv) put((string)item);
         put(cwd);
@@ -653,12 +666,96 @@ static class Program
         put(keys.Count.ToString());
         foreach (string key in keys) { put(key); put((string)env[key]); }
         put(timeout.ToString());
+        if (v3) put(limits != null ? "limits" : "no limits");
         if (limits != null)
         {
             put((string)limits["mode"]);
             foreach (string key in new string[] { "cpuMillis", "memoryMiB", "swapMiB" }) put(((int)limits[key]).ToString());
         }
+        if (v3)
+        {
+            put((inputs == null ? 0 : inputs.Count).ToString());
+            if (inputs != null)
+                foreach (object item in inputs)
+                    foreach (string key in new string[] { "path", "absolutePath", "sha256" }) put((string)((Dictionary<string, object>)item)[key]);
+            put((artifacts == null ? 0 : artifacts.Count).ToString());
+            if (artifacts != null)
+                foreach (object item in artifacts)
+                {
+                    Dictionary<string, object> artifact = (Dictionary<string, object>)item;
+                    put((string)artifact["path"]);
+                    put((string)artifact["format"]);
+                    put(Convert.ToInt64(artifact["minBytes"]).ToString());
+                }
+        }
         using (SHA256 sha = SHA256.Create()) return Hex(sha.ComputeHash(data.ToArray()));
+    }
+
+    /// The frozen inputs a start carries (path, absolutePath and sha256 of
+    /// each, as inspect found them), refused when malformed; null when none.
+    static IList RequestInputs(Dictionary<string, object> request)
+    {
+        if (!request.ContainsKey("inputs")) return null;
+        IList inputs = request["inputs"] as IList;
+        bool good = inputs != null && inputs.Count <= 128;
+        if (good)
+            foreach (object item in inputs)
+            {
+                Dictionary<string, object> input = item as Dictionary<string, object>;
+                if (input == null) { good = false; break; }
+                foreach (string key in new string[] { "path", "absolutePath", "sha256" })
+                    if (!input.ContainsKey(key) || !(input[key] is string)) good = false;
+            }
+        if (!good) throw new Refused("inputs must be the files Core froze: path, absolutePath and sha256 of each");
+        return inputs.Count > 0 ? inputs : null;
+    }
+
+    /// The declared artifacts a start carries; null when none.
+    static IList RequestArtifacts(Dictionary<string, object> request)
+    {
+        if (!request.ContainsKey("artifacts")) return null;
+        IList artifacts = request["artifacts"] as IList;
+        bool good = artifacts != null && artifacts.Count <= 20;
+        if (good)
+            foreach (object item in artifacts)
+            {
+                Dictionary<string, object> artifact = item as Dictionary<string, object>;
+                string format = artifact == null || !artifact.ContainsKey("format") ? null : artifact["format"] as string;
+                object minimum = artifact == null || !artifact.ContainsKey("minBytes") ? null : artifact["minBytes"];
+                if (artifact == null || !artifact.ContainsKey("path") || !(artifact["path"] is string)
+                    || (format != "bytes" && format != "json" && format != "jsonl")
+                    || !((minimum is int && (int)minimum >= 0) || (minimum is long && (long)minimum >= 0)))
+                    good = false;
+            }
+        if (!good) throw new Refused("artifacts must be declared as path, format (bytes, json or jsonl) and minBytes");
+        return artifacts.Count > 0 ? artifacts : null;
+    }
+
+    /// A job's inputs as they are on this PC, for Core to freeze at submit
+    /// (remote_job.py inspect): what each path leads to, its SHA-256 and
+    /// identity, or why it cannot be an input. Reads only; nothing written.
+    static Dictionary<string, object> Inspect(Dictionary<string, object> request)
+    {
+        string cwd = Text(request, "cwd");
+        IList paths = request.ContainsKey("inputs") ? request["inputs"] as IList : null;
+        if (cwd == null || !Regex.IsMatch(cwd, @"^[A-Za-z]:[\\/]")) throw new Refused("cwd must be an absolute Windows path");
+        bool good = paths != null && paths.Count >= 1 && paths.Count <= 128;
+        if (good)
+            foreach (object item in paths)
+                if (!(item is string) || ((string)item).Length == 0 || ((string)item).Length > 4096 || ((string)item).IndexOf('\0') >= 0) good = false;
+        if (!good) throw new Refused("inputs must be 1-128 paths");
+        if (!Directory.Exists(cwd)) throw new Refused("The working directory " + cwd + " does not exist on this machine");
+        List<object> files = new List<object>();
+        long total = 0;
+        foreach (object item in paths)
+        {
+            Dictionary<string, object> entry = Files.InputFacts(cwd, (string)item);
+            if (entry.ContainsKey("bytes")) total += (long)entry["bytes"];
+            files.Add(entry);
+        }
+        Dictionary<string, object> reply = Map("status", "inspected", "cwd", cwd, "files", files, "totalBytes", total);
+        if (total > Files.InputsLimit) reply["problem"] = total + " bytes in all: inputs are small files (at most 16 MiB together)";
+        return reply;
     }
 
     /// The limits a start carries (Core's spec), refused when malformed; null
@@ -740,8 +837,9 @@ static class Program
         if (cwd == null || !Regex.IsMatch(cwd, @"^[A-Za-z]:[\\/]")) throw new Refused("cwd must be an absolute Windows path");
         int timeout = (int)timeoutValue;
         Dictionary<string, object> limits = RequestLimits(request);
+        IList inputs = RequestInputs(request), artifacts = RequestArtifacts(request);
         Dictionary<string, object> bound = Binding(request);
-        if (Digest(argv, cwd, env, timeout, limits) != (string)bound["digest"])
+        if (Digest(argv, cwd, env, timeout, limits, inputs, artifacts) != (string)bound["digest"])
             throw new Refused("The digest does not match the command sent with it; nothing was started");
         if (host != (string)bound["expectHost"]) return Map("status", "other_host");
         string root = AttemptDir(request, true);
@@ -766,6 +864,8 @@ static class Program
             Dictionary<string, object> spec = Map("jobId", request["jobId"], "attempt", request["attempt"],
                 "argv", argv, "cwd", cwd, "env", env, "timeoutSeconds", timeout);
             if (limits != null) spec["limits"] = limits;
+            if (inputs != null) spec["inputs"] = inputs;
+            if (artifacts != null) spec["artifacts"] = artifacts;
             Common.Atomic(Path.Combine(root, "spec.json"), spec);
             intent = Map("workspaceKey", bound["workspaceKey"], "machineId", bound["machineId"], "digest", bound["digest"],
                 "jobId", request["jobId"], "attempt", request["attempt"], "hostId", host, "bootId", Common.BootId(),
@@ -1116,6 +1216,34 @@ static class Supervisor
             GC.KeepAlive(hold);
             return 0;
         }
+        // The inputs Core froze at submit, checked again last thing before the
+        // command may run, while it is still suspended in its Job Object: if
+        // one changed, it never runs an instruction.
+        List<string> changed = Files.InputsChanged(spec);
+        if (changed.Count > 0)
+        {
+            Native.TerminateProcess(process.hProcess, 1);
+            Native.WaitForSingleObject(process.hProcess, 5000);
+            Native.CloseHandle(process.hThread);
+            Native.CloseHandle(process.hProcess);
+            Native.CloseHandle(outputRead);
+            Native.CloseHandle(job);
+            string shown = string.Join(", ", changed.GetRange(0, Math.Min(5, changed.Count)).ToArray())
+                + (changed.Count > 5 ? " and " + (changed.Count - 5) + " more" : "");
+            Common.Outcome(root, intent, "rejected", "Inputs changed on this machine while queued (" + shown + "); command was not started", null);
+            GC.KeepAlive(hold);
+            return 0;
+        }
+        // What each declared artifact's path holds now, recorded with the
+        // check after exit (preExisting, unchangedSinceStart): an observation.
+        IList artifacts = spec.ContainsKey("artifacts") ? spec["artifacts"] as IList : null;
+        Dictionary<string, long[]> artifactsBefore = new Dictionary<string, long[]>();
+        if (artifacts != null)
+            foreach (object item in artifacts)
+            {
+                string path = (string)((Dictionary<string, object>)item)["path"];
+                artifactsBefore[path] = Files.IdentityOf((string)spec["cwd"], path);
+            }
         long commandCreated;
         Native.GetProcessTimes(process.hProcess, out commandCreated, out exited, out kernel, out user);
         Dictionary<string, object> started = Map("jobId", intent["jobId"], "attempt", attempt, "pid", process.dwProcessId,
@@ -1207,6 +1335,42 @@ static class Supervisor
             Common.Outcome(root, intent, "cancelled", "Cancelled; its Job Object was terminated", exitCode, evidence);
         else if (why == "timeout")
             Common.Outcome(root, intent, "failed", "timeout after " + spec["timeoutSeconds"] + " s; its Job Object was terminated", exitCode, evidence);
+        else if (code == 0 && artifacts != null)
+        {
+            // As for local jobs, after a clean exit only: each declared
+            // artifact on this PC, recorded with this attempt.
+            List<object> checkedArtifacts = null;
+            try
+            {
+                checkedArtifacts = new List<object>();
+                foreach (object item in artifacts)
+                {
+                    Dictionary<string, object> artifact = (Dictionary<string, object>)item;
+                    long[] before;
+                    artifactsBefore.TryGetValue((string)artifact["path"], out before);
+                    checkedArtifacts.Add(Files.CheckArtifact((string)spec["cwd"], artifact, before));
+                }
+                Common.Atomic(Path.Combine(root, "artifacts.json"), Map("attempt", attempt, "checkedAt", Common.Now(), "artifacts", checkedArtifacts));
+            }
+            catch (Exception) { checkedArtifacts = null; }
+            evidence["artifacts"] = checkedArtifacts;
+            List<string> problems = new List<string>();
+            if (checkedArtifacts != null)
+                foreach (object item in checkedArtifacts)
+                {
+                    Dictionary<string, object> entry = (Dictionary<string, object>)item;
+                    if (!(entry["ok"] is bool) || !(bool)entry["ok"])
+                        problems.Add(entry["path"] + ": " + (entry.ContainsKey("problem") ? entry["problem"] : "not verified"));
+                }
+            if (checkedArtifacts == null)
+                Common.Outcome(root, intent, "failed", "Exit 0, but artifact verification did not complete" + note, exitCode, evidence);
+            else if (problems.Count > 0)
+            {
+                string reason = "Exit 0, but declared artifacts failed verification: " + string.Join("; ", problems.ToArray());
+                Common.Outcome(root, intent, "failed", (reason.Length > 1000 ? reason.Substring(0, 1000) : reason) + note, exitCode, evidence);
+            }
+            else Common.Outcome(root, intent, "succeeded", "success" + note, exitCode, evidence);
+        }
         else if (code == 0)
             Common.Outcome(root, intent, "succeeded", "success" + note, exitCode, evidence);
         else
@@ -1418,6 +1582,692 @@ static class Supervisor
             line.Append('"');
         }
         return line.ToString();
+    }
+}
+
+/// Whether bytes are one complete JSON document as Python's json.loads(bytes)
+/// reads it, which is how host.py and remote_job.py check json and jsonl
+/// artifacts: the encoding detected as json.detect_encoding does (UTF-8, with
+/// or without its byte order mark, UTF-16 or UTF-32 by byte order mark or by
+/// where the zero bytes are), decoded strictly but letting surrogates pass;
+/// whitespace is space, tab, line feed and carriage return; a scalar may be
+/// the whole document; strings without raw control characters and with only
+/// JSON's escapes; numbers in JSON's form; NaN, Infinity and -Infinity
+/// accepted; nothing after the value. It checks syntax only and builds
+/// nothing: one pass over the bytes, with one bit per open array or object.
+///
+/// Bounds, said rather than guessed: an integer of more than MaxIntegerDigits
+/// digits (Python 3.11 and later refuse to convert those) and nesting deeper
+/// than MaxDepth (Python's own limit depends on its version and stack) end the
+/// check as not completed, never as malformed JSON; the rest is still read, so
+/// a malformed document is still called malformed. Python's messages are not
+/// copied: the verdict is what matches, not its wording.
+class JsonSyntax
+{
+    public const int MaxDepth = 1000;
+    public const int MaxIntegerDigits = 4300;
+
+    /// Not complete JSON (or not decodable): the document is malformed.
+    public class Invalid : Exception { public Invalid(string message) : base(message) { } }
+
+    const int Utf8 = 8, Utf16Le = 161, Utf16Be = 162, Utf32Le = 321, Utf32Be = 322;
+    readonly byte[] data;
+    readonly int end;
+    readonly int encoding;
+    int at;
+    long read;
+    int peeked = -2;
+    byte[] stack = new byte[64];
+    int depth;
+    /// Why the check did not complete, if it did not: the first bound reached.
+    string notChecked;
+
+    JsonSyntax(byte[] data, int start, int count)
+    {
+        this.data = data;
+        end = start + count;
+        at = start;
+        encoding = Detect(data, start, count, out at);
+    }
+
+    /// Null when the bytes are complete JSON; the reason when a bound ended the
+    /// check (not completed); throws Invalid when they are not complete JSON.
+    public static string Check(byte[] data, int start, int count)
+    {
+        JsonSyntax scan = new JsonSyntax(data, start, count);
+        scan.Document();
+        return scan.notChecked;
+    }
+
+    /// json.detect_encoding; `skip` is where the text starts (after a byte order mark).
+    static int Detect(byte[] b, int s, int n, out int skip)
+    {
+        skip = s;
+        if (n >= 4 && ((b[s] == 0 && b[s + 1] == 0 && b[s + 2] == 0xFE && b[s + 3] == 0xFF)
+            || (b[s] == 0xFF && b[s + 1] == 0xFE && b[s + 2] == 0 && b[s + 3] == 0)))
+        {
+            skip = s + 4;
+            return b[s] == 0 ? Utf32Be : Utf32Le;
+        }
+        if (n >= 2 && ((b[s] == 0xFE && b[s + 1] == 0xFF) || (b[s] == 0xFF && b[s + 1] == 0xFE)))
+        {
+            skip = s + 2;
+            return b[s] == 0xFE ? Utf16Be : Utf16Le;
+        }
+        if (n >= 3 && b[s] == 0xEF && b[s + 1] == 0xBB && b[s + 2] == 0xBF)
+        {
+            skip = s + 3;
+            return Utf8;
+        }
+        if (n >= 4)
+        {
+            if (b[s] == 0) return b[s + 1] != 0 ? Utf16Be : Utf32Be;
+            if (b[s + 1] == 0) return b[s + 2] != 0 || b[s + 3] != 0 ? Utf16Le : Utf32Le;
+        }
+        else if (n == 2)
+        {
+            if (b[s] == 0) return Utf16Be;
+            if (b[s + 1] == 0) return Utf16Le;
+        }
+        return Utf8;
+    }
+
+    Invalid Bad(string what) { return new Invalid(what + " at character " + read); }
+
+    Invalid Undecodable()
+    {
+        string name = encoding == Utf8 ? "UTF-8" : encoding == Utf16Le || encoding == Utf16Be ? "UTF-16" : "UTF-32";
+        return new Invalid("cannot be decoded as " + name + " at byte " + at);
+    }
+
+    /// The next code point, or -1 at the end.
+    int Decode()
+    {
+        if (at >= end) return -1;
+        if (encoding == Utf8)
+        {
+            int b0 = data[at];
+            if (b0 < 0x80) { at++; return b0; }
+            int need, low = 0x80, high = 0xBF, value;
+            if (b0 >= 0xC2 && b0 <= 0xDF) { need = 1; value = b0 & 0x1F; }
+            else if (b0 >= 0xE0 && b0 <= 0xEF)
+            {
+                // ED A0-BF: a surrogate, which Python's surrogatepass lets through.
+                need = 2; value = b0 & 0x0F;
+                if (b0 == 0xE0) low = 0xA0;
+            }
+            else if (b0 >= 0xF0 && b0 <= 0xF4)
+            {
+                need = 3; value = b0 & 0x07;
+                if (b0 == 0xF0) low = 0x90;
+                if (b0 == 0xF4) high = 0x8F;
+            }
+            else throw Undecodable();
+            // A sequence cut off by the end of the bytes.
+            if (at + need >= end) throw Undecodable();
+            for (int i = 1; i <= need; i++)
+            {
+                int next = data[at + i];
+                int lo = i == 1 ? low : 0x80, hi = i == 1 ? high : 0xBF;
+                if (next < lo || next > hi) throw Undecodable();
+                value = (value << 6) | (next & 0x3F);
+            }
+            at += need + 1;
+            return value;
+        }
+        if (encoding == Utf16Le || encoding == Utf16Be)
+        {
+            if (at + 1 >= end) throw Undecodable();
+            int unit = Unit16(at);
+            at += 2;
+            if (unit >= 0xD800 && unit <= 0xDBFF && at + 1 < end)
+            {
+                int next = Unit16(at);
+                if (next >= 0xDC00 && next <= 0xDFFF)
+                {
+                    at += 2;
+                    return 0x10000 + ((unit - 0xD800) << 10) + (next - 0xDC00);
+                }
+            }
+            // A lone surrogate passes, as with surrogatepass.
+            return unit;
+        }
+        if (at + 3 >= end) throw Undecodable();
+        uint point = encoding == Utf32Le
+            ? (uint)data[at] | ((uint)data[at + 1] << 8) | ((uint)data[at + 2] << 16) | ((uint)data[at + 3] << 24)
+            : ((uint)data[at] << 24) | ((uint)data[at + 1] << 16) | ((uint)data[at + 2] << 8) | (uint)data[at + 3];
+        if (point > 0x10FFFF) throw Undecodable();
+        at += 4;
+        return (int)point;
+    }
+
+    int Unit16(int i) { return encoding == Utf16Le ? data[i] | (data[i + 1] << 8) : (data[i] << 8) | data[i + 1]; }
+
+    int Peek()
+    {
+        if (peeked == -2) peeked = Decode();
+        return peeked;
+    }
+
+    int Next()
+    {
+        int c = Peek();
+        peeked = -2;
+        if (c >= 0) read++;
+        return c;
+    }
+
+    void Whitespace()
+    {
+        while (true)
+        {
+            int c = Peek();
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') return;
+            Next();
+        }
+    }
+
+    void Literal(string word)
+    {
+        foreach (char expected in word)
+            if (Next() != expected) throw Bad("Expecting value");
+    }
+
+    static bool Digit(int c) { return c >= '0' && c <= '9'; }
+
+    void Number()
+    {
+        if (Peek() == '-')
+        {
+            Next();
+            if (Peek() == 'I') { Literal("Infinity"); return; }
+        }
+        int digits = 0;
+        int c = Peek();
+        if (c == '0') { Next(); digits = 1; }
+        else if (c >= '1' && c <= '9') { while (Digit(Peek())) { Next(); digits++; } }
+        else throw Bad("Expecting value");
+        bool fraction = false;
+        if (Peek() == '.')
+        {
+            Next();
+            if (!Digit(Peek())) throw Bad("Expecting a digit after the decimal point");
+            while (Digit(Peek())) Next();
+            fraction = true;
+        }
+        if (Peek() == 'e' || Peek() == 'E')
+        {
+            Next();
+            if (Peek() == '+' || Peek() == '-') Next();
+            if (!Digit(Peek())) throw Bad("Expecting a digit in the exponent");
+            while (Digit(Peek())) Next();
+            fraction = true;
+        }
+        if (!fraction && digits > MaxIntegerDigits && notChecked == null)
+            notChecked = "an integer of more than " + MaxIntegerDigits + " digits is not checked here";
+    }
+
+    void String()
+    {
+        Next();
+        while (true)
+        {
+            int c = Next();
+            if (c == -1) throw Bad("Unterminated string");
+            if (c == '"') return;
+            if (c == '\\')
+            {
+                int e = Next();
+                if (e == 'u')
+                {
+                    for (int i = 0; i < 4; i++)
+                    {
+                        int h = Next();
+                        if (!(Digit(h) || (h >= 'a' && h <= 'f') || (h >= 'A' && h <= 'F'))) throw Bad("Invalid \\uXXXX escape");
+                    }
+                }
+                else if (e != '"' && e != '\\' && e != '/' && e != 'b' && e != 'f' && e != 'n' && e != 'r' && e != 't')
+                    throw Bad("Invalid \\escape");
+            }
+            else if (c < 0x20) throw Bad("Invalid control character");
+        }
+    }
+
+    /// Opens an array (0) or object (1): one bit each, so depth costs no recursion.
+    void Open(int kind)
+    {
+        if (depth / 8 >= stack.Length) Array.Resize(ref stack, stack.Length * 2);
+        if (kind == 1) stack[depth / 8] |= (byte)(1 << (depth % 8));
+        else stack[depth / 8] &= (byte)~(1 << (depth % 8));
+        depth++;
+        if (depth > MaxDepth && notChecked == null)
+            notChecked = "nesting deeper than " + MaxDepth + " levels is not checked here";
+    }
+
+    bool InObject() { return (stack[(depth - 1) / 8] & (1 << ((depth - 1) % 8))) != 0; }
+
+    void Key()
+    {
+        Whitespace();
+        if (Peek() != '"') throw Bad("Expecting property name enclosed in double quotes");
+        String();
+        Whitespace();
+        if (Next() != ':') throw Bad("Expecting ':' delimiter");
+    }
+
+    void Document()
+    {
+        while (true)
+        {
+            // A value.
+            Whitespace();
+            int c = Peek();
+            if (c == '{')
+            {
+                Next();
+                Open(1);
+                Whitespace();
+                if (Peek() == '}') { Next(); depth--; }
+                else { Key(); continue; }
+            }
+            else if (c == '[')
+            {
+                Next();
+                Open(0);
+                Whitespace();
+                if (Peek() == ']') { Next(); depth--; }
+                else continue;
+            }
+            else if (c == '"') String();
+            else if (c == 'n') Literal("null");
+            else if (c == 't') Literal("true");
+            else if (c == 'f') Literal("false");
+            else if (c == 'N') Literal("NaN");
+            else if (c == 'I') Literal("Infinity");
+            else if (c == '-' || Digit(c)) Number();
+            else throw Bad("Expecting value");
+            // After a value: close what it ends, or go on to the next one.
+            while (true)
+            {
+                if (depth == 0)
+                {
+                    Whitespace();
+                    if (Peek() != -1) throw Bad("Extra data");
+                    return;
+                }
+                Whitespace();
+                int d = Next();
+                if (InObject())
+                {
+                    if (d == ',') { Key(); break; }
+                    if (d == '}') { depth--; continue; }
+                    throw Bad("Expecting ',' delimiter");
+                }
+                if (d == ',') break;
+                if (d == ']') { depth--; continue; }
+                throw Bad("Expecting ',' delimiter");
+            }
+        }
+    }
+}
+
+/// Inputs and artifacts: files on this PC, read here by the helper. A path is
+/// opened once (links followed, as Python's resolve does) and everything is
+/// read on that handle: its final path from Windows, its identity (volume
+/// serial number, file index, size, last write and change time) before and
+/// after, and the path opened again after, so a file replaced or written
+/// meanwhile is never taken for the one read. While it is read, writers and
+/// deleters are refused (sharing), so another process that has it open for
+/// writing, or without sharing it, makes it "cannot be read", never retried. A check before the start,
+/// not a read-only snapshot while the command runs, and no isolation against
+/// this account's own programs.
+static class Files
+{
+    public const int InputLimit = 2 * 1024 * 1024;
+    public const int InputsLimit = 16 * 1024 * 1024;
+    public const long HashLimit = 1L << 30;
+    public const int JsonLimit = 16 * 1024 * 1024;
+    const int Chunk = 1024 * 1024;
+
+    const uint GENERIC_READ = 0x80000000, FILE_READ_ATTRIBUTES = 0x80;
+    const uint FILE_SHARE_READ = 1, FILE_SHARE_ALL = 7, OPEN_EXISTING = 3, FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+    const uint FILE_ATTRIBUTE_DIRECTORY = 0x10;
+    const int FILE_TYPE_DISK = 1, FileBasicInfo = 0;
+    const int ERROR_FILE_NOT_FOUND = 2, ERROR_PATH_NOT_FOUND = 3, ERROR_SHARING_VIOLATION = 32;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct BY_HANDLE_FILE_INFORMATION
+    {
+        public uint FileAttributes;
+        public uint CreationLow, CreationHigh, AccessLow, AccessHigh, WriteLow, WriteHigh;
+        public uint VolumeSerialNumber, SizeHigh, SizeLow, NumberOfLinks, IndexHigh, IndexLow;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct FILE_BASIC_INFO { public long CreationTime, LastAccessTime, LastWriteTime, ChangeTime; public uint FileAttributes, Padding; }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetFileInformationByHandle(SafeFileHandle file, out BY_HANDLE_FILE_INFORMATION info);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetFileInformationByHandleEx(SafeFileHandle file, int infoClass, out FILE_BASIC_INFO info, int size);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern int GetFinalPathNameByHandleW(SafeFileHandle file, StringBuilder path, int size, int flags);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern int GetFullPathNameW(string name, int size, StringBuilder buffer, IntPtr filePart);
+    [DllImport("kernel32.dll")]
+    static extern int GetFileType(SafeFileHandle file);
+
+    /// Why a path could not be opened or read, as said in an entry.
+    public class Unreadable : Exception { public Unreadable(string message) : base(message) { } }
+    class Missing : Exception { }
+
+    static readonly Regex Drive = new Regex(@"^[A-Za-z]:[\\/]");
+
+    /// A path given for this PC, from the job's cwd when relative: the full
+    /// path Windows would use (. and .. resolved, / as \), or null when it is
+    /// neither a drive path nor relative (a drive-relative C:x, a rooted \x,
+    /// a network or device path, an alternate data stream).
+    public static string FullPath(string cwd, string given)
+    {
+        string combined;
+        if (Drive.IsMatch(given)) combined = given;
+        else if (given.Length > 0 && given[0] != '\\' && given[0] != '/' && given.IndexOf(':') < 0)
+            combined = cwd.TrimEnd('\\', '/') + "\\" + given;
+        else return null;
+        if (combined.Substring(2).IndexOf(':') >= 0) return null;
+        StringBuilder buffer = new StringBuilder(32768);
+        int length = GetFullPathNameW(combined, buffer.Capacity, buffer, IntPtr.Zero);
+        if (length <= 0 || length >= buffer.Capacity) return null;
+        string full = buffer.ToString();
+        return Drive.IsMatch(full) ? full : null;
+    }
+
+    /// Opens a full drive path; long paths through the \\?\ form.
+    static SafeFileHandle Open(string full, uint access, uint share)
+    {
+        SafeFileHandle handle = CreateFileW("\\\\?\\" + full, access, share, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+        if (!handle.IsInvalid) return handle;
+        int error = Marshal.GetLastWin32Error();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) throw new Missing();
+        if (error == ERROR_SHARING_VIOLATION)
+            throw new Unreadable("another process has it open for writing, or without sharing it (sharing violation); not retried");
+        throw new Unreadable(new System.ComponentModel.Win32Exception(error).Message + " (" + error + ")");
+    }
+
+    /// The file's identity on this handle: volume, index, size, last write and change time.
+    static long[] Identity(SafeFileHandle handle, out bool regular)
+    {
+        BY_HANDLE_FILE_INFORMATION info;
+        FILE_BASIC_INFO basic;
+        if (!GetFileInformationByHandle(handle, out info) || !GetFileInformationByHandleEx(handle, FileBasicInfo, out basic, Marshal.SizeOf(typeof(FILE_BASIC_INFO))))
+            throw new Unreadable(new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error()).Message);
+        regular = (info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 && GetFileType(handle) == FILE_TYPE_DISK;
+        return new long[] { info.VolumeSerialNumber, ((long)info.IndexHigh << 32) | info.IndexLow,
+            ((long)info.SizeHigh << 32) | info.SizeLow, basic.LastWriteTime, basic.ChangeTime };
+    }
+
+    static bool Same(long[] a, long[] b)
+    {
+        if (a == null || b == null || a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+        return true;
+    }
+
+    /// Where the handle's file is, as Windows names it: C:\... (or \\server\share\...).
+    static string FinalPath(SafeFileHandle handle)
+    {
+        StringBuilder buffer = new StringBuilder(32768);
+        int length = GetFinalPathNameByHandleW(handle, buffer, buffer.Capacity, 0);
+        if (length <= 0 || length >= buffer.Capacity) throw new Unreadable("its final path cannot be read");
+        string path = buffer.ToString();
+        if (path.StartsWith("\\\\?\\UNC\\", StringComparison.Ordinal)) return "\\" + path.Substring(7);
+        if (path.StartsWith("\\\\?\\", StringComparison.Ordinal)) return path.Substring(4);
+        return path;
+    }
+
+    static string Hex(byte[] bytes)
+    {
+        StringBuilder text = new StringBuilder();
+        foreach (byte b in bytes) text.Append(b.ToString("x2"));
+        return text.ToString();
+    }
+
+    /// An input as it is now (see remote_job.py input_facts): the file its
+    /// path leads to, its SHA-256 and identity, or why it cannot be an input.
+    public static Dictionary<string, object> InputFacts(string cwd, string given)
+    {
+        Dictionary<string, object> entry = new Dictionary<string, object>();
+        entry["path"] = given;
+        string full = FullPath(cwd, given);
+        if (full == null)
+        {
+            entry["problem"] = "not a path on a drive of this PC or relative to the job's working directory";
+            return entry;
+        }
+        try
+        {
+            using (SafeFileHandle handle = Open(full, GENERIC_READ, FILE_SHARE_READ))
+            {
+                bool regular;
+                long[] before = Identity(handle, out regular);
+                if (!regular) { entry["problem"] = "not a regular file"; return entry; }
+                if (before[2] > InputLimit) { entry["problem"] = before[2] + " bytes: an input is a small file (at most 2 MiB)"; return entry; }
+                byte[] data = new byte[(int)before[2] + 1];
+                int count = 0;
+                using (FileStream stream = new FileStream(new SafeFileHandle(handle.DangerousGetHandle(), false), FileAccess.Read, 4096))
+                {
+                    int n;
+                    while (count < data.Length && (n = stream.Read(data, count, data.Length - count)) > 0) count += n;
+                }
+                long[] after = Identity(handle, out regular);
+                string final = FinalPath(handle);
+                long[] again;
+                using (SafeFileHandle reopened = Open(full, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL)) again = Identity(reopened, out regular);
+                // The file read is the one the path led to before and after,
+                // unchanged meanwhile: a replaced path or a write is never one.
+                if (!Same(before, after) || !Same(after, again) || count != after[2])
+                {
+                    entry["problem"] = "changed while it was being read";
+                    return entry;
+                }
+                string sha;
+                using (SHA256 hasher = SHA256.Create()) sha = Hex(hasher.ComputeHash(data, 0, count));
+                entry["absolutePath"] = final; entry["sha256"] = sha; entry["bytes"] = after[2];
+                entry["volumeSerial"] = after[0]; entry["fileIndex"] = after[1]; entry["lastWriteTime"] = after[3];
+            }
+        }
+        catch (Missing) { entry["problem"] = "missing"; }
+        catch (Unreadable error) { entry["problem"] = "cannot be read: " + error.Message; }
+        catch (IOException error) { entry["problem"] = "cannot be read: " + error.Message; }
+        catch (UnauthorizedAccessException error) { entry["problem"] = "cannot be read: " + error.Message; }
+        return entry;
+    }
+
+    /// The frozen inputs that are no longer what Core recorded at submit.
+    public static List<string> InputsChanged(Dictionary<string, object> spec)
+    {
+        List<string> changed = new List<string>();
+        IList inputs = spec.ContainsKey("inputs") ? spec["inputs"] as IList : null;
+        if (inputs == null) return changed;
+        foreach (object item in inputs)
+        {
+            Dictionary<string, object> frozen = (Dictionary<string, object>)item;
+            string path = (string)frozen["path"];
+            Dictionary<string, object> now = InputFacts((string)spec["cwd"], path);
+            if (now.ContainsKey("problem")) changed.Add(path + " (" + now["problem"] + ")");
+            else if ((string)now["absolutePath"] != (string)frozen["absolutePath"]) changed.Add(path + " (now " + now["absolutePath"] + ")");
+            else if ((string)now["sha256"] != (string)frozen["sha256"]) changed.Add(path + " (its content changed)");
+        }
+        return changed;
+    }
+
+    /// What a declared artifact's path holds before the command runs, or null.
+    public static long[] IdentityOf(string cwd, string given)
+    {
+        string full = FullPath(cwd, given);
+        if (full == null) return null;
+        try
+        {
+            using (SafeFileHandle handle = Open(full, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL))
+            {
+                bool regular;
+                return Identity(handle, out regular);
+            }
+        }
+        catch (Exception) { return null; }
+    }
+
+    static bool Blank(byte[] b, int s, int n)
+    {
+        // bytes.strip()'s whitespace: space, \t, \n, \r, \v, \f.
+        for (int i = s; i < s + n; i++)
+            if (b[i] != ' ' && b[i] != '\t' && b[i] != '\n' && b[i] != '\r' && b[i] != 0x0B && b[i] != 0x0C) return false;
+        return true;
+    }
+
+    /// A declared artifact as it is now, checked as host.py does: a complete
+    /// regular file inside cwd, its size, whole JSON or JSON lines (read in
+    /// the same 1 MiB steps, with the same 16 MiB bounds), its SHA-256.
+    /// `before` is what its path held before the command ran: noted, not judged.
+    public static Dictionary<string, object> CheckArtifact(string cwd, Dictionary<string, object> artifact, long[] before)
+    {
+        string fmt = artifact.ContainsKey("format") && artifact["format"] is string ? (string)artifact["format"] : "bytes";
+        long minimum = artifact.ContainsKey("minBytes") ? Convert.ToInt64(artifact["minBytes"]) : 1;
+        Dictionary<string, object> entry = new Dictionary<string, object>();
+        entry["path"] = artifact["path"]; entry["format"] = fmt; entry["minBytes"] = minimum; entry["ok"] = false;
+        entry["preExisting"] = before != null;
+        string what = fmt == "json" ? "JSON" : "JSON lines";
+        try
+        {
+            string baseFull = FullPath(cwd, ".");
+            string full = FullPath(cwd, (string)artifact["path"]);
+            if (baseFull == null || full == null) { entry["problem"] = "not a path relative to the working directory"; return entry; }
+            string baseFinal;
+            using (SafeFileHandle folder = Open(baseFull, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL)) baseFinal = FinalPath(folder);
+            using (SafeFileHandle handle = Open(full, GENERIC_READ, FILE_SHARE_READ))
+            {
+                string final = FinalPath(handle);
+                if (final != baseFinal && !final.StartsWith(baseFinal.TrimEnd('\\') + "\\", StringComparison.Ordinal))
+                {
+                    entry["problem"] = "resolves outside the working directory";
+                    return entry;
+                }
+                bool regular;
+                long[] first = Identity(handle, out regular);
+                if (!regular) { entry["problem"] = "not a regular file"; return entry; }
+                long size = first[2];
+                entry["absolutePath"] = final; entry["bytes"] = size; entry["lastWriteTime"] = first[3];
+                if (size < minimum) { entry["problem"] = size + " bytes, fewer than the required " + minimum; return entry; }
+                string incomplete = null;
+                if (size > HashLimit)
+                {
+                    entry["sha256"] = null;
+                    entry["hash"] = "Not hashed: larger than 1 GiB; identified by size and last write time";
+                    if (fmt != "bytes") { entry["problem"] = "larger than 1 GiB, too large to check as " + fmt + "; declare it as bytes"; return entry; }
+                }
+                else
+                {
+                    byte[] whole = fmt == "json" && size <= JsonLimit ? new byte[size] : null;
+                    int filled = 0;
+                    byte[] pending = fmt == "jsonl" ? new byte[Chunk] : null;
+                    int pendingLength = 0;
+                    long lines = 0;
+                    byte[] chunk = new byte[Chunk];
+                    using (SHA256 hasher = SHA256.Create())
+                    using (FileStream stream = new FileStream(new SafeFileHandle(handle.DangerousGetHandle(), false), FileAccess.Read, 4096))
+                    {
+                        while (true)
+                        {
+                            int n = 0, got;
+                            while (n < Chunk && (got = stream.Read(chunk, n, Chunk - n)) > 0) n += got;
+                            if (n == 0) break;
+                            hasher.TransformBlock(chunk, 0, n, null, 0);
+                            if (whole != null)
+                            {
+                                if (filled + n > whole.Length) { entry["problem"] = "changed while it was being checked"; return entry; }
+                                Buffer.BlockCopy(chunk, 0, whole, filled, n);
+                                filled += n;
+                            }
+                            if (pending != null)
+                            {
+                                // As host.py: the unfinished last line is bounded first, then
+                                // the lines this step completed are read.
+                                int last = Array.LastIndexOf(chunk, (byte)'\n', n - 1, n);
+                                long tail = last < 0 ? pendingLength + n : n - last - 1;
+                                if (tail > JsonLimit) { entry["problem"] = "a line longer than 16 MiB"; return entry; }
+                                int start = 0;
+                                for (int k = 0; k <= last; k++)
+                                {
+                                    if (chunk[k] != '\n') continue;
+                                    string bound;
+                                    if (pendingLength == 0)
+                                        bound = Blank(chunk, start, k - start) ? "" : JsonSyntax.Check(chunk, start, k - start);
+                                    else
+                                    {
+                                        Append(ref pending, ref pendingLength, chunk, start, k - start);
+                                        bound = Blank(pending, 0, pendingLength) ? "" : JsonSyntax.Check(pending, 0, pendingLength);
+                                        pendingLength = 0;
+                                    }
+                                    if (bound != "") lines++;
+                                    if (bound != null && bound != "" && incomplete == null) incomplete = bound;
+                                    start = k + 1;
+                                }
+                                Append(ref pending, ref pendingLength, chunk, start, n - start);
+                            }
+                        }
+                        hasher.TransformFinalBlock(chunk, 0, 0);
+                        entry["sha256"] = Hex(hasher.Hash);
+                    }
+                    if (fmt == "json")
+                    {
+                        if (whole == null) { entry["problem"] = "larger than 16 MiB, too large to check as JSON"; return entry; }
+                        if (filled != whole.Length) { entry["problem"] = "changed while it was being checked"; return entry; }
+                        incomplete = JsonSyntax.Check(whole, 0, filled);
+                    }
+                    if (fmt == "jsonl")
+                    {
+                        if (pendingLength > 0) { entry["problem"] = "the last line is not terminated: the file may be partly written"; return entry; }
+                        entry["lines"] = lines;
+                    }
+                }
+                long[] last2 = Identity(handle, out regular);
+                if (last2[2] != first[2] || last2[3] != first[3]) { entry["problem"] = "changed while it was being checked"; return entry; }
+                if (before != null) entry["unchangedSinceStart"] = Same(before, last2);
+                if (incomplete != null)
+                {
+                    entry["incomplete"] = true;
+                    entry["problem"] = "the " + what + " check did not complete: " + incomplete;
+                    return entry;
+                }
+            }
+        }
+        catch (Missing) { entry["problem"] = "missing"; return entry; }
+        catch (JsonSyntax.Invalid error)
+        {
+            string message = error.Message;
+            entry["problem"] = "not complete " + what + ": " + (message.Length > 200 ? message.Substring(0, 200) : message);
+            return entry;
+        }
+        catch (Unreadable error) { entry["problem"] = "cannot be read: " + error.Message; return entry; }
+        catch (IOException error) { entry["problem"] = "cannot be read: " + error.Message; return entry; }
+        catch (UnauthorizedAccessException error) { entry["problem"] = "cannot be read: " + error.Message; return entry; }
+        entry["ok"] = true;
+        return entry;
+    }
+
+    static void Append(ref byte[] buffer, ref int length, byte[] source, int start, int count)
+    {
+        if (count <= 0) return;
+        if (length + count > buffer.Length)
+        {
+            int size = buffer.Length;
+            while (size < length + count) size *= 2;
+            Array.Resize(ref buffer, size);
+        }
+        Buffer.BlockCopy(source, start, buffer, length, count);
+        length += count;
     }
 }
 
