@@ -2,6 +2,8 @@
 # Run every web/tools/*.test.mjs in an isolated Node process; no retries.
 # New files are discovered automatically. Every file runs serially.
 # WEB_TEST_TIMEOUT=300 seconds per file; parallel execution is not enabled.
+# WEB_TEST_SHARD=i/n runs every n-th file only; CI runs the shards as
+# separate jobs, each on its own hosted VM.
 #
 # Not run here: web/tools/*-check.mjs and *-browser.mjs. Those Chromium
 # acceptance checks require a browser/Core/isolated build and write screenshots.

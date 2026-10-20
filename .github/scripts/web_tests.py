@@ -2,6 +2,9 @@
 """Run each discovered Node test file once, serially, with attributable logs.
 
 The two-worker experiment did not pass; see acceptance/web-ci/README.md.
+WEB_TEST_SHARD=i/n runs only every n-th file of the sorted list, starting at
+the i-th, so that n CI jobs on separate hosted VMs run all files between them,
+still one at a time on each (T-150).
 The existing 2 GiB old-space cap is not an RSS limit; the runner's VM bounds memory.
 Each test and its ordinary descendants share a private process group, killed
 on completion, timeout or cancellation. Tests must not daemonize/escape it.
@@ -110,15 +113,23 @@ def main():
         raise ValueError('WEB_TEST_JOBS must be 1; parallel execution has not passed validation')
     if not re.fullmatch(r'(?:\d+(?:\.\d*)?|\.\d+)[smhd]?', timeout) or float(timeout.rstrip('smhd')) <= 0:
         raise ValueError('WEB_TEST_TIMEOUT must be a positive duration (seconds, or s/m/h/d suffix)')
+    shard = os.environ.get('WEB_TEST_SHARD', '1/1')
+    match = re.fullmatch(r'([1-9]\d*)/([1-9]\d*)', shard)
+    if not match or int(match[1]) > int(match[2]):
+        raise ValueError('WEB_TEST_SHARD must be i/n with 1 <= i <= n')
     files = sys.argv[1:] or sorted(str(p.relative_to(WEB)) for p in (WEB / 'tools').glob('*.test.mjs') if not p.name.startswith('.'))
     if not files:
         raise ValueError('No web/tools/*.test.mjs files found')
+    total = len(files)
+    files = files[int(match[1]) - 1::int(match[2])]
+    if not files:
+        raise ValueError(f'Shard {shard} of {total} files has no files')
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, interrupt)
     with tempfile.TemporaryDirectory(prefix='yuzuno-web-tests-') as directory:
         results = run(files, timeout, Path(directory))
     failures = sum(job['rc'] != 0 for job in results)
-    title = f'Web test files: {len(results)} run, {failures} failed'
+    title = 'Web test files' + (f' (shard {shard} of {total})' if shard != '1/1' else '') + f': {len(results)} run, {failures} failed'
     if len(results) != len(files):
         title += f', {len(files)-len(results)} not started (cancelled)'
     lines = [f'{"FAIL" if job["rc"] else "PASS"}  {job["seconds"]:.2f}s  {job["file"]}' + (f' ({job["reason"]})' if job['rc'] else '') for job in results]
