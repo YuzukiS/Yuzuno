@@ -769,9 +769,34 @@ for line in sys.stdin:
         (dir, ws)
     }
 
+    /// Codex's own item for a steered input: the fake prints its
+    /// `item/completed` before answering `turn/steer`, but Core applies events
+    /// on its own consumer, so a delivery can return before the item is there.
+    /// Waits (bounded) for the item with this `clientId` in this Turn.
+    pub(crate) async fn steered_item(ws: &Workspace, turn: &str, client: &str) -> Value {
+        for _ in 0..500 {
+            let d = ws.store.detail("a").unwrap();
+            let item = d.turns.iter().find(|t| t["id"] == turn)
+                .and_then(|t| t["items"].as_array()?.iter().find(|i| i["clientId"] == client).cloned());
+            if let Some(item) = item {
+                return item;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("Codex's item for {client} was never applied to Turn {turn}: {:#?}", ws.store.detail("a").unwrap().turns);
+    }
+
+    /// The `clientUserMessageId` of the fake's only `turn/steer` call.
+    fn steered_client(dir: &std::path::Path) -> String {
+        let calls = std::fs::read_to_string(dir.join("steers.jsonl")).unwrap();
+        assert_eq!(calls.lines().count(), 1);
+        let call: Value = serde_json::from_str(calls.lines().next().unwrap()).unwrap();
+        call["clientUserMessageId"].as_str().unwrap().to_owned()
+    }
+
     #[tokio::test]
     async fn peer_doorbells_project_actual_normal_and_urgent_delivery_snapshots() {
-        let (_dir, ws) = fixture().await;
+        let (dir, ws) = fixture().await;
         let mut sender = ws.store.detail("a").unwrap();
         sender.agent.id = "sender".into();
         sender.agent.name = "Dev 4".into();
@@ -783,12 +808,18 @@ for line in sys.stdin:
             ws.collaboration_call(Some("sender"),"peer_send",json!({"requestId":priority,"toAgentId":"a","priority":priority,"body":"A bounded peer result"})).await.unwrap();
             let batch = ws.store.pending_peer_deliveries().unwrap().into_iter().find(|b| b["priority"]==priority).unwrap();
             ws.deliver_peer_batch(&batch).await.unwrap();
+            let client = (priority == "urgent").then(|| steered_client(dir.path()));
+            if let Some(client) = &client {
+                steered_item(&ws, "original-turn", client).await;
+            }
             let detail=ws.store.client_detail("a").unwrap();
-            let notice = if priority == "normal" {
-                detail.turns.iter().find(|t|t["id"]=="native-turn").unwrap()["_yuzunoMailbox"].clone()
+            let notice = if let Some(client) = &client {
+                let item = detail.turns.iter().find(|t|t["id"]=="original-turn").unwrap()["items"].as_array().unwrap().iter()
+                    .find(|i|i["clientId"]==client.as_str()).unwrap().clone();
+                assert_eq!(item["_yuzunoSource"], "peer", "Codex's item landed but is not labelled peer: {item:#}");
+                item["_yuzunoMailbox"].clone()
             } else {
-                detail.turns.iter().find(|t|t["id"]=="original-turn").unwrap()["items"].as_array().unwrap().iter()
-                    .find(|i|i["_yuzunoSource"]=="peer").unwrap()["_yuzunoMailbox"].clone()
+                detail.turns.iter().find(|t|t["id"]=="native-turn").unwrap()["_yuzunoMailbox"].clone()
             };
             assert_eq!(notice["priority"],priority);
             assert_eq!(notice["groups"],json!([{"kind":"peer","status":"","name":"Dev 4","count":1}]));
@@ -1033,11 +1064,14 @@ for line in sys.stdin:
         let text = call["input"][0]["text"].as_str().unwrap();
         assert!(text.contains("priority=\"urgent\""));
         assert!(!text.contains("body stays in the mailbox"));
+        let client = call["clientUserMessageId"].as_str().unwrap();
+        steered_item(&ws, "original-turn", client).await;
         let d = ws.store.detail("a").unwrap();
         assert_eq!(d.turns.len(), 1);
         assert!(d.turns[0].get("_yuzunoSource").is_none());
         assert!(d.turns[0]["items"][0].get("_yuzunoSource").is_none());
-        assert_eq!(d.turns[0]["items"][1]["_yuzunoSource"], "peer");
+        assert_eq!(d.turns[0]["items"][1]["clientId"], client, "Codex's item is the Turn's second: {:#}", d.turns[0]);
+        assert_eq!(d.turns[0]["items"][1]["_yuzunoSource"], "peer", "Codex's item landed but is not labelled peer: {:#}", d.turns[0]);
         let inbox = ws
             .store
             .collaboration_call(None, "peer_read", json!({"agentId":"a"}))
