@@ -997,7 +997,11 @@ class PauseTests(unittest.TestCase):
 
     @unittest.skipUnless(USER_MANAGER, "no systemd user manager with the memory controller here")
     def test_a_paused_attempt_whose_supervisor_is_gone_is_thawed_and_stopped_by_cancel(self):
-        attempt = self.attempt(self.TICKS)
+        # With its supervisor gone nothing reads the output pipe, so a write
+        # there ends on SIGPIPE: dash, Ubuntu's /bin/sh, reports the sleep
+        # the TERM ended ("Terminated") on stderr before it runs the trap.
+        # Its stderr goes to a file, so the trap shows the TERM was acted on.
+        attempt = self.attempt("exec 2>>stderr.txt; " + self.TICKS)
         self.running(attempt, self.facts(linger=True))
         self.assertEqual(self.call(self.bound(attempt, "pause"))["state"], "paused")
         supervisor = json.loads((self.folder(attempt) / "supervisor.json").read_text())["pid"]
