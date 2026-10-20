@@ -30,7 +30,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     process::{Child, Command},
     time::{timeout, Instant},
 };
@@ -46,6 +46,7 @@ const GRACE: Duration = Duration::from_secs(3);
 /// OpenCode sends `server.heartbeat` every 10 s on an open stream.
 pub const EVENT_IDLE_LIMIT: Duration = Duration::from_secs(30);
 const BODY_LIMIT: usize = 2048;
+const LINE_LIMIT: u64 = 64 << 10;
 const EVENT_BUFFER_LIMIT: usize = 16 << 20;
 
 /// What one Agent's server is started with.
@@ -246,19 +247,26 @@ impl Server {
             submitted: Mutex::default(),
         };
         // From here on, an error drops `server`, which ends its group.
-        let mut lines = BufReader::new(stdout).lines();
+        // OpenCode's output is bytes, not necessarily UTF-8; a line is read
+        // at most LINE_LIMIT at a time.
+        let mut output = BufReader::new(stdout);
         server.base = timeout(START_LIMIT, async {
-            while let Some(line) = lines.next_line().await? {
-                if let Some(base) = listening(&line)? {
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                if (&mut output).take(LINE_LIMIT).read_until(b'\n', &mut line).await? == 0 {
+                    bail!("OpenCode exited before it was listening");
+                }
+                if let Some(base) = listening(&String::from_utf8_lossy(&line))? {
                     return Ok::<_, anyhow::Error>(base);
                 }
             }
-            bail!("OpenCode exited before it was listening")
         })
         .await
         .map_err(|_| anyhow!("OpenCode was not listening after {}s", START_LIMIT.as_secs()))??;
-        // Its later output is not read, only drained so it never blocks.
-        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+        // Its later output is not read, only drained so that writing it
+        // never blocks or fails.
+        tokio::spawn(async move { tokio::io::copy(&mut output, &mut tokio::io::sink()).await });
         let health = server.json(Method::GET, "/global/health", None).await?;
         let version = health["version"].as_str().unwrap_or_default();
         ensure!(health["healthy"] == true && version == VERSION,

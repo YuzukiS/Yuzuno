@@ -57,8 +57,9 @@ impl Lab {
 
     async fn control(&self, name: &str, body: Value) -> Value {
         let port = self.seen()["port"].as_u64().unwrap();
+        // Bounded, so a stand-in blocked on its output fails the test.
         http().post(format!("http://127.0.0.1:{port}/__fixture/{name}")).json(&body)
-            .send().await.unwrap().json().await.unwrap()
+            .timeout(Duration::from_secs(20)).send().await.unwrap().json().await.unwrap()
     }
 }
 
@@ -138,6 +139,17 @@ async fn dropping_the_server_ends_its_process_group() {
     let (pid, child) = lab.pids();
     drop(server);
     assert!(ends(pid).await && ends(child).await);
+}
+
+#[tokio::test]
+async fn output_that_is_not_utf8_stops_neither_start_nor_the_drain() {
+    let lab = lab();
+    lab.switch("noise", "1");
+    let server = Server::start(&lab.launch).await.unwrap();
+    // More than a pipe holds: it is written only while Core keeps draining.
+    assert_eq!(lab.control("print", json!({"bytes": 1 << 20})).await, true);
+    session(&server).await;
+    server.shutdown().await.unwrap();
 }
 
 #[tokio::test]

@@ -4,7 +4,8 @@ tests/opencode_transport.rs. It reads only its arguments and the environment
 Core starts it with, and keeps its state in memory. It writes what it saw to
 the folder of OPENCODE_DB (start.json, calls.jsonl), where a test may leave a
 switch before it starts: `host` (the address it reports), `version` (the
-version it reports) or `exit` (exit before listening). Routes under
+version it reports), `exit` (exit before listening) or `noise` (a long line
+that is not UTF-8 before listening). Routes under
 /__fixture/ are the test's own controls and need no password.
 """
 import base64
@@ -98,6 +99,11 @@ def control(name, body):
         return True
     if name == 'store':
         return store(body['sessionID'], body['messageID'], body.get('text', ''))
+    if name == 'print':
+        # Output that is not UTF-8, more than a pipe holds; it fails if Core stopped draining.
+        sys.stdout.buffer.write(b'\xff' * body['bytes'] + b'\n')
+        sys.stdout.buffer.flush()
+        return True
     if name == 'drop':
         with lock:
             generation[0] += 1
@@ -290,6 +296,9 @@ def main():
     server.daemon_threads = True
     seen['port'] = server.server_address[1]
     (ROOT / 'start.json').write_text(json.dumps(seen))
+    if switch('noise'):
+        # A line longer than Core reads at once, and not UTF-8.
+        sys.stdout.buffer.write(b'\xfe' * 100_000 + b'\n')
     print('INFO fixture starting', flush=True)
     print(f'opencode server listening on http://{switch("host") or "127.0.0.1"}:{seen["port"]}', flush=True)
     server.serve_forever()
