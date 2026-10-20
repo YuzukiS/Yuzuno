@@ -902,7 +902,7 @@ async fn observe(ws: &Arc<Workspace>, w: &Value, ttl: i64) -> Result<Observed> {
 }
 pub(crate) fn tool_definitions() -> Vec<Value> {
     let string = json!({"type":"string"});
-    let task_reference = json!({"type":"string","description":"Existing shared task ID, for example T-1. Use the ID returned by task_create/list; reuse it across agents, turns, and retries."});
+    let task_reference = json!({"type":"string","description":crate::collaboration_store::TASK_ID});
     let make = |name: &str, description: &str, properties: Value, required: Vec<&str>| json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}});
     vec![
         make(
@@ -916,13 +916,13 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         ),
         make(
             "ci_list",
-            "Read cached GitHub Actions runs and persistent subscriptions in Jobs, optionally scoped to an Agent/task. Includes actual and watched SHA, last observation, errors and expiry. Reading does not initiate a remote poll (ci_refresh does); check hasMore/nextBefore.",
+            "Read cached GitHub Actions runs and persistent subscriptions in Jobs. Without agentId or taskId it covers every Agent's subscriptions; runs come newest first, 50 per page (follow nextBefore while hasMore). Includes actual and watched SHA, last observation, errors and expiry. Reading never asks GitHub (ci_refresh does); ci_subscribe mails you when a run finishes.",
             json!({"agentId":string,"taskId":task_reference,"before":{"type":"integer"}}),
             vec![],
         ),
         make(
             "ci_get",
-            "Read a known Actions run/attempt (including current runWatched state) and one bounded jobs/steps page (100 jobs, at most 10 pages). Uses shared authenticated cache/conditional reads; failure retains the last run observation. Logs/artifacts use native GitHub links. CI success is not PR merge, review approval or task completion.",
+            "Read a known Actions run/attempt (including current runWatched state) and one bounded jobs/steps page (100 jobs, at most 10 pages). The run is Core's last observation, not read from GitHub here; the jobs/steps page comes from a short shared cache, and once that has expired from one conditional GitHub read (a failed read keeps the last observation). To have the run itself checked now use ci_refresh, which still waits for GitHub's poll interval and cooldowns; to be mailed when it finishes use ci_subscribe. Logs/artifacts use native GitHub links. CI success is not PR merge, review approval or task completion.",
             json!({"runKey":string,"page":{"type":"integer","minimum":1,"maximum":10,"default":1}}),
             vec!["runKey"],
         ),

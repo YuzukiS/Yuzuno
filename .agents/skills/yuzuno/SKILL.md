@@ -3,14 +3,14 @@ name: yuzuno
 description: How to work as an Agent in a Yuzuno Workspace when its yuzuno MCP tools are connected. Use before running builds, test suites, browsers or other long or resource-heavy commands, which may belong in a Job; when taking, delivering or reporting a shared task; when starting a review, CI watch or PR operation; when writing or updating a Project Brief section; and after a timeout, lost reply or mailbox notification.
 metadata:
   short-description: Work in a Yuzuno Workspace
-  checked-against: Yuzuno 2026.10.16-core.5
+  checked-against: Yuzuno 2026.10.19-core.12
 ---
 
 # Working in a Yuzuno Workspace
 
 The Core you are connected to is the authority. Tool names, parameters and guarantees come from the tool schemas and results in your session; this guide says when to use which and how the steps connect. If a tool or parameter named here is missing from your session, that capability is not available to you now: do not simulate it or report it as available.
 
-From the release that includes T-131, the connected Core also serves this guide, written for its own release, as the `yuzuno_guide` tool: an Agent in any project reads it there by topic, without a checkout of this repository.
+The connected Core also serves this guide, written for its own release, as the `yuzuno_guide` tool: an Agent in any project reads it there by topic, without a checkout of this repository.
 
 Core enforces identity, permissions, idempotency, resource admission and state checks. This guide grants nothing and does not widen your task. Project conventions — review rounds, who merges or deploys, test commands, paths, machine budgets — come from your dispatch materials and the project's own instructions, not from here.
 
@@ -25,7 +25,7 @@ Core enforces identity, permissions, idempotency, resource admission and state c
 
 Decide by what the work needs, not by a fixed number of seconds.
 
-For discovery, use the scoped, bounded `job_list` your connected Core advertises; newer versions default to your own Agent. A known Job belongs in `job_get`. See [references/jobs.md](references/jobs.md#finding-a-job) for Project/Workspace scope and the separate history/live cursors. Do not list the whole Workspace merely to find your own work.
+For discovery, use the scoped, bounded `job_list`; it defaults to your own Agent. A known Job belongs in `job_get`. See [references/jobs.md](references/jobs.md#finding-a-job) for Project/Workspace scope and the separate history/live cursors. Do not list the whole Workspace merely to find your own work.
 
 - Run directly: reads, searches, git inspection, small edits, quick checks you will wait for anyway.
 - Submit a Job when the work needs queueing or a resource reservation (full builds, large test suites, browsers, benchmarks, batches of model calls), or should finish in the background and report through the mailbox. See [references/jobs.md](references/jobs.md) before your first submission in a session.
@@ -48,7 +48,7 @@ For per-Agent Codex context windows, compaction thresholds and safe application 
 Report what is true, in separate terms: result submitted, review passed, merged, deployed. Merged to the main branch does not mean running on the user's Core.
 
 - Fix the candidate (commit, push, PR linked to the task with `github_links`) and get independent review plus CI for that exact head. If this task has an explicitly authorized `delivery_*` flow, submit its matching candidate and let it reuse the registered operations; otherwise start `review_start` yourself when the project authorizes it. Details: [references/delivery.md](references/delivery.md).
-- `ci_subscribe` notifies you per completed run. `ci_get` returns the run as Core last observed it plus a jobs/steps page read through a short shared cache, each with its own observation time; only `ci_refresh`, where your session has it, asks GitHub about the run now. Report CI state with those times rather than as "just checked".
+- `ci_subscribe` notifies you per completed run. `ci_get` returns the run as Core last observed it plus a jobs/steps page read through a short shared cache, each with its own observation time; only `ci_refresh` asks GitHub about the run now. Report CI state with those times rather than as "just checked".
 - Submit with `task_submit_result`: exact commit, CI run, review identifier and conclusion, tests, known limits. Use status `review` unless you are told to report `done`.
 - If your result notifies the dispatcher automatically (a dispatched task and a `task_submit_result` that takes `dispatchId`), do not also `peer_send` the same news.
 

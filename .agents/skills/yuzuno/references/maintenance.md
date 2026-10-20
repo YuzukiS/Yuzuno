@@ -19,7 +19,7 @@ For people changing Yuzuno or this skill. Ordinary task work needs only [When ch
 ## Source and distribution
 
 - There is one source: `.agents/skills/yuzuno/` in the Yuzuno repository. `.claude/skills/yuzuno` is a relative link to it. Do not keep a second copy for either Harness, or anywhere else.
-- From the release that includes T-131, Core compiles that folder into its binary and serves it as the `yuzuno_guide` tool. Each `## ` section of SKILL.md and each reference file is one topic; `core/src/guide.rs` maps them, and its tests fail when a section or file has no topic. Links between the files become topic pointers. An answer names the Core release it comes from and the guide's revision, the SHA-256 of the compiled files.
+- Core compiles that folder into its binary and serves it as the `yuzuno_guide` tool. Each `## ` section of SKILL.md and each reference file is one topic; `core/src/guide.rs` maps them, and its tests fail when a section or file has no topic. Links between the files become topic pointers. An answer names the Core release it comes from and the guide's revision, the SHA-256 of the compiled files.
   - An Agent in any project connected to that Core reads the guide of that Core's release, with no checkout and nothing installed. The yuzuno MCP server's instructions and each session's notice name the tool; neither carries the guide itself.
   - A release serves the text it was built from. A change here reaches Agents elsewhere only with the next Core release that contains it.
 - Discovery of the skill itself, as tested with Codex 0.162.1, Claude Code 2.1.280 and Core 2026.10.16-core.5:
@@ -47,7 +47,7 @@ Measured with `acceptance/t69/session_probe.py`, Claude Code 2.1.280 and Codex 0
 - **A skill's text changed:** it is read when the model opens the skill. A session that already read the old text may keep acting on it: Codex did, in a live and in a resumed thread. Claude read the new text when it used the skill again.
 - **Reaching running Agents:** when a change matters to running work, say so in the dispatch or message to the Agents concerned and ask them to re-read the skill, or to start a new session. Send a targeted note, not a broadcast.
 - **When a change exists for an Agent:** only once its checkout contains the commit. Merging to main does not update other worktrees.
-- **`yuzuno_guide` (from the release that includes T-131):** its answer is the running Core's guide, so after a Core upgrade the next call has the new release's text. A session started before its Core had the tool keeps the tool list and server instructions it loaded at start and does not see `yuzuno_guide` until it reconnects or a new session starts; the session notice is sent again on start and resume. This follows from how tool lists load and was not measured with the probe.
+- **`yuzuno_guide`:** its answer is the running Core's guide, so after a Core upgrade the next call has the new release's text. A session started before its Core had the tool keeps the tool list and server instructions it loaded at start and does not see `yuzuno_guide` until it reconnects or a new session starts; the session notice is sent again on start and resume. This follows from how tool lists load and was not measured with the probe.
 - **Tool schemas:** they come from the connected Core, separately from skills. After a Core upgrade, a running session can keep the schema it loaded earlier. If a tool rejects or lacks a field your instructions mention, the session needs to reconnect or restart; do not guess.
 
 ## What belongs here
