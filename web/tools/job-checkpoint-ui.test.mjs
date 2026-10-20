@@ -85,7 +85,7 @@ test('stop at a checkpoint is offered apart from pause, says how it differs, and
     stop.click();
     await until(() => /Stopping at checkpoint/.test(heading(p)));
     assert.deepEqual(posts(p), ['/api/jobs/job-1/checkpoint']);
-    assert.match(note(p), /Sent SIGTERM to the command/);
+    assert.ok(note(p).startsWith(`Sent SIGTERM to the command; it has until ${deadline} to save and exit. If it has not stopped by`), note(p));
     assert.ok(note(p).includes(`If it has not stopped by ${new Date(deadline).toLocaleString()}, it is cancelled and cannot be resumed.`), note(p));
     // A stopping job is neither paused nor stopped again; cancel stays.
     assert.equal(button(p, 'Pause'), undefined);

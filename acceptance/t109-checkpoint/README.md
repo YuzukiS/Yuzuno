@@ -4,8 +4,11 @@ A small Lightning 2.5.0 training on CPU that follows the Jobs checkpoint
 protocol, and a check that runs it through the real host helper and systemd.
 No Core, no GPU, nothing installed outside the folder you choose.
 
-- `setup.sh ENV_DIR` makes a task-local environment: CPU PyTorch 2.5.1 and
-  Lightning 2.5.0, with uv's cache beside it.
+- `setup.sh ENV_DIR` makes a task-local environment from the pins it holds:
+  CPU PyTorch 2.5.1, Lightning 2.5.0 (and `pytorch-lightning`, which it requires
+  unpinned, at the same release) and the versions they resolved with, installed
+  with `--no-deps`. It fails if a CUDA package is installed. `--resolve`
+  resolves afresh, to update the pins.
 - `train.py` is the command. On SIGTERM, Lightning's handler raises
   `SIGTERMException` at the end of the batch and `OnExceptionCheckpoint` saves
   the trainer state into `$YUZUNO_CHECKPOINT_DIR`. The script then writes
@@ -17,7 +20,9 @@ No Core, no GPU, nothing installed outside the folder you choose.
     - Stops a training in its own worker unit, asking twice.
     - Checks the wrapper's verification, that the attempt's groups are empty, and what the checkpoint holds.
     - Resumes it as a new attempt from the same model, optimizer momentum, scheduler and global step.
-    - Compares its final weights with an uninterrupted run.
+    - Compares its final weights with an uninterrupted run. Each run writes
+      `trace.jsonl` (each step's starting weights and loss), to find the step
+      where two runs part if they do.
   - **tampered**: a changed checkpoint rejects the resumed attempt before the command starts.
   - **wrong-code**: a stop that exits a code other than the declared one is not resumable, and says why.
 
@@ -26,7 +31,9 @@ acceptance/t109-checkpoint/setup.sh target/t109/env
 /usr/bin/python3 acceptance/t109-checkpoint/check.py target/t109/env/bin/python target/t109/check
 ```
 
-Run both as Jobs. The setup downloads about 200 MB.
+Run both as Jobs; check.py starts its own user units, so give its Job
+`XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS`. The setup downloads about
+200 MB.
 
 What it does not show:
 

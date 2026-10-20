@@ -14,10 +14,10 @@ Lightning's SIGTERMException is a bare SystemExit: left alone the process
 would exit 0, which a Job reads as a finished run. Exiting 75 is this
 script's part of the protocol.
 
-The data cursor is the global step: each step's batch is drawn from a
-generator seeded with (seed, global_step), so a resumed run sees exactly the
-batches an uninterrupted run would. There is no dropout and no other random
-state. That is what makes the final weights comparable here; it is not a
+The initial weights come from a fixed seed, and the data cursor is the
+global step: each step's batch is drawn from a generator seeded with (seed,
+global_step), so a resumed run sees exactly the batches an uninterrupted run
+would. There is no dropout and no other random state. That is what makes the final weights comparable here; it is not a
 claim about any other training.
 
 Usage: train.py OUT_DIR [--max-steps N] [--step-sleep S] [--stop-at STEP]
@@ -102,9 +102,16 @@ class Report(Callback):
 
     def on_train_start(self, trainer, module):
         atomic(self.out / 'start.json', self.state(trainer, module))
+        self.trace = (self.out / 'trace.jsonl').open('a')
+
+    def on_train_batch_start(self, trainer, module, batch, batch_idx):
+        # Each step: the weights it starts from and its loss, to find where two runs part.
+        self.before = {'step': trainer.global_step, 'weights': digest(module.parameters())}
 
     def on_train_batch_end(self, trainer, module, outputs, batch, batch_idx):
         step = trainer.global_step
+        self.trace.write(json.dumps({**self.before, 'loss': outputs['loss'].item(), 'after': step}) + '\n')
+        self.trace.flush()
         if step % 20 == 0 and self.progress:
             atomic(Path(self.progress), {'unit': 'steps', 'done': step, 'total': trainer.max_steps})
         if self.stop_at and step >= self.stop_at:
@@ -113,6 +120,7 @@ class Report(Callback):
 
     def on_train_end(self, trainer, module):
         atomic(self.out / 'final.json', self.state(trainer, module))
+        torch.save(module.state_dict(), self.out / 'final.pt')
 
 
 def manifest(trainer, base):
@@ -132,6 +140,8 @@ def main():
     opts = args.parse_args()
     torch.set_num_threads(1)
     torch.use_deterministic_algorithms(True)
+    # The same initial weights in every attempt; a resumed one replaces them.
+    torch.manual_seed(SEED)
     out = Path(opts.out)
     out.mkdir(parents=True, exist_ok=True)
     base = Path(os.environ['YUZUNO_CHECKPOINT_DIR']) if os.environ.get('YUZUNO_CHECKPOINT_DIR') else None

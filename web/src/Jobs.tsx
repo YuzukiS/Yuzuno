@@ -216,6 +216,8 @@ const pauseName: Record<JobPause["state"], string> = {
   failed: "Pause failed",
   unknown: "Pause unknown",
 };
+/** Core's reason as a sentence, so more can follow it. */
+const sentence = (text?: string | null) => (text && !/[.!?]$/.test(text) ? `${text}.` : text || "");
 /** A running job the user asked to stop at a checkpoint. */
 const stoppingAtCheckpoint = (job: Job) =>
   job.status === "running" && ["requested", "signalled", "pending", "failed"].includes(job.checkpointStop?.state ?? "");
@@ -1279,7 +1281,7 @@ function JobDetail({
       </JobDetailHeading>
       {stop && (job.status === "running" || job.status === "cancelling" || !job.reserved) ? (
         <p className="job-checkpoint-note">
-          {stop.reason}
+          {sentence(stop.reason)}
           {stopping && stop.deadline && ` If it has not stopped by ${new Date(stop.deadline).toLocaleString()}, it is cancelled and cannot be resumed.`}
           {stop.state === "checkpointed" && !!job.result?.checkpoint?.files?.length &&
             ` ${job.result.checkpoint.files.length} checkpoint file${job.result.checkpoint.files.length === 1 ? "" : "s"} checked by SHA-256.`}
