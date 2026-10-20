@@ -68,6 +68,26 @@ class LeaveOutSdk(unittest.TestCase):
                 self.assertTrue((self.sdk / 'sdk.mjs').is_file(), 'a refused runtime is left as it was')
                 self.assertFalse((self.runtime / 'claude-agent-sdk.json').exists())
 
+    def test_an_sdk_with_an_executable_file_or_a_bin_entry_is_refused(self):
+        package = self.sdk / 'package.json'
+        installed = package.read_text()
+        for name, change, undo in [
+                ('executable file', lambda: (self.sdk / 'vendor/x.js').chmod(0o755),
+                 lambda: (self.sdk / 'vendor/x.js').chmod(0o644)),
+                ('bin', lambda: package.write_text(json.dumps({**json.loads(installed), 'bin': {'x': 'vendor/x.js'}})),
+                 lambda: package.write_text(installed)),
+                ('directories.bin', lambda: package.write_text(json.dumps({**json.loads(installed), 'directories': {'bin': 'vendor'}})),
+                 lambda: package.write_text(installed))]:
+            with self.subTest(name):
+                change()
+                with self.assertRaisesRegex(ValueError, 'without file modes'):
+                    leave_out_sdk(self.runtime)
+                self.assertTrue((self.sdk / 'sdk.mjs').is_file(), 'a refused runtime is left as it was')
+                self.assertFalse((self.runtime / 'claude-agent-sdk.json').exists())
+                undo()
+        leave_out_sdk(self.runtime)
+        self.assertTrue(sdk_left_out(self.runtime))
+
     def test_a_runtime_that_still_has_the_sdk_is_not_left_out(self):
         self.assertFalse(sdk_left_out(self.runtime))
         leave_out_sdk(self.runtime)

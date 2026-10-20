@@ -8,6 +8,8 @@ installed SDK package with:
   Core checks the copy it obtains on the user's machine against;
 - the placeholder package.json at the package's path (release_common), so
   that installed Cores, which require a file there, still accept the release.
+A package with an executable file or a bin entry is refused: Core prepares
+the SDK without file modes.
 """
 import json
 from pathlib import Path
@@ -31,7 +33,14 @@ def leave_out_sdk(runtime):
         raise ValueError(f"The installed {NAME} is not the locked {locked['version']}")
     if not str(locked.get('integrity', '')).startswith('sha512-') or not str(locked.get('resolved', '')).startswith('https://'):
         raise ValueError(f'The lock file names no HTTPS source and sha512 integrity for {NAME}')
-    files = {path: {'sha256': entry['sha256'], 'bytes': entry['bytes']} for path, entry in inventory(package).items()}
+    files = inventory(package)
+    # Core does not restore file modes when it unpacks the SDK it obtains, so
+    # a package that needs any (an executable file, a bin entry) stops here.
+    executable = sorted(path for path, entry in files.items() if entry['executable'])
+    if executable or installed.get('bin') or (installed.get('directories') or {}).get('bin'):
+        reason = f"executable files ({', '.join(executable)})" if executable else 'a bin entry'
+        raise ValueError(f'The installed {NAME} has {reason}; Core prepares the SDK without file modes')
+    files = {path: {'sha256': entry['sha256'], 'bytes': entry['bytes']} for path, entry in files.items()}
     manifest = {'format': 1, 'name': NAME, 'version': locked['version'], 'resolved': locked['resolved'],
                 'integrity': locked['integrity'], 'files': files}
     write(runtime / CLAUDE_SDK_MANIFEST, manifest)
