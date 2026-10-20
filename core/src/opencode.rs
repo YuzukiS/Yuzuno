@@ -49,9 +49,12 @@ const BODY_LIMIT: usize = 2048;
 const LINE_LIMIT: u64 = 64 << 10;
 const EVENT_BUFFER_LIMIT: usize = 16 << 20;
 /// `sh -c WATCHED opencode PROGRAM ARGS…`: the watcher reads the pipe on fd 3
-/// until it closes, then signals its own process group, OpenCode's.
+/// until it closes, then ends its own process group, OpenCode's, as
+/// `shutdown` does: SIGTERM, GRACE, then SIGKILL. It ignores SIGTERM itself,
+/// so it is still in the group (whose ID then cannot be anyone else's) when
+/// its SIGKILL ends what ignored SIGTERM, and itself with it.
 #[cfg(unix)]
-const WATCHED: &str = r#"exec 3<&0; (read _ <&3; kill -TERM 0) >/dev/null 2>&1 </dev/null & exec "$@" 3<&- </dev/null"#;
+const WATCHED: &str = r#"exec 3<&0; (trap '' TERM; read _ <&3; kill -TERM 0; sleep 3; kill -KILL 0) >/dev/null 2>&1 </dev/null & exec "$@" 3<&- </dev/null"#;
 
 /// What one Agent's server is started with.
 pub struct Launch {
@@ -634,33 +637,75 @@ mod tests {
         }
     }
 
-    /// As if Core ended without dropping `Server`: only its end of the pipe
-    /// closes, and OpenCode's whole group ends anyway.
+    /// The stand-in OpenCode in `dir`, started; with `stubborn`, it and a
+    /// child of its own ignore SIGTERM. Its PIDs: itself and its children.
     #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn closing_cores_end_of_the_pipe_ends_opencodes_group() {
+    async fn stand_in(dir: &std::path::Path, stubborn: bool) -> (Server, Vec<u64>) {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let program = dir.path().join("opencode");
+        let program = dir.join("opencode");
         let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
         std::fs::write(&program, format!("#!/bin/sh\nexec /usr/bin/python3 {fixture} \"$@\"\n")).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let (directory, root) = (dir.path().join("work"), dir.path().join("db"));
+        let (directory, root) = (dir.join("work"), dir.join("db"));
         std::fs::create_dir(&directory).unwrap();
         std::fs::create_dir(&root).unwrap();
-        let mut server = Server::start(&Launch { program, directory, database: root.join("opencode.db") }).await.unwrap();
+        if stubborn {
+            std::fs::write(root.join("stubborn"), "1").unwrap();
+        }
+        let server = Server::start(&Launch { program, directory, database: root.join("opencode.db") }).await.unwrap();
         let seen: Value = serde_json::from_str(&std::fs::read_to_string(root.join("start.json")).unwrap()).unwrap();
-        let pids = [seen["pid"].as_u64().unwrap(), seen["child"].as_u64().unwrap()];
-        drop(server.child.stdin.take());
-        let ended = |pid: u64| std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        let pids = ["pid", "child", "stubborn"].iter().filter_map(|key| seen[key].as_u64()).collect();
+        (server, pids)
+    }
+
+    /// Whether every one of `pids` ends (or is a zombie) within `limit`.
+    #[cfg(target_os = "linux")]
+    async fn all_end(pids: &[u64], limit: Duration) -> bool {
+        let ended = |pid: &u64| std::fs::read_to_string(format!("/proc/{pid}/stat"))
             .map_or(true, |stat| stat.rsplit_once(')').is_some_and(|(_, rest)| rest.trim_start().starts_with('Z')));
-        for _ in 0..200 {
-            if pids.iter().all(|pid| ended(*pid)) {
-                return;
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            if pids.iter().all(ended) {
+                return true;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        panic!("OpenCode outlived the pipe: {pids:?}");
+        pids.iter().all(ended)
+    }
+
+    /// As if Core ended without dropping `Server`: only its end of the pipe
+    /// closes, and OpenCode's whole group ends anyway, even what ignores
+    /// SIGTERM (after GRACE, by SIGKILL).
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn closing_cores_end_of_the_pipe_ends_opencodes_group() {
+        for stubborn in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut server, pids) = stand_in(dir.path(), stubborn).await;
+            assert_eq!(pids.len(), if stubborn { 3 } else { 2 });
+            drop(server.child.stdin.take());
+            assert!(all_end(&pids, GRACE + Duration::from_secs(5)).await, "stubborn {stubborn}: OpenCode outlived the pipe: {pids:?}");
+        }
+    }
+
+    /// `shutdown` and dropping end a group that ignores SIGTERM too.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn shutdown_and_drop_end_a_group_that_ignores_term() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, pids) = stand_in(dir.path(), true).await;
+        server.shutdown().await.unwrap();
+        assert!(all_end(&pids, Duration::from_secs(5)).await, "after shutdown: {pids:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let (server, pids) = stand_in(dir.path(), true).await;
+        drop(server);
+        assert!(all_end(&pids, Duration::from_secs(5)).await, "after drop: {pids:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_watcher_waits_what_shutdown_waits() {
+        assert!(WATCHED.contains(&format!("sleep {}; kill -KILL 0", GRACE.as_secs())));
     }
 
     #[test]

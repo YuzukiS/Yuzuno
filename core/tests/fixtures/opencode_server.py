@@ -5,7 +5,8 @@ Core starts it with, and keeps its state in memory. It writes what it saw to
 the folder of OPENCODE_DB (start.json, calls.jsonl), where a test may leave a
 switch before it starts: `host` (the address it reports), `version` (the
 version it reports), `exit` (exit before listening), `noise` (a long line
-that is not UTF-8 before listening) or `mcp` (the MCP status it reports).
+that is not UTF-8 before listening), `mcp` (the MCP status it reports) or
+`stubborn` (it and a child of its own ignore SIGTERM).
 Sessions and messages are kept in state.json there, as OpenCode keeps them
 in its database; pending requests, as in OpenCode, live only in the process. Routes under
 /__fixture/ are the test's own controls and need no password.
@@ -14,6 +15,7 @@ import base64
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -375,6 +377,12 @@ def main():
     seen = {'argv': argv, 'cwd': os.getcwd(), 'pid': os.getpid(), 'pgid': os.getpgid(0), 'child': child.pid,
             'database': os.environ.get('OPENCODE_DB'), 'username': USERNAME, 'passwordLength': len(PASSWORD),
             'passwordInArgv': bool(PASSWORD) and any(PASSWORD in arg for arg in argv)}
+    if switch('stubborn'):
+        # As a server, or a tool it runs, that does not stop on SIGTERM.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        seen['stubborn'] = subprocess.Popen(
+            [sys.executable, '-c', 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid
     if switch('exit'):
         (ROOT / 'start.json').write_text(json.dumps(seen))
         sys.exit(3)
