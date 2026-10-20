@@ -334,9 +334,14 @@ pub(super) async fn call(programs: &Programs<'_>, machine: &Machine, mut request
         let mut stderr = child.stderr.take().context("no stderr")?.take(8192);
         let (_, out, err) = tokio::try_join!(
             // Moved in, so stdin closes once written: the helper reads to EOF.
+            // An SSH that cannot connect exits without reading it; what it
+            // printed and its exit status say why, not the pipe it closed.
             async move {
-                stdin.write_all(&payload).await?;
-                stdin.shutdown().await
+                match stdin.write_all(&payload).await {
+                    Ok(()) => stdin.shutdown().await,
+                    Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                    Err(error) => Err(error),
+                }
             },
             async {
                 let mut bytes = Vec::new();
