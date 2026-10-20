@@ -199,6 +199,23 @@ async fn once_its_command_has_exited_the_check_of_its_files_is_not_cancelled() {
     assert!(host::command_exited(dir.path(), &job).await);
 }
 
+#[tokio::test]
+async fn a_resume_is_new_work_and_is_refused_during_an_update_drain_as_a_submit_is() {
+    // Round 2 of the review (454355ab): resume queues a Job, so it needs
+    // the same work admission as job_submit.
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+    ws.admission.begin_drain("t109-drain").unwrap();
+    let resume = |ws: &Arc<Workspace>| call(ws.clone(), None, "job_checkpoint_resume".into(), json!({"jobId":"missing"}));
+    let refused = resume(&ws).await.unwrap_err().to_string();
+    let submit = call(ws.clone(), None, "job_submit".into(), json!({})).await.unwrap_err().to_string();
+    assert_eq!(refused, submit, "refused the way a submit is");
+    ws.admission.reopen("t109-drain").unwrap();
+    // Admitted again: it gets as far as looking for the job.
+    let admitted = resume(&ws).await.unwrap_err().to_string();
+    assert_ne!(admitted, refused, "{admitted}");
+}
+
 #[test]
 fn a_job_that_ends_before_the_stop_reaches_its_command_keeps_its_own_reason() {
     let (_dir, s) = setup();

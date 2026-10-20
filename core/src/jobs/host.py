@@ -755,6 +755,9 @@ def worker(spec, folder):
         except FileExistsError:
             atomic(folder / 'input-changed.json', {'reason': f'{base} already exists; each attempt saves into a new one'})
             return 78
+        except OSError as error:
+            atomic(folder / 'input-changed.json', {'reason': f'{base} cannot be created for checkpoints: {error.strerror or error}'})
+            return 78
     # Clear ambient manager/Core credentials. The submission stores this exact
     # env; Core adds only this attempt's identity and report files.
     total = 0

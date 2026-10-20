@@ -777,7 +777,8 @@ pub async fn call(
         Some(serde_json::from_value::<runs::AnalysisDecision>(input.clone())?)
     } else { None };
     // Continuing a frozen DAG admits new work, including while update drain is active.
-    let _permit = if matches!(operation.as_str(), "job_submit" | "job_run_submit" | "job_run_retry")
+    // A resume from a checkpoint queues a new Job, as a submit does.
+    let _permit = if matches!(operation.as_str(), "job_submit" | "job_run_submit" | "job_run_retry" | "job_checkpoint_resume")
         || decision.as_ref().is_some_and(|d| d.continues()) {
         ws.admission.enter_work()?
     } else {
