@@ -33,6 +33,7 @@ import {
 import type { Agent, Project, ProjectUsage } from "./types";
 import "./projects.css";
 import { GitHubLinks } from "./GitHubLinks";
+import { ProjectServices } from "./ProjectServices";
 import { HomeContentEditors } from "./home/HomeContentEditors";
 
 function useOutsideClose(
@@ -588,6 +589,7 @@ function ProjectDetail({
         </button>
       </form>
       <GitHubLinks key={project.id} projectId={project.id} disabled={archived} />
+      <ProjectServices key={`services:${project.id}`} projectId={project.id} machines={machines} disabled={archived} />
       <HomeContentEditors key={`editors:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
       {archived && (
         <p className="project-note project-archived-note">

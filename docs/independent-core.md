@@ -219,6 +219,19 @@ The Mac app ([building and installing it](../desktop/README.md#macos-desktop-cor
 - **B:** `sudo rm /etc/ssh/sshd_config.d/30-yuzuno-tunnel.conf`, `sudo sshd -t`, reload the server, then `rm ~/.ssh/authorized_keys_yuzuno_tunnel`. If you added the firewall rule: `Remove-NetFirewallHyperVRule -Name Yuzuno-Tunnel-SSH`.
 - **Either way,** a tunnel already open stays up until it ends: run `scripts/mac-tunnel.sh stop` on the Mac, or end its `sshd-session` process on the Core host. Then delete `~/.ssh/yuzuno_tunnel`, `~/.ssh/yuzuno_tunnel.pub` and `~/.ssh/yuzuno_known_hosts` on the Mac.
 
+### Project services from a Mac
+
+A [project service](project-services.md) opens on a port of Core's services range (`4380–4389` by default) on the Core host. To open one from the Mac, the tunnel forwards those ports too, each to the same number:
+
+- **The key** (step 3) may forward them as well:
+  - **A:** add `permitopen="127.0.0.1:4380"` through `permitopen="127.0.0.1:4389"` after `permitopen="127.0.0.1:4317"`. The other options stay as they are.
+  - **B:** in `30-yuzuno-tunnel.conf`, change `PermitOpen 127.0.0.1:4317` to `PermitOpen 127.0.0.1:4317 127.0.0.1:4380 127.0.0.1:4381 … 127.0.0.1:4389`, then check and reload as in step 3.
+- **The tunnel:** start it with `YUZUNO_TUNNEL_SERVICE_PORTS=4380-4389`. Once the tunnel to Core is up, the script adds each port with `ssh -O forward`. A port that something on the Mac already uses is named and skipped; the tunnel to Core stays up.
+
+**To undo:** remove the added `permitopen` entries (A), or put back `PermitOpen 127.0.0.1:4317` and check and reload the server (B). Then `scripts/mac-tunnel.sh stop` and start it again without `YUZUNO_TUNNEL_SERVICE_PORTS`: the service ports close with the old tunnel, and nothing else changes.
+
+The Projects dialog offers a service's address only after the page has proved that the port reaches this Core. Where a port on the Mac leads elsewhere, or nowhere, the dialog says so and offers no address. These checks ran with a Mac stand-in (another loopback address with its own restricted tunnel) and real OpenSSH. They have not been run on a real Mac.
+
 ## Update
 
 Settings → Updates checks the publisher's releases, downloads and verifies one, prepares it while you keep working, and applies it when Agents are idle. It needs `release-source.json` and a signed-in `gh`. See [Managed Workspace updates](workspace-updates.md). Updates do not change the native CLIs or the desktop app. The desktop app updates separately; [Updates and platform support](updates-and-platforms.md) says which part updates how, and what is released.
