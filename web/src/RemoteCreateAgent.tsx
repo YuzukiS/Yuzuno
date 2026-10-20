@@ -210,7 +210,8 @@ export function RemoteCreateAgent({
       ...(current.length ? current : [localMachine]),
       saved,
     ]);
-    selectMachine(saved);
+    // An OpenCode Agent stays on the Core host; the machine is kept for later.
+    if (!isOpenCode) selectMachine(saved);
     setAdding(false);
   }
 
@@ -378,7 +379,8 @@ export function RemoteCreateAgent({
                   className="choice-chip-action"
                   aria-expanded={adding}
                   aria-controls="new-ssh-machine"
-                  disabled={disabled || adding || loadingMachines}
+                  disabled={disabled || adding || loadingMachines || isOpenCode}
+                  title={isOpenCode ? "OpenCode Agents run only on the Core host for now" : undefined}
                   onClick={() => setAdding(true)}
                 >
                   <Plus size={13} /> Add SSH machine

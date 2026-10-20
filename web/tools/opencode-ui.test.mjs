@@ -94,6 +94,7 @@ test("OpenCode is offered only when Core creates it, on the Core host, with Open
     choice(page, "Harness", "opencode").click(); await tick();
     assert.equal(group(page, "Where to work").querySelector("input:checked").value, "local", "an SSH machine is left");
     assert.equal(choice(page, "Where to work", "mini").disabled, true);
+    assert.equal(button(page, "Add SSH machine").disabled, true, "no SSH machine to add for OpenCode");
     assert.equal(group(page, "Model"), null, "no model choice");
     assert.doesNotMatch(page.document.body.textContent, /Loading|Couldn’t load models/);
     assert.match(page.document.body.textContent, /OpenCode’s own default model, login and permission rules/);
@@ -107,6 +108,27 @@ test("OpenCode is offered only when Core creates it, on the Core host, with Open
     // The switch turned off while the dialog is open: back to Codex.
     await create(page, false);
     assert.equal(group(page, "Harness").querySelector("input:checked").value, "codex");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a machine added while OpenCode is chosen is kept, and the Core host stays selected", async () => {
+  const page = mount((url, init) => url.endsWith("/machines") && init.method === "POST"
+    ? { id: "mini-new", kind: "ssh", ...JSON.parse(init.body) } : undefined);
+  const field = (label) => [...page.document.querySelectorAll("label")]
+    .find((node) => node.textContent.trim().startsWith(label))?.querySelector("input");
+  try {
+    await create(page, true);
+    // The form was opened for Codex, then OpenCode was chosen.
+    button(page, "Add SSH machine").click(); await tick();
+    choice(page, "Harness", "opencode").click(); await tick();
+    await value(page, field("Machine name"), "Garden mini");
+    await value(page, field("SSH destination"), "mini-alias");
+    await value(page, field("Default working folder"), "/Users/fixture/work");
+    button(page, "Save machine").click(); await tick();
+    assert.equal(page.calls.filter((call) => call.init.method === "POST" && call.url.endsWith("/machines")).length, 1);
+    assert.equal(group(page, "Where to work").querySelector("input:checked").value, "local");
+    assert.equal(choice(page, "Where to work", "mini-new").disabled, true);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
