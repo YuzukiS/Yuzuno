@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
-from release_common import archive_tree, digest, extract, inventory, read, write
+from release_common import CLAUDE_SDK_PLACEHOLDER, archive_tree, digest, extract, inventory, read, write
 
 spec = importlib.util.spec_from_file_location('release_flow', Path(__file__).with_name('core-release.py'))
 release = importlib.util.module_from_spec(spec)
@@ -187,7 +187,8 @@ class ReleaseTests(unittest.TestCase):
         (source / 'claude/node_modules/@anthropic-ai/sdk/package.json').write_text('{}')
         if sdk:
             (source / 'claude/node_modules/@anthropic-ai/claude-agent-sdk').mkdir(parents=True)
-            (source / 'claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json').write_text('{}')
+            (source / 'claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json').write_bytes(
+                CLAUDE_SDK_PLACEHOLDER if sdk == 'placeholder' else b'{}')
         (source / 'result-validator').mkdir()
         (source / 'result-validator/validator.mjs').write_text('// unit fixture')
         (source / 'result-validator/THIRD_PARTY_NOTICES.txt').write_text('fixture validator notices')
@@ -283,7 +284,8 @@ class ReleaseTests(unittest.TestCase):
             fetch(sdk=True, run_id='51', attempt='1')
         self.assertFalse((flow.root / 'inputs').exists())
         shutil.rmtree(flow.root / 'artifact')
-        fetch(sdk=False, run_id='51', attempt='1')
+        # As a build leaves it: the placeholder alone, with exactly its bytes.
+        fetch(sdk='placeholder', run_id='51', attempt='1')
         stage = read(flow.root / 'report.json')['stages']['fetch']
         self.assertEqual(stage['inputsUrl'], self.inputs_run['html_url'])
         self.assertEqual(read(flow.root / 'ci.json')['inputsRun']['id'], 51)

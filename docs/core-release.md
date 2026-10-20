@@ -9,7 +9,7 @@ in [Workspace updates](workspace-updates.md).
 
 The public repository is the only active development source. Its CI builds and tests source on GitHub-hosted runners and uploads nothing. Production inputs come only from the separate [release-inputs workflow](#ci-artifact-and-compatibility), run on request for the head of `main`.
 
-Those inputs are public, so they must not carry the Claude Agent SDK ([Publication status](public-readiness.md#the-claude-agent-sdk)); the workflow refuses inputs that do. The build still installs the SDK into the Claude runtime, so until the runtime obtains it on the user's machine instead, the workflow refuses every build and no public package can be prepared. Do not use a historical private artifact as a substitute for those inputs, turn private CI back into an active development path, or publish a package merely because source CI passed.
+Those inputs are public, so they must not carry the Claude Agent SDK ([Publication status](public-readiness.md#the-claude-agent-sdk)); the workflow refuses inputs that do. The build leaves the SDK out of the Claude runtime: it writes `claude-agent-sdk.json`, from which Core obtains the SDK on the user's machine, and at the SDK's `package.json` a placeholder written by Yuzuno, because installed Cores refuse a release without a file there. That placeholder, with exactly its bytes, is the only file the check accepts in the SDK's directory. Do not use a historical private artifact as a substitute for those inputs, turn private CI back into an active development path, or publish a package merely because source CI passed.
 
 ## What runs by default
 
@@ -46,8 +46,8 @@ The release version marker is added once by the existing packager.
 
 **Public inputs on request.** `.github/workflows/release-inputs.yml` runs only when someone starts it (`workflow_dispatch`), on GitHub-hosted ubuntu-24.04, with a token that reads contents and actions and no secret:
 - It builds `github.sha`, the head of `main` when it was started, and only after the `CI` workflow has passed on that commit's push to `main`. It cannot build an older commit: start it right after choosing a candidate, before anything else is merged.
-- It runs `tools/build-release-inputs-ci.py`, then `tools/release-inputs-check.py`. The check refuses inputs from another commit, repository, run or attempt, an archive that differs from `build.json`, and any file of the Claude Agent SDK, before `core-inputs-<SHA>-<run attempt>` is uploaded for 14 days.
-- `core-release.py init` then names both runs: `--ci-run` is the CI run that tested the commit, `--inputs-run` this one. The artifact, its name and `build.json` must belong to the inputs run, and its files must not include the SDK.
+- It runs `tools/build-release-inputs-ci.py`, then `tools/release-inputs-check.py`. The check refuses inputs from another commit, repository, run or attempt, an archive that differs from `build.json`, and any file of the Claude Agent SDK (anything in its directory but the placeholder with exactly its bytes), before `core-inputs-<SHA>-<run attempt>` is uploaded for 14 days.
+- `core-release.py init` then names both runs: `--ci-run` is the CI run that tested the commit, `--inputs-run` this one. The artifact, its name and `build.json` must belong to the inputs run, and its files must not include the SDK, by the same rule.
 
 **Started main runs finish:**
 - On `main`, a later push does not cancel a run that has started, so its inputs artifact is completed. A newer push to a PR still cancels that PR's older run.
@@ -92,8 +92,9 @@ build actually contains, so a dependency change updates it without a manual step
   `npm ci --omit=dev --omit=optional`. `tools/runtime_notices.py` first checks
   the installed packages against the lock file; a missing, extra or
   differently versioned package stops the build. It then writes each package's
-  declared license and the texts it ships, including the Claude Agent SDK's
-  own terms as its package declares them.
+  declared license and the texts it ships. The Claude Agent SDK, which the
+  build then leaves out, is listed as not in the release, with the source and
+  integrity Core obtains it from.
 
 Nothing is chosen for a package that offers several licenses. A package that
 ships no license text is listed as such. A new web package without one fails

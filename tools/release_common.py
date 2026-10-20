@@ -31,14 +31,19 @@ CLAUDE_SDK_PLACEHOLDER = (json.dumps({
 # Where the Claude Agent SDK's packages would be in release inputs:
 # tools/build-core-artifact.py copies the Claude runtime to claude/. The
 # prefix also covers the SDK's per-platform packages.
-CLAUDE_SDK = 'claude/node_modules/@anthropic-ai/claude-agent-sdk'
+CLAUDE_SDK = 'claude/' + CLAUDE_SDK_PACKAGE
 
 
 def claude_sdk_files(files):
     """The paths of `files` (an inventory) that belong to the Claude Agent
-    SDK. Public release inputs must have none (docs/public-readiness.md)."""
-    return sorted(path for path in files if path == CLAUDE_SDK or path.startswith(CLAUDE_SDK + '/')
-                  or path.startswith(CLAUDE_SDK + '-'))
+    SDK. Public release inputs must have none (docs/public-readiness.md).
+    CLAUDE_SDK_PLACEHOLDER is not one, but only at the SDK's package.json,
+    with exactly its bytes and not executable."""
+    placeholder = {'sha256': hashlib.sha256(CLAUDE_SDK_PLACEHOLDER).hexdigest(),
+                   'bytes': len(CLAUDE_SDK_PLACEHOLDER), 'executable': False}
+    return sorted(path for path in files
+                  if (path == CLAUDE_SDK or path.startswith(CLAUDE_SDK + '/') or path.startswith(CLAUDE_SDK + '-'))
+                  and not (path == CLAUDE_SDK + '/package.json' and files[path] == placeholder))
 
 
 def read(path):
