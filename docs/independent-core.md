@@ -41,6 +41,8 @@ The Claude Code and Agent SDK versions checked with a release are listed in [the
 
 - Linux x86_64 with glibc 2.35 or newer (`ldd --version`).
 - **Node.js 20 or newer** on `PATH`, for Claude Agents.
+  - A public release does not include the Claude Agent SDK. Unless another installed release has the same version, the first Claude start downloads it from `registry.npmjs.org` (about 1.6 MB, checked against the locked integrity); see [The Claude Agent SDK](public-readiness.md#the-claude-agent-sdk).
+  - Behind a proxy, that download honours `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` with Node 22.21 or later, or 24 or later. An older Node with a proxy set stops with a message instead of connecting around the proxy.
 - **`/usr/bin/python3`**, for Jobs and remote Agents.
 - **A systemd user manager with cgroup v2**, for Jobs (`systemctl --user status` works). On a server you log in to only over SSH, run `loginctl enable-linger "$USER"` once, so the user manager keeps running.
   - **Jobs also need its `cpu`, `memory` and `pids` controllers.** `cat "/sys/fs/cgroup$(systemctl --user show --property=ControlGroup --value)/cgroup.controllers"` must list all three. Without them Core refuses every local Job ("User manager requires cgroup v2 cpu, memory and pids controllers"); Agents and the rest still work.

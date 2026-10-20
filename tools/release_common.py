@@ -13,6 +13,21 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+# The Claude Agent SDK is not in a public release (T-159): its runtime carries
+# claude-agent-sdk.json instead, and Core obtains the SDK on the user's
+# machine. A release still has a file at the SDK's package.json, because
+# installed Cores (core.12 and earlier) refuse a release without one; it is
+# this placeholder, written by Yuzuno, not a file of the SDK.
+CLAUDE_SDK_PACKAGE = 'node_modules/@anthropic-ai/claude-agent-sdk'
+CLAUDE_SDK_MANIFEST = 'claude-agent-sdk.json'
+CLAUDE_SDK_PLACEHOLDER = (json.dumps({
+    'private': True,
+    'yuzunoPlaceholder': True,
+    'description': 'Written by Yuzuno. This is not the Claude Agent SDK and cannot be imported. '
+                   'Yuzuno Core obtains the SDK on this machine, as ../../../claude-agent-sdk.json names it.',
+}, indent=2) + '\n').encode()
+
+
 def read(path):
     return json.loads(Path(path).read_text())
 

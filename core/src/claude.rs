@@ -133,9 +133,8 @@ impl Bridge {
     async fn spawn_mode(events: impl Into<crate::backlog::EventSender>, review_cwd: Option<&std::path::Path>) -> Result<Arc<Self>> {
         let events = events.into();
         let program = std::env::var("YUZUNO_NODE").unwrap_or_else(|_| "node".into());
-        let script = crate::runtime_paths::resolve(
-            std::env::var_os("YUZUNO_CLAUDE_BRIDGE"), "claude/bridge.mjs",
-        ).context("请设置 YUZUNO_CLAUDE_BRIDGE 或通过已安装的发布包启动 Core")?;
+        // A release without the SDK runs its prepared copy (T-159).
+        let script = crate::claude_sdk::bridge_script(std::env::var_os("YUZUNO_CLAUDE_BRIDGE")).await?;
         anyhow::ensure!(
             script.is_file(),
             "找不到 Claude SDK bridge；请设置 YUZUNO_CLAUDE_BRIDGE 并安装其依赖"
@@ -331,7 +330,9 @@ impl Bridge {
 /// digest (remote::claude_install). Returns the digest it runs from.
 /// Also the Node and PATH the helper found there, for a direct bridge.
 async fn claude_remote_install(machine: &RemoteMachine) -> Result<(String, crate::remote::ClaudeTools)> {
-    let (digest, archive) = tokio::task::spawn_blocking(crate::remote::claude_runtime_cached).await??;
+    // A release without the SDK uploads its prepared copy (T-159).
+    let root = crate::claude_sdk::runtime_root(std::env::var_os("YUZUNO_CLAUDE_BRIDGE")).await?;
+    let (digest, archive) = tokio::task::spawn_blocking(move || crate::remote::claude_runtime_cached(&root)).await??;
     let tools = crate::remote::claude_install(machine, &digest, &archive).await?;
     Ok((digest, tools))
 }

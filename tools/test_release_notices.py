@@ -162,6 +162,29 @@ class RuntimeNoticesTests(unittest.TestCase):
         self.assertNotIn('opt 5.0.0', text)
         self.assertNotIn('@yuzuno/claude-runtime', text)
 
+    def test_the_claude_agent_sdk_is_listed_as_obtained_on_the_machine_without_its_texts(self):
+        lock = json.loads((self.runtime / 'package-lock.json').read_text())
+        lock['packages']['node_modules/@anthropic-ai/claude-agent-sdk'] = {
+            'version': '0.3.296', 'license': 'SEE LICENSE IN README.md',
+            'resolved': 'https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.296.tgz',
+            'integrity': 'sha512-locked'}
+        (self.runtime / 'package-lock.json').write_text(json.dumps(lock))
+        self.package('node_modules/@anthropic-ai/claude-agent-sdk', '@anthropic-ai/claude-agent-sdk', '0.3.296',
+                     'SEE LICENSE IN README.md', {'LICENSE.md': 'All rights reserved by the SDK vendor.',
+                                                  'README.md': 'SDK readme terms.'})
+        summary = runtime_notices.generate(self.runtime, self.out, self.sources)
+        self.assertEqual(summary['packages'], 4)
+        text = self.out.read_text()
+        self.assertIn('@anthropic-ai/claude-agent-sdk 0.3.296\n  License (as declared): SEE LICENSE IN README.md\n', text)
+        self.assertIn("  Not in this release: Core obtains it on the user's machine from "
+                      "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.296.tgz, "
+                      "checked against sha512-locked", text)
+        self.assertNotIn('All rights reserved by the SDK vendor.', text)
+        self.assertNotIn('SDK readme terms.', text)
+        self.assertNotIn('claude-agent-sdk 0.3.296 LICENSE.md', text)
+        # The other packages keep their texts.
+        self.assertIn('Use is subject to the vendor terms.', text)
+
     def test_a_missing_package_a_wrong_version_or_an_extra_package_is_refused(self):
         cases = {
             'missing': (lambda: (self.runtime / 'node_modules/a/node_modules/c/package.json').unlink(),
