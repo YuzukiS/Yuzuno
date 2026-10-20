@@ -1117,8 +1117,8 @@ export function App() {
       const control = sentDraft.images?.length || draftTextBlocks(sentDraft)?.length ? null : nativeControl(text, agent.harness || "codex");
       if (control?.command === "model") {
         if (/\s/.test(control.args)) throw new Error("Give one model name, for example /model followed by a name from this Agent's settings. Your draft is kept.");
+        // The notice comes once the settings have opened for it.
         setModelRequest({ model: control.args, nonce: Date.now() });
-        setNotice("Model settings are open. A change applies from this Agent's next turn.");
         return;
       }
       if (control?.command === "compact") {
@@ -1554,6 +1554,7 @@ export function App() {
                   disabled={previewMode || closed}
                   onOpenChange={setAgentSettingsOpen}
                   request={modelRequest}
+                  onRequestOpened={() => setNotice("Model settings are open. A change applies from this Agent's next turn.")}
                   onSaved={() => {
                     refresh();
                     setNotice(

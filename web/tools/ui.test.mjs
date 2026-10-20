@@ -3480,3 +3480,66 @@ test("a Claude Agent's /compact is Claude Code's own command and goes as a messa
     assert.equal(sent.text, "/compact");
   } finally { page.close(); }
 });
+
+// R1 P2: /model chooses a model exactly as its chip does; only Save keeps it.
+async function modelSwitch(mountOptions, target, how, read) {
+  const page = await mount(mountOptions);
+  try {
+    if (how === "chip") {
+      page.document.querySelector('[aria-label="Agent settings"]').click();
+      await until(() => chipGroup(page, "Model")?.querySelector(`input[value="${target}"]`), "the catalog");
+      await choose(page, "Model", target);
+    } else {
+      await sendDraft(page, `/model ${target}`);
+    }
+    await until(() => chipGroup(page, "Model") && chosen(page, "Model") === target, `${target} chosen via ${how}`);
+    const state = read(page);
+    const before = page.calls.filter((r) => r.init.method === "POST").length;
+    saveButton(page).click();
+    await pause(); await pause();
+    const posts = page.calls.filter((r) => r.init.method === "POST");
+    return { state, savedBefore: before, saved: JSON.parse(posts.at(-1).init.body) };
+  } finally { page.close(); }
+}
+
+test("Codex: /model resets effort and context overrides exactly as the model chip does", async () => {
+  const models = [
+    { id: "test-model", model: "test-model", displayName: "Test model", defaultReasoningEffort: "high",
+      supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Fast" }, { reasoningEffort: "high", description: "More" }] },
+    { id: "other-model", model: "other-model", displayName: "Other model", defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Balanced" }] },
+  ];
+  const options = () => ({ harness: "codex", models,
+    settings: { reasoningEffort: "high", approvalPolicy: "on-request", sandbox: "workspace-write", contextWindow: 872000, autoCompactTokenLimit: 600000 },
+    contextSettings: { supported: true, settingsSubmitted: true, canApply: true } });
+  const read = (page) => ({
+    effort: chosen(page, "Reasoning effort"),
+    window: page.document.querySelector('[aria-label="Context window tokens"]').value,
+    compact: page.document.querySelector('[aria-label="Auto-compaction threshold"]').value,
+    reset: /Context overrides reset to automatic/.test(page.document.querySelector('[role="dialog"]').textContent),
+  });
+  const chip = await modelSwitch(options(), "other-model", "chip", read);
+  const command = await modelSwitch(options(), "other-model", "command", read);
+  assert.deepEqual(command, chip);
+  assert.deepEqual(chip.state, { effort: "medium", window: "", compact: "", reset: true });
+  assert.equal(chip.savedBefore, 0, "nothing is saved before Save");
+  assert.equal(chip.saved.model, "other-model");
+  assert.equal(chip.saved.settings.reasoningEffort, "medium", "the new model's own default, not the old one's");
+  assert.equal(chip.saved.settings.contextWindow, null);
+  assert.equal(chip.saved.settings.autoCompactTokenLimit, null);
+});
+
+test("Claude: /model drops an effort the new model lacks exactly as the model chip does", async () => {
+  const options = () => ({ harness: "claude", agentFields: { model: "opus" }, models: claudeModels,
+    settings: { reasoningEffort: "max", approvalPolicy: "on-request", sandbox: "workspace-write", permissionMode: "default" } });
+  const read = (page) => ({
+    effort: chosen(page, "Reasoning effort"),
+    note: /Sonnet does not take reasoning effort max; it is back to Claude Code default\./.test(page.document.querySelector('[role="dialog"]').textContent),
+  });
+  const chip = await modelSwitch(options(), "sonnet", "chip", read);
+  const command = await modelSwitch(options(), "sonnet", "command", read);
+  assert.deepEqual(command, chip);
+  assert.deepEqual(chip.state, { effort: "", note: true });
+  assert.equal(chip.savedBefore, 0);
+  assert.equal(chip.saved.model, "sonnet");
+});
