@@ -82,7 +82,7 @@ The order below is the usual shape; your project's instructions decide who may p
   - After a lost reply, repeat the same requestId. A continuation left unknown by a restart is never run again; reconcile it from its record.
 
 - Check `review_list` for the same base and head first, so a round is not started twice.
-- Start it yourself with `review_start` on the task's PR link and the fixed base and head, once the candidate is frozen and your targeted checks pass. It may run while CI runs. Finish the turn; the report arrives by mail and `review_get` reads it.
+- Start it yourself with `review_start` on the task's PR link and the fixed base and head, once the candidate is frozen and your targeted checks pass. It may run while CI runs. Finish the turn; the report arrives by mail and `review_get` reads its summary (`view: "full"` adds the original report and per-file evidence).
   - Take `baseSha` and `headSha` from the PR link (`github_links`, `snapshot.baseSha` and `snapshot.headSha`). The PR's base is the commit GitHub recorded for it, often behind the target branch's current tip: do not substitute main's head. If you are unsure of the base, omit `baseSha` alone: the round reviews your fixed `headSha` against the PR's current base.
 - Verify each finding against the code. Fix what is in scope, then give the new head its own CI and the next round as the project allows. Raise scope or verdict disputes with whoever owns that decision.
 - A review is evidence, not approval: it does not merge, run code or complete the task. Failures of the review service itself are not review rounds; report them rather than retrying without limit.

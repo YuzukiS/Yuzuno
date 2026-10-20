@@ -15,7 +15,9 @@
 同一派工事务把完整材料保存到活动记录，并在消息中提供 `materialsRef`。它包含原 `dispatchId`、任务版本、采集时间、登记来源和覆盖字段；同 requestId 重试返回同一派工。后续修改任务、GitHub 观察或重新派工不会改写这个快照：
 
 - `task_get({taskId, dispatchId})` 直接按任务与原派工 ID 查询，仅返回 `dispatchMaterials` 和 `latestTask.taskId` 入口，不展开最新任务、活动或执行历史。
-- `task_get({taskId})` 读取最新任务、登记资料及原有活动/执行信息。常规活动页只返回派工材料引用；读取决定活动可用 `afterSeq: activitySeq - 1, limit: 1`。
+- `task_get({taskId, view: "full"})` 读取最新任务、登记资料及原有活动/执行信息。常规活动页只返回派工材料引用；读取决定活动可用 `afterSeq: activitySeq - 1, limit: 1`。GUI 不带 `view`，仍读这份完整记录。
+- Agent 经 MCP 不带 `view` 时读 `current`（T-153）：状态、版本、负责人、派工、短结果、最新活动及当前交付（各 PR 的固定 head/base、该 head 最后观察到的 CI、最新评审、最新 CI 订阅及其最新 run，均带观察时间）。它按索引读取，不扫描历史；超过 1500 字符的文本截断并注明。未观察、其他提交或过期的状态写作 unknown，不当作通过，也不据此合并或完成任何事。带 `afterSeq`/`limit` 时默认 `view: "activity"`，按 seq 光标分页，期间新写入的活动只出现在后续页。
+- Agent 的任务写入（create/update/claim/comment/submit_result/dispatch）返回短回执：完整回答删去字段后的子集，路径与名称不变（`task.id`、`task.version`、`task.result.id`、`message.id` 等）。存储的幂等回执仍是完整对象，重试经同一投影返回同样内容。`review_get` 默认返回摘要（结论、全部发现、覆盖计数和未覆盖路径及原因），`view: "full"` 返回原始报告、上下文读取和逐文件证据。
 - 旧派工没有材料快照时，显式查询返回 `dispatch_materials_not_found`，不会拿最新资料冒充旧快照。
 
 登记对象上限 32 KiB，固定快照上限 128 KiB，最终消息正文上限 16 KiB（均为 UTF-8 字节）；Project 仓库最多 20 项、任务 GitHub 链接最多 30 项。正文中的长字段以固定快照字段入口代替，不静默截断；超过存储上限或引用无效时整个派工事务回滚。执行者沿原任务调用 `task_submit_result` 并保留原 `dispatchId`；自动通知不等于独立评审、合并或上线。

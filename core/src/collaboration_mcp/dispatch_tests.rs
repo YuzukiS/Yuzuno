@@ -126,8 +126,9 @@ async fn two_agents_dispatch_submit_and_receive_automatic_result_over_mcp() {
     );
     assert_eq!(inbox["messages"][0]["reportedBy"]["id"], "dev");
     assert_eq!(inbox["messages"][0]["source"]["sessionId"], "session-dev");
+    // An Agent reads the current view by default; the whole record is asked for.
     let detail = clients[0]
-        .call_tool(request("task_get", json!({"taskId":task})))
+        .call_tool(request("task_get", json!({"taskId":task,"view":"full"})))
         .await
         .unwrap()
         .structured_content
