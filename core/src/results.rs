@@ -992,6 +992,25 @@ mod tests {
         assert_eq!(rows(&ws, "interactive_results"), 2);
     }
 
+    /// Review a490d813: when the Home hint lookup fails, a result already
+    /// published is still answered as published, without the hint; a result
+    /// the contract rejects is still rejected.
+    #[tokio::test]
+    async fn a_failed_home_hint_lookup_never_fails_a_published_result() {
+        let (_dir, ws) = fixture();
+        let project = ws.store.create_project("Code", Default::default()).unwrap().id;
+        ws.store.set_agent_project("a", Some(&project)).unwrap();
+        // An editor policy Core cannot read makes the lookup fail.
+        ws.store.db.write().unwrap().execute(
+            "INSERT OR REPLACE INTO project_brief_editors(project_id,version,editor_ids) VALUES(?1,1,'not json')", [&project]).unwrap();
+        let published = ws.result_publish("a", input("broken-hint", "t1", spec(None))).await.unwrap().unwrap();
+        assert!(published.get("homeHint").is_none(), "{published}");
+        assert_eq!(rows(&ws, "interactive_results"), 1);
+        let rejected = ws.result_publish("a", input("bad-spec", "t1", invalid())).await.unwrap();
+        assert!(rejected.is_err(), "{rejected:?}");
+        assert_eq!(rows(&ws, "interactive_results"), 1);
+    }
+
     #[test]
     fn the_notice_follows_configured_developer_instructions_and_stands_alone_otherwise() {
         let notice = capability_notice();

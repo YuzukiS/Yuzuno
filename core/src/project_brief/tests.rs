@@ -1432,3 +1432,31 @@ async fn a_task_result_carries_home_advice_only_for_editors_of_its_project() {
     assert!(ask_only.get("homeHint").is_none());
     assert!(mail(&ask_only).ends_with(outcome_hint()));
 }
+
+/// Review a490d813: the Home hint is advice. When its lookup fails, a task
+/// result is still submitted and mailed, without the hint; the result's own
+/// version and assignment checks still refuse what they refused before.
+#[tokio::test]
+async fn a_failed_home_hint_lookup_never_fails_a_task_result() {
+    let (_dir, ws, project) = lab();
+    let call = |actor: &str, op: &str, input: Value| ws.store.collaboration_call(Some(actor), op, input);
+    let task = call("a", "task_create", json!({"requestId":"c","title":"Measure","projectId":project})).unwrap()["task"].clone();
+    let sent = call("a", "task_dispatch", json!({"requestId":"d","taskId":task["id"],"expectedVersion":task["version"],"toAgentId":"b"})).unwrap();
+    // An editor policy Core cannot read: every hint lookup for this Project fails.
+    ws.store.db.write().unwrap().execute(
+        "INSERT OR REPLACE INTO project_brief_editors(project_id,version,editor_ids) VALUES(?1,1,'not json')", [&project]).unwrap();
+    let id = task["id"].as_str().unwrap();
+    assert!(home_hint(&ws.store, &ws.store.db.read().unwrap(), id, "b").is_err());
+    let submit = |actor: &str, request: &str, version: &Value| call(actor, "task_submit_result", json!({"requestId":request,
+        "taskId":id,"expectedVersion":version,"dispatchId":sent["message"]["dispatchId"],"summary":"Found it."}));
+    let version = sent["task"]["version"].clone();
+    assert!(submit("b", "stale", &json!(1)).unwrap_err().to_string().starts_with("version_conflict"));
+    assert!(submit("c", "not-the-executor", &version).is_err());
+    let submitted = submit("b", "s", &version).unwrap();
+    assert!(submitted.get("homeHint").is_none());
+    assert_eq!(submitted["task"]["status"], "review");
+    let mail = submitted["message"]["body"].as_str().unwrap();
+    assert!(mail.contains("submitted a result") && !mail.contains(outcome_hint()), "{mail}");
+    let inbox = call("a", "peer_read", json!({})).unwrap();
+    assert!(inbox["messages"].as_array().unwrap().iter().any(|m| m["metadata"]["kind"] == "task_result"));
+}
