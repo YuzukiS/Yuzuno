@@ -40,6 +40,7 @@ pub mod ci_monitor;
 pub mod input_images;
 mod clarifications;
 pub mod older_cores;
+pub mod opencode;
 pub mod rail;
 pub mod record_rows;
 pub mod remote;
