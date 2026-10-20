@@ -1,0 +1,64 @@
+.message-content {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.message-text-block {
+  display: inline-block;
+  position: relative;
+  max-width: 100%;
+  vertical-align: baseline;
+}
+.message-text-block .pasted-text-chip {
+  white-space: normal;
+  text-align: start;
+  gap: 7px;
+}
+.message-text-block .pasted-text-chip small {
+  color: var(--text-secondary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.message-text-preview {
+  position: fixed;
+  z-index: 50;
+  width: min(420px, 85vw);
+  max-width: calc(100vw - 16px);
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--input);
+  color: var(--ink);
+  box-shadow: 0 5px 18px #0002;
+  pointer-events: none;
+}
+.message-text-preview > span {
+  display: block;
+  font:
+    12px/1.5 ui-monospace,
+    monospace;
+  white-space: pre-wrap;
+  max-height: 126px;
+  overflow: hidden;
+}
+.message-text-preview small {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+.message-text-source {
+  max-height: min(55vh, 500px);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font:
+    var(--reading-size, 16px)/1.5 ui-monospace,
+    monospace;
+}
+.agent-work-summary:has(.message-text-block) {
+  overflow: visible;
+  display: block;
+}
+.turn-dock-preview:has(.message-text-block) {
+  pointer-events: auto;
+}

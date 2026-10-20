@@ -1,0 +1,347 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { build } from "vite";
+import react from "@vitejs/plugin-react";
+import { JSDOM, VirtualConsole } from "jsdom";
+
+const root = fileURLToPath(new URL("../", import.meta.url));
+const cache = path.join(root, "node_modules/.cache");
+await mkdir(cache, { recursive: true });
+const fixture = await mkdtemp(path.join(cache, "pr-operations-ui-"));
+let bundle;
+try {
+  const entry = path.join(fixture, "entry.tsx");
+  await writeFile(
+    entry,
+    `import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {PrOperations} from ${JSON.stringify(path.join(root, "src/PrOperations.tsx"))};
+const root = createRoot(document.getElementById('root'));
+window.renderOperations = props => root.render(<PrOperations {...props}/>);`,
+  );
+  const result = await build({
+    root,
+    configFile: false,
+    define: { "process.env.NODE_ENV": JSON.stringify("production") },
+    logLevel: "silent",
+    plugins: [react()],
+    build: {
+      write: false,
+      lib: { entry, name: "ImportUI", formats: ["iife"] },
+    },
+  });
+  bundle = (Array.isArray(result) ? result[0] : result).output.find(
+    (item) => item.type === "chunk",
+  ).code;
+} finally {
+  await rm(fixture, { recursive: true, force: true });
+}
+const tick = () => new Promise((resolve) => setTimeout(resolve, 25));
+
+function mount(handler) {
+  const calls = [],
+    errors = [];
+  const vc = new VirtualConsole();
+  vc.on("jsdomError", (e) => errors.push(e.message));
+  const dom = new JSDOM('<div id="root"></div>', {
+    url: "http://isolated.test/",
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+    virtualConsole: vc,
+  });
+  dom.window.fetch = async (url, init = {}) => {
+    const body = init.body ? JSON.parse(init.body) : null;
+    calls.push({ url, body });
+    const result = await handler(url, body, init);
+    if (result instanceof Error) throw result;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => structuredClone(result),
+      text: async () => JSON.stringify(result),
+    };
+  };
+  dom.window.eval(bundle);
+  return {
+    window: dom.window,
+    doc: dom.window.document,
+    calls,
+    errors,
+    close: () => dom.window.close(),
+  };
+}
+const operation = {
+  id: "operation-1",
+  cursor: 1,
+  requestId: "accepted",
+  attempt: 1,
+  status: "completed",
+  phase: "completed",
+  repository: "owner/repo",
+  input: {
+    action: "create",
+    base: "main",
+    head: "feature",
+    title: "Ship feature",
+    draft: true,
+  },
+  createdAt: new Date().toISOString(),
+  remote: {
+    number: 11,
+    url: "https://github.com/owner/repo/pull/11",
+    title: "Ship feature",
+    draft: true,
+    state: "open",
+    headSha: "b".repeat(40),
+    baseSha: "a".repeat(40),
+  },
+  candidates: [],
+  linked: true,
+  notificationRecipient: { id: "dev", name: "Dev" },
+  notificationId: "notification-1",
+};
+const page = (operations) => ({
+  operations,
+  repositories: [{ id: 7, fullName: "owner/repo" }],
+  hasMore: false,
+  nextBefore: operations.at(-1)?.cursor ?? null,
+});
+const button = (p, text) =>
+  [...p.doc.querySelectorAll("button")].find(
+    (b) => b.textContent.trim() === text,
+  );
+const article = (p, id) => p.doc.querySelector(`[data-operation-id="${id}"]`);
+async function waitFor(f) {
+  for (let i = 0; i < 100; i++) {
+    if (f()) return;
+    await tick();
+  }
+  assert.fail("Expected UI state did not appear");
+}
+function field(p, name, value) {
+  const label = [...p.doc.querySelectorAll("label")].find((l) =>
+    l.textContent.startsWith(name),
+  );
+  assert.ok(label, name);
+  const el = label.querySelector("input,textarea,select");
+  const prototype =
+    el.tagName === "SELECT"
+      ? p.window.HTMLSelectElement.prototype
+      : el.tagName === "TEXTAREA"
+        ? p.window.HTMLTextAreaElement.prototype
+        : p.window.HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, "value").set.call(el, value);
+  el.dispatchEvent(
+    new p.window.Event(el.tagName === "SELECT" ? "change" : "input", {
+      bubbles: true,
+    }),
+  );
+}
+const submit = (p) =>
+  p.doc
+    .querySelector("form")
+    .dispatchEvent(
+      new p.window.Event("submit", { bubbles: true, cancelable: true }),
+    );
+
+test("lost acceptance retries the same request; updates target a number and omit draft", async () => {
+  let attempts = 0,
+    operations = [];
+  const p = mount((url, body) => {
+    if (url.includes("peers_list"))
+      return { peers: [{ id: "dev", name: "Dev" }] };
+    if (url === "/api/pr-operations" && body) {
+      if (++attempts === 1) return new Error("Response lost");
+      operations = [{ ...operation, requestId: body.requestId, input: body }];
+      return operations[0];
+    }
+    return page(operations);
+  });
+  try {
+    p.window.renderOperations({ taskId: "T-1", disabled: false });
+    await waitFor(
+      () =>
+        p.doc.querySelector("fieldset") &&
+        !p.doc.querySelector("fieldset").disabled,
+    );
+    field(p, "PR repository", "7");
+    field(p, "Head branch", "feature");
+    field(p, "PR title", "Literal `title`");
+    field(p, "PR body", "Literal $(body)\nsecond line");
+    field(p, "PR result recipient", "dev");
+    await tick();
+    submit(p);
+    await waitFor(
+      () =>
+        p.doc.querySelector('[role="alert"]') &&
+        !p.doc.querySelector("fieldset").disabled,
+    );
+    submit(p);
+    await waitFor(() => article(p, operation.id));
+    const starts = p.calls.filter((c) => c.url === "/api/pr-operations");
+    assert.equal(starts[0].body.requestId, starts[1].body.requestId);
+    assert.deepEqual(
+      { ...starts[1].body, requestId: undefined },
+      {
+        taskId: "T-1",
+        action: "create",
+        repositoryId: 7,
+        base: "main",
+        head: "feature",
+        title: "Literal `title`",
+        body: "Literal $(body)\nsecond line",
+        draft: true,
+        notifyAgentId: "dev",
+        requestId: undefined,
+      },
+    );
+    assert.match(
+      article(p, operation.id).textContent,
+      /Task association at completion: linked/,
+    );
+    assert.match(
+      article(p, operation.id).textContent,
+      /Result recorded in mailbox for Dev/,
+    );
+    field(p, "Action", "update");
+    await tick();
+    field(p, "PR number", "11");
+    await tick();
+    submit(p);
+    await waitFor(
+      () => p.calls.filter((c) => c.url === "/api/pr-operations").length === 3,
+    );
+    const updated = p.calls
+      .filter((c) => c.url === "/api/pr-operations")
+      .at(-1).body;
+    assert.equal(updated.action, "update");
+    assert.equal(updated.number, 11);
+    assert.ok(!("draft" in updated));
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("candidate recovery addresses the same operation and late task responses are discarded", async () => {
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  const p = mount((url, body) => {
+    if (url.includes("peers_list")) return { peers: [] };
+    if (url.includes("T-old")) return pending;
+    if (url.endsWith("/check")) return { ...operation, status: "accepted" };
+    return page([
+      {
+        ...operation,
+        status: "needs_selection",
+        candidates: [operation.remote],
+        linked: false,
+      },
+    ]);
+  });
+  try {
+    p.window.renderOperations({ taskId: "T-old", disabled: false });
+    await tick();
+    p.window.renderOperations({ taskId: "T-new", disabled: false });
+    await waitFor(() => button(p, "Select #11: Ship feature"));
+    button(p, "Select #11: Ship feature").click();
+    await waitFor(() => p.calls.some((c) => c.url.endsWith("/check")));
+    const call = p.calls.find((c) => c.url.endsWith("/check"));
+    assert.equal(call.url, "/api/pr-operations/operation-1/check");
+    assert.equal(call.body.taskId, "T-new");
+    assert.equal(call.body.number, 11);
+    assert.ok(!p.calls.some((c) => c.url === "/api/pr-operations"));
+    release(page([{ ...operation, id: "wrong-task" }]));
+    await tick();
+    await tick();
+    assert.equal(article(p, "wrong-task"), null);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("refresh covers the loaded older range and keeps expanded evidence and pagination", async () => {
+  let records = Array.from({ length: 45 }, (_, i) => ({
+    ...operation,
+    id: `op-${45 - i}`,
+    cursor: 45 - i,
+    status: "unknown",
+  }));
+  const p = mount((url) => {
+    if (url.includes("peers_list")) return { peers: [] };
+    if (url.includes("/op-23?"))
+      return {
+        ...records.find((r) => r.id === "op-23"),
+        input: { ...operation.input, body: "retained original content" },
+        history: [],
+      };
+    const query = new URL(url, "http://isolated.test").searchParams;
+    const before = Number(query.get("before") || Infinity),
+      through = Number(query.get("through") || 0);
+    const remaining = records.filter((r) => r.cursor < before);
+    const visible = through
+      ? remaining.filter((r) => r.cursor >= through)
+      : remaining.slice(0, 20);
+    return { ...page(visible), hasMore: remaining.length > visible.length };
+  });
+  const timers = new Map();
+  let timerId = 0;
+  p.window.setInterval = (callback) => {
+    timers.set(++timerId, callback);
+    return timerId;
+  };
+  p.window.clearInterval = (id) => timers.delete(id);
+  try {
+    p.window.renderOperations({ taskId: "T-1", disabled: false });
+    await waitFor(() => p.doc.querySelectorAll("article").length === 20);
+    button(p, "Older PR operations").click();
+    await waitFor(() => article(p, "op-6"));
+    const old = article(p, "op-23"),
+      details = old.querySelector("details");
+    details.open = true;
+    await waitFor(() =>
+      details.textContent.includes("retained original content"),
+    );
+    records = [
+      { ...operation, id: "op-46", cursor: 46 },
+      ...records.map((r) => ({ ...r, status: "completed", attempt: 2 })),
+    ];
+    [...timers.values()][0]();
+    await waitFor(
+      () =>
+        article(p, "op-46") &&
+        !article(p, "op-23").textContent.includes("Outcome unconfirmed"),
+    );
+    assert.ok(p.calls.some((c) => c.url.endsWith("&through=6")));
+    assert.equal(article(p, "op-23"), old);
+    assert.equal(details.open, true);
+    assert.match(details.textContent, /retained original content/);
+    assert.equal(p.doc.querySelectorAll("article").length, 41);
+    assert.match(
+      details.textContent,
+      /detail predates the latest operation result/,
+    );
+    [...details.querySelectorAll("button")]
+      .find((b) => b.textContent === "Refresh operation detail")
+      .click();
+    await waitFor(() => !details.textContent.includes("detail predates"));
+    assert.equal(details.open, true);
+    button(p, "Older PR operations").click();
+    await waitFor(() => article(p, "op-1"));
+    assert.equal(button(p, "Older PR operations"), undefined);
+    assert.equal(p.doc.querySelectorAll("article").length, 46);
+    [...timers.values()][0]();
+    await tick();
+    assert.ok(p.calls.some((c) => c.url.endsWith("&through=1")));
+    assert.equal(details.open, true);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});

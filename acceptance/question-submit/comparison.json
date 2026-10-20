@@ -1,0 +1,618 @@
+{
+  "limitations": "One sample per path/case, same-host Linux Chromium and production release Core. Synthetic protocol mock, no real model latency. Browser routing adds shared instrumentation overhead. Two RAFs show a rendering opportunity, not proof of a painted frame. Journal timestamps are event record times, not isolated fsync timings. Native reply logs follow stdout emission.",
+  "runs": [
+    {
+      "head": "4a883e30b49b235bac5d6be4bd6bb7bc41263e03",
+      "cases": [
+        {
+          "name": "short",
+          "fixture": {
+            "backgroundAgents": 0,
+            "label": "short",
+            "long": false,
+            "nativeDelayMs": 0,
+            "port": 45485,
+            "selectedFullBytes": 8340,
+            "selectedTurns": 2
+          },
+          "runs": [
+            {
+              "kind": "native",
+              "domNodes": 450,
+              "requestStartMs": 1.9,
+              "busyCommitMs": 3.9,
+              "busyFrameOpportunityMs": 22.8,
+              "responseHeadersMs": 28.5,
+              "responseJsonMs": 29.3,
+              "resolvedCommitMs": 66.6,
+              "completedFrameOpportunityMs": 91.4,
+              "httpHandlerMs": 1.98,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "request/replied",
+                  "ms": 1.61
+                }
+              ],
+              "coreToNativeReceiveMs": 2.26,
+              "nativeReceiveToResolvedMs": 2.57
+            },
+            {
+              "kind": "async",
+              "domNodes": 486,
+              "requestStartMs": 0.9,
+              "busyCommitMs": 8.1,
+              "busyFrameOpportunityMs": 43.5,
+              "responseHeadersMs": 27.6,
+              "responseJsonMs": 28.5,
+              "acceptedCommitMs": 39.6,
+              "completedFrameOpportunityMs": 140.6,
+              "httpHandlerMs": 10.2,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "message/requested",
+                  "ms": 1.79
+                },
+                {
+                  "kind": "thread/reconciled",
+                  "ms": 5.58
+                },
+                {
+                  "kind": "item/completed",
+                  "ms": 9.5
+                },
+                {
+                  "kind": "message/receipt",
+                  "ms": 10.03
+                }
+              ],
+              "coreToNativeReceiveMs": 9.12,
+              "nativeReceiveToReplyMs": 1.24
+            },
+            {
+              "kind": "form",
+              "domNodes": 480,
+              "requestStartMs": 2.2,
+              "busyCommitMs": 9.0,
+              "busyFrameOpportunityMs": 25.9,
+              "responseHeadersMs": 28.2,
+              "responseJsonMs": 29.4,
+              "acceptedCommitMs": 35.4,
+              "completedFrameOpportunityMs": 82.6,
+              "httpHandlerMs": 14.12,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "message/requested",
+                  "ms": 8.09
+                },
+                {
+                  "kind": "thread/reconciled",
+                  "ms": 12.24
+                },
+                {
+                  "kind": "item/completed",
+                  "ms": 13.64
+                },
+                {
+                  "kind": "message/receipt",
+                  "ms": 13.94
+                }
+              ],
+              "coreToNativeReceiveMs": 13.23,
+              "nativeReceiveToReplyMs": 0.4
+            }
+          ]
+        },
+        {
+          "name": "long",
+          "fixture": {
+            "backgroundAgents": 8,
+            "label": "long",
+            "long": true,
+            "nativeDelayMs": 0,
+            "port": 46265,
+            "selectedFullBytes": 11715604,
+            "selectedTurns": 157
+          },
+          "runs": [
+            {
+              "kind": "native",
+              "domNodes": 650,
+              "requestStartMs": 0.6,
+              "busyCommitMs": 2.6,
+              "busyFrameOpportunityMs": 25.8,
+              "responseHeadersMs": 270.9,
+              "responseJsonMs": 272.7,
+              "resolvedCommitMs": 333.0,
+              "completedFrameOpportunityMs": 371.9,
+              "httpHandlerMs": 242.4,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "request/replied",
+                  "ms": 221.96
+                }
+              ],
+              "coreToNativeReceiveMs": 240.45,
+              "nativeReceiveToResolvedMs": 0.21
+            },
+            {
+              "kind": "async",
+              "domNodes": 686,
+              "requestStartMs": 2.0,
+              "busyCommitMs": 13.0,
+              "busyFrameOpportunityMs": 63.7,
+              "responseHeadersMs": 720.0,
+              "responseJsonMs": 722.3,
+              "acceptedCommitMs": 728.4,
+              "completedFrameOpportunityMs": 825.6,
+              "httpHandlerMs": 686.36,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "message/requested",
+                  "ms": 19.37
+                },
+                {
+                  "kind": "thread/reconciled",
+                  "ms": 176.08
+                },
+                {
+                  "kind": "item/completed",
+                  "ms": 652.49
+                },
+                {
+                  "kind": "message/receipt",
+                  "ms": 664.21
+                }
+              ],
+              "coreToNativeReceiveMs": 603.42,
+              "nativeReceiveToReplyMs": 48.96
+            },
+            {
+              "kind": "form",
+              "domNodes": 680,
+              "requestStartMs": 1.0,
+              "busyCommitMs": 7.7,
+              "busyFrameOpportunityMs": 23.6,
+              "responseHeadersMs": 624.8,
+              "responseJsonMs": 625.6,
+              "acceptedCommitMs": 631.5,
+              "completedFrameOpportunityMs": 675.5,
+              "httpHandlerMs": 608.52,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "message/requested",
+                  "ms": 22.25
+                },
+                {
+                  "kind": "thread/reconciled",
+                  "ms": 128.87
+                },
+                {
+                  "kind": "item/completed",
+                  "ms": 587.68
+                },
+                {
+                  "kind": "message/receipt",
+                  "ms": 598.81
+                }
+              ],
+              "coreToNativeReceiveMs": 536.84,
+              "nativeReceiveToReplyMs": 50.75
+            }
+          ]
+        },
+        {
+          "name": "delayed",
+          "fixture": {
+            "backgroundAgents": 0,
+            "label": "delayed",
+            "long": false,
+            "nativeDelayMs": 250,
+            "port": 45531,
+            "selectedFullBytes": 8340,
+            "selectedTurns": 2
+          },
+          "runs": [
+            {
+              "kind": "native",
+              "domNodes": 450,
+              "requestStartMs": 0.6,
+              "busyCommitMs": 2.0,
+              "busyFrameOpportunityMs": 17.7,
+              "responseHeadersMs": 11.2,
+              "responseJsonMs": 12.3,
+              "acceptedCommitMs": 50.5,
+              "resolvedCommitMs": 423.0,
+              "completedFrameOpportunityMs": 466.5,
+              "httpHandlerMs": 0.99,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "request/replied",
+                  "ms": 0.74
+                }
+              ],
+              "coreToNativeReceiveMs": 1.29,
+              "nativeReceiveToResolvedMs": 251.07
+            },
+            {
+              "kind": "async",
+              "domNodes": 486,
+              "requestStartMs": 1.7,
+              "busyCommitMs": 9.7,
+              "busyFrameOpportunityMs": 85.9,
+              "responseHeadersMs": 272.6,
+              "responseJsonMs": 285.9,
+              "acceptedCommitMs": 288.8,
+              "completedFrameOpportunityMs": 416.9,
+              "httpHandlerMs": 256.07,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "message/requested",
+                  "ms": 0.88
+                },
+                {
+                  "kind": "thread/reconciled",
+                  "ms": 3.77
+                },
+                {
+                  "kind": "message/receipt",
+                  "ms": 255.84
+                }
+              ],
+              "coreToNativeReceiveMs": 5.11,
+              "nativeReceiveToReplyMs": 250.48
+            },
+            {
+              "kind": "form",
+              "domNodes": 480,
+              "requestStartMs": 0.7,
+              "busyCommitMs": 7.0,
+              "busyFrameOpportunityMs": 28.1,
+              "responseHeadersMs": 277.6,
+              "responseJsonMs": 281.3,
+              "acceptedCommitMs": 290.1,
+              "completedFrameOpportunityMs": 334.0,
+              "httpHandlerMs": 263.28,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "message/requested",
+                  "ms": 6.16
+                },
+                {
+                  "kind": "thread/reconciled",
+                  "ms": 8.29
+                },
+                {
+                  "kind": "message/receipt",
+                  "ms": 262.57
+                },
+                {
+                  "kind": "item/completed",
+                  "ms": 262.86
+                }
+              ],
+              "coreToNativeReceiveMs": 9.06,
+              "nativeReceiveToReplyMs": 253.09
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "head": "cc4ef9d541304866bb2defd15c8be9bf31c2ea1e",
+      "cases": [
+        {
+          "name": "short",
+          "fixture": {
+            "backgroundAgents": 0,
+            "label": "short",
+            "long": false,
+            "nativeDelayMs": 0,
+            "port": 46365,
+            "selectedFullBytes": 8340,
+            "selectedTurns": 2
+          },
+          "runs": [
+            {
+              "kind": "native",
+              "domNodes": 450,
+              "requestStartMs": 1.6,
+              "busyCommitMs": 3.4,
+              "busyFrameOpportunityMs": 23.9,
+              "responseHeadersMs": 14.9,
+              "responseJsonMs": 15.7,
+              "resolvedCommitMs": 48.0,
+              "completedFrameOpportunityMs": 75.7,
+              "httpHandlerMs": 1.13,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "request/replied",
+                  "ms": 0.81
+                }
+              ],
+              "coreToNativeReceiveMs": 1.94,
+              "nativeReceiveToResolvedMs": 0.54
+            },
+            {
+              "kind": "async",
+              "domNodes": 486,
+              "requestStartMs": 1.8,
+              "busyCommitMs": 12.7,
+              "busyFrameOpportunityMs": 73.6,
+              "responseHeadersMs": 50.9,
+              "responseJsonMs": 51.7,
+              "acceptedCommitMs": 57.9,
+              "completedFrameOpportunityMs": 163.3,
+              "httpHandlerMs": 10.37,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "message/requested",
+                  "ms": 1.62
+                },
+                {
+                  "kind": "thread/reconciled",
+                  "ms": 4.47
+                },
+                {
+                  "kind": "item/completed",
+                  "ms": 9.7
+                },
+                {
+                  "kind": "message/receipt",
+                  "ms": 10.14
+                }
+              ],
+              "coreToNativeReceiveMs": 5.61,
+              "nativeReceiveToReplyMs": 0.49
+            },
+            {
+              "kind": "form",
+              "domNodes": 480,
+              "requestStartMs": 1.0,
+              "busyCommitMs": 5.8,
+              "busyFrameOpportunityMs": 28.5,
+              "responseHeadersMs": 19.4,
+              "responseJsonMs": 19.9,
+              "acceptedCommitMs": 22.7,
+              "completedFrameOpportunityMs": 63.3,
+              "httpHandlerMs": 7.88,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "message/requested",
+                  "ms": 3.17
+                },
+                {
+                  "kind": "thread/reconciled",
+                  "ms": 6.16
+                },
+                {
+                  "kind": "item/completed",
+                  "ms": 7.01
+                },
+                {
+                  "kind": "message/receipt",
+                  "ms": 7.49
+                }
+              ],
+              "coreToNativeReceiveMs": 6.72,
+              "nativeReceiveToReplyMs": 1.08
+            }
+          ],
+          "storeCosts": {
+            "batchRecoveryMs": 0.024907000000000002,
+            "briefLookupMs": 0.013575,
+            "legacyLookupMs": 0.149663,
+            "legacyRecoveryMs": 0.044814999999999994,
+            "unchangedLastSeq": 15
+          }
+        },
+        {
+          "name": "long",
+          "fixture": {
+            "backgroundAgents": 8,
+            "label": "long",
+            "long": true,
+            "nativeDelayMs": 0,
+            "port": 44995,
+            "selectedFullBytes": 11715604,
+            "selectedTurns": 157
+          },
+          "runs": [
+            {
+              "kind": "native",
+              "domNodes": 650,
+              "requestStartMs": 0.6,
+              "busyCommitMs": 2.1,
+              "busyFrameOpportunityMs": 26.3,
+              "responseHeadersMs": 43.2,
+              "responseJsonMs": 43.8,
+              "resolvedCommitMs": 84.2,
+              "completedFrameOpportunityMs": 127.9,
+              "httpHandlerMs": 32.89,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "request/replied",
+                  "ms": 17.87
+                }
+              ],
+              "coreToNativeReceiveMs": 31.36,
+              "nativeReceiveToResolvedMs": 0.19
+            },
+            {
+              "kind": "async",
+              "domNodes": 686,
+              "requestStartMs": 1.5,
+              "busyCommitMs": 9.5,
+              "busyFrameOpportunityMs": 53.5,
+              "responseHeadersMs": 258.3,
+              "responseJsonMs": 260.0,
+              "acceptedCommitMs": 266.3,
+              "completedFrameOpportunityMs": 390.5,
+              "httpHandlerMs": 240.85,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "message/requested",
+                  "ms": 25.88
+                },
+                {
+                  "kind": "thread/reconciled",
+                  "ms": 156.14
+                },
+                {
+                  "kind": "item/completed",
+                  "ms": 224.56
+                },
+                {
+                  "kind": "message/receipt",
+                  "ms": 233.75
+                }
+              ],
+              "coreToNativeReceiveMs": 183.29,
+              "nativeReceiveToReplyMs": 41.25
+            },
+            {
+              "kind": "form",
+              "domNodes": 680,
+              "requestStartMs": 0.9,
+              "busyCommitMs": 6.3,
+              "busyFrameOpportunityMs": 26.1,
+              "responseHeadersMs": 225.2,
+              "responseJsonMs": 225.8,
+              "acceptedCommitMs": 228.3,
+              "completedFrameOpportunityMs": 262.3,
+              "httpHandlerMs": 212.65,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "message/requested",
+                  "ms": 28.33
+                },
+                {
+                  "kind": "thread/reconciled",
+                  "ms": 124.3
+                },
+                {
+                  "kind": "item/completed",
+                  "ms": 193.36
+                },
+                {
+                  "kind": "message/receipt",
+                  "ms": 203.37
+                }
+              ],
+              "coreToNativeReceiveMs": 145.83,
+              "nativeReceiveToReplyMs": 45.72
+            }
+          ],
+          "storeCosts": {
+            "batchRecoveryMs": 5.931030000000001,
+            "briefLookupMs": 0.151577,
+            "legacyLookupMs": 114.56456399999999,
+            "legacyRecoveryMs": 291.45415099999997,
+            "unchangedLastSeq": 170
+          }
+        },
+        {
+          "name": "delayed",
+          "fixture": {
+            "backgroundAgents": 0,
+            "label": "delayed",
+            "long": false,
+            "nativeDelayMs": 250,
+            "port": 46229,
+            "selectedFullBytes": 8340,
+            "selectedTurns": 2
+          },
+          "runs": [
+            {
+              "kind": "native",
+              "domNodes": 450,
+              "requestStartMs": 0.7,
+              "busyCommitMs": 2.8,
+              "busyFrameOpportunityMs": 19.5,
+              "responseHeadersMs": 10.2,
+              "responseJsonMs": 10.8,
+              "acceptedCommitMs": 38.3,
+              "resolvedCommitMs": 423.5,
+              "completedFrameOpportunityMs": 452.8,
+              "httpHandlerMs": 0.72,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "request/replied",
+                  "ms": 0.55
+                }
+              ],
+              "coreToNativeReceiveMs": 1.29,
+              "nativeReceiveToResolvedMs": 250.34
+            },
+            {
+              "kind": "async",
+              "domNodes": 486,
+              "requestStartMs": 1.9,
+              "busyCommitMs": 9.1,
+              "busyFrameOpportunityMs": 39.3,
+              "responseHeadersMs": 279.6,
+              "responseJsonMs": 280.4,
+              "acceptedCommitMs": 284.2,
+              "completedFrameOpportunityMs": 383.2,
+              "httpHandlerMs": 260.61,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "message/requested",
+                  "ms": 3.43
+                },
+                {
+                  "kind": "thread/reconciled",
+                  "ms": 7.47
+                },
+                {
+                  "kind": "item/completed",
+                  "ms": 259.56
+                },
+                {
+                  "kind": "message/receipt",
+                  "ms": 260.34
+                }
+              ],
+              "coreToNativeReceiveMs": 8.84,
+              "nativeReceiveToReplyMs": 250.6
+            },
+            {
+              "kind": "form",
+              "domNodes": 480,
+              "requestStartMs": 1.6,
+              "busyCommitMs": 8.3,
+              "busyFrameOpportunityMs": 24.2,
+              "responseHeadersMs": 279.1,
+              "responseJsonMs": 279.6,
+              "acceptedCommitMs": 283.4,
+              "completedFrameOpportunityMs": 326.6,
+              "httpHandlerMs": 260.92,
+              "journalFromHandlerMs": [
+                {
+                  "kind": "message/requested",
+                  "ms": 4.28
+                },
+                {
+                  "kind": "thread/reconciled",
+                  "ms": 6.74
+                },
+                {
+                  "kind": "message/receipt",
+                  "ms": 260.5
+                }
+              ],
+              "coreToNativeReceiveMs": 7.78,
+              "nativeReceiveToReplyMs": 252.27
+            }
+          ],
+          "storeCosts": {
+            "batchRecoveryMs": 0.042471,
+            "briefLookupMs": 0.013675999999999999,
+            "legacyLookupMs": 0.144674,
+            "legacyRecoveryMs": 0.07833799999999999,
+            "unchangedLastSeq": 15
+          }
+        }
+      ]
+    }
+  ]
+}

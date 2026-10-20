@@ -1,0 +1,578 @@
+{
+  "base": "6673c3ef237a934fd5220cb6ce15738ec78d79bf",
+  "testedCandidate": "423d075b2a045cae3e40d7081b620377462637df",
+  "baselineJob": "a1ff7435-5497-4a76-a27f-672360e4919d",
+  "candidateJob": "169e9042-7a34-4a8d-9c2c-b7eea0da7113",
+  "baseline": [
+    {
+      "motion": "no-preference",
+      "shape": "long",
+      "passed": true,
+      "beforeClick": {
+        "gap": 1200,
+        "turns": 2,
+        "blocks": 2,
+        "nodes": 480,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 805,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 849,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 577,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    },
+    {
+      "motion": "no-preference",
+      "shape": "giant",
+      "passed": true,
+      "beforeClick": {
+        "gap": 1200,
+        "turns": 1,
+        "blocks": 8,
+        "nodes": 443,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 759,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 803,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 531,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    },
+    {
+      "motion": "no-preference",
+      "shape": "short",
+      "passed": false,
+      "beforeClick": {
+        "gap": 0,
+        "turns": 4,
+        "blocks": 4,
+        "nodes": 525,
+        "button": false
+      }
+    },
+    {
+      "motion": "no-preference",
+      "shape": "paged",
+      "passed": true,
+      "beforeClick": {
+        "gap": 1200,
+        "turns": 2,
+        "blocks": 2,
+        "nodes": 483,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 793,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 852,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 580,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    },
+    {
+      "motion": "reduce",
+      "shape": "long",
+      "passed": true,
+      "beforeClick": {
+        "gap": 1200,
+        "turns": 2,
+        "blocks": 2,
+        "nodes": 480,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 505,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 549,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 577,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    },
+    {
+      "motion": "reduce",
+      "shape": "giant",
+      "passed": true,
+      "beforeClick": {
+        "gap": 1200,
+        "turns": 1,
+        "blocks": 8,
+        "nodes": 443,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 459,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 503,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 531,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    },
+    {
+      "motion": "reduce",
+      "shape": "short",
+      "passed": false,
+      "beforeClick": {
+        "gap": 0,
+        "turns": 4,
+        "blocks": 4,
+        "nodes": 525,
+        "button": false
+      }
+    },
+    {
+      "motion": "reduce",
+      "shape": "paged",
+      "passed": true,
+      "beforeClick": {
+        "gap": 1200,
+        "turns": 2,
+        "blocks": 2,
+        "nodes": 483,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 508,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 552,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 580,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    }
+  ],
+  "candidate": [
+    {
+      "motion": "no-preference",
+      "shape": "long",
+      "passed": true,
+      "beforeClick": {
+        "gap": 1200,
+        "turns": 2,
+        "blocks": 2,
+        "nodes": 480,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 805,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 849,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 577,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    },
+    {
+      "motion": "no-preference",
+      "shape": "giant",
+      "passed": true,
+      "beforeClick": {
+        "gap": 1200,
+        "turns": 1,
+        "blocks": 8,
+        "nodes": 444,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 759,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 803,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 531,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    },
+    {
+      "motion": "no-preference",
+      "shape": "short",
+      "passed": true,
+      "beforeClick": {
+        "gap": 1200,
+        "turns": 4,
+        "blocks": 4,
+        "nodes": 535,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 782,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 826,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 554,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    },
+    {
+      "motion": "no-preference",
+      "shape": "paged",
+      "passed": true,
+      "beforeClick": {
+        "gap": 1200,
+        "turns": 2,
+        "blocks": 2,
+        "nodes": 483,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 793,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 852,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 580,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    },
+    {
+      "motion": "no-preference",
+      "shape": "paged-delay",
+      "passed": true,
+      "beforeClick": {
+        "gap": 4631,
+        "turns": 3,
+        "blocks": 3,
+        "nodes": 505,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 763,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 852,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 580,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    },
+    {
+      "motion": "reduce",
+      "shape": "long",
+      "passed": true,
+      "beforeClick": {
+        "gap": 1200,
+        "turns": 2,
+        "blocks": 2,
+        "nodes": 480,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 505,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 549,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 577,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    },
+    {
+      "motion": "reduce",
+      "shape": "giant",
+      "passed": true,
+      "beforeClick": {
+        "gap": 1200,
+        "turns": 1,
+        "blocks": 8,
+        "nodes": 444,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 459,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 503,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 531,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    },
+    {
+      "motion": "reduce",
+      "shape": "short",
+      "passed": true,
+      "beforeClick": {
+        "gap": 1200,
+        "turns": 4,
+        "blocks": 4,
+        "nodes": 535,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 482,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 526,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 554,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    },
+    {
+      "motion": "reduce",
+      "shape": "paged",
+      "passed": true,
+      "beforeClick": {
+        "gap": 1200,
+        "turns": 2,
+        "blocks": 2,
+        "nodes": 483,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 508,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 552,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 580,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    },
+    {
+      "motion": "reduce",
+      "shape": "paged-delay",
+      "passed": true,
+      "beforeClick": {
+        "gap": 4631,
+        "turns": 3,
+        "blocks": 3,
+        "nodes": 505,
+        "button": true
+      },
+      "afterGrowth": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 508,
+        "button": false
+      },
+      "afterCancel": {
+        "gap": 3976,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 552,
+        "button": true
+      },
+      "afterSwitch": {
+        "gap": 0,
+        "turns": 1,
+        "blocks": 1,
+        "nodes": 580,
+        "button": false
+      },
+      "anchorShiftPx": 0
+    }
+  ]
+}

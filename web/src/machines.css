@@ -1,0 +1,278 @@
+/* Machines page and the shared last-check summary. */
+.machines-page {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+.machines-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-quiet);
+}
+.machine-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-raised);
+}
+.machine-card-heading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+}
+.machine-card-heading h3 {
+  margin: 0;
+  font-size: calc(13px + var(--font-adjust, 3px));
+  font-weight: 600;
+  color: var(--ink);
+}
+.machine-card-heading div > span {
+  display: block;
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--text-quiet);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Adding an SSH machine, and editing or removing one; the Core host is
+   only checked. */
+.machines-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+.machine-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.machine-card-actions .icon-button[aria-pressed="true"] {
+  background: var(--surface-soft);
+  color: var(--accent-ink);
+}
+.machines-page .remote-machine-editor {
+  margin: 0;
+}
+.machine-remove {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.6;
+}
+.machine-remove p {
+  margin: 0;
+}
+.machine-remove-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.last-check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 6px 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-soft);
+  color: var(--text-secondary);
+  font-size: calc(11px + var(--font-adjust, 3px));
+}
+.last-check > svg {
+  margin-top: 2px;
+}
+.last-check.state-reached > svg {
+  color: var(--green);
+}
+.last-check.state-failed {
+  border-color: #e7c9bc;
+  background: #fbf1ec;
+}
+.last-check.state-failed > svg,
+.last-check.state-failed strong {
+  color: var(--coral);
+}
+:root[data-theme="dark"] .last-check.state-failed {
+  border-color: #6b4a3d;
+  background: #36291f;
+}
+.last-check-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  min-width: 0;
+}
+.last-check-line strong {
+  color: var(--ink);
+  font-weight: 560;
+  overflow-wrap: anywhere;
+}
+.last-check-line time,
+.last-check-line > span:not(.last-check-stale) {
+  color: var(--text-quiet);
+}
+.last-check-stale {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+  font-size: 0.9em;
+}
+.last-check-harnesses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  grid-column: 2;
+}
+.harness-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--input);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+.harness-chip.found {
+  color: var(--green);
+}
+.harness-chip.missing {
+  border-color: #e7c9bc;
+  color: var(--coral);
+}
+.harness-chip.unsupported {
+  color: var(--text-quiet);
+  border-style: dashed;
+}
+.last-check-error {
+  grid-column: 2;
+  margin: 0;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.machine-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+.machine-facts div {
+  min-width: 0;
+}
+.machine-facts dt {
+  color: var(--text-quiet);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.machine-facts dd {
+  overflow: hidden;
+  margin: 3px 0 0;
+  color: var(--text-secondary);
+  font-size: calc(11px + var(--font-adjust, 3px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.machine-agents h4 {
+  margin: 0 0 6px;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.machine-agents h4 span {
+  color: var(--text-quiet);
+  font-weight: 400;
+}
+/* Small tiles, as many to a row as fit: name and project, state at the end. */
+.machine-agents ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.machine-agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  padding: 6px 9px 6px 7px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  text-align: left;
+}
+.machine-agent:hover {
+  background: var(--surface-hover);
+}
+.machine-agent-name {
+  display: grid;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+.machine-agent-name strong,
+.machine-agent-name small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.machine-agent-name strong {
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 560;
+}
+.machine-agent-name small {
+  color: var(--text-quiet);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.machine-agent-state {
+  flex-shrink: 0;
+  max-width: 50%;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.machine-note {
+  margin: 0;
+  color: var(--text-quiet);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.machines-footnote {
+  padding-top: 4px;
+}
+@media (max-width: 720px) {
+  .machine-card-heading {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .machine-card-heading > .machine-card-actions {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+  .last-check-harnesses,
+  .last-check-error {
+    grid-column: 1 / -1;
+  }
+}

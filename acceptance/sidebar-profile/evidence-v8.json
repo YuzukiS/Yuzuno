@@ -1,0 +1,157 @@
+{
+  "task": "T-77",
+  "sourceHead": "be0533d749aecbc172b1eac1afdf8f9f11bdc632",
+  "baselineHead": "8eac935a5a9a6536e33dbbf3ad43f8b6f013e19b",
+  "jobId": "272c34ea-9f3f-4305-9a7d-5da6de737053",
+  "status": "succeeded",
+  "conditions": {
+    "chromium": "153.0.8010.52",
+    "node": "v26.11.1",
+    "viewport": {
+      "width": 1440,
+      "height": 1000
+    },
+    "appearance": {
+      "theme": "light",
+      "fontSize": 20,
+      "palette": "garden"
+    },
+    "cpuMillis": 2000,
+    "memoryMiB": 3072,
+    "swapMiB": 0,
+    "affinity": "8-9",
+    "samplesPerBuild": 6,
+    "timing": "native click capture to matching target DOM commit plus two RAF callbacks"
+  },
+  "samples": [
+    {
+      "action": "long-left-close",
+      "baselineMs": 214.8,
+      "candidateMs": 24.7,
+      "baselineDom": 23598,
+      "candidateDom": 1068
+    },
+    {
+      "action": "long-left-open",
+      "baselineMs": 234.7,
+      "candidateMs": 27.9,
+      "baselineDom": 23599,
+      "candidateDom": 1069
+    },
+    {
+      "action": "long-right-close",
+      "baselineMs": 224.5,
+      "candidateMs": 27.2,
+      "baselineDom": 23534,
+      "candidateDom": 1004
+    },
+    {
+      "action": "long-right-open",
+      "baselineMs": 246.9,
+      "candidateMs": 28.9,
+      "baselineDom": 23599,
+      "candidateDom": 1069
+    },
+    {
+      "action": "switch-long-to-short",
+      "baselineMs": 87.3,
+      "candidateMs": 59.1,
+      "baselineDom": 477,
+      "candidateDom": 494,
+      "baselineTransfer": {
+        "bytes": 23456,
+        "fetchThroughJsonMs": 18.3,
+        "responseBodyMs": 2.3,
+        "responseEndThroughJsonMs": 2.7
+      },
+      "candidateTransfer": {
+        "bytes": 23456,
+        "fetchThroughJsonMs": 19.4,
+        "responseBodyMs": 1.4,
+        "responseEndThroughJsonMs": 1.9
+      }
+    },
+    {
+      "action": "switch-short-to-long",
+      "baselineMs": 898,
+      "candidateMs": 66.4,
+      "baselineDom": 23599,
+      "candidateDom": 1058,
+      "baselineTransfer": {
+        "bytes": 12576273,
+        "fetchThroughJsonMs": 170.5,
+        "responseBodyMs": 66.0,
+        "responseEndThroughJsonMs": 71.7
+      },
+      "candidateTransfer": {
+        "bytes": 315425,
+        "fetchThroughJsonMs": 21.3,
+        "responseBodyMs": 4.8,
+        "responseEndThroughJsonMs": 5.0
+      }
+    }
+  ],
+  "coreDiagnosticMeasurements": [
+    {
+      "bodyAndIndexSerializationBytes": 315790,
+      "build": "debug; timings are diagnostic, not release or browser latency",
+      "fullBytes": 12576627,
+      "id": "a",
+      "internalReadMs": 175.219283,
+      "projectionMs": 36.928883000000006,
+      "routerReadSerializeAndTestParseMs": 237.222421,
+      "serializeMs": 8.566398,
+      "windowBytes": 315779
+    },
+    {
+      "bodyAndIndexSerializationBytes": 229084,
+      "build": "debug; timings are diagnostic, not release or browser latency",
+      "fullBytes": 13544920,
+      "id": "b",
+      "internalReadMs": 191.014607,
+      "projectionMs": 47.342087,
+      "routerReadSerializeAndTestParseMs": 286.138285,
+      "serializeMs": 4.969709,
+      "windowBytes": 229073
+    }
+  ],
+  "browserValidation": {
+    "tests": 100,
+    "coreUnit": 5,
+    "coreApi": 2,
+    "coreFixtureExport": 1,
+    "allFourBrowserScenariosPassed": true,
+    "pageAnchorDifferencePx": 0.125,
+    "growthAnchorDifferencePx": -0.171875,
+    "growthLatestDom": 540,
+    "hugeTurnItems": 6198,
+    "hugeTurnDom": 386,
+    "hugeTurnResponseBytes": 229073,
+    "collectionSteps": 2000,
+    "collectionChildren": 2000,
+    "collectionEvents": 4000,
+    "collectionDom": 1008
+  },
+  "memoryEvents": {
+    "baselineBefore": "low 0\nhigh 0\nmax 39058\noom 0\noom_kill 0\noom_group_kill 0",
+    "baselineAfter": "low 0\nhigh 0\nmax 41208\noom 0\noom_kill 0\noom_group_kill 0",
+    "candidateBefore": "low 0\nhigh 0\nmax 41208\noom 0\noom_kill 0\noom_group_kill 0",
+    "candidateAfter": "low 0\nhigh 0\nmax 41208\noom 0\noom_kill 0\noom_group_kill 0"
+  },
+  "evidenceSha256": {
+    "target/t77/window-v8/head.txt": "a0c62139a69151ab51a876c493a0007d3d171a0c132d7333f648f170a5ae6fc8",
+    "target/t77/window-v8/assets.json": "9c5a83a7bf042699f008b775f865d6ffb7e0d042888b10e9e68525dc199c7f29",
+    "target/t77/window-v8/profile-assets.json": "48adb80ffd0e12e2612343cf44fd1d91d71a5b1d115fb91fc841f634ef6a23ff",
+    "target/t77/window-v8/build.log": "3bc5f0f0ff343578c7a900f5e9ebac713a33f6c985b6b10d6333208bd31e3748",
+    "target/t77/window-v8/tests.log": "9e8f86e70c345903591690b1cf38c9536f634c513d1b9cf13069b2b5cc14c676",
+    "target/t77/window-v8/core-unit.log": "26e6def4c1ebc0dc83138764d598ac39df9923ab3928346da93dc66bc69356f0",
+    "target/t77/window-v8/core-api.log": "d172916a87c78d659004f3e9eb9ce215e9dbcfa63e221a4b16089c1262d894f8",
+    "target/t77/window-v8/core-fixture.log": "bd14619e8557de81da95ca0231d9d8e16b1bac60088d0c4dcf087022163d22ab",
+    "target/t77/window-v8/profile-baseline/report.json": "9704134f2770d98015632fc97c960522b0c7048e36ed1d6ac33814c20199d290",
+    "target/t77/window-v8/profile-window/report.json": "183155220e28212872befc716735942edef9f3ad9025874dc042abd2b0e82de6",
+    "target/t77/window-v8/browser-api/report.json": "217ebd66208a723e95b7b2910649d3fe546c0a10ac68483a4d79231a5a32bd13",
+    "target/t77/window-v8/browser-reading/report.json": "977d3a8f10e17751331f69cbca9533f4e3fe00bc1e3c6972bd37a1622d547c8e",
+    "target/t77/window-v8/browser-compatibility/report.json": "2fe30f2e91f13d1386ec92b7bf7907a0a9450b81e915f4e8a8f4ad7028d4d6fb",
+    "target/t77/window-v8/browser-collections/report.json": "a7d672d9dd56da9498adb4900b5f5841fde0276e3ae846596e2e8775701cfaef"
+  }
+}

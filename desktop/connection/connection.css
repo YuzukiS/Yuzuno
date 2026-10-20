@@ -1,0 +1,39 @@
+:root { font-family: Inter, "Segoe UI", system-ui, sans-serif; color: #34473b; background: #faf8f4; color-scheme: light; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; padding: 42px 54px 25px; display: flex; flex-direction: column; }
+.wordmark { display: flex; align-items: center; gap: 9px; font-size: 26px; font-weight: 650; letter-spacing: -1.1px; }
+.wordmark svg { width: 38px; height: 38px; }
+.wordmark-dot { color: #cf9f38; }
+main { width: min(620px, 100%); margin: auto; padding: 70px 0; }
+.eyebrow { display: flex; align-items: center; gap: 8px; color: #7b8173; font-size: 12px; letter-spacing: .06em; }
+.status-dot { width: 6px; height: 6px; border-radius: 50%; background: #91a18a; }
+h1 { margin: 23px 0 20px; font-family: Georgia, "Times New Roman", serif; font-weight: 400; font-size: clamp(44px, 5.5vw, 66px); letter-spacing: -.045em; line-height: 1.08; }
+.intro { font-size: 15px; color: #7c8279; line-height: 1.7; margin: 0 0 37px; }
+form { max-width: 560px; }
+label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 9px; color: #536151; }
+.address-row { display: flex; gap: 8px; }
+input { min-width: 0; flex: 1; padding: 14px 15px; border: 1px solid #e3e1d6; background: #fffefa; border-radius: 12px; font: 13px "Cascadia Code", "SFMono-Regular", Consolas, monospace; color: #495647; transition: border-color 150ms; }
+input:focus { border-color: #b3bb96; outline: 3px solid #e6ead9; outline-offset: 1px; }
+button { border: 1px solid #e5ca73; border-radius: 12px; padding: 0 19px; background: #f0d685; color: #534b29; cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; transition: background 150ms; white-space: nowrap; }
+button span { padding-left: 12px; font-size: 17px; }
+button:hover { background: #eccb69; }
+button:focus-visible { outline: 3px solid #b3bb96; outline-offset: 2px; }
+button:disabled { cursor: wait; opacity: .7; }
+.hint { color: #919385; font-size: 11px; line-height: 1.6; margin: 10px 1px 0; }
+.message { min-height: 42px; padding-top: 15px; font-size: 12px; line-height: 1.6; color: #7b8173; }
+.message[data-error="true"] { color: #a35e50; }
+.connection-note { border-top: 1px solid #e7e7de; margin-top: 19px; padding-top: 21px; display: flex; gap: 12px; color: #8f9b7a; }
+.connection-note > span { font-size: 23px; line-height: 1.1; }
+.connection-note p { font-size: 12px; margin: 0; color: #707c69; line-height: 1.7; }
+.connection-note p span { color: #999e91; }
+footer { display: flex; align-items: center; justify-content: space-between; color: #a3a697; font-size: 9px; letter-spacing: .13em; }
+.footer-tag { font-size: 10px; letter-spacing: .03em; padding: 5px 10px; border: 1px solid #e7e7de; border-radius: 6px; }
+@media (max-width: 600px) { body { padding: 25px; } main { padding: 50px 0; } .address-row { flex-wrap: wrap; } input { flex-basis: 100%; } button { height: 42px; } }
+/* Frameless window (Windows): the top band moves the window; its buttons
+   follow the page's quiet style, close warming to coral on hover. */
+.window-controls { position: fixed; top: 10px; right: 12px; display: flex; gap: 4px; }
+.window-controls[hidden] { display: none; }
+.window-controls button { width: 32px; height: 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 7px; background: transparent; color: #8b937f; }
+.window-controls button:hover { background: #e9ece2; color: #465c42; }
+.window-controls button[data-window="close"]:hover { background: #f3e2da; color: #ac745e; }
+.window-controls svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }

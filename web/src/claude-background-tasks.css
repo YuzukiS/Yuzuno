@@ -1,0 +1,24 @@
+/* A Claude background task's card (ClaudeBackgroundTasks.tsx); its facts,
+   parts and result share the sub-agent card's rules in claude.css. */
+.claude-task-command {
+  margin: 2px 0 0;
+  max-height: 10em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.claude-task-stop { display: grid; gap: 4px; justify-items: start; }
+.claude-task-stop .secondary-button { display: inline-flex; align-items: center; gap: 6px; }
+.claude-task-stop-note { margin: 0; color: var(--muted); }
+.claude-task-evidence summary { color: var(--muted); cursor: pointer; }
+.claude-task-evidence pre {
+  margin: 4px 0 0;
+  max-height: 14em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}

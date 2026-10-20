@@ -1,0 +1,211 @@
+.github-panel {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px;
+  margin: 14px 0;
+  min-width: 0;
+  background: var(--surface-raised);
+}
+.github-panel header,
+.github-entry-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.github-panel h4 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.85rem;
+  margin: 0;
+  font-weight: 600;
+}
+.github-hint,
+.github-source,
+.github-empty,
+.github-sync,
+.github-notice {
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.55;
+  margin: 8px 0;
+}
+.github-source {
+  font-size: 0.6rem;
+  margin-bottom: 0;
+}
+.github-sync {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.github-entry {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.github-entry:first-child {
+  padding-top: 10px;
+}
+.github-entry-top a {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  color: var(--ink);
+  font-size: 0.72rem;
+  min-width: 0;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.github-entry-top a span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.github-entry-top a:hover {
+  text-decoration: underline;
+}
+.github-entry-top svg {
+  flex-shrink: 0;
+}
+.github-entry small {
+  display: block;
+  color: var(--muted);
+  font-size: 0.6rem;
+  line-height: 1.5;
+  margin-top: 6px;
+}
+.github-title {
+  font-size: 0.8rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  margin: 5px 0 7px;
+}
+.github-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.62rem;
+  align-items: center;
+}
+.github-state {
+  padding: 2px 7px;
+  background: var(--surface-soft);
+  border-radius: 20px;
+}
+.github-state.merged {
+  color: var(--green);
+}
+.github-ci.success {
+  color: var(--green);
+}
+.github-ci.failure,
+.github-error {
+  color: var(--coral);
+}
+.github-ci.stale,
+.github-stale {
+  color: var(--muted);
+}
+.github-error {
+  font-size: 0.7rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  margin: 7px 0;
+}
+.github-commit {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.6rem;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+.github-commit code {
+  font-size: inherit;
+}
+.github-checks {
+  font-size: 0.65rem;
+  color: var(--muted);
+  margin-top: 8px;
+}
+.github-checks summary {
+  cursor: pointer;
+}
+.github-checks > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 0;
+  overflow-wrap: anywhere;
+}
+.github-link-form {
+  margin-top: 12px;
+  min-width: 0;
+}
+.github-link-form label {
+  display: block;
+  font-size: 0.65rem;
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+.github-link-form > div {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+.github-link-form input {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: .55rem .65rem;
+  color: var(--ink);
+  background: var(--input, var(--paper));
+  min-width: 0;
+  flex: 1;
+  width: 100%;
+  font-size: 0.7rem;
+}
+.github-link-form button {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.github-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.6rem;
+  color: var(--muted);
+  margin: 8px 0;
+  min-width: 0;
+}
+.github-summary > span {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  align-items: center;
+  overflow-wrap: anywhere;
+}
+.github-summary svg {
+  flex-shrink: 0;
+}
+@media (max-width: 600px) {
+  .github-panel {
+    padding: 10px;
+  }
+  .github-link-form > div {
+    flex-wrap: wrap;
+  }
+  .github-link-form input {
+    flex-basis: 100%;
+  }
+  .github-link-form button {
+    margin-left: auto;
+  }
+  .github-checks > div {
+    flex-wrap: wrap;
+  }
+}

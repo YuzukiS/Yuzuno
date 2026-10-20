@@ -1,0 +1,60 @@
+{
+  "format": 1,
+  "repository": "owner/repo",
+  "tag": "core-test",
+  "manifest": {
+    "format": 1,
+    "releaseId": "signed-test",
+    "version": "test.2",
+    "gitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "builtAt": "2026-10-14T12:00:00Z",
+    "notes": "Signed test fixture; never execute.",
+    "platform": "linux-x86_64",
+    "protocol": 1,
+    "schema": {
+      "writes": 2,
+      "readsMin": 2,
+      "readsMax": 2
+    },
+    "records": {
+      "writes": 1,
+      "readsMin": 0,
+      "readsMax": 1
+    },
+    "files": {
+      "bin/yuzuno-workspace": {
+        "bytes": 7,
+        "sha256": "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d",
+        "executable": true
+      },
+      "bin/yuzuno-update-helper": {
+        "bytes": 7,
+        "sha256": "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d",
+        "executable": true
+      },
+      "web/index.html": {
+        "bytes": 76,
+        "sha256": "a901a47d2f0a582307a7d65363b9fd5862ea947d82571b66be8bea2c1948bb72",
+        "executable": false
+      },
+      "runtimes/claude/bridge.mjs": {
+        "bytes": 7,
+        "sha256": "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d",
+        "executable": false
+      },
+      "runtimes/claude/package.json": {
+        "bytes": 7,
+        "sha256": "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d",
+        "executable": false
+      },
+      "runtimes/claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json": {
+        "bytes": 7,
+        "sha256": "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d",
+        "executable": false
+      }
+    }
+  },
+  "manifestSha256": "8dd55c2537d1351bc6308bf7f25c0f51435a3e49c76a184a180563d0da39a7c4",
+  "archiveSha256": "4908f8e3eb1cc44bb9d39569580b86a6e24b848aed83578fdbb4382f12e801e0",
+  "archiveBytes": 751
+}

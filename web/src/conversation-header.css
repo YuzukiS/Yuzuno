@@ -1,0 +1,138 @@
+/* Size the header for the conversation, including when either side panel grows. */
+.main-panel {
+  container-type: inline-size;
+  container-name: conversation;
+}
+.conversation-header {
+  gap: 16px;
+  align-items: center;
+  padding: 12px 28px;
+  border-bottom: 1px solid var(--line);
+}
+.conversation-header .conversation-title {
+  flex: 1;
+}
+.conversation-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 4px 10px;
+}
+.conversation-heading h1 {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .conversation-header .status-label {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: calc(8px + var(--font-adjust, 3px));
+  font-weight: 400;
+  gap: 5px;
+  line-height: 1.5;
+  flex-shrink: 0;
+}
+.conversation-header .conversation-actions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-soft);
+}
+.conversation-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  gap: 7px;
+  height: 32px;
+  min-width: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: var(--text-secondary);
+  background: transparent;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    background 120ms,
+    color 120ms;
+}
+.conversation-action svg {
+  flex-shrink: 0;
+}
+.conversation-action:hover:not(:disabled),
+.conversation-action[aria-expanded="true"] {
+  color: var(--ink);
+  background: var(--input);
+}
+.conversation-action:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.conversation-actions .agent-settings-button {
+  position: relative;
+  margin-right: 5px;
+  padding: 0 9px;
+  color: var(--ink);
+}
+.agent-settings-button::after {
+  content: "";
+  position: absolute;
+  right: -4px;
+  top: 8px;
+  bottom: 8px;
+  width: 1px;
+  background: var(--line);
+}
+.agent-settings-button .settings-chevron {
+  color: var(--text-quiet);
+}
+@container conversation (max-width: 640px) {
+  .agent-settings-button .reasoning-label {
+    display: none;
+  }
+  .conversation-header {
+    gap: 10px;
+    padding-inline: 18px;
+  }
+  .conversation-title > .avatar {
+    display: none;
+  }
+}
+@container conversation (max-width: 440px) {
+  .conversation-header {
+    gap: 8px;
+    padding: 10px 14px;
+  }
+  .conversation-header .conversation-heading {
+    gap: 6px;
+  }
+  .conversation-header .conversation-actions {
+    gap: 0;
+    padding: 2px;
+  }
+  .conversation-action {
+    min-width: 27px;
+    height: 28px;
+  }
+  .conversation-actions .agent-settings-button > span,
+  .agent-settings-button .settings-chevron,
+  .agent-settings-button::after,
+  .conversation-actions .agent-close-button {
+    display: none;
+  }
+  .conversation-actions .agent-settings-button {
+    margin: 0;
+    padding: 0;
+  }
+}

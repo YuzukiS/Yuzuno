@@ -1,0 +1,725 @@
+/* A Brief section body. Colours come from the app's palette variables, so
+ * every palette's light and dark modes apply; only the chart series slots
+ * are fixed here, as a validated categorical order with a light and a dark
+ * step each (dataviz reference palette). The state roles have fallbacks for
+ * the Garden palette, which defines none of them. They only tint and colour
+ * icons: chip text stays ink (at least 7.8:1 in every palette). */
+.brief-body {
+  container: brief-body / inline-size;
+  --brief-working: var(--state-working, #c19465);
+  --brief-done: var(--state-done, var(--green));
+  --brief-error: var(--state-error, var(--coral));
+  --brief-waiting: var(--state-waiting, #6b8fa3);
+  --brief-critical: var(--error-ink, var(--brief-error));
+  --result-wash: color-mix(in srgb, var(--green) 8%, var(--paper));
+  --result-bar: color-mix(in srgb, var(--green) 45%, var(--paper));
+  --brief-mono: "SFMono-Regular", Consolas, monospace;
+  --brief-series-1: #2a78d6;
+  --brief-series-2: #eb6834;
+  --brief-series-3: #1baf7a;
+  --brief-series-4: #eda100;
+  --brief-series-5: #e87ba4;
+  --brief-series-6: #008300;
+  --brief-series-7: #4a3aa7;
+  --brief-series-8: #e34948;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 0.88rem;
+}
+:root[data-theme="dark"] .brief-body {
+  --brief-series-1: #3987e5;
+  --brief-series-2: #d95926;
+  --brief-series-3: #199e70;
+  --brief-series-4: #c98500;
+  --brief-series-5: #d55181;
+  --brief-series-6: #008300;
+  --brief-series-7: #9085e9;
+  --brief-series-8: #e66767;
+}
+.brief-root,
+.brief-group {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.brief-body :is(h4, p, ul, ol, dl) {
+  margin: 0;
+}
+.brief-body h4 {
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+/* The section card is the only frame. A group inside it is a title and its
+ * blocks, set apart by space, and by a rule from the group before it. */
+.brief-group {
+  gap: 10px;
+}
+.brief-root > * + .brief-group:not([data-tone]),
+.brief-root > * + .brief-change[data-rule] {
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+/* A block added or changed since the version the user marked seen: a small
+ * mark above it. The card itself is not highlighted; its header says only
+ * that something in it changed. */
+.brief-change {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.brief-change-mark {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--home-new, var(--accent-ink)) 8%, transparent);
+  /* Small text on a tint, which may sit on a tinted group: closer to ink
+   * than the header's mark, to keep 4.5:1 there too. */
+  color: color-mix(in srgb, var(--home-new, var(--accent-ink)) 75%, var(--ink));
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+  line-height: 1.65;
+}
+.brief-change-mark::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+/* A tone tints the background, without a border; text on it is ink, as
+ * secondary text would fall below 4.5:1 on the tint. */
+.brief-group[data-tone] {
+  padding: 12px 14px;
+  border-radius: 8px;
+}
+.brief-group[data-tone] .brief-markdown {
+  color: var(--ink);
+}
+.brief-group[data-tone="accent"] {
+  background: var(--accent-wash);
+}
+.brief-group[data-tone="muted"] {
+  background: var(--surface-soft);
+}
+
+/* Columns: one grid column per child, at the Agent's relative widths.
+ * Stacked (Blocks.tsx measures each Columns) once a column would be too
+ * narrow: one column, in the order given. */
+.brief-columns {
+  display: grid;
+  grid-template-columns: var(--brief-columns, none);
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  min-width: 0;
+}
+.brief-columns[data-stacked] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-flow: row;
+  gap: 12px;
+}
+
+/* Markdown, with code and log excerpts kept in bounded scrolling blocks. */
+.brief-body .brief-markdown {
+  font-size: 0.88rem;
+  line-height: 1.65;
+  color: var(--text-secondary, var(--ink));
+}
+.brief-body .brief-markdown :is(p, ul, ol) {
+  margin: 0 0 10px;
+}
+.brief-body .brief-markdown :is(h1, h2, h3) {
+  margin: 14px 0 8px;
+  font-size: 0.95rem;
+}
+.brief-body .brief-markdown pre {
+  max-height: 22em;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 10px 0;
+  padding: 10px 12px;
+  font-size: 0.76rem;
+  line-height: 1.55;
+  white-space: pre;
+  tab-size: 4;
+}
+.brief-body .brief-markdown pre code {
+  font-family: var(--brief-mono);
+}
+
+.brief-math {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.brief-math.is-inline {
+  padding: 2px 0;
+}
+.brief-math.is-display .katex-display {
+  margin: 4px 0;
+}
+.brief-math.is-error {
+  font-family: var(--brief-mono);
+  font-size: 0.76rem;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
+/* Status chips: an icon and a label always; the state colour only tints. */
+.brief-chip {
+  --chip: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, var(--chip) 40%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--chip) 12%, transparent);
+  color: var(--ink);
+  font-size: 0.7rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.brief-chip svg {
+  color: var(--chip);
+}
+.brief-chip[data-state="doing"],
+.brief-chip[data-severity="medium"] {
+  --chip: var(--brief-working);
+}
+.brief-chip[data-state="done"] {
+  --chip: var(--brief-done);
+}
+.brief-chip[data-state="blocked"],
+.brief-chip[data-severity="high"] {
+  --chip: var(--brief-error);
+}
+.brief-chip[data-severity="critical"] {
+  --chip: var(--brief-critical);
+  font-weight: 600;
+}
+.brief-chip[data-severity="low"],
+.brief-chip[data-state="changed"] {
+  --chip: var(--brief-waiting);
+}
+
+/* Checklists, plans and findings. */
+.brief-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.brief-list header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.brief-list header span {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+.brief-list :is(ul, ol) {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0;
+  list-style: none;
+}
+.brief-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.brief-list li > svg {
+  flex: none;
+  margin-top: 3px;
+  color: var(--muted);
+}
+.brief-list li[data-done] {
+  color: var(--text-secondary, var(--muted));
+}
+.brief-list li[data-done] > svg {
+  color: var(--brief-done);
+}
+.brief-list li[data-state="done"] > span:last-child {
+  color: var(--text-secondary, var(--muted));
+}
+.brief-findings li > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.brief-findings small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.brief-findings small code {
+  font-family: var(--brief-mono);
+  overflow-wrap: anywhere;
+}
+.brief-findings small a {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--green);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+}
+
+/* Metrics and their change from the previous version. */
+.brief-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 14px 22px;
+}
+.brief-metrics > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.brief-metrics dt,
+.brief-metrics small {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+.brief-metrics dd {
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.brief-unit {
+  margin-left: 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.brief-metrics .brief-delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text-secondary, var(--ink));
+  font-variant-numeric: tabular-nums;
+}
+
+/* Tables come from interactive results; here they scroll within a bound. */
+.brief-body .result-table-scroll {
+  max-height: 22rem;
+  overscroll-behavior: contain;
+}
+.brief-body .result-table-scroll th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+/* Charts: a fixed plot height, axis names as text above and below. */
+.brief-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.brief-chart header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 14px;
+}
+.brief-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 0;
+  list-style: none;
+  color: var(--text-secondary, var(--ink));
+  font-size: 0.74rem;
+}
+.brief-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.brief-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--slot);
+}
+.brief-legend i[data-repeat] {
+  background: repeating-linear-gradient(90deg, var(--slot) 0 3px, transparent 3px 5px);
+}
+.brief-legend i[data-shape="circle"] {
+  border-radius: 50%;
+}
+.brief-legend i[data-shape="diamond"] {
+  transform: rotate(45deg) scale(0.8);
+}
+.brief-legend i[data-shape="triangle"] {
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+.brief-legend i[data-shape="cross"] {
+  clip-path: polygon(35% 0, 65% 0, 65% 35%, 100% 35%, 100% 65%, 65% 65%, 65% 100%, 35% 100%, 35% 65%, 0 65%, 0 35%, 35% 35%);
+}
+.brief-legend i[data-shape="star"] {
+  clip-path: polygon(50% 0, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
+}
+.brief-legend i[data-shape="wye"] {
+  clip-path: polygon(40% 100%, 60% 100%, 60% 55%, 100% 20%, 85% 5%, 50% 38%, 15% 5%, 0 20%, 40% 55%);
+}
+.brief-legend i[data-slot="1"] { --slot: var(--brief-series-1); }
+.brief-legend i[data-slot="2"] { --slot: var(--brief-series-2); }
+.brief-legend i[data-slot="3"] { --slot: var(--brief-series-3); }
+.brief-legend i[data-slot="4"] { --slot: var(--brief-series-4); }
+.brief-legend i[data-slot="5"] { --slot: var(--brief-series-5); }
+.brief-legend i[data-slot="6"] { --slot: var(--brief-series-6); }
+.brief-legend i[data-slot="7"] { --slot: var(--brief-series-7); }
+.brief-legend i[data-slot="8"] { --slot: var(--brief-series-8); }
+.brief-chart-axis {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.brief-chart-plot {
+  height: 260px;
+  min-width: 0;
+}
+.brief-chart-plot .recharts-text {
+  font-size: 0.72rem;
+}
+.brief-chart-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-align: center;
+}
+.brief-chart-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.brief-chart-foot .is-x {
+  margin-left: auto;
+}
+.brief-chart-points {
+  flex: 1 0 100%;
+  min-height: 1.5em;
+  line-height: 1.5;
+  white-space: pre;
+}
+.brief-chart-data > summary {
+  width: fit-content;
+  padding: 2px 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.brief-chart-data > .brief-preview {
+  margin-top: 6px;
+}
+
+/* Live references. */
+.brief-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0;
+  list-style: none;
+}
+.brief-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-raised, var(--paper));
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.brief-ref > svg {
+  flex: none;
+  color: var(--muted);
+}
+.brief-ref small {
+  color: var(--muted);
+  font-family: var(--brief-mono);
+  font-size: 0.68rem;
+}
+:is(a, button).brief-ref {
+  cursor: pointer;
+}
+:is(a, button).brief-ref:hover {
+  background: var(--surface-hover, var(--cream));
+}
+:is(a, button).brief-ref:focus-visible {
+  outline: 2px solid var(--focus, var(--green));
+  outline-offset: 2px;
+}
+span.brief-ref {
+  background: transparent;
+  color: var(--text-secondary, var(--ink));
+}
+/* Core's current state: a word with a tone dot, never colour alone. */
+.brief-ref {
+  --tone: var(--muted);
+}
+.brief-ref[data-tone="ok"] {
+  --tone: var(--brief-done);
+}
+.brief-ref[data-tone="active"] {
+  --tone: var(--brief-working);
+}
+.brief-ref[data-tone="attention"] {
+  --tone: var(--brief-error);
+  border-color: color-mix(in srgb, var(--tone) 45%, var(--line));
+  background: color-mix(in srgb, var(--tone) 8%, var(--surface-raised, var(--paper)));
+}
+.brief-ref[data-tone="missing"] {
+  border-style: dashed;
+  color: var(--text-secondary, var(--muted));
+}
+.brief-ref-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ink);
+  font-size: 0.7rem;
+  font-style: normal;
+}
+.brief-ref-state::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tone);
+}
+.brief-ref-state[data-tone="missing"] {
+  color: var(--text-secondary, var(--muted));
+}
+.brief-ref-state[data-tone="missing"]::before {
+  display: none;
+}
+
+/* Attachments. Previews keep fixed frames. */
+.brief-attachments {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
+  gap: 12px;
+  padding: 0;
+  list-style: none;
+}
+/* No card around an attachment: an image comes first at its own shape,
+ * then its name, caption and details. Data and text keep their preview frame. */
+.brief-attachment {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.brief-attachment[data-kind="image"] .brief-image {
+  order: -1;
+  height: auto;
+  margin-bottom: 4px;
+  background: none;
+}
+.brief-attachment[data-kind="image"] .brief-image img {
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 240px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.brief-attachment header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+.brief-attachment header > svg {
+  flex: none;
+  color: var(--muted);
+}
+.brief-attachment header strong {
+  min-width: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.brief-attachment-open,
+.brief-attachment-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--green);
+  font-size: 0.74rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+}
+.brief-attachment-open {
+  margin-left: auto;
+}
+/* The directory gives way first; the file name always shows whole. */
+.brief-path {
+  display: flex;
+  flex: 1 1 160px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text-secondary, var(--muted));
+  font-family: var(--brief-mono);
+  font-size: 0.7rem;
+}
+.brief-path-dir {
+  flex: 0 1000 auto;
+  min-width: 1ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brief-path-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.brief-attachment-caption {
+  color: var(--text-secondary, var(--ink));
+  font-size: 0.8rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.brief-attachment-meta,
+.brief-attachment-note,
+.brief-preview small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.brief-image {
+  display: block;
+  height: 240px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--cream);
+}
+.brief-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.brief-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.brief-preview-frame {
+  height: 200px;
+  margin: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--cream);
+}
+p.brief-preview-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  text-align: center;
+}
+.brief-preview-scroll table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.74rem;
+  text-align: left;
+}
+.brief-preview-scroll :is(th, td) {
+  max-width: 220px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.brief-preview-scroll th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-soft, var(--cream));
+  color: var(--text-secondary, var(--ink));
+  font-weight: 500;
+  white-space: nowrap;
+}
+.brief-tail {
+  padding: 8px 10px;
+  color: var(--ink);
+  font-family: var(--brief-mono);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  white-space: pre;
+}
+.brief-preview-frame:focus-visible {
+  outline: 2px solid var(--focus, var(--green));
+  outline-offset: 2px;
+}
+
+@container brief-body (max-width: 520px) {
+  .brief-group {
+    padding: 10px;
+  }
+  .brief-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 14px;
+  }
+  .brief-metrics dd {
+    font-size: 1.12rem;
+  }
+  .brief-image {
+    height: 200px;
+  }
+  .brief-body .result-filter {
+    width: 100%;
+  }
+  .brief-body .result-table-tools > h4 {
+    width: 100%;
+  }
+}
+
+@media (forced-colors: active) {
+  .brief-change-mark {
+    border: 1px solid CanvasText;
+  }
+}

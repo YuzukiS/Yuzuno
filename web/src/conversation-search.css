@@ -1,0 +1,107 @@
+.conversation-search-trigger {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.modal.conversation-search-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(700px, calc(100vw - 32px));
+  background: var(--surface-raised);
+  color: var(--ink);
+  border-color: var(--line);
+}
+.conversation-search-dialog .modal-heading {
+  flex-shrink: 0;
+  min-width: 0;
+}
+.conversation-search-dialog .modal-heading > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.conversation-search-dialog .modal-heading p {
+  color: var(--text-secondary);
+}
+.conversation-search-input {
+  width: 100%;
+  min-width: 0;
+  flex-shrink: 0;
+  margin-top: 20px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--input);
+  color: var(--ink);
+  font-size: var(--reading-size);
+}
+.conversation-search-input::placeholder {
+  color: var(--text-quiet);
+}
+.conversation-search-status {
+  margin: 14px 0;
+  flex-shrink: 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+.conversation-search-results {
+  list-style: none;
+  margin: 0;
+  padding: 3px;
+  overflow: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+.conversation-search-results li + li {
+  margin-top: 8px;
+}
+.conversation-search-result {
+  display: block;
+  width: 100%;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--ink);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.conversation-search-result:hover {
+  background: var(--surface-hover);
+}
+.conversation-search-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 12px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+.conversation-search-meta strong {
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+}
+.conversation-search-meta > span {
+  white-space: nowrap;
+}
+.conversation-search-meta svg {
+  flex-shrink: 0;
+}
+.conversation-search-snippet {
+  display: block;
+  margin-top: 7px;
+  font-size: var(--reading-size);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.conversation-search-snippet mark {
+  color: var(--accent-ink);
+  background: var(--accent-wash);
+  border-radius: 2px;
+}
+[data-search-highlight="true"] {
+  background: var(--accent-wash);
+  outline: 2px solid var(--focus);
+  outline-offset: 5px;
+  border-radius: 6px;
+  scroll-margin-block: 18px;
+}

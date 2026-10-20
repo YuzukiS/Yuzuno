@@ -1,0 +1,210 @@
+.agent-settings-form {
+  display: grid;
+  gap: 18px;
+  margin-top: 20px;
+}
+.agent-settings-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+}
+/* Each setting is a row of chips, then quiet notes about the choice. */
+.agent-setting,
+.codex-permissions {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+.agent-settings-form .choice-chips {
+  margin: 0;
+}
+.agent-settings-form .choice-chips > legend {
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+}
+.agent-settings-form small,
+.agent-settings-location {
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.agent-settings-location {
+  margin: 0;
+}
+.codex-permissions .permission-preview {
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--input);
+  overflow-wrap: anywhere;
+}
+.composer-send-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.composer-bottom > span {
+  min-width: 0;
+  overflow: hidden;
+}
+.message-delivery-notice {
+  margin: 0 0 9px;
+  color: var(--accent-ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.message-delivery-notice button {
+  margin-left: 8px;
+}
+.async-question-footer .answer-delivery {
+  color: var(--text-secondary);
+}
+
+/* Codex context window: what Codex reports, the two overrides side by side,
+ * then one line on applying them with its actions. */
+.codex-context-settings {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+  gap: 12px;
+}
+.codex-context-settings > legend {
+  margin-bottom: 7px;
+  padding: 0;
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+}
+.codex-context-reported {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+.codex-context-reported-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 22px;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.codex-context-reported-head .icon-button {
+  width: 24px;
+  height: 24px;
+  margin-right: -6px;
+}
+.codex-context-figure {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.codex-context-figure strong {
+  color: var(--ink);
+  font-size: calc(15px + var(--font-adjust, 3px));
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.codex-context-stale {
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.codex-context-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+  gap: 12px 14px;
+}
+.agent-settings-form .codex-context-fields label {
+  gap: 5px;
+}
+.codex-context-input {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-raised, var(--input));
+}
+.codex-context-input:focus-within {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 1px var(--focus);
+}
+.codex-context-input input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 0 7px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+.codex-context-input input:focus {
+  background: transparent;
+}
+.codex-context-input input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.75;
+}
+.codex-context-input > span {
+  padding: 0 10px 0 6px;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.codex-context-input:has(input:disabled) {
+  opacity: 0.6;
+}
+.codex-context-more {
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.codex-context-more > summary {
+  width: fit-content;
+  cursor: pointer;
+}
+.codex-context-more > p {
+  margin: 6px 0 0;
+}
+.codex-context-apply {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.codex-context-apply > p {
+  flex: 1 1 220px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.codex-context-apply[data-tone="blocked"] > p[role="status"],
+.codex-context-apply[data-tone="wait"] > p[role="status"] {
+  color: var(--ink);
+}
+.codex-context-apply > .codex-context-note {
+  flex-basis: 100%;
+  order: 1;
+}
+.codex-context-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.codex-context-actions .secondary-button {
+  padding: 6px 12px;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}

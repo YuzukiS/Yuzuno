@@ -1,0 +1,99 @@
+{
+  "port": 4472,
+  "root": "/home/developer/yuzuno-next/target/u12-script4",
+  "checks": [
+    "created scripted native-protocol session with large payloads",
+    "busy/approval preserved; fresh send fenced; duplicate apply deduplicated; cancellation reopened; approval answered while waiting",
+    "complete: same workspace/project/native identity; matching Core/UI; duplicate request receipt",
+    "rolledBack: same workspace/project/native identity; matching Core/UI; duplicate request receipt"
+  ],
+  "native": false,
+  "scripted": true,
+  "releases": [
+    {
+      "id": "t12-a-aa58142b",
+      "manifestSha256": "5ec165aa655505d696bf848fb03b74e29f3952001249011176a8fb7f47af6e1c"
+    },
+    {
+      "id": "t12-b-aa58142b",
+      "manifestSha256": "e4340365902300e326b01ce649809573aa57cf762f41f123302b7afd7f056999"
+    },
+    {
+      "id": "t12-c-aa58142b",
+      "manifestSha256": "6c6238f4f64da1839e2e8f9ae323b4dffab77f8f0eb112d03eec77739c4d1fc5"
+    }
+  ],
+  "sessions": [
+    {
+      "id": "a85de305-be0f-421e-a7ea-6dd40e7dcc98",
+      "harness": "codex",
+      "threadId": "6973a258-ae8f-412d-b576-da1a0747d3f2",
+      "claudeSessionId": null,
+      "turnIds": [
+        "turn-7a2fad81-bd3b-4932-bdb3-5a5b79bc6f17"
+      ]
+    }
+  ],
+  "storage": [
+    {
+      "phase": "complete",
+      "layouts": [
+        1
+      ],
+      "recordsReady": true
+    },
+    {
+      "phase": "rolledBack",
+      "layouts": [
+        1
+      ],
+      "recordsReady": true
+    }
+  ],
+  "restoredSessions": [
+    {
+      "phase": "complete",
+      "sessions": [
+        {
+          "id": "a85de305-be0f-421e-a7ea-6dd40e7dcc98",
+          "harness": "codex",
+          "threadId": "6973a258-ae8f-412d-b576-da1a0747d3f2",
+          "claudeSessionId": null,
+          "turnIds": [
+            "turn-7a2fad81-bd3b-4932-bdb3-5a5b79bc6f17",
+            "turn-534808e2-679f-44f7-810f-3911446761e4"
+          ]
+        }
+      ]
+    },
+    {
+      "phase": "rolledBack",
+      "sessions": [
+        {
+          "id": "a85de305-be0f-421e-a7ea-6dd40e7dcc98",
+          "harness": "codex",
+          "threadId": "6973a258-ae8f-412d-b576-da1a0747d3f2",
+          "claudeSessionId": null,
+          "turnIds": [
+            "turn-7a2fad81-bd3b-4932-bdb3-5a5b79bc6f17",
+            "turn-534808e2-679f-44f7-810f-3911446761e4"
+          ]
+        }
+      ]
+    }
+  ],
+  "passed": true,
+  "cleanup": [
+    {
+      "pid": 49872,
+      "action": "gracefully stopped"
+    }
+  ],
+  "publicCopy": {
+    "redacted": [
+      "machine-specific absolute paths"
+    ],
+    "originalEvidence": "retained privately",
+    "outcomes": "historical observations, not rerun with example paths"
+  }
+}

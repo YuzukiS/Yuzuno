@@ -1,0 +1,31 @@
+{
+  "format": 1,
+  "file": "yuzuno-jobs-helper.exe",
+  "sha256": "f31ac69d2f2ad43ede72ca66dc686c089eed8be411b2a5e00b4efb2022dc8927",
+  "bytes": 43520,
+  "protocol": 1,
+  "source": {
+    "commit": "e3cfbdf1ed86a2cded30387fbf4eb98d9df9be21",
+    "path": "core/src/jobs/windows_job.cs",
+    "sha256": "85ae44ec5f32d0c57bb042e368e56798119960a72675010c8bcf1529db766085",
+    "blob": "7881b370b48c21f65436355f4da2bb718c20f686"
+  },
+  "compiler": {
+    "path": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe",
+    "sha256": "46809206887326d2d24db1eff1f3064de972c3451abe766b49111450a5e08e00",
+    "version": "Microsoft (R) Visual C# Compiler version 4.8.9221.0",
+    "output": "Microsoft (R) Visual C# Compiler version 4.8.9221.0\r\nfor C# 5\nCopyright (C) Microsoft Corporation. All rights reserved.\r\n\r\nThis compiler is provided as part of the Microsoft (R) .NET Framework, but only supports language versions up to C# 5, which is no longer the latest version. For compilers that support newer versions of the C# programming language, see http://go.microsoft.com/fwlink/?LinkID=533240",
+    "flags": [
+      "/noconfig",
+      "/target:exe",
+      "/platform:x64",
+      "/optimize",
+      "/r:System.dll",
+      "/r:System.Web.Extensions.dll",
+      "/r:System.Management.dll"
+    ]
+  },
+  "requires": "Windows x64 with .NET Framework 4 (v4.0.30319, part of Windows), started by a Core in WSL with Windows interop on",
+  "builtAt": "2026-10-19T02:17:43+00:00",
+  "builtOn": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.44"
+}

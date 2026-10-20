@@ -1,0 +1,216 @@
+/* Repository activity in a Project panel header (RepoActivity.tsx). Colours
+ * come from the theme variables, so every palette and dark mode follows;
+ * fallbacks are the garden light values. Each list holds a fixed number of
+ * one-line rows, so loading, refreshing and short lists keep one height. */
+.repo-activity {
+  --repo-ok: var(--success-ink, var(--state-done, var(--green)));
+  --repo-active: var(--state-working, var(--home-attention, #b08a2e));
+  --repo-attention: var(--home-error, var(--error-ink, var(--coral)));
+  --repo-muted: var(--home-ink-2, var(--text-secondary, var(--muted)));
+  --repo-rows: 5;
+  container: repo-activity / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.repo-activity .repo-activity-repo > header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.repo-activity .repo-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.repo-activity .repo-branch {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--home-soft, var(--surface-soft));
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.repo-activity .repo-asof {
+  flex: none;
+  margin-left: auto;
+  color: var(--repo-muted);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.repo-activity .repo-activity-problem {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--repo-muted);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.repo-activity .repo-activity-problem svg {
+  flex: none;
+}
+.repo-activity .repo-activity-lists {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px 14px;
+  margin-top: 4px;
+}
+.repo-activity .repo-activity-lists h5 {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 2px;
+  color: var(--repo-muted);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.repo-activity .repo-count {
+  margin-left: auto;
+  font-weight: 400;
+}
+.repo-activity .repo-activity-lists ul {
+  --repo-row: 1.7em;
+  min-height: calc(var(--repo-rows) * var(--repo-row));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+/* The host widget styles its own list items; these rows are fixed lines. */
+.repo-activity .repo-activity-lists li {
+  display: block;
+  height: var(--repo-row);
+  overflow: hidden;
+  font-size: inherit;
+  line-height: var(--repo-row);
+}
+.repo-activity .repo-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  min-width: 0;
+  padding: 0 4px;
+  margin: 0 -4px;
+  border-radius: 5px;
+  color: inherit;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.repo-activity a.repo-row:hover {
+  background: var(--home-soft, var(--surface-soft));
+}
+.repo-activity a.repo-row:focus-visible {
+  outline: 2px solid var(--home-focus, var(--focus));
+  outline-offset: -2px;
+}
+.repo-activity .repo-row code {
+  flex: none;
+  color: var(--repo-muted);
+  font-size: 0.92em;
+}
+.repo-activity .repo-row-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.repo-activity .repo-row small {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  color: var(--repo-muted);
+  font-size: 0.9em;
+  text-overflow: ellipsis;
+}
+.repo-activity .repo-draft {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--home-soft, var(--surface-soft));
+  color: var(--repo-muted);
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+.repo-activity .repo-state {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+}
+.repo-activity .repo-state.is-ok {
+  color: var(--repo-ok);
+}
+.repo-activity .repo-state.is-active {
+  color: var(--repo-active);
+}
+.repo-activity .repo-state.is-attention {
+  color: var(--repo-attention);
+}
+.repo-activity .repo-state.is-neutral {
+  color: var(--repo-muted);
+}
+.repo-activity .repo-empty {
+  color: var(--repo-muted);
+}
+.repo-activity .repo-skeleton span {
+  display: inline-block;
+  vertical-align: middle;
+  width: 80%;
+  height: 0.7em;
+  border-radius: 4px;
+  background: var(--home-soft, var(--surface-soft));
+}
+.repo-activity .repo-skeleton:nth-child(2) span {
+  width: 64%;
+}
+.repo-activity .repo-skeleton:nth-child(3) span {
+  width: 72%;
+}
+.repo-activity .repo-activity-repo.is-loading .repo-skeleton span {
+  animation: repo-activity-pulse 1.6s ease-in-out infinite;
+}
+@keyframes repo-activity-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .repo-activity .repo-activity-repo.is-loading .repo-skeleton span {
+    animation: none;
+  }
+}
+@media (forced-colors: active) {
+  .repo-activity .repo-skeleton span {
+    background: GrayText;
+  }
+}
+
+/* Narrow (≤ 520 px of panel): one column, three rows a list. */
+@container repo-activity (max-width: 520px) {
+  .repo-activity .repo-activity-lists {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .repo-activity .repo-activity-lists ul {
+    --repo-rows: 3;
+  }
+  .repo-activity .repo-activity-lists li:nth-child(n + 4) {
+    display: none;
+  }
+  .repo-activity .repo-asof {
+    margin-left: 0;
+  }
+  .repo-activity .repo-activity-repo > header {
+    flex-wrap: wrap;
+    gap: 0 8px;
+  }
+}

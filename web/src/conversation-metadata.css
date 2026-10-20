@@ -1,0 +1,38 @@
+.composer-area .composer-footnote {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 6px 14px;
+  color: var(--text-secondary);
+}
+.conversation-metadata {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+  font-size: calc(8px + var(--font-adjust, 3px));
+  color: var(--text-secondary);
+}
+.conversation-metadata > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 40%;
+}
+.conversation-metadata > span > svg {
+  flex: none;
+  color: var(--text-quiet);
+}
+.conversation-metadata > span > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer-footnote .composer-context {
+  flex: none;
+  gap: 4px;
+}
+.closed-conversation-metadata {
+  margin: 0 32px 14px;
+}

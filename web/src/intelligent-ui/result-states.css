@@ -1,0 +1,95 @@
+/* States of an interactive result in a reply: still coming, or not shown.
+   Loaded with the reply itself, never with the result chunk, so they work
+   when that chunk is what failed. Quiet: the reply text stays the focus. */
+.result-state {
+  margin: 10px 0 14px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 9px 13px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  background: color-mix(in srgb, var(--cream) 55%, transparent);
+}
+.result-placeholder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.result-unavailable > p {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 0;
+  color: var(--ink);
+}
+.result-unavailable > p > svg {
+  flex: none;
+  color: var(--yellow, #c9a640);
+}
+.result-unavailable > p > span {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+.result-retry {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 4px 9px;
+  font-size: 0.76rem;
+  color: var(--green);
+}
+.result-retry:focus-visible,
+.result-state-details > summary:focus-visible {
+  outline: 2px solid var(--focus, var(--green));
+  outline-offset: 2px;
+}
+.result-state-details {
+  margin-top: 6px;
+}
+.result-state-details > summary {
+  cursor: pointer;
+  width: fit-content;
+  padding: 3px 0;
+  font-size: 0.74rem;
+}
+.result-problem {
+  display: grid;
+  gap: 3px;
+  margin: 6px 0 8px;
+  font-size: 0.74rem;
+}
+.result-problem > div {
+  display: grid;
+  grid-template-columns: 4.5em minmax(0, 1fr);
+  gap: 8px;
+}
+.result-problem dt {
+  color: var(--muted);
+}
+.result-problem dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.result-state-details pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--cream);
+  color: var(--ink);
+  font-size: 0.74rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (prefers-reduced-motion: reduce) {
+  .result-placeholder .spin {
+    animation: none;
+  }
+}
+/* Results published with the tool, after the Turn's replies. */
+.turn-results {
+  display: grid;
+  gap: 4px;
+}

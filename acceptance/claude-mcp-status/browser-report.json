@@ -1,0 +1,11 @@
+{
+  "checks": [
+    "Six states, safe reason, official authentication help, compact independent section without overflow",
+    "Keyboard refresh coalesces duplicate clicks; failed read retains explicitly stale observation",
+    "Successful refresh restores current observation; no model, reconnect or authentication writes"
+  ],
+  "errors": [],
+  "unexpected": [],
+  "reads": 1,
+  "refreshes": 2
+}

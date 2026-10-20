@@ -1,0 +1,7 @@
+.rewind-open { display: inline-flex; align-items: center; gap: 4px; font-size: calc(9px + var(--font-adjust, 3px)); white-space: nowrap; }
+.reply-actions > .rewind-open { margin-left: auto; }
+.rewind-dialog { display: grid; gap: 12px; }
+.rewind-dialog h3, .rewind-dialog p { margin: 0; }
+.rewind-dialog p { line-height: 1.5; }
+.rewind-note { opacity: .75; }
+.rewind-input { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; font: inherit; }

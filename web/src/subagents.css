@@ -1,0 +1,170 @@
+/* Codex sub-agents (SubAgents.tsx): a group of the conversation's left dock
+   and, for the one chosen, a card beside it. The Turn keeps only anchors. */
+.subagent-anchor {
+  display: block;
+  height: 0;
+  outline: none;
+}
+
+/* A raised card beside the dock, like the turn dock's tips but readable at
+   length: a heading, the child's facts, its answer and two actions. */
+.subagent-card {
+  position: fixed;
+  z-index: 60;
+  display: grid;
+  width: min(360px, calc(100vw - 16px));
+  /* Never taller than the window, so placing it can always keep it in. */
+  max-height: min(70vh, 560px, calc(100dvh - 16px));
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 6%),
+    0 12px 32px rgb(0 0 0 / 12%);
+  color: var(--text-secondary);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  outline: none;
+}
+.subagent-card-heading {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 10px 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-raised);
+  color: var(--text-quiet);
+}
+.subagent-card-heading strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-card-heading .icon-button {
+  width: 26px;
+  height: 26px;
+}
+.subagent-card-icon {
+  display: inline-flex;
+}
+.subagent-card-list {
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+}
+.subagent-card-list button {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 8px;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.subagent-card-list button:hover {
+  background: var(--surface-hover);
+}
+.subagent-card-list strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-card-list small {
+  grid-column: 2 / -1;
+  overflow: hidden;
+  color: var(--text-quiet);
+  font-family: var(--mono, ui-monospace, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-card-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0;
+  color: var(--ink);
+}
+.subagent-card-state code {
+  overflow-wrap: anywhere;
+  color: var(--text-quiet);
+}
+.subagent-detail {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px 14px;
+}
+.subagent-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0;
+}
+.subagent-facts dt {
+  color: var(--text-quiet);
+}
+.subagent-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.subagent-answer {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-soft) 70%, transparent);
+}
+.subagent-answer p {
+  max-height: 14em;
+  margin: 4px 0 0;
+  overflow: auto;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+.subagent-answer-label {
+  color: var(--text-quiet);
+}
+.subagent-muted {
+  color: var(--text-quiet);
+}
+.subagent-note {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: var(--text-quiet);
+  font-size: 0.92em;
+}
+.subagent-error {
+  margin: 0;
+  color: var(--error-ink, var(--coral));
+}
+.subagent-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.subagent-card-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .subagent-card .updates-spin {
+    animation: none;
+  }
+}

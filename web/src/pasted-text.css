@@ -1,0 +1,124 @@
+.pasted-text-composer .cm-editor {
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--reading-size, 16px);
+}
+.pasted-text-composer .cm-editor.cm-focused {
+  outline: none;
+}
+/* The editor grows with its text, up to about a third of the window, then
+   scrolls inside. */
+.pasted-text-composer .cm-scroller {
+  font-family: inherit;
+  line-height: 1.75;
+  max-height: min(35dvh, 320px);
+  overflow: auto;
+}
+.pasted-text-composer .cm-content {
+  min-height: 64px;
+  padding: 15px 16px 6px;
+  white-space: pre-wrap;
+}
+.pasted-text-composer .cm-line {
+  padding: 0;
+}
+.pasted-text-composer .cm-placeholder {
+  color: var(--text-quiet);
+}
+.pasted-text-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  margin: 2px 3px;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.7;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pasted-text-chip:hover {
+  border-color: var(--focus);
+  background: var(--surface-hover);
+}
+.pasted-text-chip:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.cm-tooltip.pasted-text-preview-container {
+  max-width: min(420px, 85vw);
+  color: var(--ink);
+  background: var(--input);
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  box-shadow: 0 5px 18px #0002;
+}
+.pasted-text-preview {
+  padding: 10px 12px;
+}
+.pasted-text-preview pre {
+  font:
+    12px/1.5 ui-monospace,
+    monospace;
+  margin: 0 0 7px;
+  max-height: 126px;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pasted-text-preview small {
+  display: block;
+  white-space: normal;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+.pasted-text-source-label {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+}
+.pasted-text-source {
+  width: 100%;
+  height: min(50vh, 450px);
+  min-height: 160px;
+  resize: vertical;
+  white-space: pre;
+  overflow: auto;
+  tab-size: 4;
+  font:
+    var(--reading-size, 16px)/1.6 ui-monospace,
+    monospace;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 12px;
+  background: var(--input);
+}
+.pasted-text-edit-note {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin: 9px 0;
+}
+.pasted-text-dialog-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+/* CodeMirror's light theme draws a black caret, injected after this file;
+   the palette's ink keeps it visible on dark themes. */
+.pasted-text-composer .cm-editor .cm-scroller .cm-content {
+  caret-color: var(--ink);
+}
+.pasted-text-composer .cm-editor :is(.cm-cursor, .cm-dropCursor) {
+  border-left-color: var(--ink);
+}
+.pasted-text-source:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}

@@ -1,0 +1,290 @@
+.conversation-body {
+  --turn-dock-width: 58px;
+  /* Matches the global ::-webkit-scrollbar width. */
+  --conversation-scrollbar: 7px;
+  display: flex;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.conversation-body > .conversation-scroll {
+  min-width: 0;
+  /* The scrollbar's room is kept while the conversation is still short, so
+     the column below neither shifts when it appears nor counts on it. */
+  scrollbar-gutter: stable;
+}
+/* The docks float over the conversation's edges: turns on the right, left
+   of the scrollbar, which stays on the outer edge; jobs on the left
+   (work-dock.css). Each side needs room for its dock, or the column's usual
+   margin, and both sides keep the larger of the two, so the column stays
+   centred in the whole pane, scrollbar included, whichever docks show. */
+.conversation-body {
+  --gutter-left: 20px;
+  --gutter-right: 20px;
+}
+.conversation-body:has(.turn-dock) {
+  --gutter-right: calc(var(--turn-dock-width) + 2px);
+}
+.conversation-body:is(:has(.turn-dock), :has(> .work-dock:not(:empty)))
+  > .conversation-scroll
+  > .conversation-inner {
+  /* From the pane's edges; 100% is the scroller less its scrollbar. */
+  --gutter: max(
+    var(--gutter-left),
+    calc(var(--gutter-right) + var(--conversation-scrollbar))
+  );
+  --column: min(
+    890px,
+    calc(100% + var(--conversation-scrollbar) - 2 * var(--gutter))
+  );
+  width: var(--column);
+  max-width: none;
+  margin-right: 0;
+  margin-left: calc((100% + var(--conversation-scrollbar) - var(--column)) / 2);
+  padding-inline: 16px;
+}
+.conversation-body > .jump-latest {
+  bottom: 12px;
+}
+.turn-dock {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  right: calc(var(--conversation-scrollbar) + 1px);
+  translate: 0 -50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: var(--turn-dock-width);
+  max-height: calc(100% - 16px);
+  padding-block: 8px;
+  color: var(--text-quiet);
+}
+.turn-dock-heading {
+  display: flex;
+  padding: 2px 0 5px;
+  flex: none;
+}
+/* At most five numbered Turns, with up to five bars on each side that
+   shorten and fade with distance; the wheel or keyboard moves the window. */
+.turn-dock-list {
+  list-style: none;
+  width: 100%;
+  padding: 6px 0;
+  margin: 0;
+}
+.turn-dock-list li {
+  padding: 0;
+}
+/* Row heights are set inline from the component, which also uses them to
+   glide rows when the window moves. --lift (0–1) is the pointer lens. */
+.turn-dock-stop {
+  display: flex;
+  position: relative;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+}
+.turn-dock-chip {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 28px;
+  height: 22px;
+  padding-inline: 2px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  transform: scale(calc(1 + var(--lift, 0) * 0.42));
+  transition:
+    transform 140ms ease-out,
+    background 140ms,
+    border-color 140ms,
+    color 140ms;
+}
+.turn-dock-bar {
+  /* Short rounded bars: shorter and fainter with distance; near the pointer
+     a bar lengthens and comes forward. The fade spreads over however many
+     bars Settings show (--bar-span, one less than that count), so the
+     farthest is always 6 px at 0.18, as the fifth was with the default 5. */
+  --bar-width: calc(18px - (var(--bar-distance) - 1) * 12px / var(--bar-span, 4));
+  --bar-rest: calc(0.62 - (var(--bar-distance) - 1) * 0.44 / var(--bar-span, 4));
+  width: var(--bar-width);
+  height: 3px;
+  border-radius: 2px;
+  background: var(--text-secondary);
+  opacity: calc(var(--bar-rest) + var(--lift, 0) * (0.95 - var(--bar-rest)));
+  transform: scale(calc(1 + var(--lift, 0) * 0.7), calc(1 + var(--lift, 0) * 0.35));
+  transition:
+    width 160ms ease-out,
+    transform 140ms ease-out,
+    opacity 140ms,
+    background 140ms;
+}
+.turn-dock-stop[data-active="true"] .turn-dock-bar,
+.turn-dock-bar[data-running="true"] {
+  background: var(--accent-ink);
+}
+.turn-dock-stop[data-highlighted="true"] .turn-dock-bar {
+  --bar-width: 20px;
+  background: var(--ink);
+  opacity: 0.9;
+}
+.turn-dock-stop[data-active="true"] .turn-dock-chip {
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+  border-color: color-mix(in srgb, var(--focus) 50%, transparent);
+  font-weight: 650;
+}
+.turn-dock-stop[data-highlighted="true"] .turn-dock-chip {
+  color: var(--ink);
+  background: var(--surface-raised);
+  border-color: var(--line);
+}
+.turn-dock-chip[data-running="true"]::after {
+  content: "";
+  position: absolute;
+  right: -3px;
+  top: 8px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent-ink);
+}
+.turn-dock-stop:focus-visible {
+  outline: none;
+}
+.turn-dock-stop:focus-visible :is(.turn-dock-chip, .turn-dock-bar) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.turn-dock-position {
+  display: flex;
+  gap: 3px;
+  padding-top: 6px;
+  flex: none;
+  color: var(--text-secondary);
+  font-size: calc(6px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.turn-dock-position > span {
+  color: var(--text-quiet);
+}
+/* Being near the dock counts: a little room around it opens what it holds
+   only for pointer and focus. */
+.turn-dock::before {
+  content: "";
+  position: absolute;
+  inset: -20px 0 -20px -14px;
+}
+/* Back to latest, the dock's last stop, shown only while the pointer or
+   focus is at the dock. */
+.turn-dock-latest {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-top: 6px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 160ms ease,
+    color 160ms ease;
+}
+.turn-dock:is(:hover, :focus-within, [data-engaged="true"]) .turn-dock-latest {
+  opacity: 1;
+  pointer-events: auto;
+}
+.turn-dock-latest:hover,
+.turn-dock-latest:focus-visible {
+  color: var(--accent-ink);
+}
+.turn-dock-preview {
+  position: absolute;
+  z-index: 12;
+  right: calc(100% + 8px);
+  width: min(290px, calc(100cqw - 86px));
+  max-height: calc(100% - 16px);
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow: 0 8px 26px var(--palette-shadow, #00000020);
+  pointer-events: none;
+  overflow: hidden;
+  animation: dock-preview-in 150ms ease-out;
+  transition: top 140ms ease-out;
+}
+@keyframes dock-preview-in {
+  from {
+    opacity: 0;
+    translate: 6px 0;
+  }
+}
+.turn-dock-preview > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.turn-dock-preview > div > span {
+  color: var(--text-secondary);
+  font-size: 0.85em;
+}
+.turn-dock-preview p {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  margin: 7px 0;
+  line-height: 1.5;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.turn-dock-preview small {
+  color: var(--text-quiet);
+  font-size: calc(7px + var(--font-adjust, 3px));
+}
+@container conversation (max-width: 480px) {
+  .conversation-body {
+    --turn-dock-width: 46px;
+    --gutter-left: 8px;
+  }
+  /* Too narrow to give up a dock's width on both sides: the column just
+     keeps clear of each. */
+  .conversation-body:is(:has(.turn-dock), :has(> .work-dock:not(:empty)))
+    > .conversation-scroll
+    > .conversation-inner {
+    --column: calc(100% - var(--gutter-left) - var(--gutter-right));
+    margin-left: var(--gutter-left);
+    padding-inline: 8px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .turn-dock-chip,
+  .turn-dock-bar,
+  .turn-dock-preview {
+    transition: none;
+    animation: none;
+  }
+  .turn-dock-chip,
+  .turn-dock-bar {
+    transform: none;
+  }
+}

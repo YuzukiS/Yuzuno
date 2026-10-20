@@ -1,0 +1,18 @@
+.claude-mcp-status .section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.claude-mcp-status .section-title h2 { display: flex; align-items: center; gap: 6px; }
+.mcp-status-note, .mcp-auth-help, .mcp-server-list p { font-size: 11px; line-height: 1.5; color: var(--text-secondary); margin: 7px 0; overflow-wrap: anywhere; }
+.mcp-observed { color: var(--text-secondary); font-size: 10px; margin: 6px 0; }
+.mcp-server-list { list-style: none; padding: 0; margin: 8px 0 0; max-height: 300px; overflow-y: auto; }
+.mcp-server-list li { padding: 7px 0; border-bottom: 1px solid var(--line); }
+.mcp-server-list li:last-child { border-bottom: 0; }
+.mcp-server-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.mcp-server-name { font-size: 12px; flex: 1 1 90px; min-width: 0; overflow-wrap: anywhere; }
+.mcp-server-state { font-size: 10px; color: var(--text-secondary); }
+.mcp-server-state[data-state="connected"] { color: var(--accent-ink); }
+.mcp-server-state[data-state="failed"], .mcp-server-state[data-state="needs-auth"] { color: var(--ink); font-weight: 600; }
+.mcp-server-list[data-stale] { opacity: .65; }
+.mcp-auth-help a { display: inline; color: var(--accent-ink); }
+.mcp-auth-help svg { vertical-align: -1px; }
+.mcp-refreshing { animation: mcp-refresh 1s linear infinite; }
+@keyframes mcp-refresh { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .mcp-refreshing { animation: none; } }

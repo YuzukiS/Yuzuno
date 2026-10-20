@@ -1,0 +1,4362 @@
+{
+  "candidate": true,
+  "cases": [
+    {
+      "cacheJsonBytes": 698130,
+      "coldIndexBuild": {
+        "ms": 70.87365299999999,
+        "rustPeakAddedBytes": 22131344
+      },
+      "readStats": {
+        "bodyItems": 96,
+        "bodyJsonBytes": 210379,
+        "indexBuildItems": 6198,
+        "indexBuildJsonBytes": 12531638,
+        "metadataJsonBytes": 38389,
+        "source": "rows"
+      },
+      "shape": "long"
+    },
+    {
+      "clientDetail": null,
+      "destination": "latest",
+      "fullRecordBytes": 12576254,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 23.989698999999998,
+        "maxRustPeakAddedBytes": 7083694,
+        "medianMs": 17.135804,
+        "minMs": 15.616603999999999,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 20.7999,
+            "rustPeakAddedBytes": 7083694
+          },
+          {
+            "ms": 20.914711999999998,
+            "rustPeakAddedBytes": 7083694
+          },
+          {
+            "ms": 15.616603999999999,
+            "rustPeakAddedBytes": 7083694
+          },
+          {
+            "ms": 17.683315,
+            "rustPeakAddedBytes": 7083694
+          },
+          {
+            "ms": 17.135804,
+            "rustPeakAddedBytes": 7083694
+          },
+          {
+            "ms": 16.905402,
+            "rustPeakAddedBytes": 7083694
+          },
+          {
+            "ms": 15.752374999999999,
+            "rustPeakAddedBytes": 7083694
+          },
+          {
+            "ms": 23.989698999999998,
+            "rustPeakAddedBytes": 7083694
+          },
+          {
+            "ms": 16.079165999999997,
+            "rustPeakAddedBytes": 7083694
+          }
+        ]
+      },
+      "items": 6198,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        }
+      ],
+      "responseBytes": 315680,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.302743,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.26341899999999996,
+        "minMs": 0.206261,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.29547900000000005,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.245625,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.206261,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.262717,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.239433,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.26341899999999996,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.291301,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.267165,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.302743,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "long",
+      "turns": 157,
+      "viewBytes": 315680,
+      "windowReadAndProjection": {
+        "maxMs": 14.798948,
+        "maxRustPeakAddedBytes": 7071873,
+        "medianMs": 13.491651000000001,
+        "minMs": 11.850384,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 12.467712,
+            "rustPeakAddedBytes": 7071873
+          },
+          {
+            "ms": 12.33181,
+            "rustPeakAddedBytes": 7071873
+          },
+          {
+            "ms": 11.850384,
+            "rustPeakAddedBytes": 7071873
+          },
+          {
+            "ms": 12.654306,
+            "rustPeakAddedBytes": 7071873
+          },
+          {
+            "ms": 13.491651000000001,
+            "rustPeakAddedBytes": 7071873
+          },
+          {
+            "ms": 13.668750000000001,
+            "rustPeakAddedBytes": 7071873
+          },
+          {
+            "ms": 13.816596,
+            "rustPeakAddedBytes": 7071873
+          },
+          {
+            "ms": 13.727562,
+            "rustPeakAddedBytes": 7071873
+          },
+          {
+            "ms": 14.798948,
+            "rustPeakAddedBytes": 7071873
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "middle",
+      "fullRecordBytes": 12576254,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 20.096663,
+        "maxRustPeakAddedBytes": 7039304,
+        "medianMs": 16.313653000000002,
+        "minMs": 14.528854,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 16.863993,
+            "rustPeakAddedBytes": 7039304
+          },
+          {
+            "ms": 16.313653000000002,
+            "rustPeakAddedBytes": 7039304
+          },
+          {
+            "ms": 14.777124,
+            "rustPeakAddedBytes": 7039304
+          },
+          {
+            "ms": 15.318344,
+            "rustPeakAddedBytes": 7039304
+          },
+          {
+            "ms": 18.502155,
+            "rustPeakAddedBytes": 7039304
+          },
+          {
+            "ms": 15.518367999999999,
+            "rustPeakAddedBytes": 7039304
+          },
+          {
+            "ms": 20.096663,
+            "rustPeakAddedBytes": 7039304
+          },
+          {
+            "ms": 17.349823999999998,
+            "rustPeakAddedBytes": 7039304
+          },
+          {
+            "ms": 14.528854,
+            "rustPeakAddedBytes": 7039304
+          }
+        ]
+      },
+      "items": 6198,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 196419,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 196419,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 196419,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 196419,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 196419,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 196419,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 196419,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 196419,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 196419,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        }
+      ],
+      "responseBytes": 299797,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.32223,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.22175999999999998,
+        "minMs": 0.191142,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.231178,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.32223,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.22175999999999998,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.191142,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.27246600000000004,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.20303500000000002,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.238832,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.210939,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.19521,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "long",
+      "turns": 157,
+      "viewBytes": 299797,
+      "windowReadAndProjection": {
+        "maxMs": 15.900945,
+        "maxRustPeakAddedBytes": 7027447,
+        "medianMs": 12.486148,
+        "minMs": 11.686042,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 14.418759999999999,
+            "rustPeakAddedBytes": 7027447
+          },
+          {
+            "ms": 15.197721000000001,
+            "rustPeakAddedBytes": 7027447
+          },
+          {
+            "ms": 12.117348999999999,
+            "rustPeakAddedBytes": 7027447
+          },
+          {
+            "ms": 12.331995000000001,
+            "rustPeakAddedBytes": 7027447
+          },
+          {
+            "ms": 15.900945,
+            "rustPeakAddedBytes": 7027447
+          },
+          {
+            "ms": 13.233001,
+            "rustPeakAddedBytes": 7027447
+          },
+          {
+            "ms": 11.796963,
+            "rustPeakAddedBytes": 7027447
+          },
+          {
+            "ms": 11.686042,
+            "rustPeakAddedBytes": 7027447
+          },
+          {
+            "ms": 12.486148,
+            "rustPeakAddedBytes": 7027447
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "direct",
+      "fullRecordBytes": 12576254,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 17.642333,
+        "maxRustPeakAddedBytes": 7036019,
+        "medianMs": 16.286861,
+        "minMs": 14.294903,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 16.992166,
+            "rustPeakAddedBytes": 7036019
+          },
+          {
+            "ms": 15.687282,
+            "rustPeakAddedBytes": 7036019
+          },
+          {
+            "ms": 16.561562,
+            "rustPeakAddedBytes": 7036019
+          },
+          {
+            "ms": 15.05761,
+            "rustPeakAddedBytes": 7036019
+          },
+          {
+            "ms": 16.598036,
+            "rustPeakAddedBytes": 7036019
+          },
+          {
+            "ms": 17.642333,
+            "rustPeakAddedBytes": 7036019
+          },
+          {
+            "ms": 16.286861,
+            "rustPeakAddedBytes": 7036019
+          },
+          {
+            "ms": 14.294903,
+            "rustPeakAddedBytes": 7036019
+          },
+          {
+            "ms": 15.109885,
+            "rustPeakAddedBytes": 7036019
+          }
+        ]
+      },
+      "items": 6198,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 194503,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 194503,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 194503,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 194503,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 194503,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 194503,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 194503,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 194503,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 194503,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 736519,
+          "source": "rows"
+        }
+      ],
+      "responseBytes": 297886,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.352337,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.254732,
+        "minMs": 0.208344,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.23965299999999998,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.208344,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.268208,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.254732,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.30335399999999996,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.261936,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.352337,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.24881099999999998,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.21990700000000002,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "long",
+      "turns": 157,
+      "viewBytes": 297886,
+      "windowReadAndProjection": {
+        "maxMs": 14.534084,
+        "maxRustPeakAddedBytes": 7024109,
+        "medianMs": 12.439809,
+        "minMs": 11.660414,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 12.439809,
+            "rustPeakAddedBytes": 7024109
+          },
+          {
+            "ms": 11.711381,
+            "rustPeakAddedBytes": 7024109
+          },
+          {
+            "ms": 12.639101,
+            "rustPeakAddedBytes": 7024109
+          },
+          {
+            "ms": 11.722883,
+            "rustPeakAddedBytes": 7024109
+          },
+          {
+            "ms": 12.55951,
+            "rustPeakAddedBytes": 7024109
+          },
+          {
+            "ms": 12.153196,
+            "rustPeakAddedBytes": 7024109
+          },
+          {
+            "ms": 14.534084,
+            "rustPeakAddedBytes": 7024109
+          },
+          {
+            "ms": 13.649428,
+            "rustPeakAddedBytes": 7024109
+          },
+          {
+            "ms": 11.660414,
+            "rustPeakAddedBytes": 7024109
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "latest",
+      "fullRecordBytes": 12576254,
+      "held": true,
+      "heldClone": null,
+      "http": {
+        "maxMs": 11.595191,
+        "maxRustPeakAddedBytes": 6468991,
+        "medianMs": 9.397769,
+        "minMs": 8.438686,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 10.068501000000001,
+            "rustPeakAddedBytes": 6459999
+          },
+          {
+            "ms": 8.438686,
+            "rustPeakAddedBytes": 6468991
+          },
+          {
+            "ms": 9.390051999999999,
+            "rustPeakAddedBytes": 6459999
+          },
+          {
+            "ms": 9.11777,
+            "rustPeakAddedBytes": 6459999
+          },
+          {
+            "ms": 9.397769,
+            "rustPeakAddedBytes": 6459999
+          },
+          {
+            "ms": 11.595191,
+            "rustPeakAddedBytes": 6459999
+          },
+          {
+            "ms": 8.680463,
+            "rustPeakAddedBytes": 6459999
+          },
+          {
+            "ms": 9.854606,
+            "rustPeakAddedBytes": 6459999
+          },
+          {
+            "ms": 11.011125,
+            "rustPeakAddedBytes": 6459999
+          }
+        ]
+      },
+      "items": 6198,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        }
+      ],
+      "responseBytes": 315681,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.281573,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.22189,
+        "minMs": 0.182556,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.24516400000000002,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.20808400000000002,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.242639,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.242069,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.22189,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.186613,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.19497899999999999,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.281573,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.182556,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "long",
+      "turns": 157,
+      "viewBytes": 315681,
+      "windowReadAndProjection": {
+        "maxMs": 6.864676,
+        "maxRustPeakAddedBytes": 6448178,
+        "medianMs": 5.973102999999999,
+        "minMs": 5.171149,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 5.561197,
+            "rustPeakAddedBytes": 6448178
+          },
+          {
+            "ms": 5.8264190000000005,
+            "rustPeakAddedBytes": 6448178
+          },
+          {
+            "ms": 5.171149,
+            "rustPeakAddedBytes": 6448178
+          },
+          {
+            "ms": 5.973102999999999,
+            "rustPeakAddedBytes": 6448178
+          },
+          {
+            "ms": 6.864676,
+            "rustPeakAddedBytes": 6448178
+          },
+          {
+            "ms": 6.103385,
+            "rustPeakAddedBytes": 6448178
+          },
+          {
+            "ms": 6.215535,
+            "rustPeakAddedBytes": 6448178
+          },
+          {
+            "ms": 6.026178,
+            "rustPeakAddedBytes": 6448178
+          },
+          {
+            "ms": 5.851786000000001,
+            "rustPeakAddedBytes": 6448178
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "middle",
+      "fullRecordBytes": 12576254,
+      "held": true,
+      "heldClone": null,
+      "http": {
+        "maxMs": 10.052609,
+        "maxRustPeakAddedBytes": 6410883,
+        "medianMs": 8.986252,
+        "minMs": 8.670295,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 10.052609,
+            "rustPeakAddedBytes": 6410883
+          },
+          {
+            "ms": 8.670295,
+            "rustPeakAddedBytes": 6410883
+          },
+          {
+            "ms": 9.061784,
+            "rustPeakAddedBytes": 6410883
+          },
+          {
+            "ms": 8.707142,
+            "rustPeakAddedBytes": 6410883
+          },
+          {
+            "ms": 8.986252,
+            "rustPeakAddedBytes": 6410883
+          },
+          {
+            "ms": 8.928127,
+            "rustPeakAddedBytes": 6410883
+          },
+          {
+            "ms": 9.143488999999999,
+            "rustPeakAddedBytes": 6410883
+          },
+          {
+            "ms": 10.004828999999999,
+            "rustPeakAddedBytes": 6410883
+          },
+          {
+            "ms": 8.820504,
+            "rustPeakAddedBytes": 6410883
+          }
+        ]
+      },
+      "items": 6198,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        }
+      ],
+      "responseBytes": 299797,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.315237,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.19245500000000001,
+        "minMs": 0.16658499999999998,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.224465,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.19245500000000001,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.16658499999999998,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.178258,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.182535,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.267266,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.315237,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.17227599999999998,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.24852000000000002,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "long",
+      "turns": 157,
+      "viewBytes": 299797,
+      "windowReadAndProjection": {
+        "maxMs": 6.631304,
+        "maxRustPeakAddedBytes": 6399026,
+        "medianMs": 5.997374,
+        "minMs": 4.855302,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 5.670215,
+            "rustPeakAddedBytes": 6399026
+          },
+          {
+            "ms": 6.164229000000001,
+            "rustPeakAddedBytes": 6399026
+          },
+          {
+            "ms": 5.9738500000000005,
+            "rustPeakAddedBytes": 6399026
+          },
+          {
+            "ms": 5.997374,
+            "rustPeakAddedBytes": 6399026
+          },
+          {
+            "ms": 6.172284,
+            "rustPeakAddedBytes": 6399026
+          },
+          {
+            "ms": 4.855302,
+            "rustPeakAddedBytes": 6399026
+          },
+          {
+            "ms": 6.0549360000000005,
+            "rustPeakAddedBytes": 6399026
+          },
+          {
+            "ms": 5.511375,
+            "rustPeakAddedBytes": 6399026
+          },
+          {
+            "ms": 6.631304,
+            "rustPeakAddedBytes": 6399026
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "direct",
+      "fullRecordBytes": 12576254,
+      "held": true,
+      "heldClone": null,
+      "http": {
+        "maxMs": 10.034011000000001,
+        "maxRustPeakAddedBytes": 6415790,
+        "medianMs": 8.950994999999999,
+        "minMs": 7.632163,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 7.962083999999999,
+            "rustPeakAddedBytes": 6407598
+          },
+          {
+            "ms": 8.906099000000001,
+            "rustPeakAddedBytes": 6407598
+          },
+          {
+            "ms": 8.110383,
+            "rustPeakAddedBytes": 6407598
+          },
+          {
+            "ms": 10.034011000000001,
+            "rustPeakAddedBytes": 6407598
+          },
+          {
+            "ms": 7.632163,
+            "rustPeakAddedBytes": 6407598
+          },
+          {
+            "ms": 9.521199,
+            "rustPeakAddedBytes": 6407598
+          },
+          {
+            "ms": 8.950994999999999,
+            "rustPeakAddedBytes": 6407598
+          },
+          {
+            "ms": 9.919538000000001,
+            "rustPeakAddedBytes": 6407598
+          },
+          {
+            "ms": 9.099808,
+            "rustPeakAddedBytes": 6415790
+          }
+        ]
+      },
+      "items": 6198,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        }
+      ],
+      "responseBytes": 297886,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.24674700000000002,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.208435,
+        "minMs": 0.166626,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.177346,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.212813,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.24503300000000003,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.166626,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.204557,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.24674700000000002,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.23238999999999999,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.18970900000000002,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.208435,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "long",
+      "turns": 157,
+      "viewBytes": 297886,
+      "windowReadAndProjection": {
+        "maxMs": 7.724046,
+        "maxRustPeakAddedBytes": 6395688,
+        "medianMs": 5.969581,
+        "minMs": 5.103576,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 5.333336,
+            "rustPeakAddedBytes": 6395688
+          },
+          {
+            "ms": 5.969581,
+            "rustPeakAddedBytes": 6395688
+          },
+          {
+            "ms": 6.408021,
+            "rustPeakAddedBytes": 6395688
+          },
+          {
+            "ms": 5.35697,
+            "rustPeakAddedBytes": 6395688
+          },
+          {
+            "ms": 5.103576,
+            "rustPeakAddedBytes": 6395688
+          },
+          {
+            "ms": 5.58044,
+            "rustPeakAddedBytes": 6395688
+          },
+          {
+            "ms": 7.724046,
+            "rustPeakAddedBytes": 6395688
+          },
+          {
+            "ms": 7.18981,
+            "rustPeakAddedBytes": 6395688
+          },
+          {
+            "ms": 7.035568,
+            "rustPeakAddedBytes": 6395688
+          }
+        ]
+      }
+    },
+    {
+      "held": true,
+      "http": {
+        "maxMs": 11.325383,
+        "maxRustPeakAddedBytes": 6468960,
+        "medianMs": 9.285805,
+        "minMs": 8.265157,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 10.344460999999999,
+            "rustPeakAddedBytes": 6468181
+          },
+          {
+            "ms": 8.265157,
+            "rustPeakAddedBytes": 6468240
+          },
+          {
+            "ms": 8.578280000000001,
+            "rustPeakAddedBytes": 6468240
+          },
+          {
+            "ms": 10.920224,
+            "rustPeakAddedBytes": 6468249
+          },
+          {
+            "ms": 8.747710000000001,
+            "rustPeakAddedBytes": 6468249
+          },
+          {
+            "ms": 9.082985,
+            "rustPeakAddedBytes": 6468951
+          },
+          {
+            "ms": 9.285805,
+            "rustPeakAddedBytes": 6468258
+          },
+          {
+            "ms": 11.325383,
+            "rustPeakAddedBytes": 6468258
+          },
+          {
+            "ms": 10.252078,
+            "rustPeakAddedBytes": 6468960
+          }
+        ]
+      },
+      "shape": "long",
+      "streamWrites": {
+        "maxMs": 8.498672000000001,
+        "maxRustPeakAddedBytes": 0,
+        "medianMs": 6.653405,
+        "minMs": 0.8322660000000001,
+        "runs": 4,
+        "samples": [
+          {
+            "ms": 1.384781,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 0.8322660000000001,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 6.653405,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 8.498672000000001,
+            "rustPeakAddedBytes": 0
+          }
+        ]
+      },
+      "streaming": true
+    },
+    {
+      "cacheJsonBytes": 2792289,
+      "coldIndexBuild": {
+        "ms": 333.36847400000005,
+        "rustPeakAddedBytes": 87138974
+      },
+      "readStats": {
+        "bodyItems": 96,
+        "bodyJsonBytes": 210379,
+        "indexBuildItems": 24789,
+        "indexBuildJsonBytes": 50126393,
+        "metadataJsonBytes": 153547,
+        "source": "rows"
+      },
+      "shape": "long4"
+    },
+    {
+      "clientDetail": null,
+      "destination": "latest",
+      "fullRecordBytes": 50304815,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 90.36598599999999,
+        "maxRustPeakAddedBytes": 26775004,
+        "medianMs": 62.271009,
+        "minMs": 53.142302,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 79.179091,
+            "rustPeakAddedBytes": 26775004
+          },
+          {
+            "ms": 90.36598599999999,
+            "rustPeakAddedBytes": 26775004
+          },
+          {
+            "ms": 76.788371,
+            "rustPeakAddedBytes": 26775004
+          },
+          {
+            "ms": 53.142302,
+            "rustPeakAddedBytes": 26775004
+          },
+          {
+            "ms": 62.271009,
+            "rustPeakAddedBytes": 26775004
+          },
+          {
+            "ms": 65.18913699999999,
+            "rustPeakAddedBytes": 26775004
+          },
+          {
+            "ms": 57.685559999999995,
+            "rustPeakAddedBytes": 26775004
+          },
+          {
+            "ms": 59.91985,
+            "rustPeakAddedBytes": 26775004
+          },
+          {
+            "ms": 54.465837,
+            "rustPeakAddedBytes": 26775004
+          }
+        ]
+      },
+      "items": 24789,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 96,
+          "bodyJsonBytes": 210379,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        }
+      ],
+      "responseBytes": 623427,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.640723,
+        "maxRustPeakAddedBytes": 667648,
+        "medianMs": 0.554019,
+        "minMs": 0.469659,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.622258,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.569879,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.49684999999999996,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.469659,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.486211,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.554019,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.568947,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.484608,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.640723,
+            "rustPeakAddedBytes": 667648
+          }
+        ]
+      },
+      "shape": "long4",
+      "turns": 628,
+      "viewBytes": 623427,
+      "windowReadAndProjection": {
+        "maxMs": 59.715336,
+        "maxRustPeakAddedBytes": 26763183,
+        "medianMs": 55.206059,
+        "minMs": 49.153179,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 55.553326,
+            "rustPeakAddedBytes": 26763183
+          },
+          {
+            "ms": 59.715336,
+            "rustPeakAddedBytes": 26763183
+          },
+          {
+            "ms": 55.206059,
+            "rustPeakAddedBytes": 26763183
+          },
+          {
+            "ms": 49.153179,
+            "rustPeakAddedBytes": 26763183
+          },
+          {
+            "ms": 53.830453,
+            "rustPeakAddedBytes": 26763183
+          },
+          {
+            "ms": 57.814115,
+            "rustPeakAddedBytes": 26763183
+          },
+          {
+            "ms": 56.939931,
+            "rustPeakAddedBytes": 26763183
+          },
+          {
+            "ms": 51.666388,
+            "rustPeakAddedBytes": 26763183
+          },
+          {
+            "ms": 51.740018,
+            "rustPeakAddedBytes": 26763183
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "middle",
+      "fullRecordBytes": 50304815,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 73.13525899999999,
+        "maxRustPeakAddedBytes": 26575490,
+        "medianMs": 58.450507,
+        "minMs": 51.542212,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 57.811281,
+            "rustPeakAddedBytes": 26575490
+          },
+          {
+            "ms": 73.13525899999999,
+            "rustPeakAddedBytes": 26575490
+          },
+          {
+            "ms": 53.911114000000005,
+            "rustPeakAddedBytes": 26575490
+          },
+          {
+            "ms": 53.086911,
+            "rustPeakAddedBytes": 26575490
+          },
+          {
+            "ms": 68.208673,
+            "rustPeakAddedBytes": 26575490
+          },
+          {
+            "ms": 62.760208,
+            "rustPeakAddedBytes": 26575490
+          },
+          {
+            "ms": 60.659919,
+            "rustPeakAddedBytes": 26575490
+          },
+          {
+            "ms": 51.542212,
+            "rustPeakAddedBytes": 26575490
+          },
+          {
+            "ms": 58.450507,
+            "rustPeakAddedBytes": 22053132
+          }
+        ]
+      },
+      "items": 24789,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 142534,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 142534,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 142534,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 142534,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 142534,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 142534,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 142534,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 142534,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 142534,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        }
+      ],
+      "responseBytes": 552999,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.6052660000000001,
+        "maxRustPeakAddedBytes": 667648,
+        "medianMs": 0.481211,
+        "minMs": 0.443751,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.518562,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.471553,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.516588,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.462485,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.443751,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.6052660000000001,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.461583,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.481211,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.49405499999999997,
+            "rustPeakAddedBytes": 667648
+          }
+        ]
+      },
+      "shape": "long4",
+      "turns": 628,
+      "viewBytes": 552999,
+      "windowReadAndProjection": {
+        "maxMs": 57.888946,
+        "maxRustPeakAddedBytes": 26563627,
+        "medianMs": 53.330086,
+        "minMs": 49.299186,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 57.888946,
+            "rustPeakAddedBytes": 26563627
+          },
+          {
+            "ms": 53.330086,
+            "rustPeakAddedBytes": 26563627
+          },
+          {
+            "ms": 53.49555,
+            "rustPeakAddedBytes": 26563627
+          },
+          {
+            "ms": 52.336365,
+            "rustPeakAddedBytes": 26563627
+          },
+          {
+            "ms": 54.190887000000004,
+            "rustPeakAddedBytes": 26563627
+          },
+          {
+            "ms": 51.359597,
+            "rustPeakAddedBytes": 26563627
+          },
+          {
+            "ms": 54.841257999999996,
+            "rustPeakAddedBytes": 26563627
+          },
+          {
+            "ms": 50.817885,
+            "rustPeakAddedBytes": 26563627
+          },
+          {
+            "ms": 49.299186,
+            "rustPeakAddedBytes": 26563627
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "direct",
+      "fullRecordBytes": 50304815,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 67.437319,
+        "maxRustPeakAddedBytes": 26562318,
+        "medianMs": 57.829782,
+        "minMs": 54.387209,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 55.776146999999995,
+            "rustPeakAddedBytes": 26562318
+          },
+          {
+            "ms": 65.905784,
+            "rustPeakAddedBytes": 26562318
+          },
+          {
+            "ms": 57.829782,
+            "rustPeakAddedBytes": 26562318
+          },
+          {
+            "ms": 54.691855,
+            "rustPeakAddedBytes": 26562318
+          },
+          {
+            "ms": 67.437319,
+            "rustPeakAddedBytes": 26562318
+          },
+          {
+            "ms": 54.387209,
+            "rustPeakAddedBytes": 26562318
+          },
+          {
+            "ms": 62.389066,
+            "rustPeakAddedBytes": 26562318
+          },
+          {
+            "ms": 55.727406,
+            "rustPeakAddedBytes": 26562318
+          },
+          {
+            "ms": 60.840851,
+            "rustPeakAddedBytes": 26562318
+          }
+        ]
+      },
+      "items": 24789,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 133540,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 133540,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 133540,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 133540,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 133540,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 133540,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 133540,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 133540,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 133540,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 2945836,
+          "source": "rows"
+        }
+      ],
+      "responseBytes": 543998,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.927196,
+        "maxRustPeakAddedBytes": 667648,
+        "medianMs": 0.643859,
+        "minMs": 0.553819,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.611798,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.629391,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.553819,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.6543779999999999,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.649009,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.619914,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.643859,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.663916,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.927196,
+            "rustPeakAddedBytes": 667648
+          }
+        ]
+      },
+      "shape": "long4",
+      "turns": 628,
+      "viewBytes": 543998,
+      "windowReadAndProjection": {
+        "maxMs": 57.484324,
+        "maxRustPeakAddedBytes": 26550414,
+        "medianMs": 54.510721,
+        "minMs": 51.302227,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 53.989988000000004,
+            "rustPeakAddedBytes": 26550414
+          },
+          {
+            "ms": 54.68353,
+            "rustPeakAddedBytes": 26550414
+          },
+          {
+            "ms": 51.302227,
+            "rustPeakAddedBytes": 26550414
+          },
+          {
+            "ms": 54.510721,
+            "rustPeakAddedBytes": 26550414
+          },
+          {
+            "ms": 57.484324,
+            "rustPeakAddedBytes": 26550414
+          },
+          {
+            "ms": 54.215793,
+            "rustPeakAddedBytes": 26550414
+          },
+          {
+            "ms": 56.003907999999996,
+            "rustPeakAddedBytes": 26548190
+          },
+          {
+            "ms": 52.849166000000004,
+            "rustPeakAddedBytes": 26550414
+          },
+          {
+            "ms": 55.894602,
+            "rustPeakAddedBytes": 26550414
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "latest",
+      "fullRecordBytes": 50304815,
+      "held": true,
+      "heldClone": null,
+      "http": {
+        "maxMs": 41.400673,
+        "maxRustPeakAddedBytes": 24306154,
+        "medianMs": 33.271815000000004,
+        "minMs": 31.762248,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 39.955918,
+            "rustPeakAddedBytes": 24297162
+          },
+          {
+            "ms": 31.762248,
+            "rustPeakAddedBytes": 24306154
+          },
+          {
+            "ms": 32.207391,
+            "rustPeakAddedBytes": 24297162
+          },
+          {
+            "ms": 35.326687,
+            "rustPeakAddedBytes": 24297162
+          },
+          {
+            "ms": 41.400673,
+            "rustPeakAddedBytes": 24297162
+          },
+          {
+            "ms": 33.271815000000004,
+            "rustPeakAddedBytes": 24297162
+          },
+          {
+            "ms": 36.008067,
+            "rustPeakAddedBytes": 24297162
+          },
+          {
+            "ms": 32.737544,
+            "rustPeakAddedBytes": 24297162
+          },
+          {
+            "ms": 33.191278999999994,
+            "rustPeakAddedBytes": 24297162
+          }
+        ]
+      },
+      "items": 24789,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        }
+      ],
+      "responseBytes": 623428,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.5778340000000001,
+        "maxRustPeakAddedBytes": 667648,
+        "medianMs": 0.410046,
+        "minMs": 0.34856,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.411088,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.408293,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.421788,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.40021700000000004,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.5778340000000001,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.34856,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.410046,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.351545,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.561502,
+            "rustPeakAddedBytes": 667648
+          }
+        ]
+      },
+      "shape": "long4",
+      "turns": 628,
+      "viewBytes": 623428,
+      "windowReadAndProjection": {
+        "maxMs": 35.775655,
+        "maxRustPeakAddedBytes": 24285341,
+        "medianMs": 28.767468,
+        "minMs": 27.29959,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 28.956129,
+            "rustPeakAddedBytes": 24285341
+          },
+          {
+            "ms": 28.767468,
+            "rustPeakAddedBytes": 24285341
+          },
+          {
+            "ms": 28.583981,
+            "rustPeakAddedBytes": 24285341
+          },
+          {
+            "ms": 28.221465000000002,
+            "rustPeakAddedBytes": 24285341
+          },
+          {
+            "ms": 35.775655,
+            "rustPeakAddedBytes": 24285341
+          },
+          {
+            "ms": 32.688685,
+            "rustPeakAddedBytes": 24285341
+          },
+          {
+            "ms": 27.29959,
+            "rustPeakAddedBytes": 24285341
+          },
+          {
+            "ms": 30.779316,
+            "rustPeakAddedBytes": 24285341
+          },
+          {
+            "ms": 27.886802,
+            "rustPeakAddedBytes": 24285341
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "middle",
+      "fullRecordBytes": 50304815,
+      "held": true,
+      "heldClone": null,
+      "http": {
+        "maxMs": 37.803175,
+        "maxRustPeakAddedBytes": 24092922,
+        "medianMs": 33.155593999999994,
+        "minMs": 31.693498,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 32.860111999999994,
+            "rustPeakAddedBytes": 24092922
+          },
+          {
+            "ms": 33.155593999999994,
+            "rustPeakAddedBytes": 24092922
+          },
+          {
+            "ms": 33.268455,
+            "rustPeakAddedBytes": 24092922
+          },
+          {
+            "ms": 37.803175,
+            "rustPeakAddedBytes": 24092922
+          },
+          {
+            "ms": 35.799597000000006,
+            "rustPeakAddedBytes": 24092922
+          },
+          {
+            "ms": 32.199757000000005,
+            "rustPeakAddedBytes": 24092922
+          },
+          {
+            "ms": 33.421397999999996,
+            "rustPeakAddedBytes": 24092922
+          },
+          {
+            "ms": 31.693498,
+            "rustPeakAddedBytes": 24092922
+          },
+          {
+            "ms": 32.211148,
+            "rustPeakAddedBytes": 24092922
+          }
+        ]
+      },
+      "items": 24789,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        }
+      ],
+      "responseBytes": 552999,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.457636,
+        "maxRustPeakAddedBytes": 667648,
+        "medianMs": 0.356715,
+        "minMs": 0.339643,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.350163,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.36633299999999996,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.457636,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.387835,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.377725,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.356715,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.339643,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.34832,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.346696,
+            "rustPeakAddedBytes": 667648
+          }
+        ]
+      },
+      "shape": "long4",
+      "turns": 628,
+      "viewBytes": 552999,
+      "windowReadAndProjection": {
+        "maxMs": 38.249618,
+        "maxRustPeakAddedBytes": 24081059,
+        "medianMs": 29.541695,
+        "minMs": 27.597303,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 28.602571,
+            "rustPeakAddedBytes": 24081059
+          },
+          {
+            "ms": 34.343474,
+            "rustPeakAddedBytes": 24081059
+          },
+          {
+            "ms": 28.549225,
+            "rustPeakAddedBytes": 24081059
+          },
+          {
+            "ms": 37.791650000000004,
+            "rustPeakAddedBytes": 24081059
+          },
+          {
+            "ms": 38.249618,
+            "rustPeakAddedBytes": 24081059
+          },
+          {
+            "ms": 29.541695,
+            "rustPeakAddedBytes": 24081059
+          },
+          {
+            "ms": 30.230317,
+            "rustPeakAddedBytes": 24081059
+          },
+          {
+            "ms": 28.227045,
+            "rustPeakAddedBytes": 24081059
+          },
+          {
+            "ms": 27.597303,
+            "rustPeakAddedBytes": 24081059
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "direct",
+      "fullRecordBytes": 50304815,
+      "held": true,
+      "heldClone": null,
+      "http": {
+        "maxMs": 36.399396,
+        "maxRustPeakAddedBytes": 24087942,
+        "medianMs": 33.421705,
+        "minMs": 32.04755900000001,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 35.642584,
+            "rustPeakAddedBytes": 24079750
+          },
+          {
+            "ms": 33.237018,
+            "rustPeakAddedBytes": 24079750
+          },
+          {
+            "ms": 33.421705,
+            "rustPeakAddedBytes": 24079750
+          },
+          {
+            "ms": 33.414466,
+            "rustPeakAddedBytes": 24079750
+          },
+          {
+            "ms": 36.399396,
+            "rustPeakAddedBytes": 24079750
+          },
+          {
+            "ms": 32.04755900000001,
+            "rustPeakAddedBytes": 24079750
+          },
+          {
+            "ms": 34.05127,
+            "rustPeakAddedBytes": 24079750
+          },
+          {
+            "ms": 34.741136999999995,
+            "rustPeakAddedBytes": 24079750
+          },
+          {
+            "ms": 33.219465,
+            "rustPeakAddedBytes": 24087942
+          }
+        ]
+      },
+      "items": 24789,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        }
+      ],
+      "responseBytes": 543998,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.5067900000000001,
+        "maxRustPeakAddedBytes": 667648,
+        "medianMs": 0.402502,
+        "minMs": 0.339272,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.37492899999999996,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.447747,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.403714,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.45366900000000004,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.372896,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.399646,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.402502,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.339272,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.5067900000000001,
+            "rustPeakAddedBytes": 667648
+          }
+        ]
+      },
+      "shape": "long4",
+      "turns": 628,
+      "viewBytes": 543998,
+      "windowReadAndProjection": {
+        "maxMs": 36.175833,
+        "maxRustPeakAddedBytes": 24067846,
+        "medianMs": 30.037112,
+        "minMs": 27.507884,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 27.963656999999998,
+            "rustPeakAddedBytes": 24067846
+          },
+          {
+            "ms": 36.175833,
+            "rustPeakAddedBytes": 24067846
+          },
+          {
+            "ms": 32.083296999999995,
+            "rustPeakAddedBytes": 24067846
+          },
+          {
+            "ms": 29.846245,
+            "rustPeakAddedBytes": 24067846
+          },
+          {
+            "ms": 30.037112,
+            "rustPeakAddedBytes": 24067846
+          },
+          {
+            "ms": 30.113425999999997,
+            "rustPeakAddedBytes": 24067846
+          },
+          {
+            "ms": 28.722483,
+            "rustPeakAddedBytes": 24067846
+          },
+          {
+            "ms": 27.507884,
+            "rustPeakAddedBytes": 24067846
+          },
+          {
+            "ms": 33.032402000000005,
+            "rustPeakAddedBytes": 24067846
+          }
+        ]
+      }
+    },
+    {
+      "held": true,
+      "http": {
+        "maxMs": 44.273027,
+        "maxRustPeakAddedBytes": 24306156,
+        "medianMs": 33.764959,
+        "minMs": 29.612282,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 40.059653,
+            "rustPeakAddedBytes": 24305350
+          },
+          {
+            "ms": 33.764959,
+            "rustPeakAddedBytes": 24304688
+          },
+          {
+            "ms": 36.9771,
+            "rustPeakAddedBytes": 24304697
+          },
+          {
+            "ms": 30.238614000000002,
+            "rustPeakAddedBytes": 24304664
+          },
+          {
+            "ms": 44.273027,
+            "rustPeakAddedBytes": 24304779
+          },
+          {
+            "ms": 29.612282,
+            "rustPeakAddedBytes": 24306156
+          },
+          {
+            "ms": 33.566242,
+            "rustPeakAddedBytes": 24304691
+          },
+          {
+            "ms": 36.072297000000006,
+            "rustPeakAddedBytes": 24304700
+          },
+          {
+            "ms": 32.054191,
+            "rustPeakAddedBytes": 24304837
+          }
+        ]
+      },
+      "shape": "long4",
+      "streamWrites": {
+        "maxMs": 16.38926,
+        "maxRustPeakAddedBytes": 0,
+        "medianMs": 11.232985,
+        "minMs": 8.7743,
+        "runs": 10,
+        "samples": [
+          {
+            "ms": 11.793245,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 10.568677000000001,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 12.411344,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 9.986596,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 9.337126,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 8.7743,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 16.38926,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 11.232985,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 13.565743999999999,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 10.804834,
+            "rustPeakAddedBytes": 0
+          }
+        ]
+      },
+      "streaming": true
+    },
+    {
+      "cacheJsonBytes": 753738,
+      "coldIndexBuild": {
+        "ms": 69.158592,
+        "rustPeakAddedBytes": 24509039
+      },
+      "readStats": {
+        "bodyItems": 97,
+        "bodyJsonBytes": 1161509,
+        "indexBuildItems": 6199,
+        "indexBuildJsonBytes": 13537218,
+        "metadataJsonBytes": 1307,
+        "source": "rows"
+      },
+      "shape": "giant"
+    },
+    {
+      "clientDetail": null,
+      "destination": "latest",
+      "fullRecordBytes": 13544732,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 17.77,
+        "maxRustPeakAddedBytes": 8558355,
+        "medianMs": 15.62094,
+        "minMs": 14.817089000000001,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 15.62094,
+            "rustPeakAddedBytes": 8558355
+          },
+          {
+            "ms": 14.921577000000001,
+            "rustPeakAddedBytes": 8558355
+          },
+          {
+            "ms": 16.460271,
+            "rustPeakAddedBytes": 8558355
+          },
+          {
+            "ms": 15.246402,
+            "rustPeakAddedBytes": 8558355
+          },
+          {
+            "ms": 17.412743000000003,
+            "rustPeakAddedBytes": 8558355
+          },
+          {
+            "ms": 14.817089000000001,
+            "rustPeakAddedBytes": 8558355
+          },
+          {
+            "ms": 17.77,
+            "rustPeakAddedBytes": 8558355
+          },
+          {
+            "ms": 15.286529,
+            "rustPeakAddedBytes": 8558355
+          },
+          {
+            "ms": 15.814466999999999,
+            "rustPeakAddedBytes": 8558355
+          }
+        ]
+      },
+      "items": 6199,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 97,
+          "bodyJsonBytes": 1161509,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 97,
+          "bodyJsonBytes": 1161509,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 97,
+          "bodyJsonBytes": 1161509,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 97,
+          "bodyJsonBytes": 1161509,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 97,
+          "bodyJsonBytes": 1161509,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 97,
+          "bodyJsonBytes": 1161509,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 97,
+          "bodyJsonBytes": 1161509,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 97,
+          "bodyJsonBytes": 1161509,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 97,
+          "bodyJsonBytes": 1161509,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        }
+      ],
+      "responseBytes": 229167,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.298786,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.173499,
+        "minMs": 0.15304,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.298786,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.184359,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.165122,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.15304,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.173499,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.16921,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.18057199999999998,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.162989,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.21121900000000002,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "giant",
+      "turns": 1,
+      "viewBytes": 229167,
+      "windowReadAndProjection": {
+        "maxMs": 19.604052,
+        "maxRustPeakAddedBytes": 8546534,
+        "medianMs": 11.786835,
+        "minMs": 11.111405,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 19.604052,
+            "rustPeakAddedBytes": 8546534
+          },
+          {
+            "ms": 12.124644,
+            "rustPeakAddedBytes": 8546534
+          },
+          {
+            "ms": 11.786835,
+            "rustPeakAddedBytes": 8546534
+          },
+          {
+            "ms": 12.13916,
+            "rustPeakAddedBytes": 8546534
+          },
+          {
+            "ms": 14.612262000000001,
+            "rustPeakAddedBytes": 8546534
+          },
+          {
+            "ms": 11.111405,
+            "rustPeakAddedBytes": 8546534
+          },
+          {
+            "ms": 11.674278999999999,
+            "rustPeakAddedBytes": 8546534
+          },
+          {
+            "ms": 11.400502,
+            "rustPeakAddedBytes": 8546534
+          },
+          {
+            "ms": 11.373261000000001,
+            "rustPeakAddedBytes": 8546534
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "middle",
+      "fullRecordBytes": 13544732,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 14.127915,
+        "maxRustPeakAddedBytes": 5915764,
+        "medianMs": 12.254767999999999,
+        "minMs": 11.082961000000001,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 11.16333,
+            "rustPeakAddedBytes": 5915764
+          },
+          {
+            "ms": 14.127915,
+            "rustPeakAddedBytes": 5915764
+          },
+          {
+            "ms": 12.254767999999999,
+            "rustPeakAddedBytes": 5915764
+          },
+          {
+            "ms": 11.418406000000001,
+            "rustPeakAddedBytes": 5915764
+          },
+          {
+            "ms": 11.082961000000001,
+            "rustPeakAddedBytes": 5915764
+          },
+          {
+            "ms": 13.834349,
+            "rustPeakAddedBytes": 5915764
+          },
+          {
+            "ms": 12.771447,
+            "rustPeakAddedBytes": 5915764
+          },
+          {
+            "ms": 12.43516,
+            "rustPeakAddedBytes": 5915764
+          },
+          {
+            "ms": 11.930214999999999,
+            "rustPeakAddedBytes": 5915764
+          }
+        ]
+      },
+      "items": 6199,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 98,
+          "bodyJsonBytes": 143007,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 98,
+          "bodyJsonBytes": 143007,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 98,
+          "bodyJsonBytes": 143007,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 98,
+          "bodyJsonBytes": 143007,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 98,
+          "bodyJsonBytes": 143007,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 98,
+          "bodyJsonBytes": 143007,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 98,
+          "bodyJsonBytes": 143007,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 98,
+          "bodyJsonBytes": 143007,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 98,
+          "bodyJsonBytes": 143007,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        }
+      ],
+      "responseBytes": 155774,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.159051,
+        "maxRustPeakAddedBytes": 166912,
+        "medianMs": 0.12319300000000001,
+        "minMs": 0.120628,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.12319300000000001,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.143261,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.12194100000000001,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.159051,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.12150999999999999,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.122031,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.123454,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.12683,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.120628,
+            "rustPeakAddedBytes": 166912
+          }
+        ]
+      },
+      "shape": "giant",
+      "turns": 1,
+      "viewBytes": 155774,
+      "windowReadAndProjection": {
+        "maxMs": 12.89912,
+        "maxRustPeakAddedBytes": 5903938,
+        "medianMs": 9.763803,
+        "minMs": 9.489845,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 9.613237999999999,
+            "rustPeakAddedBytes": 5903938
+          },
+          {
+            "ms": 10.057263,
+            "rustPeakAddedBytes": 5903938
+          },
+          {
+            "ms": 9.763803,
+            "rustPeakAddedBytes": 5903938
+          },
+          {
+            "ms": 12.89912,
+            "rustPeakAddedBytes": 5903938
+          },
+          {
+            "ms": 9.54557,
+            "rustPeakAddedBytes": 5903938
+          },
+          {
+            "ms": 9.728155000000001,
+            "rustPeakAddedBytes": 5903938
+          },
+          {
+            "ms": 11.324628,
+            "rustPeakAddedBytes": 5903938
+          },
+          {
+            "ms": 9.847221999999999,
+            "rustPeakAddedBytes": 5903938
+          },
+          {
+            "ms": 9.489845,
+            "rustPeakAddedBytes": 5903938
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "direct",
+      "fullRecordBytes": 13544732,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 15.053825,
+        "maxRustPeakAddedBytes": 5972740,
+        "medianMs": 13.534572,
+        "minMs": 11.993343,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 13.992219,
+            "rustPeakAddedBytes": 5972740
+          },
+          {
+            "ms": 15.053825,
+            "rustPeakAddedBytes": 5972740
+          },
+          {
+            "ms": 11.993343,
+            "rustPeakAddedBytes": 5972740
+          },
+          {
+            "ms": 12.955021,
+            "rustPeakAddedBytes": 5972740
+          },
+          {
+            "ms": 13.534572,
+            "rustPeakAddedBytes": 5972740
+          },
+          {
+            "ms": 14.190854,
+            "rustPeakAddedBytes": 5972740
+          },
+          {
+            "ms": 12.820119,
+            "rustPeakAddedBytes": 5972740
+          },
+          {
+            "ms": 14.353758,
+            "rustPeakAddedBytes": 5972740
+          },
+          {
+            "ms": 12.38189,
+            "rustPeakAddedBytes": 5972740
+          }
+        ]
+      },
+      "items": 6199,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 163636,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 163636,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 163636,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 163636,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 163636,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 163636,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 163636,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 163636,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        },
+        {
+          "bodyItems": 99,
+          "bodyJsonBytes": 163636,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 755045,
+          "source": "rows"
+        }
+      ],
+      "responseBytes": 176165,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.17219600000000002,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.136078,
+        "minMs": 0.13276100000000002,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.17219600000000002,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.133102,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.136078,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.13276100000000002,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.134454,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.134535,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.154884,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.151026,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.14165799999999998,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "giant",
+      "turns": 1,
+      "viewBytes": 176165,
+      "windowReadAndProjection": {
+        "maxMs": 12.938052,
+        "maxRustPeakAddedBytes": 5960852,
+        "medianMs": 11.736291,
+        "minMs": 9.777529999999999,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 9.777529999999999,
+            "rustPeakAddedBytes": 5960852
+          },
+          {
+            "ms": 9.872688,
+            "rustPeakAddedBytes": 5960852
+          },
+          {
+            "ms": 9.833611000000001,
+            "rustPeakAddedBytes": 5960852
+          },
+          {
+            "ms": 10.298335,
+            "rustPeakAddedBytes": 5960852
+          },
+          {
+            "ms": 11.736291,
+            "rustPeakAddedBytes": 5960852
+          },
+          {
+            "ms": 12.052757000000001,
+            "rustPeakAddedBytes": 5960852
+          },
+          {
+            "ms": 12.938052,
+            "rustPeakAddedBytes": 5960852
+          },
+          {
+            "ms": 12.441203,
+            "rustPeakAddedBytes": 5960852
+          },
+          {
+            "ms": 11.761489,
+            "rustPeakAddedBytes": 5960852
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "latest",
+      "fullRecordBytes": 13544732,
+      "held": true,
+      "heldClone": null,
+      "http": {
+        "maxMs": 8.808290999999999,
+        "maxRustPeakAddedBytes": 6922523,
+        "medianMs": 7.792481,
+        "minMs": 6.790134,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 6.790134,
+            "rustPeakAddedBytes": 6913531
+          },
+          {
+            "ms": 7.250775999999999,
+            "rustPeakAddedBytes": 6922523
+          },
+          {
+            "ms": 8.808290999999999,
+            "rustPeakAddedBytes": 6913531
+          },
+          {
+            "ms": 8.752167,
+            "rustPeakAddedBytes": 6913531
+          },
+          {
+            "ms": 7.362748,
+            "rustPeakAddedBytes": 6913531
+          },
+          {
+            "ms": 8.149468,
+            "rustPeakAddedBytes": 6913531
+          },
+          {
+            "ms": 7.0707640000000005,
+            "rustPeakAddedBytes": 6913531
+          },
+          {
+            "ms": 7.964257000000001,
+            "rustPeakAddedBytes": 6913531
+          },
+          {
+            "ms": 7.792481,
+            "rustPeakAddedBytes": 6913531
+          }
+        ]
+      },
+      "items": 6199,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        }
+      ],
+      "responseBytes": 229168,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.166174,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.13450499999999999,
+        "minMs": 0.126769,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.14243,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.126769,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.13450499999999999,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.132791,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.13567700000000002,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.12697,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.166174,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.12862400000000002,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.139975,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "giant",
+      "turns": 1,
+      "viewBytes": 229168,
+      "windowReadAndProjection": {
+        "maxMs": 5.515701,
+        "maxRustPeakAddedBytes": 6901710,
+        "medianMs": 4.747892,
+        "minMs": 3.9578720000000005,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 3.9578720000000005,
+            "rustPeakAddedBytes": 6901710
+          },
+          {
+            "ms": 4.927649,
+            "rustPeakAddedBytes": 6901710
+          },
+          {
+            "ms": 4.201384,
+            "rustPeakAddedBytes": 6901710
+          },
+          {
+            "ms": 4.747892,
+            "rustPeakAddedBytes": 6901710
+          },
+          {
+            "ms": 5.064017,
+            "rustPeakAddedBytes": 6901710
+          },
+          {
+            "ms": 4.124898999999999,
+            "rustPeakAddedBytes": 6901710
+          },
+          {
+            "ms": 5.515701,
+            "rustPeakAddedBytes": 6901710
+          },
+          {
+            "ms": 4.289751,
+            "rustPeakAddedBytes": 6901710
+          },
+          {
+            "ms": 5.4905919999999995,
+            "rustPeakAddedBytes": 6901710
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "middle",
+      "fullRecordBytes": 13544732,
+      "held": true,
+      "heldClone": null,
+      "http": {
+        "maxMs": 9.501536,
+        "maxRustPeakAddedBytes": 5287372,
+        "medianMs": 5.710892,
+        "minMs": 5.424288,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 5.6712359999999995,
+            "rustPeakAddedBytes": 5287372
+          },
+          {
+            "ms": 5.707545,
+            "rustPeakAddedBytes": 5287372
+          },
+          {
+            "ms": 5.4736519999999995,
+            "rustPeakAddedBytes": 5287372
+          },
+          {
+            "ms": 5.750666,
+            "rustPeakAddedBytes": 5287372
+          },
+          {
+            "ms": 5.424288,
+            "rustPeakAddedBytes": 5287372
+          },
+          {
+            "ms": 6.8341069999999995,
+            "rustPeakAddedBytes": 5287372
+          },
+          {
+            "ms": 5.710892,
+            "rustPeakAddedBytes": 5287372
+          },
+          {
+            "ms": 7.426699999999999,
+            "rustPeakAddedBytes": 5287372
+          },
+          {
+            "ms": 9.501536,
+            "rustPeakAddedBytes": 5287372
+          }
+        ]
+      },
+      "items": 6199,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        }
+      ],
+      "responseBytes": 155774,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.28019,
+        "maxRustPeakAddedBytes": 166912,
+        "medianMs": 0.104728,
+        "minMs": 0.10074,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.104728,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.12504700000000002,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.102965,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.10074,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.10115099999999999,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.101392,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.12221199999999999,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.134886,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.28019,
+            "rustPeakAddedBytes": 166912
+          }
+        ]
+      },
+      "shape": "giant",
+      "turns": 1,
+      "viewBytes": 155774,
+      "windowReadAndProjection": {
+        "maxMs": 5.02403,
+        "maxRustPeakAddedBytes": 5275546,
+        "medianMs": 3.7486960000000003,
+        "minMs": 3.382504,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 4.262779,
+            "rustPeakAddedBytes": 5275546
+          },
+          {
+            "ms": 4.052031,
+            "rustPeakAddedBytes": 5275546
+          },
+          {
+            "ms": 3.7486960000000003,
+            "rustPeakAddedBytes": 5275546
+          },
+          {
+            "ms": 3.478816,
+            "rustPeakAddedBytes": 5275546
+          },
+          {
+            "ms": 3.5762490000000002,
+            "rustPeakAddedBytes": 5275546
+          },
+          {
+            "ms": 3.382504,
+            "rustPeakAddedBytes": 5275546
+          },
+          {
+            "ms": 3.754308,
+            "rustPeakAddedBytes": 5275546
+          },
+          {
+            "ms": 3.4191719999999997,
+            "rustPeakAddedBytes": 5275546
+          },
+          {
+            "ms": 5.02403,
+            "rustPeakAddedBytes": 5275546
+          }
+        ]
+      }
+    },
+    {
+      "clientDetail": null,
+      "destination": "direct",
+      "fullRecordBytes": 13544732,
+      "held": true,
+      "heldClone": null,
+      "http": {
+        "maxMs": 9.138931,
+        "maxRustPeakAddedBytes": 5342849,
+        "medianMs": 8.22929,
+        "minMs": 5.978076,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 8.235169,
+            "rustPeakAddedBytes": 5342849
+          },
+          {
+            "ms": 9.138931,
+            "rustPeakAddedBytes": 5342849
+          },
+          {
+            "ms": 6.119785,
+            "rustPeakAddedBytes": 5342849
+          },
+          {
+            "ms": 8.22929,
+            "rustPeakAddedBytes": 5342849
+          },
+          {
+            "ms": 6.247017,
+            "rustPeakAddedBytes": 5342849
+          },
+          {
+            "ms": 8.705951,
+            "rustPeakAddedBytes": 5342849
+          },
+          {
+            "ms": 5.978076,
+            "rustPeakAddedBytes": 5342849
+          },
+          {
+            "ms": 8.937818,
+            "rustPeakAddedBytes": 5342849
+          },
+          {
+            "ms": 7.980365999999999,
+            "rustPeakAddedBytes": 5342849
+          }
+        ]
+      },
+      "items": 6199,
+      "projection": null,
+      "readStats": [
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        },
+        {
+          "bodyItems": 0,
+          "bodyJsonBytes": 0,
+          "indexBuildItems": 0,
+          "indexBuildJsonBytes": 0,
+          "metadataJsonBytes": 0,
+          "source": "held"
+        }
+      ],
+      "responseBytes": 176165,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": null,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.196291,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.135036,
+        "minMs": 0.107353,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.159672,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.134465,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.135036,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.157558,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.107353,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.11537800000000001,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.107674,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.196291,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.149413,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "giant",
+      "turns": 1,
+      "viewBytes": 176165,
+      "windowReadAndProjection": {
+        "maxMs": 8.655315,
+        "maxRustPeakAddedBytes": 5330961,
+        "medianMs": 4.79648,
+        "minMs": 3.5707180000000003,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 8.655315,
+            "rustPeakAddedBytes": 5330961
+          },
+          {
+            "ms": 5.274476,
+            "rustPeakAddedBytes": 5330961
+          },
+          {
+            "ms": 5.744975999999999,
+            "rustPeakAddedBytes": 5330961
+          },
+          {
+            "ms": 3.5707180000000003,
+            "rustPeakAddedBytes": 5330961
+          },
+          {
+            "ms": 4.069463,
+            "rustPeakAddedBytes": 5330961
+          },
+          {
+            "ms": 4.778867,
+            "rustPeakAddedBytes": 5330961
+          },
+          {
+            "ms": 4.79648,
+            "rustPeakAddedBytes": 5330961
+          },
+          {
+            "ms": 5.913194,
+            "rustPeakAddedBytes": 5330961
+          },
+          {
+            "ms": 4.512262000000001,
+            "rustPeakAddedBytes": 5330961
+          }
+        ]
+      }
+    },
+    {
+      "held": true,
+      "http": {
+        "maxMs": 9.643977999999999,
+        "maxRustPeakAddedBytes": 6914211,
+        "medianMs": 7.449363,
+        "minMs": 6.862618,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 8.199098,
+            "rustPeakAddedBytes": 6913503
+          },
+          {
+            "ms": 7.27698,
+            "rustPeakAddedBytes": 6913540
+          },
+          {
+            "ms": 7.375091,
+            "rustPeakAddedBytes": 6913540
+          },
+          {
+            "ms": 7.449363,
+            "rustPeakAddedBytes": 6914211
+          },
+          {
+            "ms": 6.862618,
+            "rustPeakAddedBytes": 6913549
+          },
+          {
+            "ms": 6.973695,
+            "rustPeakAddedBytes": 6913549
+          },
+          {
+            "ms": 9.502269,
+            "rustPeakAddedBytes": 6913549
+          },
+          {
+            "ms": 9.457883,
+            "rustPeakAddedBytes": 6912889
+          },
+          {
+            "ms": 9.643977999999999,
+            "rustPeakAddedBytes": 6913558
+          }
+        ]
+      },
+      "shape": "giant",
+      "streamWrites": {
+        "maxMs": 4.881731,
+        "maxRustPeakAddedBytes": 0,
+        "medianMs": 2.569588,
+        "minMs": 1.38912,
+        "runs": 3,
+        "samples": [
+          {
+            "ms": 1.38912,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 4.881731,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 2.569588,
+            "rustPeakAddedBytes": 0
+          }
+        ]
+      },
+      "streaming": true
+    }
+  ],
+  "fixtureSha256": "b17c868ec398ad5b23247d813aaef5e3dcf9b210bcfd2cd38e1f9f330e81c76d",
+  "notes": [
+    "Release Core library, Store, production server router and loopback HTTP; no mock responses, native harness or daily data",
+    "Allocator peak is process-wide Rust heap above pre-operation live bytes, not RSS; HTTP includes client/runtime, streaming includes writer",
+    "Rows JSON counts actual returned metadata/turn/item/preview strings; excludes SQLite page traffic and ancillary annotation queries",
+    "Warm repeated samples are descriptive, not a p95 guarantee or Windows result",
+    "Candidate coldIndexBuild is one initial Store call with absent cache; warm Rows use persisted metadata. Body bytes include at most three rail source items and the rejected boundary candidate",
+    "Candidate body/index byte counters exclude ancillary provenance/result queries and physical page IO. Held has no JSON read/decode; its complete light metadata still scales with item count"
+  ],
+  "processMemory": [
+    "VmHWM:\t  567304 kB",
+    "VmRSS:\t  567304 kB"
+  ],
+  "runs": 9
+}

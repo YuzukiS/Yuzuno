@@ -1,0 +1,746 @@
+/* Settings: categories on the left, one category at a time on the right,
+   as the old Yuzuno settings rail worked. A section is a heading, a sentence
+   and what is in effect; then its rows, or for Updates one status card that
+   answers "am I up to date, and what is the next step". */
+/* One size whichever category is open: the dialog keeps its height and
+   only the category's own column scrolls. */
+.modal.settings-modal {
+  display: flex;
+  flex-direction: column;
+  height: min(720px, calc(100dvh - 52px));
+  overflow: hidden;
+}
+.settings-layout {
+  display: grid;
+  grid-template-columns: 9.5rem minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 28px;
+  margin-top: 22px;
+}
+.settings-modal .settings-layout {
+  flex: 1;
+  min-height: 0;
+}
+.settings-modal .settings-pane {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+  overscroll-behavior: contain;
+}
+.settings-nav {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  display: grid;
+  gap: 2px;
+}
+.settings-nav [role="tab"] {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  text-align: left;
+  white-space: nowrap;
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+.settings-nav [role="tab"] svg {
+  flex: none;
+  color: var(--text-quiet);
+}
+.settings-nav [role="tab"]:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+.settings-nav [aria-selected="true"] {
+  color: var(--accent-ink);
+  background: var(--accent-wash);
+  font-weight: 550;
+}
+.settings-nav [aria-selected="true"] svg {
+  color: inherit;
+}
+.settings-nav-dot {
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--accent-ink);
+}
+.settings-pane {
+  display: grid;
+  /* As wide as the dialog leaves it, never as its widest line. */
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  align-content: start;
+}
+.settings-section {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  scroll-margin-top: 4px;
+}
+/* Updates holds the Workspace service and then the desktop app. */
+.settings-section + .settings-section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.settings-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+/* What is in effect now, as the old settings showed beside each title. */
+.settings-current {
+  flex: none;
+  margin-top: 3px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.settings-section-heading h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(13px + var(--font-adjust, 3px));
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.settings-section-heading p {
+  max-width: 62ch;
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.55;
+}
+.settings-group {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  /* A hair of tone off the dialog, which is the raised surface itself. */
+  background: color-mix(in srgb, var(--surface-soft) 38%, var(--surface-raised));
+  overflow: hidden;
+}
+.settings-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 14px 16px;
+}
+.settings-row + .settings-row {
+  border-top: 1px solid var(--line);
+}
+.settings-row-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-quiet);
+}
+.settings-row-main {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+  min-width: 0;
+}
+.settings-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 550;
+}
+.settings-row-help {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.55;
+}
+.settings-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  margin: 0;
+  color: var(--text-quiet);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.settings-row-meta code {
+  font-size: inherit;
+  overflow-wrap: anywhere;
+}
+.settings-row-meta svg {
+  flex: none;
+}
+.settings-row-meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.settings-row-action {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+.settings-row-action button,
+.updates-reload button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+/* A row that only ends a group: its action sits on the right. */
+.settings-row-end {
+  justify-content: flex-end;
+  padding-block: 10px;
+}
+.settings-select {
+  width: min(15rem, 100%);
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--input);
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+}
+.settings-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, currentColor 9%, transparent);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-weight: 500;
+  line-height: 1.6;
+}
+.settings-chip.is-ready {
+  color: var(--accent-ink);
+  background: var(--accent-wash);
+}
+.settings-footnote {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 2px;
+  color: var(--text-quiet);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.settings-footnote svg {
+  flex: none;
+}
+
+/* Updates */
+.updates-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-weight: 450;
+}
+.updates-state-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sage, #7e987b);
+}
+.updates-state.is-active {
+  color: var(--accent-ink);
+}
+.updates-version-number {
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.updates-notes > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  width: fit-content;
+  list-style: none;
+  color: var(--text-secondary);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.updates-notes > summary::-webkit-details-marker {
+  display: none;
+}
+.updates-notes > summary svg {
+  transition: rotate 160ms ease;
+}
+.updates-notes[open] > summary svg {
+  rotate: 90deg;
+}
+.updates-notes > summary:hover {
+  color: var(--ink);
+}
+.updates-release-notes {
+  max-height: 10rem;
+  margin: 6px 0 0;
+  overflow: auto;
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.updates-download-progress {
+  display: grid;
+  gap: 4px;
+  max-width: 22rem;
+}
+.updates-download-progress progress {
+  width: 100%;
+  height: 6px;
+  accent-color: var(--accent-ink);
+}
+.updates-download-progress small {
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+/* The update status card: one answer and its one next step. */
+.update-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-soft) 38%, var(--surface-raised));
+  overflow: hidden;
+}
+.update-card.is-action {
+  border-color: color-mix(in srgb, var(--accent-ink) 28%, var(--line));
+}
+.update-card-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 18px;
+}
+.update-card-icon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--text-quiet);
+}
+.update-card.is-ok .update-card-icon {
+  color: var(--sage, #7e987b);
+}
+.update-card:is(.is-action, .is-busy) .update-card-icon {
+  color: var(--accent-ink);
+}
+.update-card-text {
+  display: grid;
+  flex: 1;
+  gap: 5px;
+  min-width: 0;
+}
+.update-card-title {
+  color: var(--ink);
+  font-size: calc(12.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.update-card-line {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.55;
+}
+.update-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin: 0;
+  color: var(--text-quiet);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.update-card-meta svg {
+  flex: none;
+}
+.update-card-action {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+.update-card-action button,
+.update-card-part button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.update-card-part {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+}
+.update-card-label {
+  margin: 0;
+  color: var(--text-quiet);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.update-card-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.update-card-result strong {
+  color: var(--ink);
+  font-weight: 550;
+}
+.updates-progress.is-complete .update-card-result svg {
+  color: var(--sage, #7e987b);
+}
+.updates-progress:is(.is-failed, .is-rolledBack) .update-card-result svg {
+  color: var(--danger, #b55d53);
+}
+.update-card-also {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+}
+.update-card-also .updates-download-progress {
+  flex-basis: 100%;
+}
+.update-card-foot {
+  display: flex;
+  padding-block: 6px;
+}
+.update-card-foot .quiet-button {
+  margin-left: -8px;
+}
+.update-card-also-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+/* The steps of the update in hand as one track of five segments: filled
+   once done, lighter when the release already had it, moving while
+   current. Labels wrap inside their own segment at narrow widths. */
+.update-steps {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-quiet);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.35;
+}
+.update-steps li {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-width: 0;
+}
+.update-steps li::before {
+  content: "";
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+}
+/* The mark sits inline, so a wrapping label keeps it on its first line. */
+.update-step-mark {
+  display: inline-flex;
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+.update-step-mark:empty {
+  display: none;
+}
+.update-steps :is(.is-done, .is-reused) {
+  color: var(--text-secondary);
+}
+.update-steps .is-done::before {
+  background: var(--accent-ink);
+}
+.update-steps .is-reused::before {
+  background: color-mix(in srgb, var(--accent-ink) 35%, var(--line));
+}
+.update-steps .is-current {
+  color: var(--accent-ink);
+  font-weight: 550;
+}
+.update-steps .is-current::before {
+  background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--accent-ink) 55%, transparent),
+      transparent
+    )
+    0 0 / 50% 100% no-repeat,
+    color-mix(in srgb, var(--accent-ink) 30%, var(--line));
+  animation: update-step-moving 1.6s ease-in-out infinite;
+}
+@keyframes update-step-moving {
+  from {
+    background-position: -100% 0, 0 0;
+  }
+  to {
+    background-position: 200% 0, 0 0;
+  }
+}
+/* The facts behind the answer, for when they matter. */
+.update-details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  margin: 2px 0 0 2px;
+  color: var(--text-secondary);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  list-style: none;
+  cursor: pointer;
+}
+.update-details > summary::-webkit-details-marker {
+  display: none;
+}
+.update-details > summary svg {
+  transition: rotate 160ms ease;
+}
+.update-details[open] > summary svg {
+  rotate: 90deg;
+}
+.update-details > summary:hover {
+  color: var(--ink);
+}
+.update-details dl {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.update-details dl > div {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: 12px;
+}
+.update-details dt {
+  color: var(--text-quiet);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.update-details dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  margin: 0;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.update-details dd code {
+  font-size: inherit;
+  overflow-wrap: anywhere;
+}
+.update-details dd > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.updates-deadline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.updates-blockers {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.updates-blockers li {
+  display: grid;
+  grid-template-columns: 6px auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.updates-blockers strong {
+  color: var(--ink);
+  font-weight: 550;
+}
+.updates-blockers li > span:last-child {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.updates-blocker-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-ink);
+  translate: 0 -1px;
+}
+/* An Agent that already yielded to the update is no longer holding it. */
+.updates-blockers .is-idle {
+  color: var(--text-secondary);
+}
+.updates-blockers .is-idle .updates-blocker-dot {
+  background: var(--sage, #7e987b);
+}
+.updates-notice,
+.updates-note,
+.updates-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.updates-notice svg {
+  flex: none;
+  margin-top: 2px;
+}
+.updates-error {
+  color: var(--danger, #b55d53);
+}
+.updates-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.updates-state.is-active svg,
+.updates-spin {
+  animation: updates-spin 1.4s linear infinite;
+}
+@keyframes updates-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-updates * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Narrow: the navigator becomes a row of tabs over the column, and each
+   row's control drops under its text. */
+@media (max-width: 720px) {
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 16px;
+    margin-top: 16px;
+  }
+  .settings-nav [role="tab"] {
+    flex: none;
+    width: auto;
+  }
+  .settings-nav {
+    position: static;
+    display: flex;
+    gap: 4px;
+    margin: 0 -4px;
+    padding: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .update-card-main {
+    flex-wrap: wrap;
+  }
+  .update-card-text {
+    flex-basis: calc(100% - 40px);
+  }
+  .update-card-action {
+    padding-left: 34px;
+  }
+  .update-details dl > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .settings-row,
+  .settings-section-heading {
+    flex-wrap: wrap;
+  }
+  .settings-row-main {
+    flex-basis: calc(100% - 40px);
+  }
+  .settings-row-action {
+    justify-content: flex-start;
+    width: 100%;
+    padding-left: 32px;
+  }
+  .settings-row-end .settings-row-action,
+  .settings-row-end {
+    padding-left: 16px;
+  }
+  .settings-select {
+    width: 100%;
+  }
+  .updates-blockers li {
+    grid-template-columns: 6px minmax(0, 1fr);
+  }
+  .updates-blockers li > span:last-child {
+    grid-column: 2;
+  }
+  .updates-banner span {
+    max-width: 12rem;
+    text-align: left;
+  }
+}
+@media (max-width: 480px) {
+  .settings-nav [role="tab"] {
+    padding-inline: 9px;
+  }
+  .settings-nav [role="tab"] svg {
+    display: none;
+  }
+}
+
+/* The narrowest bar hides its icon buttons, but Settings stays: it holds
+   Appearance too, as the bar's palette button did before (T-79). */
+@media (max-width: 520px) {
+  .toolbar-actions > .icon-button.workspace-settings {
+    display: inline-flex;
+  }
+}

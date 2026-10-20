@@ -1,0 +1,376 @@
+//! Opt-in, replaceable windows of saved conversation bodies. This is a client
+//! projection, never a storage truncation. The lightweight Turn index remains
+//! available for direct navigation; a cursor names stable IDs, not an offset.
+use crate::{client_view::Missing, model::AgentDetail};
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+pub const MAX_ITEMS: usize = 96;
+pub const MAX_BODY_BYTES: usize = 256 * 1024;
+pub const MAX_ITEM_BYTES: usize = 32 * 1024;
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Query {
+    pub view: Option<String>,
+    pub before: Option<String>,
+    pub after: Option<String>,
+    pub turn_id: Option<String>,
+    pub item_id: Option<String>,
+}
+
+impl Query {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.view.as_deref().is_some_and(|v| v != "window") { return Err("Unknown conversation view"); }
+        if usize::from(self.before.is_some()) + usize::from(self.after.is_some()) + usize::from(self.turn_id.is_some()) > 1 {
+            return Err("Choose one conversation destination");
+        }
+        if self.item_id.is_some() && self.turn_id.is_none() { return Err("itemId needs turnId"); }
+        for value in [&self.before, &self.after].into_iter().flatten() {
+            if serde_json::from_str::<(String, Option<String>)>(value).is_err() { return Err("Invalid conversation cursor"); }
+        }
+        if self.view.is_none() && (self.before.is_some() || self.after.is_some() || self.turn_id.is_some()) {
+            return Err("A conversation destination needs view=window");
+        }
+        Ok(())
+    }
+}
+
+fn head(text: &str, limit: usize) -> &str {
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) { end -= 1; }
+    &text[..end]
+}
+
+/// Bounded plain text for previews and navigation, without copying a huge
+/// string just to take its prefix. Message search below uses the same fields.
+fn message_parts(item: &Value) -> Vec<&str> {
+    if item["type"] == "userMessage" {
+        if let Some(original) = item["_yuzunoInputText"].as_str() { return vec![original]; }
+        item["content"].as_array().into_iter().flatten().filter_map(|v| v["text"].as_str()).collect()
+    } else {
+        item["text"].as_str().into_iter().collect()
+    }
+}
+fn excerpt(item: &Value, limit: usize) -> String {
+    let mut text = String::new();
+    for part in message_parts(item) {
+        if !text.is_empty() && text.len() < limit { text.push('\n'); }
+        text.push_str(head(part, limit.saturating_sub(text.len())));
+        if text.len() >= limit { break; }
+    }
+    text
+}
+
+/// One explicit original-text entry also bounds pathological Markdown or one
+/// huge structured item. The full saved item is available from /original.
+pub fn bounded_item(item: &Value) -> Value {
+    let bytes = serde_json::to_vec(item).map_or(0, |v| v.len());
+    if bytes <= MAX_ITEM_BYTES { return item.clone(); }
+    let preview = excerpt(item, 4096);
+    let mut out = json!({"id":item["id"],"type":"historyPreview","status":item["status"],
+        "text":preview,"_yuzunoWindowPreview":{"type":item["type"],"bytes":bytes}});
+    // A Claude sub-agent's call and its own calls stay where they belong,
+    // and so does a background task's call; a goal and result are read with
+    // the original.
+    if let Some(parent) = item.get("parentToolUseId") {
+        out["parentToolUseId"] = parent.clone();
+    }
+    for record in crate::claude::TASK_RECORDS {
+        if let Some(sub) = item[record].as_object() {
+            out["name"] = item["name"].clone();
+            out[record] = sub.iter().filter(|(key, _)| !matches!(key.as_str(), "prompt" | "result" | "progress"))
+                .map(|(key, value)| (key.clone(), value.clone())).collect::<serde_json::Map<_, _>>().into();
+        }
+    }
+    out
+}
+
+pub(crate) fn turn_shell(turn: &Value) -> Value {
+    let mut out = Value::Object(turn.as_object().into_iter().flatten()
+        .filter(|(key, _)| key.as_str() != "items").map(|(key, value)| (key.clone(), value.clone())).collect());
+    out["items"] = json!([]);
+    out
+}
+
+/// Only the fields used by the complete navigation/attention index. The text
+/// markers on assistant items are for choosing the rail's source, not bodies.
+pub(crate) fn item_index(item: &Value) -> Value {
+    let mut out = json!({"id":item["id"], "type":item["type"]});
+    if item["type"] == "userMessage" {
+        for key in ["clientId", "_yuzunoSource"] {
+            if let Some(value) = item.get(key) { out[key] = value.clone(); }
+        }
+        out["content"] = json!([{"type":"text", "text":excerpt(item, 256)}]);
+    } else if item["type"] == "agentMessage" {
+        for key in ["text", "_yuzunoCompletedText"] {
+            if item[key].as_str().is_some_and(|s| !s.trim().is_empty()) { out[key] = "present".into(); }
+        }
+        if item["delivery"] == "async" && item["questions"].as_array().is_some_and(|q| !q.is_empty()) {
+            for key in ["delivery", "status", "questions"] { out[key] = item[key].clone(); }
+        }
+    }
+    out
+}
+
+pub(crate) fn header(detail: &AgentDetail) -> AgentDetail {
+    // Exhaustive: adding a record field must also preserve it here.
+    let AgentDetail { agent, turns: _, history, pending, artifacts, context_usage,
+        message_receipts, claude_runtime, codex_handoff } = detail;
+    AgentDetail { agent:agent.clone(), turns:Vec::new(), history:history.clone(),
+        pending:pending.clone(), artifacts:artifacts.clone(), context_usage:context_usage.clone(),
+        message_receipts:message_receipts.clone(), claude_runtime:claude_runtime.clone(), codex_handoff:codex_handoff.clone() }
+}
+
+pub(crate) fn index(detail: &AgentDetail) -> AgentDetail {
+    let mut out = header(detail);
+    out.turns = detail.turns.iter().map(|turn| {
+        let mut shell = turn_shell(turn);
+        shell["items"] = turn["items"].as_array().into_iter().flatten().map(item_index).collect();
+        shell
+    }).collect();
+    out
+}
+
+pub fn project(detail: &mut AgentDetail, query: &Query) -> Result<Value, Missing> {
+    let (turns, metadata) = project_from(&detail.turns, query, |t, i| Ok(detail.turns[t]["items"][i].clone()))
+        .expect("in-memory body read cannot fail")?;
+    detail.turns = turns;
+    Ok(metadata)
+}
+
+/// The same projection for borrowed records and persisted indexes. Only the
+/// body candidates are loaded; all navigation and attention metadata stays.
+pub(crate) fn project_from(
+    turns: &[Value], query: &Query,
+    mut read: impl FnMut(usize, usize) -> anyhow::Result<Value>,
+) -> anyhow::Result<Result<(Vec<Value>, Value), Missing>> {
+    let index: Vec<Value> = turns.iter().enumerate().map(|(number, turn)| {
+        let users: Vec<_> = turn["items"].as_array().into_iter().flatten().filter(|item| item["type"] == "userMessage").collect();
+        let mut previews: Vec<_> = users.first().copied().into_iter().collect();
+        if users.len() > 1 { previews.push(users[users.len()-1]); }
+        json!({"id":turn["id"],"status":turn["status"],"_yuzunoSource":turn["_yuzunoSource"],
+            "number":number + 1,"_yuzunoIndex":true,"_yuzunoRequestCount":users.len(),"itemCount":turn["items"].as_array().map_or(0, Vec::len),
+            "items":previews.into_iter().map(|item| json!({"id":item["id"],"type":"userMessage","_yuzunoSource":item["_yuzunoSource"],
+                "content":[{"type":"text","text":excerpt(item,256)}]})).collect::<Vec<_>>()})
+    }).collect();
+    // Attention and delivery state is independent of the body page, just as
+    // RPC approvals are. Keep question definitions, never their reply bodies.
+    let questions: Vec<Value> = turns.iter().filter_map(|turn| {
+        let items: Vec<Value> = turn["items"].as_array().into_iter().flatten()
+            .filter(|i| i["type"] == "agentMessage" && i["delivery"] == "async" && i["questions"].as_array().is_some_and(|q|!q.is_empty()))
+            .map(|i| json!({"id":i["id"],"type":"agentMessage","delivery":"async","status":i["status"],"questions":i["questions"]})).collect();
+        (!items.is_empty()).then(||json!({"id":turn["id"],"status":turn["status"],"_yuzunoImportedQuestions":turn["_yuzunoImportedQuestions"],"items":items}))
+    }).collect();
+    let native_client_ids: Vec<&str> = turns.iter().flat_map(|t|t["items"].as_array().into_iter().flatten())
+        .filter(|i|i["type"] == "userMessage").filter_map(|i|i["clientId"].as_str()).collect();
+    // Empty turns have a position too, so error/compaction-only turns remain
+    // reachable and paging can always make progress.
+    let positions: Vec<(usize, Option<usize>)> = turns.iter().enumerate().flat_map(|(t, turn)| {
+        let n = turn["items"].as_array().map_or(0, Vec::len);
+        (0..n.max(1)).map(move |i| (t, (n > 0).then_some(i)))
+    }).collect();
+    let cursor = |position: usize| {
+        let (t, i) = positions[position];
+        serde_json::to_string(&(turns[t]["id"].as_str().unwrap_or_default(), i.and_then(|i| turns[t]["items"][i]["id"].as_str()))).unwrap()
+    };
+    let find_cursor = |value: &str| -> Result<usize, Missing> {
+        let (turn_id, item_id): (String, Option<String>) = serde_json::from_str(value).map_err(|_| Missing::Item)?;
+        positions.iter().position(|&(t, i)| turns[t]["id"] == turn_id
+            && i.and_then(|i| turns[t]["items"][i]["id"].as_str()) == item_id.as_deref()).ok_or(Missing::Item)
+    };
+    let destination = || -> Result<(usize, bool), Missing> { Ok(if let Some(before) = &query.before {
+        // One overlapping item provides a stable reading anchor on page change.
+        (find_cursor(before)?, true)
+    } else if let Some(after) = &query.after {
+        (find_cursor(after)?, false)
+    } else if let Some(turn_id) = &query.turn_id {
+        let t = turns.iter().position(|t| t["id"] == *turn_id).ok_or(Missing::Turn)?;
+        let at = positions.iter().position(|&(n, i)| n == t && query.item_id.as_ref().is_none_or(|id|
+            i.is_some_and(|i| turns[t]["items"][i]["id"] == *id))).ok_or(Missing::Item)?;
+        (at, false)
+    } else { (positions.len().saturating_sub(1), true) }) };
+    let (anchor, reverse) = match destination() { Ok(at) => at, Err(missing) => return Ok(Err(missing)) };
+    let mut chosen = Vec::new();
+    let mut bytes = 0;
+    for offset in 0..MAX_ITEMS {
+        let at = if reverse { anchor.checked_sub(offset) } else { anchor.checked_add(offset) };
+        let Some(at) = at.filter(|&at| at < positions.len()) else { break };
+        let (t, i) = positions[at];
+        let item = i.map(|i| read(t, i).map(|item| bounded_item(&item))).transpose()?;
+        let size = item.as_ref().map_or(0, |i| serde_json::to_vec(i).unwrap().len());
+        if !chosen.is_empty() && bytes + size > MAX_BODY_BYTES { break; }
+        bytes += size;
+        chosen.push((at, item));
+    }
+    chosen.sort_unstable_by_key(|(at, _)| *at);
+    let start = chosen.first().map(|(at, _)| *at);
+    let end = chosen.last().map(|(at, _)| *at);
+    let metadata = json!({"index":index,"questions":questions,"nativeClientIds":native_client_ids,"start":start.map(cursor),"end":end.map(cursor),
+        "hasBefore":start.is_some_and(|i| i > 0),"hasAfter":end.is_some_and(|i| i + 1 < positions.len()),
+        "totalItems":turns.iter().map(|t| t["items"].as_array().map_or(0, Vec::len)).sum::<usize>()});
+    let mut selected: Vec<Value> = Vec::new();
+    let mut previous = None;
+    for (at, item) in chosen {
+        let (t, i) = positions[at];
+        if previous != Some(t) {
+            let mut turn = turn_shell(&turns[t]);
+            turn["_yuzunoSlice"] = json!({"start":i.unwrap_or(0),"total":turns[t]["items"].as_array().map_or(0,Vec::len),"index":t});
+            selected.push(turn);
+            previous = Some(t);
+        }
+        if let Some(item) = item { selected.last_mut().unwrap()["items"].as_array_mut().unwrap().push(item); }
+    }
+    Ok(Ok((selected, metadata)))
+}
+
+pub fn original_turn(detail: &AgentDetail, turn_id: &str) -> Result<Value, Missing> {
+    detail.turns.iter().find(|t| t["id"] == turn_id).cloned().ok_or(Missing::Turn)
+}
+pub fn original_item(detail: &AgentDetail, turn_id: Option<&str>, item_id: &str) -> Result<Value, Missing> {
+    detail.turns.iter().rev().filter(|t| turn_id.is_none_or(|id| t["id"] == id))
+        .find_map(|t| t["items"].as_array()?.iter().find(|i| i["id"] == item_id)).cloned().ok_or(Missing::Item)
+}
+
+/// Saved message search is independent of loaded/mounted windows. Literal
+/// matching, 50 results and bounded snippets; tool output is excluded.
+pub fn search(detail: &AgentDetail, query: &str) -> Vec<Value> {
+    let query = query.trim();
+    if query.is_empty() || query.len() > 256 { return Vec::new(); }
+    let needle = query.to_lowercase();
+    let mut results = Vec::new();
+    for (number, turn) in detail.turns.iter().enumerate() {
+        for item in turn["items"].as_array().into_iter().flatten() {
+            if !matches!(item["type"].as_str(), Some("userMessage" | "agentMessage")) { continue; }
+            for part in message_parts(item) {
+                // Lowercasing may change byte lengths. Build offsets back into
+                // the original only for the first match, never slice with an
+                // offset from the folded string.
+                let folded = part.to_lowercase();
+                let Some(at) = folded.find(&needle) else { continue };
+                let mut folded_at = 0;
+                let mut start = 0;
+                let mut end = part.len();
+                for (byte, ch) in part.char_indices() {
+                    if folded_at <= at { start = byte; }
+                    if folded_at >= at + needle.len() { end = byte; break; }
+                    folded_at += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+                }
+                let before: String = part[..start].chars().rev().take(70).collect::<Vec<_>>().into_iter().rev().collect();
+                let after: String = part[end..].chars().take(110).collect();
+                results.push(json!({"turnId":turn["id"],"itemId":item["id"],"turnNumber":number + 1,
+                    "role":if item["type"] == "userMessage" { "user" } else if item["phase"] == "commentary" { "progress" } else { "assistant" },
+                    "before":before,"match":&part[start..end],"after":after}));
+                break;
+            }
+            if results.len() == 50 { return results; }
+        }
+    }
+    results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn record(turns: Vec<Value>) -> AgentDetail {
+        serde_json::from_value(json!({"agent":{"id":"a","name":"A","cwd":"/tmp","model":"m","color":"sage",
+            "status":"idle","createdAt":"","updatedAt":"","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},
+            "turns":turns,"pending":[],"artifacts":[]})).unwrap()
+    }
+    fn giant(n: usize) -> AgentDetail {
+        record(vec![json!({"id":"giant","status":"completed","items":(0..n).map(|i|
+            json!({"id":format!("i{i}"),"type":"agentMessage","text":format!("message {i}")})).collect::<Vec<_>>()})])
+    }
+    #[test]
+    fn pages_cover_a_giant_turn_and_direct_target_without_truncating_storage() {
+        let saved = giant(1001);
+        let mut page = saved.clone();
+        let mut meta = project(&mut page, &Query::default()).unwrap();
+        assert_eq!(page.turns[0]["items"].as_array().unwrap().len(), MAX_ITEMS);
+        assert_eq!(page.turns[0]["items"][MAX_ITEMS-1]["id"], "i1000");
+        assert_eq!(page.turns[0]["_yuzunoSlice"]["start"], 905);
+        let mut found = std::collections::HashSet::new();
+        loop {
+            for item in page.turns[0]["items"].as_array().unwrap() { found.insert(item["id"].as_str().unwrap().to_owned()); }
+            if meta["hasBefore"] != true { break; }
+            let cursor = meta["start"].as_str().unwrap().to_owned();
+            page = saved.clone();
+            meta = project(&mut page, &Query {before:Some(cursor),..Default::default()}).unwrap();
+        }
+        assert_eq!(found.len(),1001);
+        let mut target = saved.clone();
+        let meta = project(&mut target, &Query {turn_id:Some("giant".into()),item_id:Some("i500".into()),..Default::default()}).unwrap();
+        assert_eq!(target.turns[0]["items"][0]["id"],"i500");
+        assert_eq!(meta["hasAfter"],true);
+        assert_eq!(original_turn(&saved,"giant").unwrap()["items"].as_array().unwrap().len(),1001);
+    }
+    #[test]
+    fn size_limit_and_huge_single_item_have_explicit_originals() {
+        let original = json!({"id":"large","type":"agentMessage","text":"🐈 heading\n".repeat(100_000)});
+        let saved = record(vec![json!({"id":"t","items":[original.clone()]})]);
+        let mut view = saved.clone();
+        project(&mut view,&Query::default()).unwrap();
+        let item = &view.turns[0]["items"][0];
+        assert_eq!(item["type"],"historyPreview");
+        assert!(serde_json::to_vec(item).unwrap().len()<8192);
+        assert_eq!(original_item(&saved,Some("t"),"large").unwrap(),original);
+        let mut many = record(vec![json!({"id":"t","items":(0..100).map(|i|json!({"id":format!("i{i}"),"type":"agentMessage","text":"x".repeat(20000)})).collect::<Vec<_>>()})]);
+        let meta = project(&mut many,&Query::default()).unwrap();
+        assert!(serde_json::to_vec(&many.turns[0]["items"]).unwrap().len()<MAX_BODY_BYTES);
+        assert_eq!(meta["hasBefore"],true);
+    }
+    #[test]
+    fn a_huge_subagent_call_keeps_who_it_belongs_to() {
+        let huge = "x".repeat(40_000);
+        let call = json!({"id":"agent","type":"claudeToolUse","name":"Agent","status":"completed","input":{"prompt":huge},
+            "subAgent":{"status":"completed","taskId":"task","prompt":huge,"result":"done"}});
+        let child = json!({"id":"read","type":"claudeToolUse","name":"Read","status":"completed","parentToolUseId":"agent","output":huge});
+        let (call, child) = (bounded_item(&call), bounded_item(&child));
+        assert_eq!((call["type"].clone(), call["name"].clone(), call["subAgent"].clone()),
+            (json!("historyPreview"), json!("Agent"), json!({"status":"completed","taskId":"task"})));
+        assert_eq!((child["type"].clone(), child["parentToolUseId"].clone()), (json!("historyPreview"), json!("agent")));
+        let shell = bounded_item(&json!({"id":"bash","type":"claudeToolUse","name":"Bash","status":"completed","input":{"command":huge},
+            "backgroundTask":{"status":"stopped","taskId":"b1","type":"local_bash","result":"done"}}));
+        assert_eq!((shell["name"].clone(), shell["backgroundTask"].clone()),
+            (json!("Bash"), json!({"status":"stopped","taskId":"b1","type":"local_bash"})));
+    }
+    #[test]
+    fn empty_turns_ids_and_errors_remain_reachable() {
+        let mut detail = record(vec![json!({"id":"empty","status":"failed","error":{"message":"failed"},"items":[]}),json!({"id":"t","items":[]})]);
+        let meta = project(&mut detail,&Query {turn_id:Some("empty".into()),..Default::default()}).unwrap();
+        assert_eq!(detail.turns.len(),2);
+        assert_eq!(detail.turns[0]["error"]["message"],"failed");
+        assert_eq!(meta["index"].as_array().unwrap().len(),2);
+        assert!(Query {view:Some("window".into()),before:Some("bad".into()),..Default::default()}.validate().is_err());
+        assert_eq!(project(&mut detail,&Query {turn_id:Some("missing".into()),..Default::default()}),Err(Missing::Turn));
+    }
+    #[test]
+    fn search_finds_unloaded_text_and_keeps_unicode_offsets() {
+        let mut saved = giant(1001);
+        saved.turns[0]["items"][0]["text"] = json!("İ猫 hello 🐈 WORLD final");
+        let matches = search(&saved,"world");
+        assert_eq!(matches.len(),1);
+        assert_eq!(matches[0]["itemId"],"i0");
+        assert_eq!(matches[0]["match"],"WORLD");
+        assert_eq!(matches[0]["before"],"İ猫 hello 🐈 ");
+        assert_eq!(search(&saved,"message").len(),50);
+        assert_eq!(search(&saved,"İ")[0]["match"],"İ");
+        saved.turns[0]["items"][0] = json!({"id":"pasted","type":"userMessage",
+            "content":[{"type":"text","text":"Native transformed body"}],
+            "_yuzunoInputText":"Exact submitted paste with original source"});
+        assert_eq!(search(&saved,"submitted paste")[0]["itemId"],"pasted");
+        assert!(search(&saved,"transformed body").is_empty());
+    }
+    #[test]
+    fn questions_and_delivery_identity_survive_body_eviction() {
+        let mut saved = giant(400);
+        saved.turns[0]["items"][0] = json!({"id":"question","type":"agentMessage","delivery":"async","text":"large body".repeat(10000),"questions":[{"title":"Pick a path","options":["A","B"]}]});
+        saved.turns[0]["items"][1] = json!({"id":"user","type":"userMessage","clientId":"confirmed","_yuzunoSource":"peer","content":[{"type":"text","text":"reminder"}]});
+        let metadata = project(&mut saved,&Query::default()).unwrap();
+        assert!(!saved.turns[0]["items"].as_array().unwrap().iter().any(|i|i["id"] == "question"));
+        assert_eq!(metadata["questions"][0]["items"][0]["questions"][0]["title"],"Pick a path");
+        assert!(metadata["questions"][0]["items"][0].get("text").is_none());
+        assert_eq!(metadata["nativeClientIds"],json!(["confirmed"]));
+        assert_eq!(metadata["index"][0]["items"][0]["_yuzunoSource"],"peer");
+    }
+}

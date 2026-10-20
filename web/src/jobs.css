@@ -1,0 +1,988 @@
+/* Jobs: the sources on the left, as Settings lists its categories; then a
+   source's rows, grouped by what they need, beside the chosen one. Rows wear
+   the dock's status marks (StatusMark), so a job reads the same here and on
+   the conversation's edge. Cards and type follow Settings (updates.css). */
+.modal.jobs-dialog {
+  --jobs-card: color-mix(in srgb, var(--surface-soft) 38%, var(--surface-raised));
+  /* A little deeper than a card, for command and output text. */
+  --jobs-well: color-mix(in srgb, var(--surface-soft) 72%, var(--surface-raised));
+  display: flex;
+  flex-direction: column;
+  width: min(1120px, calc(100vw - 32px));
+  height: min(800px, calc(100dvh - 40px));
+  max-height: none;
+  overflow: hidden;
+}
+.jobs-dialog > .modal-heading {
+  flex: none;
+  align-items: center;
+}
+.jobs-dialog > .modal-heading > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.jobs-dialog > .modal-heading > .icon-button {
+  margin: 0 -8px 0 0;
+}
+
+/* Whose jobs: the whole Workspace, this conversation's Agent, or a task. */
+.jobs-scope {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  max-width: 50%;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.jobs-scope button {
+  min-width: 0;
+  max-width: 180px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+.jobs-scope button:hover {
+  color: var(--ink);
+}
+.jobs-scope button[aria-pressed="true"] {
+  color: var(--accent-ink);
+  background: var(--accent-wash);
+  font-weight: 550;
+}
+.job-task-scope {
+  padding: 4px 10px;
+  color: var(--accent-ink);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.jobs-layout {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 9.5rem minmax(0, 1fr);
+  gap: 28px;
+  min-height: 0;
+  margin-top: 22px;
+}
+.jobs-rail-count {
+  margin-left: auto;
+  color: var(--text-quiet);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+}
+[aria-selected="true"] > .jobs-rail-count {
+  color: inherit;
+}
+.jobs-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.jobs-source {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  min-height: 0;
+}
+.jobs-source-heading {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+.jobs-source-heading h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(13px + var(--font-adjust, 3px));
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.jobs-source-heading p {
+  max-width: 62ch;
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.55;
+}
+.jobs-source-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+.jobs-source-actions button,
+.job-detail-actions button,
+.job-detail-actions a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.job-detail-actions a {
+  color: inherit;
+  text-decoration: none;
+}
+/* What a manual check with GitHub found, under the heading. */
+.ci-check {
+  flex: none;
+  margin: -6px 0 0;
+  color: var(--text-secondary);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.ci-check.inline-error {
+  color: var(--error-ink, #a37961);
+}
+.jobs-source > .inline-error {
+  flex: none;
+  margin: 0;
+}
+
+/* The machine at a glance: one bar per resource in a row of cells, the
+   lighter band reserved and the solid part in use; each cell's one setting
+   or note sits under its bar. */
+.jobs-budget {
+  display: grid;
+  flex: none;
+  gap: 10px;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--jobs-card);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.jobs-budget-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+}
+.jobs-budget-machine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
+}
+.jobs-budget-machine strong {
+  color: var(--ink);
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  font-weight: 550;
+}
+.jobs-budget-machine span,
+.jobs-budget-key {
+  color: var(--text-secondary);
+}
+.jobs-budget-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-quiet);
+  cursor: help;
+}
+.jobs-key {
+  width: 10px;
+  height: 6px;
+  border-radius: 999px;
+}
+.jobs-key.is-reserved {
+  margin-left: 6px;
+}
+/* Four cells to a row on a wide panel; in use on top, the rest beneath. */
+.jobs-budget-meters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr));
+  gap: 12px 22px;
+}
+.jobs-meter {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+}
+.jobs-meter-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.jobs-meter-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-quiet);
+  text-overflow: ellipsis;
+}
+.jobs-meter-value {
+  flex: none;
+}
+.jobs-meter-value strong {
+  color: var(--ink);
+  font-weight: 550;
+}
+.jobs-meter-bar {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-quiet) 18%, transparent);
+}
+.jobs-meter-bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+}
+.jobs-meter-reserved,
+.jobs-key.is-reserved {
+  background: color-mix(in srgb, var(--accent-ink) 32%, transparent);
+}
+.jobs-meter-used,
+.jobs-key.is-used {
+  background: var(--accent-ink);
+}
+.jobs-cell-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+  min-width: 0;
+  color: var(--text-quiet);
+}
+.jobs-reserved-text,
+.jobs-budget-host,
+.jobs-disk-total,
+.jobs-gpu-total,
+.jobs-gpu-held {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-quiet);
+}
+.jobs-gpu-busy {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.jobs-meter > small,
+.jobs-gpus-problem,
+.jobs-gpus-error {
+  margin: 0;
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.jobs-disk-volume.is-low .jobs-disk-free,
+.jobs-meter > small,
+.jobs-gpus-problem {
+  color: var(--coral);
+}
+.jobs-disk-volume.is-low .jobs-meter-used {
+  background: var(--coral);
+}
+.jobs-gpus-problem,
+.jobs-gpus-error {
+  grid-column: 1 / -1;
+}
+.jobs-disk-paths,
+.jobs-gpu-name,
+.jobs-gpu-held[title] {
+  cursor: help;
+}
+.job-budget-settings summary {
+  width: fit-content;
+  color: var(--accent-ink);
+  cursor: pointer;
+}
+.job-budget-settings form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  padding: 10px 0 2px;
+}
+.job-budget-settings label {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+  min-width: 90px;
+  color: var(--text-secondary);
+}
+.job-budget-settings input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--input);
+  color: var(--ink);
+  font: inherit;
+}
+.job-budget-settings .job-footnote {
+  flex-basis: 100%;
+}
+/* Reads like the settings beside it: a quiet word, not a boxed button. */
+.jobs-gpu-pause {
+  padding: 0;
+  color: var(--accent-ink);
+  font-size: inherit;
+}
+.job-gpu {
+  overflow-wrap: anywhere;
+}
+
+/* The list and the chosen one, each scrolling on its own. */
+.jobs-browser {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(240px, 0.85fr) minmax(0, 1.4fr);
+  gap: 18px;
+  min-height: 0;
+}
+.job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 2px 8px;
+}
+.job-group {
+  display: grid;
+  gap: 6px;
+}
+.job-group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 2px;
+  color: var(--text-quiet);
+  font-size: calc(7.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.job-group-title span {
+  font-weight: 500;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+.job-group-rows {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--jobs-card);
+}
+.job-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+.job-row + .job-row {
+  border-top: 1px solid var(--line);
+}
+.job-row > .status-mark {
+  margin-top: 1px;
+}
+.job-row:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.job-row.selected {
+  background: var(--accent-wash);
+}
+.job-row:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.job-row-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.job-row-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+/* A long name takes a second line, then ends in an ellipsis. */
+.job-row-title strong {
+  display: -webkit-box;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  font-weight: 550;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.job-row.selected .job-row-title strong {
+  color: var(--accent-ink);
+}
+.job-row-time {
+  flex: none;
+  color: var(--text-quiet);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+}
+.job-row small {
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.job-row small.job-row-note {
+  color: var(--text-quiet);
+}
+/* When it was queued and finished: there to look up, not to read first. */
+.job-row small.job-row-moments {
+  color: var(--text-quiet);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+.job-group-more {
+  justify-self: start;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.job-list > .quiet-button {
+  align-self: center;
+}
+
+/* A status in words, coloured as its mark. */
+.job-state {
+  color: var(--text-secondary);
+}
+.job-state:is(.state-running, .state-starting, .state-cancelling) {
+  color: var(--state-working, var(--accent-ink));
+}
+.job-state:is(.state-succeeded, .state-passed) {
+  color: var(--success-ink, var(--accent-ink));
+}
+.job-state:is(.state-failed, .state-rejected, .state-interrupted, .state-unknown) {
+  color: var(--error-ink, var(--danger, #b55d53));
+}
+
+/* The chosen job, run or review: a heading with its one action, then
+   cards. */
+.job-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 4px 8px 2px;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.job-detail-heading {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  gap: 10px;
+}
+.job-detail-heading > .status-mark {
+  margin-top: 4px;
+}
+.job-detail-title {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+.job-detail-title h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(13px + var(--font-adjust, 3px));
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.job-detail-title .job-state {
+  margin: 0;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.job-detail-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.job-detail > p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.job-card {
+  display: grid;
+  flex: none;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--jobs-card);
+}
+.job-card-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.job-card-heading strong {
+  color: var(--text-quiet);
+  font-size: calc(7.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.job-card-heading small {
+  color: var(--text-quiet);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.job-card > p {
+  margin: 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.job-detail dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 18px;
+  margin: 0;
+}
+.job-detail dt {
+  color: var(--text-quiet);
+}
+.job-detail dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.job-detail a {
+  color: var(--accent-ink);
+  overflow-wrap: anywhere;
+}
+.job-command,
+.job-log,
+.job-evidence {
+  max-height: 320px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--jobs-well);
+  color: var(--ink);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.job-log {
+  min-height: 120px;
+  max-height: 440px;
+}
+.job-outputs {
+  justify-items: start;
+}
+/* The run a stage attempt belongs to: its stages in order, each with its
+   attempts, and what a waiting stage waits for. */
+.job-run-name {
+  color: var(--ink);
+}
+.job-run-name span {
+  color: var(--text-secondary);
+}
+.job-run-stages {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.job-run-stage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+.job-run-stage-key {
+  min-width: 6ch;
+  color: var(--ink);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+.job-run-stage .quiet-button[aria-current="true"] {
+  color: var(--ink);
+  font-weight: 600;
+}
+.job-run-stage small {
+  color: var(--text-quiet);
+}
+.job-run-wait {
+  flex-basis: 100%;
+  line-height: 1.5;
+}
+.job-state.state-waiting {
+  color: var(--text-secondary);
+}
+.job-run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.job-analysis-decision {
+  flex-basis: 100%;
+  padding-block: 6px;
+}
+.job-analysis-decision p { margin: 0 0 8px; }
+.job-analysis-decision button + button { margin-left: 8px; }
+.job-analysis-runs {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.job-analysis-runs h3 { margin: 0; font-size: 14px; }
+.job-analysis-runs > p { margin: 6px 0; font-size: 12px; }
+.job-analysis-runs summary { cursor: pointer; padding-block: 6px; }
+.job-artifacts ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.job-artifacts li {
+  display: grid;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+.job-artifacts li span {
+  color: var(--text-secondary);
+}
+.job-artifacts li.unverified span {
+  color: var(--error-ink, var(--danger, #b55d53));
+}
+.job-evidence-details {
+  flex: none;
+}
+.job-evidence-details summary,
+.ci-child-job summary,
+.ci-subscriptions summary {
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.job-evidence-details[open] summary {
+  margin-bottom: 8px;
+}
+.job-footnote,
+.jobs-empty {
+  margin: 0;
+  color: var(--text-quiet);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.jobs-empty {
+  padding: 18px 6px;
+  text-align: center;
+}
+.job-detail > .jobs-empty {
+  margin: auto 0;
+}
+
+/* GitHub Actions: who is watching what, and each run's jobs and steps. */
+.ci-subscriptions {
+  flex: none;
+  max-height: 34%;
+  overflow: auto;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--jobs-card);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.ci-subscription {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+}
+.ci-subscription + .ci-subscription {
+  border-top: 1px solid var(--line);
+}
+.ci-subscription > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ci-subscription button {
+  flex-shrink: 0;
+}
+.ci-subscription small {
+  color: var(--text-quiet);
+}
+.ci-subscription p {
+  margin: 0;
+}
+.ci-jobs a {
+  color: var(--accent-ink);
+  overflow-wrap: anywhere;
+}
+.ci-child-job {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.ci-child-job:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+.ci-child-job summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+.ci-child-job summary .job-state {
+  margin-left: auto;
+  white-space: nowrap;
+}
+.ci-child-job ol {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 4px;
+  padding: 0;
+  list-style: none;
+}
+.ci-child-job li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  overflow-wrap: anywhere;
+}
+.ci-child-job .ci-job-logs {
+  display: inline-block;
+  margin: 6px 0 0 24px;
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.ci-child-job .ci-step-state {
+  color: var(--text-quiet);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ci-jobs .spin {
+    animation: none;
+  }
+}
+
+.review-outdated {
+  color: var(--error-ink, var(--danger, #b55d53));
+}
+
+/* A new job: what runs, its limits, then its checks and files. */
+.job-form {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 2px 8px;
+}
+.job-form-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+  min-width: 0;
+  margin: 0;
+  padding: 12px 16px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--jobs-card);
+}
+.job-form-group > legend {
+  float: left;
+  grid-column: 1 / -1;
+  padding: 0;
+  color: var(--text-quiet);
+  font-size: calc(7.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.job-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.job-form input,
+.job-form textarea,
+.job-form select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--input);
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+}
+.job-form textarea {
+  resize: vertical;
+}
+.job-form textarea.job-code {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.job-wide {
+  grid-column: 1 / -1;
+}
+.job-form details {
+  display: grid;
+  gap: 12px;
+}
+.job-form details > summary {
+  color: var(--accent-ink);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.job-form details p,
+.job-form-footer small {
+  margin: 0;
+  color: var(--text-quiet);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.job-form .job-checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+}
+.job-checkbox input {
+  width: auto;
+}
+.job-form-footer {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 2px;
+}
+.job-form-footer button {
+  flex-shrink: 0;
+}
+
+.jobs-nav .nav-count {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+@media (max-width: 720px) {
+  .jobs-nav .nav-count {
+    display: none;
+  }
+  /* Narrow: the sources become a row of tabs, and the list and the chosen
+     one stack, scrolling with the panel. */
+  .modal.jobs-dialog {
+    width: calc(100vw - 16px);
+    height: calc(100dvh - 16px);
+    padding: 16px;
+  }
+  .jobs-dialog > .modal-heading {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  /* The title and its close button on one line, whose jobs under them. */
+  .jobs-dialog > .modal-heading > div:first-child {
+    flex-basis: calc(100% - 48px);
+  }
+  .jobs-scope {
+    order: 3;
+    max-width: 100%;
+  }
+  .jobs-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 14px;
+    margin-top: 14px;
+  }
+  .jobs-pane {
+    overflow: auto;
+  }
+  .jobs-source,
+  .jobs-browser,
+  .job-form {
+    flex: none;
+  }
+  .jobs-browser {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .job-list,
+  .job-detail,
+  .job-form {
+    overflow: visible;
+  }
+  .jobs-source-heading {
+    flex-wrap: wrap;
+  }
+  .job-form-group {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .job-form-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ci-subscriptions {
+    max-height: none;
+  }
+}
+.review-report-action {
+  justify-content: flex-start;
+}

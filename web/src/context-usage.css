@@ -1,0 +1,123 @@
+.composer-context {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-left: auto;
+}
+.composer-context > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.context-usage {
+  position: relative;
+  flex: none;
+  color: var(--green);
+}
+.context-usage[data-level="medium"] {
+  color: var(--accent-ink);
+}
+.context-usage[data-level="high"] {
+  color: var(--coral);
+}
+.context-usage[data-level="unknown"] {
+  color: var(--text-quiet);
+}
+.context-usage-button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+}
+.context-usage-button:hover,
+.context-usage-button:focus-visible {
+  background: var(--surface-hover);
+}
+.context-usage-button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.context-ring-track,
+.context-ring-fill,
+.context-ring-unknown {
+  fill: none;
+  stroke-width: 2.5;
+}
+.context-ring-track {
+  stroke: var(--line);
+}
+.context-ring-fill,
+.context-ring-unknown {
+  stroke: currentColor;
+}
+.context-usage[data-level="unknown"] .context-ring-track {
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-dasharray: 2 3;
+  opacity: 0.65;
+}
+.context-ring-unknown {
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+.context-usage-tooltip {
+  position: absolute;
+  z-index: 25;
+  right: -2px;
+  bottom: 100%;
+  width: min(280px, calc(100vw - 48px));
+  padding-bottom: 8px;
+  text-align: left;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.context-usage-card {
+  padding: 13px 15px;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 5px 24px color-mix(in srgb, var(--ink) 12%, transparent);
+}
+.context-usage-heading,
+.context-usage-value {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.context-usage-heading strong {
+  font-weight: 600;
+}
+.context-usage-heading small {
+  color: var(--text-quiet);
+  font-size: 0.85em;
+}
+.context-usage-value {
+  margin-top: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.context-usage-value > :last-child:not(:first-child) {
+  color: var(--text-secondary);
+  font-size: 0.9em;
+}
+.context-usage-card p {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+  font-size: 0.9em;
+}
+@media (forced-colors: active) {
+  .context-ring-track {
+    stroke: GrayText;
+  }
+  .context-ring-fill,
+  .context-ring-unknown {
+    stroke: ButtonText;
+  }
+}

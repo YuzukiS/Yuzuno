@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a change to what Yuzuno does.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include tokens, CLI login files or private conversations. Report a security problem [privately](https://github.com/YuzukiS/Yuzuno/security/advisories/new) instead; do not describe a vulnerability here.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help
+      description: The behaviour you would like, and which part it concerns, for example Agents, tasks, Jobs, reviews, CI, the Codex or Claude integration, or the desktop.
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: How you handle it now, if at all.

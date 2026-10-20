@@ -1,0 +1,19 @@
+{
+  "findings": [
+    {
+      "body": "The old Bash runner reported a timeout as `timed out after ${per_file_timeout}s`, which gave \"timed out after 300s\" by default. The new message is `f'timed out after {timeout}'`, so a timeout with the default value of `300` now reads \"timed out after 300\" with no unit, in the summary, the step summary and the `::error` annotation. The new error annotation also drops the `web/` prefix and the \"open its log group above\" hint. This only affects how results are reported; pass/fail is unchanged. A possible fix is to append `s` when the value has no suffix.",
+      "code_location": {
+        "absolute_file_path": ".github/scripts/web_tests.py",
+        "line_range": {
+          "end": 84,
+          "start": 84
+        }
+      },
+      "priority": 4,
+      "title": "Timeout reason no longer shows the default unit"
+    }
+  ],
+  "overall_confidence_score": 0.85,
+  "overall_correctness": "patch is correct",
+  "overall_explanation": "I read every diff page of all 6 changed files.\n\n**CI build change:** CI now runs `npm run build:bundle` instead of `npm run build`. This is safe. `web/tsconfig.json` sets `noEmit: true`, so the skipped `tsc -b` produced no files that Vite needs, and the separate `npm run typecheck` step still runs before the build. Local `npm run build` still runs `tsc -b` first and then the same bundle command.\n\n**New runner:** the Python runner `web_tests.py` behaves like the old Bash loop:\n- It runs from `web/` and keeps the same `timeout --kill-after=10` / `node --max-old-space-size=2048 --experimental-strip-types` command.\n- It discovers `tools/*.test.mjs` the same way, runs every file even after failures, and exits nonzero if any file fails.\n- It writes the same step summary and keeps the log groups balanced.\n\nIt also adds cleanup:\n- It kills each test's process group after the test exits.\n- On SIGINT/SIGTERM/SIGHUP it cleans up and exits with 128 + the signal number.\n- It rejects bad `WEB_TEST_JOBS` and `WEB_TEST_TIMEOUT` values.\n\nThe old retry list was already empty, so removing it changes nothing.\n\n**Tests:** the new unittest file is picked up by the existing \"CI script tests\" step (`unittest discover --start-directory .github/scripts`). Its fixtures (a fake `node` on `PATH`, plus GNU `timeout` and `/proc`) look consistent with what the runner does.\n\n**Remaining issue:** one minor reporting regression in how timeouts are described (see the finding)."
+}

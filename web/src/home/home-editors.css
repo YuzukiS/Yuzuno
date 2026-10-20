@@ -1,0 +1,18 @@
+.home-editor-settings {
+  display: grid;
+  gap: 10px;
+  padding-block: 16px;
+  border-top: 1px solid var(--border);
+}
+.home-editor-settings h3 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 1em; }
+.home-editor-settings p { margin: 0; color: var(--muted); line-height: 1.5; }
+.home-editor-settings label { display: flex; align-items: flex-start; gap: 9px; overflow-wrap: anywhere; }
+.home-editor-settings input[type="checkbox"] { width: 16px; height: 16px; flex: 0 0 16px; margin-top: 3px; accent-color: var(--green); }
+.home-editor-settings small { display: block; color: var(--muted); font-size: .85em; }
+.home-editor-members { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
+.home-editor-hint { font-size: .9em; color: var(--muted); }
+.home-editor-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.home-team-details { margin-block: 16px; border-top: 1px solid var(--border); padding-top: 10px; }
+.home-team-details > summary { cursor: pointer; color: var(--muted); padding-block: 6px; }
+.home-team-details > .home-agent-counts { display: flex; flex-wrap: wrap; margin-block: 12px; }
+.home-team-details .home-team-content { margin-top: 16px; }

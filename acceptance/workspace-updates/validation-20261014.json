@@ -1,0 +1,108 @@
+{
+  "date": "2026-10-14",
+  "sourceCommit": "aa58142b9aeeb0f6e32892adfe2a2cf85c80fc2a",
+  "baseCommit": "fe51b05fa05be725014f73fa316b58d399668098",
+  "status": "local scripted acceptance passed; real native and remote delivery require authorization",
+  "scope": "Managed Linux/WSL Core + Web UI + Claude bridge update; independent helper; no daily service changes",
+  "results": {
+    "coreUpdates": {
+      "passed": 30,
+      "failed": 0,
+      "sourceCommit": "aa58142b9aeeb0f6e32892adfe2a2cf85c80fc2a",
+      "log": "/home/developer/yuzuno-next/target/workspace-updates/hash-fix-20261014.log"
+    },
+    "coreLibrary": {
+      "passed": 187,
+      "ignored": 2,
+      "sourceCommit": "5492426abafb753ca51fcbe3a40761803165ce7d",
+      "note": "Initial full run had 185 pass / 2 Unix path length failures / 2 ignored; all five remote tests passed after using shorter project-disk TMPDIR. Later helper changes covered by 30 update tests."
+    },
+    "coreIntegration": {
+      "passed": 161,
+      "ignored": 2,
+      "targets": 22,
+      "sourceCommit": "5492426abafb753ca51fcbe3a40761803165ce7d",
+      "log": "/home/developer/yuzuno-next/target/workspace-updates/core-integration-20261014.log",
+      "note": "161 is the sum of individual results; an earlier task progress entry incorrectly said 179."
+    },
+    "build": {
+      "rustBins": "passed",
+      "typescript": "passed",
+      "vite": "passed, isolated ui-dist; existing chunk-size warning"
+    },
+    "bridge": {
+      "passed": 23,
+      "failed": 0,
+      "log": "/home/developer/yuzuno-next/target/workspace-updates/bridge-20261014.log"
+    },
+    "updatesUi": {
+      "passed": 3
+    },
+    "sendProtection": {
+      "passed": 3
+    },
+    "packager": {
+      "passed": 3
+    },
+    "browser": {
+      "status": "passed",
+      "checks": [
+        "light/dark 20px layout at desktop, short and narrow sizes",
+        "keyboard focus stays in dialog and Escape closes without interrupt/read/approval",
+        "bad candidate and disk-full errors leave the workspace available",
+        "draft persistence failure prevents applying and keeps the draft in place",
+        "prepare does not apply; double-click applies once; new tab restores durable wait and draft",
+        "disconnect/reconnect preserves wait and draft; cancel resumes work",
+        "lost apply receipt reconciles the accepted operation without submitting again",
+        "hanging apply receipt times out and releases Cancel while durable wait remains visible",
+        "only explicit reload loads the matching new UI and preserves the draft",
+        "rollback and partial restore failures show actionable durable reasons"
+      ],
+      "screenshots": "/home/developer/yuzuno-next/target/workspace-updates/browser-20261014",
+      "mode": "real-chromium-production-ui-with-explicit-api-fixture"
+    },
+    "realPackagedProcessSwitch": {
+      "status": "passed",
+      "receipt": "scripted-20261014.json",
+      "harness": "scripted Codex native-protocol fixture, no external model call",
+      "port": 4472,
+      "data": "/home/developer/yuzuno-next/target/u12-script4/data",
+      "checks": [
+        "busy Turn and Pending prevent stop",
+        "fresh send fenced without receipt/user item",
+        "duplicate apply returns durable operation ID",
+        "cancel then immediate retry succeeds",
+        "approval response remains usable while waiting",
+        "A to B real Core process replacement",
+        "C startup failure returns to compatible B",
+        "same Workspace/Project/session/settings/read cursor/history",
+        "full large payload survives update",
+        "records.layout=1 and strict record health",
+        "matching Core and Web release identity",
+        "exact owned test process gracefully stopped"
+      ]
+    }
+  },
+  "limitations": [
+    "A and B are separately packaged release IDs of the same tested source commit; this is a lifecycle/storage handoff test, not a migration between different code revisions.",
+    "Real authenticated Codex and Claude sessions have not been run: automatic approval review rejected account/network usage.",
+    "UI fault and browser reconnect/draft scenarios use explicit mock API; package/process/storage switch is real.",
+    "Disk-space and incompatible/corrupt records rejection have unit/SQLite fixture coverage, not a filled real disk.",
+    "GitHub push was rejected by automatic approval review; no PR or CI run exists for this branch yet.",
+    "Lead independent review remains outstanding.",
+    "New main 0dc15cb T15 App adjacency and T17 token/generation restoration must be checked when integrating."
+  ],
+  "fixesFoundByAcceptance": [
+    "Cancelled helper still holding exclusive lock: bounded handoff, helper identity published before large bundle hashes.",
+    "Complete bundle verification could block async workers: moved apply verification to blocking pool.",
+    "Acceptance HTTP wait was shorter than real complete bundle hashing under shared CPU contention; fixture now allows 90s for verification, while separate UI test retains actual 10s timeout/reconciliation check."
+  ],
+  "deployment": "Not deployed. Daily Core/data/web/dist/windows untouched. First managed enablement plan: docs/workspace-updates.md.",
+  "publicCopy": {
+    "redacted": [
+      "machine-specific absolute paths"
+    ],
+    "originalEvidence": "retained privately",
+    "outcomes": "historical observations, not rerun with example paths"
+  }
+}

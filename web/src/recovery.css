@@ -1,0 +1,30 @@
+.recovery-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 10px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--accent-ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.55;
+}
+.recovery-notice > svg {
+  flex: none;
+  margin-top: 0.2em;
+}
+.recovery-notice > span {
+  flex: 1 1 22rem;
+  min-width: 0;
+}
+.recovery-notice > button {
+  margin-left: auto;
+}
+.recovery-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--error-ink, #94342a);
+}

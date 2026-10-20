@@ -1,0 +1,288 @@
+/* The Agent list by project (ProjectGroups.tsx), as Settings → Appearance →
+   Project groups chooses: headings, cards or colour bands. Every style folds
+   the same way and starts a new Agent from its heading. */
+.project-group {
+  margin: 0 0 8px;
+}
+.project-group-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.project-group-toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 4px 6px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.project-group-toggle:hover {
+  color: var(--ink);
+}
+.project-group-toggle:focus-visible,
+.project-group-add:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 1px;
+}
+.project-group-toggle > svg {
+  flex: none;
+}
+/* Folded in a rail too narrow for the name and its marks together, the
+   marks go under the name and the + stays beside the name's line. */
+.project-group-head[data-stacked] {
+  align-items: start;
+}
+.project-group-head[data-stacked] > .project-group-toggle {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  row-gap: 3px;
+}
+.project-group-head[data-stacked] .project-group-summary {
+  grid-area: 2 / 3 / 3 / -1;
+  justify-self: start;
+}
+.project-group-head[data-stacked] > .project-group-add {
+  margin-top: 3px;
+}
+.project-group-chevron {
+  transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.project-group.is-folded .project-group-chevron {
+  transform: rotate(-90deg);
+}
+.project-group-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.project-group-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  opacity: 0.75;
+}
+.project-group-add {
+  display: inline-flex;
+  flex: none;
+  padding: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-secondary);
+  opacity: 0.75;
+  cursor: pointer;
+}
+.project-group-add:hover {
+  background: var(--surface-soft);
+  color: var(--ink);
+  opacity: 1;
+}
+
+/* A folded group's marks fade in beside its name. */
+.project-group-summary {
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+  animation: project-group-summary 200ms ease-out;
+}
+@keyframes project-group-summary {
+  from {
+    opacity: 0;
+    transform: translateX(-3px);
+  }
+}
+.project-group-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--text-secondary);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  font-weight: 550;
+  letter-spacing: 0;
+  line-height: 1.6;
+  text-transform: none;
+}
+.project-group-mark.is-attention {
+  background: #efe1c9;
+  color: #a77b4f;
+}
+.project-group-mark .status-dot {
+  width: 5px;
+  height: 5px;
+}
+.project-group-ring {
+  width: 7px;
+  height: 7px;
+  border: 1.3px solid color-mix(in srgb, var(--ink) 72%, transparent);
+  border-radius: 50%;
+}
+
+/* Folding: the rows' track closes to nothing and fades, then takes no focus
+   (inert). Rows keep a little room for their focus ring while open. */
+.project-group-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-rows 260ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 200ms ease;
+}
+.project-group.is-folded > .project-group-body {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+.project-group-rows {
+  min-height: 0;
+  margin: -3px;
+  padding: 3px;
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .project-group-body,
+  .project-group-chevron {
+    transition: none;
+  }
+  .project-group-summary {
+    animation: none;
+  }
+}
+
+/* Headings: small capitals and a thin line; each stays at the top while its
+   group scrolls by. */
+.project-group-headers > .project-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 0 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+  background: var(--cream);
+  color: var(--text-secondary);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  font-weight: 650;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.agent-list > .project-group-headers:first-child > .project-group-head {
+  padding-top: 0;
+  border-top: 0;
+}
+/* Folded, the marks need the room more than the spacing does. */
+.project-group-headers.is-folded .project-group-name {
+  letter-spacing: 0.4px;
+}
+
+/* Cards: each project a light card. */
+.project-group-cards {
+  margin-bottom: 10px;
+  padding: 2px 4px 1px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+.project-group-cards > .project-group-head {
+  color: var(--ink);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 650;
+}
+.project-group-cards > .project-group-head .project-group-toggle > svg:not(.project-group-chevron) {
+  color: var(--text-secondary);
+}
+.project-group-cards .agent-row {
+  margin-bottom: 4px;
+  padding-inline: 10px;
+}
+.project-group-cards .project-group-mark {
+  background: var(--paper);
+}
+.project-group-cards.is-unassigned {
+  border-style: dashed;
+  background: transparent;
+}
+
+/* Colour bands: a thin line in the project's colour beside its group. */
+.project-group-bands {
+  --project: var(--text-secondary);
+  position: relative;
+  padding-left: 8px;
+}
+.project-group-bands::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 1px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--project);
+  opacity: 0.45;
+}
+.project-group-bands.is-unassigned::before {
+  width: 0;
+  border-left: 2px dotted var(--line);
+  background: none;
+  opacity: 1;
+}
+.project-group-bands > .project-group-head {
+  color: var(--ink);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 650;
+}
+.project-group-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--project);
+  opacity: 0.8;
+}
+.project-group-bands.is-unassigned .project-group-dot {
+  border: 1.5px solid var(--line);
+  background: none;
+}
+
+/* The avatar-only rail of the narrowest windows: a thin line between groups,
+   nothing to read or fold. */
+@media (max-width: 520px) {
+  .project-group > .project-group-head {
+    position: static;
+    height: 1px;
+    margin: 6px 4px 8px;
+    padding: 0;
+    overflow: hidden;
+    border: 0;
+    background: var(--line);
+  }
+  .project-group > .project-group-head > * {
+    display: none;
+  }
+  .agent-list > .project-group:first-child > .project-group-head {
+    display: none;
+  }
+  .project-group-cards,
+  .project-group-bands {
+    padding: 0;
+    border: 0;
+    background: none;
+  }
+  .project-group-bands::before {
+    display: none;
+  }
+  .project-group-cards .agent-row {
+    padding-inline: 8px;
+  }
+}

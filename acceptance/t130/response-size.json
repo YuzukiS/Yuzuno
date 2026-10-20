@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "executedHead": "90e008f354974978ec9acfa292d74fdbcb999176",
+  "jobId": "1af90dc9-3eaf-4fbe-a3ff-df2830d6e63b",
+  "attemptId": "fcda3c7b-c020-41cb-99ce-feeef878af24",
+  "startedAt": "2026-10-18T19:45:53.893Z",
+  "finishedAt": "2026-10-18T19:47:03.443Z",
+  "command": "cargo test -p yuzuno-workspace --lib jobs:: -- --nocapture",
+  "passed": 103,
+  "failed": 0,
+  "sizeReceipt": {
+    "agents": 2,
+    "fixtureJobs": 120,
+    "projects": 2,
+    "rows": [
+      {
+        "case": "prior-workspace",
+        "jobs": 50,
+        "liveJobs": 50,
+        "serializedBytes": 75396
+      },
+      {
+        "case": "new-default-self",
+        "jobs": 10,
+        "liveJobs": 0,
+        "serializedBytes": 4517
+      },
+      {
+        "case": "new-workspace",
+        "jobs": 10,
+        "liveJobs": 0,
+        "serializedBytes": 4712
+      },
+      {
+        "case": "new-project",
+        "jobs": 10,
+        "liveJobs": 0,
+        "serializedBytes": 4744
+      },
+      {
+        "case": "new-expanded-workspace",
+        "jobs": 10,
+        "liveJobs": 0,
+        "serializedBytes": 8653
+      }
+    ]
+  },
+  "note": "Synthetic temporary Store fixture only. liveJobs excludes rows already in jobs in new responses; liveJobIds preserves the live page. Compact json serialization, not MCP transport envelope. No unrelated workspace data was read."
+}

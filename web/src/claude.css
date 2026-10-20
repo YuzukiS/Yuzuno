@@ -1,0 +1,45 @@
+.claude-permission-input { max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.claude-permission-actions { display: flex; flex-wrap: wrap; gap: .65rem; margin-top: 1rem; }
+.claude-deny-reason { display: grid; gap: .35rem; margin-top: .9rem; font-size: calc(11px + var(--font-adjust, 3px)); }
+.claude-deny-reason small { color: var(--muted); font-weight: 400; }
+.claude-deny-reason input { min-width: 0; }
+.claude-question-fields { border: 0; margin: 0; padding: 0; min-width: 0; }
+.claude-question-fields > fieldset { margin: 1rem 0; border: 0; padding: 0; min-width: 0; }
+.claude-question-fields legend { font-weight: 600; margin-bottom: .65rem; }
+.claude-tool .tool-content pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.claude-tool summary strong { font-weight: 600; }
+.claude-tool[data-subagent-status="unknown"] > summary .tool-result,
+.claude-tool[data-subagent-status="failed"] > summary .tool-result { color: var(--coral); }
+/* A Claude sub-agent under its Agent call (ClaudeSubAgentDetail). */
+.claude-subagent { display: grid; gap: 8px; min-width: 0; color: var(--text-secondary, var(--muted)); }
+.claude-subagent-facts { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 0; }
+.claude-subagent-facts dt { color: var(--muted); }
+.claude-subagent-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.claude-subagent-part p { margin: 2px 0 0; }
+.claude-subagent-text { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); max-height: 16em; overflow: auto; }
+.claude-subagent-muted { margin: 0; color: var(--muted); }
+.claude-subagent-error { margin: 0; color: var(--error-ink, var(--coral)); }
+.claude-subagent-calls { display: grid; gap: 4px; min-width: 0; }
+.claude-subagent-calls-toggle {
+  display: inline-flex; align-items: center; gap: 6px; justify-self: start; padding: 4px 6px; border: 0; border-radius: 4px;
+  background: none; font: inherit; color: inherit; cursor: pointer;
+}
+.claude-subagent-calls-toggle:hover { background: var(--surface-hover, transparent); }
+.claude-subagent-calls-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.claude-subagent-calls-toggle svg { transition: transform .15s; }
+.claude-subagent-calls-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+.claude-subagent-calls > div { padding-left: 10px; border-left: 2px solid var(--line); }
+/* An ExitPlanMode request and its call: the plan as Markdown. A long plan
+   is cut to a readable height until opened (PlanText). */
+.claude-plan-mode { margin: 0 0 10px; }
+.claude-plan-text { display: grid; gap: 6px; min-width: 0; }
+.claude-plan-body { min-width: 0; overflow-wrap: anywhere; }
+.claude-plan-body[data-collapsed] {
+  max-height: 22em; overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 75%, transparent);
+}
+.claude-plan-body .prose { color: var(--ink); }
+.claude-plan-toggle { justify-self: start; }
+.claude-plan-empty, .claude-plan-file { margin: 4px 0; color: var(--muted); }
+.claude-plan-file .mono-small { overflow-wrap: anywhere; }
+.claude-tool .tool-content .claude-plan-text { margin-bottom: 10px; }

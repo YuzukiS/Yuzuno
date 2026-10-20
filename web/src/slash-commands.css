@@ -1,0 +1,97 @@
+/* The composer's slash list (slash-commands.ts): a CodeMirror tooltip above
+   the draft, like the pasted-text preview. CodeMirror marks the list's own
+   element as the tooltip. */
+.cm-tooltip.slash-menu {
+  width: min(560px, 92vw);
+  color: var(--ink);
+  background: var(--input);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px #0002;
+  overflow: hidden;
+}
+/* Above the line it opens from (always the draft's first), clear of the
+   composer box: the content's top padding (15px, pasted-text.css), its
+   border, and a small gap. */
+.cm-tooltip.cm-tooltip-above.slash-menu {
+  margin-top: -22px;
+}
+.slash-menu-list {
+  /* Rows measure their offsets against the list (slash-commands.ts). */
+  position: relative;
+  max-height: min(296px, 42vh);
+  overflow-y: auto;
+  padding: 4px;
+}
+.slash-menu-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "name hint source"
+    "description description description";
+  align-items: baseline;
+  column-gap: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.slash-menu-item:hover {
+  background: var(--surface-hover);
+}
+.slash-menu-item.is-active {
+  background: var(--surface-hover);
+  box-shadow: inset 2px 0 0 var(--focus);
+}
+.slash-menu-name {
+  grid-area: name;
+  font:
+    600 12.5px/1.4 ui-monospace,
+    monospace;
+}
+.slash-menu-hint {
+  grid-area: hint;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font:
+    11.5px/1.4 ui-monospace,
+    monospace;
+}
+.slash-menu-source {
+  grid-area: source;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.slash-menu-source.is-skill {
+  color: var(--accent-ink);
+}
+.slash-menu-description {
+  grid-area: description;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+}
+.slash-menu-note {
+  margin: 0;
+  padding: 8px 12px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+}
+.slash-menu-note.is-source {
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  font-size: 10.5px;
+}
+.slash-menu-note.is-failed {
+  color: var(--ink);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .slash-menu-item {
+    transition: background-color 80ms ease-out;
+  }
+}

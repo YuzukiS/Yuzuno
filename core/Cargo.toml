@@ -1,0 +1,52 @@
+[package]
+name = "yuzuno-workspace"
+default-run = "yuzuno-workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Packaged builds receive runtime paths from their verified installed bundle.
+bundled-release = []
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+axum = { version = "0.8", features = ["macros"] }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "6"
+futures-util = "0.3"
+flate2 = "1"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+minisign-verify = "0.3"
+parking_lot = "0.12"
+rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-streamable-http-server"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+rustix = { version = "1.1", features = ["fs", "process"] }
+sha2 = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["json", "blocking"] }
+serde = { version = "1", features = ["derive"] }
+# float_roundtrip: a float parsed back from the JSON written for it is the
+# same float, so records survive a write and load exactly (record_rows).
+serde_json = { version = "1", features = ["float_roundtrip"] }
+subtle = "2.6"
+tar = "0.4"
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs", "limit", "set-header"] }
+unicode-segmentation = "=1.13.3"
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+rmcp = { version = "3.5.1", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
+tempfile = "3"

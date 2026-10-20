@@ -1,0 +1,75 @@
+.pr-reviews {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+.pr-reviews h4 {
+  margin: 0 0 8px;
+}
+.pr-review-start,
+.pr-review-run > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pr-review-start {
+  margin: 8px 0;
+  font-size: 12px;
+}
+.pr-review-run {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.pr-review-run header {
+  font-size: 12px;
+}
+.pr-review-run p,
+.pr-review-run details {
+  font-size: 12px;
+}
+.pr-review-run summary {
+  cursor: pointer;
+  margin: 8px 0;
+}
+.pr-review-run dd {
+  margin: 2px 0 8px;
+  font-family: monospace;
+}
+.pr-review-run pre {
+  white-space: pre-wrap;
+  max-height: 400px;
+  overflow: auto;
+  font-size: 11px;
+}
+.pr-review-finding {
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.pr-review-recipient {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pr-review-recipient select {
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+  padding: 8px 10px;
+  min-width: 0;
+}
+.pr-review-run dd {
+  overflow-wrap: anywhere;
+}
+.pr-review-run.focused {
+  border-color: var(--accent-ink);
+}

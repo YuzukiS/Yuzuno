@@ -1,0 +1,31 @@
+.connection-banner.core-connection-banner {
+  background: var(--cream);
+  border-color: var(--line);
+  color: var(--ink);
+}
+.connection-banner.core-connection-banner > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.connection-banner.core-connection-banner span {
+  color: var(--muted);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.connection-banner.core-connection-banner .quiet-button {
+  flex-shrink: 0;
+  color: var(--green);
+}
+.event-connection-status {
+  color: var(--muted);
+  font-size: inherit;
+  border-left: 1px solid var(--line);
+  padding-left: 9px;
+  margin-left: 3px;
+}
+@media (max-width: 900px) {
+  .event-connection-status {
+    display: none;
+  }
+}

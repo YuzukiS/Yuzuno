@@ -1,0 +1,152 @@
+.agent-select {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 0;
+  width: 100%;
+  color: inherit;
+}
+/* The select button's hit area covers the whole card, padding included. */
+.agent-select::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+}
+.agent-select:focus-visible {
+  outline: none;
+}
+.agent-row:has(.agent-select:focus-visible) {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 1px;
+}
+.agent-rail-avatar {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+/* Unread updates: a thin ring around the avatar, apart from it by a small
+   gap. Drawn behind the avatar so its leaf stays on top; no dot, so it
+   never reads as one of the status dots. */
+.agent-rail-avatar.has-unread::before {
+  content: "";
+  position: absolute;
+  inset: -3.5px;
+  border: 1.5px solid color-mix(in srgb, var(--ink) 72%, transparent);
+  border-radius: 13px;
+  pointer-events: none;
+}
+.agent-select .agent-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-select .agent-runtime {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+/* CI can coexist with a Job or a check hint. That longer, combined status
+   takes its own line, so the Agent and machine names keep their usable
+   width; a single wait such as "Waiting · CI" stays beside the name. */
+@media (min-width: 521px) {
+  .agent-select:has(.agent-runtime[data-combined]) {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr);
+    row-gap: 4px;
+  }
+  .agent-select:has(.agent-runtime[data-combined]) .agent-rail-avatar {
+    grid-row: 1 / span 2;
+  }
+  .agent-select .agent-runtime[data-combined] {
+    grid-column: 2;
+    white-space: normal;
+  }
+}
+@media (max-width: 520px) {
+  .agent-select .agent-runtime {
+    display: none;
+  }
+}
+.agent-work-summary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin-top: 10px;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.agent-work-summary.kind-pending {
+  color: var(--attention-ink, #987344);
+}
+/* Compact Agent list (Settings → Appearance): the name and status only.
+   The latest report or update stays in the conversation; "needs you"
+   still shows. */
+:root[data-agent-list="compact"] .agent-row {
+  padding-block: 9px;
+  margin-bottom: 4px;
+}
+:root[data-agent-list="compact"] .agent-work-summary {
+  display: none;
+}
+:root[data-agent-list="compact"] .agent-row .agent-row-bottom {
+  margin-top: 6px;
+}
+.agent-report-prefix {
+  opacity: 0.72;
+  font-size: 0.9em;
+}
+.agent-identity {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+.agent-identity > .agent-name {
+  flex: none;
+}
+/* Plain icon and name over the Agent's name, as the working folder used to
+   be shown. */
+.agent-identity > .remote-machine-badge {
+  align-self: flex-start;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  background: none;
+  font-size: calc(8px + var(--font-adjust, 3px));
+  line-height: 1.3;
+  opacity: 0.72;
+}
+.agent-identity > .remote-machine-badge > svg {
+  flex-shrink: 0;
+  width: 11px;
+  height: 11px;
+}
+.agent-row .agent-row-bottom {
+  margin-top: 8px;
+}
+.read-end-marker {
+  height: 1px;
+  width: 100%;
+}
+.conversation-read-help {
+  margin: 8px 0 18px;
+  line-height: 1.7;
+}
+.inspector-work-source {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.inspector-work-source:hover {
+  text-decoration: underline;
+}

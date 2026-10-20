@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Yuzuno — your workspace is close</title>
+    <link rel="stylesheet" href="connection.css" />
+    <script src="connection.js" defer></script>
+  </head>
+  <body>
+    <header class="wordmark"><svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" viewBox="0 0 72 72" fill="none">
+  <!-- Matches the Yuzu vector mark in web/src/components.tsx. -->
+  <path d="M37 19C31 8 44 4 51 7C49 17 44 20 37 19Z" fill="#75966c"/>
+  <path d="M36 20C36 15 33 12 30 10" stroke="#476b43" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M17 28C24 19 29 20 36 22C45 18 53 23 58 32C65 45 58 62 43 65C25 69 10 58 11 44C11 37 13 32 17 28Z" fill="#f1c85b" stroke="#d9b147" stroke-width="1.3"/>
+  <path d="M19 33C22 28 25 27 28 27" stroke="#ffe6a0" stroke-width="3" stroke-linecap="round"/>
+  <ellipse cx="28" cy="43" rx="1.8" ry="2.3" fill="#526148"/>
+  <ellipse cx="46" cy="43" rx="1.8" ry="2.3" fill="#526148"/>
+  <path d="M33 49C35 52 39 52 41 49" stroke="#526148" stroke-width="1.8" stroke-linecap="round"/>
+  <ellipse cx="22" cy="48" rx="4" ry="2.5" fill="#eaaa7c" opacity=".6"/>
+  <ellipse cx="51" cy="48" rx="4" ry="2.5" fill="#eaaa7c" opacity=".6"/>
+</svg>
+<span>yuzuno<span class="wordmark-dot">.</span></span></header>
+    <main>
+      <div class="eyebrow"><span class="status-dot"></span> A little room for your agents</div>
+      <h1>Your workspace<br />is close.</h1>
+      <p class="intro">Connect to where your agents live.<br />Everything will be right where you left it.</p>
+      <form id="connection-form" novalidate>
+        <label for="core-url">Workspace address</label>
+        <div class="address-row"><input id="core-url" name="url" type="url" value="http://127.0.0.1:4317" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="address-hint connection-message" required /><button id="connect-button" type="submit">Connect <span aria-hidden="true">↗</span></button></div>
+        <p id="address-hint" class="hint">Core on this computer, or in WSL? The default address usually works. On another computer, use your SSH tunnel's local address.</p>
+        <div id="connection-message" class="message" role="status" aria-live="polite">Getting ready…</div>
+      </form>
+      <div class="connection-note"><span aria-hidden="true">↳</span><p>Your agents keep working when this window closes.<br /><span>The Workspace Core runs separately.</span></p></div>
+    </main>
+    <footer><span>YOUR SPACE, YOUR PACE</span><span class="footer-tag">Desktop</span></footer>
+    <div class="window-controls" role="group" aria-label="Window" hidden>
+      <button type="button" data-window="minimize" aria-label="Minimize" title="Minimize"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12"/></svg></button>
+      <button type="button" data-window="maximize" aria-label="Maximize" title="Maximize"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></button>
+      <button type="button" data-window="close" aria-label="Close window" title="Close window"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17"/></svg></button>
+    </div>
+  </body>
+</html>

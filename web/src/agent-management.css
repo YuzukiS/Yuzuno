@@ -1,0 +1,201 @@
+/* Which agents the rail lists: a small pill on the rail's title line. */
+.agent-scope {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+}
+.agent-scope button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: calc(7px + var(--font-adjust, 3px));
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.agent-scope button:hover:not([aria-pressed="true"]) {
+  color: var(--ink);
+}
+.agent-scope button[aria-pressed="true"] {
+  background: var(--input);
+  color: var(--ink);
+  box-shadow: 0 1px 2px #0000000f;
+}
+.agent-scope button span {
+  font-size: 0.92em;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.65;
+}
+.agent-action-list {
+  display: grid;
+  gap: 9px;
+  margin-top: 21px;
+}
+.agent-action-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+  color: var(--ink);
+  border-radius: 11px;
+  padding: 17px;
+}
+.agent-action-card svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.agent-action-card span {
+  display: grid;
+  gap: 6px;
+}
+.agent-action-card strong {
+  font-size: calc(12px + var(--font-adjust, 3px));
+  font-weight: 550;
+}
+.agent-action-card small {
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.6;
+}
+.agent-action-card:hover {
+  border-color: var(--text-secondary);
+}
+.danger-action,
+.delete-explanation > svg {
+  color: var(--management-danger);
+}
+:root {
+  --management-danger: #a54847;
+  --management-danger-bg: #a54847;
+}
+:root[data-theme="dark"] {
+  --management-danger: #eca5a0;
+  --management-danger-bg: #91443f;
+}
+.danger-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 10px 16px;
+  background: var(--management-danger-bg);
+  color: #fff;
+  font: inherit;
+  font-weight: 550;
+}
+.agent-read-actions {
+  padding: 9px 2px 0;
+  border-top: 1px solid var(--line);
+  margin-top: 9px;
+}
+.agent-read-actions p,
+.agent-files-kept {
+  color: var(--text-secondary);
+  line-height: 1.7;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.agent-action-explanation {
+  display: flex;
+  align-items: flex-start;
+  gap: 15px;
+  padding: 20px;
+  margin-top: 23px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+  line-height: 1.7;
+}
+.agent-action-explanation > svg {
+  flex-shrink: 0;
+  color: var(--accent-ink);
+  margin-top: 2px;
+}
+.agent-action-explanation strong {
+  font-size: calc(12px + var(--font-adjust, 3px));
+  font-weight: 550;
+}
+.agent-action-explanation p {
+  margin: 6px 0 0;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  color: var(--text-secondary);
+}
+.closed-agent-note {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 16px 28px;
+  padding: 17px 20px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface-soft);
+  color: var(--text-secondary);
+}
+.closed-agent-note > svg {
+  flex-shrink: 0;
+  color: var(--accent-ink);
+}
+.closed-agent-note > div {
+  flex: 1;
+  min-width: 0;
+}
+.closed-agent-note strong {
+  display: block;
+  color: var(--ink);
+  font-size: calc(12px + var(--font-adjust, 3px));
+  font-weight: 550;
+}
+.closed-agent-note p {
+  margin: 5px 0 0;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.6;
+}
+.model-catalog-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.6;
+}
+.model-catalog-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+@media (max-width: 940px) {
+  .closed-agent-note {
+    margin: 12px;
+    flex-wrap: wrap;
+    padding: 15px;
+  }
+}
+@media (max-width: 520px) {
+  .agent-scope {
+    flex-direction: column;
+    border-radius: 12px;
+  }
+  .agent-scope button {
+    justify-content: center;
+    padding: 1px 6px;
+    font-size: calc(6px + var(--font-adjust, 3px));
+  }
+  .agent-scope button span {
+    display: none;
+  }
+  .agent-action-explanation {
+    padding: 15px;
+    gap: 10px;
+  }
+}

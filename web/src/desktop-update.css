@@ -1,0 +1,19 @@
+/* The Desktop app's own updates: one row of the Settings dialog's Desktop
+   app section (updates.css carries the section and row system). */
+.desktop-update-version {
+  font-variant-numeric: tabular-nums;
+}
+.desktop-update-state,
+.desktop-update-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.desktop-update-state {
+  color: var(--ink);
+}
+.desktop-update-available {
+  display: grid;
+  gap: 4px;
+}

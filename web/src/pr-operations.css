@@ -1,0 +1,90 @@
+.pr-operations {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 16px;
+}
+.pr-operations fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.pr-operations label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+}
+.pr-operations input,
+.pr-operations select,
+.pr-operations textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: inherit;
+  padding: 7px 9px;
+  font: inherit;
+}
+.pr-operations textarea {
+  resize: vertical;
+}
+.pr-operation-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.pr-operations .pr-operation-draft {
+  display: flex;
+  align-items: center;
+}
+.pr-operation-draft input {
+  width: auto;
+}
+.pr-operation {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  margin-top: 12px;
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+.pr-operation header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: space-between;
+  font-size: 12px;
+}
+.pr-operation p {
+  margin: 7px 0;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+.pr-operation small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+.pr-operation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.pr-operation details {
+  margin-top: 10px;
+  font-size: 12px;
+}
+.pr-operation summary {
+  cursor: pointer;
+}
+.pr-operation pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow: auto;
+  font: inherit;
+}

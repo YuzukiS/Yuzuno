@@ -1,0 +1,36 @@
+.codex-writer-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 10px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--accent-ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.55;
+}
+.codex-writer-notice > svg {
+  flex: none;
+  margin-top: 0.2em;
+}
+.codex-writer-notice > span:first-of-type {
+  flex: 1 1 22rem;
+  min-width: 0;
+}
+.codex-writer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+.codex-writer-notice.is-continued {
+  color: var(--text-secondary);
+}
+.codex-fork-dialog .session-preview-heading > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

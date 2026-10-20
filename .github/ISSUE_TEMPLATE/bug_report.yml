@@ -1,0 +1,77 @@
+name: Bug report
+description: Something in Yuzuno does not work as its documentation describes.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include tokens, API keys, the Codex or Claude CLI login files, SSH keys, full private conversations or your Workspace data folder. Trim logs to the lines around the failure, and replace private paths or hostnames if they matter to you.
+
+        Report a security problem [privately](https://github.com/YuzukiS/Yuzuno/security/advisories/new) instead. Do not describe a vulnerability or exploit steps here.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest steps that show the problem, starting from a new Agent or a separate test Workspace if you can.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: input
+    id: core-version
+    attributes:
+      label: Core version
+      description: "`version` and `releaseId` from `curl -s http://127.0.0.1:4317/api/health` (use your port). If `releaseId` is `development`, add the commit from `git rev-parse HEAD`."
+    validations:
+      required: true
+  - type: dropdown
+    id: core-host
+    attributes:
+      label: Core host
+      options:
+        - Linux
+        - WSL
+        - Other (say which under Environment)
+    validations:
+      required: true
+  - type: dropdown
+    id: client
+    attributes:
+      label: Client
+      options:
+        - Browser (say which under Environment)
+        - Windows desktop
+        - Not client-related
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      multiple: true
+      options:
+        - Codex, local
+        - Codex over SSH
+        - Claude, local
+        - Not Agent-related
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: The output of `codex --version` or `claude --version` on the machine that runs the Agent, the browser and its version, and anything else about the setup.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Identifiers rather than screenshots of whole conversations, for example a Job ID with its status and reason, a CI run link or a review ID, and the log lines around the failure.

@@ -1,0 +1,45 @@
+{
+  "task": "T-73",
+  "baseSha": "8eac935a5a9a6536e33dbbf3ad43f8b6f013e19b",
+  "realSource": {
+    "repository": "torvalds/linux",
+    "revision": "2f2f7eeef8b0a1a9b9ca998231419873ccae8d4e",
+    "path": "drivers/gpu/drm/amd/include/asic_reg/gc/gc_11_0_0_sh_mask.h",
+    "blobSha": "3088a4a13cb50b918dd190711ec2a84532a28200",
+    "bytes": 4345221,
+    "lines": 41664
+  },
+  "controlledChange": {
+    "diffBytes": 170,
+    "modelUsed": false,
+    "readStartLine": 1300,
+    "readEndLine": 1302
+  },
+  "transport": {
+    "comparisonIdentity": {
+      "base": "951f487fbc71122e5f48e37c7d14d8c9237f2684",
+      "commits": 1,
+      "mergeBase": "951f487fbc71122e5f48e37c7d14d8c9237f2684"
+    },
+    "checkoutCreated": false,
+    "modelUsed": false,
+    "readPath": "core/src/pr_review/source.rs",
+    "readBlobSha": "da3cea044f4b3b21bf6c74fae7ec7b72347a843c"
+  },
+  "validationJob": "4a1f78df-53b3-40cc-8225-c8e9fe2faf3b",
+  "fullBridgeValidation": {
+    "jobId": "fc95269a-9df2-4f4b-b53d-1d2f4d0a2c43",
+    "passedTests": 51,
+    "nativeCliRequired": false
+  },
+  "r1Correction": {
+    "reviewId": "7b573f67-39ab-406d-a393-ef792d2daef7",
+    "conclusion": "changes_requested",
+    "actualHarness": "codex",
+    "actualModel": "gpt-6.1-sol",
+    "finding": "Serialized diff page can exceed response budget",
+    "validationJob": "b6d25e29-4b5c-4ab9-ba97-2788bd7ced4f",
+    "focusedCorePassed": 17,
+    "realSourcePassed": true
+  }
+}

@@ -1,0 +1,22 @@
+/* Window buttons in the desktop toolbar, in the toolbar's own icon style:
+   set apart by a hairline, the close button warming to coral on hover. */
+.window-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 12px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
+.window-control {
+  width: 30px;
+  height: 28px;
+  border-radius: 7px;
+}
+/* !important: the palettes' shared icon-button hover rule carries a :has()
+   in its :is() list, which outranks any plain selector here. */
+.window-control.close:hover {
+  background: color-mix(in srgb, var(--coral) 16%, transparent) !important;
+  border-color: transparent !important;
+  color: var(--coral) !important;
+}

@@ -1,0 +1,58 @@
+/* The recovery page stands in for the whole app, so it uses only the palette
+   and the shared buttons, nothing that depends on the app having drawn. */
+.app-recovery {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 20px;
+  background: var(--paper, #f0ebe1);
+  color: var(--ink, #2e2720);
+}
+.app-recovery-card {
+  width: min(560px, 100%);
+  display: grid;
+  gap: 14px;
+}
+.app-recovery-card h1 {
+  margin: 0;
+  font-size: calc(18px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.app-recovery-card p {
+  margin: 0;
+  color: var(--text-secondary, #574c40);
+  line-height: 1.5;
+}
+.app-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.app-recovery-actions button,
+.diagnostics-section .settings-section-heading button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.diagnostics-note {
+  margin: 0;
+  color: var(--text-secondary, #574c40);
+}
+.diagnostics-text {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 160px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--line, #cfc5b6);
+  border-radius: 6px;
+  background: var(--input, #fdfaf1);
+  color: var(--ink, #2e2720);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.45;
+}
+.diagnostics-section {
+  display: grid;
+  gap: 10px;
+}

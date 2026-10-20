@@ -1,0 +1,216 @@
+{
+  "task": "T-31",
+  "scope": "First milestone: local Codex image input; Claude and remote remain unsupported",
+  "base": "663a80fcc8c1b66d330cbf663ddee2791e9681ba",
+  "implementation": {
+    "nativeProtocol": "turn/start and turn/steer input localImage; model/list inputModalities checked before submission",
+    "storage": "Agent-scoped content-addressed original files and 320px maximum thumbnails under Core data-dir/input-images; draft and message receipt contain references only",
+    "limits": {
+      "formats": [
+        "PNG",
+        "JPEG",
+        "WebP"
+      ],
+      "perImageMiB": 10,
+      "perMessageImages": 8,
+      "perMessageMiB": 40,
+      "maxSidePx": 8192,
+      "maxMegapixels": 24,
+      "decoderMiB": 128,
+      "concurrentDecodes": 1,
+      "perAgentStoredMiB": 256
+    },
+    "reuse": [
+      "Existing CodeMirror composer and pasted text blocks",
+      "Radix Modal",
+      "Existing message receipts, unknown-outcome protection, draft snapshot clearing",
+      "Existing browser origin/client boundary; no external image URLs or caller filesystem paths"
+    ]
+  },
+  "validation": {
+    "typescript": "PASS",
+    "isolatedProductionBuild": "PASS (target/t31/ui, daily web/dist untouched)",
+    "imageAndDraftUnits": {
+      "passed": 20
+    },
+    "conversationInteractions": {
+      "passed": 13
+    },
+    "existingUiRegression": {
+      "passed": 66
+    },
+    "finalStreamingImageReadIntegration": "PASS",
+    "browser": {
+      "checks": [
+        "native PNG clipboard attaches once",
+        "same picker content deduplicates",
+        "hover/full preview and Escape without Interrupt",
+        "Agent switch + reload preserve caption and image",
+        "light/dark 20px layout",
+        "failed send retains draft; changing only image uses a new dedup key",
+        "accepted immutable snapshot does not clear new typing",
+        "image-only send and original message image replay"
+      ],
+      "errors": [],
+      "layout": [
+        {
+          "theme": "light",
+          "left": 279,
+          "right": 479,
+          "top": 585,
+          "bottom": 768,
+          "vw": 1440,
+          "vh": 1000
+        },
+        {
+          "theme": "dark",
+          "left": 279,
+          "right": 479,
+          "top": 585,
+          "bottom": 768,
+          "vw": 1440,
+          "vh": 1000
+        }
+      ],
+      "result": "PASS"
+    },
+    "realCodex": {
+      "run": "/home/developer/yuzuno-next/.claude/worktrees/t31-image-input/target/t31/native-1792028423839",
+      "port": 4487,
+      "checks": [
+        "real UI uploads two PNGs and Codex reads both labels and colors through localImage",
+        "real image-only UI send recognized by Codex",
+        "reload preserves three native image references and full image preview"
+      ],
+      "errors": [],
+      "agentId": "45343c83-d938-4833-b87b-c92884b3f5af",
+      "model": "gpt-6-astra",
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "firstAnswer": "1. “ORBIT-731” — a red square.\n2. “IMAGE-ONLY-928” — a blue circle.",
+      "nativeContent": [
+        {
+          "type": "text"
+        },
+        {
+          "type": "localImage",
+          "filename": "0ae456d1d02053df887bc12382e157c3d05d6bcafa94d17ddf46ddcf7233032c.png"
+        },
+        {
+          "type": "localImage",
+          "filename": "19dfaa6622d890316c0e21366d6c0dbabd823cef18d9206c0e31bb9493885310.png"
+        }
+      ],
+      "coreExit": 0,
+      "coreStopped": true,
+      "secondAnswer": "“IMAGE-ONLY-928” — a blue circle.",
+      "finalReviewedSeq": 68,
+      "result": "PASS"
+    },
+    "oldReaderGuard": {
+      "oldReaderRelease": "core-20261014-47b61025",
+      "exitCode": 1,
+      "stderr": "Error: Agent 45343c83-d938-4833-b87b-c92884b3f5af persisted history/Item/payload cannot be read\n\nCaused by:\n    Agent 45343c83-d938-4833-b87b-c92884b3f5af 的记录无法读取：Workspace 记录无法读取: unknown field `images`, expected one of `clientMessageId`, `text`, `expectedTurnId`, `question`\n",
+      "databaseUnchanged": true,
+      "expected": "Refuse rollback to an old Core that cannot read image message receipts"
+    },
+    "narrowPreview": "PASS: full preview container remains inside the dialog at a 390px viewport",
+    "updateSendFences": {
+      "passed": 5,
+      "includes": "same/different image retry identity under update admission fence"
+    },
+    "r1ForkHistoryFix": {
+      "result": "PASS",
+      "scope": "R1 P2: preserve original owner for images in forked native history",
+      "implementation": "Strictly extract input-images/<owner>/<sha256.ext> from native localImage references; existing read route verifies the owner and serves only Core-managed files. No arbitrary paths, URLs, new routes or copies.",
+      "core": "Deterministic native-protocol fork fixture: HTTP upload in A, managed localImage recorded in completed native history, official fork flow creates B and verifies identical history, source-owner original and thumbnail routes return decodable images (640px/320px); missing owner rejected. No model inference repeated.",
+      "frontend": "4 image helper tests passed, including source owner preservation and rejection of unmanaged paths, URLs, traversal and malformed IDs.",
+      "browser": {
+        "checks": [
+          "native PNG clipboard attaches once",
+          "same picker content deduplicates",
+          "hover/full preview and Escape without Interrupt",
+          "Agent switch + reload preserve caption and image",
+          "light/dark 20px layout",
+          "failed send retains draft; changing only image uses a new dedup key",
+          "accepted immutable snapshot does not clear new typing",
+          "image-only send and original message image replay",
+          "fork history loads original-owner thumbnail and full image without a copy in the new Agent"
+        ],
+        "errors": [],
+        "layout": [
+          {
+            "theme": "light",
+            "left": 279,
+            "right": 479,
+            "top": 585,
+            "bottom": 768,
+            "vw": 1440,
+            "vh": 1000
+          },
+          {
+            "theme": "dark",
+            "left": 279,
+            "right": 479,
+            "top": 585,
+            "bottom": 768,
+            "vw": 1440,
+            "vh": 1000
+          }
+        ],
+        "result": "PASS"
+      },
+      "typescript": "PASS",
+      "isolatedProductionBuild": "PASS",
+      "logs": [
+        "target/t31/r1-fork-core.log",
+        "target/t31/r1-image-unit.log",
+        "target/t31/r1-build.log",
+        "target/t31/r1-browser.log"
+      ]
+    }
+  },
+  "resources": {
+    "globalSlots": "/home/developer/yuzuno-next/target/heavy-slot.sh",
+    "cargo": "4 GiB memory, zero swap, -j4, serial tests, timeout",
+    "nodeBrowser": "3 GiB memory, zero swap, Node heap 2 GiB, timeout",
+    "temporaryFiles": "Own worktree target/t31/tmp; short symlink under root target for Chromium UNIX socket length"
+  },
+  "sources": [
+    "https://learn.chatgpt.com/docs/app-server",
+    "https://docs.rs/image/0.25.10/image/struct.ImageReader.html",
+    "https://docs.rs/image/0.25.10/image/struct.Limits.html"
+  ],
+  "knownBoundaries": [
+    "Only local Codex; Claude and remote explicitly reject image input",
+    "Accepted uploads survive draft removal so sent/history references remain valid; no automatic image garbage collection in this milestone",
+    "A draft copied to a fork preserves original images for recovery but asks to attach them in the new Agent before sending",
+    "Once image receipts exist, old Core releases cannot read them. Existing actual-records verifier refuses rollback, verified read-only against the isolated test DB",
+    "Browser upload-in-progress warns before reload and blocks managed update reload; completed uploads and failed sends retain durable draft references"
+  ],
+  "manualAcceptance": [
+    "Open a local Codex Agent, paste a screenshot or choose PNG/JPEG/WebP with Add images",
+    "Hover a thumbnail, click it for original preview, press Escape to close, remove an image",
+    "Switch Agents or refresh: saved images and text remain",
+    "Send one or several images with text, or send images alone; click their thumbnails in the original user message after refreshing",
+    "On a slow send type more text: the successful old send must not clear the new draft",
+    "Fork a local Codex conversation containing a sent image: the inherited thumbnail and full image still open from the source owner; the source Agent and stored image must still exist",
+    "Claude or remote Agents show the unsupported explanation; use local Codex for this milestone"
+  ],
+  "dailyChanges": "None: daily Core, database, web/dist and user window untouched",
+  "testFixtureNotes": [
+    "Initial browser startup hit UNIX socket path length; short TMPDIR symlink fixed it",
+    "Initial native test incorrectly compared CodeMirror placeholder innerText to empty input; checked durable draft parts instead and continued the same isolated session",
+    "An extra assertion about read cursors during ordinary conversation reading was outside T31 scope; retained existing read behavior and verified required paths without further model calls",
+    "Initial Web CI failed because the existing source-level send-hook test loader did not resolve the new image-input import. Loader updated; all five update-send tests pass locally."
+  ],
+  "publicCopy": {
+    "redacted": [
+      "machine-specific absolute paths"
+    ],
+    "originalEvidence": "retained privately",
+    "outcomes": "historical observations, not rerun with example paths"
+  }
+}

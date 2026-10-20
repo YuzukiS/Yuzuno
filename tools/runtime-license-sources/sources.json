@@ -1,0 +1,25 @@
+{
+  "about": "License texts traced to the exact source of a runtime package that ships none (tools/runtime_notices.py). Each entry is used only for that name, version and lock integrity, with its text checked against textSha256.",
+  "packages": [
+    {
+      "name": "standardwebhooks",
+      "version": "1.1.1",
+      "integrity": "sha512-bCbX9ZEyFkWPsRz7Bl3NuQUJohmwGSev/yhr7vhaGPlc4AfIrspIRa6cPTBuI1ItmrTDJ4d/S2hCsfe4+vQGnQ==",
+      "declaredLicense": "MIT",
+      "text": "standardwebhooks-1.1.1-LICENSE",
+      "textSha256": "5ec8c7b26b64d881a6706617bed25c049f97f2f35de034c756de8546fd6dbe27",
+      "upstream": {
+        "repository": "https://github.com/standard-webhooks/standard-webhooks",
+        "commit": "b4d2c14fc5b4ccff3ff271e3b087dff812254c59",
+        "path": "libraries/LICENSE",
+        "gitBlob": "55b14b3a3ce649a2f1b05428dcc9c6db95b37c04"
+      },
+      "evidence": [
+        "The package ships no license text: its tarball holds README.md, dist/ and package.json, which declares MIT.",
+        "Its npm SLSA provenance (https://registry.npmjs.org/-/npm/v1/attestations/standardwebhooks@1.1.1) names this tarball (sha512 equal to the integrity above), built from this commit by .github/workflows/javascript-release.yml, which publishes from libraries/javascript.",
+        "At this commit libraries/javascript has no license file. libraries/LICENSE, the nearest license file above it, is MIT (unchanged since c7cd8a9e, 2023-09-21) and matches the declared license.",
+        "The repository's root LICENSE at this commit is the Apache License 2.0 text (blob 261eeb9e); it does not match the declared license and is not used."
+      ]
+    }
+  ]
+}

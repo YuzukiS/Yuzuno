@@ -1,0 +1,75 @@
+.purpose-section dl > .codex-plan-usage {
+  align-items: flex-start;
+}
+.codex-plan-usage dd {
+  flex: 1;
+  justify-content: flex-end;
+  align-items: flex-start;
+}
+.codex-plan-values {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 5px;
+}
+.codex-plan-window {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px 7px;
+  font-variant-numeric: tabular-nums;
+}
+.codex-plan-window > span:first-child,
+.codex-plan-note {
+  color: var(--muted);
+}
+.codex-plan-details {
+  font-size: 0.94em;
+  color: var(--muted);
+  text-align: right;
+}
+.codex-plan-details summary {
+  cursor: pointer;
+}
+.codex-plan-details > span {
+  display: block;
+  margin-top: 6px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.codex-plan-refresh {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  padding: 4px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+.codex-plan-refresh:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--cream);
+}
+.codex-plan-refresh:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+.codex-plan-refresh:disabled {
+  opacity: 0.5;
+}
+.codex-plan-spinning {
+  animation: codex-plan-spin 1.2s linear infinite;
+}
+@keyframes codex-plan-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .codex-plan-spinning {
+    animation: none;
+  }
+}

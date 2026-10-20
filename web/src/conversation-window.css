@@ -1,0 +1,23 @@
+.conversation-window {
+  overflow-anchor: none;
+}
+.conversation-window-row {
+  display: flow-root;
+}
+[data-plan-status]::before { content: attr(aria-posinset) ". "; }
+.conversation-history-window {
+  padding: 12px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.conversation-history-window button + button { margin-left: 16px; }
+.history-item-preview { padding: 12px 0; }
+.history-item-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.history-original-dialog { width: min(900px, 94vw); }
+.history-original-dialog > pre {
+  max-height: 65vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}

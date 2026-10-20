@@ -1,0 +1,15 @@
+.outgoing-message {
+  margin: 22px 0;
+}
+.outgoing-message .message-label {
+  flex-wrap: wrap;
+}
+.outgoing-message .message-label small,
+.message-label small.message-delivery {
+  font-size: calc(9px + var(--font-adjust, 3px));
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.outgoing-message .outgoing-hide {
+  font-size: calc(9px + var(--font-adjust, 3px));
+}

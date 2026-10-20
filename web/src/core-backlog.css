@@ -1,0 +1,54 @@
+/* Core's own backlog note in the status bar (CoreBacklog.tsx). */
+.core-backlog {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.core-backlog-hint {
+  font: inherit;
+  color: var(--coral);
+  background: none;
+  border: 0;
+  border-left: 1px solid var(--line);
+  padding: 0 0 0 9px;
+  margin-left: 3px;
+  cursor: pointer;
+  user-select: none;
+}
+.core-backlog-hint:hover,
+.core-backlog-hint[aria-expanded="true"] {
+  text-decoration: underline;
+}
+.core-backlog-hint:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.core-backlog-details {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  width: min(360px, 80vw);
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper, #fff);
+  color: var(--ink);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: normal;
+  user-select: text;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.08);
+}
+.core-backlog-details p {
+  margin: 0;
+  color: var(--text-secondary, var(--muted));
+}
+.core-backlog-details ul {
+  margin: 6px 0;
+  padding-left: 16px;
+}
+.core-backlog-details .core-backlog-observed {
+  color: var(--muted);
+  font-size: 0.7rem;
+}

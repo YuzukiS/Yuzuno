@@ -1,0 +1,395 @@
+# The public repository's CI (T-147). Not active here: GitHub reads workflows
+# only from .github/workflows. The public snapshot puts this file at
+# .github/workflows/ci.yml; see ci/public/README.md.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Read-only for every job. Under pull_request, GitHub gives a fork's run a
+# read-only token and no secrets; this workflow uses no secrets at all.
+permissions:
+  contents: read
+
+# A newer push to a PR cancels its older run. On main, a run that has started
+# finishes. GitHub keeps one pending run per group: a further push replaces a
+# main run that is still waiting.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Same toolchains as the development host. Bump these deliberately.
+  RUST_TOOLCHAIN: 1.97.1
+  NODE_VERSION: 22.23.2
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Decides whether a PR changes documentation only: README.md,
+  # CONTRIBUTING.md or Markdown under docs/, compared between the PR's fixed
+  # base and head (.github/scripts/pr_scope.py). Anything else, or any doubt,
+  # keeps the full checks. Push to main never runs it.
+  scope:
+    name: Change scope
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.decide.outputs.docs_only }}
+    steps:
+      # Before anything else, refuse any runner but a GitHub-hosted one.
+      - name: GitHub-hosted runner
+        working-directory: .
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ] || { echo "::error::not a GitHub-hosted runner"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The merge commit and both parents: the PR's fixed base and head.
+          fetch-depth: 2
+
+      # The base's copy of the script decides, so a PR cannot change the rule
+      # that judges it. A base without the script keeps the full checks.
+      - name: Decide
+        id: decide
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if git show "$BASE_SHA:.github/scripts/pr_scope.py" > "$RUNNER_TEMP/pr_scope.py" 2>/dev/null; then
+            python3 "$RUNNER_TEMP/pr_scope.py" "$BASE_SHA" "$HEAD_SHA"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "docs_only=false: full checks: the base $BASE_SHA has no change-scope script"
+            printf '### Change scope\n\n**Full checks.** The base `%s` has no change-scope script.\n' "$BASE_SHA" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # Runs instead of the four product jobs, only for a documentation-only PR.
+  # Its success means the Markdown links held, not that Core, Web or the
+  # bridge were tested.
+  docs:
+    name: Docs (local links)
+    needs: scope
+    if: needs.scope.result == 'success' && needs.scope.outputs.docs_only == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Before anything else, refuse any runner but a GitHub-hosted one.
+      - name: GitHub-hosted runner
+        working-directory: .
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ] || { echo "::error::not a GitHub-hosted runner"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Runner details
+        run: .github/scripts/hosted-guard.sh
+
+      - name: Product checks not run
+        run: echo "::notice title=Documentation-only PR::Core, Lint, Web UI and Claude bridge were skipped and did not run; only the Markdown links are checked."
+
+      # Fails only on links this PR breaks.
+      - name: Local links and anchors
+        run: python3 .github/scripts/docs_links.py --base HEAD^1
+
+  core:
+    name: Core (build and test)
+    needs: scope
+    # A PR that the scope job found to change documentation only skips this
+    # job. If scope failed or was skipped (push to main), this job runs, so an
+    # unknown scope never skips the product checks. Fork PRs run it too, on a
+    # fresh GitHub-hosted VM with a read-only token.
+    if: >-
+      !cancelled()
+      && !(needs.scope.result == 'success' && needs.scope.outputs.docs_only == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      # Keep backtrace line information without filling the disk with full
+      # debug data for every test/example binary; SQLite tests need disk space.
+      CARGO_PROFILE_DEV_DEBUG: "1"
+      CARGO_PROFILE_TEST_DEBUG: "1"
+    steps:
+      # Before anything else, refuse any runner but a GitHub-hosted one.
+      - name: GitHub-hosted runner
+        working-directory: .
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ] || { echo "::error::not a GitHub-hosted runner"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Runner details
+        run: .github/scripts/hosted-guard.sh
+
+      # An earlier hosted run (2026-10-17) ran out of disk compiling the Core
+      # tests. Remove preinstalled SDKs that no job here uses.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift
+          df -h / "$RUNNER_TEMP"
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup override set "$RUST_TOOLCHAIN"
+          rustc --version && cargo --version
+
+      # The result_publish tests run the generated validator
+      # (runtimes/result-validator) with Node, as Core does.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      # Integration tests start scripted fake runtimes (Codex app-server and
+      # SSH helper stand-ins) through /usr/bin/python3, and the SSH check test
+      # runs `ssh` against an unresolvable .invalid host. No real Codex,
+      # Claude, account or network service is used.
+      - name: Show test prerequisites
+        run: |
+          /usr/bin/python3 --version
+          command -v ssh && ssh -V
+          node --version
+
+      # scripts/launch.py starts Core and the desktop client; its unit tests
+      # use only the standard library and mocks.
+      - name: Launcher tests
+        run: python3 -m unittest discover --start-directory scripts --pattern 'test_*.py' --verbose
+
+      # The change-scope, docs-link and public-CI scripts, against small fixtures.
+      - name: CI script tests
+        run: python3 -m unittest discover --start-directory .github/scripts --pattern 'test_*.py' --verbose
+
+      - name: Release flow tests (no build, keys or network)
+        run: python3 -m unittest discover --start-directory tools --pattern 'test_release_*.py' --verbose
+
+      # The desktop app's rule for recognizing a Core has no dependencies,
+      # so it is checked here without building the Windows app.
+      - name: Desktop health rule
+        run: |
+          rustc --edition 2021 --test desktop/src/health.rs -o "$RUNNER_TEMP/desktop-health"
+          "$RUNNER_TEMP/desktop-health"
+
+      # Cargo dependencies only (the workspace's own build output is not
+      # kept). Restores on every run; saves only from main, so a PR cannot
+      # write a cache that main later reads.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      # Read-only check of free disk before building; see the script.
+      - name: Disk space precheck
+        run: .github/scripts/disk-precheck.sh 20 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+
+      - name: Build
+        run: |
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          cargo build --locked --all-targets
+
+      # Serial: in parallel, Store drop-and-reopen tests intermittently fail
+      # with "lock acquisition failed because the operation would block".
+      # Tests that need an installed Codex CLI are #[ignore]d with a reason.
+      - name: Test (serial)
+        run: |
+          # Preserve runner capacity evidence when SQLite reports disk full.
+          df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+          cargo test --locked -- --test-threads=1
+
+      - name: Disk capacity after tests
+        if: always()
+        run: df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+
+  lint:
+    # Report-only: main is not rustfmt-clean and has a few clippy warnings.
+    # Findings appear as warnings on the run; this job does not fail on them.
+    name: Lint (report-only)
+    needs: scope
+    if: >-
+      !cancelled()
+      && !(needs.scope.result == 'success' && needs.scope.outputs.docs_only == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # Before anything else, refuse any runner but a GitHub-hosted one.
+      - name: GitHub-hosted runner
+        working-directory: .
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ] || { echo "::error::not a GitHub-hosted runner"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Runner details
+        run: .github/scripts/hosted-guard.sh
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift
+          df -h / "$RUNNER_TEMP"
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }} with clippy and rustfmt
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt --no-self-update
+          rustup override set "$RUST_TOOLCHAIN"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      # Read-only check of free disk before building; see the script.
+      - name: Disk space precheck
+        run: .github/scripts/disk-precheck.sh 10 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+
+      - name: rustfmt (report-only)
+        run: |
+          if cargo fmt --all --check > "$RUNNER_TEMP/fmt.diff"; then
+            echo "rustfmt: clean"
+          else
+            hunks=$(grep -c '^Diff in ' "$RUNNER_TEMP/fmt.diff" || true)
+            grep '^Diff in ' "$RUNNER_TEMP/fmt.diff" | sed -E "s#^Diff in $GITHUB_WORKSPACE/(.*):[0-9]+:\$#\1#" \
+              | sort | uniq -c | sort -rn > "$RUNNER_TEMP/fmt.files"
+            echo "Places rustfmt would change, per file (run 'cargo fmt --all --check' locally for the diff):"
+            cat "$RUNNER_TEMP/fmt.files"
+            echo "::warning title=rustfmt (report-only)::cargo fmt --check would change $hunks places in $(wc -l < "$RUNNER_TEMP/fmt.files") files. Not blocking."
+          fi
+
+      - name: clippy (report-only)
+        env:
+          # Plain text, so the headlines below can be matched.
+          CARGO_TERM_COLOR: never
+        run: |
+          set +e
+          cargo clippy --locked --all-targets 2>&1 | tee "$RUNNER_TEMP/clippy.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          # One annotation per distinct finding, at the "-->" location that
+          # follows each "warning: ..." or "error: ..." headline.
+          awk '/^(warning|error)(\[[^]]*\])?: / { head = $0; next }
+               head != "" && match($0, /^ *--> [^ ]+:[0-9]+:[0-9]+$/) {
+                 split(substr($0, index($0, "--> ") + 4), at, ":")
+                 printf "::warning file=%s,line=%s,col=%s,title=clippy (report-only)::%s\n", at[1], at[2], at[3], head
+               }
+               { head = "" }' "$RUNNER_TEMP/clippy.log" | sort -u
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning title=clippy (report-only)::cargo clippy exited with $rc. Not blocking; see this step's log."
+          fi
+
+  web:
+    name: Web UI (typecheck, build, test)
+    needs: scope
+    if: >-
+      !cancelled()
+      && !(needs.scope.result == 'success' && needs.scope.outputs.docs_only == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      # Before anything else, refuse any runner but a GitHub-hosted one.
+      - name: GitHub-hosted runner
+        working-directory: .
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ] || { echo "::error::not a GitHub-hosted runner"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Runner details
+        run: ../.github/scripts/hosted-guard.sh
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          # No npm cache: node_modules and package archives are never kept
+          # where a later run could fetch them.
+          package-manager-cache: false
+
+      # Read-only check of free disk before building; see the script.
+      - name: Disk space precheck
+        run: ../.github/scripts/disk-precheck.sh 5 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Typecheck already passed above. Keep the same bundle and preview as
+      # local npm run build, without running TypeScript a second time.
+      - name: Build
+        run: npm run build:bundle
+
+      # Every web/tools/*.test.mjs file, one at a time; see the script header
+      # for what is not run here and why. The hosted VM bounds memory.
+      - name: Test files
+        run: ../.github/scripts/web-tests.sh
+
+      # The desktop shell's offline connection page, in JSDOM (jsdom comes
+      # from web/node_modules). Building the Tauri app itself is not in CI.
+      - name: Desktop connection page test
+        run: node ../desktop/tests/connection.test.mjs
+
+  bridge:
+    name: Claude bridge (unit tests)
+    needs: scope
+    if: >-
+      !cancelled()
+      && !(needs.scope.result == 'success' && needs.scope.outputs.docs_only == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: runtimes/claude
+    steps:
+      # Before anything else, refuse any runner but a GitHub-hosted one.
+      - name: GitHub-hosted runner
+        working-directory: .
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ] || { echo "::error::not a GitHub-hosted runner"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Runner details
+        run: ../../.github/scripts/hosted-guard.sh
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          # No npm cache: the Claude Agent SDK's package is never kept where a
+          # later run could fetch it.
+          package-manager-cache: false
+
+      # Read-only check of free disk before building; see the script.
+      - name: Disk space precheck
+        run: ../../.github/scripts/disk-precheck.sh 2 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+
+      # As documented in runtimes/claude/README.md: the bridge uses the
+      # installed Claude CLI, so the bundled platform binaries are omitted.
+      # The SDK is installed from npm on the runner; nothing is uploaded or cached.
+      - name: Install
+        run: npm ci --ignore-scripts --omit=optional --no-audit --no-fund
+
+      # The unit tests inject a fake query; this checks that the pinned SDK
+      # itself installs and loads. It starts no Claude process.
+      - name: SDK loads
+        run: node --input-type=module -e "const sdk = await import('@anthropic-ai/claude-agent-sdk'); if (typeof sdk.query !== 'function') throw new Error('query export missing'); console.log('claude-agent-sdk loads')"
+
+      - name: Unit tests
+        run: npm test

@@ -1,0 +1,58 @@
+/* Times are reading aids: small, quiet, and never louder than the text. */
+.message-time {
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: #a3aa96;
+  white-space: nowrap;
+}
+.message-label .message-time {
+  margin-left: 2px;
+}
+.agent-message-time {
+  display: block;
+  margin: 0 0 4px;
+  line-height: 1.4;
+}
+
+.reply-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  margin: 11px 0 0 -5px;
+}
+.final-message > .reply-actions > .copy-button {
+  margin: 0;
+}
+.turn-footer {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 6px;
+  row-gap: 2px;
+  min-width: 0;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  color: #a3aa96;
+}
+.turn-footer > span {
+  white-space: nowrap;
+}
+.turn-footer-separator {
+  color: #c4c9b8;
+}
+.turn-footer-standalone {
+  display: flex;
+  margin: 10px 0 0 30px;
+}
+
+:root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"]))
+  :is(.message-time, .turn-footer) {
+  color: var(--text-quiet);
+}
+:root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"])) .turn-footer-separator {
+  color: var(--line);
+}

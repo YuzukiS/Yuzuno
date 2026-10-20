@@ -1,0 +1,49 @@
+{
+  "date": "2026-10-14",
+  "reviewedSource": "d385918028b9a5882415bc3b9e938a67af1e9747",
+  "release": {
+    "assets": [
+      {
+        "digest": "sha256:4ce096cd4c451daa55c7c1ea4d87f0b975644fbab50264c78a15449577c2ab5d",
+        "id": 641906422,
+        "name": "yuzuno-core-linux-x86_64.json",
+        "size": 1598609,
+        "state": "uploaded"
+      },
+      {
+        "digest": "sha256:3c6fed8af6e8b8bb4d534f9477aed21ee2af50776ce5e5b3d7883c7475fcb056",
+        "id": 641906428,
+        "name": "yuzuno-core-linux-x86_64.json.minisig",
+        "size": 310,
+        "state": "uploaded"
+      },
+      {
+        "digest": "sha256:f6e38579ef4320d338ad172a40723965a536ea209b26ba5d276776b4d5ae05f4",
+        "id": 641906426,
+        "name": "yuzuno-core-linux-x86_64.tar.gz",
+        "size": 25656576,
+        "state": "uploaded"
+      }
+    ],
+    "draft": true,
+    "html_url": "https://github.com/YuzukiS/Yuzuno/releases/tag/untagged-7cb53bad3f374ea6f275",
+    "id": 413246872,
+    "prerelease": false,
+    "tag_name": "core-t13-acceptance-20261014-d385918",
+    "target_commitish": "d385918028b9a5882415bc3b9e938a67af1e9747"
+  },
+  "verification": {
+    "archiveBytes": 25656576,
+    "archiveSha256": "f6e38579ef4320d338ad172a40723965a536ea209b26ba5d276776b4d5ae05f4",
+    "draftId": 413246872,
+    "gitSha": "d385918028b9a5882415bc3b9e938a67af1e9747",
+    "limits": "Direct bounded download/signature/unpack only; not stable discovery or application",
+    "manifestSha256": "c28de2dabba535e0a1e2161a7fae3f68465072dd500e28430f24edcccad3ef78",
+    "passed": true,
+    "releaseId": "t13-b-d385918",
+    "repository": "YuzukiS/Yuzuno",
+    "tag": "core-t13-acceptance-20261014-d385918",
+    "transport": "official gh private draft"
+  },
+  "scope": "Existing private repository, three project assets only. Retain as Draft; no production publisher identity or stable discovery/application claim."
+}

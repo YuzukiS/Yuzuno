@@ -1,0 +1,154 @@
+{
+  "about": "License texts for code in the Windows desktop app or its installer that ships without one in any crate (tools/desktop_notices.py). A linked entry is used only while its crate has the recorded version and file hash; an installer entry is checked by scripts/desktop.ps1 against the folder the Tauri CLI bundles with, before and after bundling. Each text is checked against its sha256.",
+  "linked": [
+    {
+      "name": "Microsoft WebView2 loader (WebView2LoaderStatic.lib)",
+      "crate": "webview2-com-sys",
+      "version": "0.39.1",
+      "file": "x64/WebView2LoaderStatic.lib",
+      "fileSha256": "89c6b872783b8f6c3cedbff618adb42082d455c615453ae10cfc753f1e8f25d8",
+      "texts": [
+        {
+          "file": "Microsoft.Web.WebView2-1.0.3800.47-LICENSE.txt",
+          "sha256": "0af8f1b807512aae39c2ac1aa4d0cae65cabecb6fd554b8439a5162a0d6eca55"
+        },
+        {
+          "file": "Microsoft.Web.WebView2-1.0.3800.47-NOTICE.txt",
+          "sha256": "106423785c5b7eba0a8e61d1837f2132e9c828e20ad530f565d981c1df60dd90"
+        }
+      ],
+      "upstream": {
+        "package": "Microsoft.Web.WebView2",
+        "version": "1.0.3800.47",
+        "url": "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.3800.47",
+        "packageSha256": "56c9f26bdd07916a2d1949fb58a5c7e434dfa1173577dca879206050c4e718db",
+        "path": "build/native/x64/WebView2LoaderStatic.lib"
+      },
+      "evidence": [
+        "On MSVC targets webview2-com-sys 0.39.1 links WebView2LoaderStatic (src/lib.rs: link(name = \"WebView2LoaderStatic\", kind = \"static\")) from its x64 folder (build.rs). The crate declares MIT and ships no license text, for itself or for that file.",
+        "That file is byte for byte build/native/x64/WebView2LoaderStatic.lib of the NuGet package Microsoft.Web.WebView2 1.0.3800.47 (same SHA-256). Its nuspec names LICENSE.txt as the license file; the package also ships NOTICE.txt. Both are stored here unchanged."
+      ]
+    }
+  ],
+  "installer": [
+    {
+      "name": "NSIS 3.13",
+      "role": "the installer and uninstaller code, compression and plug-ins",
+      "files": [
+        {
+          "path": "NSIS.exe",
+          "sha256": "78e17de55fa013be7620487e85b6676c204c6c51d7ebabb74ee8a9cfce6252a0"
+        },
+        {
+          "path": "COPYING",
+          "sha256": "388357c1215ff403c5ebde3a5ecd273e68f8b79a579996775245d1ee65442aba"
+        }
+      ],
+      "texts": [
+        {
+          "file": "NSIS-3.13-COPYING",
+          "sha256": "388357c1215ff403c5ebde3a5ecd273e68f8b79a579996775245d1ee65442aba"
+        }
+      ],
+      "evidence": [
+        "The Tauri CLI 2.12.3 bundles with the NSIS it downloads from https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.13/nsis-3.13.zip into %LOCALAPPDATA%\\tauri\\NSIS (tauri-bundler src/bundle/windows/nsis/mod.rs at tauri-cli-v2.12.3, commit 59b63ab5).",
+        "NSIS.exe in that folder has the SHA-1 the CLI pins for it (6D45D4E8CCF18FE1FDAC9164058F356102A2ECF2). COPYING is that folder's own file, stored unchanged."
+      ]
+    },
+    {
+      "name": "nsis_tauri_utils 0.5.3",
+      "role": "a plug-in in the installer",
+      "files": [
+        {
+          "path": "Plugins/x86-unicode/additional/nsis_tauri_utils.dll",
+          "sha256": "5ba143b5db4a87d32d6e7802e033330aae56cbceabe0d1e3ba41948385ad4709"
+        }
+      ],
+      "texts": [
+        {
+          "file": "nsis_tauri_utils-0.5.3-LICENSE_MIT",
+          "sha256": "1c1020fa10a6bf318717e82c911bcc54ebdfb9bb280460ae332bcb2f82f57fbe"
+        },
+        {
+          "file": "nsis_tauri_utils-0.5.3-LICENSE_APACHE-2.0",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        }
+      ],
+      "evidence": [
+        "The Tauri CLI 2.12.3 adds nsis_tauri_utils.dll from https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll and checks its SHA-1 (75197FEE3C6A814FE035788D1C34EAD39349B860); the file in the folder has that SHA-1.",
+        "At the tag nsis_tauri_utils-v0.5.3 (commit 13d9edd2) the crate declares \"MIT or Apache-2.0\"; LICENSE_MIT and LICENSE_APACHE-2.0 of that commit are stored unchanged. They also cover the sources build.rs combines into the plug-in (nsis-semvercompare, nsis-process, nsis-string) and nsis-plugin-api, all in that repository.",
+        "The DLL is the release asset of that tag (GitHub digest sha256:5ba143b5…, published 2026-01-26), built by `cargo build --release` for i686-pc-windows-msvc (.changes/config.json, .cargo/config.toml). It is #![no_std], so of Rust's libraries only core is in it.",
+        "Its third-party crates come from the manifests at that commit: windows-sys ^0.61.2 (which needs windows-link ^0.2.1) and semver ^1.0 without default features. The commit has no Cargo.lock, the release run's log (21344433681) has expired (HTTP 410), and the stripped DLL names no crate versions. The versions above are the newest crates.io offered in those ranges on 2026-01-26 (semver 1.0.28 came on 2026-04-04), so they are inferred, not recorded.",
+        "Their texts are not stored here: the generator requires each listed SHA-256 among the texts the app's own crates ship. windows-sys 0.61.2 and windows-link 0.2.1 are the app's own versions. semver-1.0.27.crate (sha256 d767eb0a…, equal to the crates.io index checksum) has LICENSE-APACHE and LICENSE-MIT byte-identical to the app's semver 1.0.28.",
+        "core's notices are not separately recorded: the notices point to the Rust library notices copied from the toolchain that built the app; the plug-in's toolchain version is not recorded."
+      ],
+      "dependencies": [
+        {
+          "crate": "windows-sys",
+          "version": "0.61.2",
+          "range": "^0.61.2",
+          "texts": [
+            {
+              "file": "license-apache-2.0",
+              "sha256": "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
+            },
+            {
+              "file": "license-mit",
+              "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+            }
+          ]
+        },
+        {
+          "crate": "windows-link",
+          "version": "0.2.1",
+          "range": "^0.2.1 (from windows-sys 0.61.2)",
+          "texts": [
+            {
+              "file": "license-apache-2.0",
+              "sha256": "c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b"
+            },
+            {
+              "file": "license-mit",
+              "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+            }
+          ]
+        },
+        {
+          "crate": "semver",
+          "version": "1.0.27",
+          "range": "^1.0, default features off",
+          "texts": [
+            {
+              "file": "LICENSE-APACHE",
+              "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+            },
+            {
+              "file": "LICENSE-MIT",
+              "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+            }
+          ]
+        }
+      ],
+      "note": "Rust's core library is in the plug-in too. Its notices are in rust-std-COPYRIGHT-library.html, copied from the toolchain that built the app; the toolchain that built the plug-in is not recorded."
+    },
+    {
+      "name": "Tauri NSIS installer template (tauri-bundler 2.10.3)",
+      "role": "the installer script, compiled into the installer",
+      "cli": "2.12.3",
+      "texts": [
+        {
+          "file": "tauri-bundler-2.10.3-License-MIT.md",
+          "sha256": "86fc515b82835f7cb6ad400cc64a9d3380d22d55b593e8c34f51efee9f6a250b"
+        },
+        {
+          "file": "tauri-bundler-2.10.3-License-Apache.md",
+          "sha256": "a0746c84c2a9663f57491dda8a619cc64152a8447889c0e17aa2f3e592e0097e"
+        }
+      ],
+      "evidence": [
+        "The Tauri CLI 2.12.3 (@tauri-apps/cli, pinned in scripts/desktop.ps1) writes the installer script from tauri-bundler's NSIS template; at tauri-cli-v2.12.3 that is tauri-bundler 2.10.3, which declares \"Apache-2.0 OR MIT\".",
+        "Its License-MIT.md and License-Apache.md at that commit are stored unchanged."
+      ]
+    }
+  ]
+}

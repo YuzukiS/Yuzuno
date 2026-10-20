@@ -1,0 +1,52 @@
+# Build outputs and dependency caches.
+target/
+node_modules
+/web/dist/
+__pycache__/
+*.py[cod]
+*.tsbuildinfo
+*.log
+.DS_Store
+Thumbs.db
+
+# Local credentials and Harness/runtime configuration.
+/.aws/
+/.codex/
+/.claude/*
+# Except the shared project skills: links to the one source in .agents/skills.
+!/.claude/skills/
+.env
+.env.*
+!.env.example
+!.env.sample
+.yuzuno-next/
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-wal
+*.db-shm
+*.pid
+*.sock
+
+# Keep original acceptance scripts and notes, not generated results, database
+# snapshots, binaries, screenshots, task folders, or copied source trees.
+/acceptance/**
+!/acceptance/*/
+!/acceptance/*/README.md
+!/acceptance/*/*.py
+!/acceptance/*/*.mjs
+!/acceptance/*/*.ps1
+!/acceptance/*/*.sh
+!/acceptance/*/*.cu
+/web/acceptance/
+
+# Runtime observations and Catch-up fixtures contain local session data.
+/experiments/runtime/private/
+/experiments/runtime/*.json
+/experiments/catchup/*.json
+/experiments/catchup/output/
+
+# Desktop notices, generated for each installer (tools/desktop_notices.py).
+/desktop/licenses/

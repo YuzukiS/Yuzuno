@@ -1,0 +1,206 @@
+.agent-message > .user-message {
+  margin-top: 22px;
+}
+
+.tool-activity > summary {
+  flex-wrap: wrap;
+}
+.tool-activity > summary > svg {
+  flex-shrink: 0;
+}
+.tool-counts {
+  display: flex;
+  flex: 1 1 10rem;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: 4px 12px;
+  color: var(--text-secondary);
+}
+.tool-count {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.tool-count-number {
+  padding-left: 4px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-activity .activity-elapsed {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.turn-activity[data-state="compacting"] .activity-yuzu {
+  transform-origin: center bottom;
+  animation: activity-compact 2.2s ease-in-out infinite;
+}
+.turn-activity[data-state="compacting"] .activity-twinkle {
+  animation: activity-gather 2.2s ease-in-out infinite;
+}
+@keyframes activity-compact {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  35% {
+    transform: translateY(1px) scale(1.14, 0.78);
+  }
+  60% {
+    transform: translateY(-1px) scale(0.9, 1.08);
+  }
+  80% {
+    transform: scale(1.03, 0.97);
+  }
+}
+@keyframes activity-gather {
+  0%,
+  100% {
+    transform: translate(3px, -2px) scale(0.7);
+    opacity: 0.35;
+  }
+  40% {
+    transform: translate(-4px, 4px) scale(0.35);
+    opacity: 0.2;
+  }
+  70% {
+    transform: translate(0, -1px) scale(1);
+    opacity: 0.9;
+  }
+}
+@media (prefers-reduced-motion: reduce), (forced-colors: active) {
+  .turn-activity[data-state="compacting"]
+    :is(.activity-yuzu, .activity-twinkle) {
+    animation: none;
+  }
+}
+
+/* Keep native details semantics, keyboard controls and source-jump behavior. */
+@supports (interpolate-size: allow-keywords) and
+  selector(details::details-content) {
+  @media (prefers-reduced-motion: no-preference) {
+    .execution,
+    .tool-item {
+      interpolate-size: allow-keywords;
+    }
+    /* Closing folds evenly and quickly. */
+    .execution::details-content,
+    .tool-item::details-content {
+      block-size: 0;
+      opacity: 0;
+      overflow: clip;
+      transition:
+        block-size 220ms cubic-bezier(0.4, 0, 0.2, 1),
+        opacity 160ms ease,
+        content-visibility 220ms allow-discrete;
+    }
+    /* Opening unfolds like an arriving row (tool-motion.ts); the text
+       settles in just behind the moving edge. */
+    .execution[open]::details-content,
+    .tool-item[open]::details-content {
+      block-size: auto;
+      opacity: 1;
+      transition:
+        block-size 300ms cubic-bezier(0.2, 0.8, 0.2, 1),
+        opacity 240ms ease 60ms,
+        content-visibility 300ms allow-discrete;
+    }
+  }
+}
+
+/* A source jump must expose its target before scrolling or focusing it.
+   Chromium does not expose every native details transition to getAnimations. */
+details[data-source-jump][open]::details-content {
+  transition: none;
+  content-visibility: visible;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* The chevron springs open and eases shut. */
+  :is(.execution, .tool-item)[open] > summary > svg:first-child {
+    transition: transform 320ms cubic-bezier(0.34, 1.5, 0.64, 1);
+  }
+  :is(.execution, .tool-item):not([open]) > summary > svg:first-child {
+    transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
+
+.execution > summary,
+.tool-item > summary {
+  transition: background-color 160ms ease;
+}
+:is(.execution, .tool-item) > summary:hover {
+  background-color: color-mix(in srgb, currentColor 6%, transparent);
+}
+
+/* A row arriving live (tool-motion.ts) keeps its content inside while it
+   grows. */
+.tool-item[data-unfolding] {
+  overflow: clip;
+}
+.tool-activity-label,
+.tool-count-number {
+  display: inline-block;
+}
+
+/* The tool still running: a soft band of light passes over its label. */
+@media (prefers-reduced-motion: no-preference) and (not (forced-colors: active)) {
+  .tool-item[data-running] > summary > span:first-of-type {
+    mask-image: linear-gradient(
+      100deg,
+      rgb(0 0 0 / 0.55) 38%,
+      #000 50%,
+      rgb(0 0 0 / 0.55) 62%
+    );
+    mask-size: 300% 100%;
+    animation: tool-shimmer 1.9s linear infinite;
+  }
+}
+@keyframes tool-shimmer {
+  from {
+    mask-position: 100% 0;
+  }
+  to {
+    mask-position: 0 0;
+  }
+}
+
+/* Held while the turn runs; fades in with work and out as it finishes. */
+.tool-spinner {
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-left: auto;
+  color: #9baa85;
+  opacity: 0;
+  scale: 0.6;
+  transition:
+    opacity 200ms ease,
+    scale 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.tool-spinner[data-on] {
+  opacity: 1;
+  scale: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool-spinner {
+    transition: none;
+  }
+}
+
+/* A tool row whose output arrived as a preview (see item-payload.ts). */
+.truncation-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 10px;
+  margin: 2px 0 4px;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.truncation-notice[role="alert"] {
+  color: var(--error-ink, #a37961);
+}

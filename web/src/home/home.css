@@ -1,0 +1,1169 @@
+/* Home. Colours come from the theme variables (styles.css, appearance.css,
+ * palettes.css) so every palette and dark mode follows; the fallbacks are
+ * for garden light, where some roles are not defined.
+ * Text colours (*-ink, --home-ink-2, --home-new) are mixed towards --ink so
+ * they keep at least 4.5:1 on --paper, --home-surface and --home-soft in
+ * every palette, light and dark (garden light is the tightest, about 4.9:1).
+ * The plain accents are for dots, icons and borders only. */
+.home-view {
+  --home-surface: var(--surface-raised, var(--paper));
+  --home-soft: var(--surface-soft, var(--cream));
+  --home-ink-2: var(--text-secondary, #5d6858);
+  --home-focus: var(--focus, var(--green));
+  --home-attention: var(--state-waiting, #b08a2e);
+  --home-attention-ink: color-mix(in srgb, var(--home-attention) 45%, var(--ink));
+  --home-error: var(--error-ink, var(--coral));
+  --home-error-ink: color-mix(in srgb, var(--home-error) 60%, var(--ink));
+  --home-new: color-mix(in srgb, var(--accent-ink, var(--green)) 85%, var(--ink));
+  overflow: auto;
+  /* Scroll anchoring keeps what is being read in place when content above
+     it changes size (the browser default; stated here on purpose). */
+  overflow-anchor: auto;
+  padding: 28px 40px 40px;
+  width: 100%;
+  color: var(--ink);
+  /* The whole pane; the layout below follows its width, not the window's. */
+  container: home / inline-size;
+}
+/* Needs you and the projects on the left, a column of widgets on the right;
+   one column when the pane is narrow, the widgets between Needs you and the
+   projects. */
+.home-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(300px, 30%, 400px);
+  grid-template-areas:
+    "needs widgets"
+    "main widgets";
+  grid-template-rows: auto 1fr;
+  column-gap: 24px;
+  align-items: start;
+}
+.home-needs-area {
+  grid-area: needs;
+  min-width: 0;
+}
+.home-main {
+  grid-area: main;
+  min-width: 0;
+}
+@container home (max-width: 900px) {
+  .home-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "needs"
+      "widgets"
+      "main";
+    grid-template-rows: none;
+  }
+  .home-widget-column {
+    margin-bottom: 18px;
+  }
+}
+
+/* The widget column: widgets chosen and ordered on this device
+   (HomeWidgets.tsx). Its own class names: .home-widget(s) are the project
+   panels' inner widgets. */
+.home-widget-column {
+  grid-area: widgets;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.home-widget-column-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+}
+.home-widget-column-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-widget-column-head .is-active {
+  color: var(--home-new);
+  background: var(--home-soft);
+}
+.home-widget-slot {
+  min-width: 0;
+}
+
+/* A Brief section pinned to the column: its source first, then the same
+ * body as in its project. A source that is gone keeps only its name and a
+ * note. */
+.home-pinned {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--home-surface);
+}
+.home-pinned-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.home-pinned-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-pinned-head h2 > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.home-pinned-from,
+.home-pinned-time,
+.home-pinned-note {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-pinned-time,
+.home-pinned-note {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 8px;
+}
+.home-pinned-body {
+  min-width: 0;
+}
+.home-pinned-foot,
+.home-pinned-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.home-pinned[data-pin-state="shown"] .home-pinned-note {
+  color: var(--error-ink, var(--ink));
+}
+.home-widget-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 6px;
+  padding: 3px 4px 3px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--home-ink-2);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.home-widget-tools > span {
+  margin-right: auto;
+  color: var(--ink);
+  font-weight: 500;
+}
+.home-widget-column-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.home-widget-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--home-surface);
+  color: var(--home-new);
+  font: inherit;
+  cursor: pointer;
+}
+.home-widget-add:hover {
+  border-color: var(--home-focus);
+}
+.home-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.home-header h1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: calc(18px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-header-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.home-header-tools .is-active {
+  color: var(--home-new);
+  background: var(--home-soft);
+}
+.home-note {
+  margin: 4px 0;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.home-error-banner {
+  margin-bottom: 12px;
+}
+.home-view h2,
+.home-view h3,
+.home-view h4 {
+  margin: 0;
+}
+
+/* Needs you: one fixed-height row however many items it holds. */
+.home-needs-you {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  margin-bottom: 14px;
+  padding: 0 4px 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--home-surface);
+}
+.home-needs-you h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-needs-list {
+  display: flex;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 0;
+  list-style: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  min-width: 0;
+  flex: 1;
+}
+.home-needs-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  max-width: 300px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  text-align: left;
+  white-space: nowrap;
+}
+.home-needs-item:hover {
+  background: var(--home-soft);
+}
+.home-needs-item.kind-approval svg {
+  color: var(--home-attention);
+}
+.home-needs-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.2;
+}
+.home-needs-text strong {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.home-needs-source,
+.home-needs-since {
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-needs-since {
+  flex: none;
+}
+.home-needs-empty {
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+
+/* Machines */
+.home-machines {
+  container: machines / inline-size;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--home-surface);
+}
+.home-machines > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.home-machines h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-machines-manage {
+  margin-right: auto;
+}
+.home-machines-at {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-machines-at.is-error {
+  color: var(--home-error-ink);
+}
+.home-machine {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 18px;
+}
+/* The widget follows its own width: three columns when wide, then two,
+   then one in the widget column. */
+@container machines (max-width: 640px) {
+  .home-machine {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container machines (max-width: 420px) {
+  .home-machine {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.home-load {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.home-load-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.home-meter {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--home-soft);
+  overflow: hidden;
+}
+.home-meter > span {
+  height: 100%;
+  border-radius: 4px;
+}
+.home-meter-jobs {
+  background: var(--state-working, var(--green));
+}
+.home-meter-agents {
+  background: var(--state-waiting, var(--yellow));
+}
+.home-meter-other {
+  background: var(--state-idle, var(--muted));
+}
+.home-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 4px 10px;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.4;
+}
+/* Two lines kept for a machine's facts: values that wrap differently
+   from the first reading, or from one reading to the next, move nothing. */
+.home-load > .home-facts {
+  min-height: calc(2lh + 4px);
+}
+.home-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-fact strong {
+  color: var(--ink);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.home-fact.is-reading strong {
+  color: var(--home-ink-2);
+  font-weight: 400;
+}
+.home-fact.is-unknown strong {
+  color: var(--home-ink-2);
+  font-style: italic;
+  font-weight: 400;
+}
+.home-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.home-gpus ul,
+.home-machine-jobs ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* A GPU: its name, then use and memory as two bars, each with its value. */
+.home-gpus li {
+  display: grid;
+  gap: 4px;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.home-gpu-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-gpu-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+}
+.home-gpu-bar .home-meter {
+  height: 6px;
+}
+.home-meter-gpu {
+  background: var(--state-working, var(--green));
+}
+.home-machine-jobs {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.home-machine-jobs-count {
+  color: var(--home-ink-2);
+  font-variant-numeric: tabular-nums;
+}
+/* Each Job as the conversation's dock shows one: a mark, its name on one
+   line and a quiet line under it. The whole row opens it in Jobs. */
+.home-machine-job {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+button.home-machine-job:hover,
+button.home-machine-job:focus-visible {
+  background: var(--home-soft);
+}
+.home-machine-job-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-top: calc((1.35em - 7px) / 2);
+  border-radius: 50%;
+  background: var(--state-working, var(--green));
+}
+.home-machine-job-text {
+  display: grid;
+  flex: 1;
+  gap: 1px;
+  min-width: 0;
+  line-height: 1.35;
+}
+.home-machine-job-text strong,
+.home-machine-job-text small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-machine-job-text strong {
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  font-weight: 550;
+}
+.home-machine-job-text small {
+  display: flex;
+  gap: 8px;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-machine-job-who {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-machine-job-text .home-fact {
+  flex: none;
+}
+/* About three Jobs; more scroll inside, so the panels below keep their place. */
+.home-machine-jobs-list {
+  height: calc(3 * (2.7 * (9.5px + var(--font-adjust, 3px)) + 12px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.home-machine-jobs-list > .home-note {
+  margin: 0;
+}
+
+/* Project panels */
+/* A project is its heading and its cards on the page, not one more box
+ * around them; a rule sets each project apart from the one above. */
+.home-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+/* Every project has the same room above it, so a reorder moves no card
+   inside its panel; only the rule is drawn from the second on. */
+.home-panel {
+  padding-top: 10px;
+  border-top: 1px solid transparent;
+}
+.home-panel + .home-panel {
+  border-top-color: var(--line);
+}
+.home-reorder-note {
+  margin-bottom: 10px;
+}
+.home-panel {
+  scroll-margin: 16px;
+}
+.home-panel-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  min-height: 40px;
+  padding: 2px 0;
+}
+/* The project's name lines up with its cards; its hover still has room. */
+.home-panel-toggle {
+  margin-left: -6px;
+}
+.home-panel-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px;
+  border-radius: 6px;
+  text-align: left;
+}
+.home-panel-toggle:hover {
+  background: var(--home-soft);
+}
+.home-panel-toggle h2 {
+  font-size: calc(13px + var(--font-adjust, 3px));
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-agent-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  color: var(--home-ink-2);
+}
+.home-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.home-agent-counts .home-count:not(.is-zero) {
+  color: var(--ink);
+}
+.home-panel-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.home-chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  color: var(--home-ink-2);
+  white-space: nowrap;
+}
+.home-chip.is-new {
+  color: var(--home-new);
+  border-color: currentColor;
+}
+.home-chip.is-attention {
+  color: var(--home-attention-ink);
+  border-color: var(--home-attention);
+}
+.home-chip.is-error {
+  color: var(--home-error-ink);
+  border-color: var(--home-error);
+}
+.home-quiet {
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-reorder {
+  display: flex;
+  gap: 2px;
+}
+.home-panel-content {
+  padding: 0 0 4px;
+}
+.home-widgets {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+.home-widgets:empty {
+  display: none;
+}
+.home-widget h4 {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 5px;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-widget ul,
+ul.home-widget {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.home-approval {
+  border-radius: 9px;
+  scroll-margin: 24px;
+}
+.home-approval + .home-approval {
+  margin-top: 8px;
+}
+.home-from {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-approval .pending-card {
+  margin: 0;
+}
+.home-error {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  color: var(--home-error-ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.home-error svg {
+  align-self: center;
+}
+.home-error-message {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.home-error small,
+.home-missing small,
+.home-repos small {
+  color: var(--home-ink-2);
+}
+.home-jobs ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.home-job {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.home-job:hover {
+  background: var(--home-soft);
+}
+.home-job strong {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-job > span:last-child {
+  color: var(--home-ink-2);
+}
+.home-job-status {
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--home-soft);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.home-job-status.status-failed,
+.home-job-status.status-unknown {
+  color: var(--home-error-ink);
+}
+.home-repos li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.home-repos a {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.home-repos .github-panel {
+  margin-top: 8px;
+}
+.home-missing {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+
+/* The Brief */
+.home-brief {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 14px;
+}
+/* Below the top ranks, about 600 px of body; "Show more" lifts it. */
+.home-brief.is-capped {
+  max-height: 600px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 48px), transparent);
+}
+.home-more {
+  margin-top: 6px;
+}
+.home-brief-empty {
+  padding: 6px 0;
+}
+.home-topic {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.home-topic-name {
+  font-size: calc(10px + var(--font-adjust, 3px));
+  color: var(--home-ink-2);
+  font-weight: 600;
+}
+.home-subs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-left: 22px;
+}
+.home-section {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--home-surface);
+  scroll-margin: 24px;
+}
+/* Greyed without fading its text: charts and images lose their colour, the
+   words keep their contrast, and the "Data as of" line says why. */
+.home-section.is-stale .home-section-body {
+  filter: grayscale(1);
+}
+.home-section.is-deferred {
+  border-style: dashed;
+}
+.home-section-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.home-section-head h3 {
+  font-size: calc(12px + var(--font-adjust, 3px));
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.home-kind {
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--home-soft);
+  color: var(--ink);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.home-kind.kind-ask {
+  color: var(--home-attention-ink);
+}
+.home-changed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--home-new);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-changed::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.home-section-meta {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-seen {
+  padding: 2px 8px;
+}
+.home-pin[aria-pressed="true"] {
+  color: var(--accent-ink, var(--ink));
+}
+.home-section-time {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin-top: 4px;
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.home-section-time > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.home-stale {
+  color: var(--home-error-ink);
+}
+.home-question {
+  margin: 8px 0 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.home-section-body {
+  margin-top: 8px;
+  min-width: 0;
+}
+.home-body-fallback {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  white-space: pre-wrap;
+}
+.home-ask {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+.home-ask-reply,
+.home-project-reply {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.home-reply-target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  color: var(--home-ink-2);
+}
+.home-reply-target select {
+  max-width: 220px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--input, var(--paper));
+  color: var(--ink);
+}
+.home-ask-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.home-ask-choice {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.home-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+}
+.home-choice p {
+  margin: 0;
+  flex: 1;
+  color: var(--home-ink-2);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.home-choice button {
+  align-self: flex-start;
+}
+.home-text-reply {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.home-text-reply textarea {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--input, var(--paper));
+  color: var(--ink);
+}
+.home-ask-replied {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.home-ask-replied > div {
+  flex: 1;
+  min-width: 0;
+}
+.home-ask-replied strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+.home-ask-replied p {
+  margin: 2px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.home-ask-replied p.home-ask-updated {
+  color: var(--home-ink-2);
+  white-space: normal;
+}
+/* Answered and waiting for its owner: not the user's to decide any more, so
+   it keeps the plain card look and drops the ask's attention colour. */
+.home-kind.kind-ask.is-replied {
+  color: var(--home-ink-2);
+}
+.home-section.is-replied .home-ask {
+  margin-top: 8px;
+  padding-top: 8px;
+}
+.home-replied-details {
+  margin-top: 8px;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.home-replied-details > summary {
+  cursor: pointer;
+  color: var(--home-ink-2);
+}
+.home-replied-details .home-question {
+  margin-top: 6px;
+}
+.home-history-reply {
+  margin: 4px 0 0;
+  color: var(--home-ink-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.home-defer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.home-defer > span {
+  display: flex;
+  gap: 6px;
+}
+.home-panel-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+}
+.home-panel-foot .home-project-reply {
+  flex: 1;
+  min-width: 260px;
+}
+.home-history {
+  margin-top: 12px;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.home-history > summary,
+.home-history li > details > summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--home-ink-2);
+}
+.home-history ul {
+  margin: 6px 0 0;
+  padding: 0 0 0 18px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.home-history li > details > summary {
+  color: var(--ink);
+}
+.home-history small {
+  color: var(--home-ink-2);
+}
+
+/* Focus and the needs-you jump */
+.home-view :is(button, a, summary, select, textarea):focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+}
+.home-section:focus-visible,
+.home-approval:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+}
+[data-home-highlight] {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 3px;
+  animation: home-highlight 2.4s ease-out;
+}
+@keyframes home-highlight {
+  from {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--home-focus) 35%, transparent);
+  }
+  to {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-home-highlight] {
+    animation: none;
+  }
+}
+@media (forced-colors: active) {
+  .home-meter > span {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+}
+
+@media (max-width: 720px) {
+  .home-view {
+    padding: 20px 20px 32px;
+  }
+}
+/* Narrow: one column, compact headers. */
+@media (max-width: 520px) {
+  .home-view {
+    padding: 14px 10px 28px;
+  }
+  .home-header {
+    margin-bottom: 10px;
+  }
+  .home-needs-you {
+    padding-left: 8px;
+    gap: 8px;
+  }
+  .home-needs-you h2 {
+    font-size: 0;
+    gap: 4px;
+  }
+  .home-needs-you h2 .nav-count {
+    font-size: calc(9px + var(--font-adjust, 3px));
+  }
+  .home-needs-item {
+    max-width: 220px;
+  }
+  .home-panel-head {
+    gap: 4px 8px;
+    padding: 2px 0;
+  }
+  .home-panel-chips {
+    margin-left: 0;
+  }
+  .home-panel-content {
+    padding: 0 0 4px;
+  }
+  .home-section {
+    padding: 10px;
+  }
+  .home-section-meta {
+    margin-left: 0;
+    width: 100%;
+  }
+  .home-subs {
+    margin-left: 10px;
+  }
+  .home-ask-choice {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .home-text-reply {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .home-panel-foot .home-project-reply {
+    min-width: 0;
+  }
+}

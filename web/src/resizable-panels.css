@@ -1,0 +1,57 @@
+.app > .main-panel {
+  /* Only the ancestor .app grid consumes these widths. Keep its changes from
+     invalidating inherited custom properties across the conversation. */
+  --rail-width: 0px;
+  --inspector-width: 0px;
+}
+.rail,
+.inspector {
+  position: relative;
+  min-width: 0;
+}
+.app .inspector {
+  overflow: visible;
+}
+.inspector-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  flex: 1;
+}
+.panel-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+.rail-resize-handle {
+  right: -5px;
+}
+.inspector-resize-handle {
+  left: -5px;
+}
+.panel-resize-handle::after {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  border-radius: 2px;
+  background: transparent;
+}
+.panel-resize-handle:hover::after,
+.panel-resize-handle:focus-visible::after,
+.panel-resize-handle.is-resizing::after {
+  background: var(--focus);
+}
+/* Set on the root only while a panel is dragged. An .app:has(…) * rule here
+   made every keystroke and streamed line re-style the whole app (T-18). */
+:root.is-resizing-panels,
+:root.is-resizing-panels * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}

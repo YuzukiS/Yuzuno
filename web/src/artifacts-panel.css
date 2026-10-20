@@ -1,0 +1,52 @@
+.artifact-turn-label,
+.artifact-turn-empty,
+.artifact-history > summary {
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.artifact-turn-label {
+  margin: 0 0 9px;
+}
+.artifact-turn-empty {
+  margin: 0;
+}
+.artifact-history {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.artifact-history > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 12px 0;
+  cursor: pointer;
+  list-style: none;
+}
+.artifact-history > summary::-webkit-details-marker {
+  display: none;
+}
+.artifact-history > summary:hover {
+  color: var(--ink);
+}
+.artifact-history > summary:focus-visible {
+  outline: 2px solid var(--accent-ink);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.artifact-history > summary > svg {
+  flex-shrink: 0;
+  transition: transform 180ms ease;
+}
+.artifact-history[open] > summary > svg {
+  transform: rotate(90deg);
+}
+.artifact-history-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+  .artifact-history > summary > svg {
+    transition: none;
+  }
+}

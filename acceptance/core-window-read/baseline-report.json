@@ -1,0 +1,5037 @@
+{
+  "cases": [
+    {
+      "clientDetail": {
+        "maxMs": 48.960014,
+        "maxRustPeakAddedBytes": 29888567,
+        "medianMs": 39.098556,
+        "minMs": 34.819967,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 36.179599,
+            "rustPeakAddedBytes": 29886007
+          },
+          {
+            "ms": 42.240288,
+            "rustPeakAddedBytes": 29886007
+          },
+          {
+            "ms": 48.960014,
+            "rustPeakAddedBytes": 29886007
+          },
+          {
+            "ms": 39.098556,
+            "rustPeakAddedBytes": 29888567
+          },
+          {
+            "ms": 43.688915,
+            "rustPeakAddedBytes": 29886007
+          },
+          {
+            "ms": 34.819967,
+            "rustPeakAddedBytes": 29888567
+          },
+          {
+            "ms": 37.76461,
+            "rustPeakAddedBytes": 29888567
+          },
+          {
+            "ms": 40.763647999999996,
+            "rustPeakAddedBytes": 29888567
+          },
+          {
+            "ms": 35.27059,
+            "rustPeakAddedBytes": 29888567
+          }
+        ]
+      },
+      "destination": "latest",
+      "fullRecordBytes": 12576254,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 80.19535499999999,
+        "maxRustPeakAddedBytes": 31388668,
+        "medianMs": 57.776785,
+        "minMs": 45.139621999999996,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 70.257638,
+            "rustPeakAddedBytes": 31388668
+          },
+          {
+            "ms": 80.19535499999999,
+            "rustPeakAddedBytes": 31388668
+          },
+          {
+            "ms": 59.815255,
+            "rustPeakAddedBytes": 31388668
+          },
+          {
+            "ms": 57.776785,
+            "rustPeakAddedBytes": 31388668
+          },
+          {
+            "ms": 48.482701000000006,
+            "rustPeakAddedBytes": 31388668
+          },
+          {
+            "ms": 45.139621999999996,
+            "rustPeakAddedBytes": 31388668
+          },
+          {
+            "ms": 50.648911999999996,
+            "rustPeakAddedBytes": 31388668
+          },
+          {
+            "ms": 64.382201,
+            "rustPeakAddedBytes": 31388668
+          },
+          {
+            "ms": 46.964883,
+            "rustPeakAddedBytes": 31388668
+          }
+        ]
+      },
+      "items": 6198,
+      "projection": {
+        "maxMs": 11.557948999999999,
+        "maxRustPeakAddedBytes": 1572697,
+        "medianMs": 8.704078,
+        "minMs": 8.202337,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 8.704078,
+            "rustPeakAddedBytes": 1572697
+          },
+          {
+            "ms": 8.386696,
+            "rustPeakAddedBytes": 1572697
+          },
+          {
+            "ms": 11.156259,
+            "rustPeakAddedBytes": 1572697
+          },
+          {
+            "ms": 10.99837,
+            "rustPeakAddedBytes": 1572697
+          },
+          {
+            "ms": 11.557948999999999,
+            "rustPeakAddedBytes": 1572697
+          },
+          {
+            "ms": 8.202337,
+            "rustPeakAddedBytes": 1572697
+          },
+          {
+            "ms": 8.400724,
+            "rustPeakAddedBytes": 1572697
+          },
+          {
+            "ms": 10.589144,
+            "rustPeakAddedBytes": 1572697
+          },
+          {
+            "ms": 8.392036000000001,
+            "rustPeakAddedBytes": 1572697
+          }
+        ]
+      },
+      "responseBytes": 315680,
+      "rowsDecode": {
+        "maxMs": 23.049464,
+        "maxRustPeakAddedBytes": 15829895,
+        "medianMs": 20.048847000000002,
+        "minMs": 19.117131,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 19.157947,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 20.186063,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 19.117131,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 22.427526999999998,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 21.507295,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 23.049464,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 19.600804999999998,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 19.81484,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 20.048847000000002,
+            "rustPeakAddedBytes": 15829895
+          }
+        ]
+      },
+      "rowsJsonReadAndDecodedBytes": 12570027,
+      "rowsSql": {
+        "maxMs": 17.861142,
+        "maxRustPeakAddedBytes": 14018494,
+        "medianMs": 15.725089,
+        "minMs": 13.509775,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 14.926838,
+            "rustPeakAddedBytes": 14018494
+          },
+          {
+            "ms": 15.725089,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 13.509775,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 17.861142,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 16.965166,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 17.699095,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 17.456546,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 13.751643,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 14.683021,
+            "rustPeakAddedBytes": 14017826
+          }
+        ]
+      },
+      "serialization": {
+        "maxMs": 0.534292,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.37930800000000003,
+        "minMs": 0.32302200000000003,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.32302200000000003,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.344362,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.534292,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.465522,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.433922,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.341416,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.424854,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.37582099999999996,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.37930800000000003,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "long",
+      "turns": 157,
+      "viewBytes": 315680
+    },
+    {
+      "clientDetail": {
+        "maxMs": 38.753797999999996,
+        "maxRustPeakAddedBytes": 29888567,
+        "medianMs": 37.603086,
+        "minMs": 36.385044,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 36.385044,
+            "rustPeakAddedBytes": 29888567
+          },
+          {
+            "ms": 38.351491,
+            "rustPeakAddedBytes": 29888567
+          },
+          {
+            "ms": 38.331089,
+            "rustPeakAddedBytes": 29886007
+          },
+          {
+            "ms": 38.3938,
+            "rustPeakAddedBytes": 29886007
+          },
+          {
+            "ms": 37.603086,
+            "rustPeakAddedBytes": 29888567
+          },
+          {
+            "ms": 37.166067999999996,
+            "rustPeakAddedBytes": 29888567
+          },
+          {
+            "ms": 37.234708,
+            "rustPeakAddedBytes": 29886007
+          },
+          {
+            "ms": 36.990645,
+            "rustPeakAddedBytes": 29888567
+          },
+          {
+            "ms": 38.753797999999996,
+            "rustPeakAddedBytes": 29888567
+          }
+        ]
+      },
+      "destination": "middle",
+      "fullRecordBytes": 12576254,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 57.635548,
+        "maxRustPeakAddedBytes": 31339553,
+        "medianMs": 49.61825,
+        "minMs": 46.636216000000005,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 57.635548,
+            "rustPeakAddedBytes": 31339553
+          },
+          {
+            "ms": 46.93992,
+            "rustPeakAddedBytes": 31339553
+          },
+          {
+            "ms": 57.241641,
+            "rustPeakAddedBytes": 31339553
+          },
+          {
+            "ms": 49.61825,
+            "rustPeakAddedBytes": 31339553
+          },
+          {
+            "ms": 46.636216000000005,
+            "rustPeakAddedBytes": 31339553
+          },
+          {
+            "ms": 47.672557,
+            "rustPeakAddedBytes": 31339553
+          },
+          {
+            "ms": 53.636112,
+            "rustPeakAddedBytes": 31339553
+          },
+          {
+            "ms": 47.535634,
+            "rustPeakAddedBytes": 31339553
+          },
+          {
+            "ms": 52.789234,
+            "rustPeakAddedBytes": 31339553
+          }
+        ]
+      },
+      "items": 6198,
+      "projection": {
+        "maxMs": 11.968331000000001,
+        "maxRustPeakAddedBytes": 1523546,
+        "medianMs": 8.935999,
+        "minMs": 8.020693000000001,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 8.446871999999999,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 9.116819,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 11.968331000000001,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 8.767247000000001,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 8.400311,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 8.020693000000001,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 9.534229,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 8.935999,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 9.018162,
+            "rustPeakAddedBytes": 1523546
+          }
+        ]
+      },
+      "responseBytes": 299797,
+      "rowsDecode": {
+        "maxMs": 23.049464,
+        "maxRustPeakAddedBytes": 15829895,
+        "medianMs": 20.048847000000002,
+        "minMs": 19.117131,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 19.157947,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 20.186063,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 19.117131,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 22.427526999999998,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 21.507295,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 23.049464,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 19.600804999999998,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 19.81484,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 20.048847000000002,
+            "rustPeakAddedBytes": 15829895
+          }
+        ]
+      },
+      "rowsJsonReadAndDecodedBytes": 12570027,
+      "rowsSql": {
+        "maxMs": 17.861142,
+        "maxRustPeakAddedBytes": 14018494,
+        "medianMs": 15.725089,
+        "minMs": 13.509775,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 14.926838,
+            "rustPeakAddedBytes": 14018494
+          },
+          {
+            "ms": 15.725089,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 13.509775,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 17.861142,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 16.965166,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 17.699095,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 17.456546,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 13.751643,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 14.683021,
+            "rustPeakAddedBytes": 14017826
+          }
+        ]
+      },
+      "serialization": {
+        "maxMs": 0.472124,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.38499900000000004,
+        "minMs": 0.325226,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.42047599999999996,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.472124,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.387413,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.340023,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.340394,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.325226,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.38499900000000004,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.370131,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.38524,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "long",
+      "turns": 157,
+      "viewBytes": 299797
+    },
+    {
+      "clientDetail": {
+        "maxMs": 47.060131999999996,
+        "maxRustPeakAddedBytes": 29888567,
+        "medianMs": 37.759035000000004,
+        "minMs": 34.95917,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 37.080600999999994,
+            "rustPeakAddedBytes": 29886007
+          },
+          {
+            "ms": 36.077757000000005,
+            "rustPeakAddedBytes": 29888567
+          },
+          {
+            "ms": 47.060131999999996,
+            "rustPeakAddedBytes": 29888567
+          },
+          {
+            "ms": 35.655370999999995,
+            "rustPeakAddedBytes": 29886007
+          },
+          {
+            "ms": 34.95917,
+            "rustPeakAddedBytes": 29888567
+          },
+          {
+            "ms": 38.901422999999994,
+            "rustPeakAddedBytes": 29888567
+          },
+          {
+            "ms": 41.104267,
+            "rustPeakAddedBytes": 29888567
+          },
+          {
+            "ms": 37.759035000000004,
+            "rustPeakAddedBytes": 29886007
+          },
+          {
+            "ms": 37.878216,
+            "rustPeakAddedBytes": 29888567
+          }
+        ]
+      },
+      "destination": "direct",
+      "fullRecordBytes": 12576254,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 58.86989,
+        "maxRustPeakAddedBytes": 31336268,
+        "medianMs": 50.807949,
+        "minMs": 47.516192,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 47.516192,
+            "rustPeakAddedBytes": 31336268
+          },
+          {
+            "ms": 58.86989,
+            "rustPeakAddedBytes": 31336268
+          },
+          {
+            "ms": 50.807949,
+            "rustPeakAddedBytes": 31336268
+          },
+          {
+            "ms": 49.085822,
+            "rustPeakAddedBytes": 31336268
+          },
+          {
+            "ms": 48.305595,
+            "rustPeakAddedBytes": 31336268
+          },
+          {
+            "ms": 51.179672000000004,
+            "rustPeakAddedBytes": 31336268
+          },
+          {
+            "ms": 49.643033,
+            "rustPeakAddedBytes": 31336268
+          },
+          {
+            "ms": 51.02853,
+            "rustPeakAddedBytes": 31336268
+          },
+          {
+            "ms": 54.169936,
+            "rustPeakAddedBytes": 31336268
+          }
+        ]
+      },
+      "items": 6198,
+      "projection": {
+        "maxMs": 12.190817,
+        "maxRustPeakAddedBytes": 1520208,
+        "medianMs": 9.403702,
+        "minMs": 8.706109999999999,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 8.832379,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 9.239090000000001,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 11.346379,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 9.403702,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 8.706109999999999,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 8.902163,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 11.385123,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 12.190817,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 9.543557,
+            "rustPeakAddedBytes": 1520208
+          }
+        ]
+      },
+      "responseBytes": 297886,
+      "rowsDecode": {
+        "maxMs": 23.049464,
+        "maxRustPeakAddedBytes": 15829895,
+        "medianMs": 20.048847000000002,
+        "minMs": 19.117131,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 19.157947,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 20.186063,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 19.117131,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 22.427526999999998,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 21.507295,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 23.049464,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 19.600804999999998,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 19.81484,
+            "rustPeakAddedBytes": 15829895
+          },
+          {
+            "ms": 20.048847000000002,
+            "rustPeakAddedBytes": 15829895
+          }
+        ]
+      },
+      "rowsJsonReadAndDecodedBytes": 12570027,
+      "rowsSql": {
+        "maxMs": 17.861142,
+        "maxRustPeakAddedBytes": 14018494,
+        "medianMs": 15.725089,
+        "minMs": 13.509775,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 14.926838,
+            "rustPeakAddedBytes": 14018494
+          },
+          {
+            "ms": 15.725089,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 13.509775,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 17.861142,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 16.965166,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 17.699095,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 17.456546,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 13.751643,
+            "rustPeakAddedBytes": 14017826
+          },
+          {
+            "ms": 14.683021,
+            "rustPeakAddedBytes": 14017826
+          }
+        ]
+      },
+      "serialization": {
+        "maxMs": 0.5112180000000001,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.35681599999999997,
+        "minMs": 0.323122,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.35681599999999997,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.335115,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.41189,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.35385,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.323122,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.382174,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.5112180000000001,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.373787,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.336106,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "long",
+      "turns": 157,
+      "viewBytes": 297886
+    },
+    {
+      "clientDetail": {
+        "maxMs": 19.400206,
+        "maxRustPeakAddedBytes": 29561976,
+        "medianMs": 18.04513,
+        "minMs": 15.364289999999999,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 18.04513,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 17.590018,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 16.349479,
+            "rustPeakAddedBytes": 29559416
+          },
+          {
+            "ms": 19.400206,
+            "rustPeakAddedBytes": 29559416
+          },
+          {
+            "ms": 18.102929,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 18.661780999999998,
+            "rustPeakAddedBytes": 29559416
+          },
+          {
+            "ms": 16.893591,
+            "rustPeakAddedBytes": 29559416
+          },
+          {
+            "ms": 18.663114,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 15.364289999999999,
+            "rustPeakAddedBytes": 29561976
+          }
+        ]
+      },
+      "destination": "latest",
+      "fullRecordBytes": 12576254,
+      "held": true,
+      "heldClone": {
+        "maxMs": 27.835065,
+        "maxRustPeakAddedBytes": 29477220,
+        "medianMs": 12.214644,
+        "minMs": 10.667553999999999,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 27.835065,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 12.214644,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 12.777398,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 10.690207000000001,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 10.667553999999999,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 10.915292,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 14.15736,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 12.532244,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 11.243694999999999,
+            "rustPeakAddedBytes": 29477220
+          }
+        ]
+      },
+      "http": {
+        "maxMs": 29.786445,
+        "maxRustPeakAddedBytes": 31071070,
+        "medianMs": 26.621076000000002,
+        "minMs": 24.659732,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 26.621076000000002,
+            "rustPeakAddedBytes": 31062078
+          },
+          {
+            "ms": 26.403465,
+            "rustPeakAddedBytes": 31071070
+          },
+          {
+            "ms": 26.733809,
+            "rustPeakAddedBytes": 31062078
+          },
+          {
+            "ms": 24.710328,
+            "rustPeakAddedBytes": 31062078
+          },
+          {
+            "ms": 29.786445,
+            "rustPeakAddedBytes": 31062078
+          },
+          {
+            "ms": 27.535717,
+            "rustPeakAddedBytes": 31062078
+          },
+          {
+            "ms": 28.285693000000002,
+            "rustPeakAddedBytes": 31062078
+          },
+          {
+            "ms": 26.100817,
+            "rustPeakAddedBytes": 31062078
+          },
+          {
+            "ms": 24.659732,
+            "rustPeakAddedBytes": 31062078
+          }
+        ]
+      },
+      "items": 6198,
+      "projection": {
+        "maxMs": 10.228203,
+        "maxRustPeakAddedBytes": 1572698,
+        "medianMs": 6.816915,
+        "minMs": 6.7463820000000005,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 10.228203,
+            "rustPeakAddedBytes": 1572698
+          },
+          {
+            "ms": 6.8558580000000005,
+            "rustPeakAddedBytes": 1572698
+          },
+          {
+            "ms": 6.803189000000001,
+            "rustPeakAddedBytes": 1572698
+          },
+          {
+            "ms": 6.7463820000000005,
+            "rustPeakAddedBytes": 1572698
+          },
+          {
+            "ms": 7.600899,
+            "rustPeakAddedBytes": 1572698
+          },
+          {
+            "ms": 7.520587,
+            "rustPeakAddedBytes": 1572698
+          },
+          {
+            "ms": 6.760858,
+            "rustPeakAddedBytes": 1572698
+          },
+          {
+            "ms": 6.816915,
+            "rustPeakAddedBytes": 1572698
+          },
+          {
+            "ms": 6.76665,
+            "rustPeakAddedBytes": 1572698
+          }
+        ]
+      },
+      "responseBytes": 315681,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": 0,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.395218,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.305027,
+        "minMs": 0.264781,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.363698,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.264781,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.270582,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.317191,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.395218,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.35245699999999996,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.305027,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.275932,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.27458,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "long",
+      "turns": 157,
+      "viewBytes": 315681
+    },
+    {
+      "clientDetail": {
+        "maxMs": 20.384356999999998,
+        "maxRustPeakAddedBytes": 29561976,
+        "medianMs": 16.673839,
+        "minMs": 15.500083,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 15.893461,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 16.761844,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 15.731951,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 16.389005,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 16.878563,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 17.096424,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 16.673839,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 15.500083,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 20.384356999999998,
+            "rustPeakAddedBytes": 29561976
+          }
+        ]
+      },
+      "destination": "middle",
+      "fullRecordBytes": 12576254,
+      "held": true,
+      "heldClone": {
+        "maxMs": 27.835065,
+        "maxRustPeakAddedBytes": 29477220,
+        "medianMs": 12.214644,
+        "minMs": 10.667553999999999,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 27.835065,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 12.214644,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 12.777398,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 10.690207000000001,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 10.667553999999999,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 10.915292,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 14.15736,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 12.532244,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 11.243694999999999,
+            "rustPeakAddedBytes": 29477220
+          }
+        ]
+      },
+      "http": {
+        "maxMs": 30.93039,
+        "maxRustPeakAddedBytes": 31012962,
+        "medianMs": 26.816541,
+        "minMs": 24.540536000000003,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 26.816541,
+            "rustPeakAddedBytes": 31012962
+          },
+          {
+            "ms": 25.770325,
+            "rustPeakAddedBytes": 31012962
+          },
+          {
+            "ms": 26.004779,
+            "rustPeakAddedBytes": 31012962
+          },
+          {
+            "ms": 28.110715000000003,
+            "rustPeakAddedBytes": 31012962
+          },
+          {
+            "ms": 24.540536000000003,
+            "rustPeakAddedBytes": 31012962
+          },
+          {
+            "ms": 30.93039,
+            "rustPeakAddedBytes": 31012962
+          },
+          {
+            "ms": 27.668868999999997,
+            "rustPeakAddedBytes": 31012962
+          },
+          {
+            "ms": 27.442,
+            "rustPeakAddedBytes": 31012962
+          },
+          {
+            "ms": 24.810174,
+            "rustPeakAddedBytes": 31012962
+          }
+        ]
+      },
+      "items": 6198,
+      "projection": {
+        "maxMs": 8.914315,
+        "maxRustPeakAddedBytes": 1523546,
+        "medianMs": 7.029488000000001,
+        "minMs": 6.58786,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 7.691521,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 6.635591,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 6.58786,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 7.18909,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 7.029488000000001,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 8.914315,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 8.627984,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 6.6843639999999995,
+            "rustPeakAddedBytes": 1523546
+          },
+          {
+            "ms": 6.671048,
+            "rustPeakAddedBytes": 1523546
+          }
+        ]
+      },
+      "responseBytes": 299797,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": 0,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.729912,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.279539,
+        "minMs": 0.244663,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.729912,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.279539,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.261545,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.27186499999999997,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.329374,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.430145,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.331257,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.276474,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.244663,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "long",
+      "turns": 157,
+      "viewBytes": 299797
+    },
+    {
+      "clientDetail": {
+        "maxMs": 21.542926,
+        "maxRustPeakAddedBytes": 29561976,
+        "medianMs": 16.598472,
+        "minMs": 16.086864,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 16.239777,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 18.537202,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 16.164861,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 18.608916999999998,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 16.102423,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 21.502727,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 16.086864,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 21.542926,
+            "rustPeakAddedBytes": 29561976
+          },
+          {
+            "ms": 16.598472,
+            "rustPeakAddedBytes": 29561976
+          }
+        ]
+      },
+      "destination": "direct",
+      "fullRecordBytes": 12576254,
+      "held": true,
+      "heldClone": {
+        "maxMs": 27.835065,
+        "maxRustPeakAddedBytes": 29477220,
+        "medianMs": 12.214644,
+        "minMs": 10.667553999999999,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 27.835065,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 12.214644,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 12.777398,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 10.690207000000001,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 10.667553999999999,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 10.915292,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 14.15736,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 12.532244,
+            "rustPeakAddedBytes": 29477220
+          },
+          {
+            "ms": 11.243694999999999,
+            "rustPeakAddedBytes": 29477220
+          }
+        ]
+      },
+      "http": {
+        "maxMs": 28.955295,
+        "maxRustPeakAddedBytes": 31017869,
+        "medianMs": 26.312858000000002,
+        "minMs": 25.772047999999998,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 26.00537,
+            "rustPeakAddedBytes": 31009677
+          },
+          {
+            "ms": 26.055765,
+            "rustPeakAddedBytes": 31009677
+          },
+          {
+            "ms": 25.772047999999998,
+            "rustPeakAddedBytes": 31009677
+          },
+          {
+            "ms": 28.955295,
+            "rustPeakAddedBytes": 31009677
+          },
+          {
+            "ms": 26.846702,
+            "rustPeakAddedBytes": 31009677
+          },
+          {
+            "ms": 28.549834999999998,
+            "rustPeakAddedBytes": 31009677
+          },
+          {
+            "ms": 26.312858000000002,
+            "rustPeakAddedBytes": 31009677
+          },
+          {
+            "ms": 26.201060000000002,
+            "rustPeakAddedBytes": 31009677
+          },
+          {
+            "ms": 27.27814,
+            "rustPeakAddedBytes": 31017869
+          }
+        ]
+      },
+      "items": 6198,
+      "projection": {
+        "maxMs": 9.104144999999999,
+        "maxRustPeakAddedBytes": 1520208,
+        "medianMs": 7.734572,
+        "minMs": 6.53978,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 7.745713,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 6.569537,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 6.53978,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 8.597876000000001,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 7.734572,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 8.882555,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 6.6284279999999995,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 9.104144999999999,
+            "rustPeakAddedBytes": 1520208
+          },
+          {
+            "ms": 6.6699660000000005,
+            "rustPeakAddedBytes": 1520208
+          }
+        ]
+      },
+      "responseBytes": 297886,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": 0,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.39069000000000004,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.290991,
+        "minMs": 0.254993,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.3326,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.283988,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.319425,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.26734600000000003,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.290991,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.39069000000000004,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.25637499999999996,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.347669,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.254993,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "long",
+      "turns": 157,
+      "viewBytes": 297886
+    },
+    {
+      "held": true,
+      "http": {
+        "maxMs": 30.781635,
+        "maxRustPeakAddedBytes": 31070600,
+        "medianMs": 26.923853,
+        "minMs": 25.120016,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 27.430889,
+            "rustPeakAddedBytes": 31070269
+          },
+          {
+            "ms": 25.169171000000002,
+            "rustPeakAddedBytes": 31070360
+          },
+          {
+            "ms": 30.781635,
+            "rustPeakAddedBytes": 31070364
+          },
+          {
+            "ms": 25.983788,
+            "rustPeakAddedBytes": 31070382
+          },
+          {
+            "ms": 25.120016,
+            "rustPeakAddedBytes": 31070464
+          },
+          {
+            "ms": 26.630077,
+            "rustPeakAddedBytes": 31070418
+          },
+          {
+            "ms": 26.923853,
+            "rustPeakAddedBytes": 31070436
+          },
+          {
+            "ms": 27.614390999999998,
+            "rustPeakAddedBytes": 31070454
+          },
+          {
+            "ms": 27.563665,
+            "rustPeakAddedBytes": 31070600
+          }
+        ]
+      },
+      "shape": "long",
+      "streamWrites": {
+        "maxMs": 13.641544999999999,
+        "maxRustPeakAddedBytes": 0,
+        "medianMs": 3.1529190000000002,
+        "minMs": 1.6951889999999998,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 3.1529190000000002,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 1.976631,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 13.641544999999999,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 4.907413999999999,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 2.192391,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 1.956284,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 1.6951889999999998,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 3.180882,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 3.564036,
+            "rustPeakAddedBytes": 0
+          }
+        ]
+      },
+      "streaming": true
+    },
+    {
+      "clientDetail": {
+        "maxMs": 246.365053,
+        "maxRustPeakAddedBytes": 119420789,
+        "medianMs": 174.018415,
+        "minMs": 162.09051599999998,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 166.645358,
+            "rustPeakAddedBytes": 119418229
+          },
+          {
+            "ms": 174.68372300000001,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 173.481399,
+            "rustPeakAddedBytes": 119418229
+          },
+          {
+            "ms": 162.09051599999998,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 246.365053,
+            "rustPeakAddedBytes": 89602796
+          },
+          {
+            "ms": 174.018415,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 171.49176999999997,
+            "rustPeakAddedBytes": 119418229
+          },
+          {
+            "ms": 188.550106,
+            "rustPeakAddedBytes": 119418565
+          },
+          {
+            "ms": 182.704722,
+            "rustPeakAddedBytes": 119420789
+          }
+        ]
+      },
+      "destination": "latest",
+      "fullRecordBytes": 50304815,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 322.142703,
+        "maxRustPeakAddedBytes": 124011850,
+        "medianMs": 241.025834,
+        "minMs": 230.474391,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 238.554386,
+            "rustPeakAddedBytes": 124011850
+          },
+          {
+            "ms": 293.384082,
+            "rustPeakAddedBytes": 124011850
+          },
+          {
+            "ms": 322.142703,
+            "rustPeakAddedBytes": 124011850
+          },
+          {
+            "ms": 241.442405,
+            "rustPeakAddedBytes": 124011850
+          },
+          {
+            "ms": 241.025834,
+            "rustPeakAddedBytes": 124011850
+          },
+          {
+            "ms": 235.61344,
+            "rustPeakAddedBytes": 124011850
+          },
+          {
+            "ms": 234.67450200000002,
+            "rustPeakAddedBytes": 124011850
+          },
+          {
+            "ms": 243.04406600000002,
+            "rustPeakAddedBytes": 124011850
+          },
+          {
+            "ms": 230.474391,
+            "rustPeakAddedBytes": 124011850
+          }
+        ]
+      },
+      "items": 24789,
+      "projection": {
+        "maxMs": 78.33746699999999,
+        "maxRustPeakAddedBytes": 4784611,
+        "medianMs": 60.567548,
+        "minMs": 54.200234,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 59.556884999999994,
+            "rustPeakAddedBytes": 4784611
+          },
+          {
+            "ms": 63.31089500000001,
+            "rustPeakAddedBytes": 4784611
+          },
+          {
+            "ms": 54.429349,
+            "rustPeakAddedBytes": 4784611
+          },
+          {
+            "ms": 54.200234,
+            "rustPeakAddedBytes": 4784611
+          },
+          {
+            "ms": 72.780417,
+            "rustPeakAddedBytes": 4784611
+          },
+          {
+            "ms": 60.567548,
+            "rustPeakAddedBytes": 4784611
+          },
+          {
+            "ms": 62.65804,
+            "rustPeakAddedBytes": 4784611
+          },
+          {
+            "ms": 78.33746699999999,
+            "rustPeakAddedBytes": 4784611
+          },
+          {
+            "ms": 57.2778,
+            "rustPeakAddedBytes": 4784611
+          }
+        ]
+      },
+      "responseBytes": 623427,
+      "rowsDecode": {
+        "maxMs": 85.298104,
+        "maxRustPeakAddedBytes": 63128435,
+        "medianMs": 81.104876,
+        "minMs": 76.687774,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 81.925163,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 85.298104,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 82.935884,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 80.016876,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 80.97148399999999,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 81.104876,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 79.049166,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 76.687774,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 82.68141,
+            "rustPeakAddedBytes": 63128435
+          }
+        ]
+      },
+      "rowsJsonReadAndDecodedBytes": 50279940,
+      "rowsSql": {
+        "maxMs": 63.354659999999996,
+        "maxRustPeakAddedBytes": 56224174,
+        "medianMs": 58.620560000000005,
+        "minMs": 53.702723,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 63.354659999999996,
+            "rustPeakAddedBytes": 56224174
+          },
+          {
+            "ms": 62.924961,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 58.620560000000005,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 55.584094,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 60.739263,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 55.524571,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 54.075718,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 58.985543,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 53.702723,
+            "rustPeakAddedBytes": 56223506
+          }
+        ]
+      },
+      "serialization": {
+        "maxMs": 1.2121849999999998,
+        "maxRustPeakAddedBytes": 667648,
+        "medianMs": 0.946572,
+        "minMs": 0.6858390000000001,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.924611,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.7873300000000001,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.696208,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.6858390000000001,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.968684,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 1.065567,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.946572,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.9984900000000001,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 1.2121849999999998,
+            "rustPeakAddedBytes": 667648
+          }
+        ]
+      },
+      "shape": "long4",
+      "turns": 628,
+      "viewBytes": 623427
+    },
+    {
+      "clientDetail": {
+        "maxMs": 195.502667,
+        "maxRustPeakAddedBytes": 119420789,
+        "medianMs": 173.719691,
+        "minMs": 162.518737,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 195.502667,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 173.719691,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 178.958208,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 186.009346,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 162.518737,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 169.559696,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 167.79431399999999,
+            "rustPeakAddedBytes": 119418229
+          },
+          {
+            "ms": 165.520139,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 187.104559,
+            "rustPeakAddedBytes": 119420789
+          }
+        ]
+      },
+      "destination": "middle",
+      "fullRecordBytes": 50304815,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 250.621291,
+        "maxRustPeakAddedBytes": 123807611,
+        "medianMs": 227.191893,
+        "minMs": 217.348673,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 230.69990800000002,
+            "rustPeakAddedBytes": 123807611
+          },
+          {
+            "ms": 236.563168,
+            "rustPeakAddedBytes": 123807611
+          },
+          {
+            "ms": 250.621291,
+            "rustPeakAddedBytes": 123807611
+          },
+          {
+            "ms": 220.448141,
+            "rustPeakAddedBytes": 123807611
+          },
+          {
+            "ms": 224.855122,
+            "rustPeakAddedBytes": 123807611
+          },
+          {
+            "ms": 238.971252,
+            "rustPeakAddedBytes": 123807611
+          },
+          {
+            "ms": 217.348673,
+            "rustPeakAddedBytes": 123807611
+          },
+          {
+            "ms": 221.63623099999998,
+            "rustPeakAddedBytes": 123807611
+          },
+          {
+            "ms": 227.191893,
+            "rustPeakAddedBytes": 123807611
+          }
+        ]
+      },
+      "items": 24789,
+      "projection": {
+        "maxMs": 72.282526,
+        "maxRustPeakAddedBytes": 4580330,
+        "medianMs": 60.144888,
+        "minMs": 55.538076,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 72.282526,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 60.144888,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 70.55903099999999,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 59.914170000000006,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 55.538076,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 61.629408,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 56.583716,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 58.238798,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 71.76705899999999,
+            "rustPeakAddedBytes": 4580330
+          }
+        ]
+      },
+      "responseBytes": 552999,
+      "rowsDecode": {
+        "maxMs": 85.298104,
+        "maxRustPeakAddedBytes": 63128435,
+        "medianMs": 81.104876,
+        "minMs": 76.687774,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 81.925163,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 85.298104,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 82.935884,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 80.016876,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 80.97148399999999,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 81.104876,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 79.049166,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 76.687774,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 82.68141,
+            "rustPeakAddedBytes": 63128435
+          }
+        ]
+      },
+      "rowsJsonReadAndDecodedBytes": 50279940,
+      "rowsSql": {
+        "maxMs": 63.354659999999996,
+        "maxRustPeakAddedBytes": 56224174,
+        "medianMs": 58.620560000000005,
+        "minMs": 53.702723,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 63.354659999999996,
+            "rustPeakAddedBytes": 56224174
+          },
+          {
+            "ms": 62.924961,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 58.620560000000005,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 55.584094,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 60.739263,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 55.524571,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 54.075718,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 58.985543,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 53.702723,
+            "rustPeakAddedBytes": 56223506
+          }
+        ]
+      },
+      "serialization": {
+        "maxMs": 1.3520990000000002,
+        "maxRustPeakAddedBytes": 667648,
+        "medianMs": 0.831383,
+        "minMs": 0.5926319999999999,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.8613810000000001,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.7579750000000001,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.913038,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.800585,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.831383,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.8547480000000001,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.5926319999999999,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 1.3520990000000002,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.8004760000000001,
+            "rustPeakAddedBytes": 667648
+          }
+        ]
+      },
+      "shape": "long4",
+      "turns": 628,
+      "viewBytes": 552999
+    },
+    {
+      "clientDetail": {
+        "maxMs": 182.65340799999998,
+        "maxRustPeakAddedBytes": 119420789,
+        "medianMs": 167.928607,
+        "minMs": 160.250754,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 182.65340799999998,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 160.250754,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 167.061627,
+            "rustPeakAddedBytes": 119418229
+          },
+          {
+            "ms": 171.99214099999998,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 165.705931,
+            "rustPeakAddedBytes": 119418229
+          },
+          {
+            "ms": 167.346576,
+            "rustPeakAddedBytes": 119419077
+          },
+          {
+            "ms": 171.381229,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 167.928607,
+            "rustPeakAddedBytes": 119420789
+          },
+          {
+            "ms": 168.174613,
+            "rustPeakAddedBytes": 119418229
+          }
+        ]
+      },
+      "destination": "direct",
+      "fullRecordBytes": 50304815,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 257.94225900000004,
+        "maxRustPeakAddedBytes": 123794439,
+        "medianMs": 247.580453,
+        "minMs": 222.160403,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 247.580453,
+            "rustPeakAddedBytes": 123794439
+          },
+          {
+            "ms": 230.93723699999998,
+            "rustPeakAddedBytes": 123794439
+          },
+          {
+            "ms": 257.94225900000004,
+            "rustPeakAddedBytes": 123794439
+          },
+          {
+            "ms": 230.263077,
+            "rustPeakAddedBytes": 123794439
+          },
+          {
+            "ms": 222.447005,
+            "rustPeakAddedBytes": 123794439
+          },
+          {
+            "ms": 222.160403,
+            "rustPeakAddedBytes": 123794439
+          },
+          {
+            "ms": 249.86627000000001,
+            "rustPeakAddedBytes": 123794439
+          },
+          {
+            "ms": 249.224075,
+            "rustPeakAddedBytes": 123794439
+          },
+          {
+            "ms": 247.85706699999997,
+            "rustPeakAddedBytes": 123794439
+          }
+        ]
+      },
+      "items": 24789,
+      "projection": {
+        "maxMs": 64.036219,
+        "maxRustPeakAddedBytes": 4567117,
+        "medianMs": 58.797558,
+        "minMs": 56.292741,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 64.036219,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 58.596636000000004,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 63.89220099999999,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 57.56335,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 58.797558,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 56.292741,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 59.328744,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 57.330961,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 63.503456,
+            "rustPeakAddedBytes": 4567117
+          }
+        ]
+      },
+      "responseBytes": 543998,
+      "rowsDecode": {
+        "maxMs": 85.298104,
+        "maxRustPeakAddedBytes": 63128435,
+        "medianMs": 81.104876,
+        "minMs": 76.687774,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 81.925163,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 85.298104,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 82.935884,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 80.016876,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 80.97148399999999,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 81.104876,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 79.049166,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 76.687774,
+            "rustPeakAddedBytes": 63128435
+          },
+          {
+            "ms": 82.68141,
+            "rustPeakAddedBytes": 63128435
+          }
+        ]
+      },
+      "rowsJsonReadAndDecodedBytes": 50279940,
+      "rowsSql": {
+        "maxMs": 63.354659999999996,
+        "maxRustPeakAddedBytes": 56224174,
+        "medianMs": 58.620560000000005,
+        "minMs": 53.702723,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 63.354659999999996,
+            "rustPeakAddedBytes": 56224174
+          },
+          {
+            "ms": 62.924961,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 58.620560000000005,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 55.584094,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 60.739263,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 55.524571,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 54.075718,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 58.985543,
+            "rustPeakAddedBytes": 56223506
+          },
+          {
+            "ms": 53.702723,
+            "rustPeakAddedBytes": 56223506
+          }
+        ]
+      },
+      "serialization": {
+        "maxMs": 0.917707,
+        "maxRustPeakAddedBytes": 667648,
+        "medianMs": 0.831815,
+        "minMs": 0.726796,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.7410230000000001,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.811275,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.831815,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.833668,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.844679,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.796127,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.726796,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.85556,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.917707,
+            "rustPeakAddedBytes": 667648
+          }
+        ]
+      },
+      "shape": "long4",
+      "turns": 628,
+      "viewBytes": 543998
+    },
+    {
+      "clientDetail": {
+        "maxMs": 85.59256699999999,
+        "maxRustPeakAddedBytes": 118114422,
+        "medianMs": 80.508845,
+        "minMs": 74.27890500000001,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 81.33385,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 79.454551,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 74.479703,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 75.678332,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 74.27890500000001,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 81.443578,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 80.508845,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 85.59256699999999,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 84.83169,
+            "rustPeakAddedBytes": 118114422
+          }
+        ]
+      },
+      "destination": "latest",
+      "fullRecordBytes": 50304815,
+      "held": true,
+      "heldClone": {
+        "maxMs": 59.873113,
+        "maxRustPeakAddedBytes": 117908706,
+        "medianMs": 50.325047999999995,
+        "minMs": 46.03134,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 59.873113,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 50.7381,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 57.027687,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 50.325047999999995,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 48.599661000000005,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 46.03134,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 46.616026999999995,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 50.082744,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 51.829236,
+            "rustPeakAddedBytes": 117908706
+          }
+        ]
+      },
+      "http": {
+        "maxMs": 134.552796,
+        "maxRustPeakAddedBytes": 122714476,
+        "medianMs": 127.154286,
+        "minMs": 115.150772,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 132.542944,
+            "rustPeakAddedBytes": 122705484
+          },
+          {
+            "ms": 127.154286,
+            "rustPeakAddedBytes": 122714476
+          },
+          {
+            "ms": 121.363402,
+            "rustPeakAddedBytes": 122705484
+          },
+          {
+            "ms": 123.550298,
+            "rustPeakAddedBytes": 122705484
+          },
+          {
+            "ms": 121.86596800000001,
+            "rustPeakAddedBytes": 122705484
+          },
+          {
+            "ms": 130.707798,
+            "rustPeakAddedBytes": 122705484
+          },
+          {
+            "ms": 115.150772,
+            "rustPeakAddedBytes": 122705484
+          },
+          {
+            "ms": 134.552796,
+            "rustPeakAddedBytes": 122705484
+          },
+          {
+            "ms": 131.094354,
+            "rustPeakAddedBytes": 122705484
+          }
+        ]
+      },
+      "items": 24789,
+      "projection": {
+        "maxMs": 48.201439,
+        "maxRustPeakAddedBytes": 4784612,
+        "medianMs": 42.300227,
+        "minMs": 37.194612,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 46.762012999999996,
+            "rustPeakAddedBytes": 4784612
+          },
+          {
+            "ms": 48.201439,
+            "rustPeakAddedBytes": 4784612
+          },
+          {
+            "ms": 38.319531,
+            "rustPeakAddedBytes": 4784612
+          },
+          {
+            "ms": 37.194612,
+            "rustPeakAddedBytes": 4784612
+          },
+          {
+            "ms": 43.385400999999995,
+            "rustPeakAddedBytes": 4784612
+          },
+          {
+            "ms": 42.713989,
+            "rustPeakAddedBytes": 4784612
+          },
+          {
+            "ms": 40.079935,
+            "rustPeakAddedBytes": 4784612
+          },
+          {
+            "ms": 37.650458,
+            "rustPeakAddedBytes": 4784612
+          },
+          {
+            "ms": 42.300227,
+            "rustPeakAddedBytes": 4784612
+          }
+        ]
+      },
+      "responseBytes": 623428,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": 0,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.865999,
+        "maxRustPeakAddedBytes": 667648,
+        "medianMs": 0.787486,
+        "minMs": 0.683373,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.787486,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.683373,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.8034910000000001,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.7192719999999999,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.865148,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.865999,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.8090919999999999,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.720174,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.725052,
+            "rustPeakAddedBytes": 667648
+          }
+        ]
+      },
+      "shape": "long4",
+      "turns": 628,
+      "viewBytes": 623428
+    },
+    {
+      "clientDetail": {
+        "maxMs": 98.998681,
+        "maxRustPeakAddedBytes": 118114422,
+        "medianMs": 80.698385,
+        "minMs": 73.5,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 98.998681,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 73.988974,
+            "rustPeakAddedBytes": 118111862
+          },
+          {
+            "ms": 81.048388,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 80.698385,
+            "rustPeakAddedBytes": 118111862
+          },
+          {
+            "ms": 84.010617,
+            "rustPeakAddedBytes": 118111862
+          },
+          {
+            "ms": 79.50900499999999,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 73.5,
+            "rustPeakAddedBytes": 118111862
+          },
+          {
+            "ms": 75.221468,
+            "rustPeakAddedBytes": 118111862
+          },
+          {
+            "ms": 86.054606,
+            "rustPeakAddedBytes": 118111862
+          }
+        ]
+      },
+      "destination": "middle",
+      "fullRecordBytes": 50304815,
+      "held": true,
+      "heldClone": {
+        "maxMs": 59.873113,
+        "maxRustPeakAddedBytes": 117908706,
+        "medianMs": 50.325047999999995,
+        "minMs": 46.03134,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 59.873113,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 50.7381,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 57.027687,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 50.325047999999995,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 48.599661000000005,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 46.03134,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 46.616026999999995,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 50.082744,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 51.829236,
+            "rustPeakAddedBytes": 117908706
+          }
+        ]
+      },
+      "http": {
+        "maxMs": 144.096262,
+        "maxRustPeakAddedBytes": 122501244,
+        "medianMs": 119.739052,
+        "minMs": 114.173818,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 144.096262,
+            "rustPeakAddedBytes": 122501244
+          },
+          {
+            "ms": 130.093121,
+            "rustPeakAddedBytes": 122501244
+          },
+          {
+            "ms": 128.292595,
+            "rustPeakAddedBytes": 122501244
+          },
+          {
+            "ms": 119.739052,
+            "rustPeakAddedBytes": 122501244
+          },
+          {
+            "ms": 128.7548,
+            "rustPeakAddedBytes": 122501244
+          },
+          {
+            "ms": 118.483399,
+            "rustPeakAddedBytes": 122501244
+          },
+          {
+            "ms": 114.173818,
+            "rustPeakAddedBytes": 122501244
+          },
+          {
+            "ms": 115.821326,
+            "rustPeakAddedBytes": 122501244
+          },
+          {
+            "ms": 117.139938,
+            "rustPeakAddedBytes": 122501244
+          }
+        ]
+      },
+      "items": 24789,
+      "projection": {
+        "maxMs": 58.731392,
+        "maxRustPeakAddedBytes": 4580330,
+        "medianMs": 39.810048,
+        "minMs": 35.188189,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 58.731392,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 35.188189,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 36.226253,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 39.844768,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 38.959813000000004,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 39.810048,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 41.631468999999996,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 40.777454,
+            "rustPeakAddedBytes": 4580330
+          },
+          {
+            "ms": 38.649916,
+            "rustPeakAddedBytes": 4580330
+          }
+        ]
+      },
+      "responseBytes": 552999,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": 0,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 1.057953,
+        "maxRustPeakAddedBytes": 667648,
+        "medianMs": 0.695386,
+        "minMs": 0.595176,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 1.057953,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.709476,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.6254379999999999,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.595176,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.695386,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.688393,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.60237,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.7155549999999999,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.6974509999999999,
+            "rustPeakAddedBytes": 667648
+          }
+        ]
+      },
+      "shape": "long4",
+      "turns": 628,
+      "viewBytes": 552999
+    },
+    {
+      "clientDetail": {
+        "maxMs": 86.552538,
+        "maxRustPeakAddedBytes": 118114422,
+        "medianMs": 76.726929,
+        "minMs": 71.54064,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 77.679943,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 78.465824,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 79.012105,
+            "rustPeakAddedBytes": 118111862
+          },
+          {
+            "ms": 73.80476,
+            "rustPeakAddedBytes": 118111862
+          },
+          {
+            "ms": 72.848686,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 71.54064,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 86.552538,
+            "rustPeakAddedBytes": 118114422
+          },
+          {
+            "ms": 76.726929,
+            "rustPeakAddedBytes": 118111862
+          },
+          {
+            "ms": 75.983089,
+            "rustPeakAddedBytes": 118114422
+          }
+        ]
+      },
+      "destination": "direct",
+      "fullRecordBytes": 50304815,
+      "held": true,
+      "heldClone": {
+        "maxMs": 59.873113,
+        "maxRustPeakAddedBytes": 117908706,
+        "medianMs": 50.325047999999995,
+        "minMs": 46.03134,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 59.873113,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 50.7381,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 57.027687,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 50.325047999999995,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 48.599661000000005,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 46.03134,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 46.616026999999995,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 50.082744,
+            "rustPeakAddedBytes": 117908706
+          },
+          {
+            "ms": 51.829236,
+            "rustPeakAddedBytes": 117908706
+          }
+        ]
+      },
+      "http": {
+        "maxMs": 122.52869199999999,
+        "maxRustPeakAddedBytes": 122496264,
+        "medianMs": 118.653036,
+        "minMs": 108.582142,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 118.653036,
+            "rustPeakAddedBytes": 122488072
+          },
+          {
+            "ms": 113.265968,
+            "rustPeakAddedBytes": 122488072
+          },
+          {
+            "ms": 117.110802,
+            "rustPeakAddedBytes": 122488072
+          },
+          {
+            "ms": 119.261639,
+            "rustPeakAddedBytes": 122488072
+          },
+          {
+            "ms": 120.175089,
+            "rustPeakAddedBytes": 122488072
+          },
+          {
+            "ms": 110.212896,
+            "rustPeakAddedBytes": 122488072
+          },
+          {
+            "ms": 120.014233,
+            "rustPeakAddedBytes": 122488072
+          },
+          {
+            "ms": 108.582142,
+            "rustPeakAddedBytes": 122488072
+          },
+          {
+            "ms": 122.52869199999999,
+            "rustPeakAddedBytes": 122496264
+          }
+        ]
+      },
+      "items": 24789,
+      "projection": {
+        "maxMs": 46.301871,
+        "maxRustPeakAddedBytes": 4567117,
+        "medianMs": 37.302295,
+        "minMs": 35.204053,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 36.294807999999996,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 43.117793,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 35.204053,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 44.755255,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 37.302295,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 36.854988,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 46.301871,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 36.921083,
+            "rustPeakAddedBytes": 4567117
+          },
+          {
+            "ms": 41.411435000000004,
+            "rustPeakAddedBytes": 4567117
+          }
+        ]
+      },
+      "responseBytes": 543998,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": 0,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.777722,
+        "maxRustPeakAddedBytes": 667648,
+        "medianMs": 0.613231,
+        "minMs": 0.576472,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.5882529999999999,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.668104,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.613231,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.777722,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.6405029999999999,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.576472,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.600016,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.577523,
+            "rustPeakAddedBytes": 667648
+          },
+          {
+            "ms": 0.7305229999999999,
+            "rustPeakAddedBytes": 667648
+          }
+        ]
+      },
+      "shape": "long4",
+      "turns": 628,
+      "viewBytes": 543998
+    },
+    {
+      "held": true,
+      "http": {
+        "maxMs": 135.179553,
+        "maxRustPeakAddedBytes": 122715020,
+        "medianMs": 124.092844,
+        "minMs": 114.379546,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 135.179553,
+            "rustPeakAddedBytes": 122714437
+          },
+          {
+            "ms": 124.092844,
+            "rustPeakAddedBytes": 122713930
+          },
+          {
+            "ms": 121.417299,
+            "rustPeakAddedBytes": 122713878
+          },
+          {
+            "ms": 127.619289,
+            "rustPeakAddedBytes": 122713932
+          },
+          {
+            "ms": 114.379546,
+            "rustPeakAddedBytes": 122714692
+          },
+          {
+            "ms": 114.410565,
+            "rustPeakAddedBytes": 122714728
+          },
+          {
+            "ms": 119.252421,
+            "rustPeakAddedBytes": 122715020
+          },
+          {
+            "ms": 124.46587000000001,
+            "rustPeakAddedBytes": 122714800
+          },
+          {
+            "ms": 133.508407,
+            "rustPeakAddedBytes": 122714148
+          }
+        ]
+      },
+      "shape": "long4",
+      "streamWrites": {
+        "maxMs": 61.39779,
+        "maxRustPeakAddedBytes": 0,
+        "medianMs": 13.07364,
+        "minMs": 9.515391999999999,
+        "runs": 24,
+        "samples": [
+          {
+            "ms": 10.336577,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 38.212799,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 12.278025999999999,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 9.515391999999999,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 28.7743,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 11.834313000000002,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 9.964341999999998,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 28.5781,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 11.580652,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 14.133246,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 31.297828,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 12.313279999999999,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 56.295686999999994,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 13.407291,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 49.554524,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 13.07364,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 58.253397,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 12.60383,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 61.39779,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 12.748229,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 12.207145,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 33.820797999999996,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 12.831634,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 11.155522,
+            "rustPeakAddedBytes": 0
+          }
+        ]
+      },
+      "streaming": true
+    },
+    {
+      "clientDetail": {
+        "maxMs": 36.712648,
+        "maxRustPeakAddedBytes": 33600869,
+        "medianMs": 34.366327000000005,
+        "minMs": 33.237610000000004,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 36.364388999999996,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 36.712648,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 34.366327000000005,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 35.110911,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 33.237610000000004,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 33.303244,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 34.174274,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 34.463061,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 33.699954999999996,
+            "rustPeakAddedBytes": 33600869
+          }
+        ]
+      },
+      "destination": "latest",
+      "fullRecordBytes": 13544732,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 49.23229,
+        "maxRustPeakAddedBytes": 33608352,
+        "medianMs": 43.356256,
+        "minMs": 41.034701,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 43.661384999999996,
+            "rustPeakAddedBytes": 33608352
+          },
+          {
+            "ms": 43.660032,
+            "rustPeakAddedBytes": 33608352
+          },
+          {
+            "ms": 43.329910999999996,
+            "rustPeakAddedBytes": 33608352
+          },
+          {
+            "ms": 42.389997,
+            "rustPeakAddedBytes": 33608352
+          },
+          {
+            "ms": 42.225295,
+            "rustPeakAddedBytes": 33608352
+          },
+          {
+            "ms": 49.23229,
+            "rustPeakAddedBytes": 33608352
+          },
+          {
+            "ms": 41.034701,
+            "rustPeakAddedBytes": 33608352
+          },
+          {
+            "ms": 43.356256,
+            "rustPeakAddedBytes": 33608352
+          },
+          {
+            "ms": 47.320751,
+            "rustPeakAddedBytes": 0
+          }
+        ]
+      },
+      "items": 6199,
+      "projection": {
+        "maxMs": 51.012460000000004,
+        "maxRustPeakAddedBytes": 1212147,
+        "medianMs": 7.2971140000000005,
+        "minMs": 7.046099,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 7.255004,
+            "rustPeakAddedBytes": 1212147
+          },
+          {
+            "ms": 7.217193,
+            "rustPeakAddedBytes": 1212147
+          },
+          {
+            "ms": 8.151422,
+            "rustPeakAddedBytes": 1212147
+          },
+          {
+            "ms": 7.738159,
+            "rustPeakAddedBytes": 1212147
+          },
+          {
+            "ms": 7.046099,
+            "rustPeakAddedBytes": 1212147
+          },
+          {
+            "ms": 7.2971140000000005,
+            "rustPeakAddedBytes": 1212147
+          },
+          {
+            "ms": 7.240547,
+            "rustPeakAddedBytes": 1212147
+          },
+          {
+            "ms": 7.824371999999999,
+            "rustPeakAddedBytes": 1212147
+          },
+          {
+            "ms": 51.012460000000004,
+            "rustPeakAddedBytes": 64
+          }
+        ]
+      },
+      "responseBytes": 229167,
+      "rowsDecode": {
+        "maxMs": 19.837634,
+        "maxRustPeakAddedBytes": 18770592,
+        "medianMs": 17.333924,
+        "minMs": 16.895264,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 19.066875,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.723943,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.250566,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 18.435579,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.333924,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 16.895264,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.005833000000003,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 19.837634,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.071598,
+            "rustPeakAddedBytes": 18770592
+          }
+        ]
+      },
+      "rowsJsonReadAndDecodedBytes": 13538525,
+      "rowsSql": {
+        "maxMs": 14.739683,
+        "maxRustPeakAddedBytes": 14826607,
+        "medianMs": 11.851756,
+        "minMs": 11.598397,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 14.739683,
+            "rustPeakAddedBytes": 14826607
+          },
+          {
+            "ms": 12.937431,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.850434,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 13.32165,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.598397,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.762026,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.656486000000001,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.851756,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 13.419304,
+            "rustPeakAddedBytes": 14825939
+          }
+        ]
+      },
+      "serialization": {
+        "maxMs": 1.081126,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.226018,
+        "minMs": 0.209727,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.226018,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.213875,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.217481,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.250594,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.209727,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.28874700000000003,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.218513,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.242639,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 1.081126,
+            "rustPeakAddedBytes": 29938
+          }
+        ]
+      },
+      "shape": "giant",
+      "turns": 1,
+      "viewBytes": 229167
+    },
+    {
+      "clientDetail": {
+        "maxMs": 50.366357,
+        "maxRustPeakAddedBytes": 33596531,
+        "medianMs": 39.015079,
+        "minMs": 34.289702,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 37.37424,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 43.95984,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 45.379785,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 34.289702,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 50.366357,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 44.320101,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 35.441993,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 35.847645,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 39.015079,
+            "rustPeakAddedBytes": 33596531
+          }
+        ]
+      },
+      "destination": "middle",
+      "fullRecordBytes": 13544732,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 55.372989999999994,
+        "maxRustPeakAddedBytes": 33608357,
+        "medianMs": 43.438531000000005,
+        "minMs": 40.515839,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 43.793313,
+            "rustPeakAddedBytes": 33608357
+          },
+          {
+            "ms": 40.515839,
+            "rustPeakAddedBytes": 33608357
+          },
+          {
+            "ms": 44.935748,
+            "rustPeakAddedBytes": 33608357
+          },
+          {
+            "ms": 41.908045,
+            "rustPeakAddedBytes": 33608357
+          },
+          {
+            "ms": 42.639558,
+            "rustPeakAddedBytes": 33608357
+          },
+          {
+            "ms": 41.513836999999995,
+            "rustPeakAddedBytes": 33608357
+          },
+          {
+            "ms": 55.372989999999994,
+            "rustPeakAddedBytes": 33608357
+          },
+          {
+            "ms": 43.438531000000005,
+            "rustPeakAddedBytes": 33608357
+          },
+          {
+            "ms": 43.464521999999995,
+            "rustPeakAddedBytes": 33608357
+          }
+        ]
+      },
+      "items": 6199,
+      "projection": {
+        "maxMs": 12.575426,
+        "maxRustPeakAddedBytes": 486647,
+        "medianMs": 7.9505300000000005,
+        "minMs": 7.095863,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 8.736248,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 11.166258000000001,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 7.9505300000000005,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 7.095863,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 12.575426,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 8.702233999999999,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 7.522792000000001,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 7.203467,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 7.740993,
+            "rustPeakAddedBytes": 486647
+          }
+        ]
+      },
+      "responseBytes": 155774,
+      "rowsDecode": {
+        "maxMs": 19.837634,
+        "maxRustPeakAddedBytes": 18770592,
+        "medianMs": 17.333924,
+        "minMs": 16.895264,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 19.066875,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.723943,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.250566,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 18.435579,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.333924,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 16.895264,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.005833000000003,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 19.837634,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.071598,
+            "rustPeakAddedBytes": 18770592
+          }
+        ]
+      },
+      "rowsJsonReadAndDecodedBytes": 13538525,
+      "rowsSql": {
+        "maxMs": 14.739683,
+        "maxRustPeakAddedBytes": 14826607,
+        "medianMs": 11.851756,
+        "minMs": 11.598397,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 14.739683,
+            "rustPeakAddedBytes": 14826607
+          },
+          {
+            "ms": 12.937431,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.850434,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 13.32165,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.598397,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.762026,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.656486000000001,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.851756,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 13.419304,
+            "rustPeakAddedBytes": 14825939
+          }
+        ]
+      },
+      "serialization": {
+        "maxMs": 0.444351,
+        "maxRustPeakAddedBytes": 166912,
+        "medianMs": 0.40999599999999997,
+        "minMs": 0.37501,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.444351,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.414825,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.435194,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.37501,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.40999599999999997,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.428892,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.392182,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.392964,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.378617,
+            "rustPeakAddedBytes": 166912
+          }
+        ]
+      },
+      "shape": "giant",
+      "turns": 1,
+      "viewBytes": 155774
+    },
+    {
+      "clientDetail": {
+        "maxMs": 37.114861,
+        "maxRustPeakAddedBytes": 33596531,
+        "medianMs": 34.890664,
+        "minMs": 33.008858000000004,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 34.467287999999996,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 34.273732,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 34.890664,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 33.722108,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 35.001961,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 36.506828999999996,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 37.114861,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 33.008858000000004,
+            "rustPeakAddedBytes": 33596531
+          },
+          {
+            "ms": 35.820299999999996,
+            "rustPeakAddedBytes": 33596531
+          }
+        ]
+      },
+      "destination": "direct",
+      "fullRecordBytes": 13544732,
+      "held": false,
+      "heldClone": null,
+      "http": {
+        "maxMs": 44.529638000000006,
+        "maxRustPeakAddedBytes": 33608419,
+        "medianMs": 42.267775,
+        "minMs": 39.527448,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 42.404855,
+            "rustPeakAddedBytes": 33608419
+          },
+          {
+            "ms": 40.956659,
+            "rustPeakAddedBytes": 33608419
+          },
+          {
+            "ms": 42.487602,
+            "rustPeakAddedBytes": 33608419
+          },
+          {
+            "ms": 44.529638000000006,
+            "rustPeakAddedBytes": 33608419
+          },
+          {
+            "ms": 42.267775,
+            "rustPeakAddedBytes": 33608419
+          },
+          {
+            "ms": 40.70633,
+            "rustPeakAddedBytes": 33608419
+          },
+          {
+            "ms": 40.015693,
+            "rustPeakAddedBytes": 33608419
+          },
+          {
+            "ms": 39.527448,
+            "rustPeakAddedBytes": 33608419
+          },
+          {
+            "ms": 43.032434,
+            "rustPeakAddedBytes": 33608419
+          }
+        ]
+      },
+      "items": 6199,
+      "projection": {
+        "maxMs": 9.035575,
+        "maxRustPeakAddedBytes": 542062,
+        "medianMs": 7.732728000000001,
+        "minMs": 6.822626,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 8.121945,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 7.544592,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 7.732728000000001,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 7.098167,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 9.035575,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 8.097991,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 8.472799,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 6.822626,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 7.175654,
+            "rustPeakAddedBytes": 542062
+          }
+        ]
+      },
+      "responseBytes": 176165,
+      "rowsDecode": {
+        "maxMs": 19.837634,
+        "maxRustPeakAddedBytes": 18770592,
+        "medianMs": 17.333924,
+        "minMs": 16.895264,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 19.066875,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.723943,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.250566,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 18.435579,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.333924,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 16.895264,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.005833000000003,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 19.837634,
+            "rustPeakAddedBytes": 18770592
+          },
+          {
+            "ms": 17.071598,
+            "rustPeakAddedBytes": 18770592
+          }
+        ]
+      },
+      "rowsJsonReadAndDecodedBytes": 13538525,
+      "rowsSql": {
+        "maxMs": 14.739683,
+        "maxRustPeakAddedBytes": 14826607,
+        "medianMs": 11.851756,
+        "minMs": 11.598397,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 14.739683,
+            "rustPeakAddedBytes": 14826607
+          },
+          {
+            "ms": 12.937431,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.850434,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 13.32165,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.598397,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.762026,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.656486000000001,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 11.851756,
+            "rustPeakAddedBytes": 14825939
+          },
+          {
+            "ms": 13.419304,
+            "rustPeakAddedBytes": 14825939
+          }
+        ]
+      },
+      "serialization": {
+        "maxMs": 0.47048100000000004,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.38808499999999996,
+        "minMs": 0.335835,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.393164,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.379008,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.38808499999999996,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.370962,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.47048100000000004,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.335835,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.452507,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.351866,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.451484,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "giant",
+      "turns": 1,
+      "viewBytes": 176165
+    },
+    {
+      "clientDetail": {
+        "maxMs": 22.472252,
+        "maxRustPeakAddedBytes": 30339935,
+        "medianMs": 15.514709,
+        "minMs": 14.382677,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 16.667562,
+            "rustPeakAddedBytes": 30337375
+          },
+          {
+            "ms": 22.472252,
+            "rustPeakAddedBytes": 30339935
+          },
+          {
+            "ms": 15.561739,
+            "rustPeakAddedBytes": 30339935
+          },
+          {
+            "ms": 15.514709,
+            "rustPeakAddedBytes": 30337375
+          },
+          {
+            "ms": 15.370477000000001,
+            "rustPeakAddedBytes": 30337375
+          },
+          {
+            "ms": 16.376581,
+            "rustPeakAddedBytes": 30337375
+          },
+          {
+            "ms": 14.681814,
+            "rustPeakAddedBytes": 30339935
+          },
+          {
+            "ms": 14.545625,
+            "rustPeakAddedBytes": 30337375
+          },
+          {
+            "ms": 14.382677,
+            "rustPeakAddedBytes": 30339935
+          }
+        ]
+      },
+      "destination": "latest",
+      "fullRecordBytes": 13544732,
+      "held": true,
+      "heldClone": {
+        "maxMs": 12.564485,
+        "maxRustPeakAddedBytes": 30290717,
+        "medianMs": 10.387194000000001,
+        "minMs": 8.575163,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 8.575163,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 8.650023999999998,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 8.723985,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 11.054417,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 12.564485,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 11.319417999999999,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 10.5701,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 10.387194000000001,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 9.589554,
+            "rustPeakAddedBytes": 30290717
+          }
+        ]
+      },
+      "http": {
+        "maxMs": 40.995236999999996,
+        "maxRustPeakAddedBytes": 31523996,
+        "medianMs": 24.705059000000002,
+        "minMs": 22.62956,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 23.055636,
+            "rustPeakAddedBytes": 31515004
+          },
+          {
+            "ms": 26.546484,
+            "rustPeakAddedBytes": 31523996
+          },
+          {
+            "ms": 23.652963999999997,
+            "rustPeakAddedBytes": 31515004
+          },
+          {
+            "ms": 40.995236999999996,
+            "rustPeakAddedBytes": 31515004
+          },
+          {
+            "ms": 25.196179,
+            "rustPeakAddedBytes": 31515004
+          },
+          {
+            "ms": 24.902381000000002,
+            "rustPeakAddedBytes": 31515004
+          },
+          {
+            "ms": 22.933434,
+            "rustPeakAddedBytes": 31515004
+          },
+          {
+            "ms": 24.705059000000002,
+            "rustPeakAddedBytes": 31515004
+          },
+          {
+            "ms": 22.62956,
+            "rustPeakAddedBytes": 31515004
+          }
+        ]
+      },
+      "items": 6199,
+      "projection": {
+        "maxMs": 9.26578,
+        "maxRustPeakAddedBytes": 1212148,
+        "medianMs": 6.1982729999999995,
+        "minMs": 5.762347999999999,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 9.26578,
+            "rustPeakAddedBytes": 1212148
+          },
+          {
+            "ms": 8.260978,
+            "rustPeakAddedBytes": 1212148
+          },
+          {
+            "ms": 6.0455939999999995,
+            "rustPeakAddedBytes": 1212148
+          },
+          {
+            "ms": 6.1982729999999995,
+            "rustPeakAddedBytes": 1212148
+          },
+          {
+            "ms": 6.414683,
+            "rustPeakAddedBytes": 1212148
+          },
+          {
+            "ms": 6.895384,
+            "rustPeakAddedBytes": 1212148
+          },
+          {
+            "ms": 5.907404,
+            "rustPeakAddedBytes": 1212148
+          },
+          {
+            "ms": 6.12793,
+            "rustPeakAddedBytes": 1212148
+          },
+          {
+            "ms": 5.762347999999999,
+            "rustPeakAddedBytes": 1212148
+          }
+        ]
+      },
+      "responseBytes": 229168,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": 0,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.261575,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.222802,
+        "minMs": 0.206731,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.23785,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.233682,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.209156,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.208004,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.222802,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.241106,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.261575,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.207483,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.206731,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "giant",
+      "turns": 1,
+      "viewBytes": 229168
+    },
+    {
+      "clientDetail": {
+        "maxMs": 16.564618,
+        "maxRustPeakAddedBytes": 30339935,
+        "medianMs": 14.894549999999999,
+        "minMs": 13.849899,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 15.173719,
+            "rustPeakAddedBytes": 30339935
+          },
+          {
+            "ms": 13.911305,
+            "rustPeakAddedBytes": 30339935
+          },
+          {
+            "ms": 14.036230999999999,
+            "rustPeakAddedBytes": 30339935
+          },
+          {
+            "ms": 14.899996,
+            "rustPeakAddedBytes": 30339935
+          },
+          {
+            "ms": 14.263863,
+            "rustPeakAddedBytes": 30337375
+          },
+          {
+            "ms": 13.849899,
+            "rustPeakAddedBytes": 30337375
+          },
+          {
+            "ms": 15.0343,
+            "rustPeakAddedBytes": 30337375
+          },
+          {
+            "ms": 14.894549999999999,
+            "rustPeakAddedBytes": 30339935
+          },
+          {
+            "ms": 16.564618,
+            "rustPeakAddedBytes": 30339935
+          }
+        ]
+      },
+      "destination": "middle",
+      "fullRecordBytes": 13544732,
+      "held": true,
+      "heldClone": {
+        "maxMs": 12.564485,
+        "maxRustPeakAddedBytes": 30290717,
+        "medianMs": 10.387194000000001,
+        "minMs": 8.575163,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 8.575163,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 8.650023999999998,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 8.723985,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 11.054417,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 12.564485,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 11.319417999999999,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 10.5701,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 10.387194000000001,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 9.589554,
+            "rustPeakAddedBytes": 30290717
+          }
+        ]
+      },
+      "http": {
+        "maxMs": 25.749204000000002,
+        "maxRustPeakAddedBytes": 30789508,
+        "medianMs": 22.792728,
+        "minMs": 20.411881,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 21.163233,
+            "rustPeakAddedBytes": 30789508
+          },
+          {
+            "ms": 22.139031,
+            "rustPeakAddedBytes": 30789508
+          },
+          {
+            "ms": 24.338414,
+            "rustPeakAddedBytes": 30789508
+          },
+          {
+            "ms": 22.792728,
+            "rustPeakAddedBytes": 30789508
+          },
+          {
+            "ms": 23.849970000000003,
+            "rustPeakAddedBytes": 30789508
+          },
+          {
+            "ms": 20.411881,
+            "rustPeakAddedBytes": 30789508
+          },
+          {
+            "ms": 23.683009000000002,
+            "rustPeakAddedBytes": 30789508
+          },
+          {
+            "ms": 25.749204000000002,
+            "rustPeakAddedBytes": 30789508
+          },
+          {
+            "ms": 22.632414,
+            "rustPeakAddedBytes": 30789508
+          }
+        ]
+      },
+      "items": 6199,
+      "projection": {
+        "maxMs": 6.138211,
+        "maxRustPeakAddedBytes": 486647,
+        "medianMs": 5.594850999999999,
+        "minMs": 5.281468,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 5.594850999999999,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 5.281468,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 5.365467,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 5.599621,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 5.524297,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 5.464104,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 6.138211,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 6.0834660000000005,
+            "rustPeakAddedBytes": 486647
+          },
+          {
+            "ms": 5.9134340000000005,
+            "rustPeakAddedBytes": 486647
+          }
+        ]
+      },
+      "responseBytes": 155774,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": 0,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.197995,
+        "maxRustPeakAddedBytes": 166912,
+        "medianMs": 0.167437,
+        "minMs": 0.16377,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.19275499999999998,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.164441,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.16377,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.16554300000000002,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.164461,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.178478,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.167437,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.197995,
+            "rustPeakAddedBytes": 166912
+          },
+          {
+            "ms": 0.170212,
+            "rustPeakAddedBytes": 166912
+          }
+        ]
+      },
+      "shape": "giant",
+      "turns": 1,
+      "viewBytes": 155774
+    },
+    {
+      "clientDetail": {
+        "maxMs": 30.891518,
+        "maxRustPeakAddedBytes": 30339935,
+        "medianMs": 15.927732,
+        "minMs": 14.699106,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 14.699106,
+            "rustPeakAddedBytes": 30337375
+          },
+          {
+            "ms": 15.581928,
+            "rustPeakAddedBytes": 30339935
+          },
+          {
+            "ms": 16.030357,
+            "rustPeakAddedBytes": 30337375
+          },
+          {
+            "ms": 15.927732,
+            "rustPeakAddedBytes": 30339935
+          },
+          {
+            "ms": 16.733087,
+            "rustPeakAddedBytes": 30339935
+          },
+          {
+            "ms": 16.827403,
+            "rustPeakAddedBytes": 30339935
+          },
+          {
+            "ms": 30.891518,
+            "rustPeakAddedBytes": 30339935
+          },
+          {
+            "ms": 15.449298,
+            "rustPeakAddedBytes": 30339935
+          },
+          {
+            "ms": 14.727872,
+            "rustPeakAddedBytes": 30339935
+          }
+        ]
+      },
+      "destination": "direct",
+      "fullRecordBytes": 13544732,
+      "held": true,
+      "heldClone": {
+        "maxMs": 12.564485,
+        "maxRustPeakAddedBytes": 30290717,
+        "medianMs": 10.387194000000001,
+        "minMs": 8.575163,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 8.575163,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 8.650023999999998,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 8.723985,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 11.054417,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 12.564485,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 11.319417999999999,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 10.5701,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 10.387194000000001,
+            "rustPeakAddedBytes": 30290717
+          },
+          {
+            "ms": 9.589554,
+            "rustPeakAddedBytes": 30290717
+          }
+        ]
+      },
+      "http": {
+        "maxMs": 29.711064999999998,
+        "maxRustPeakAddedBytes": 30844985,
+        "medianMs": 24.308296,
+        "minMs": 22.73559,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 24.325961,
+            "rustPeakAddedBytes": 30844985
+          },
+          {
+            "ms": 24.796490000000002,
+            "rustPeakAddedBytes": 30844985
+          },
+          {
+            "ms": 29.711064999999998,
+            "rustPeakAddedBytes": 30844985
+          },
+          {
+            "ms": 25.721210000000003,
+            "rustPeakAddedBytes": 30844985
+          },
+          {
+            "ms": 22.73559,
+            "rustPeakAddedBytes": 30844985
+          },
+          {
+            "ms": 24.283802,
+            "rustPeakAddedBytes": 30844985
+          },
+          {
+            "ms": 24.197716,
+            "rustPeakAddedBytes": 30844985
+          },
+          {
+            "ms": 24.308296,
+            "rustPeakAddedBytes": 30844985
+          },
+          {
+            "ms": 22.823277,
+            "rustPeakAddedBytes": 30844985
+          }
+        ]
+      },
+      "items": 6199,
+      "projection": {
+        "maxMs": 10.008761,
+        "maxRustPeakAddedBytes": 542062,
+        "medianMs": 6.206759,
+        "minMs": 5.589951999999999,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 5.589951999999999,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 6.463373,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 6.001021,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 6.206759,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 6.081533,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 10.008761,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 6.7265950000000005,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 6.215496,
+            "rustPeakAddedBytes": 542062
+          },
+          {
+            "ms": 5.839103,
+            "rustPeakAddedBytes": 542062
+          }
+        ]
+      },
+      "responseBytes": 176165,
+      "rowsDecode": null,
+      "rowsJsonReadAndDecodedBytes": 0,
+      "rowsSql": null,
+      "serialization": {
+        "maxMs": 0.24905100000000002,
+        "maxRustPeakAddedBytes": 333824,
+        "medianMs": 0.191493,
+        "minMs": 0.18230500000000002,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 0.191493,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.24905100000000002,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.182926,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.18230500000000002,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.18290599999999999,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.23269,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.225647,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.208514,
+            "rustPeakAddedBytes": 333824
+          },
+          {
+            "ms": 0.188617,
+            "rustPeakAddedBytes": 333824
+          }
+        ]
+      },
+      "shape": "giant",
+      "turns": 1,
+      "viewBytes": 176165
+    },
+    {
+      "held": true,
+      "http": {
+        "maxMs": 27.04693,
+        "maxRustPeakAddedBytes": 31515750,
+        "medianMs": 23.880508000000003,
+        "minMs": 23.150724,
+        "runs": 9,
+        "samples": [
+          {
+            "ms": 27.04693,
+            "rustPeakAddedBytes": 31514985
+          },
+          {
+            "ms": 23.880508000000003,
+            "rustPeakAddedBytes": 31515036
+          },
+          {
+            "ms": 23.150724,
+            "rustPeakAddedBytes": 31515750
+          },
+          {
+            "ms": 23.700916999999997,
+            "rustPeakAddedBytes": 31515058
+          },
+          {
+            "ms": 26.351505,
+            "rustPeakAddedBytes": 31515076
+          },
+          {
+            "ms": 23.543225,
+            "rustPeakAddedBytes": 31515094
+          },
+          {
+            "ms": 25.207573,
+            "rustPeakAddedBytes": 31514425
+          },
+          {
+            "ms": 23.605116,
+            "rustPeakAddedBytes": 31515130
+          },
+          {
+            "ms": 24.710378000000002,
+            "rustPeakAddedBytes": 31515148
+          }
+        ]
+      },
+      "shape": "giant",
+      "streamWrites": {
+        "maxMs": 13.457319,
+        "maxRustPeakAddedBytes": 0,
+        "medianMs": 2.96908,
+        "minMs": 1.941836,
+        "runs": 8,
+        "samples": [
+          {
+            "ms": 2.8148779999999998,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 13.457319,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 1.941836,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 2.96908,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 2.881164,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 2.6856850000000003,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 12.196529,
+            "rustPeakAddedBytes": 0
+          },
+          {
+            "ms": 3.009918,
+            "rustPeakAddedBytes": 0
+          }
+        ]
+      },
+      "streaming": true
+    }
+  ],
+  "fixtureSha256": "b17c868ec398ad5b23247d813aaef5e3dcf9b210bcfd2cd38e1f9f330e81c76d",
+  "notes": [
+    "Release Core library, Store, production server router and loopback HTTP; no mock responses, native harness or daily data",
+    "Allocator peak is process-wide Rust heap above pre-operation live bytes, not RSS; HTTP includes client/runtime, streaming includes writer",
+    "Rows JSON counts actual returned metadata/turn/item/preview strings; excludes SQLite page traffic and ancillary annotation queries",
+    "Warm repeated samples are descriptive, not a p95 guarantee or Windows result"
+  ],
+  "processMemory": [
+    "VmHWM:\t  888292 kB",
+    "VmRSS:\t  888292 kB"
+  ],
+  "runs": 9
+}

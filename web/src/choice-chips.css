@@ -1,0 +1,110 @@
+/* Choices shown at once, one click each: Appearance's theme cards made
+   small. Selectors are doubled up where form styles (.create-form label,
+   .create-form input) would otherwise reach the chips. */
+.choice-chips {
+  min-width: 0;
+  margin: 16px 0 0;
+  padding: 0;
+  border: 0;
+}
+.choice-chips > legend {
+  float: left;
+  width: 100%;
+  margin: 0 0 7px;
+  padding: 0;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 500;
+}
+.choice-chip-row {
+  clear: both;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.choice-chips .choice-chip {
+  position: relative;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  margin: 0;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 500;
+  line-height: 1.3;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+.choice-chips .choice-chip input[type="radio"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  opacity: 0;
+}
+.choice-chips .choice-chip:hover {
+  border-color: var(--focus);
+}
+.choice-chips .choice-chip:has(input:checked) {
+  border-color: var(--focus);
+  background: var(--surface-soft);
+  box-shadow: 0 0 0 1px var(--focus);
+}
+/* Colour sits on the parts, not the label, which dark themes recolour as a
+   form label. */
+.choice-chip-label {
+  color: var(--ink);
+}
+.choice-chips .choice-chip:has(input:focus-visible) {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+.choice-chips .choice-chip:has(input:disabled),
+.choice-chips:disabled .choice-chip {
+  cursor: default;
+  opacity: 0.55;
+}
+.choice-chip-icon {
+  display: inline-flex;
+  color: var(--text-quiet);
+}
+.choice-chips .choice-chip:has(input:checked) .choice-chip-icon {
+  color: var(--green);
+}
+.choice-chips .choice-chip small {
+  color: var(--text-quiet);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-weight: 400;
+}
+/* An action after the choices, such as "Add SSH machine", reads as a quiet
+   chip of its own. */
+.choice-chip-row > .choice-chip-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--green);
+  font: inherit;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.choice-chip-row > .choice-chip-action:hover:not(:disabled) {
+  border-color: var(--focus);
+}
+.choice-chip-row > .choice-chip-action:disabled {
+  cursor: default;
+  opacity: 0.55;
+}

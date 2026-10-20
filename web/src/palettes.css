@@ -1,0 +1,490 @@
+/* Adapted from the earlier Yuzuno project’s styles (Yuzu, Graphite, Pine, Sunroom).
+ * Keep colour values and light/dark pairs; bind them to Next component roles.
+ * Garden is the existing Next palette, retained for saved preferences. */
+
+:root[data-palette="yuzu"][data-theme="light"] {
+  --paper: #f0ebe1;
+  --cream: #e3dbd3;
+  --surface-raised: #f8f4ea;
+  --surface-soft: #e7dfd4;
+  --surface-hover: #fdfaf1;
+  --input: #fdfaf1;
+  --line: #cfc5b6;
+  --ink: #2e2720;
+  --muted: #665c4e;
+  --text-secondary: #574c40;
+  --text-quiet: #665c4e;
+  --green: #6b4f18;
+  --yellow: #e8a93a;
+  --coral: #7f4333;
+  --accent-ink: #6b4f18;
+  --focus: #c08f2b;
+  --success-ink: #495a2d;
+  --error-ink: #94342a;
+  --button-fill: #e8a93a;
+  --palette-scrim: rgba(70, 56, 36, 0.3);
+  --palette-shadow: rgba(84, 66, 40, 0.16);
+  --state-working: #b8871f;
+  --state-idle: #9a8e80;
+  --state-waiting: #3d7a78;
+  --state-error: #a33a2e;
+  --state-done: #62783c;
+  --button-ink: #2e2720;
+}
+
+:root[data-theme="light"] [data-swatch="yuzu"] {
+  --swatch-ground: #f0ebe1;
+  --swatch-ink: #2e2720;
+  --swatch-accent: #e8a93a;
+}
+
+:root[data-palette="yuzu"][data-theme="dark"] {
+  --paper: #211c17;
+  --cream: #191512;
+  --surface-raised: #2a241d;
+  --surface-soft: #342c23;
+  --surface-hover: #342c23;
+  --input: #342c23;
+  --line: #3a3127;
+  --ink: #f2e9d6;
+  --muted: #a09483;
+  --text-secondary: #b9ab94;
+  --text-quiet: #a09483;
+  --green: #d9a83c;
+  --yellow: #e8a93a;
+  --coral: #f0954a;
+  --accent-ink: #d9a83c;
+  --focus: #d9a83c;
+  --success-ink: #91ae6d;
+  --error-ink: #de9085;
+  --button-fill: #e8a93a;
+  --palette-scrim: rgba(12, 8, 5, 0.58);
+  --palette-shadow: rgba(0, 0, 0, 0.5);
+  --state-working: #d9a83c;
+  --state-idle: #8d806c;
+  --state-waiting: #5fa39c;
+  --state-error: #cf5b4c;
+  --state-done: #8aa863;
+  --button-ink: #2e2720;
+}
+
+:root[data-theme="dark"] [data-swatch="yuzu"] {
+  --swatch-ground: #211c17;
+  --swatch-ink: #f2e9d6;
+  --swatch-accent: #e8a93a;
+}
+
+:root[data-palette="graphite"][data-theme="light"] {
+  --paper: #eaecee;
+  --cream: #dbdddf;
+  --surface-raised: #f2f4f7;
+  --surface-soft: #dee0e3;
+  --surface-hover: #f8fafc;
+  --input: #f8fafc;
+  --line: #c4c7ca;
+  --ink: #25292d;
+  --muted: #575f66;
+  --text-secondary: #444a51;
+  --text-quiet: #575f66;
+  --green: #675024;
+  --yellow: #ddae52;
+  --coral: #833b34;
+  --accent-ink: #675024;
+  --focus: #ba9142;
+  --success-ink: #3b5d2f;
+  --error-ink: #8e2e32;
+  --button-fill: #ddae52;
+  --palette-scrim: rgba(47, 51, 56, 0.3);
+  --palette-shadow: rgba(57, 62, 67, 0.16);
+  --state-working: #af8a43;
+  --state-idle: #86929e;
+  --state-waiting: #427979;
+  --state-error: #9f3d3f;
+  --state-done: #577a4b;
+  --button-ink: #25292d;
+}
+
+:root[data-theme="light"] [data-swatch="graphite"] {
+  --swatch-ground: #eaecee;
+  --swatch-ink: #25292d;
+  --swatch-accent: #ddae52;
+}
+
+:root[data-palette="graphite"][data-theme="dark"] {
+  --paper: #1b1d20;
+  --cream: #151618;
+  --surface-raised: #232529;
+  --surface-soft: #2a2e32;
+  --surface-hover: #2a2e32;
+  --input: #2a2e32;
+  --line: #2f3338;
+  --ink: #e2ebf5;
+  --muted: #8e97a0;
+  --text-secondary: #a9b5c1;
+  --text-quiet: #8e97a0;
+  --green: #d5a954;
+  --yellow: #ddae52;
+  --coral: #ff7e6b;
+  --accent-ink: #d5a954;
+  --focus: #d5a954;
+  --success-ink: #88b37a;
+  --error-ink: #f48482;
+  --button-fill: #ddae52;
+  --palette-scrim: rgba(2, 3, 5, 0.58);
+  --palette-shadow: rgba(1, 1, 1, 0.5);
+  --state-working: #d2aa5e;
+  --state-idle: #758494;
+  --state-waiting: #63a1a1;
+  --state-error: #ca5e5e;
+  --state-done: #80aa71;
+  --button-ink: #25292d;
+}
+
+:root[data-theme="dark"] [data-swatch="graphite"] {
+  --swatch-ground: #1b1d20;
+  --swatch-ink: #e2ebf5;
+  --swatch-accent: #ddae52;
+}
+
+:root[data-palette="pine"][data-theme="light"] {
+  --paper: #e6eee7;
+  --cream: #d7dfd9;
+  --surface-raised: #eff7f0;
+  --surface-soft: #d9e3dc;
+  --surface-hover: #f5fcf7;
+  --input: #f5fcf7;
+  --line: #bdcac0;
+  --ink: #242a25;
+  --muted: #566158;
+  --text-secondary: #424c44;
+  --text-quiet: #566158;
+  --green: #63531f;
+  --yellow: #d4b347;
+  --coral: #823c32;
+  --accent-ink: #63531f;
+  --focus: #b29638;
+  --success-ink: #455b24;
+  --error-ink: #902b33;
+  --button-fill: #d4b347;
+  --palette-scrim: rgba(37, 56, 42, 0.3);
+  --palette-shadow: rgba(47, 67, 52, 0.16);
+  --state-working: #a98e35;
+  --state-idle: #869589;
+  --state-waiting: #3f797d;
+  --state-error: #a13a41;
+  --state-done: #607840;
+  --button-ink: #242a25;
+}
+
+:root[data-theme="light"] [data-swatch="pine"] {
+  --swatch-ground: #e6eee7;
+  --swatch-ink: #242a25;
+  --swatch-accent: #d4b347;
+}
+
+:root[data-palette="pine"][data-theme="dark"] {
+  --paper: #172019;
+  --cream: #121813;
+  --surface-raised: #1d2820;
+  --surface-soft: #233226;
+  --surface-hover: #233226;
+  --input: #233226;
+  --line: #27382b;
+  --ink: #e0eee2;
+  --muted: #8d9b8f;
+  --text-secondary: #a7b9aa;
+  --text-quiet: #8d9b8f;
+  --green: #cdae4a;
+  --yellow: #d4b347;
+  --coral: #ff8169;
+  --accent-ink: #cdae4a;
+  --focus: #cdae4a;
+  --success-ink: #93b06e;
+  --error-ink: #f98385;
+  --button-fill: #d4b347;
+  --palette-scrim: rgba(0, 5, 1, 0.58);
+  --palette-shadow: rgba(0, 1, 0, 0.5);
+  --state-working: #cbae50;
+  --state-idle: #748879;
+  --state-waiting: #60a1a6;
+  --state-error: #cc5b5f;
+  --state-done: #8ba866;
+  --button-ink: #242a25;
+}
+
+:root[data-theme="dark"] [data-swatch="pine"] {
+  --swatch-ground: #172019;
+  --swatch-ink: #e0eee2;
+  --swatch-accent: #d4b347;
+}
+
+:root[data-palette="sunroom"][data-theme="light"] {
+  --paper: #fbfaf8;
+  --cream: #f2f1ed;
+  --surface-raised: #fefefc;
+  --surface-soft: #ebe9e4;
+  --surface-hover: #ffffff;
+  --input: #ffffff;
+  --line: #d6d3cd;
+  --ink: #212b35;
+  --muted: #4e6071;
+  --text-secondary: #405060;
+  --text-quiet: #4e6071;
+  --green: #335b67;
+  --yellow: #71c4dd;
+  --coral: #853c15;
+  --accent-ink: #335b67;
+  --focus: #5da4ba;
+  --success-ink: #356131;
+  --error-ink: #932929;
+  --button-fill: #71c4dd;
+  --palette-scrim: rgba(54, 51, 42, 0.3);
+  --palette-shadow: rgba(64, 61, 52, 0.16);
+  --state-working: #c08227;
+  --state-idle: #949086;
+  --state-waiting: #3c797d;
+  --state-error: #a33936;
+  --state-done: #507c4b;
+  --button-ink: #212b35;
+}
+
+:root[data-theme="light"] [data-swatch="sunroom"] {
+  --swatch-ground: #fbfaf8;
+  --swatch-ink: #212b35;
+  --swatch-accent: #71c4dd;
+}
+
+:root[data-palette="sunroom"][data-theme="dark"] {
+  --paper: #201e19;
+  --cream: #161511;
+  --surface-raised: #292721;
+  --surface-soft: #343129;
+  --surface-hover: #343129;
+  --input: #343129;
+  --line: #393630;
+  --ink: #e5eef6;
+  --muted: #939ca4;
+  --text-secondary: #aeb9c4;
+  --text-quiet: #939ca4;
+  --green: #71bdd5;
+  --yellow: #71c4dd;
+  --coral: #ff8950;
+  --accent-ink: #71bdd5;
+  --focus: #71bdd5;
+  --success-ink: #81b67b;
+  --error-ink: #ff857d;
+  --button-fill: #71c4dd;
+  --palette-scrim: rgba(5, 3, 1, 0.58);
+  --palette-shadow: rgba(1, 1, 0, 0.5);
+  --state-working: #e4a143;
+  --state-idle: #878275;
+  --state-waiting: #5da2a6;
+  --state-error: #cf5a55;
+  --state-done: #78ac72;
+  --button-ink: #212b35;
+}
+
+:root[data-theme="dark"] [data-swatch="sunroom"] {
+  --swatch-ground: #201e19;
+  --swatch-ink: #e5eef6;
+  --swatch-accent: #71c4dd;
+}
+
+:root[data-palette]:not([data-palette="garden"]) {
+  --attention-ink: var(--accent-ink);
+  --accent-wash: color-mix(in srgb, var(--yellow) 16%, var(--surface-raised));
+  --selected-line: color-mix(in srgb, var(--yellow) 60%, var(--line));
+  --link-hover: var(--ink);
+  --button-line: color-mix(in srgb, var(--button-fill) 75%, var(--ink));
+  --button-hover: color-mix(
+    in srgb,
+    var(--button-fill) 88%,
+    var(--surface-raised)
+  );
+  --success-wash: color-mix(
+    in srgb,
+    var(--success-ink) 10%,
+    var(--surface-raised)
+  );
+  --success-line: color-mix(in srgb, var(--success-ink) 35%, var(--line));
+  --error-wash: color-mix(in srgb, var(--error-ink) 10%, var(--surface-raised));
+  --error-line: color-mix(in srgb, var(--error-ink) 35%, var(--line));
+}
+:root[data-palette]:not([data-palette="garden"])
+  :is(button, a, summary):focus-visible {
+  outline-color: var(--focus);
+}
+:root[data-palette]:not([data-palette="garden"])
+  :is(input, textarea, select):focus {
+  border-color: var(--focus) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 14%, transparent);
+}
+:root[data-palette]:not([data-palette="garden"]) .status-dot {
+  background: var(--state-idle);
+}
+:root[data-palette]:not([data-palette="garden"]) .status-dot.working {
+  background: var(--state-working);
+}
+:root[data-palette]:not([data-palette="garden"]) .status-dot.waiting {
+  background: var(--state-waiting);
+}
+:root[data-palette]:not([data-palette="garden"]) .status-dot.error {
+  background: var(--state-error);
+}
+:root[data-palette]:not([data-palette="garden"])
+  .collaboration
+  .primary-button {
+  color: var(--button-ink);
+}
+:root[data-palette]:not([data-palette="garden"]) ::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-quiet) 40%, transparent);
+}
+:root[data-palette]:not([data-palette="garden"])
+  ::-webkit-scrollbar-thumb:hover {
+  background: var(--text-quiet);
+}
+:root[data-palette="sunroom"] .toolbar {
+  background: color-mix(in srgb, var(--yellow) 22%, var(--paper));
+}
+:root[data-palette]:not([data-palette="garden"]) .rail-heading > span {
+  color: var(--text-secondary);
+}
+:root[data-palette] .conversation-header .status-label {
+  background: transparent;
+}
+
+/* Theme miniatures preview the selected palette in both modes. */
+:root[data-palette="yuzu"] {
+  --preview-light-paper: #f0ebe1;
+  --preview-light-rail: #e3dbd3;
+  --preview-dark-paper: #211c17;
+  --preview-dark-rail: #191512;
+}
+:root[data-palette="graphite"] {
+  --preview-light-paper: #eaecee;
+  --preview-light-rail: #dbdddf;
+  --preview-dark-paper: #1b1d20;
+  --preview-dark-rail: #151618;
+}
+:root[data-palette="pine"] {
+  --preview-light-paper: #e6eee7;
+  --preview-light-rail: #d7dfd9;
+  --preview-dark-paper: #172019;
+  --preview-dark-rail: #121813;
+}
+:root[data-palette="sunroom"] {
+  --preview-light-paper: #fbfaf8;
+  --preview-light-rail: #f2f1ed;
+  --preview-dark-paper: #201e19;
+  --preview-dark-rail: #161511;
+}
+:root[data-palette]:not([data-palette="garden"]) .theme-swatch {
+  border-color: var(--line);
+  background: linear-gradient(
+    90deg,
+    var(--preview-light-rail) 0 25%,
+    var(--preview-light-paper) 25%
+  );
+}
+:root[data-palette]:not([data-palette="garden"])
+  .theme-choice-dark
+  .theme-swatch {
+  background: linear-gradient(
+    90deg,
+    var(--preview-dark-rail) 0 25%,
+    var(--preview-dark-paper) 25%
+  );
+}
+:root[data-palette]:not([data-palette="garden"])
+  .theme-choice-system
+  .theme-swatch {
+  background: linear-gradient(
+    90deg,
+    var(--preview-light-rail) 0 25%,
+    var(--preview-light-paper) 25% 50%,
+    var(--preview-dark-paper) 50%
+  );
+}
+:root[data-palette]:not([data-palette="garden"]) .theme-swatch span {
+  background: var(--yellow);
+}
+
+.palette-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+.palette-choice {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.palette-choice input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.palette-choice:hover {
+  border-color: var(--focus);
+}
+.palette-choice:has(input:checked) {
+  border-color: var(--focus);
+  background: var(--surface-soft);
+  box-shadow: 0 0 0 1px var(--focus);
+}
+.palette-choice:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+.palette-swatch {
+  display: flex;
+  width: 100%;
+  gap: 4px;
+}
+.palette-swatch i {
+  height: 9px;
+  border-radius: 3px;
+  flex: 1;
+  background: var(--swatch-ground);
+  border: 1px solid color-mix(in srgb, var(--swatch-ink) 20%, transparent);
+}
+.palette-swatch i:nth-child(2) {
+  background: var(--swatch-ink);
+}
+.palette-swatch i:nth-child(3) {
+  background: var(--swatch-accent);
+}
+.palette-selected {
+  margin-left: auto;
+  opacity: 0;
+  color: var(--green);
+}
+.palette-choice:has(input:checked) .palette-selected {
+  opacity: 1;
+}
+[data-swatch="garden"] {
+  --swatch-ground: #fdfdf9;
+  --swatch-ink: #364b3c;
+  --swatch-accent: #efd180;
+}
+:root[data-theme="dark"] [data-swatch="garden"] {
+  --swatch-ground: #1d241f;
+  --swatch-ink: #d9e2ce;
+  --swatch-accent: #dbc57e;
+}
+@media (max-width: 520px) {
+  .palette-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

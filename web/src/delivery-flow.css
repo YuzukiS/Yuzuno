@@ -1,0 +1,95 @@
+.delivery-flow {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  margin: 12px 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 0.85rem;
+  min-width: 0;
+}
+.delivery-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.delivery-heading > .icon-button {
+  margin-left: auto;
+}
+.delivery-state {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.delivery-state.is-ready_to_merge {
+  color: var(--green);
+}
+.delivery-flow p {
+  margin: 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.delivery-revision {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.delivery-evidence,
+.delivery-setup,
+.delivery-round {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.delivery-evidence > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.delivery-flow code,
+.delivery-flow a {
+  overflow-wrap: anywhere;
+}
+.delivery-flow small,
+.delivery-note {
+  color: var(--muted);
+}
+.delivery-flow summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.delivery-round {
+  margin-top: 10px;
+  font-size: 0.78rem;
+}
+.delivery-setup {
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.delivery-setup label {
+  display: grid;
+  gap: 6px;
+}
+.delivery-setup select {
+  width: 100%;
+  max-width: 100%;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+}
+.delivery-flow > button {
+  justify-self: start;
+}
+.delivery-error {
+  color: var(--coral);
+}
+.delivery-submit {
+  display: flex;
+  gap: 8px;
+  align-items: start;
+  line-height: 1.5;
+}
