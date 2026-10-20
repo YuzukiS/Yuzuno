@@ -42,6 +42,7 @@ pub mod older_cores;
 pub mod rail;
 pub mod record_rows;
 pub mod remote;
+pub mod services;
 mod remote_images;
 pub mod results;
 mod runtime_paths;

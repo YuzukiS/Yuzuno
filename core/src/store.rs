@@ -951,6 +951,7 @@ impl Store {
             PRAGMA user_version=2;")?;
         crate::collaboration_store::migrate(&db)?;
         crate::projects::migrate(&db)?;
+        crate::services::migrate(&db)?;
         crate::github::store::migrate(&db)?;
         crate::pr_review::store::migrate(&db)?;
         crate::pr_operations::store::migrate(&db)?;

@@ -1351,7 +1351,7 @@ pub fn tool_definitions() -> Vec<Value> {
         crate::results::guide_tool_definition(),
         // The working guide, compiled from the yuzuno skill; served by `guide`.
         crate::guide::tool_definition(),
-    ].into_iter().chain(crate::github::tool_definitions()).chain(crate::pr_review::tool_definitions()).chain(crate::pr_operations::tool_definitions()).chain(crate::jobs::tool_definitions()).chain(crate::ci_monitor::tool_definitions()).chain(crate::delivery::tool_definitions()).collect()
+    ].into_iter().chain(crate::github::tool_definitions()).chain(crate::pr_review::tool_definitions()).chain(crate::pr_operations::tool_definitions()).chain(crate::jobs::tool_definitions()).chain(crate::ci_monitor::tool_definitions()).chain(crate::delivery::tool_definitions()).chain(crate::services::tool_definitions()).collect()
 }
 
 #[cfg(test)]
