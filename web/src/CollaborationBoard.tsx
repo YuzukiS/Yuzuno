@@ -1,5 +1,7 @@
 import { DeliveryFlow, type DeliveryCandidate } from "./DeliveryFlow";
 import { openJobs } from "./Jobs";
+import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
+import type { HandoffSource } from "./handoff";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -212,6 +214,18 @@ export function plainLine(text: string) {
  * in progress's latest progress, otherwise what the task is. An earlier
  * round's result never stands in for current progress.
  */
+/** A task for Send to Agent (T-152): a reference, never an assignment. */
+function taskHandoff(task: SharedTask): HandoffSource {
+  return {
+    kind: "task",
+    taskId: task.id,
+    title: task.title,
+    status: task.status,
+    assignee: task.assignee?.name || null,
+    version: task.version,
+    summary: task.result?.summary || task.progress || task.description || "",
+  };
+}
 export function taskLine(task: SharedTask) {
   const text =
     task.status === "blocked"
@@ -712,6 +726,12 @@ export function CollaborationBoard({
         aria-pressed={selected === task.id}
         data-task-id={task.id}
         data-status={task.status}
+        // Dragged onto an Agent, a reference in its draft (T-152).
+        draggable
+        onDragStart={(event) => {
+          event.dataTransfer.effectAllowed = "copy";
+          startHandoffDrag(event, taskHandoff(task));
+        }}
       >
         <span className="collab-row-head">
           {card ? (
@@ -1601,6 +1621,8 @@ function TaskPane({
             </div>
             <div className="collab-task-actions">
               <button className="secondary-button" onClick={() => openJobs({taskId:task.id})}>Related jobs</button>
+              {/* A reference in an Agent's draft (T-152), unlike Give to agent below. */}
+              <SendToAgentButton source={() => taskHandoff(task)} />
               <button
                 className="primary-button"
                 disabled={mutation.pending}

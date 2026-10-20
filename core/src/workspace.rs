@@ -115,6 +115,8 @@ pub struct Workspace {
     pub(crate) brief_turns: crate::brief_turns::State,
     /// The previous Machine Load sample (see `machine_load`).
     pub(crate) machine_load: crate::machine_load::State,
+    /// Project services opened in this Core (T-151); see `services`.
+    pub(crate) services: crate::services::Runtime,
 }
 
 impl Workspace {
@@ -168,6 +170,7 @@ impl Workspace {
             results: Arc::new(crate::results::Validator::from_env()),
             brief_turns: Default::default(),
             machine_load: Default::default(),
+            services: Default::default(),
         }))
     }
 

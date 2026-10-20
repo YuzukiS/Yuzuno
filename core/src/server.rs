@@ -87,6 +87,10 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         .route("/api/machines/{id}/check",post(check_machine))
         .route("/api/projects",get(projects).post(create_project))
         .route("/api/projects/{id}",patch(update_project).delete(delete_project))
+        .route("/api/projects/{id}/services",get(project_services).post(register_service))
+        .route("/api/services/{id}",axum::routing::delete(delete_service))
+        .route("/api/services/{id}/open",post(open_service))
+        .route("/api/services/{id}/close",post(close_service))
         .route("/api/agents/{id}/project",post(set_agent_project))
         .route("/api/codex/sessions/preview",post(preview_session))
         .route("/api/codex/sessions/import",post(import_session))
@@ -415,10 +419,31 @@ async fn update_project(State(ws): State<Arc<Workspace>>, Path(id): Path<String>
     ws.projects_changed();
     Ok(Json(serde_json::to_value(project)?))
 }
+/// Project services (T-151): the user registers, opens, closes and deletes;
+/// opening forwards one loopback port and checks it answers HTTP.
+async fn project_services(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    Ok(Json(ws.project_services(&id).await?))
+}
+async fn register_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>,
+    Json(input): Json<crate::services::NewService>) -> ApiResult<Json<Value>> {
+    Ok(Json(ws.register_service(&id, input, json!({"kind":"user"}), None).await?))
+}
+async fn delete_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    ws.delete_service(&id).await?;
+    Ok(Json(json!({"deleted":true,"serviceId":id})))
+}
+async fn open_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, headers: axum::http::HeaderMap)
+    -> ApiResult<Json<Value>> {
+    // The browser boundary has already accepted this page's Origin, if any.
+    let origin = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok());
+    Ok(Json(ws.open_service(&id, origin).await?))
+}
+async fn close_service(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    Ok(Json(ws.close_service(&id).await?))
+}
 async fn delete_project(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
-    let project = id.clone();
-    ws.stored(move |store| store.delete_project(&project)).await?;
-    ws.projects_changed();
+    // Its services' open ways end with it (services.rs).
+    ws.delete_project(&id).await?;
     Ok(Json(json!({"deleted":true,"projectId":id})))
 }
 #[derive(Deserialize)]

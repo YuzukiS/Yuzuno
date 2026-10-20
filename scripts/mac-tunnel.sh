@@ -13,12 +13,20 @@
 #   YUZUNO_TUNNEL_LOCAL_PORT   the port the app connects to here    [5317]
 #   YUZUNO_TUNNEL_CORE_PORT    Core's loopback port on that host    [4317]
 #   YUZUNO_TUNNEL_STATE_DIR    a folder only you can open           [$TMPDIR/yuzuno-tunnel]
+#   YUZUNO_TUNNEL_SERVICE_PORTS  Core's project service ports, first-last,
+#                              to forward as well (e.g. 4380-4389)  [none]
 #
 # The host key must already be in YUZUNO_TUNNEL_KNOWN_HOSTS, written from a
 # fingerprint you checked; this never accepts a new or changed host key. It
 # forwards 127.0.0.1:<local port> to Core's loopback port only and stops when
 # the connection is lost (start it again). Point the app at
 # http://127.0.0.1:<local port> once; it remembers it.
+#
+# With YUZUNO_TUNNEL_SERVICE_PORTS, each of those ports here is forwarded to
+# the same port on the Core host, so a project service Core opens there can
+# be opened from this Mac too (the key's permitopen must allow them). A port
+# something here already listens on is skipped and named; the tunnel to Core
+# stays up. Yuzuno's page checks each port before it offers an address.
 #
 # One tunnel per local port. ssh runs as a control master, and its control
 # socket in the state folder is the only handle on it: status and stop ask the
@@ -44,6 +52,20 @@ for port in "$ssh_port" "$local_port" "$core_port"; do
     '' | *[!0-9]*) echo "Ports must be numbers (got '$port')." >&2; exit 64 ;;
   esac
 done
+services=${YUZUNO_TUNNEL_SERVICE_PORTS:-}
+first_service='' last_service=''
+if [ -n "$services" ]; then
+  first_service=${services%%-*}
+  last_service=${services#*-}
+  case $first_service$last_service in
+    *[!0-9]*) first_service='' ;;
+  esac
+  if [ -z "$first_service" ] || [ -z "$last_service" ] || [ "$first_service" -lt 1024 ] ||
+    [ "$last_service" -lt "$first_service" ] || [ $((last_service - first_service)) -ge 64 ]; then
+    echo "YUZUNO_TUNNEL_SERVICE_PORTS must be first-last, unprivileged, at most 64 ports (got '$services')." >&2
+    exit 64
+  fi
+fi
 case ${1:-} in
   start | stop | status) ;;
   *) echo "Usage: $0 start|stop|status" >&2; exit 64 ;;
@@ -87,6 +109,24 @@ running() {
 
 health() {
   /usr/bin/curl -fsS --max-time 4 --noproxy '*' "http://127.0.0.1:$local_port/api/health" >/dev/null 2>&1
+}
+
+# Core's service ports, each forwarded on its own: one taken here is named
+# and skipped, never fatal to the tunnel to Core.
+forward_services() {
+  [ -n "$first_service" ] || return 0
+  port=$first_service
+  skipped=''
+  while [ "$port" -le "$last_service" ]; do
+    if ! /usr/bin/ssh -F /dev/null -S "$ctl" -O forward -L "127.0.0.1:$port:127.0.0.1:$port" "$user@${host:-core}" 2>/dev/null; then
+      skipped="$skipped $port"
+    fi
+    port=$((port + 1))
+  done
+  if [ -n "$skipped" ]; then
+    echo "Service ports$skipped are taken on this Mac; a service Core opens there cannot be opened from here." >&2
+  fi
+  echo "Service ports $first_service-$last_service forwarded to the Core host."
 }
 
 # Whether anything accepts a connection on the local port (curl's 7: refused).
@@ -133,7 +173,11 @@ case $1 in
     fi
     for _ in 1 2 3 4 5 6 7 8 9 10; do
       running || break
-      if health; then echo "Tunnel up: http://127.0.0.1:$local_port"; exit 0; fi
+      if health; then
+        echo "Tunnel up: http://127.0.0.1:$local_port"
+        forward_services
+        exit 0
+      fi
       sleep 1
     done
     echo "The tunnel did not reach Core. ssh said:" >&2

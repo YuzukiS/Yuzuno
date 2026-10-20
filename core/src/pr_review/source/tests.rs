@@ -1691,3 +1691,17 @@ async fn reviews_under_earlier_coverage_policies_report_no_scope() {
     assert_eq!((run["coverage"]["coveredFileCount"].as_u64(), run["coverage"]["fullAddedSourceCount"].as_u64()), (Some(1), Some(1)));
     assert!(run["scope"].is_null());
 }
+
+/// T-155: a caller that passes a branch tip as the PR's base learns both
+/// commits, that no reviewer ran, and where the PR's own revision is.
+#[test]
+fn a_moved_or_mistaken_revision_names_both_commits_and_what_to_read() {
+    let (base, head, main) = ("a".repeat(40), "b".repeat(40), "c".repeat(40));
+    assert_eq!(moved_revision(None, None, &base, &head), None);
+    assert_eq!(moved_revision(Some(&base), Some(&head), &base, &head), None);
+    let wrong_base = moved_revision(Some(&main), Some(&head), &base, &head).unwrap();
+    assert!(wrong_base.starts_with(&format!("The PR's base is {base}, not the requested baseSha {main}; no reviewer ran.")), "{wrong_base}");
+    assert!(wrong_base.contains("snapshot.baseSha") && wrong_base.contains("github_links") && wrong_base.contains("omitting baseSha alone reviews your headSha"));
+    let moved_head = moved_revision(None, Some(&main), &base, &head).unwrap();
+    assert!(moved_head.starts_with(&format!("The PR's head is {head}, not the requested headSha {main}")), "{moved_head}");
+}

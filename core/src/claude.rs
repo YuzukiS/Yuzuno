@@ -695,20 +695,22 @@ impl Workspace {
     }
 
     pub(crate) async fn claude_ensure(self: &Arc<Self>, id: &str) -> Result<Connection> {
-        ensure_agent_open(&self.detail(id).await?.agent)?;
+        // Only the Agent and its Turns' statuses are read (send_view): a long
+        // record is not copied for a check (T-140).
+        ensure_agent_open(&self.send_view(id).await?.agent)?;
         let existing = self.claudes.lock().unwrap().get(id).cloned();
         if let Some(c) = existing {
             return Ok(c);
         }
-        let d = self.detail(id).await?;
+        let d = self.send_view(id).await?;
         if d.agent.claude_session_id.is_none() && !d.turns.is_empty() {
             bail!(
                 "Claude 上次任务已发送但原生 Session ID 未确认；不会创建另一个 Session 或重发任务"
             );
         }
         self
-            .update_record(id, "claude/connecting", json!({}), |d| {
-                d.agent.connection_state = "connecting".into()
+            .record_meta(id, "claude/connecting", json!({}), |m| {
+                m.agent.connection_state = "connecting".into()
             }).await?;
         self.changed(id);
         let (tx, mut rx) = mpsc::channel(256);
@@ -1044,7 +1046,9 @@ impl Workspace {
     async fn claude_send_input_locked(
         self: &Arc<Self>, id: &str, text: String, input: Option<&crate::model::MessageInput>,
     ) -> Result<Value> {
-        let d = self.detail(id).await?;
+        // What a send checks, as send_message reads it: the Agent, Turn
+        // statuses and pending requests, not a copy of every Item (T-140).
+        let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         if d.agent.connection_state == "connected"
             && (d.turns.iter().any(|t| t["status"] == "inProgress")
@@ -1193,13 +1197,13 @@ impl Workspace {
         if images.is_empty() {
             return Ok((vec![], vec![]));
         }
-        let agent = self.detail(id).await?.agent;
+        let agent = self.send_view(id).await?.agent;
         if agent.remote.is_some() {
             let workspace = self.stored(|store| store.workspace_id()).await?;
             let instance = c.remote_instance.as_deref().context("远程 Claude 运行实例尚未确认，图片未发送")?;
             let refs = crate::remote_images::transfer(self.data_dir.clone(), &workspace, &agent,
                 c.generation, instance, images).await?;
-            let current = self.detail(id).await?.agent;
+            let current = self.send_view(id).await?.agent;
             anyhow::ensure!(self.claudes.lock().unwrap().get(id).is_some_and(|v| v.generation == c.generation)
                 && crate::remote_images::destination(&agent) == crate::remote_images::destination(&current),
                 "远程 Claude 图片目标已变化，消息未发送；草稿保留");
@@ -1481,7 +1485,8 @@ impl Workspace {
                 if let Err(error) = crate::brief_turns::record_bridge_outcome(self, id, turn_id, outcome) {
                     eprintln!("Workspace Claude brief outcome: {error:#}");
                 }
-                let _ = self.store.update(id, "claude/brief", &message, |_| {});
+                // Journaled with the record's metadata, without copying it.
+                let _ = self.store.update_meta(id, "claude/brief", &message, |_| {});
             }
             Some("mailbox_delivery") => {
                 let (Some(client_id), Some(turn_id), Some(status)) = (
@@ -1494,7 +1499,7 @@ impl Workspace {
                 if !matches!(status, "injected" | "deferred") {
                     return;
                 }
-                let Ok(detail) = self.store.detail(id) else {
+                let Ok(detail) = self.store.send_view(id) else {
                     return;
                 };
                 if let Err(error) = self.store.record_peer_hook_delivery(
@@ -1507,7 +1512,7 @@ impl Workspace {
                     eprintln!("Workspace Claude mailbox receipt: {error}");
                     return;
                 }
-                let _ = self.store.update(id, "peer/hookDelivery", &message, |_| {});
+                let _ = self.store.update_meta(id, "peer/hookDelivery", &message, |_| {});
                 let _ = self.changes.send(json!({"collaboration":true}));
                 self.collaboration_wakeup.notify_one();
             }
@@ -1525,24 +1530,33 @@ impl Workspace {
                 match crate::store::route(&kind, &message) {
                     crate::store::Route::Ignored => return,
                     crate::store::Route::Synchronous if event["type"] == "result" => {
-                        let result = self
-                            .store
-                            .update(id, &kind, &message, |d| project_event(d, turn_id, event));
-                        if let Ok(d) = result {
-                            if let Some(tid) = turn_id {
-                                if let Some(turn) = d.turns.iter().find(|t| {
-                                    t["id"] == tid
-                                        && matches!(
-                                            t["status"].as_str(),
-                                            Some("completed" | "failed" | "interrupted")
-                                        )
-                                }) {
-                                    // Common read-state journal; raw SDK result is
-                                    // kept separately and never fabricated.
-                                    let _ = self.store.record_recovered_completion(id, turn);
-                                }
+                        // Only the ended Turn and the usage-limit check are taken
+                        // from the committed record, not a copy of all of it (T-140).
+                        let result = self.store.update_picking(
+                            id,
+                            &kind,
+                            &message,
+                            |d| project_event(d, turn_id, event),
+                            |d| {
+                                let ended = turn_id.and_then(|tid| {
+                                    d.turns.iter().find(|t| {
+                                        t["id"] == tid
+                                            && matches!(
+                                                t["status"].as_str(),
+                                                Some("completed" | "failed" | "interrupted")
+                                            )
+                                    }).cloned()
+                                });
+                                (ended, crate::claude_quota::result_stop(d))
+                            },
+                        );
+                        if let Ok((ended, stop)) = result {
+                            if let Some(turn) = ended {
+                                // Common read-state journal; raw SDK result is
+                                // kept separately and never fabricated.
+                                let _ = self.store.record_recovered_completion(id, &turn);
                             }
-                            crate::claude_quota::observe_result(self, id, &d);
+                            crate::claude_quota::observe_result(self, id, stop);
                         }
                     }
                     crate::store::Route::Synchronous => {

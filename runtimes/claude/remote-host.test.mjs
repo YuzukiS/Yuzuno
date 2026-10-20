@@ -109,6 +109,21 @@ test('busy() is true only while the bridge has work', () => {
   assert.equal(busy({ turnId: null, pendingCount: 0, interrupting: true }), true);
 });
 
+test('its own state is published before its socket accepts anyone, replacing what an earlier host left (T-156)', async t => {
+  const { host, root } = setup(t);
+  // An earlier host died mid-turn and left this behind.
+  writeFileSync(join(root, 'state.json'), JSON.stringify({ pid: 1, attached: false, busy: true, turnId: 't-earlier' }));
+  // The helper takes a socket that answers as this host being ready, then reads state.json.
+  let listeningAtFirstState;
+  const state = host.state.bind(host);
+  host.state = extra => { listeningAtFirstState ??= !!host.server?.listening; state(extra); };
+  await host.listen();
+  assert.equal(listeningAtFirstState, false);
+  const published = JSON.parse(readFileSync(join(root, 'state.json'), 'utf8'));
+  assert.equal(published.pid, process.pid);
+  assert.equal(published.busy, undefined);
+});
+
 test('a connection that sends nothing (a liveness check) neither attaches nor stops the host', async t => {
   const { host, log } = setup(t);
   await host.listen();

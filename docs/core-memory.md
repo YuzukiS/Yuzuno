@@ -82,3 +82,49 @@ workload. It does not establish that all of the observed production RSS is free,
 or predict production's final RSS. No live Core was trimmed or restarted for
 these experiments. Integration tests, CI and independent review belong
 to the task's delivery record, separately from this frozen experiment.
+
+## Copies per send and Turn end
+
+The trim above releases what the allocator keeps, but RSS also depends on how
+much is freed between trims. In the daily Core, RSS returned to about 3.5 GiB
+within about 20 minutes of a trim that released about 4 GiB. What it keeps is
+freed copies of long records. A Claude send, a Turn end and a mail delivery each
+copied the whole held record several times:
+
+- The send path read it with `detail` four or five times, where only the Agent,
+  Turn statuses and pending requests are checked.
+- The bridge's `result`, `brief` and `mailbox_delivery` frames used an `update`
+  that copied, compared and returned the record.
+
+They now use `send_view`, `update_meta` and `update_picking`, which read and
+write the same fields. A committed change to a Turn still copies the record
+once (`commit_locked`).
+
+`core/examples/core_memory_paths.rs` measures this with a synthetic record, in
+a managed Job as above:
+
+```sh
+cargo build --locked --release -p yuzuno-workspace --example core_memory_paths
+target/release/examples/core_memory_paths target/paths-128.json 128 paths
+target/release/examples/core_memory_paths target/cycles-current.json 64 cycles-current 24
+target/release/examples/core_memory_paths target/cycles-light.json 64 cycles-light 24
+```
+
+`paths` measures each call once, cold and held. The two `cycles` modes repeat a
+send, streamed deltas and a Turn end, on four threads with two arenas and no
+trim. `current` makes the calls the send and Turn-end paths used to make;
+`light` makes the ones they make now.
+
+T-140 Job run `dd1342b8-e3fc-4dd0-99f1-b8d85cd4bed8`, source `90b7775`, 2026-10-20:
+
+| Observation | Before | After |
+| --- | ---: | ---: |
+| Allocated per send, 128 MiB record held | 726 MiB | 146 MiB |
+| Allocated per Turn end, 128 MiB record held | 1,016 MiB | 146 MiB |
+| RSS after 24 cycles, 64 MiB record (73 MiB in use) | 726 MiB | 318 MiB |
+| Median cycle with the record held | 160 ms | 49 ms |
+| Median cycle that first reads it from its rows | 374 ms | 245 ms |
+
+These are allocator measurements of a synthetic workload with one Agent. Production
+RSS also depends on how many Agents send and end Turns at once. Rust counters
+exclude SQLite's C allocations.

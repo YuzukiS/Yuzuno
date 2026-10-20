@@ -356,6 +356,25 @@ fn explicit_references_are_validated_and_can_be_read_without_guessing() {
 }
 
 #[test]
+fn a_reference_error_says_which_fields_go_together() {
+    let (_dir, store) = fixture();
+    let refused = |reference: Value| {
+        let before = task(&store);
+        store.collaboration_call(None, "task_update", json!({"requestId":format!("ref-{reference}"),"taskId":"T-1",
+            "expectedVersion":before["task"]["version"],"patch":{"materials":{"references":[reference]}}})).unwrap_err().to_string()
+    };
+    let missing_seq = refused(json!({"kind":"evidence","label":"Scope","taskId":"T-1"}));
+    assert!(missing_seq.contains("needs activitySeq") && missing_seq.contains("task_get activities[].seq") && missing_seq.contains("url"), "{missing_seq}");
+    let neither = refused(json!({"kind":"evidence","label":"Scope"}));
+    assert!(neither.contains("needs url, or taskId with activitySeq"), "{neither}");
+    let unknown_seq = refused(json!({"kind":"evidence","label":"Scope","taskId":"T-1","activitySeq":9999}));
+    assert!(unknown_seq.contains("T-1 has no activity with seq 9999"), "{unknown_seq}");
+    let items = &schema()["properties"]["references"]["items"]["properties"];
+    assert!(items["taskId"]["description"].as_str().unwrap().contains("Needs activitySeq"));
+    assert!(items["activitySeq"]["description"].as_str().unwrap().contains("Needs taskId"));
+}
+
+#[test]
 fn invalid_or_oversized_materials_roll_back_the_entire_dispatch() {
     let (_dir, store) = fixture();
     repos(&store);

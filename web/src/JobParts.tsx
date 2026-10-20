@@ -2,7 +2,7 @@
 // runs and reviews read as one list: a heading like a Settings section, rows
 // grouped into what is still going and what has ended, and the dock's
 // status marks.
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useState, type DragEvent, type ReactNode } from "react";
 import { StatusMark } from "./WorkDock";
 
 /** Where a row belongs: still going, or ended however it ended. */
@@ -143,6 +143,7 @@ export function JobRow({
   moments,
   selected,
   onSelect,
+  onDragStart,
 }: {
   status: string;
   state: string;
@@ -155,6 +156,8 @@ export function JobRow({
   moments?: string | null;
   selected: boolean;
   onSelect: () => void;
+  /** Makes the row draggable, as Send to Agent does with a local Job (T-152). */
+  onDragStart?: (event: DragEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <button
@@ -162,6 +165,8 @@ export function JobRow({
       className={`job-row${selected ? " selected" : ""}`}
       aria-current={selected ? "true" : undefined}
       onClick={onSelect}
+      draggable={!!onDragStart}
+      onDragStart={onDragStart}
     >
       <StatusMark status={status} />
       <span className="job-row-main">

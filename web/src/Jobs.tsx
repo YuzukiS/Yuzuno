@@ -28,6 +28,8 @@ import {
 import { ArtifactsCard, ReportedLines, RunCard, PendingAnalysisRuns, type Artifact, type Cost, type Progress } from "./JobRun";
 import { openTaskReview, ReviewJobs, type ReviewOpen } from "./ReviewJobs";
 import type { Agent } from "./types";
+import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
+import type { HandoffSource } from "./handoff";
 import "./jobs.css";
 import {
   CiJobs,
@@ -67,9 +69,9 @@ type Job = {
   guardGit?: boolean;
   timeoutSeconds?: number;
   snapshot?: { scope: string };
-  machine: { name: string };
+  machine: { id?: string; name: string };
   /** Where it runs when not on this host: an SSH machine or Windows (T-108). */
-  executor?: { kind: string } | null;
+  executor?: { kind: string; machineId?: string; machineName?: string } | null;
   resources: Resources;
   exclusive?: boolean;
   reservation: Resources;
@@ -516,7 +518,13 @@ export function Jobs({
       setOpen(true);
     };
     window.addEventListener("yuzuno:open-job", listener);
-    return () => window.removeEventListener("yuzuno:open-job", listener);
+    // Send to Agent added a Job to a draft and opened that Agent (T-152).
+    const sent = () => setOpen(false);
+    window.addEventListener("yuzuno:handoff-sent", sent);
+    return () => {
+      window.removeEventListener("yuzuno:open-job", listener);
+      window.removeEventListener("yuzuno:handoff-sent", sent);
+    };
   }, []);
   useEffect(() => {
     generation.current++;
@@ -935,6 +943,10 @@ export function Jobs({
                             moments={queuedAndFinished(job)}
                             selected={selected === job.id}
                             onSelect={() => setSelected(job.id)}
+                            onDragStart={(event) => {
+                              event.dataTransfer.effectAllowed = "copy";
+                              startHandoffDrag(event, jobHandoff(job));
+                            }}
                           />
                         )}
                       >
@@ -1083,6 +1095,27 @@ function JobsBudget({
   );
 }
 
+/** A Job for Send to Agent (T-152): where its files stay decides what another Agent can open. */
+function jobHandoff(job: Job): HandoffSource {
+  const executor = job.executor;
+  return {
+    kind: "job",
+    jobId: job.id,
+    name: job.name,
+    status: job.status,
+    reason: job.result?.reason || job.reason || null,
+    finishedAt: job.finishedAt,
+    machine:
+      // An SSH machine without a recorded id still is not this host.
+      executor?.kind === "ssh"
+        ? { kind: "ssh", id: executor.machineId || "", name: executor.machineName || job.machine.name }
+        : executor?.kind === "windows"
+          ? { kind: "windows", name: executor.machineName || job.machine.name }
+          : { kind: "core" },
+    artifacts: job.result?.artifacts?.map(a => a.absolutePath || a.path) ?? (job.artifacts || []).map(a => a.path),
+  };
+}
+
 function JobDetail({
   job,
   log,
@@ -1165,6 +1198,7 @@ function JobDetail({
             </button>
           )
         )}
+        <SendToAgentButton source={() => jobHandoff(job)} />
       </JobDetailHeading>
       {pause ? (
         <p className="job-pause-note">

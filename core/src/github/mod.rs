@@ -271,7 +271,7 @@ fn schedule(ws: &Arc<Workspace>, key: String) {
 
 pub fn tool_definitions() -> Vec<Value> {
     let string = json!({"type":"string"});
-    let task = json!({"type":"string","description":"Stable task ID, for example T-1, from task_list. Reuse the same task."});
+    let task = json!({"type":"string","description":crate::collaboration_store::TASK_ID});
     let action = json!({"type":"string","enum":["list","link","unlink"],"default":"list"});
     vec![
         json!({"name":"github_repositories","description":"List, explicitly link, or unlink GitHub.com repositories for a Project. Uses the Core host's gh authentication; GitHub reads only. Input is owner/repo or its HTTPS URL. Unlink removes only the Project association, retaining task links. No cwd inference.","inputSchema":{"type":"object","properties":{"projectId":string,"action":action,"input":string,"repositoryId":{"type":"integer","minimum":1}},"required":["projectId"],"additionalProperties":false}}),

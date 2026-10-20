@@ -143,6 +143,8 @@ import { PastedTextComposer, type ComposerHandle } from "./PastedTextComposer";
 import { draftTextBlocks } from "./message-content";
 import { RequestSummary } from "./MessageContent";
 import { appendDraft, draftText, hasDraftContent } from "./composer-draft";
+import { HandoffContext, HandoffDropStrip, type HandoffApi } from "./SendToAgent";
+import { handoffLabel, handoffRefusal, handoffText, type HandoffSource } from "./handoff";
 import { useComposerDraft } from "./useComposerDraft";
 import { DraftRecovery } from "./DraftRecovery";
 import { PendingQuestions, type PendingQuestionsHandle } from "./PendingQuestions";
@@ -1145,6 +1147,53 @@ export function App() {
     setDraft(agentId, current => appendDraft(current, text));
     setNotice("Rewind input saved to this Agent’s draft. Send when ready.");
   }, [setDraft]);
+  /**
+   * Send to Agent (T-152): the menu and a drop on the rail both end here. It
+   * only adds to that Agent's draft, after what is there, and opens it: the
+   * user edits and sends it, or not. Nothing is sent, assigned or dispatched.
+   */
+  function handoffToAgent(source: HandoffSource, targetId: string) {
+    const target = workspace?.agents.find(a => a.id === targetId);
+    const refusal = previewMode
+      ? "Drafts cannot be changed in this preview."
+      : targetId === selected && draftBlocked
+        ? "Recover or reset this Agent’s saved draft first; nothing was added."
+        : handoffRefusal(source, target);
+    if (refusal || !target) {
+      setNotice(refusal || "That Agent is no longer in this Workspace.");
+      return false;
+    }
+    const text = handoffText(source, target, new Date());
+    if (targetId === selected && composer.current) composer.current.append(text);
+    else {
+      // A damaged saved draft is never overwritten (reading it throws, or the
+      // write is skipped), so say so rather than lose this.
+      let added = false;
+      try {
+        setDraft(targetId, current => appendDraft(current, text));
+        added = draftText(getDraft(targetId)).endsWith(text);
+      } catch {
+        added = false;
+      }
+      if (!added) {
+        setNotice(`${target.name}’s saved draft needs recovering first; nothing was added. Open ${target.name} to recover it.`);
+        return false;
+      }
+    }
+    // Dialogs it was picked up in close on this, so the draft is in view.
+    setCollaborationOpen(false);
+    window.dispatchEvent(new Event("yuzuno:handoff-sent"));
+    selectAgent(targetId);
+    requestAnimationFrame(() => composer.current?.focus());
+    setNotice(`Added ${handoffLabel(source)} to ${target.name}’s draft. Edit it, then send.`);
+    return true;
+  }
+  const handoffRef = useRef({ agents: () => [] as Agent[], send: handoffToAgent });
+  handoffRef.current = { agents: () => workspace?.agents || [], send: handoffToAgent };
+  const handoffApi = useMemo<HandoffApi>(() => ({
+    agents: () => handoffRef.current.agents(),
+    send: (source, id) => handoffRef.current.send(source, id),
+  }), []);
   const sendQuestionAnswer = useCallback((text: string, source: QuestionSource) => turnHandlers.current.submitMessage(text, source), []);
   function showQuestionSource(source: QuestionSource) {
     showConversationSource(source);
@@ -1233,6 +1282,7 @@ export function App() {
     ) || [];
 
   return (
+    <HandoffContext.Provider value={handoffApi}>
     <div
       className={`app ${isNative ? "native" : "web"} ${railOpen ? "" : "rail-hidden"} ${inspector && agent && !homeOpen ? "with-inspector" : ""}`}
       style={panelWidths.style}
@@ -2481,6 +2531,8 @@ export function App() {
           {notice}
         </div>
       )}
+      <HandoffDropStrip />
     </div>
+    </HandoffContext.Provider>
   );
 }

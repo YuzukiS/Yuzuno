@@ -1,5 +1,7 @@
 import { MessageContent } from "./MessageContent";
 import { RewindButton } from "./Rewind";
+import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
+import { HANDOFF_TYPE, type HandoffSource, type MessageAuthor } from "./handoff";
 import { MailboxNotice } from "./MailboxNotice";
 import { userRequestText, userText } from "./message-content";
 import { ImageAttachments } from "./ImageAttachments";
@@ -339,6 +341,35 @@ export function turnText(turn: NativeTurn) {
 }
 export function isPeerInput(turn: NativeTurn, item: NativeItem, firstUser?: NativeItem) {
   return item._yuzunoSource === "peer" || (turn._yuzunoSource === "peer" && item === firstUser);
+}
+/**
+ * A message of this conversation for Send to Agent (T-152), with who wrote it,
+ * or null for anything that is not a message. `selected` is a selection from it.
+ */
+export function messageHandoff(
+  agent: Agent,
+  turn: NativeTurn,
+  item: NativeItem,
+  selected?: string,
+): HandoffSource | null {
+  if (item.type !== "userMessage" && item.type !== "agentMessage") return null;
+  const firstUser = turn.items.find(i => i.type === "userMessage");
+  const author: MessageAuthor =
+    item.type === "agentMessage" ? { kind: "agent" }
+      : isPeerInput(turn, item, firstUser) ? { kind: "mailbox" }
+      : isBriefReminder(turn, item, firstUser) ? { kind: "reminder" }
+      : { kind: "user" };
+  return {
+    kind: "message",
+    agentId: agent.id,
+    agentName: agent.name,
+    turnId: turn.id,
+    itemId: item.id,
+    author,
+    at: item._yuzunoTime?.at ?? null,
+    text: selected ?? (item.type === "agentMessage" ? item.text || "" : author.kind === "user" ? userText(item) : itemText(item)),
+    excerpt: selected !== undefined,
+  };
 }
 /** Yuzuno's own prompt asking an Agent to update its Project Brief (T-85). */
 export function isBriefReminder(turn: NativeTurn, item: NativeItem, firstUser?: NativeItem) {
@@ -697,6 +728,7 @@ export function Turn({
             {agent.harness === "claude" && item.nativeUuid && !item._yuzunoDelivery && (
               <ClaudeCheckpointButton agent={agent} nativeUuid={item.nativeUuid} turnRunning={running} />
             )}
+            <SendToAgentButton source={() => messageHandoff(agent, turn, item)} />
           </div>
           <div className="user-text"><MessageContent text={userText(item)} blocks={item._yuzunoTextBlocks} /></div>
           <ImageAttachments images={messageImages(item.content)} />
@@ -710,6 +742,22 @@ export function Turn({
       id={`turn-${turn.id}`}
       data-turn-id={turn.id}
       tabIndex={-1}
+      onDragStart={event => {
+        // Selected text dragged out of one message also carries where it came
+        // from, so an Agent in the rail can take it (T-152). The text the
+        // browser drags is left as it is.
+        if (event.dataTransfer.types.includes(HANDOFF_TYPE)) return;
+        const selection = window.getSelection();
+        const text = selection?.toString() || "";
+        if (!selection || !text.trim()) return;
+        const message = (node: Node | null) =>
+          (node instanceof Element ? node : node?.parentElement)?.closest<HTMLElement>("[data-item-id]");
+        const from = message(selection.anchorNode);
+        if (!from || from !== message(selection.focusNode) || !event.currentTarget.contains(from)) return;
+        const item = turn.items.find(i => i.id === from.dataset.itemId);
+        const source = item && messageHandoff(agent, turn, item, text);
+        if (source) startHandoffDrag(event, source);
+      }}
     >
       <div className="turn-divider">
         <span>{loadedNumbering ? "LOADED TURN" : "TURN"} {String(index + 1).padStart(2, "0")}</span>
@@ -828,11 +876,15 @@ export function Turn({
                 {!running && !commentary && (blockIndex === footerAt ? (
                   <div className="reply-actions">
                     <CopyButton text={item.text || ""} label="Copy reply" />
+                    <SendToAgentButton source={() => messageHandoff(agent, turn, item)} />
                     <TurnFooter parts={footer} />
                     <RewindButton agent={agent} turn={turn} onDraft={onRewindDraft} />
                   </div>
                 ) : (
-                  <CopyButton text={item.text || ""} label="Copy reply" />
+                  <>
+                    <CopyButton text={item.text || ""} label="Copy reply" />
+                    <SendToAgentButton source={() => messageHandoff(agent, turn, item)} />
+                  </>
                 ))}
               </div>
             </Fragment>

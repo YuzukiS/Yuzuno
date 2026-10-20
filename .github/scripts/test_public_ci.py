@@ -13,12 +13,14 @@ from pathlib import Path
 import os
 import re
 import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 CANDIDATE = ROOT / 'ci/public/ci.yml'
 PATCH = ROOT / 'ci/public/public-docs.patch'
 GUARD = ROOT / '.github/scripts/hosted-guard.sh'
+FREE_DISK = ROOT / '.github/scripts/free-disk.sh'
 JOB = re.compile(r'^  ([A-Za-z0-9_-]+):\s*$')
 
 
@@ -135,6 +137,28 @@ class PublicCi(unittest.TestCase):
                     env['RUNNER_ENVIRONMENT'] = environment
                 run = subprocess.run([str(GUARD)], env=env, capture_output=True, text=True)
                 self.assertEqual(run.returncode, code, run.stdout + run.stderr)
+
+    def test_the_sdks_are_removed_only_when_free_space_is_short_or_unknown(self):
+        with tempfile.TemporaryDirectory() as temp:
+            bindir = Path(temp)
+            (bindir / 'df').write_text('#!/bin/sh\ncase "$*" in *--output=avail*) [ -n "$FAKE_AVAIL" ] || exit 1; printf "Avail\\n%s\\n" "$FAKE_AVAIL";; *) echo "df -h";; esac\n')
+            (bindir / 'sudo').write_text(f'#!/bin/sh\necho "$*" >> {bindir}/sudo.log\n')
+            for tool in ('df', 'sudo'):
+                (bindir / tool).chmod(0o755)
+            env = dict(os.environ, PATH=f'{bindir}:' + os.environ['PATH'])
+            gib = 1073741824
+            for avail, removed in [(50 * gib, False), (40 * gib, False), (40 * gib - 1, True), (10 * gib, True), ('', True)]:
+                with self.subTest(avail=avail):
+                    (bindir / 'sudo.log').unlink(missing_ok=True)
+                    run = subprocess.run([str(FREE_DISK), '40'], env=dict(env, FAKE_AVAIL=str(avail)), capture_output=True, text=True)
+                    self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                    log = bindir / 'sudo.log'
+                    self.assertEqual(log.exists(), removed, run.stdout)
+                    if removed:
+                        self.assertIn('rm -rf /usr/local/lib/android /usr/share/dotnet', log.read_text())
+            for argument in ([], ['many']):
+                run = subprocess.run([str(FREE_DISK), *argument], env=env, capture_output=True, text=True)
+                self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
 
     @unittest.skipUnless(PATCH.exists(), 'the public docs patch is applied in the public snapshot')
     def test_the_public_docs_patch_still_applies(self):

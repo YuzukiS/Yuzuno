@@ -24,14 +24,13 @@ The order below is the usual shape; your project's instructions decide who may p
 ## CI
 
 - `ci_subscribe` with the PR or run URL and the exact head SHA sends one mail per completed run attempt. A newer head needs its own subscription.
-- Source update (requires a containing Core release): after a merge, watch the merge commit itself, with no need to wait for its run to appear.
+- After a merge, watch the merge commit itself, with no need to wait for its run to appear.
   - Pass its commit URL (`https://github.com/{owner}/{repo}/commit/{sha}`), `expectedSha` set to that SHA, and the exact `branch` and `event` of the runs to watch. For a merge to main that is usually `main` and `push`; check the repository's workflows rather than guessing.
   - Until a run exists the watch shows `waiting_for_run` and reads less often: every 30 s for ten minutes, every two minutes until an hour, then every ten minutes. The Agent rail shows it as waiting for its first run, still monitored, with its last successful check; only a failed or overdue read turns that into Check CI.
   - Only runs of that SHA, branch, event and repository count. A PR run of the same commit, another branch's run or a fork's run never does, and a newer main commit never replaces the watched one.
   - Each finished attempt mails once. If no matching run was observed by the seven-day expiry, one mail per subscription says so, with any failed reads or an incomplete run list. It reports what Yuzuno observed, not that GitHub never had such a run, and it is not a pass. Replaying an old requestId neither renews the watch nor mails again.
-  - Older Cores refuse a commit URL; then subscribe to the main run once it is listed.
-- `ci_get` returns the run as Core last observed it and one page of its jobs and steps, which Core reads through a short shared cache; each part carries its own observation time. `ci_refresh`, where available, asks GitHub about the run and its visible pages now. Neither reruns or cancels CI.
-- Source update (requires a containing Core release): a known `runKey` can be checked once even when its monitor is stopped, expired or paused. This does not resume or renew monitoring. `runWatched` describes current monitoring separately from the last observed GitHub status; an unwatched Running record is historical, not proof it is still running. Refresh reads the exact recorded attempt and retains old facts on failure. Older Cores may instead return `nothing` for such a run; do not subscribe just to work around that response without authorization.
+- `ci_get` returns the run as Core last observed it and one page of its jobs and steps, which Core reads through a short shared cache (an expired cache means one conditional GitHub read); each part carries its own observation time. `ci_refresh` asks GitHub about the run and its visible pages now, within GitHub's poll interval and cooldowns. Neither reruns or cancels CI.
+- A known `runKey` can be checked once with `ci_refresh` even when its monitor is stopped, expired or paused. This does not resume or renew monitoring. `runWatched` describes current monitoring separately from the last observed GitHub status; an unwatched Running record is historical, not proof it is still running. Refresh reads the exact recorded attempt and retains old facts on failure.
 
 ## Independent review
 
@@ -63,7 +62,7 @@ The order below is the usual shape; your project's instructions decide who may p
   - After a new head it shows as another candidate's. Add it again with `previousEvidenceId` to bind it to the new review; the old record stays.
   - Core fetches and verifies nothing, and the note is yours. "Bound to this candidate" is an identity match only. `artifactMatchesHeadContent` says only that the registered SHA-256 equals the hash of the fixed Git content Core read, not that the referenced Job's or link's artifact was retrieved or checked. Evidence never changes a review's conclusion or whether it passes.
   - The permanent gaps are paths no further round of the same head can cover. That says nothing about whether any other gap may be retried or continued.
-- **Continuing a round** (source update; requires a containing Core release). `review_continue` asks for a bounded continuation of one completed round of the same frozen snapshot, for the changed paths it left `not_read` or `read_failed`.
+- **Continuing a round** (Cores newer than 2026.10.19-core.12). `review_continue` asks for a bounded continuation of one completed round of the same frozen snapshot, for the changed paths it left `not_read` or `read_failed`.
   - It is a new isolated reviewer run with its own record, round number and cost, not a resumed session. It gets only what the parent round left of its 160 calls, 1.5 MB and 900 000 ms, to the exact millisecond; nothing is refilled.
   - A PR gets at most two started review rounds when one of them is a continuation, counted across every task linked to that PR. Only a round recorded with a ledger that failed before its native start was recorded provably started nothing; older rounds and unknown ones count.
   - Core refuses it before it exists, starting no model, when the parent:
@@ -91,7 +90,8 @@ The order below is the usual shape; your project's instructions decide who may p
   - `ledger.cumulative` shows both rounds' calls, bytes and time, and each run's own usage report under `runs`; a cost one of them didn't report stays unknown. The earlier round's record never changes.
 
 - Check `review_list` for the same base and head first, so a round is not started twice.
-- Start it yourself with `review_start` on the task's PR link and the fixed base and head, once the candidate is frozen and your targeted checks pass. It may run while CI runs. Finish the turn; the report arrives by mail and `review_get` reads it.
+- Start it yourself with `review_start` on the task's PR link and the fixed base and head, once the candidate is frozen and your targeted checks pass. It may run while CI runs. Finish the turn; the report arrives by mail and `review_get` reads its summary (`view: "full"` adds the original report and per-file evidence).
+  - Take `baseSha` and `headSha` from the PR link (`github_links`, `snapshot.baseSha` and `snapshot.headSha`). The PR's base is the commit GitHub recorded for it, often behind the target branch's current tip: do not substitute main's head. If you are unsure of the base, omit `baseSha` alone: the round reviews your fixed `headSha` against the PR's current base.
 - Verify each finding against the code. Fix what is in scope, then give the new head its own CI and the next round as the project allows. Raise scope or verdict disputes with whoever owns that decision.
 - A review is evidence, not approval: it does not merge, run code or complete the task. Failures of the review service itself are not review rounds; report them rather than retrying without limit.
 

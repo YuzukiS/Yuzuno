@@ -12,7 +12,7 @@ mod incremental_tests;
 #[cfg(test)]
 mod tests;
 use crate::github::client::Client;
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -1089,6 +1089,18 @@ struct Search {
     cursor: String,
 }
 
+/// Why a requested base or head is not the PR's, saying both commits and
+/// what to read: a caller may have taken a branch tip for the PR's own base.
+pub(super) fn moved_revision(expected_base: Option<&str>, expected_head: Option<&str>, base: &str, head: &str) -> Option<String> {
+    [("baseSha", "base", expected_base, base), ("headSha", "head", expected_head, head)]
+        .into_iter()
+        .find_map(|(field, name, expected, current)| expected.filter(|expected| *expected != current).map(|expected| format!(
+            "The PR's {name} is {current}, not the requested {field} {expected}; no reviewer ran. {field} is the PR's own \
+             commit as github_links shows it (snapshot.{field}), not the current tip of a branch. Read github_links \
+             (github_refresh updates it) and start again with those values; omitting baseSha alone reviews your headSha against the PR's current base."
+        )))
+}
+
 pub(super) async fn collect(
     client: &Client,
     run: &mut Value,
@@ -1111,10 +1123,9 @@ pub(super) async fn collect(
     );
     let base = sha(&pr["base"]["sha"])?;
     let head = sha(&pr["head"]["sha"])?;
-    ensure!(
-        expected_base.is_none_or(|s| s == base) && expected_head.is_none_or(|s| s == head),
-        "PR changed since it was displayed. Refresh GitHub and review the new revision."
-    );
+    if let Some(problem) = moved_revision(expected_base, expected_head, base, head) {
+        bail!(problem);
+    }
     let comparison = client
         .comparison_identity(&repo.full_name, base, head)
         .await?;

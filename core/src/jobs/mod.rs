@@ -185,6 +185,16 @@ fn windows_absolute(path: &str) -> bool {
         && matches!(bytes[2], b'\\' | b'/')
         && !path.chars().any(char::is_control)
 }
+/// A path below a Windows cwd: no drive, not rooted (\ or /), no stream or
+/// drive colon, never through a parent directory with either separator.
+fn windows_relative(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 4096
+        && !path.chars().any(char::is_control)
+        && !path.starts_with(['\\', '/'])
+        && !path.contains(':')
+        && !path.split(['\\', '/']).any(|part| part == "..")
+}
 fn default_timeout() -> u64 {
     86400
 }
@@ -216,9 +226,16 @@ impl Submit {
                 self.outputs.is_empty(),
                 "outputs are downloaded from this host; on a remote machine they stay there, so declare them as artifacts instead"
             );
+            // On Windows, files of that PC: inputs on a drive or below cwd,
+            // artifacts below cwd, with Windows' separators.
             ensure!(
-                machine != remote::WINDOWS || (self.inputs.is_empty() && self.artifacts.is_empty()),
-                "inputs and artifacts are not available on Windows in this version"
+                machine != remote::WINDOWS
+                    || self.inputs.iter().all(|p| windows_absolute(p) || windows_relative(p)),
+                "inputs on Windows are drive paths such as C:\\data\\a.txt or paths relative to cwd, never through .."
+            );
+            ensure!(
+                machine != remote::WINDOWS || self.artifacts.iter().all(|a| windows_relative(&a.path)),
+                "artifacts on Windows are paths relative to cwd, such as out\\result.json, never through .. and without a drive or :"
             );
         }
         self.validate_command()
@@ -727,14 +744,11 @@ pub async fn call(
                     ws.stored(move |s| s.init_job_budget(&host["suggestedBudget"])).await?;
                 }
                 // Inputs are files on that machine, frozen there now; nothing of
-                // this host is read for them.
-                let snapshot = if windows {
-                    json!({"cwd": input.cwd.clone(), "remote": true,
-                        "scope": "Nothing is frozen on the remote machine: Core does not see its files"})
-                } else {
-                    let machine_id = input.machine_id.clone().unwrap_or_default();
-                    remote::remote_snapshot(&ws, &remote::Programs { ssh: remote::SSH, windows: None }, &machine_id, &input.cwd, &input.inputs).await?
-                };
+                // this host is read for them (on Windows, nothing through /mnt).
+                let machine_id = input.machine_id.clone().unwrap_or_default();
+                let helper = if windows { remote::windows_helper() } else { None };
+                let programs = remote::Programs { ssh: remote::SSH, windows: helper.as_ref() };
+                let snapshot = remote::remote_snapshot(&ws, &programs, &machine_id, &input.cwd, &input.inputs).await?;
                 let author = actor.clone();
                 let capabilities = if windows { remote::windows_capabilities() } else { remote::capabilities() };
                 // The machine is read in the Job's own insert transaction.
@@ -1132,21 +1146,47 @@ fn not_started_reason(error: &anyhow::Error) -> String {
     )
 }
 
+/// What a Job's inputs are, wherever it runs. Remote specifics are in
+/// REMOTE_INPUTS and, at length, in the guide's jobs topic.
+const INPUTS: &str = "Small files the command reads (at most 2 MiB each, 16 MiB together), relative to cwd: their SHA-256 is \
+    frozen at submit and checked again just before the command starts, and a change rejects the job before it runs. This is a check \
+    before the start, not a read-only snapshot while it runs. An input missing at submit is recorded as missing.";
+const REMOTE_INPUTS: &str = "With machineId they are files on that machine, read there at submit (on windows by its native \
+    helper, never through /mnt): one that is missing, unreadable or too large refuses the submit, and nothing of this host is read for them.";
+const ARTIFACTS: &str = "Files a clean exit must leave behind, relative to cwd. After exit 0 each must be a regular file inside cwd \
+    of at least minBytes (default 1); json must be one complete JSON document, jsonl complete newline-terminated JSON lines. Size and \
+    SHA-256 are recorded. Any failure makes the job failed; a non-zero exit, a timeout or a cancel is reported as such, with no artifact \
+    check. Structure only: whether the content is valid is the project's call. A file left there earlier passes if it meets the rules \
+    (preExisting and unchangedSinceStart record it): for an output only this attempt can have written, give it a path of its own.";
+const REMOTE_ARTIFACTS: &str = "With machineId they are checked on that machine by the same rules and stay there: the job \
+    records the machine, each file's path there, size and SHA-256, and nothing is copied to this host or offered for download.";
+/// machineId in short; how each kind of machine runs a job, holds its limits
+/// and checks its files is the guide's jobs topic (references/jobs.md).
+const MACHINE: &str = "Run on a registered machine from the Machines list instead of this Core's host: an SSH machine \
+    (Linux), or \"windows\", Windows on the PC this Core's WSL runs on (cwd a Windows drive path such as C:\\work). Without machineId \
+    the job runs on this Core's host, never on the machine your Agent itself runs on. cwd and every path are on that machine; pass the \
+    environment the command needs in env. That machine's own admission (its maxJobs and budget) decides when it starts, and its limit \
+    mode whether the declared CPU, RAM and swap are held there or only recorded. Not available with machineId: gpu, exclusive, outputs \
+    (declare artifacts), runs of stages, and guardGit (set it to false); pause only where the job's capabilities.pause allows it, never \
+    on windows. Cancel and timeouts stop the attempt's process group (on windows its Job Object), not processes that leave it. A lost \
+    connection leaves the job unknown with its slot held: Core checks the same attempt again and never starts it twice, so do not \
+    resubmit it. How each machine runs, limits and checks a job: yuzuno_guide topic jobs.";
+
 pub(crate) fn tool_definitions() -> Vec<Value> {
     let string = json!({"type":"string"});
-    let task_reference = json!({"type":"string","description":"Existing task ID returned by task_create/list, for example T-1. Reuse it; do not create a task for each execution step."});
+    let task_reference = json!({"type":"string","description":crate::collaboration_store::TASK_ID});
     let properties = json!({"requestId":string,"taskId":task_reference,"name":string,"cwd":string,
         "argv":{"type":"array","items":string,"minItems":1,"maxItems":128},
         "env":{"type":"object","additionalProperties":{"type":"string"}},
         "resources":{"type":"object","properties":{"cpuMillis":{"type":"integer","minimum":100},"memoryMiB":{"type":"integer","minimum":64},"swapMiB":{"type":"integer","minimum":0}},"required":["cpuMillis","memoryMiB","swapMiB"],"additionalProperties":false},
         "exclusive":{"type":"boolean","default":false,"description":"Run alone among this Core's managed local jobs. FIFO waits for existing jobs and their process-group cleanup; later jobs remain queued until this reservation releases. Does not stop other applications or reserve the whole host. Request actual CPU/RAM/swap limits as usual."},
         "timeoutSeconds":{"type":"integer","minimum":1,"maximum":604800,"default":86400},
-        "guardGit":{"type":"boolean","default":true},"inputs":{"type":"array","items":string,"maxItems":128,"description":"Small files the command reads (at most 2 MiB each, 16 MiB together), relative to cwd: their SHA-256 is frozen at submit and checked again just before the command starts, and a change rejects the job before it runs. This is a check before the start, not a read-only snapshot while it runs. On this host an input missing at submit is recorded as missing. With machineId (SSH) they are files on that machine, read there at submit in one SSH call of at most 30 seconds; one that is missing, not a regular file, unreadable or too large refuses the submit, and nothing of this host is read for them."},"outputs":{"type":"array","items":string,"maxItems":20,"description":"Declared output file paths relative to cwd, available for download from the job panel. Not with machineId: declare artifacts there."}});
-    let artifacts = json!({"type":"array","maxItems":20,"description":"Files a clean exit must leave behind, relative to cwd. After exit 0 the job checks each inside its own limits: a regular file inside cwd, at least minBytes (default 1), and for json a complete JSON document, for jsonl complete newline-terminated JSON lines; it records size and SHA-256. Any failure makes the job failed; a non-zero exit, a timeout or a cancel is reported as such, with no artifact check. Structure only: whether the content is valid is the project's call. With machineId (SSH) they are checked on that machine by the same rules and stay there: the job records the machine, each file's path there, size and SHA-256, and nothing is copied to this host or offered for download. Whether a file was already at the path before the command ran is recorded (preExisting, unchangedSinceStart), not judged: a file left there earlier passes if it meets the rules; for an output only this attempt can have written, give it a path of its own.",
+        "guardGit":{"type":"boolean","default":true},"inputs":{"type":"array","items":string,"maxItems":128,"description":INPUTS},"outputs":{"type":"array","items":string,"maxItems":20,"description":"Declared output file paths relative to cwd, available for download from the job panel. Not with machineId: declare artifacts there."}});
+    let artifacts = json!({"type":"array","maxItems":20,"description":ARTIFACTS,
         "items":{"type":"object","properties":{"path":string,"format":{"type":"string","enum":["bytes","json","jsonl"],"default":"bytes"},"minBytes":{"type":"integer","minimum":0}},"required":["path"],"additionalProperties":false}});
     let mut properties = properties;
     properties["artifacts"] = artifacts.clone();
-    properties["machineId"] = json!({"type":"string","description":"Run on a registered SSH machine (Linux; its id from the Machines list) instead of this Core's host. Without machineId the job runs on this Core's host, never on the machine your Agent itself runs on. Core reaches it with that machine's own SSH identity and runs the command there in its own process group under a supervisor that keeps its output and outcome on that machine; Core pins the machine that answers before starting, so a re-pointed name is never taken for it. A lost connection leaves the job unknown with its slot held, and the same attempt is checked when the machine answers, never started twice. The machine's own admission applies there, not this host's budget: at most its maxJobs attempts at once (2 unless set), within its own budget when one is set. Declared CPU, RAM and swap go with the attempt: the helper holds what the account's systemd user manager can (memory, swap where the kernel accounts it, and CPU where that controller is delegated) in the attempt's own scope, only when the account lingers. In the strict mode (a machine added now) a limit it cannot hold means not started; in the limited mode (chosen for the machine) it runs and the job records what is only declared, holding nothing on a non-lingering account; a machine registered before limits only records them. A machine's budget and maxJobs decide when an attempt starts, not what it may use. Cancel stops the attempt's process group, not processes that leave it. inputs and artifacts are files on that machine (see each). The user can pause it only while it runs in a scope of its own there (its limits held: strict, or limited on an account that lingers; the job's capabilities.pause says so), which is frozen there as local jobs are; otherwise pause is refused with the reason. gpu, exclusive, guardGit (set it to false), outputs and runs of stages are not available. cwd and paths are on that machine, whichever machine your Agent runs on. machineId \"windows\" is Windows on the PC this Core's WSL runs on, reached through WSL interop instead of SSH, with the same guarantees: cwd is a Windows drive path such as C:\\work, the command keeps its Windows environment (no Linux PATH or LANG is added), and cancel and timeouts end the attempt's own Windows Job Object, children included; inputs, artifacts and pause are not available there. Its Job Object holds the declared CPU (a hard cap on its share of all processors) and memory (a job-wide limit on committed memory: an allocation beyond it fails), read back before the command runs, and it reserves from this host's Jobs budget, which this PC's Linux and Windows jobs share. Core runs the native Windows helper shipped in its signed release (it needs Windows' own .NET Framework 4), checking its bytes before every run; with no helper in the release, one that differs or speaks another protocol, or WSL interop off, the job ends as not started."});
+    properties["machineId"] = json!({"type":"string","description":MACHINE});
     properties["gpu"] = json!({"type":"object","description":"Local NVIDIA GPUs the command needs, admitted with its CPU and RAM: devices by UUID (any device when omitted), the GPU memory it needs in MiB, and mode exclusive (default: the only managed GPU job on the device) or shared (only on a device the user opened for sharing). The job gets CUDA_VISIBLE_DEVICES set to the reserved UUIDs. It waits, with the device and the shortfall named, while the device is busy, closed to new jobs, short of memory or not freshly sampled. Free memory is the whole card's, other programs included; this is admission, not memory isolation or a compute share.",
         "properties":{"count":{"type":"integer","minimum":1,"maximum":8,"default":1},"devices":{"type":"array","items":{"type":"string"},"maxItems":8},"memoryMiB":{"type":"integer","minimum":64},"mode":{"type":"string","enum":["exclusive","shared"],"default":"exclusive"}},
         "required":["memoryMiB"],"additionalProperties":false});
@@ -1157,6 +1197,9 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         // A run's stages run on this host in this version.
         map.remove("machineId");
     }
+    // Only job_submit takes machineId; a run's stages keep the host-only text.
+    properties["inputs"]["description"] = format!("{INPUTS} {REMOTE_INPUTS}").into();
+    properties["artifacts"]["description"] = format!("{ARTIFACTS} {REMOTE_ARTIFACTS}").into();
     stage["key"] = json!({"type":"string","description":"Stage key, unique in the run: 1-32 letters, digits, '.', '_' or '-'."});
     stage["name"] = json!({"type":"string","description":"Optional; defaults to the run name and stage key."});
     stage["needs"] = json!({"type":"array","items":string,"description":"Keys of earlier stages that must succeed, with their artifacts verified, before this stage starts. Success dependencies only."});
@@ -1180,7 +1223,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "stages":{"type":"array","minItems":1,"maxItems":16,"description":"In dependency order: a stage may need only earlier stages.","items":{"type":"object","properties":stage,"required":stage_required,"additionalProperties":false}}}),
             vec!["requestId","taskId","name","stages"]),
         make("job_run_get", "Read a run: each stage's attempts (job IDs, status, reasons, verified artifacts with SHA-256, identity), its upstream, retries and recorded cost across all attempts. Each attempt has resourceSummary (actual peak memory and CPU time / worker monotonic wall time versus declared resources); missing/invalid/remote values are null. Includes worker wrapper and pauses in wall time, excludes collector. Retries stay separate, reused producers do not execute in this run, and memory peaks are not additive. Unknown cost is reported apart, never as zero.", run_id.clone(), vec!["runId"]),
-        make("job_run_list", "List recent runs with their status, stages and recorded cost. Optional Agent, task and experiment filters.", json!({"agentId":string,"taskId":task_reference,"experiment":string,"before":{"type":"integer"},"awaitingAnalysis":{"type":"boolean","description":"Only runs with a pending analysis gate, including when independent stages are still running."}}), vec![]),
+        make("job_run_list", "List runs with their status, stages and recorded cost, newest first, 20 per page; follow nextBefore as before while hasMore. Unlike job_list it does not default to your own Agent: without filters it lists every Agent's runs, so pass agentId, taskId or experiment to narrow it.", json!({"agentId":string,"taskId":task_reference,"experiment":string,"before":{"type":"integer","description":"nextBefore from the previous page; keep the same filters."},"awaitingAnalysis":{"type":"boolean","description":"Only runs with a pending analysis gate, including when independent stages are still running."}}), vec![]),
         make("job_run_decide", "Record your analysis decision for one successful stage. Read job_run_get first and pass its exact gateId and attemptId. Continue releases only the frozen DAG, subject to update drain, budget, Git/input and artifact checks; it neither authorizes additional work nor accepts command changes. Cancel stops the run without changing successful Jobs. Only the owner Agent or user may decide. A stable requestId makes lost-reply retries idempotent; stale gates and cancelled runs cannot be reopened. For changed commands/inputs submit a new run with explicit reuse.", json!({"requestId":string,"runId":string,"stage":string,"gateId":string,"attemptId":string,"decision":{"type":"string","enum":["continue","cancel"]},"reason":{"type":"string","maxLength":4000}}), vec!["requestId","runId","stage","gateId","attemptId","decision"]),
         make("job_run_retry", "Start a new attempt of a stage whose latest attempt failed, was cancelled, rejected or interrupted: the same command and frozen inputs (a changed input rejects it), its own job, log and usage file; earlier attempts and their cost are kept. Stages waiting on it start after it succeeds. An unknown outcome must be cancelled first. Use a stable requestId.", json!({"requestId":string,"runId":string,"stage":string}), vec!["requestId","runId","stage"]),
         make("job_run_cancel", "Cancel your run: stages that have not started never will; running stages are cancelled as any job, their reservation released only when their process groups are gone. Succeeded attempts and their artifacts are kept for an explicit reuse in a new run. Does not cancel the business task.", run_id, vec!["runId"]),
