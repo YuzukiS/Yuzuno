@@ -842,4 +842,20 @@ mod tests {
             assert!(instructions.contains(tool), "{tool}");
         }
     }
+
+    /// What every Agent's client receives from this server, for
+    /// acceptance/t155/measure_contract.py. Run on purpose:
+    /// YUZUNO_CONTRACT_DUMP=out.json cargo test --lib contract_dump -- --ignored
+    #[test]
+    #[ignore = "writes the tool contract to YUZUNO_CONTRACT_DUMP for measurement"]
+    fn contract_dump() {
+        let out = std::env::var("YUZUNO_CONTRACT_DUMP").expect("YUZUNO_CONTRACT_DUMP names the output file");
+        let dump = json!({
+            "instructions": server_instructions(),
+            "sessionNotice": crate::guide::session_notice(),
+            "hardRules": crate::project_brief::hard_rules(),
+            "tools": crate::collaboration_store::tool_definitions(),
+        });
+        std::fs::write(out, serde_json::to_string_pretty(&dump).unwrap()).unwrap();
+    }
 }

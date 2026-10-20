@@ -315,7 +315,7 @@ pub(super) async fn progress(ws: &Workspace, record: &Value) -> Result<()> {
 }
 pub(crate) fn tool_definitions() -> Vec<Value> {
     let text = json!({"type":"string"});
-    let task = json!({"type":"string","description":"Existing task ID, for example T-1. Reuse the same task across delivery and recovery."});
+    let task = json!({"type":"string","description":crate::collaboration_store::TASK_ID});
     let number = json!({"type":"integer","minimum":1});
     let def = |name: &str, description: &str, properties: Value, required: &[&str]| json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}});
     vec![

@@ -88,15 +88,20 @@ pub(super) fn validate(db: &Connection, value: &Value) -> Result<Value> {
                     "invalid_input: references require http(s) URLs"
                 );
             } else {
+                ensure!(
+                    reference.get("taskId").is_some(),
+                    "invalid_input: a reference needs url, or taskId with activitySeq"
+                );
                 let (id, number) = task_key(db, &required_text(reference, "taskId", 128)?)?;
                 let seq = reference["activitySeq"]
                     .as_i64()
                     .filter(|s| *s > 0)
-                    .context("invalid_input: activitySeq must be positive")?;
+                    .context("invalid_input: a task reference needs activitySeq, the seq of one of that task's activities (task_get activities[].seq); or give url instead")?;
                 let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM collaboration_task_activity WHERE task_id=?1 AND seq=?2)", params![id, seq], |r| r.get(0))?;
                 ensure!(
                     exists,
-                    "invalid_input: referenced activity does not belong to the task"
+                    "invalid_input: {} has no activity with seq {seq}",
+                    task_number(number)
                 );
                 reference["taskId"] = json!(task_number(number));
             }
@@ -249,8 +254,9 @@ pub(super) fn schema() -> Value {
             "headSha":commit_sha::schema(Form::Any, true, "The commit to deliver or review."),"baseline":text(1024),"worktree":text(4096),"returnRequirements":text(8192),
             "references":{"type":["array","null"],"maxItems":20,"items":{"type":"object","additionalProperties":false,
                 "properties":{"kind":{"type":"string","enum":["acceptance","decision","evidence"]},"label":{"type":"string","maxLength":300},
-                    "url":{"type":"string","maxLength":4096,"description":"An explicit http(s) reference, not automatically fetched. Use either url or taskId plus activitySeq."},
-                    "taskId":{"type":"string"},"activitySeq":{"type":"integer","minimum":1}},"required":["kind","label"]}}}})
+                    "url":{"type":"string","maxLength":4096,"description":"An explicit http(s) reference, not automatically fetched. Give url, or taskId with activitySeq, not both."},
+                    "taskId":{"type":"string","description":"A task one of whose activities this cites, for example T-1. Needs activitySeq."},
+                    "activitySeq":{"type":"integer","minimum":1,"description":"The seq of that task's activity, from task_get activities[].seq. Needs taskId."}},"required":["kind","label"]}}}})
 }
 
 /// Long fields are references to the immutable snapshot, never silent previews.
