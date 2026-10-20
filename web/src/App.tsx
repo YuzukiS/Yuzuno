@@ -143,7 +143,7 @@ import { PastedTextComposer, type ComposerHandle } from "./PastedTextComposer";
 import { draftTextBlocks } from "./message-content";
 import { RequestSummary } from "./MessageContent";
 import { appendDraft, draftText, hasDraftContent } from "./composer-draft";
-import { HandoffContext, type HandoffApi } from "./SendToAgent";
+import { HandoffContext, HandoffDropStrip, type HandoffApi } from "./SendToAgent";
 import { handoffLabel, handoffRefusal, handoffText, type HandoffSource } from "./handoff";
 import { useComposerDraft } from "./useComposerDraft";
 import { DraftRecovery } from "./DraftRecovery";
@@ -1180,7 +1180,9 @@ export function App() {
         return false;
       }
     }
+    // Dialogs it was picked up in close on this, so the draft is in view.
     setCollaborationOpen(false);
+    window.dispatchEvent(new Event("yuzuno:handoff-sent"));
     selectAgent(targetId);
     requestAnimationFrame(() => composer.current?.focus());
     setNotice(`Added ${handoffLabel(source)} to ${target.name}’s draft. Edit it, then send.`);
@@ -2529,6 +2531,7 @@ export function App() {
           {notice}
         </div>
       )}
+      <HandoffDropStrip />
     </div>
     </HandoffContext.Provider>
   );

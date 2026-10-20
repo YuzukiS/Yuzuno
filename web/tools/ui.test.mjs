@@ -3490,6 +3490,9 @@ test("a reply dragged onto an Agent in the rail lands in its draft; its own Agen
     const drag = dragData();
     fireDrag(page, send, "dragstart", drag);
     assert.deepEqual(drag.types, ["application/x-yuzuno-handoff"]);
+    await pause();
+    // The rail is in view: the dialogs' drop strip is not shown.
+    assert.equal(page.document.querySelector(".handoff-strip"), null);
     // Its own Agent refuses it and says why.
     assert.equal(fireDrag(page, railRow(page, "a"), "dragover", drag).defaultPrevented, false);
     await pause();

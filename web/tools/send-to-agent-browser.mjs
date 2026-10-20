@@ -29,6 +29,31 @@ try {
     if (!localStorage.getItem("yuzuno.composer.v1:b"))
       localStorage.setItem("yuzuno.composer.v1:b", JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "Existing note for b." }] }));
   });
+  // The Tasks board's reads (slice 2). A call that would change a task or send
+  // a message is recorded as a write, never answered as done.
+  await context.addInitScript(() => {
+    const inner = window.fetch;
+    const person = { kind: "user", id: "user", name: "You" };
+    const task = {
+      id: "T-7", title: "Tidy the rail", description: "Make rows quieter.", status: "doing", version: 3, projectId: null,
+      assigneeAgentId: "a", assignee: { kind: "agent", id: "a", name: "Codex fixture" }, progress: "Halfway", blocker: "", result: null, github: [],
+      createdAt: "2026-10-19T00:00:00Z", updatedAt: "2026-10-20T00:00:00Z", createdBy: person, updatedBy: person,
+    };
+    const writes = (window.handoffWrites = []);
+    const ok = (body) => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) });
+    window.fetch = async (url, init = {}) => {
+      const path = new URL(String(url), location.href).pathname;
+      if (!path.startsWith("/api/collaboration/")) return inner(url, init);
+      const operation = path.slice("/api/collaboration/".length);
+      if (operation === "task_list") return ok({ tasks: [task], counts: { doing: 1 }, hasMore: false });
+      if (operation === "task_get") return ok({ task, activities: [], executions: [], hasMore: false });
+      if (/^(task_(dispatch|update|claim|create|comment|submit_result)|peer_send)$/.test(operation)) {
+        writes.push(operation);
+        throw new Error("Fixture refuses " + operation);
+      }
+      return ok({ links: [], repositories: [], refreshing: false });
+    };
+  });
   const page = await context.newPage();
   page.on("pageerror", (e) => report.errors.push(e.message));
   await page.goto(`http://127.0.0.1:${port}/`);
@@ -131,6 +156,37 @@ try {
   }, first.length);
   const second = await drafts();
   check("selected text lands as an excerpt after the earlier draft", second.startsWith(first + "\n\n") && second.includes(": an excerpt of Codex fixture’s reply") && second.endsWith("> initial fixture"), second.slice(first.length));
+
+  // Slice 2: a task card dragged out of the Tasks board, which covers the rail, onto the drop strip.
+  await page.getByRole("button", { name: "Tasks & messages" }).click();
+  const card = page.locator('.collab-task-card[data-task-id="T-7"]');
+  await card.waitFor();
+  check("no drop strip before a drag", (await page.locator(".handoff-strip").count()) === 0);
+  const before = await drafts();
+  await page.mouse.move(...(await centre(card)));
+  await page.mouse.down();
+  await page.mouse.move((await centre(card))[0] + 40, (await centre(card))[1] + 30, { steps: 5 });
+  await page.locator(".handoff-strip").waitFor();
+  const chip = page.locator('.handoff-strip .handoff-chip[data-agent-id="b"]');
+  check("the drop strip offers the open Agents over the dialog", (await page.locator(".handoff-strip .handoff-chip").count()) === 2);
+  const chipAt = await centre(chip);
+  await page.mouse.move(...chipAt, { steps: 8 });
+  await page.waitForTimeout(100);
+  check("an Agent in the strip lights up as a target", (await chip.getAttribute("class")).includes("handoff-accept"), {
+    chip: await chip.getAttribute("class"),
+    under: await page.evaluate(([x, y]) => { const el = document.elementFromPoint(x, y); return el ? `${el.tagName}.${el.className}` : null; }, chipAt),
+  });
+  await page.screenshot({ path: fileURLToPath(new URL("strip.png", output)) });
+  await page.mouse.up();
+  await page.waitForFunction((length) => {
+    const parts = JSON.parse(localStorage.getItem("yuzuno.composer.v1:b") || '{"parts":[]}').parts;
+    return parts.map((p) => p.text).join("").length > length;
+  }, before.length);
+  const third = await drafts();
+  check("the task lands after the draft as a reference, not an assignment", third.startsWith(before + "\n\nFor reference: task T-7 “Tidy the rail”") && third.includes("This does not assign it to you."), third.slice(before.length));
+  check("the board closed and the strip is gone", (await page.locator(".collaboration").count()) === 0 && (await page.locator(".handoff-strip").count()) === 0);
+  check("no task was changed and no message was sent", (await page.evaluate(() => window.handoffWrites)).length === 0, await page.evaluate(() => window.handoffWrites));
+  await page.screenshot({ path: fileURLToPath(new URL("task-draft.png", output)) });
 
   const writes = await page.evaluate(() => window.connectionFixture.calls.filter((c) => c.method !== "GET").map((c) => c.path));
   check("nothing was sent or written to Core", writes.length === 0, writes);

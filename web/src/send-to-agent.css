@@ -69,3 +69,46 @@
   font-size: calc(9px + var(--font-adjust, 3px));
   pointer-events: none;
 }
+/* Over the bottom of the window, above a dialog's overlay, only while a
+   handoff dragged out of a dialog is in the air. */
+.handoff-strip {
+  position: fixed;
+  z-index: 60;
+  right: 24px;
+  bottom: 24px;
+  left: 24px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, #e2e4d6);
+  border-radius: 10px;
+  background: var(--paper, #fffdf6);
+  box-shadow: 0 8px 24px #3a3f2a26;
+  pointer-events: auto;
+}
+.handoff-strip-label {
+  color: var(--text-secondary, #8f9881);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.handoff-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--line, #e2e4d6);
+  border-radius: 7px;
+  color: var(--ink, #3e4636);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.handoff-chip small {
+  color: var(--text-secondary, #8f9881);
+}
+.handoff-chip.handoff-accept {
+  border: 1px dashed var(--focus, #8fae74);
+  background: var(--accent-wash, #f2f6e8);
+}
+.handoff-chip.handoff-refuse {
+  opacity: 0.55;
+}
