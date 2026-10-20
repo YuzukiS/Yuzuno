@@ -58,7 +58,10 @@ type Review = {
     coveredFileCount?: number;
     deliveredCompleteDiffs: number;
     fullAddedSourceCount?: number;
+    inheritedCoveredCount?: number;
   };
+  kind?: string;
+  continuation?: { parentRound?: number; targets?: { path: string }[] } | null;
   scope?: ReviewScope | null;
   scopeConclusion?: string | null;
   evidence?: ScopeEvidence[] | null;
@@ -353,6 +356,8 @@ export function PrReviews({
             <header>
               <strong>
                 {r.repository}#{r.number} · Round {r.round ?? 1}
+                {r.kind === "continuation" &&
+                  ` · continues round ${r.continuation?.parentRound ?? "?"}`}
               </strong>
               <span>{r.status}</span>
             </header>
@@ -411,6 +416,19 @@ export function PrReviews({
                   {r.coverage.coveredFileCount} of {r.coverage.fileCount} files covered
                   {" · "}{r.coverage.deliveredCompleteDiffs} by complete diff
                   {" · "}{r.coverage.fullAddedSourceCount} by complete added-file source
+                  {r.kind === "continuation" && (
+                    <>{" · "}{r.coverage.inheritedCoveredCount ?? 0} read by round {r.continuation?.parentRound ?? "?"}</>
+                  )}
+                </p>
+              )}
+              {r.kind === "continuation" && (
+                <p className="pr-review-continuation">
+                  Continues round {r.continuation?.parentRound ?? "?"} for the{" "}
+                  {r.continuation?.targets?.length ?? 0}{" "}
+                  {r.continuation?.targets?.length === 1 ? "path" : "paths"} it left unread: a new
+                  reviewer run with its own cost, within what that round left of its
+                  budget. Coverage and conclusion are over both rounds; that round's
+                  findings are kept as it recorded them.
                 </p>
               )}
               <p className="github-hint">

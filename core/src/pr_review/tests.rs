@@ -784,7 +784,7 @@ async fn a_malformed_fixed_sha_starts_no_round() {
     // the round follow as before (store tests above).
     for (base, head) in [(None, None), (Some("a".repeat(40)), Some("b".repeat(40)))] {
         let input: Start = serde_json::from_value(json!({"requestId":"r","taskId":task,"linkId":"7:pull:1","baseSha":base,"headSha":head})).unwrap();
-        assert_eq!(fixed_sha_problem(&input), None);
+        assert_eq!(fixed_sha_problem(input.base_sha.as_deref(), input.head_sha.as_deref()), None);
     }
 }
 
