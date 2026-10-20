@@ -314,6 +314,30 @@ impl Workspace {
     /// OpenCode stored it under its ID; a send whose outcome is unknown is an
     /// `OutcomeUnknown`, and is never sent again.
     pub(crate) async fn opencode_send_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>) -> Result<Value> {
+        let mut sent = false;
+        let result = self.opencode_send_once(id, text, client_id, &mut sent).await;
+        if let (Err(error), false, Some(client)) = (&result, sent, client_id) {
+            // It was never sent, or OpenCode refused it. Its receipt says so,
+            // even if a connection that ended meanwhile settled it as unknown.
+            let (client, message) = (client.to_owned(), error.to_string());
+            let recorded = self.record_meta(id, "opencode/notSent", json!({"clientMessageId":client,"error":message}), move |m| {
+                if let Some(receipt) = m.message_receipts.iter_mut().find(|r| r.input.client_message_id == client) {
+                    if matches!(receipt.status.as_str(), "sending" | "unknown") {
+                        receipt.status = "rejected".into();
+                        receipt.error = Some(message);
+                    }
+                }
+            }).await;
+            if let Err(error) = recorded {
+                eprintln!("Workspace OpenCode receipt not corrected: {error:#}");
+            }
+            self.changed(id);
+        }
+        result
+    }
+
+    /// `sent`: whether OpenCode may have taken the prompt (asked, and not refused).
+    async fn opencode_send_once(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, sent: &mut bool) -> Result<Value> {
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         ensure!(!busy(&d), "OpenCode 正在执行或等待回应；这条消息没有发送");
@@ -338,6 +362,7 @@ impl Workspace {
             d.agent.error = None;
         }).await?;
         self.changed(id);
+        *sent = true;
         let submitted = c.server.submit(&c.session, &message, &text).await;
         let refused = match &submitted {
             Ok(Submission::Refused(status)) => Some(format!("OpenCode 拒绝了这条消息（HTTP {}），它没有收下：{}", status.code, status.body)),
@@ -346,6 +371,7 @@ impl Workspace {
             Ok(Submission::Accepted | Submission::Unknown(_)) => None,
         };
         if let Some(message) = refused {
+            *sent = false;
             let (failed, error) = (turn.clone(), message.clone());
             self.record_update(id, "opencode/promptRefused", json!({"turnId":turn,"error":message}), move |d| {
                 let entry = d.turn_mut(&failed);

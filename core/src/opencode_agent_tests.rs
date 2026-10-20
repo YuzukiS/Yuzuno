@@ -42,3 +42,21 @@ async fn events_of_an_older_connection_or_another_session_change_nothing() {
     assert_eq!(ws.store.detail("oc").unwrap().pending.len(), 1);
     ws.close_agent("oc").await.unwrap();
 }
+
+/// A receipt a connection that ended settled as unknown, for a message that
+/// then was never sent: it says rejected, not unknown.
+#[tokio::test]
+async fn a_message_never_sent_is_rejected_even_once_settled_as_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let mut d = agent(&dir.path().to_string_lossy());
+    // Still running, so the send is refused before anything is sent.
+    d.turns.push(json!({"id":"msg_running","status":"inProgress","items":[]}));
+    d.message_receipts.push(serde_json::from_value(json!({"input":{"clientMessageId":"c1","text":"hi"},
+        "status":"unknown","turnId":null,"error":"settled when the connection ended"})).unwrap());
+    ws.store.insert(&d).unwrap();
+    let refused = ws.opencode_send_locked("oc", "hi".into(), Some("c1")).await.unwrap_err();
+    assert!(refused.to_string().contains("没有发送"), "{refused}");
+    let receipt = &ws.store.detail("oc").unwrap().message_receipts[0];
+    assert_eq!((receipt.status.as_str(), receipt.error.as_deref()), ("rejected", Some(refused.to_string().as_str())));
+}
