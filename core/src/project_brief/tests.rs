@@ -1446,7 +1446,10 @@ async fn a_failed_home_hint_lookup_never_fails_a_task_result() {
     ws.store.db.write().unwrap().execute(
         "INSERT OR REPLACE INTO project_brief_editors(project_id,version,editor_ids) VALUES(?1,1,'not json')", [&project]).unwrap();
     let id = task["id"].as_str().unwrap();
-    assert!(home_hint(&ws.store, &ws.store.db.read().unwrap(), id, "b").is_err());
+    // home_hint takes the task's own key, as task_submit_result passes it.
+    let key: String = ws.store.db.read().unwrap()
+        .query_row("SELECT task_id FROM project_tasks WHERE project_id=?1", [&project], |r| r.get(0)).unwrap();
+    assert!(home_hint(&ws.store, &ws.store.db.read().unwrap(), &key, "b").is_err());
     let submit = |actor: &str, request: &str, version: &Value| call(actor, "task_submit_result", json!({"requestId":request,
         "taskId":id,"expectedVersion":version,"dispatchId":sent["message"]["dispatchId"],"summary":"Found it."}));
     let version = sent["task"]["version"].clone();
