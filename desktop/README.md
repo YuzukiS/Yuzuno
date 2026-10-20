@@ -96,6 +96,23 @@ In-app artifact previews remain part of the workspace GUI.
 
 The `lab-open-failure` Cargo feature makes links to a reserved `.invalid` host fail, so that notice can be checked in a real window. It is for lab builds only, never a release.
 
+## Installer or portable ZIP (Windows)
+
+Releases after desktop 0.2.0 offer two downloads. Desktop 0.2.0 has only the installer, with the older multi-page setup.
+
+- **`yuzuno-desktop-windows-x86_64-setup.exe`, the installer.** It shows one page, then its progress, then opens the app. The app opens its Core as described under [Choose a Core](#choose-a-core): a first install tries `http://127.0.0.1:4317`, and its connection page asks for another address if none answers there.
+  - **The page** shows the app's icon and a title, then names the folder (`%LOCALAPPDATA%\Yuzuno`, or an earlier install's), says it adds Start menu and desktop shortcuts and an Installed apps entry, and says what happens if WebView2 is missing. Its button is **Install**; there are no folder, shortcut or finish pages. `/D=<folder>` on the command line still chooses another folder.
+  - **What it installs:** for your Windows account only, with the notices in `licenses\`. Windows may warn before it runs, since the installer has no Authenticode signature.
+  - **Updates:** it can update itself from the app ([Desktop updates](#desktop-updates)).
+  - **Uninstall:** from Installed apps. Its page can also delete the app's data.
+- **`yuzuno-desktop-windows-x86_64-portable.zip`, the portable copy.** Unzip it anywhere and run `Yuzuno.exe`. Its `README.txt` says the same as this list.
+  - **It does not update itself.** For a newer version, replace its files with a newer ZIP's.
+  - **Its data is outside its folder:** its saved Core in `%APPDATA%\dev.yuzuno.workspace\core.json`, and the window's storage (unsent drafts) in `%LOCALAPPDATA%\dev.yuzuno.workspace`. An installed copy uses the same folders, so the two share them. Uninstalling the installed copy with its delete-data option removes them for both.
+  - **It adds no Start menu entry, shortcut or Installed apps entry.** Deleting the folder removes it; its data stays until you delete those two places.
+  - **It needs WebView2,** as the installed app does.
+
+The installer's script is [`installer/installer.nsi`](installer/installer.nsi): Tauri's template for the pinned CLI, with each change marked `Yuzuno:`. A passive install (`/P`, which the in-app update runs) takes the template's steps unchanged; its window is the same progress page, whose **Show details** opens the steps. With another pinned CLI, take its template again and re-apply the marked changes.
+
 ## Desktop updates
 
 The Windows app updates itself only when it was installed by its own NSIS installer (per user, under `%LOCALAPPDATA%\Yuzuno`), and only through the Core it is connected to at a loopback address. In the app, **Settings → Updates**, under the Workspace service, has a **Desktop app** part that shows the version, a **Check for desktop update** button and, when a newer release exists, its notes and an explicit **Download and install** button. Nothing is downloaded or installed without that click. In a browser, that part only says the app is updated from the app itself. Installing saves drafts, closes the window, runs the installer passively and reopens the new version on the same Core. Core, the Workspace service and its agents keep running.
@@ -137,6 +154,14 @@ node "$env:LOCALAPPDATA\Yuzuno\toolchains\tauri-cli\2.12.3\node_modules\@tauri-a
    ```
 
    It verifies the installer's CRC, reads its compressed data, and passes only if each of the three files is stored there byte for byte.
+4. **Make the portable ZIP** in WSL, from the same build, into the staged release folder:
+
+   ```sh
+   python3 tools/desktop_portable.py <the -setup.exe> --app <target>/release/yuzuno-desktop.exe \
+     --licenses desktop/licenses --version <version> --out <the desktop-<version> folder>
+   ```
+
+   It refuses unless the app and the three notices are stored in the installer byte for byte, so the ZIP carries the installer's own app. It writes `yuzuno-desktop-windows-x86_64-portable.zip`. Core does not serve this file; it is a download from the release page.
 
 The release files are staged under `<target>\release\bundle\desktop-release\desktop-<version>\`, already carrying the asset names Core expects. Publishing them as a `desktop-<version>` GitHub Release is a separate, explicit step. Every installed build verifies against the public key it was built with. Changing the key therefore needs one manual reinstall.
 
