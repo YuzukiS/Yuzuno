@@ -70,6 +70,18 @@ impl Store {
         };
         for raw in pending {
             let mut run: Value = serde_json::from_str(&raw)?;
+            // Its native run had completed and shut down, and its report was
+            // stored first: only the check after the review was interrupted.
+            if run["ledger"]["nativeCompletion"] == "confirmed" && run["conclusion"].is_string() {
+                run["status"] = json!("completed");
+                if run["scope"].is_object() {
+                    run["scope"]["checkAfterReview"] = json!("interrupted");
+                }
+                run["finishedAt"] = json!(now());
+                run["phase"] = json!("completed");
+                self.save_pr_review(&run, None)?;
+                continue;
+            }
             run["status"] = json!("unknown");
             run["conclusion"] = json!("unknown");
             run["error"] = json!("Core restarted before review completion was confirmed");
@@ -155,7 +167,7 @@ impl Store {
             .transpose()?;
         let settings = super::settings::read(&tx)?;
         crate::delivery::store::attach_review(&tx,&task,link,input.base_sha.as_deref(),input.head_sha.as_deref(),&serde_json::to_value(&settings)?,&input.request_id,id)?;
-        let data = json!({"requestId":input.request_id,"notificationRecipient":recipient,"requestedHarness":settings.harness,"actualHarness":null,"reviewId":id,"round":round,"requestedBy":author,"source":source,"id":id,"taskId":task,"linkId":link,"repository":linked["repository"],"repositoryId":linked["repositoryId"],"number":linked["number"],"url":linked["url"],"status":"preparing","phase":"Fetching fixed PR revision","requestedModel":settings.model,"actualModel":null,"requestedBaseSha":input.base_sha,"requestedHeadSha":input.head_sha,"baseSha":null,"headSha":null,"mergeBaseSha":null,"createdAt":now(),"finishedAt":null,"conclusion":"unknown","findings":[],"error":null,"policyVersion":super::policy::VERSION,"coveragePolicyVersion":super::source::COVERAGE_VERSION,"reasonCodes":[],"acknowledgedUnreviewable":input.acknowledge_unreviewable == Some(true)});
+        let data = json!({"requestId":input.request_id,"notificationRecipient":recipient,"requestedHarness":settings.harness,"actualHarness":null,"reviewId":id,"round":round,"requestedBy":author,"source":source,"id":id,"taskId":task,"linkId":link,"repository":linked["repository"],"repositoryId":linked["repositoryId"],"number":linked["number"],"url":linked["url"],"status":"preparing","phase":"Fetching fixed PR revision","requestedModel":settings.model,"actualModel":null,"requestedBaseSha":input.base_sha,"requestedHeadSha":input.head_sha,"baseSha":null,"headSha":null,"mergeBaseSha":null,"createdAt":now(),"finishedAt":null,"conclusion":"unknown","findings":[],"error":null,"policyVersion":super::policy::VERSION,"coveragePolicyVersion":super::source::COVERAGE_VERSION,"reasonCodes":[],"acknowledgedUnreviewable":input.acknowledge_unreviewable == Some(true),"ledger":{"version":super::continuation::LEDGER_VERSION}});
         tx.execute("INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,?3,'preparing',?4)", params![id,task,link,data.to_string()])?;
         let mut payload = serde_json::to_value(input)?;
         payload["taskId"] = json!(task);
@@ -170,6 +182,107 @@ impl Store {
         )?;
         tx.commit()?;
         Ok((data, true))
+    }
+
+    pub(crate) fn previous_pr_review_continuation(
+        &self,
+        actor: Option<&str>,
+        input: &super::continuation::Continue,
+    ) -> Result<Option<Value>> {
+        let db = self.db.read()?;
+        previous_continuation(self, &db, actor, input)
+    }
+    /// A continuation exists only once its parent is admitted from its own
+    /// stored record, in the same transaction that reserves the budget, so
+    /// two requests can never both reserve it. Returns the child, the
+    /// parent it continues, and whether it was created now.
+    pub(crate) fn create_pr_review_continuation(
+        &self,
+        actor: Option<&str>,
+        input: &super::continuation::Continue,
+        id: &str,
+    ) -> Result<(Value, Option<Value>, bool)> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        if let Some(run) = previous_continuation(self, &tx, actor, input)? {
+            return Ok((run, None, false));
+        }
+        let (author, source) = crate::collaboration_store::actor_context(self, &tx, actor)?;
+        let task = crate::collaboration_store::task_key(&tx, &input.task_id)?.0;
+        let stored: Option<(String, String)> = tx
+            .query_row("SELECT link_id,data FROM pr_reviews WHERE id=?1 AND task_id=?2", params![input.review_id, task], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        let (link, parent) = stored.context("No review with this reviewId belongs to this task")?;
+        let parent: Value = serde_json::from_str(&parent)?;
+        let linked = crate::github::store::task_links(&tx, &task)?
+            .into_iter()
+            .find(|v| v["id"] == link.as_str())
+            .context("PR is no longer linked to this task")?;
+        let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND status IN ('preparing','running'))", params![task,link], |r| r.get(0))?;
+        ensure!(!busy, "A review for this PR is already running");
+        // One continuation per parent. Only a child that provably started no
+        // model (it failed before its native start was recorded) leaves it.
+        let used: Option<String> = tx
+            .query_row("SELECT data FROM pr_reviews WHERE task_id=?1 AND json_extract(data,'$.parentReviewId')=?2 AND NOT (status='failed' AND json_extract(data,'$.nativeStartedAt') IS NULL) ORDER BY rowid LIMIT 1", params![task, input.review_id], |r| r.get(0))
+            .optional()?;
+        if let Some(used) = used {
+            let used: Value = serde_json::from_str(&used)?;
+            anyhow::bail!(
+                "Round {} already has continuation round {} ({}, {}); a review chain gets at most one, and its budget isn't refilled. Report the result to whoever decides; a new full round needs their authorization.",
+                parent["round"], used["round"], used["id"].as_str().unwrap_or_default(), used["status"].as_str().unwrap_or("unknown")
+            );
+        }
+        let settings = super::settings::read(&tx)?;
+        let config = serde_json::to_value(&settings)?;
+        let admitted = super::continuation::admit(&parent, input, &config).map_err(|refusal| anyhow::anyhow!("{refusal} No continuation was started."))?;
+        // At most two started rounds of this PR, the continuation included,
+        // whichever task they belong to. Only a round recorded with a ledger
+        // that failed before its native start was recorded provably started
+        // nothing; every other one, older history and unknown ones included,
+        // counts.
+        let started: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM pr_reviews WHERE json_extract(data,'$.repositoryId')=?1 AND json_extract(data,'$.number')=?2
+               AND NOT (status='failed' AND json_extract(data,'$.ledger.version') IS ?3 AND json_extract(data,'$.nativeStartedAt') IS NULL)",
+            params![linked["repositoryId"].as_i64(), linked["number"].as_i64(), super::continuation::LEDGER_VERSION as i64],
+            |r| r.get(0),
+        )?;
+        ensure!(
+            started < super::continuation::MAX_STARTED_ROUNDS,
+            "This PR already has {started} review rounds that started or may have started, across tasks; a continuation would be one more than the {} it may use. Report the result to whoever decides. No continuation was started.",
+            super::continuation::MAX_STARTED_ROUNDS
+        );
+        let count: i64 = tx.query_row("SELECT COUNT(*) FROM pr_reviews WHERE task_id=?1", [&task], |r| r.get(0))?;
+        ensure!(count < 1000, "This task has reached its review history limit");
+        let round: i64 = tx.query_row("SELECT COUNT(*)+1 FROM pr_reviews WHERE task_id=?1 AND link_id=?2", params![task, link], |r| r.get(0))?;
+        let recipient = actor
+            .map(|id| crate::collaboration_store::agent_actor(self, &tx, id))
+            .transpose()?;
+        // A delivery of this exact candidate counts the continuation as one
+        // of its authorized attempts, never as an extra one.
+        crate::delivery::store::attach_review(&tx, &task, &link, Some(&input.base_sha), Some(&input.head_sha), &config, &input.request_id, id).map_err(|error| {
+            if error.to_string() == "Registered review already exists" {
+                anyhow::anyhow!("This candidate's delivery round already has its review. A continuation is another attempt: authorize it within the delivery's limit with delivery_continue first. No continuation was started.")
+            } else {
+                error
+            }
+        })?;
+        let data = json!({"requestId":input.request_id,"notificationRecipient":recipient,"requestedHarness":settings.harness,"actualHarness":null,"reviewId":id,"round":round,"requestedBy":author,"source":source,"id":id,"taskId":task,"linkId":link,"repository":linked["repository"],"repositoryId":linked["repositoryId"],"number":linked["number"],"url":linked["url"],"status":"preparing","phase":"Fetching fixed PR revision","requestedModel":settings.model,"actualModel":null,"requestedBaseSha":input.base_sha,"requestedHeadSha":input.head_sha,"baseSha":null,"headSha":null,"mergeBaseSha":null,"createdAt":now(),"finishedAt":null,"conclusion":"unknown","findings":[],"error":null,"policyVersion":super::policy::VERSION,"coveragePolicyVersion":super::source::COVERAGE_VERSION,"reasonCodes":[],"acknowledgedUnreviewable":input.acknowledge_unreviewable == Some(true),"ledger":{"version":super::continuation::LEDGER_VERSION},
+            "kind":"continuation","parentReviewId":parent["id"],"continuation":super::continuation::record(&parent, &admitted)});
+        tx.execute("INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,?3,'preparing',?4)", params![id, task, link, data.to_string()])?;
+        let mut payload = serde_json::to_value(input)?;
+        payload["taskId"] = json!(task);
+        tx.execute("INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,'review_continue',?2,?3,?4)", params![actor_key(actor), input.request_id, payload.to_string(), json!({"reviewId":id}).to_string()])?;
+        let targets = admitted["targets"].as_array().map_or(0, Vec::len);
+        crate::collaboration_store::activity(
+            &tx,
+            &task,
+            "comment",
+            &author,
+            &source,
+            json!({"body":format!("Requested code review round {round} · {id}: a continuation of round {} for {targets} unread path{}, within that round's remaining budget. It is a new reviewer run with its own cost. Review execution and task acceptance remain separate.", parent["round"], if targets == 1 { "" } else { "s" }),"reviewId":id}),
+        )?;
+        tx.commit()?;
+        Ok((data, Some(parent), true))
     }
 
     pub(crate) fn save_pr_review(&self, data: &Value, report: Option<&str>) -> Result<()> {
@@ -200,6 +313,9 @@ impl Store {
                 let public_task =
                     format!("T-{}", crate::collaboration_store::task_key(&tx, task)?.1);
                 let mut body = format!("Code review {} has ended: {status}. Model conclusion: {}. Task {public_task}; PR {}. Fixed base {}, head {}, merge base {}. Read the retained report with review_get(taskId={public_task}, reviewId={id}). Findings, CI, task acceptance and merging are separate; this notification does not authorize another review or automatic rework.{}", data["round"], data["conclusion"].as_str().unwrap_or("unknown"), data["url"].as_str().unwrap_or("unknown"), data["baseSha"].as_str().unwrap_or("not resolved"), data["headSha"].as_str().unwrap_or("not resolved"), data["mergeBaseSha"].as_str().unwrap_or("not resolved"), data["error"].as_str().map(|e|format!(" Error: {e}")).unwrap_or_default());
+                if data["kind"] == "continuation" {
+                    body.push_str(&format!(" It continued round {} within what that round left of its budget, as a new reviewer run; its coverage and conclusion are over both rounds.", data["continuation"]["parentRound"]));
+                }
                 if let Some(codes) = data["reasonCodes"].as_array().filter(|codes| !codes.is_empty()) {
                     body.push_str(&format!(" Review reasons: {}.", codes.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")));
                 }
@@ -319,6 +435,8 @@ impl Store {
                 "number",
                 "url",
                 "round",
+                "kind",
+                "parentReviewId",
                 "status",
                 "phase",
                 "conclusion",
@@ -394,6 +512,30 @@ fn actor_key(actor: Option<&str>) -> String {
     actor
         .map(|a| format!("agent:{a}"))
         .unwrap_or_else(|| "user".into())
+}
+/// The same requestId returns the same continuation and never starts
+/// another model; another payload under it is refused.
+fn previous_continuation(
+    store: &Store,
+    db: &Connection,
+    actor: Option<&str>,
+    input: &super::continuation::Continue,
+) -> Result<Option<Value>> {
+    crate::collaboration_store::actor_context(store, db, actor)?;
+    let task = crate::collaboration_store::task_key(db, &input.task_id)?.0;
+    let mut expected = serde_json::to_value(input)?;
+    expected["taskId"] = json!(task);
+    let receipt: Option<(String, String)> = db.query_row("SELECT input_json,response_json FROM collaboration_requests WHERE actor=?1 AND operation='review_continue' AND request_id=?2", params![actor_key(actor), input.request_id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+    let Some((payload, response)) = receipt else {
+        return Ok(None);
+    };
+    ensure!(
+        serde_json::from_str::<Value>(&payload)? == expected,
+        "idempotency_conflict: requestId already has a different continuation payload"
+    );
+    let response: Value = serde_json::from_str(&response)?;
+    let raw: String = db.query_row("SELECT data FROM pr_reviews WHERE id=?1", [response["reviewId"].as_str().context("Invalid review receipt")?], |r| r.get(0))?;
+    Ok(Some(serde_json::from_str(&raw)?))
 }
 fn previous(
     store: &Store,

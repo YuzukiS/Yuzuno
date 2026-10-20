@@ -1002,9 +1002,80 @@ async fn answered(ws: &Arc<Workspace>, job: &Value, reply: Value) -> Result<()> 
     if ACKNOWLEDGING.contains(&status) && job["remote"]["acknowledged"] != true {
         note(ws, job, json!({"acknowledged": true, "acknowledgedAt": now()}), None).await?;
     }
-    match evidence(job, &reply) {
-        Some(value) => record(ws, job, value).await,
-        None => Ok(()),
+    if let Some(value) = evidence(job, &reply) {
+        record(ws, job, value).await?;
+    }
+    // Whether the attempt's own scope there is frozen, as the machine read it
+    // from its cgroup: settles a pause or resume whose reply was lost, and
+    // shows one made outside Yuzuno (pause.rs reconcile_remote_pause). The
+    // user's pause or resume holds the jobs gate from its intent to its
+    // answer, so this waits for one in progress, and a reading taken before
+    // one changed the job is not applied (review R1).
+    if matches!(status, "running" | "stopping") {
+        if let Some(freezer) = reply.get("freezer").filter(|freezer| freezer.is_object()).cloned() {
+            let _gate = ws.jobs.gate.lock().await;
+            let seen = job.clone();
+            if ws.stored(move |s| s.reconcile_remote_pause(&seen, &freezer)).await? {
+                changed(ws);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Why this job cannot be paused, or None. A remote attempt can be paused
+/// only when it runs in a scope of its own on its machine (its start's
+/// evidence names the scope that holds its limits), which the helper freezes
+/// after proving it is this attempt's; one without (a record-only machine, or
+/// an account that does not linger) is never paused by other means.
+pub(super) fn pause_refusal(job: &Value) -> Option<String> {
+    let name = machine_name(job);
+    match job["executor"]["kind"].as_str() {
+        None => None,
+        Some(SSH) if job["result"]["started"]["limits"]["held"]["unit"].is_string() => None,
+        Some(SSH) => Some(format!(
+            "Pause is not available for this job on {name}: it runs without a scope of its own there (no limits are held for it: a record-only machine, or an account that does not linger), and pause freezes only an attempt's own scope; nothing was changed")),
+        Some(_) => Some(format!("Pause is not available for jobs on {name}: this executor has no pause, so nothing was changed")),
+    }
+}
+
+/// The user's pause or resume of a remote attempt, as its machine answered:
+/// {state, reason, evidence}, as host::control answers for local jobs. A lost
+/// reply is unknown, settled later by what the machine reports (answered).
+pub(super) async fn control(ws: &Arc<Workspace>, job: &Value, mode: &str) -> Value {
+    control_with(ws, job, mode, &Programs { ssh: SSH, windows: None }).await
+}
+
+pub(super) async fn control_with(ws: &Arc<Workspace>, job: &Value, mode: &str, programs: &Programs<'_>) -> Value {
+    let name = machine_name(job);
+    let (done, not_done) = if mode == "pause" { ("paused", "notPaused") } else { ("resumed", "notResumed") };
+    let unknown = |why: String| json!({"state": "unknown",
+        "reason": format!("{name} did not confirm the {mode}: {why}. Whether it took hold is known when the machine answers again")});
+    let machine = match machine_of(ws, job).await {
+        Ok(machine) => machine,
+        Err(error) => return json!({"state": not_done, "reason": format!("{name} is not registered now ({error:#}); nothing was {done}")}),
+    };
+    let workspace = match workspace_key(ws).await {
+        Ok(key) => key,
+        Err(error) => return json!({"state": not_done, "reason": format!("{error:#}; nothing was {done}")}),
+    };
+    match call(programs, &machine, bound(job, &workspace, mode)).await {
+        Reply::Answer(reply) => {
+            let reply = from_pinned(job, reply);
+            match reply["status"].as_str().unwrap_or_default() {
+                "control" if reply["state"].is_string() => json!({"state": reply["state"], "reason": reply["reason"],
+                    "evidence": reply["evidence"]}),
+                "other_host" => json!({"state": not_done,
+                    "reason": format!("{name} now reaches a different machine; nothing was {done} there")}),
+                "absent" | "conflict" => json!({"state": not_done,
+                    "reason": format!("{name} has no record of this attempt ({}); nothing was {done}",
+                        reply["reason"].as_str().unwrap_or("absent"))}),
+                status => unknown(format!("it answered {status}")),
+            }
+        }
+        // Refused before anything was done.
+        Reply::Refused(message) => json!({"state": not_done, "reason": format!("{name} refused the {mode}: {message}")}),
+        Reply::NoAnswer(error) | Reply::Broken(error) | Reply::Unusable(error) => unknown(error),
     }
 }
 
@@ -1258,7 +1329,7 @@ pub(super) fn capabilities() -> Value {
         "slots": SLOTS,
         "admission": "Per machine: at most maxJobs attempts (2 unless set), within the machine's own budget when one is set; this host's budget is not used",
         "gpu": "unavailable",
-        "pause": "unavailable",
+        "pause": "Only for an attempt that runs in a scope of its own on that machine (its limits are held there: strict, or limited on an account that lingers): its scope is frozen through the account's systemd and read back from its cgroup, as for local jobs; its memory and the machine's reservation stay, and its timeout keeps counting. Otherwise unavailable, with the reason: nothing is stopped with signals instead",
         "inputs": "Files on that machine, frozen there by SHA-256 at submit and checked again there before the command runs; one that changed stops the start",
         "artifacts": "Checked on that machine after a clean exit, as for local jobs; recorded with path, size and SHA-256, and whether a file was already at the path before the command ran (noted, not judged: a file left there earlier passes if it meets the rules); never copied here",
         "outputs": "unavailable",

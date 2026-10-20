@@ -731,8 +731,9 @@ async fn remote_requests_are_checked_and_pause_and_stages_are_unavailable() {
     assert!(error.contains("machineId (a remote machine) is not available for runs of stages"), "{error}");
     let first = submit(&lab, "pausable", "sleep 5");
     until(&lab, &lab.ssh, &first, |j| j["status"] == "running").await;
+    // No scope of its own on this machine (the lab's account holds nothing).
     let error = lab.ws.store.request_job_pause(first["id"].as_str().unwrap(), false).unwrap_err().to_string();
-    assert!(error.contains("Pause is not available for jobs on lab box"), "{error}");
+    assert!(error.starts_with("Pause is not available for this job on lab box: it runs without a scope of its own there"), "{error}");
     cancel(&lab, &first);
     until(&lab, &lab.ssh, &first, |j| j["reserved"] == false).await;
 }
@@ -1837,4 +1838,206 @@ async fn a_wake_during_a_pass_that_found_nothing_runs_another_pass() {
     let again = tokio::time::timeout(Duration::from_secs(10), second.notified()).await;
     looping.abort();
     assert!(again.is_ok(), "the wake that came during the pass got no pass of its own ({} pass(es))", passes.load(Ordering::SeqCst));
+}
+
+/// Pause on another machine (T-108): only an attempt that runs in a scope of
+/// its own there, as its start's evidence names it; Windows has no pause.
+#[test]
+fn only_an_attempt_in_a_scope_of_its_own_can_be_paused() {
+    assert_eq!(remote::pause_refusal(&json!({"executor": null})), None);
+    let ssh = |held: Value| json!({"executor": {"kind": "ssh", "machineName": "lab box"},
+        "result": {"started": {"limits": {"mode": "limited", "held": held}}}});
+    assert_eq!(remote::pause_refusal(&ssh(json!({"unit": "yuzuno-remote-job-a.scope"}))), None);
+    for bare in [ssh(Value::Null), json!({"executor": {"kind": "ssh", "machineName": "lab box"}})] {
+        assert!(remote::pause_refusal(&bare).unwrap().starts_with(
+            "Pause is not available for this job on lab box: it runs without a scope of its own there"));
+    }
+    assert_eq!(remote::pause_refusal(&json!({"executor": {"kind": "windows", "machineName": "Windows on this PC"}})).unwrap(),
+        "Pause is not available for jobs on Windows on this PC: this executor has no pause, so nothing was changed");
+}
+
+/// A stand-in machine that answers every request with `reply`, echoing the
+/// call's nonce as the helper does; `<name>.asked` exists once it was called.
+fn replying(lab: &Lab, name: &str, reply: &Value) -> String {
+    let file = lab.dir.path().join(format!("{name}.json"));
+    std::fs::write(&file, reply.to_string()).unwrap();
+    script(lab.dir.path().join(name), format!(
+        "#!/bin/sh\n: > {}.asked\nexec python3 -c 'import json,sys; r=json.load(sys.stdin); print(\"YUZUNO-JOBS-REPLY \" + r[\"replyNonce\"] + \" \" + open(sys.argv[1]).read().strip())' {}\n",
+        lab.dir.path().join(name).display(), file.display()))
+}
+
+async fn ask_pause(lab: &Lab, job: &Value, program: &str) -> Value {
+    remote::control_with(&lab.ws, job, "pause", &remote::Programs { ssh: program, windows: None }).await
+}
+
+/// The running attempt's status as a machine reports it in a scope of its own
+/// there, with what it read of that scope's freezer, if anything.
+fn scoped_status(running: &Value, freezer: Value) -> Value {
+    let started = &running["result"]["started"];
+    let unit = format!("yuzuno-remote-job-{}.scope", running["attempt"].as_str().unwrap());
+    let mut limits = started["limits"].clone();
+    limits["held"] = json!({"unit": unit, "cgroup": format!("/user.slice/{unit}")});
+    let mut reply = json!({"status": "running", "hostId": host_a(), "processes": 1,
+        "started": {"startedAtUnix": started["at"], "pgid": started["pgid"], "bootId": started["bootId"], "limits": limits}});
+    if !freezer.is_null() {
+        reply["freezer"] = freezer;
+    }
+    reply
+}
+
+/// Drive a reconciliation pass until the stand-in machine `name` was asked,
+/// then a while longer: its reply must still wait for the jobs gate.
+async fn waits_for_gate<F: std::future::Future<Output = ()>>(lab: &Lab, name: &str, pass: &mut std::pin::Pin<Box<F>>) {
+    let asked = lab.dir.path().join(format!("{name}.asked"));
+    let ended = || format!("the pass ended while the jobs gate was held ({name} asked: {}): its status reply did not wait for the user's pause or resume",
+        asked.exists());
+    for _ in 0..100 {
+        if asked.exists() {
+            break;
+        }
+        assert!(tokio::time::timeout(Duration::from_millis(50), pass.as_mut()).await.is_err(), "{}", ended());
+    }
+    assert!(asked.exists(), "{name} was never asked");
+    assert!(tokio::time::timeout(Duration::from_millis(500), pass.as_mut()).await.is_err(), "{}", ended());
+}
+
+/// The machine's answer to a pause or resume is recorded as for local jobs.
+/// One that does not come back is unknown, never paused or running, until
+/// what the machine reports of the scope (its freezer) settles it.
+#[tokio::test]
+async fn a_remote_pause_is_what_the_machine_answered_and_its_status_settles_one_left_open() {
+    let lab = lab();
+    let first = submit(&lab, "pausable", "sleep 30");
+    let running = until(&lab, &lab.ssh, &first, |j| j["status"] == "running").await;
+    let id = first["id"].as_str().unwrap();
+    // The helper there refuses too: no scope of its own, nothing changed.
+    let answer = ask_pause(&lab, &running, &lab.ssh).await;
+    assert_eq!(answer["state"], "notPaused", "{answer}");
+    assert!(answer["reason"].as_str().unwrap().contains(
+        "Pause freezes only an attempt's own scope, and this attempt runs without a scope of its own on this machine"), "{answer}");
+    let answer = ask_pause(&lab, &running, &lab.down).await;
+    assert_eq!(answer["state"], "unknown", "{answer}");
+    assert!(answer["reason"].as_str().unwrap().starts_with("lab box did not confirm the pause: "), "{answer}");
+    let answer = ask_pause(&lab, &running, &lab.other).await;
+    assert_eq!((answer["state"].as_str(), answer["reason"].as_str()),
+        (Some("notPaused"), Some("lab box now reaches a different machine; nothing was paused there")));
+    // Where the machine reports the attempt in a scope of its own (as one that
+    // holds its limits), the user's pause goes as pause::control sends it.
+    let unit = format!("yuzuno-remote-job-{}.scope", running["attempt"].as_str().unwrap());
+    let status = |freezer: Value| scoped_status(&running, freezer);
+    // Core keeps the first running report: this one, once the machine
+    // answers again after a lost connection.
+    tick(&lab, &lab.down).await;
+    assert_eq!(job(&lab, &first)["status"], "unknown");
+    tick(&lab, &replying(&lab, "ssh-scoped", &status(Value::Null))).await;
+    assert_eq!(remote::pause_refusal(&job(&lab, &first)), None);
+    let (asked, act) = lab.ws.store.request_job_pause(id, false).unwrap();
+    assert!(act);
+    assert_eq!(asked["pause"]["state"], "requested");
+    let frozen = json!({"status": "control", "state": "paused", "hostId": host_a(),
+        "reason": "Paused: every process in its scope on this machine is frozen; its memory and the machine's reservation are kept",
+        "evidence": {"unit": unit, "freezer": {"populated": true, "frozen": true}}});
+    let answer = ask_pause(&lab, &asked, &replying(&lab, "ssh-paused", &frozen)).await;
+    assert_eq!(answer["state"], "paused", "{answer}");
+    let paused = lab.ws.store.record_job_pause(id, &running["attempt"], false, &answer).unwrap();
+    assert_eq!((paused["pause"]["state"].as_str(), paused["status"].as_str(), paused["reserved"].as_bool()),
+        (Some("paused"), Some("running"), Some(true)));
+    let mail = lab.ws.store.collaboration_call(Some("a"), "peer_read", json!({})).unwrap()["messages"].clone();
+    let told = mail.as_array().unwrap().iter().find(|m| m["metadata"]["status"] == "paused").unwrap().clone();
+    assert!(told["body"].as_str().unwrap().starts_with(&format!("Job pausable ({id}) on lab box was paused by the user")), "{told}");
+    // Its status now reports the scope running: thawed outside Yuzuno, said so.
+    let thawed = || json!({"populated": true, "frozen": false});
+    tick(&lab, &replying(&lab, "ssh-thawed", &status(thawed()))).await;
+    let now = job(&lab, &first);
+    assert_eq!(now["pause"]["state"], "unknown", "{now}");
+    assert!(now["pause"]["reason"].as_str().unwrap().contains("thawed outside Yuzuno"), "{now}");
+    // Frozen again, as the machine reads it: paused once more.
+    tick(&lab, &replying(&lab, "ssh-frozen", &status(json!({"populated": true, "frozen": true})))).await;
+    assert_eq!(job(&lab, &first)["pause"]["state"], "paused");
+    // A resume whose reply is lost is unknown, never running, until the
+    // machine reports the scope thawed: then it is resumed.
+    let (asked, act) = lab.ws.store.request_job_pause(id, true).unwrap();
+    assert!(act);
+    let lost = remote::control_with(&lab.ws, &asked, "resume", &remote::Programs { ssh: &lab.down, windows: None }).await;
+    let unsure = lab.ws.store.record_job_pause(id, &running["attempt"], true, &lost).unwrap();
+    assert_eq!((unsure["pause"]["state"].as_str(), unsure["pause"]["intent"].as_str()), (Some("unknown"), Some("resume")));
+    tick(&lab, &replying(&lab, "ssh-thawed", &status(thawed()))).await;
+    let resumed = job(&lab, &first);
+    assert!(resumed.get("pause").is_none(), "{resumed}");
+    assert_eq!(resumed["pauses"].as_array().unwrap().len(), 1, "{resumed}");
+    // Cancel still reaches the attempt.
+    cancel(&lab, &first);
+    let ended = until(&lab, &lab.ssh, &first, |j| j["reserved"] == false).await;
+    assert_eq!(ended["status"], "cancelled", "{ended}");
+}
+
+/// A status reply that read the scope while the user's pause or resume was
+/// out (review R1): it waits for that operation's answer to be recorded, as
+/// pause.rs control holds the jobs gate from intent to answer, and a reading
+/// taken before the operation changed the job is not applied. Each resume is
+/// confirmed and told once, and a reading from before one never calls the
+/// resumed job frozen outside Yuzuno.
+#[tokio::test]
+async fn a_status_read_around_a_resume_settles_it_once() {
+    let lab = lab();
+    let first = submit(&lab, "pausable", "sleep 30");
+    let running = until(&lab, &lab.ssh, &first, |j| j["status"] == "running").await;
+    let (id, attempt) = (first["id"].as_str().unwrap(), &running["attempt"]);
+    tick(&lab, &lab.down).await;
+    tick(&lab, &replying(&lab, "ssh-scoped", &scoped_status(&running, Value::Null))).await;
+    let paused = json!({"state": "paused", "evidence": {},
+        "reason": "Paused: every process in its scope on this machine is frozen; its memory and the machine's reservation are kept"});
+    let pause = || {
+        assert!(lab.ws.store.request_job_pause(id, false).unwrap().1);
+        lab.ws.store.record_job_pause(id, attempt, false, &paused).unwrap()
+    };
+    let resume = || {
+        assert!(lab.ws.store.request_job_pause(id, true).unwrap().1);
+        lab.ws.store.record_job_pause(id, attempt, true, &json!({"state": "running"})).unwrap()
+    };
+    assert_eq!(pause()["pause"]["state"], "paused");
+
+    // The scope reads thawed while the user's resume is out: the reply waits
+    // for the resume's answer, and the resume is confirmed once.
+    let gate = lab.ws.jobs.gate.lock().await;
+    assert!(lab.ws.store.request_job_pause(id, true).unwrap().1);
+    let thawed = replying(&lab, "ssh-thawed", &scoped_status(&running, json!({"populated": true, "frozen": false})));
+    let mut pass = Box::pin(tick(&lab, &thawed));
+    waits_for_gate(&lab, "ssh-thawed", &mut pass).await;
+    let answered = lab.ws.store.record_job_pause(id, attempt, true, &json!({"state": "running"})).unwrap();
+    assert!(answered.get("pause").is_none(), "{answered}");
+    drop(gate);
+    pass.await;
+    let now = job(&lab, &first);
+    assert!(now.get("pause").is_none(), "{now}");
+    assert_eq!(now["pauses"].as_array().unwrap().len(), 1, "{now}");
+    assert!(now["pauses"][0]["requestedAt"].is_string() && now["pauses"][0]["confirmedAt"].is_string(), "{now}");
+
+    // Paused again; a status call reads the scope still frozen, and its reply
+    // comes back after the user's resume was answered: it is not applied.
+    assert_eq!(pause()["pause"]["state"], "paused");
+    let gate = lab.ws.jobs.gate.lock().await;
+    let frozen = replying(&lab, "ssh-frozen", &scoped_status(&running, json!({"populated": true, "frozen": true})));
+    let mut pass = Box::pin(tick(&lab, &frozen));
+    waits_for_gate(&lab, "ssh-frozen", &mut pass).await;
+    assert!(resume().get("pause").is_none());
+    drop(gate);
+    pass.await;
+    let now = job(&lab, &first);
+    assert!(now.get("pause").is_none(), "{now}");
+    assert_eq!(now["pauses"].as_array().unwrap().len(), 2, "{now}");
+    // The next reading, taken after the resume, is applied as usual.
+    tick(&lab, &frozen).await;
+    let now = job(&lab, &first);
+    assert_eq!((now["pause"]["state"].as_str(), now["pause"]["requestedAt"].as_str()), (Some("paused"), None), "{now}");
+    assert!(now["pause"]["reason"].as_str().unwrap().starts_with("Frozen outside Yuzuno"), "{now}");
+
+    // Told once per change: two pauses by the user, one frozen outside it,
+    // two resumes.
+    let mail = lab.ws.store.collaboration_call(Some("a"), "peer_read", json!({})).unwrap()["messages"].clone();
+    let told = |status: &str| mail.as_array().unwrap().iter().filter(|m| m["metadata"]["status"] == status).count();
+    assert_eq!((told("paused"), told("resumed")), (3, 2), "{mail}");
+    cancel(&lab, &first);
+    let ended = until(&lab, &lab.ssh, &first, |j| j["reserved"] == false).await;
+    assert_eq!(ended["status"], "cancelled", "{ended}");
 }

@@ -88,6 +88,8 @@ type Job = {
     artifacts?: Artifact[] | null;
     /** The machine a remote job's artifacts were checked on, and stay on. */
     artifactsOn?: { name: string } | null;
+    /** A remote attempt's start: the scope holding its limits there, if any. */
+    started?: { limits?: { held?: { unit?: string } | null } | null } | null;
     cost?: Cost | null;
     progress?: Progress | null;
   };
@@ -171,6 +173,17 @@ const statusName: Record<string, string> = {
   interrupted: "Interrupted",
   unknown: "Outcome unknown",
 };
+/** Why this job cannot be paused, or null; Core's rule (remote.rs
+ * pause_refusal): on another machine only an attempt that runs in a scope of
+ * its own there, and never on Windows. */
+const pauseRefusal = (job: Job) =>
+  !job.executor || job.executor.kind === "local"
+    ? null
+    : job.executor.kind === "ssh"
+      ? job.result?.started?.limits?.held?.unit
+        ? null
+        : `Not available: this job runs without a scope of its own on ${job.machine.name} (no limits are held for it there), and pause freezes only an attempt's own scope`
+      : `Not available for jobs on ${job.machine.name}`;
 /** A running job's pause: it keeps status running and every reservation. */
 const pauseOf = (job: Job) =>
   (job.status === "running" || job.status === "cancelling") && job.pause?.state
@@ -1097,6 +1110,7 @@ function JobDetail({
   // Resume whenever a pause was asked for or found, also to abandon one that
   // has not taken hold; pause again after a pause that failed.
   const resume = !!pause && !(pause.state === "failed" && pause.intent === "pause");
+  const refused = resume ? null : pauseRefusal(job);
   return (
     <>
       <JobDetailHeading
@@ -1113,12 +1127,14 @@ function JobDetail({
             className="secondary-button"
             // Only while a request is in flight: a resume that has not taken
             // hold (still frozen, or Core restarted mid-way) is asked again.
-            disabled={busy}
+            // A job that cannot be paused says why.
+            disabled={busy || !!refused}
             onClick={() => onPause(resume)}
             title={
-              resume
+              refused ??
+              (resume
                 ? "Continue the same processes"
-                : "Freeze every process of this job. Its memory, GPU memory and reservation stay; GPU work already sent finishes first."
+                : "Freeze every process of this job. Its memory, GPU memory and reservation stay; GPU work already sent finishes first.")
             }
           >
             {resume ? <Play size={12} aria-hidden="true" /> : <Pause size={12} aria-hidden="true" />}
@@ -1153,7 +1169,9 @@ function JobDetail({
       {pause ? (
         <p className="job-pause-note">
           {pause.state === "paused"
-            ? "Paused. Memory and GPU memory stay reserved; only you can resume it."
+            ? job.executor && job.executor.kind !== "local"
+              ? `Paused on ${job.machine.name}. Its memory and the machine's reservation stay; only you can resume it.`
+              : "Paused. Memory and GPU memory stay reserved; only you can resume it."
             : pause.reason}
           {ends && ` The timeout still counts: it stops at ${ends.toLocaleString()}.`}
           {job.status === "cancelling" && " Cancelling resumes it briefly while it stops."}

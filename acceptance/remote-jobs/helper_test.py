@@ -821,5 +821,198 @@ class InputsAndArtifactsTests(unittest.TestCase):
         self.assertEqual(remote_job.digest(dict(base, inputs=[], artifacts=[])), v1)
 
 
+class PauseTests(unittest.TestCase):
+    """Pause and resume of an attempt's own scope (T-108), against this host's
+    systemd user manager where it has one. The data root is an absolute folder
+    here and HOME is this account's own (Lead seq 4297)."""
+
+    LIMITS = {"mode": "limited", "cpuMillis": 500, "memoryMiB": 128, "swapMiB": 0}
+    TICKS = "trap 'echo term > term.txt; exit 0' TERM; while :; do date +%s%N >> ticks; sleep 0.05; done"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.data, self.work = base / "data", base / "work"
+        self.work.mkdir()
+        machine = base / "machine-id"
+        machine.write_text(MACHINE + "\n")
+        boot = base / "boot_id"
+        boot.write_text(Path("/proc/sys/kernel/random/boot_id").read_text())
+        self.env = dict(os.environ, YUZUNO_JOBS_MACHINE_ID_FILE=str(machine), YUZUNO_JOBS_BOOT_ID_FILE=str(boot))
+        self.facts_file = base / "capabilities.json"
+
+    def tearDown(self):
+        # Nothing of a failed test may stay frozen or running: this test's own
+        # scopes are thawed, their commands killed, and the scopes stopped.
+        units = []
+        for path in self.data.glob("jobs/*/*/limits.json"):
+            try:
+                units.append(json.loads(path.read_text())["unit"])
+            except (ValueError, KeyError):
+                pass
+        for unit in units:
+            subprocess.run(["systemctl", "--user", "thaw", "--", unit], capture_output=True, timeout=15)
+        for started in self.data.glob("jobs/*/*/started.json"):
+            try:
+                group = json.loads(started.read_text())
+            except ValueError:
+                continue
+            for pid in remote_job.members(group):
+                remote_job.send(pid, signal.SIGKILL, group)
+        for unit in units:
+            subprocess.run(["systemctl", "--user", "stop", "--", unit], capture_output=True, timeout=15)
+        self.tmp.cleanup()
+
+    def facts(self, linger):
+        """This host's own facts (limited holds limits in a scope only on an
+        account that lingers), or none at all: no scope."""
+        values = dict(USER_MANAGER, linger=True) if linger else {"manager": False, "busctl": False, "delegated": [],
+                                                                  "linger": False}
+        self.facts_file.write_text(json.dumps(values))
+        return {"YUZUNO_JOBS_CAPABILITIES_FILE": str(self.facts_file)}
+
+    def call(self, request, expect=0, env_extra=None):
+        nonce = uuid.uuid4().hex
+        out = subprocess.run([sys.executable, "-c", HELPER.read_text()],
+                             input=json.dumps(dict({"root": str(self.data)}, **request, replyNonce=nonce)),
+                             capture_output=True, text=True, env=dict(self.env, **(env_extra or {})), timeout=60)
+        self.assertEqual(out.returncode, expect, out.stderr + out.stdout)
+        line = out.stdout.splitlines()[-1]
+        return json.loads(line[len(f"{remote_job.MARK}{nonce} "):])
+
+    def attempt(self, script, timeout=60):
+        spec = {"argv": ["/bin/sh", "-c", script], "cwd": str(self.work), "env": {"PATH": "/usr/bin:/bin"},
+                "timeoutSeconds": timeout, "limits": self.LIMITS}
+        return dict(spec, jobId=str(uuid.uuid4()), attempt=str(uuid.uuid4()), workspaceKey="ws-1", machineId="m1",
+                    digest=remote_job.digest(spec), expectHost=host_of(MACHINE))
+
+    def bound(self, attempt, action):
+        keys = ("jobId", "attempt", "workspaceKey", "machineId", "digest", "expectHost")
+        return dict({key: attempt[key] for key in keys}, action=action)
+
+    def folder(self, attempt):
+        return self.data / "jobs" / attempt["jobId"] / attempt["attempt"]
+
+    def running(self, attempt, env):
+        self.call(dict(attempt, action="start"), env_extra=env)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            state = self.call(self.bound(attempt, "status"))
+            if state["status"] == "running" and (self.work / "ticks").exists():
+                return state
+            time.sleep(0.05)
+        self.fail("not running: " + json.dumps(state))
+
+    def settle(self, attempt, seconds=30):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            state = self.call(self.bound(attempt, "status"))
+            if state["status"] == "terminal":
+                return state
+            time.sleep(0.1)
+        self.fail("no outcome: " + json.dumps(state))
+
+    def ticking(self, seconds=0.6):
+        before = (self.work / "ticks").read_text().count("\n")
+        time.sleep(seconds)
+        return (self.work / "ticks").read_text().count("\n") > before
+
+    def test_an_attempt_without_a_scope_of_its_own_is_never_paused(self):
+        attempt = self.attempt(self.TICKS)
+        state = self.running(attempt, self.facts(linger=False))
+        self.assertNotIn("freezer", state)
+        paused = self.call(self.bound(attempt, "pause"))
+        self.assertEqual(paused["state"], "notPaused")
+        self.assertIn("Pause freezes only an attempt's own scope, and this attempt runs without a scope of its own "
+                      "on this machine", paused["reason"])
+        # Nothing was stopped by other means: it keeps running.
+        self.assertTrue(self.ticking())
+        self.assertFalse((self.folder(attempt) / "paused.json").exists())
+        self.call(self.bound(attempt, "cancel"))
+        self.assertEqual(self.settle(attempt)["result"]["status"], "cancelled")
+
+    def test_a_recorded_scope_that_is_not_this_attempts_is_never_frozen(self):
+        attempt = self.attempt(self.TICKS)
+        self.running(attempt, self.facts(linger=False))
+        # As if its record named another scope (the account's session, or
+        # another attempt's): refused before anything is asked of systemd.
+        for held in ({"unit": "session-1.scope", "cgroup": "/user.slice/user-1000.slice/session-1.scope"},
+                     {"unit": "yuzuno-remote-job-%s.scope" % uuid.uuid4(), "cgroup": "/x/yuzuno-remote-job-y.scope"},
+                     {"unit": "yuzuno-remote-job-%s.scope" % attempt["attempt"], "cgroup": "/user.slice/../evil.scope"}):
+            remote_job.atomic(self.folder(attempt) / "limits.json", held)
+            paused = self.call(self.bound(attempt, "pause"))
+            self.assertEqual((paused["state"], paused["reason"]),
+                             ("notPaused", "Pause freezes only an attempt's own scope, and the scope it recorded is "
+                                           "not this attempt's; nothing was paused"))
+            self.assertTrue(self.ticking(0.3))
+        (self.folder(attempt) / "limits.json").unlink()
+        self.call(self.bound(attempt, "cancel"))
+        self.assertEqual(self.settle(attempt)["result"]["status"], "cancelled")
+
+    @unittest.skipUnless(USER_MANAGER, "no systemd user manager with the memory controller here")
+    def test_its_own_scope_is_frozen_read_back_and_resumed(self):
+        attempt = self.attempt(self.TICKS)
+        state = self.running(attempt, self.facts(linger=True))
+        held = json.loads((self.folder(attempt) / "limits.json").read_text())
+        self.assertEqual(state["freezer"], {"populated": True, "frozen": False})
+        paused = self.call(self.bound(attempt, "pause"))
+        self.assertEqual(paused["state"], "paused", paused)
+        self.assertEqual(paused["evidence"]["unit"], "yuzuno-remote-job-%s.scope" % attempt["attempt"])
+        self.assertEqual(paused["evidence"]["freezer"]["frozen"], True)
+        events = Path("/sys/fs/cgroup" + held["cgroup"] + "/cgroup.events").read_text()
+        self.assertIn("frozen 1", events)
+        self.assertFalse(self.ticking())
+        self.assertEqual(self.call(self.bound(attempt, "status"))["freezer"]["frozen"], True)
+        # Again: nothing more is done.
+        self.assertEqual(self.call(self.bound(attempt, "pause"))["reason"], "Already paused")
+        resumed = self.call(self.bound(attempt, "resume"))
+        self.assertEqual((resumed["state"], resumed["reason"]), ("running", "Resumed: the same processes continue"))
+        self.assertTrue(self.ticking())
+        self.assertEqual(self.call(self.bound(attempt, "status"))["freezer"]["frozen"], False)
+        self.assertEqual(self.call(self.bound(attempt, "resume"))["reason"], "Already running")
+        self.call(self.bound(attempt, "cancel"))
+        self.assertEqual(self.settle(attempt)["result"]["status"], "cancelled")
+
+    @unittest.skipUnless(USER_MANAGER, "no systemd user manager with the memory controller here")
+    def test_cancel_of_a_paused_attempt_thaws_it_so_its_processes_act_on_term(self):
+        attempt = self.attempt(self.TICKS)
+        self.running(attempt, self.facts(linger=True))
+        self.assertEqual(self.call(self.bound(attempt, "pause"))["state"], "paused")
+        self.call(self.bound(attempt, "cancel"))
+        result = self.settle(attempt)["result"]
+        self.assertEqual(result["status"], "cancelled", result)
+        self.assertEqual(result["thawedToStop"]["wasFrozen"], True, result)
+        self.assertEqual((self.work / "term.txt").read_text(), "term\n")
+        started = json.loads((self.folder(attempt) / "started.json").read_text())
+        self.assertEqual(remote_job.members(started), [])
+
+    @unittest.skipUnless(USER_MANAGER, "no systemd user manager with the memory controller here")
+    def test_a_paused_attempt_that_reaches_its_timeout_is_stopped(self):
+        attempt = self.attempt(self.TICKS, timeout=3)
+        self.running(attempt, self.facts(linger=True))
+        self.assertEqual(self.call(self.bound(attempt, "pause"))["state"], "paused")
+        result = self.settle(attempt, seconds=30)["result"]
+        self.assertEqual((result["status"], result["reason"]), ("failed", "timeout after 3 s; its process group was stopped"))
+        self.assertEqual(result["thawedToStop"]["wasFrozen"], True, result)
+
+    @unittest.skipUnless(USER_MANAGER, "no systemd user manager with the memory controller here")
+    def test_a_paused_attempt_whose_supervisor_is_gone_is_thawed_and_stopped_by_cancel(self):
+        # With its supervisor gone nothing reads the output pipe, so a write
+        # there ends on SIGPIPE: dash, Ubuntu's /bin/sh, reports the sleep
+        # the TERM ended ("Terminated") on stderr before it runs the trap.
+        # Its stderr goes to a file, so the trap shows the TERM was acted on.
+        attempt = self.attempt("exec 2>>stderr.txt; " + self.TICKS)
+        self.running(attempt, self.facts(linger=True))
+        self.assertEqual(self.call(self.bound(attempt, "pause"))["state"], "paused")
+        supervisor = json.loads((self.folder(attempt) / "supervisor.json").read_text())["pid"]
+        os.kill(supervisor, signal.SIGKILL)
+        self.assertTrue(gone(supervisor))
+        self.assertEqual(self.call(self.bound(attempt, "status"))["status"], "lost")
+        cancelled = self.call(self.bound(attempt, "cancel"))
+        self.assertEqual(cancelled["status"], "terminal", cancelled)
+        self.assertEqual(cancelled["result"]["status"], "cancelled")
+        self.assertEqual((self.work / "term.txt").read_text(), "term\n")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,12 @@ may link here; they should not copy version numbers, workstation paths or
 release policy into general-purpose instructions. End-user installation lives
 in [Workspace updates](workspace-updates.md).
 
+## Current public-release boundary
+
+The public repository is the only active development source. Its CI builds and tests source on GitHub-hosted runners; it uploads no production inputs or installation packages. The first public delivery is source only.
+
+The artifact-based workflow below describes the retained tooling used for historical private releases. It is not yet an end-to-end public-package pipeline: it requires a matching production-input artifact that the public CI does not produce. A future package change must establish inputs from the exact public source and resolve the package scope described in [Publication status](public-readiness.md#the-claude-agent-sdk). Do not use a historical private artifact as a substitute for those inputs, turn private CI back into an active development path, or publish a package merely because source CI passed.
+
 ## What runs by default
 
 1. Reuse the accepted PR review and successful **exact main SHA** CI. Record the
@@ -31,8 +37,8 @@ only the affected assertion, as done for T-76.
 
 ## CI artifact and compatibility
 
-`CI` keeps its existing PR tests. Only a push to `main`, after those four jobs
-pass, builds `core-inputs-<40-character SHA>-<run attempt>` with
+The historical private `CI` kept its PR tests. Only a push to its `main`, after those four jobs
+passed, built `core-inputs-<40-character SHA>-<run attempt>` with
 `tools/build-core-artifact.py`. The artifact has `build.json` and `inputs.tar.gz`:
 release-mode Core/helper, raw Vite UI, locked production Claude SDK/runtime and
 the committed result validator. No release version or signing key is needed.
@@ -44,7 +50,7 @@ The release version marker is added once by the existing packager.
 - So only a run that has started is sure to finish. Choose a candidate from a started or finished run.
 - Nothing reruns or releases automatically.
 
-Release inputs are built only by the private development repository's CI, on its self-hosted WSL Rust lane; the public repository's CI builds none. The build uses Rust 1.97.1, Node
+Historical release inputs were built by the former private repository's self-hosted WSL Rust lane; public CI produces none. The retained build tooling uses Rust 1.97.1, Node
 22.23.2 and Python >= 3.11. Pinned cargo-zigbuild 0.23.4 and Zig 0.15.2
 cross-link for `x86_64-unknown-linux-gnu.2.35`, independent of the host's newer
 glibc. Both linker versions and the target are recorded in `build.json`.
@@ -108,9 +114,8 @@ controlled Linux release host. Use an isolated checkout. Heavy local commands
 run through the project's Jobs and shared heavy slots with bounded resources;
 two heavy jobs maximum, no polling/watcher jobs. A 1.5 CPU / 3 GiB / zero-swap
 Job is sufficient for prepare/smoke; account for collector reservation too.
-The private repository's CI runs on its self-hosted runners under their shared
-`yuzuno-ci.slice` budget, beside daily Core Jobs but outside their slots. The
-public repository's CI runs on GitHub-hosted runners and builds no release inputs.
+The old private CI and runner budget belong to the historical workflow. Active
+CI runs in the public repository on GitHub-hosted runners and builds no release inputs.
 
 First inspect the successful CI run/artifact metadata using `gh run view` and
 `gh api repos/OWNER/REPO/actions/runs/RUN_ID/artifacts`. Freeze explicit inputs:

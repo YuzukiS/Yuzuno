@@ -1,8 +1,14 @@
 # Contributing to Yuzuno
 
-Yuzuno is in active development, preparing for a public alpha. This guide covers where things are in the source, which checks to run, and how to report a problem or open a pull request. The [README](README.md) explains what Yuzuno does and how to run it from source.
+Yuzuno is a public, source-only alpha in active development. This guide covers where things are in the source, which checks to run, and how to report a problem or open a pull request. The [README](README.md) explains what Yuzuno does and how to run it from source.
 
 Yuzuno is licensed under the [Apache License 2.0](LICENSE), with the exceptions listed under [License](README.md#license). As section 5 of that license says, a contribution you submit for inclusion is under the same license unless you state otherwise.
+
+## Development repository
+
+New branches and pull requests start from `main` in [YuzukiS/Yuzuno](https://github.com/YuzukiS/Yuzuno). It is the active source of truth. The former private repository keeps its historical records and packages; it is not a second development branch to keep in sync.
+
+When moving unfinished work from that repository, apply only the necessary changes onto public `main`. Keep the existing task and relevant review and test evidence, including findings and attempt limits. Do not import the private Git history or local acceptance outputs. [Agent instructions](AGENTS.md) point to the shared Workspace skill.
 
 ## Find your way around
 

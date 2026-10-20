@@ -6,6 +6,8 @@ mod git;
 pub(super) mod scope;
 mod search_recovery;
 #[cfg(test)]
+mod continuation_tests;
+#[cfg(test)]
 mod tests;
 use crate::github::client::Client;
 use anyhow::{Context, Result, ensure};
@@ -17,8 +19,8 @@ use std::{collections::HashMap, path::Path};
 const MAX_RESPONSE: usize = 64_000;
 const PAGE_BYTES: usize = 12_000; // Raw page target; serialized envelopes are checked below.
 const MAX_LINES: usize = 500;
-const MAX_CONTEXT: usize = 1_500_000;
-const MAX_CALLS: usize = 160;
+pub(super) const MAX_CONTEXT: usize = 1_500_000;
+pub(super) const MAX_CALLS: usize = 160;
 const PAGE_ITEMS: usize = 20;
 const MAX_IDENTICAL_FAILURES: usize = 3;
 
@@ -113,6 +115,15 @@ pub(super) struct ContextStore {
     terminal: Option<String>,
     repeated_failure_limit: bool,
     scope: scope::Preflight,
+    /// The calls and bytes this run may use: the whole review budget, or
+    /// what a continuation reserved from its parent's remainder.
+    max_calls: usize,
+    max_bytes: usize,
+    reserved: bool,
+    /// A continuation's parent proofs of paths whose fixed identity this
+    /// run verified, and the parent's unresolved requests on changed paths.
+    inherited: Vec<Value>,
+    inherited_failures: Vec<Value>,
 }
 impl ContextStore {
     fn new(git: git::Git) -> Self {
@@ -130,6 +141,40 @@ impl ContextStore {
             terminal: None,
             repeated_failure_limit: false,
             scope: scope::Preflight::default(),
+            max_calls: MAX_CALLS,
+            max_bytes: MAX_CONTEXT,
+            reserved: false,
+            inherited: Vec::new(),
+            inherited_failures: Vec::new(),
+        }
+    }
+    /// A continuation runs only within what it reserved from its parent's
+    /// remaining budget; nothing here is refilled.
+    pub(super) fn reserve(&mut self, calls: usize, bytes: usize) {
+        self.max_calls = calls.min(MAX_CALLS);
+        self.max_bytes = bytes.min(MAX_CONTEXT);
+        self.reserved = true;
+    }
+    /// The parent's covered proofs and unresolved requests, kept with their
+    /// review identity. Only proofs of the same path and blob ever count.
+    pub(super) fn inherit(&mut self, proofs: Vec<Value>, failures: Vec<Value>) {
+        self.inherited = proofs;
+        self.inherited_failures = failures;
+    }
+    pub(super) fn refresh(&self, run: &mut Value) {
+        self.coverage(run);
+    }
+    pub(super) fn bytes(&self) -> usize {
+        self.bytes
+    }
+    pub(super) fn set_evidence_bytes(&mut self, bytes: usize) {
+        self.bytes = bytes;
+    }
+    fn exhausted(&self) -> String {
+        if self.reserved {
+            format!("Continuation budget exhausted ({} calls / {} bytes reserved from the parent round's remainder); remaining coverage is incomplete", self.max_calls, self.max_bytes)
+        } else {
+            "Review context budget exhausted (160 calls / 1.5 MB); remaining coverage is incomplete".into()
         }
     }
     async fn tree(&mut self, revision: &str) -> Result<&[Entry]> {
@@ -281,6 +326,32 @@ impl ContextStore {
             // Control characters can expand sixfold. Shrink the actual JSON
             // envelope, preserving UTF-8 boundaries and a gap-free cursor.
             end = offset + (end - offset) / 2;
+        }
+    }
+    /// A continuation's target, checked by Core before any model starts: the
+    /// bytes every source_diff page of it delivers, envelopes included, as
+    /// they will count against the budget; or why no tool can deliver it as
+    /// text. A diff larger than `limit` can't fit and isn't paged.
+    pub(super) async fn measure(&mut self, run: &mut Value, path: &str, limit: usize) -> Result<usize> {
+        let index = run["files"]
+            .as_array()
+            .context("Missing changes")?
+            .iter()
+            .position(|f| f["path"] == path)
+            .context("Path is outside this PR's changed files")?;
+        self.patch(run, index).await?;
+        let size = self.patches[path].len();
+        if size > limit {
+            return Ok(size);
+        }
+        let (mut total, mut offset) = (0, 0);
+        loop {
+            let page = self.diff(run, path, offset).await?;
+            total += serde_json::to_vec(&page)?.len();
+            match page["nextOffset"].as_u64() {
+                Some(next) => offset = next as usize,
+                None => return Ok(total),
+            }
         }
     }
     /// One changed file's complete patch, kept for paging.
@@ -679,15 +750,19 @@ impl ContextStore {
         }
         let result = async {
             ensure!(self.terminal.is_none(), "{}", self.terminal.as_deref().unwrap_or(""));
-            if self.receipts.len() >= MAX_CALLS || self.bytes >= MAX_CONTEXT {
-                self.terminal = Some("Review context budget exhausted (160 calls / 1.5 MB); remaining coverage is incomplete".into());
+            if self.receipts.len() >= self.max_calls || self.bytes >= self.max_bytes {
+                self.terminal = Some(self.exhausted());
                 anyhow::bail!(self.terminal.clone().unwrap());
             }
             let value = self.execute(run,tool,input.clone()).await?;
             let size = serde_json::to_vec(&value)?.len();
             ensure!(size <= MAX_RESPONSE, "Tool response exceeds 64 KB; request a smaller range");
-            if size + self.bytes > MAX_CONTEXT {
-                self.terminal = Some("Review context byte budget exhausted (1.5 MB); response was not delivered".into());
+            if size + self.bytes > self.max_bytes {
+                self.terminal = Some(if self.reserved {
+                    format!("Continuation byte budget exhausted ({} bytes reserved); response was not delivered", self.max_bytes)
+                } else {
+                    "Review context byte budget exhausted (1.5 MB); response was not delivered".into()
+                });
                 anyhow::bail!(self.terminal.clone().unwrap());
             }
             self.bytes += size;
@@ -763,11 +838,12 @@ impl ContextStore {
                         "toolSchema":schema,"identicalFailures":identical_failures,"maxIdenticalFailures":MAX_IDENTICAL_FAILURES},
                     "terminalLimit":self.terminal});
                 self.bytes += serde_json::to_vec(&failure).map_or(MAX_RESPONSE, |v| v.len());
-                if self.bytes >= MAX_CONTEXT && self.terminal.is_none() {
-                    self.terminal = Some(
-                        "Review context budget exhausted, including failed tool responses (1.5 MB)"
-                            .into(),
-                    );
+                if self.bytes >= self.max_bytes && self.terminal.is_none() {
+                    self.terminal = Some(if self.reserved {
+                        format!("Continuation budget exhausted, including failed tool responses ({} bytes reserved)", self.max_bytes)
+                    } else {
+                        "Review context budget exhausted, including failed tool responses (1.5 MB)".into()
+                    });
                 }
                 failure
             }
@@ -881,6 +957,7 @@ impl ContextStore {
         let mut uninspected = Vec::new();
         let mut covered_files = Vec::new();
         let mut complete_diffs = 0;
+        let mut inherited = 0;
         let added_policy = run["coveragePolicyVersion"].as_u64().is_some_and(|v| v >= 2);
         let files = run["files"].as_array().cloned().unwrap_or_default();
         for file in &files {
@@ -897,13 +974,39 @@ impl ContextStore {
                 .flatten()
             {
                 covered_files.push(proof);
+            } else if let Some(proof) = self.inherited.iter().find(|p| {
+                p["path"] == path && p["blobSha"] == file["sourceBlob"] && p["revision"] == file["sourceRevision"]
+            }) {
+                inherited += 1;
+                covered_files.push(proof.clone());
             } else {
                 uninspected.push(
                     json!({"path":path,"totalDiffBytes":size,"remainingByteRanges":remaining}),
                 );
             }
         }
-        let failures: Vec<_> = self.failures.iter().map(|f|json!({"receipt":f.receipt,"kind":f.kind,"tool":f.tool,"requested":f.input,"revision":f.revision,"resolved":f.resolved,"resolvedByReceipt":f.resolved_by,"correctionScope":f.correction_scope,"recoverySource":f.recovery_source,"searchRecovery":f.search_recovery})).collect();
+        let mut failures: Vec<_> = self.failures.iter().map(|f|json!({"receipt":f.receipt,"kind":f.kind,"tool":f.tool,"requested":f.input,"revision":f.revision,"resolved":f.resolved,"resolvedByReceipt":f.resolved_by,"correctionScope":f.correction_scope,"recoverySource":f.recovery_source,"searchRecovery":f.search_recovery})).collect();
+        // A continuation's union names the review behind every proof.
+        if self.reserved {
+            for proof in &mut covered_files {
+                if proof.get("byReview").is_none() {
+                    proof["byReview"] = run["id"].clone();
+                }
+            }
+        }
+        // A parent's unresolved request stays unresolved, unless this run
+        // covered the changed path it was for; it is never marked resolved.
+        let mut carried = Vec::new();
+        for failure in &self.inherited_failures {
+            let mut failure = failure.clone();
+            let path = failure["requested"]["path"].clone();
+            let superseded = covered_files.iter().any(|c| c["path"] == path && c["byReview"] == run["id"]);
+            failure["coveredByThisRun"] = json!(superseded);
+            if !superseded {
+                failures.push(failure.clone());
+            }
+            carried.push(failure);
+        }
         let unresolved = failures.iter().filter(|f| f["resolved"] != true).count();
         run["contextIncomplete"] =
             json!(!uninspected.is_empty() || unresolved > 0 || self.terminal.is_some());
@@ -912,8 +1015,12 @@ impl ContextStore {
         if added_policy {
             run["coverage"]["version"] = run["coveragePolicyVersion"].clone();
             run["coverage"]["coveredFileCount"] = json!(covered_files.len());
-            run["coverage"]["fullAddedSourceCount"] = json!(covered_files.len() - complete_diffs);
+            run["coverage"]["fullAddedSourceCount"] = json!(covered_files.len() - complete_diffs - inherited);
             run["coverage"]["coveredFiles"] = json!(covered_files);
+        }
+        if !self.inherited.is_empty() || !carried.is_empty() {
+            run["coverage"]["inheritedCoveredCount"] = json!(inherited);
+            run["coverage"]["inheritedFailedRequests"] = json!(carried);
         }
         if scope::applies(run) {
             run["scope"] = self.scope.report(run, &files, &covered_files, &uninspected, &failures, self.terminal.as_deref());
@@ -1085,15 +1192,22 @@ pub(super) async fn context_response(
     input: Value,
 ) -> Result<Value> {
     ensure!(
-        context.receipts.len() < MAX_CALLS + 4,
+        context.receipts.len() < context.max_calls + 4,
         "Reviewer continued after the context budget was exhausted"
     );
     let value = context.response(run, tool, input).await;
-    tokio::fs::write(
-        directory.join(format!("context-{}.json", context.receipts.len())),
-        serde_json::to_vec_pretty(&value)?,
-    )
-    .await?;
+    let body = serde_json::to_vec_pretty(&value)?;
+    let number = context.receipts.len();
+    tokio::fs::write(directory.join(format!("context-{number}.json")), &body).await?;
+    // The ledger's proof of what was delivered: the retained response's
+    // hash, recorded only once the file is written.
+    if super::continuation::ledger(run) {
+        let digest = json!(format!("{:x}", Sha256::digest(&body)));
+        if let Some(receipt) = context.receipts.last_mut() {
+            receipt["responseSha256"] = digest.clone();
+        }
+        run["contextReads"][number - 1]["responseSha256"] = digest;
+    }
     super::persist(ws, run, None).await?;
     ensure!(
         !context.repeated_failure_limit,

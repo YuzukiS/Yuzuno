@@ -1,27 +1,23 @@
-# Before the public repository opens
+# Publication status and remaining release work
 
-The project will be published as a new public repository, made from a cleaned snapshot of this source without its history (T-89). The names are decided; neither step has been taken yet:
-- the private repository that holds this source, today `YuzukiS/Yuzuno`, is renamed `YuzukiS/Yuzuno-dev`. It stays private, with its history, CI logs and releases;
-- the public repository is then created as `YuzukiS/Yuzuno`.
+[YuzukiS/Yuzuno](https://github.com/YuzukiS/Yuzuno) became public on 2026-10-20, starting from a cleaned source snapshot with no private Git history. The former repository is now `YuzukiS/Yuzuno-dev` and remains private, with its original commits, CI records and release packages.
 
-Below, "the private repository" is the first under either name. `YuzukiS/Yuzuno` in commands for the public repository means the second, once it exists.
+All new development targets public `main`. Unfinished work moves as selected changes with its existing evidence, not by merging the private history or maintaining two active main branches. See [Contributing](../CONTRIBUTING.md#development-repository).
 
-This checklist covers what must be decided or configured before the public repository opens. Nothing here changes a setting by itself. Each item names who decides.
-
-Already done: the Apache License 2.0 (with the character images), the README, contribution guidelines and third-party notices in release bundles. The owner chose to publish source only at first (2026-10-20): the public repository starts without release packages.
+The first public delivery is source only. The Apache License 2.0 includes the character images; third-party materials retain their own terms. There are no public installation packages yet. The notes below retain provenance and remaining package questions; they are not a claim that binary distribution has been completed.
 
 ## Settings
 
-The public repository's settings are made when it is created. The private repository today is for comparison, read on 2026-10-20 with the GitHub CLI and unchanged since 2026-10-18. Read them again before acting on this list.
+Configured and checked on the public repository on 2026-10-20:
 
-| Setting | The private repository today | The public `YuzukiS/Yuzuno` | Read with (`repos/YuzukiS/Yuzuno/…`, once it is the public one) |
-| --- | --- | --- | --- |
-| Visibility | private, forking allowed | public | `gh api repos/YuzukiS/Yuzuno --jq '{visibility, allow_forking}'` |
-| Private vulnerability reporting | not available (HTTP 404); GitHub offers it only for public repositories | enabled ([Security reports](#security-reports)) | `…/private-vulnerability-reporting` |
-| Fork pull request workflows | not run, and no write token or secrets sent to them | run on GitHub-hosted runners with a read-only token and no secrets, as the approval policy allows ([Pull requests from forks and CI](#pull-requests-from-forks-and-ci)) | `…/actions/permissions/fork-pr-workflows-private-repos` (private repositories only) |
-| Approval policy for fork workflows | not settable while private (HTTP 422) | set when it is created | `…/actions/permissions/fork-pr-contributor-approval` |
-| Default workflow token | read-only; cannot approve pull requests | the same | `…/actions/permissions/workflow` |
-| Runners | `yuzuno-wsl-pr` and `yuzuno-wsl-pr-web`, self-hosted on the maintainer's workstation | none of its own: GitHub-hosted only | `…/actions/runners` |
+| Setting | Public repository | API path below `repos/YuzukiS/Yuzuno` |
+| --- | --- | --- |
+| Visibility | public | repository metadata |
+| Private vulnerability reporting | enabled | `/private-vulnerability-reporting` |
+| Fork workflow approval | first-time contributors need approval | `/actions/permissions/fork-pr-contributor-approval` |
+| Default workflow token | read-only; cannot approve pull requests | `/actions/permissions/workflow` |
+| Action references | full commit SHA required | `/actions/permissions` |
+| Self-hosted runners | none; jobs use GitHub-hosted runners | `/actions/runners` |
 
 ## Security reports
 
@@ -33,20 +29,15 @@ The public repository's settings are made when it is created. The private reposi
 
 ## Pull requests from forks and CI
 
-**Today, in the private repository:**
-- CI runs on the two self-hosted runners, which are registered to that repository only.
-- Product jobs run only for branches in the repository: the `head.repo.full_name == github.repository` condition in the private repository's CI workflow.
-- GitHub runs no workflow for a fork pull request. A fork pull request gets no CI.
+Public CI runs on GitHub-hosted `ubuntu-24.04` for main pushes and pull requests, including forks, with a read-only token and no secrets ([CI](pr-ci-runner.md)). The configured policy requires approval for first-time contributors before their fork workflows run.
 
-**The public repository's CI** runs every job on GitHub-hosted `ubuntu-24.04` ([CI](pr-ci-runner.md)). It is the private repository's reviewed `ci/public/ci.yml` (T-147).
-
-**When it opens,** before any fork pull request arrives, set the approval policy: Settings → Actions → General → "Approval for running fork pull request workflows from contributors". The strictest choice is **Require approval for all external contributors**.
+The first public main run exposed a shell-dependent test assumption. [PR #1](https://github.com/YuzukiS/Yuzuno/pull/1) fixed the fixture while preserving the exact process-count and cleanup assertions; its PR and merged-main hosted checks passed. CI uploads no release inputs, installation packages or SDK bundles. The historical private CI is not the development workflow.
 
 ## Assets and their rights
 
 The repository records only what is listed here. The Apache License does not cover anything whose rights are unknown, and this list grants no rights.
 
-| Files | What they are | What the repository records | To decide before the public repository opens |
+| Files | What they are | What the repository records | Recorded status or remaining follow-up |
 | --- | --- | --- | --- |
 | `web/src/assets/yuzu-character.png`, `yuzu-character-outline.png` | The character in the UI | [Asset notes](../web/src/assets/README.md): generated with Codex (the owner confirmed this) and copied unchanged from an earlier project. The owner put them under the Apache License 2.0 on 2026-10-20. | Covered. |
 | `docs/images/home.png`, `conversation.png`, `jobs.png` | README screenshots with fictional sample data ([how they are made](images/README.md)) | They show the character images (Apache-2.0) and the bundled font (OFL). | Covered. |
@@ -114,22 +105,19 @@ None of this is a legal assessment.
 
 ## Where the repository is named
 
-The public repository takes over the name `YuzukiS/Yuzuno`, so nothing in the code changes:
-- **In code, one place:** `REPOSITORY` in `core/src/updates/desktop_releases.rs`, the fixed repository whose `desktop-<version>` releases Core offers the Windows app. After the switch it names the public repository, which has no desktop release yet.
-- **Not in code:**
-  - Core's own updates read the `repository` that the user writes into `release-source.json` at install.
-  - `tools/core-release.py` publishes to the repository its release config names.
-  - CI conditions use `github.repository`.
-- **In the docs,** `YuzukiS/Yuzuno` already means the public repository after the switch. That covers the install guide's commands and `release-source.json`, the desktop README's update source and the README's CI badge. Until the public repository's first release, those commands find nothing there.
+`YuzukiS/Yuzuno` now names the public repository:
+- `REPOSITORY` in `core/src/updates/desktop_releases.rs` already names it. Core relays its signed `desktop-<version>` releases to the Windows app.
+- Managed Core updates read the repository configured in `release-source.json`. Existing installations configured for `YuzukiS/Yuzuno` already point to the intended public source; do not redirect them to the historical private repository as part of this handoff.
+- `tools/core-release.py` takes an explicit repository in its release configuration. Any future public package must be prepared from public source, for this public repository, with its matching evidence and signature.
+- CI uses `github.repository`. New work starts in an independent public clone. Historical private checkouts keep their private remotes and are used only to read evidence or extract selected changes.
 
-**At the switch** (Lead): GitHub's redirect from the old name stops once the public repository takes it. The private repository's remotes, its links in the Workspace and the daily Core's update source then have to name `YuzukiS/Yuzuno-dev`.
+The public repository currently has no release packages, so update checks find no new public package. The source publication changed no installed version and required no Core restart. Old private packages remain private; do not relabel them as public releases. Package preparation is a separate step described in [the release guide](core-release.md).
 
 ## Other open decisions
 
-- **The switch itself (owner):** when the private repository is renamed and the public one created.
 - **Downloads without a GitHub account.** The public repository's release files are public. The install steps and Core's updates use `gh`, which needs a sign-in to some GitHub account but no access to the repository. The choices:
   - **As now:** users sign in to `gh` with their own account. Nothing to build.
   - **A first download without an account:** the install guide adds `curl` for the three files from `https://github.com/YuzukiS/Yuzuno/releases/download/<tag>/`. Updates inside Core still need `gh`.
   - **Updates without an account** would need Core to read releases without `gh`, which means a new HTTP client. Not proposed for the alpha.
-- **The cleaned snapshot** the public repository starts from (T-89). The private repository's history, CI logs and releases stay private and are not copied. The owner accepts historical commit email identities but not real machine names, account paths, host addresses or unrelated research material; the snapshot uses runtime parameters or clearly labelled examples instead ([public example conventions](public-content.md)).
+- **Future source changes** retain the snapshot's privacy boundary: private history, CI logs and packages are not imported. Use runtime parameters or clearly labelled synthetic examples instead of real machine names, account paths, host addresses or unrelated research material ([public example conventions](public-content.md)).
 - **Demo material** beyond the README screenshots.

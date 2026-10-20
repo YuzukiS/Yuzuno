@@ -158,7 +158,7 @@ If connecting fails, read the SSH terminal as well as the browser. **Permission 
 
 ### Windows desktop app
 
-Install it with `yuzuno-desktop-windows-x86_64-setup.exe` from the latest `desktop-<version>` release; it installs for your account only. A copy installed this way can update itself ([Desktop updates](../desktop/README.md#desktop-updates)). Any other copy is updated by running a newer installer.
+Install it with `yuzuno-desktop-windows-x86_64-setup.exe` from the latest `desktop-<version>` release; it installs for your account only. A copy installed this way can update itself ([Desktop updates](../desktop/README.md#desktop-updates)). Any other copy is updated by running a newer installer. Releases after desktop 0.2.0 also offer `yuzuno-desktop-windows-x86_64-portable.zip`: unzip it and run `Yuzuno.exe`. That copy does not update itself and shares its saved Core and drafts with an installed copy ([Installer or portable ZIP](../desktop/README.md#installer-or-portable-zip-windows)).
 
 Start it with `--core-url http://127.0.0.1:<local port>` (or set `YUZUNO_CORE_URL`). This has not been tested through a tunnel yet.
 
