@@ -41,6 +41,7 @@ pub mod input_images;
 mod clarifications;
 pub mod older_cores;
 pub mod opencode;
+mod opencode_agent;
 pub mod rail;
 pub mod record_rows;
 pub mod remote;

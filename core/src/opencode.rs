@@ -1,7 +1,7 @@
-//! OpenCode (T-110 S1a) through its own server, `opencode serve`: one process
-//! per Agent on this host's loopback, behind a password only Core holds. This
-//! is the transport alone. No Agent uses it yet, nothing in the Workspace calls
-//! it, and it adds no permission rule of its own.
+//! OpenCode (T-110) through its own server, `opencode serve`: one process per
+//! Agent on this host's loopback, behind a password only Core holds. This is
+//! the transport; `opencode_agent` connects it to an Agent's record. It adds
+//! no permission rule of its own.
 //!
 //! The protocol is the one read from OpenCode 1.19.3 (`VERSION`); a server
 //! that reports another version is stopped. Native requests, events and
@@ -16,8 +16,8 @@
 //! is either in the snapshot or still to come as an event, possibly both.
 //!
 //! OpenCode runs in a process group of its own, so its own children (language
-//! servers, local MCP servers) end with it: on `shutdown`, or when the
-//! `Server` is dropped.
+//! servers, local MCP servers) end with it: on `shutdown`, when the `Server`
+//! is dropped, or (on Unix) when Core ends without either.
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use reqwest::{Method, Response, Url};
 use serde_json::{json, Value};
@@ -48,6 +48,10 @@ pub const EVENT_IDLE_LIMIT: Duration = Duration::from_secs(30);
 const BODY_LIMIT: usize = 2048;
 const LINE_LIMIT: u64 = 64 << 10;
 const EVENT_BUFFER_LIMIT: usize = 16 << 20;
+/// `sh -c WATCHED opencode PROGRAM ARGS…`: the watcher reads the pipe on fd 3
+/// until it closes, then signals its own process group, OpenCode's.
+#[cfg(unix)]
+const WATCHED: &str = r#"exec 3<&0; (read _ <&3; kill -TERM 0) >/dev/null 2>&1 </dev/null & exec "$@" 3<&- </dev/null"#;
 
 /// What one Agent's server is started with.
 pub struct Launch {
@@ -217,6 +221,18 @@ impl Server {
             "The Agent's folder must be an existing absolute path");
         let directory = launch.directory.to_str().context("The Agent's folder is not valid UTF-8")?.to_owned();
         let password = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+        // OpenCode never reads its stdin, so a Core that ends without
+        // dropping `Server` (killed, or exiting) would leave it running on the
+        // Agent's database. A watcher in its group holds Core's end of a pipe
+        // instead and ends the group when that closes, however Core ends;
+        // OpenCode itself replaces the shell (same PID) with stdin closed.
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", WATCHED, "opencode"]).arg(&launch.program);
+            command
+        };
+        #[cfg(not(unix))]
         let mut command = Command::new(&launch.program);
         // Every network option is explicit: the user's `server` settings
         // (hostname, port, mDNS) apply only to options not given (cli/network.ts).
@@ -226,7 +242,7 @@ impl Server {
             .env("OPENCODE_SERVER_USERNAME", USERNAME)
             .env("OPENCODE_SERVER_PASSWORD", &password)
             .env("OPENCODE_DB", &launch.database)
-            .stdin(Stdio::null())
+            .stdin(if cfg!(unix) { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
@@ -616,6 +632,35 @@ mod tests {
             "msg_0123456789abABCDEFGHIJ\u{e9}N"] {
             assert!(MessageId::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    /// As if Core ended without dropping `Server`: only its end of the pipe
+    /// closes, and OpenCode's whole group ends anyway.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn closing_cores_end_of_the_pipe_ends_opencodes_group() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("opencode");
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
+        std::fs::write(&program, format!("#!/bin/sh\nexec /usr/bin/python3 {fixture} \"$@\"\n")).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (directory, root) = (dir.path().join("work"), dir.path().join("db"));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        let mut server = Server::start(&Launch { program, directory, database: root.join("opencode.db") }).await.unwrap();
+        let seen: Value = serde_json::from_str(&std::fs::read_to_string(root.join("start.json")).unwrap()).unwrap();
+        let pids = [seen["pid"].as_u64().unwrap(), seen["child"].as_u64().unwrap()];
+        drop(server.child.stdin.take());
+        let ended = |pid: u64| std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .map_or(true, |stat| stat.rsplit_once(')').is_some_and(|(_, rest)| rest.trim_start().starts_with('Z')));
+        for _ in 0..200 {
+            if pids.iter().all(|pid| ended(*pid)) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("OpenCode outlived the pipe: {pids:?}");
     }
 
     #[test]

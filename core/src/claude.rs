@@ -645,6 +645,7 @@ impl Workspace {
             color: colors[count % colors.len()].into(),
             harness: "claude".into(),
             claude_session_id: None,
+            opencode_session_id: None,
             thread_id: None,
             status: "offline".into(),
             created_at: now(),

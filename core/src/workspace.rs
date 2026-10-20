@@ -90,6 +90,7 @@ pub struct Workspace {
     pub(crate) session_reads: tokio::sync::Semaphore,
     pub(crate) rpcs: std::sync::Mutex<HashMap<String, Connection>>,
     pub(crate) claudes: std::sync::Mutex<HashMap<String, crate::claude::Connection>>,
+    pub(crate) opencodes: std::sync::Mutex<HashMap<String, crate::opencode_agent::Connection>>,
     pub(crate) claude_mcp: crate::claude_mcp::State,
     gates: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     owners: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
@@ -151,6 +152,7 @@ impl Workspace {
             runtime: Mutex::new(json!({"connected":false})),
             rpcs: std::sync::Mutex::new(HashMap::new()),
             claudes: std::sync::Mutex::new(HashMap::new()),
+            opencodes: std::sync::Mutex::new(HashMap::new()),
             claude_mcp: Default::default(),
             gates: Mutex::new(HashMap::new()),
             owners: std::sync::Mutex::new(HashMap::new()),
@@ -401,6 +403,7 @@ impl Workspace {
             color: colors[count % colors.len()].into(),
             harness: "codex".into(),
             claude_session_id: None,
+            opencode_session_id: None,
             thread_id: None,
             status: "offline".into(),
             closed_at: None,
@@ -836,6 +839,7 @@ impl Workspace {
     pub(crate) fn collaboration_generation(&self, id: &str) -> Option<u64> {
         let codex = self.rpcs.lock().unwrap().get(id).map(|c| c.generation);
         codex.or_else(|| self.claudes.lock().unwrap().get(id).map(|c| c.generation))
+            .or_else(|| self.opencodes.lock().unwrap().get(id).map(|c| c.generation))
     }
 
     async fn reconcile(self: &Arc<Self>, id: &str) -> Result<()> {
@@ -916,8 +920,10 @@ impl Workspace {
 
     pub(crate) async fn reconnect_accepted(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit) -> Result<AgentDetail> {
         permit.validate(&self.admission)?;
-        if self.detail(id).await?.agent.harness == "claude" {
-            return self.claude_reconnect_accepted(id, permit).await;
+        match self.detail(id).await?.agent.harness.as_str() {
+            "claude" => return self.claude_reconnect_accepted(id, permit).await,
+            "opencode" => return self.opencode_reconnect_accepted(id, permit).await,
+            _ => {}
         }
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
@@ -968,6 +974,8 @@ impl Workspace {
         if detail.agent.closed_at.is_some() { return Ok(detail); }
         if detail.agent.harness == "claude" {
             self.claude_close_runtime(id).await?;
+        } else if detail.agent.harness == "opencode" {
+            self.opencode_close_runtime(id).await?;
         } else {
             // A detached remote turn may still be running. Reconcile native
             // history first, without sending/replaying any task.
@@ -1132,8 +1140,10 @@ impl Workspace {
     }
 
     pub async fn send(self: &Arc<Self>, id: &str, text: String) -> Result<Value> {
-        if self.detail(id).await?.agent.harness == "claude" {
-            return self.claude_send(id, text).await;
+        match self.detail(id).await?.agent.harness.as_str() {
+            "claude" => return self.claude_send(id, text).await,
+            "opencode" => return self.opencode_send(id, text).await,
+            _ => {}
         }
         let _permit = self.admission.enter_work()?;
         if text.trim().is_empty() || text.len() > 100_000 {
@@ -1252,6 +1262,9 @@ impl Workspace {
 
     async fn admit_message(self: &Arc<Self>, id: &str, input: &MessageInput, detail: &AgentDetail) -> Result<()> {
         self.ensure_rewind_settled(id).await?;
+        if detail.agent.harness == "opencode" {
+            return self.opencode_admit(id, input, detail).await;
+        }
         if detail.agent.harness == "claude" {
             if input.clarification.is_some() { return self.claude_admit_form(id).await; }
             if input.expected_turn_id.is_none() {
@@ -1333,7 +1346,7 @@ impl Workspace {
                     && detail.turns.iter().any(|t| t["id"] == expected.as_str() && t["status"] == "inProgress"),
                     "原 Turn 已结束或发生变化；消息仍保留，请确认后作为新消息发送");
             }
-            if !claude {
+            if !claude && detail.agent.harness != "opencode" {
                 let agent = id.to_owned();
                 self.stored(move |store| store.activate_codex_import(&agent)).await?;
             }
@@ -1351,7 +1364,9 @@ impl Workspace {
         let receipt = MessageReceipt { binding: None, input: input.clone(), status: "sending".into(), turn_id: None, error: None };
         self.record_meta(id, "message/requested", serde_json::to_value(&receipt)?, move |m| m.message_receipts.push(receipt)).await?;
         self.changed(id);
-        let result = if claude && (input.clarification.is_some() || input.expected_turn_id.is_none()) {
+        let result = if detail.agent.harness == "opencode" {
+            self.opencode_send_locked(id, input.text.clone(), Some(&input.client_message_id)).await
+        } else if claude && (input.clarification.is_some() || input.expected_turn_id.is_none()) {
             self.claude_answer_form_locked(id, &input).await
         } else if input.question.is_some() || input.clarification.is_some() {
             self.answer_locked(id, &input).await
@@ -1650,8 +1665,10 @@ impl Workspace {
 
     pub async fn interrupt(&self, id: &str) -> Result<()> {
         let _permit = self.admission.enter_completion()?;
-        if self.detail(id).await?.agent.harness == "claude" {
-            return self.claude_interrupt(id).await;
+        match self.detail(id).await?.agent.harness.as_str() {
+            "claude" => return self.claude_interrupt(id).await,
+            "opencode" => return self.opencode_interrupt(id).await,
+            _ => {}
         }
         let d = self.detail(id).await?;
         ensure_agent_open(&d.agent)?;
@@ -1935,6 +1952,10 @@ impl Workspace {
             ensure_agent_open(&self.stored(move |store| store.agent(&agent)).await?)?;
             if a.harness == "claude" {
                 if self.claude_respond(&a.id, request_id, &response).await? { return Ok(()); }
+                continue;
+            }
+            if a.harness == "opencode" {
+                if self.opencode_respond(&a.id, request_id, &response).await? { return Ok(()); }
                 continue;
             }
             // Re-read Pending under the same lock as disconnect; reply and
