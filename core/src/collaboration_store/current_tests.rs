@@ -115,13 +115,32 @@ fn the_delivery_is_read_from_records_and_unknown_is_never_green() {
     run["conclusion"] = json!("approved_with_notes");
     run["headSha"] = json!(head);
     run["baseSha"] = json!(base);
+    run["actualHarness"] = json!("codex");
+    run["actualModel"] = json!("model");
     run["findings"] = json!([{"priority":3},{"priority":3},{"priority":2}]);
     run["scope"] = json!({"counts":{"covered":4}});
     s.save_pr_review(&run, Some("report")).unwrap();
-    let review = delivery(&s)["pullRequests"][0]["latestReview"].clone();
+    let pr = delivery(&s)["pullRequests"][0].clone();
+    let review = &pr["latestReview"];
     assert_eq!((review["conclusion"].clone(), review["forCurrentHead"].clone()), (json!("approved_with_notes"), json!(true)));
+    assert_eq!((review["reviewerStarted"].clone(), pr["reviews"].clone()), (json!(true), json!({"attempts":1,"reviewerRuns":1})));
+    assert!(pr.get("latestReviewerRun").is_none(), "the newest attempt ran a reviewer: {pr}");
     assert_eq!(review["findings"], json!({"P3":2,"P2":1}));
     assert_eq!(review["scopeCounts"], json!({"covered":4}));
+
+    // A later attempt that failed while preparing (a wrong fixed base) started
+    // no reviewer: it is shown as such, and the round before it still is.
+    let again = serde_json::from_value(json!({"requestId":"r2","notifyAgentId":null,"taskId":"T-1","linkId":pr["linkId"],
+        "baseSha":"c".repeat(40),"headSha":head})).unwrap();
+    let (mut failed, _) = s.create_pr_review(None, &again, "r2").unwrap();
+    failed["status"] = json!("failed");
+    failed["error"] = json!("The requested base is not the PR's base; no reviewer was started");
+    s.save_pr_review(&failed, None).unwrap();
+    let pr = delivery(&s)["pullRequests"][0].clone();
+    assert_eq!((pr["latestReview"]["reviewId"].clone(), pr["latestReview"]["reviewerStarted"].clone()), (json!("r2"), json!(false)));
+    assert_eq!((pr["latestReviewerRun"]["reviewId"].clone(), pr["latestReviewerRun"]["conclusion"].clone()),
+        (json!("r1"), json!("approved_with_notes")));
+    assert_eq!(pr["reviews"], json!({"attempts":2,"reviewerRuns":1}));
 
     let subscribe = serde_json::from_value(json!({"requestId":"ci","taskId":"T-1","agentId":null,
         "url":"https://github.com/owner/repo/pull/1","expectedSha":head})).unwrap();
@@ -150,6 +169,7 @@ fn the_current_path_reads_through_its_indexes() {
     for (sql, index) in [(super::LATEST_ACTIVITY, "collaboration_activity_task"), (LATEST_DISPATCH, "collaboration_activity_dispatched"),
         (DISPATCH_ENDS, "collaboration_activity_dispatch_end"), (super::LATEST_REVIEW, "pr_reviews_task"),
         (super::NEWEST_SUBSCRIPTIONS, "ci_subscriptions_task"), (super::SUBSCRIPTION_COUNT, "ci_subscriptions_task"),
+        (super::LATEST_REVIEWER_RUN, "pr_reviews_task"), (super::REVIEW_COUNTS, "pr_reviews_task"),
         (super::LATEST_RUN, "(watch_id=?)")] {
         let mut plan = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
         let unbound = vec![rusqlite::types::Null; plan.parameter_count()];

@@ -91,6 +91,7 @@ fn review() -> Value {
     let files = vec![json!({"path":"x.rs"}); 16];
     let covered = vec![json!({"path":"x.rs"}); 15];
     json!({"id":"r","reviewId":"r","status":"completed","round":2,"conclusion":"approved_with_notes","baseSha":"a","headSha":"b",
+        "actualHarness":"codex","actualModel":"model",
         "findings":[{"priority":3,"title":"t","body":"b".repeat(400),"path":"x.rs"}],"explanation":"fine",
         "rawReport":"r".repeat(20000),"contextReads":reads,"files":files,
         "provenance":{"cli":{}},"requestedBy":{"kind":"agent","name":"Dev"},
@@ -113,5 +114,12 @@ fn a_reviews_summary_keeps_its_findings_counts_and_uncovered_paths_and_drops_the
     assert_eq!(summary["scope"]["counts"], review()["scope"]["counts"]);
     assert_eq!(summary["scope"]["notCovered"], json!([{"path":"bin.exe","state":"unsupported","status":"added","facts":[{"reason":"binary"}]}]));
     assert!(summary["more"].as_str().unwrap().contains("view \"full\""));
+    assert_eq!(summary["reviewerStarted"], true);
+    let mut unprepared = review();
+    unprepared["status"] = json!("failed");
+    unprepared["actualHarness"] = Value::Null;
+    unprepared["error"] = json!("The fixed base is not the PR's base; no reviewer ran");
+    let summary = answer("review_get", unprepared, Some("summary"));
+    assert_eq!((summary["reviewerStarted"].clone(), summary["round"].clone()), (json!(false), json!(2)));
     assert_eq!(answer("review_get", review(), Some("full")), review(), "the full view is the record as stored");
 }

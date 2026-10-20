@@ -15,6 +15,10 @@ const SUBSCRIPTIONS: i64 = 6;
 /// current_tests.rs): none reads the task's history or other tasks' records.
 pub(super) const LATEST_ACTIVITY: &str = "SELECT data FROM collaboration_task_activity WHERE task_id=?1 ORDER BY seq DESC LIMIT 1";
 pub(super) const LATEST_REVIEW: &str = "SELECT data FROM pr_reviews WHERE task_id=?1 AND link_id=?2 ORDER BY rowid DESC LIMIT 1";
+/// A review records the harness it started (actualHarness) once a reviewer
+/// runs; one that failed while preparing (a wrong fixed base, say) has none.
+pub(super) const LATEST_REVIEWER_RUN: &str = "SELECT data FROM pr_reviews WHERE task_id=?1 AND link_id=?2 AND json_extract(data,'$.actualHarness') IS NOT NULL ORDER BY rowid DESC LIMIT 1";
+pub(super) const REVIEW_COUNTS: &str = "SELECT COUNT(*),COUNT(json_extract(data,'$.actualHarness')) FROM pr_reviews WHERE task_id=?1 AND link_id=?2";
 pub(super) const NEWEST_SUBSCRIPTIONS: &str = "SELECT id,watch_id FROM ci_subscriptions WHERE task_id=?1 ORDER BY rowid DESC LIMIT ?2";
 pub(super) const SUBSCRIPTION_COUNT: &str = "SELECT COUNT(*) FROM ci_subscriptions WHERE task_id=?1";
 // CROSS JOIN keeps the watch's own runs the outer loop: never every run's.
@@ -125,29 +129,32 @@ fn delivery(db: &Connection, task: &str) -> Result<Value> {
         } else {
             json!({"state": ci["state"], "complete": ci["complete"], "headSha": ci["headSha"], "observedAt": ci["observedAt"]})
         };
-        let review: Option<String> = db
-            .query_row(
-                LATEST_REVIEW,
-                params![task, link["id"].as_str().unwrap_or_default()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let review = review.map(|raw| serde_json::from_str::<Value>(&raw)).transpose()?.map(|r| {
-            let mut findings = serde_json::Map::new();
-            for finding in r["findings"].as_array().into_iter().flatten() {
-                let key = format!("P{}", finding["priority"].as_i64().unwrap_or(-1));
-                let count = findings.get(&key).and_then(Value::as_i64).unwrap_or(0) + 1;
-                findings.insert(key, json!(count));
-            }
-            json!({"reviewId": r["id"], "round": r["round"], "status": r["status"], "conclusion": r["conclusion"],
-                "headSha": r["headSha"], "baseSha": r["baseSha"], "forCurrentHead": !head.is_null() && r["headSha"] == head,
-                "findings": findings, "scopeCounts": r["scope"]["counts"], "contextIncomplete": r["contextIncomplete"],
-                "acknowledgedUnreviewable": r["acknowledgedUnreviewable"], "finishedAt": r["finishedAt"]})
-        });
+        // Round numbers count every attempt; reviewerRuns counts those that
+        // started a reviewer. When the newest attempt never started one, the
+        // newest that did is shown beside it: a failed preparation is not a
+        // round of review, and does not hide the one before it.
+        let link_id = link["id"].as_str().unwrap_or_default();
+        let read = |sql: &str| -> Result<Option<Value>> {
+            let raw: Option<String> = db.query_row(sql, params![task, link_id], |r| r.get(0)).optional()?;
+            Ok(raw.map(|raw| serde_json::from_str::<Value>(&raw)).transpose()?)
+        };
+        let latest = read(LATEST_REVIEW)?;
+        let (attempts, runs): (i64, i64) =
+            db.query_row(REVIEW_COUNTS, params![task, link_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let earlier = match &latest {
+            Some(r) if r["actualHarness"].is_null() && runs > 0 => Some(read(LATEST_REVIEWER_RUN)?),
+            Some(r) if r["actualHarness"].is_null() => Some(None),
+            _ => None,
+        };
         pulls.push(json!({"linkId": link["id"], "repository": link["repository"], "number": link["number"],
             "url": link["url"], "title": snapshot["title"], "state": snapshot["state"], "headSha": head,
             "baseSha": snapshot["baseSha"], "baseBranch": snapshot["baseBranch"], "syncedAt": link["syncedAt"],
-            "stale": link["stale"], "error": link["error"], "ci": ci, "latestReview": review}));
+            "stale": link["stale"], "error": link["error"], "ci": ci,
+            "reviews": {"attempts": attempts, "reviewerRuns": runs},
+            "latestReview": latest.as_ref().map(|r| review(r, &head))}));
+        if let Some(earlier) = earlier {
+            pulls.last_mut().unwrap()["latestReviewerRun"] = json!(earlier.as_ref().map(|r| review(r, &head)));
+        }
     }
     let mut q = db.prepare(NEWEST_SUBSCRIPTIONS)?;
     let rows = q
@@ -178,6 +185,23 @@ fn delivery(db: &Connection, task: &str) -> Result<Value> {
     Ok(json!({"pullRequests": pulls, "issues": issues, "ciSubscriptions": subscriptions,
         "ciSubscriptionsShown": format!("{} newest of {more}", subscriptions.len()),
         "note": "Read from Core's records with the times they were observed; unknown, stale or unobserved is not passing, and nothing here merges, approves or completes anything"}))
+}
+
+/// A review as the delivery summary shows it: what it concluded on which
+/// head, whether a reviewer ran at all, and its findings by priority.
+fn review(r: &Value, head: &Value) -> Value {
+    let mut findings = serde_json::Map::new();
+    for finding in r["findings"].as_array().into_iter().flatten() {
+        let key = format!("P{}", finding["priority"].as_i64().unwrap_or(-1));
+        let count = findings.get(&key).and_then(Value::as_i64).unwrap_or(0) + 1;
+        findings.insert(key, json!(count));
+    }
+    json!({"reviewId": r["id"], "round": r["round"], "status": r["status"], "conclusion": r["conclusion"],
+        "reviewerStarted": r.get("actualHarness").map(|h| !h.is_null()), "harness": r["actualHarness"],
+        "model": r["actualModel"], "error": r["error"].as_str().map(short),
+        "headSha": r["headSha"], "baseSha": r["baseSha"], "forCurrentHead": !head.is_null() && r["headSha"] == *head,
+        "findings": findings, "scopeCounts": r["scope"]["counts"], "contextIncomplete": r["contextIncomplete"],
+        "acknowledgedUnreviewable": r["acknowledgedUnreviewable"], "finishedAt": r["finishedAt"]})
 }
 
 #[cfg(test)]

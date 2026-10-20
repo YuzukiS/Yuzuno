@@ -96,8 +96,8 @@ fn receipt(value: &Value) -> Value {
 }
 
 /// A review's summary: its identity, fixed range, conclusion and findings
-/// (whole: they are what the review says), how much it covered, and every
-/// changed path it did not cover with why.
+/// (whole: they are what the review says), whether a reviewer ran, how much
+/// it covered, and every changed path it did not cover with why.
 fn review_summary(value: &Value) -> Value {
     let mut out = pick(value, &["id", "reviewId", "taskId", "linkId", "number", "repository", "url", "round", "status",
         "phase", "conclusion", "nativeCorrectness", "error", "reasonCodes", "outdated", "baseSha", "headSha",
@@ -105,6 +105,11 @@ fn review_summary(value: &Value) -> Value {
         "contextIncomplete", "acknowledgedUnreviewable", "explanation", "findings", "evidence"]);
     if let Some(name) = value["requestedBy"]["name"].as_str() {
         out["requestedBy"] = json!(name);
+    }
+    // A review that failed while preparing never started a reviewer: it is
+    // not a round of review, however it is numbered.
+    if let Some(harness) = value.get("actualHarness") {
+        out["reviewerStarted"] = json!(!harness.is_null());
     }
     let coverage = &value["coverage"];
     if coverage.is_object() {

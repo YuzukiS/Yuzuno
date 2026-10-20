@@ -64,6 +64,8 @@ fn seed(history: usize) -> Seeded {
     run["headSha"] = json!(head);
     run["baseSha"] = json!(base);
     run["explanation"] = json!("e".repeat(700));
+    run["actualHarness"] = json!("codex");
+    run["actualModel"] = json!("model");
     run["findings"] = json!([{"priority":2,"title":"Deleting a project leaves its services open","body":"f".repeat(900),"path":path(1)},
         {"priority":3,"title":"A busy port loses its reason","body":"g".repeat(500),"path":path(2)}]);
     run["contextReads"] = Value::Array((0..30).map(|n| json!({"number":n,"tool":"source_read","path":path(n % 16),
