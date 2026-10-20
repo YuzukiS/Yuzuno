@@ -28,7 +28,9 @@
     "createUpdaterArtifacts": true,
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "template": "installer/installer.nsi",
+        "installerIcon": "icons/icon.ico"
       }
     }
   },
