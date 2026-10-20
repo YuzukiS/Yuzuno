@@ -170,7 +170,7 @@ class ReleaseTests(unittest.TestCase):
         self.artifact = {'expired': False, 'name': f'core-inputs-{self.sha}-2', 'digest': 'sha256:' + 'b' * 64,
                          'workflow_run': {'id': 42, 'head_sha': self.sha}}
 
-    def inputs(self):
+    def inputs(self, sdk=True, run_id='42', attempt='2'):
         source = self.base / 'inputs'
         (source / 'bin').mkdir(parents=True)
         for name in ('yuzuno-workspace', 'yuzuno-update-helper'):
@@ -183,8 +183,11 @@ class ReleaseTests(unittest.TestCase):
         (source / 'web/licenses').mkdir(parents=True)
         (source / 'web/index.html').write_text('<html><head></head><body>UI</body></html>')
         (source / 'web/licenses/THIRD_PARTY_NOTICES.txt').write_text('fixture web notices')
-        (source / 'claude/node_modules/@anthropic-ai/claude-agent-sdk').mkdir(parents=True)
-        (source / 'claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json').write_text('{}')
+        (source / 'claude/node_modules/@anthropic-ai/sdk').mkdir(parents=True)
+        (source / 'claude/node_modules/@anthropic-ai/sdk/package.json').write_text('{}')
+        if sdk:
+            (source / 'claude/node_modules/@anthropic-ai/claude-agent-sdk').mkdir(parents=True)
+            (source / 'claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json').write_text('{}')
         (source / 'result-validator').mkdir()
         (source / 'result-validator/validator.mjs').write_text('// unit fixture')
         (source / 'result-validator/THIRD_PARTY_NOTICES.txt').write_text('fixture validator notices')
@@ -198,7 +201,7 @@ class ReleaseTests(unittest.TestCase):
         product = self.base / 'product'
         product.mkdir()
         files = archive_tree(source, product / 'inputs.tar.gz')
-        write(product / 'build.json', {'source': self.sha, 'tree': 'c' * 40, 'runId': '42', 'runAttempt': '2',
+        write(product / 'build.json', {'source': self.sha, 'tree': 'c' * 40, 'runId': run_id, 'runAttempt': attempt,
             'repository': 'owner/repo', 'platform': 'linux-x86_64', 'files': files,
             'archiveSha256': digest(product / 'inputs.tar.gz')})
         archive = self.base / 'artifact.zip'
@@ -223,6 +226,67 @@ class ReleaseTests(unittest.TestCase):
                 release.ci_identity({**self.run, key: value}, self.artifact, self.flow.config)
         with self.assertRaises(ValueError):
             release.ci_identity(self.run, {**self.artifact, 'expired': True}, self.flow.config)
+
+    def inputs_flow(self):
+        """A release whose artifact comes from a release-inputs run (51,
+        attempt 1) and whose tests are the main CI run (42)."""
+        args = argparse.Namespace(work_dir=self.base / 'release-inputs', repository='owner/repo', sha=self.sha,
+            release_id='core-test', version='test.1', review='Accepted PR review reference', ci_run=42,
+            artifact_id=7, inputs_run=51, baseline=self.baseline, public_key=self.base / 'publisher.pub',
+            notes=self.base / 'notes.txt')
+        release.initialize(args)
+        self.inputs_run = {'id': 51, 'head_sha': self.sha, 'head_repository': {'full_name': 'owner/repo'},
+                           'status': 'completed', 'conclusion': 'success', 'event': 'workflow_dispatch',
+                           'head_branch': 'main', 'path': '.github/workflows/release-inputs.yml', 'run_attempt': 1,
+                           'html_url': 'https://github.com/owner/repo/actions/runs/51'}
+        self.artifact = {**self.artifact, 'name': f'core-inputs-{self.sha}-1', 'workflow_run': {'id': 51, 'head_sha': self.sha}}
+        return release.Flow(self.base / 'release-inputs')
+
+    def test_an_inputs_run_is_frozen_only_when_named(self):
+        self.assertNotIn('inputsRunId', self.flow.config)
+        self.assertEqual(self.inputs_flow().config['inputsRunId'], 51)
+
+    def test_inputs_on_request_come_from_the_release_inputs_run_and_the_tests_from_main_ci(self):
+        flow = self.inputs_flow()
+        self.assertIs(release.ci_identity(self.run, self.artifact, flow.config, self.inputs_run), self.inputs_run)
+        for key, value in [('conclusion', 'failure'), ('head_sha', 'd' * 40), ('event', 'push'),
+                           ('head_branch', 'other'), ('path', '.github/workflows/ci.yml'), ('id', 52),
+                           ('run_attempt', 2)]:
+            with self.subTest(inputs_run=key), self.assertRaises(ValueError):
+                release.ci_identity(self.run, self.artifact, flow.config, {**self.inputs_run, key: value})
+        for key, value in [('conclusion', 'failure'), ('event', 'workflow_dispatch'), ('path', '.github/workflows/release-inputs.yml')]:
+            with self.subTest(tests_run=key), self.assertRaises(ValueError):
+                release.ci_identity({**self.run, key: value}, self.artifact, flow.config, self.inputs_run)
+        with self.subTest('the artifact of the tests run'), self.assertRaisesRegex(ValueError, 'another run'):
+            release.ci_identity(self.run, {**self.artifact, 'workflow_run': {'id': 42, 'head_sha': self.sha}},
+                                flow.config, self.inputs_run)
+        with self.subTest('the inputs run not read'), self.assertRaisesRegex(ValueError, 'not read'):
+            release.ci_identity(self.run, self.artifact, flow.config)
+
+    def test_fetch_binds_the_build_to_the_inputs_run_and_refuses_the_sdk(self):
+        flow = self.inputs_flow()
+        def fetch(**inputs):
+            archive = self.inputs(**inputs)
+            try:
+                with patch.object(release, 'gh_json', side_effect=[self.run, self.inputs_run, self.artifact]), \
+                     patch.object(release, 'download', side_effect=lambda endpoint, target: shutil.copy2(archive, target)):
+                    flow.run('fetch', flow.fetch)
+            finally:
+                for path in (self.base / 'inputs', self.base / 'product'):
+                    shutil.rmtree(path)
+        with self.assertRaisesRegex(ValueError, 'Build metadata differs'):
+            fetch(sdk=False, run_id='42', attempt='2')
+        # A refused artifact was saved but never extracted; a new one replaces it.
+        self.assertFalse((flow.root / 'inputs').exists())
+        shutil.rmtree(flow.root / 'artifact')
+        with self.assertRaisesRegex(ValueError, 'carry the Claude Agent SDK'):
+            fetch(sdk=True, run_id='51', attempt='1')
+        self.assertFalse((flow.root / 'inputs').exists())
+        shutil.rmtree(flow.root / 'artifact')
+        fetch(sdk=False, run_id='51', attempt='1')
+        stage = read(flow.root / 'report.json')['stages']['fetch']
+        self.assertEqual(stage['inputsUrl'], self.inputs_run['html_url'])
+        self.assertEqual(read(flow.root / 'ci.json')['inputsRun']['id'], 51)
 
     def test_download_digest_mismatch_never_adopts_artifact(self):
         archive = self.inputs()

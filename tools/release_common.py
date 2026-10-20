@@ -13,6 +13,19 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+# Where the Claude Agent SDK's packages would be in release inputs:
+# tools/build-core-artifact.py copies the Claude runtime to claude/. The
+# prefix also covers the SDK's per-platform packages.
+CLAUDE_SDK = 'claude/node_modules/@anthropic-ai/claude-agent-sdk'
+
+
+def claude_sdk_files(files):
+    """The paths of `files` (an inventory) that belong to the Claude Agent
+    SDK. Public release inputs must have none (docs/public-readiness.md)."""
+    return sorted(path for path in files if path == CLAUDE_SDK or path.startswith(CLAUDE_SDK + '/')
+                  or path.startswith(CLAUDE_SDK + '-'))
+
+
 def read(path):
     return json.loads(Path(path).read_text())
 
