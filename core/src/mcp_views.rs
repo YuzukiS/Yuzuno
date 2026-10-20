@@ -91,6 +91,10 @@ fn receipt(value: &Value) -> Value {
     if let Some(notice) = value.get("projectNotice") {
         out["projectNotice"] = notice.clone();
     }
+    // A content editor's advice where an outcome goes on Home (T-154).
+    if let Some(hint) = value.get("homeHint") {
+        out["homeHint"] = hint.clone();
+    }
     out["more"] = json!(TASK_MORE);
     out
 }

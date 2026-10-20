@@ -364,7 +364,7 @@ fn a_reference_error_says_which_fields_go_together() {
             "expectedVersion":before["task"]["version"],"patch":{"materials":{"references":[reference]}}})).unwrap_err().to_string()
     };
     let missing_seq = refused(json!({"kind":"evidence","label":"Scope","taskId":"T-1"}));
-    assert!(missing_seq.contains("needs activitySeq") && missing_seq.contains("task_get activities[].seq") && missing_seq.contains("url"), "{missing_seq}");
+    assert!(missing_seq.contains("needs activitySeq") && missing_seq.contains("task_get with view \"activity\": activities[].seq") && missing_seq.contains("url"), "{missing_seq}");
     let neither = refused(json!({"kind":"evidence","label":"Scope"}));
     assert!(neither.contains("needs url, or taskId with activitySeq"), "{neither}");
     let unknown_seq = refused(json!({"kind":"evidence","label":"Scope","taskId":"T-1","activitySeq":9999}));
