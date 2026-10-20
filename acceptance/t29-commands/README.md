@@ -85,8 +85,10 @@ sent as a prompt:
   stays uncertain until Codex's own compaction turn ends.
   - Meanwhile another `/compact` or a message is refused.
   - A lost answer stays uncertain and is never sent again.
-  - A refusal ran nothing: "not provided" (method not found) and other
-    refusals are told apart.
+  - Only a Codex without the method (method not found) provably ran
+    nothing; the Agent is as it was. Any other error doesn't show whether
+    Codex had begun, so the Agent stays uncertain, to be checked. A turn
+    Codex has already reported started is never rolled back.
   - Instructions after it are refused with the draft kept.
 - **Claude `/compact`.** This is Claude Code's own command, sent as a message.
   Its `compact_boundary` now shows as a Compaction item of that turn, with

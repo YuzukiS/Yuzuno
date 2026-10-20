@@ -14,18 +14,22 @@ fn agent(id: &str, harness: &str, status: &str, turn: &str) -> AgentDetail {
 
 /// A fake app-server writing each request's method and params to `log`. It
 /// answers `{}`, except to `thread/compact/start` when `mode` says: `missing`
-/// (method not found), `busy` (another refusal) or `drop` (it exits without
-/// answering, so the outcome is unknown).
+/// (method not found), `busy` (another error), either after a pause when
+/// prefixed `slow-`, or `drop` (it exits without answering, so the outcome
+/// is unknown).
 async fn fake(log: &std::path::Path, mode: &str) -> Arc<Rpc> {
-    let code = r#"import json,sys
+    let code = r#"import json,sys,time
 for line in sys.stdin:
  r=json.loads(line)
  if 'method' not in r: continue
  with open(sys.argv[1],'a') as f:f.write(json.dumps({'method':r['method'],'params':r.get('params')})+'\n')
- if r['method']=='thread/compact/start' and sys.argv[2]=='drop': sys.exit(0)
- if r['method']=='thread/compact/start' and sys.argv[2]=='missing':
+ mode=sys.argv[2]
+ if r['method']=='thread/compact/start' and mode=='drop': sys.exit(0)
+ if r['method']=='thread/compact/start' and mode.startswith('slow-'):
+  time.sleep(0.4); mode=mode[5:]
+ if r['method']=='thread/compact/start' and mode=='missing':
   print(json.dumps({'id':r['id'],'error':{'code':-32601,'message':'Method not found'}}),flush=True)
- elif r['method']=='thread/compact/start' and sys.argv[2]=='busy':
+ elif r['method']=='thread/compact/start' and mode=='busy':
   print(json.dumps({'id':r['id'],'error':{'code':-32000,'message':'thread is busy'}}),flush=True)
  else:
   print(json.dumps({'id':r['id'],'result':{}}),flush=True)
@@ -112,10 +116,10 @@ async fn compact_is_refused_without_any_request_when_the_agent_is_not_between_tu
 }
 
 #[tokio::test]
-async fn a_refusal_ran_nothing_and_says_which_refusal_it_was() {
+async fn only_a_codex_without_the_method_provably_ran_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
-    // A Codex without the method: not supported here.
+    // Method not found is refused before anything runs: the Agent is as it was.
     let log = dir.path().join("missing");
     connected(&ws, agent("old", "codex", "idle", "completed"), &log, "missing").await;
     let error = ws.codex_compact("old").await.unwrap_err().to_string();
@@ -123,12 +127,51 @@ async fn a_refusal_ran_nothing_and_says_which_refusal_it_was() {
     assert_eq!(status(&ws, "old"), "idle", "nothing ran, so the Agent is as it was");
     let sent: Vec<_> = requests(&log).into_iter().map(|r| r["method"].clone()).collect();
     assert_eq!(sent, [json!("thread/compact/start")], "no fallback to a prompt or another request");
-    // Any other refusal is reported as itself, not as unsupported.
+}
+
+#[tokio::test]
+async fn another_error_leaves_compact_unknown_until_codex_says_and_nothing_slips_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
     let log = dir.path().join("busy");
-    connected(&ws, agent("refused", "codex", "idle", "completed"), &log, "busy").await;
-    let error = ws.codex_compact("refused").await.unwrap_err().to_string();
-    assert!(error.contains("Codex 拒绝了原生压缩：thread is busy") && !error.contains("不提供"), "{error}");
-    assert_eq!(status(&ws, "refused"), "idle");
+    connected(&ws, agent("busy", "codex", "idle", "completed"), &log, "busy").await;
+    let error = ws.codex_compact("busy").await.unwrap_err().to_string();
+    assert!(error.contains("thread is busy") && error.contains("无法确认") && !error.contains("不提供") && !error.contains("没有执行"), "{error}");
+    assert_eq!(status(&ws, "busy"), "uncertain", "an error doesn't show whether Codex had begun");
+    // Meanwhile neither another /compact nor a message goes in.
+    assert!(ws.codex_compact("busy").await.unwrap_err().to_string().contains("尚未确认"));
+    assert!(ws.send("busy", "hello".into()).await.is_err());
+    let sent: Vec<_> = requests(&log).into_iter().map(|r| r["method"].clone()).collect();
+    assert_eq!(sent.iter().filter(|m| *m == "thread/compact/start").count(), 1, "no second compaction");
+    assert!(!sent.contains(&json!("turn/start")), "no message was sent: {sent:?}");
+    // Codex's own turn, arriving late, still settles it.
+    ws.store.record_applied("busy", "turn/started", "turn/started", &json!({"threadId":"thread-busy","turn":{"id":"compaction","status":"inProgress","items":[]}})).unwrap();
+    assert_eq!(status(&ws, "busy"), "working");
+    ws.store.record_applied("busy", "turn/completed", "turn/completed", &json!({"threadId":"thread-busy","turn":{"id":"compaction","status":"completed","items":[]}})).unwrap();
+    assert_eq!(status(&ws, "busy"), "idle");
+}
+
+#[tokio::test]
+async fn an_error_after_codex_has_started_its_turn_never_rolls_it_back() {
+    for mode in ["slow-busy", "slow-missing"] {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+        let log = dir.path().join("race");
+        connected(&ws, agent("race", "codex", "idle", "completed"), &log, mode).await;
+        let pending = {
+            let ws = ws.clone();
+            tokio::spawn(async move { ws.codex_compact("race").await })
+        };
+        for _ in 0..200 {
+            if status(&ws, "race") == "uncertain" { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(status(&ws, "race"), "uncertain", "{mode}: requested");
+        // Codex's turn/started arrives before its error answer.
+        ws.store.record_applied("race", "turn/started", "turn/started", &json!({"threadId":"thread-race","turn":{"id":"compaction","status":"inProgress","items":[]}})).unwrap();
+        assert!(pending.await.unwrap().is_err(), "{mode}");
+        assert_eq!(status(&ws, "race"), "working", "{mode}: the turn Codex started stays");
+    }
 }
 
 #[tokio::test]

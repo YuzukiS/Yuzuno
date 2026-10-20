@@ -1655,7 +1655,11 @@ impl Workspace {
     /// uncertain from before the request until Codex's own events for the
     /// thread (its compaction turn) say otherwise, so neither a second
     /// `/compact` nor a message can slip in; a lost answer leaves it
-    /// uncertain, to be checked, never sent again. A refusal ran nothing.
+    /// uncertain, to be checked, never sent again. Only a Codex without the
+    /// method (JSON-RPC -32601, refused before anything runs) provably ran
+    /// nothing; any other error says nothing about whether it had begun, so
+    /// the Agent stays uncertain too. A state Codex's own events already set
+    /// is never rolled back.
     pub async fn codex_compact(self: &Arc<Self>, id: &str) -> Result<Value> {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
@@ -1688,23 +1692,28 @@ impl Workspace {
         match result {
             Ok(_) if current => Ok(json!({"accepted":true,"threadId":thread})),
             Ok(_) => bail!("Codex 接受了 /compact，但连接随后已变化；请重新连接核对结果，不要重复执行"),
-            Err(error) => {
-                let Some(refused) = error.downcast_ref::<RpcError>() else {
-                    bail!("/compact 的结果无法确认：{error}；请重新连接核对，不要重复执行");
-                };
-                // Codex answered with a refusal: nothing ran, so the Agent is
-                // as it was before the request.
-                let message = if refused.code == -32601 {
-                    "这台机器上的 Codex 不提供原生压缩（thread/compact/start）；没有执行".to_owned()
-                } else {
-                    format!("Codex 拒绝了原生压缩：{}；没有执行", refused.message)
-                };
-                self.record_meta(id, "compact/rejected", json!({"message":message,"code":refused.code}), move |m| {
-                    if m.agent.status == "uncertain" { m.agent.status = before; }
-                }).await?;
-                self.changed(id);
-                bail!(message)
-            }
+            Err(error) => match error.downcast_ref::<RpcError>() {
+                // An unknown method is refused before any handler runs:
+                // nothing ran, so the Agent is as it was, unless Codex's own
+                // events have said otherwise meanwhile.
+                Some(refused) if refused.code == -32601 => {
+                    let message = "这台机器上的 Codex 不提供原生压缩（thread/compact/start）；没有执行".to_owned();
+                    self.record_meta(id, "compact/rejected", json!({"message":message,"code":refused.code}), move |m| {
+                        if m.agent.status == "uncertain" { m.agent.status = before; }
+                    }).await?;
+                    self.changed(id);
+                    bail!(message)
+                }
+                // Any other error doesn't show whether Codex had begun: the
+                // Agent stays as its events leave it, uncertain until checked.
+                Some(refused) => {
+                    let message = format!("Codex 对 /compact 返回了错误：{}；是否已开始压缩无法确认，请重新连接核对，不要重复执行", refused.message);
+                    self.record_meta(id, "compact/failed", json!({"message":message,"code":refused.code}), |_| {}).await?;
+                    self.changed(id);
+                    bail!(message)
+                }
+                None => bail!("/compact 的结果无法确认：{error}；请重新连接核对，不要重复执行"),
+            },
         }
     }
 
