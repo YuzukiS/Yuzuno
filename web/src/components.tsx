@@ -36,6 +36,8 @@ import type {
 } from "./types";
 import { api, artifactUrl, errorText, post } from "./api";
 import { ClaudePermission, ClaudeSubAgentScope, ClaudeTool } from "./ClaudeControls";
+import { OpenCodeRequest, OpenCodeTool } from "./OpenCodeControls";
+import { agentHarnessName } from "./machine-checks";
 import character from "./assets/yuzu-character.png";
 import characterOutline from "./assets/yuzu-character-outline.png";
 import { blockItems, conversationBlocks, isCompacting, shownItemId, toolActivityCounts } from "./conversation-blocks";
@@ -312,7 +314,7 @@ export function itemText(item: NativeItem): string {
     return item._yuzunoInputText !== undefined ? userRequestText(item) : (item.content || [])
       .map((c) => c.text || (c.type === "image" ? "[Image]" : ""))
       .join("\n");
-  if (item.type === "claudeToolUse")
+  if (item.type === "claudeToolUse" || item.type === "opencodeTool")
     return `${String(item.name || "Tool")}\n${JSON.stringify(item.input, null, 2)}\n${typeof item.output === "string" ? item.output : JSON.stringify(item.output ?? "", null, 2)}`;
   if (item.type === "commandExecution")
     return `$ ${item.command || ""}\n${item.aggregatedOutput || ""}`;
@@ -466,6 +468,7 @@ function ToolItem({
   const item = view.item;
   const notice = <TruncationNotice view={view} />;
   if (item.type === "claudeToolUse") return <ClaudeTool item={item} notice={notice} opened={opened} onOpenChange={setOpened} unconfirmed={executionUnconfirmed && /inProgress|running/.test(item.status || "")} />;
+  if (item.type === "opencodeTool") return <OpenCodeTool item={item} notice={notice} opened={opened} onOpenChange={setOpened} unconfirmed={executionUnconfirmed && /inProgress|running/.test(item.status || "")} />;
   const isCommand = item.type === "commandExecution";
   const isFile = item.type === "fileChange";
   const unconfirmed = executionUnconfirmed && /inProgress|running/.test(item.status || "");
@@ -686,7 +689,7 @@ export function Turn({
     <div className="message-label">
       <Avatar agent={agent} small />
       {agent.name}
-      <span className="message-harness">{agent.harness === "claude" ? "Claude Code" : "Codex"}</span>
+      <span className="message-harness">{agentHarnessName(agent)}</span>
       {running && (
         <span className="working-caption">
           <span className={`status-dot ${activity.state === "compacting" ? "working" : activity.state}`} />
@@ -939,7 +942,9 @@ export function Turn({
 
 /** `permissionMode` is the mode the live Claude session reports. */
 export function PendingCard(props: { request: PendingRequest; refresh: () => void; disabled: boolean; highlightSource?: boolean; onViewChanges: () => void; permissionMode?: string | null }) {
-  return props.request.method === "claude/canUseTool" ? <ClaudePermission {...props} /> : <CodexPendingCard {...props} />;
+  if (props.request.method === "claude/canUseTool") return <ClaudePermission {...props} />;
+  if (props.request.method.startsWith("opencode/")) return <OpenCodeRequest {...props} />;
+  return <CodexPendingCard {...props} />;
 }
 
 function CodexPendingCard({

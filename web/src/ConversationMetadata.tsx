@@ -12,9 +12,10 @@ export function ConversationMetadata({
   const folder =
     agent.cwd.split(/[/\\]/).filter(Boolean).slice(-2).join("/") || agent.cwd;
   const model = agent.model || "Default model";
-  // Only Codex turns are sent the saved effort; Claude does not report one.
+  // Only Codex turns are sent the saved effort; Claude does not report one
+  // and OpenCode's comes from its own configuration.
   const effort =
-    agent.harness === "claude" ? null : agent.settings?.reasoningEffort;
+    agent.harness === "claude" || agent.harness === "opencode" ? null : agent.settings?.reasoningEffort;
   return (
     <div
       className="conversation-metadata"

@@ -12,6 +12,8 @@ type Preview = { available: boolean; reason?: string; previewId?: string; remove
 /** No native history/checkpoint reads until the user opens this turn's action. */
 export function RewindButton({ agent, turn, onDraft }: { agent: Agent; turn: NativeTurn; onDraft?: (agentId: string, text: string) => void }) {
   const [open, setOpen] = useState(false);
+  // OpenCode's own revert is not offered yet.
+  if (agent.harness === "opencode") return null;
   const blocked = !!agent.closedAt || ["working", "waiting"].includes(agent.status) || turn.status === "inProgress";
   return <>
     <button type="button" className="quiet-button rewind-open" disabled={blocked || !onDraft}

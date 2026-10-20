@@ -3703,3 +3703,21 @@ test("Claude: /model drops an effort the new model lacks exactly as the model ch
   assert.equal(chip.savedBefore, 0);
   assert.equal(chip.saved.model, "sonnet");
 });
+
+test("an OpenCode Agent at work takes no message into its turn and shows OpenCode's own facts", async () => {
+  const page = await mount({ harness: "opencode", status: "working", agentFields: { opencodeSessionId: "ses_0123456789" } });
+  try {
+    setValue(page.window, page.document.querySelector("[data-composer-input]"), "One more thing");
+    await pause();
+    const send = page.document.querySelector('[aria-label="Send message"]');
+    assert.equal(send?.disabled, true, "OpenCode takes no message into a running turn");
+    assert.equal(send.title, "Wait for this turn to finish, or interrupt");
+    assert.equal(page.document.querySelector('[aria-label="Send while working"]'), null);
+    assert.equal(page.document.querySelector('[aria-label="Agent settings"]'), null, "its model and permissions are OpenCode's own");
+    const fact = (name) => [...page.document.querySelectorAll("dt")].find((dt) => dt.textContent === name)?.nextElementSibling?.textContent.trim();
+    assert.equal(fact("Harness"), "OpenCode");
+    assert.equal(fact("Session"), "ses_0123");
+    assert.equal(page.calls.some((call) => /codex\/usage/.test(call.url)), false);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});

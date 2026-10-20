@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { api, errorText, post } from "./api";
 import { Modal } from "./components";
+import { agentHarnessName } from "./machine-checks";
 import type { Agent } from "./types";
 import "./agent-management.css";
 
@@ -198,9 +199,9 @@ export function AgentManagement({
                       Conversation history, session, and your draft stay here.
                       Find {agent.name} under Closed to pick up again.
                     </p>
-                    {working && agent.harness === "claude" && (
+                    {working && (agent.harness === "claude" || agent.harness === "opencode") && (
                       <p>
-                        If Claude does not confirm the stop, closing ends its
+                        If {agent.harness === "claude" ? "Claude" : "OpenCode"} does not confirm the stop, closing ends its
                         connection and marks that turn's result as unknown.
                         Nothing is sent again.
                       </p>
@@ -224,7 +225,7 @@ export function AgentManagement({
             </div>
             <p className="agent-files-kept">
               Project files and the original{" "}
-              {agent.harness === "claude" ? "Claude Code" : "Codex"} session
+              {agentHarnessName(agent)} session
               remain on their machine.
             </p>
             <div className="modal-actions">

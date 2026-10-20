@@ -1,6 +1,9 @@
 //! OpenCode Agents (T-110): an Agent's record driven by its own `opencode
-//! serve` (see `opencode`). Local Agents only, and nothing creates one yet:
-//! HTTP create and models refuse the harness and the UI offers none.
+//! serve` (see `opencode`). Local Agents only. One is created only by a Core
+//! started with `YUZUNO_EXPERIMENTAL_OPENCODE=1`, which is off by default
+//! until this is checked against a real OpenCode; otherwise HTTP create and
+//! models refuse the harness and the UI offers none. The switch decides only
+//! creation: an existing OpenCode Agent works either way.
 //!
 //! A Turn is one prompt, named by the message ID it is sent under and
 //! recorded before it is sent. What became of it is taken from OpenCode's own
@@ -55,7 +58,94 @@ fn program() -> PathBuf {
     std::env::var_os("YUZUNO_OPENCODE_BIN").map(PathBuf::from).unwrap_or_else(|| "opencode".into())
 }
 
+/// Whether this Core creates OpenCode Agents. The UI reads it from Core.
+pub fn enabled() -> bool {
+    std::env::var_os("YUZUNO_EXPERIMENTAL_OPENCODE").is_some_and(|v| v == "1")
+}
+
+/// What `/api/models?harness=opencode` and an Agent's models answer: no list,
+/// since the model is OpenCode's own default (its configuration's).
+pub fn catalog() -> Value {
+    json!({"models":[],"opencode":{"version":opencode::VERSION}})
+}
+
 impl Workspace {
+    pub async fn opencode_create_on(
+        self: &Arc<Self>, name: String, cwd: String, model: String,
+        machine_id: Option<String>, project_id: Option<String>,
+    ) -> Result<crate::model::Agent> {
+        let permit = self.admission.enter_work()?;
+        ensure!(enabled(), "OpenCode Agent 尚未开放");
+        if name.trim().is_empty() || name.len() > 100 {
+            bail!("请填写名称（最多 100 字节）");
+        }
+        ensure!(machine_id.as_deref().is_none_or(|id| id == "local"), "OpenCode Agent 目前只支持 Core 所在的本机");
+        ensure!(model.is_empty(), "OpenCode Agent 使用 OpenCode 自己配置的默认模型，这里不能选择");
+        if let Some(project) = project_id.clone() {
+            self.stored(move |store| store.ensure_project_assignable(&project)).await?;
+        }
+        let cwd = std::fs::canonicalize(cwd).context("工作目录不存在或无法读取")?;
+        ensure!(cwd.is_dir(), "工作目录必须是文件夹");
+        let id = uuid::Uuid::new_v4().to_string();
+        let colors = ["yuzu", "sage", "rose", "sky"];
+        let count = self.stored(|store| store.agents()).await?.len();
+        let agent = crate::model::Agent {
+            id: id.clone(),
+            name: name.trim().into(),
+            goal: String::new(),
+            work_summary: None,
+            project_id,
+            cwd: cwd.to_string_lossy().into_owned(),
+            model,
+            settings: Default::default(),
+            color: colors[count % colors.len()].into(),
+            harness: "opencode".into(),
+            claude_session_id: None,
+            opencode_session_id: None,
+            thread_id: None,
+            status: "offline".into(),
+            created_at: now(),
+            updated_at: now(),
+            unread_count: 0,
+            pending_count: 0,
+            last_message: None,
+            last_seq: 0,
+            reviewed_seq: 0,
+            rev: 0,
+            error: None,
+            remote: None,
+            connection_state: "disconnected".into(),
+            closed_at: None,
+        };
+        let detail = AgentDetail {
+            agent: agent.clone(),
+            turns: vec![],
+            history: None,
+            pending: vec![],
+            artifacts: vec![],
+            context_usage: None,
+            message_receipts: vec![],
+            claude_runtime: None,
+            codex_handoff: None,
+        };
+        self.stored(move |store| store.insert_created(&detail)).await?;
+        self.changed(&id);
+        let ws = self.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let gate = ws.gate(&id).await;
+            let _held = gate.lock().await;
+            // A close or delete that won the gate first is the user's.
+            if !ws.detail(&id).await.is_ok_and(|d| d.agent.closed_at.is_none()) {
+                return;
+            }
+            if let Err(error) = ws.opencode_ensure(&id).await {
+                ws.failed(&id, &error).await;
+            }
+        });
+        Ok(agent)
+    }
+
     fn opencode_current(&self, id: &str, generation: u64) -> Option<Connection> {
         self.opencodes.lock().unwrap().get(id).filter(|c| c.generation == generation).cloned()
     }
