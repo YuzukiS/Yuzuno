@@ -287,10 +287,17 @@ fn now() -> i64 {
     Utc::now().timestamp()
 }
 
-/// Called after Core recorded a Claude `result`: arms an intent when the
-/// usage limit stopped this turn and automatic continue is on.
-pub(crate) fn observe_result(ws: &Arc<Workspace>, id: &str, d: &AgentDetail) {
-    let Some(stop) = usage_limit_stop(d, now()) else { return };
+/// Whether the usage limit stopped the record's last Turn, now: taken from
+/// the committed record when Core records a Claude `result`.
+pub(crate) fn result_stop(d: &AgentDetail) -> Option<Stop> {
+    usage_limit_stop(d, now())
+}
+
+/// Called after Core recorded a Claude `result` with `result_stop` of the
+/// committed record: arms an intent when the usage limit stopped this turn
+/// and automatic continue is on.
+pub(crate) fn observe_result(ws: &Arc<Workspace>, id: &str, stop: Option<Stop>) {
+    let Some(stop) = stop else { return };
     let (ws, id) = (ws.clone(), id.to_owned());
     tokio::spawn(async move {
         if let Err(error) = ws.arm_claude_quota_resume(&id, stop).await {
