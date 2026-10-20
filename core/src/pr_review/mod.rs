@@ -3,6 +3,7 @@
 mod claude;
 mod continuation;
 mod evidence;
+mod incremental;
 pub(crate) mod policy;
 mod reviewer;
 pub(crate) mod settings;
@@ -98,6 +99,11 @@ pub(crate) struct Start {
     /// round can cover; it acknowledges them, nothing more.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     acknowledge_unreviewable: Option<bool>,
+    /// A completed earlier round of this PR at another head: this round
+    /// reads only what changed since and carries its findings
+    /// (incremental.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous_review_id: Option<String>,
 }
 
 async fn list(
@@ -318,6 +324,10 @@ fn spawn(
                 evidence = prepare_continuation(&ws, parent, &mut run, &mut context).await.inspect_err(|_| {
                     policy::execution_reason(&mut run, "continuation_refused");
                 })?;
+            } else if run["kind"] == "incremental" {
+                evidence = prepare_incremental(&ws, &mut run, &mut context, &evidence).await.inspect_err(|_| {
+                    policy::execution_reason(&mut run, "incremental_refused");
+                })?;
             }
             tokio::fs::write(directory.join("source.json"), &evidence).await?;
             run["phase"] = json!(format!(
@@ -370,6 +380,8 @@ fn spawn(
             run["ledger"]["nativeUsage"] = continuation::native_usage(&run, &raw);
             if parent.is_some() {
                 run["ledger"]["cumulative"] = continuation::cumulative(&run);
+            } else if run["kind"] == "incremental" {
+                run["ledger"]["cumulative"] = incremental::cumulative(&run);
             }
         }
         // Owned process only. No existing Agent or shared app-server is touched.
@@ -398,7 +410,7 @@ fn spawn(
             } else {
                 "execution_unconfirmed"
             };
-            if run["reasonCodes"].as_array().is_none_or(|codes| !codes.iter().any(|code| code == "invalid_report" || code == "execution_failed" || code == "continuation_refused")) {
+            if run["reasonCodes"].as_array().is_none_or(|codes| !codes.iter().any(|code| code == "invalid_report" || code == "execution_failed" || code == "continuation_refused" || code == "incremental_refused")) {
                 policy::execution_reason(&mut run, reason);
             }
             run["error"] = json!(if cancelled {
@@ -496,6 +508,34 @@ async fn prepare_continuation(
     Ok(evidence)
 }
 
+/// A review of a new head relying on an earlier round, checked before any
+/// model starts: only that round's proofs of paths identical on both sides
+/// carry over, and only after its retained responses still match their
+/// hashes. The reviewer is told what to read and what that round found.
+async fn prepare_incremental(
+    ws: &Workspace,
+    run: &mut Value,
+    context: &mut source::ContextStore,
+    collected: &str,
+) -> Result<String> {
+    run["phase"] = json!("Comparing with the earlier round's snapshot");
+    let task = run["taskId"].as_str().context("Review task missing")?.to_owned();
+    let earlier = run["previousReviewId"].as_str().context("Earlier review id missing")?.to_owned();
+    let previous = ws.stored(move |s| s.pr_review_report(&task, &earlier)).await?;
+    let proofs = incremental::compare(&previous, run)?;
+    if !proofs.is_empty() {
+        let id = previous["id"].as_str().context("Earlier review id missing")?;
+        continuation::verify_receipts(&previous, &ws.data_dir.join("pr-reviews").join(id)).await?;
+    }
+    context.inherit(proofs, Vec::new());
+    context.refresh(run);
+    let evidence = incremental::evidence(collected, run)?;
+    context.set_evidence_bytes(evidence.len());
+    run["evidenceBytes"] = json!(evidence.len());
+    context.refresh(run);
+    Ok(evidence)
+}
+
 async fn persist(ws: &Workspace, run: &Value, raw: Option<&str>) -> Result<()> {
     let run = run.clone();
     let raw = raw.map(str::to_owned);
@@ -543,13 +583,14 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
       definition("review_start","Explicitly request an independent read-only review with the Workspace review Harness/model settings of a task-linked PR. Returns reviewId immediately; Core continues after your turn ends and sends a normal system mailbox notification to you at completion/failure/cancellation. Finish your turn after acceptance; do not poll or sleep waiting for the review. Reuse requestId only for an identical retry, including after a lost reply. A new requestId is a new paid review round. Review findings, CI and task completion are separate; this does not merge, run source code or change task status.",json!({"requestId":text,"taskId":task,"linkId":text,
         "baseSha":fixed("Optional: the PR's own base as github_links shows it (snapshot.baseSha), in lowercase; not the current tip of the target branch, which may have moved on. A malformed one is refused before any round starts; one that is no longer the PR's ends its round before a reviewer runs."),
         "headSha":fixed("Optional: the PR head as github_links shows it, in lowercase. A malformed one is refused before any round starts; one that is no longer the PR's ends its round before a reviewer runs."),
-        "acknowledgeUnreviewable":{"type":"boolean","description":"Optional. When the latest completed round of this exact base and head found changed paths no round can cover (unsupported, too large, or excluded by the base's .yuzuno/review-scope.json), a new round is refused before it is created. true reviews the other paths anyway. It only acknowledges that those paths stay unreviewed: not an approval, not a lifted round limit, and the result is judged the same way."}}), &["requestId","taskId","linkId"]),
+        "acknowledgeUnreviewable":{"type":"boolean","description":"Optional. When the latest completed round of this exact base and head found changed paths no round can cover (unsupported, too large, or excluded by the base's .yuzuno/review-scope.json), a new round is refused before it is created. true reviews the other paths anyway. It only acknowledges that those paths stay unreviewed: not an approval, not a lifted round limit, and the result is judged the same way."},
+        "previousReviewId":{"type":"string","description":"Optional: a completed full round of this PR at another head, to review this head incrementally. It is a new round with its own normal budget and cost, and it counts toward the PR's two started rounds shared with continuations. Only that round's proofs of changed paths identical on both sides under the same merge base carry over; every other changed path is read again. Each of its findings stays, and keeps blocking if P0-P2, unless this round marks it fixed with fix paths that changed since that head and that it read completely itself. Refused before any model starts for a round that isn't completed with a confirmed native completion and a ledger, is a continuation or incremental round, used another reviewer or policy, or reviewed this same head (use review_continue)."}}), &["requestId","taskId","linkId"]),
       definition("review_continue","Explicitly request a bounded continuation of one completed review round of the same fixed snapshot, for the changed paths it left unread (not_read or read_failed in its scope). It is a new isolated reviewer run with its own record, round number and cost, not a resumed session, and it never refills a budget: it gets only what the parent round left of its 160 calls, 1.5 MB and 900 000 ms. A PR gets at most two started review rounds when one is a continuation, counted across tasks; rounds that can't be shown to have started nothing count. Core admits it from the parent's stored record before it exists and refuses, without starting any model, a parent that isn't completed with a confirmed native completion, predates usage ledgers, is itself a continuation or already has one, stopped at a terminal limit, has nothing left to read, or whose snapshot, policy or reviewer settings changed. Before the reviewer starts Core re-fetches the snapshot and checks it is the parent's, that every response the parent delivered still matches its recorded hash, and that the unread paths can be delivered within the remaining budget. Under an authorized delivery of this candidate it must be one of the delivery's attempts (delivery_continue first). The parent's report, findings and receipts stay unchanged; the continuation's coverage, scope and conclusion are over both rounds, each covered path naming the review that read it, and a blocking finding from either round blocks. Returns reviewId at once and notifies you at the end; do not poll. Reuse requestId only for an identical retry.",json!({"requestId":text,"taskId":task,"reviewId":{"type":"string","description":"The completed round to continue."},
         "baseSha":fixed("The parent round's fixed base, in lowercase."),
         "headSha":fixed("The parent round's fixed head, in lowercase."),
         "acknowledgeUnreviewable":{"type":"boolean","description":"Optional. Required when the parent also found paths no review of this snapshot can cover; it only acknowledges that they stay unreviewed, so the result can't pass."}}), &["requestId","taskId","reviewId","baseSha","headSha"]),
       definition("review_list","List retained review runs for an existing task, newest first. Use nextBefore while hasMore. Outdated compares both fixed base and head; null means the current version is unverified.",json!({"taskId":task,"before":{"type":"integer"}}), &["taskId"]),
-      definition("review_get","Read the same durable review shown in task details, including original report, model, fixed range, findings, policyVersion, coveragePolicyVersion, per-file coverage evidence, reasonCodes and, from coverage policy 3, scope: every changed path with its frozen revision, blob and modes and one state (covered with its evidenceKind, excluded, unsupported with its reason such as binary, symlink or submodule, budget_exhausted as diff_exceeds_context or context_exhausted, read_failed, or not_read). A continuation's (review_continue) coverage, scope and conclusion are over both rounds, and each covered path names the review that read it. Links, submodules and paths the base's .yuzuno/review-scope.json excludes are known before the reviewer starts; binary or non-UTF-8 sources and diffs larger than the review context are recorded when the reviewer meets them or by Core's bounded check after it finishes. They keep the review incomplete; another round of the same head can't cover them. A complete correct review with only P3 suggestions can be approved_with_notes; unknown is never passing and approval never merges the PR. Your default view \"summary\" has the conclusion, findings, coverage and scope counts and every path not covered; view \"full\" adds the original report, context reads and per-file evidence.",json!({"taskId":task,"reviewId":text,"view":{"type":"string","enum":["summary","full"]}}), &["taskId","reviewId"]),
+      definition("review_get","Read the same durable review shown in task details, including original report, model, fixed range, findings, policyVersion, coveragePolicyVersion, per-file coverage evidence, reasonCodes and, from coverage policy 3, scope: every changed path with its frozen revision, blob and modes and one state (covered with its evidenceKind, excluded, unsupported with its reason such as binary, symlink or submodule, budget_exhausted as diff_exceeds_context or context_exhausted, read_failed, or not_read). A continuation's (review_continue) coverage, scope and conclusion are over both rounds, and each covered path names the review that read it. An incremental round (review_start with previousReviewId) keeps the earlier round's unsettled findings with their origin and lists the ones it settled, with their fix paths, in settledFindings. Links, submodules and paths the base's .yuzuno/review-scope.json excludes are known before the reviewer starts; binary or non-UTF-8 sources and diffs larger than the review context are recorded when the reviewer meets them or by Core's bounded check after it finishes. They keep the review incomplete; another round of the same head can't cover them. A complete correct review with only P3 suggestions can be approved_with_notes; unknown is never passing and approval never merges the PR. Your default view \"summary\" has the conclusion, findings, coverage and scope counts and every path not covered, and for a continuation or incremental round the round it follows and the findings it settled; view \"full\" adds the original report, context reads and per-file evidence.",json!({"taskId":task,"reviewId":text,"view":{"type":"string","enum":["summary","full"]}}), &["taskId","reviewId"]),
       definition("review_evidence_add","Record evidence for one changed path of a review that couldn't cover it (for example a prebuilt binary): a source review, build provenance, an artifact hash, a signature or a behaviour test, by reference to another review or Job of this task, a CI run of the reviewed repository (its ci_list runKey), or an https link. It is bound to that review's frozen base, head, merge base and the path's blobs and modes, and shown beside reviews as bound to this candidate only when all of them match; after a new head it shows as another candidate's. Core records the reference without fetching or checking it, and the note is yours; nothing here verifies the evidence or changes any review's conclusion, scope or whether it passes. To bind it to a newer review, add it again with previousEvidenceId; the old record stays. Reuse requestId only to retry the same call.",json!({"requestId":text,"taskId":task,"reviewId":text,"path":text,
         "kind":{"type":"string","enum":evidence::KINDS},
         "reference":{"type":"object","additionalProperties":false,"description":"Exactly one of reviewId, jobId, ciRunKey or url.","properties":{"reviewId":text,"jobId":text,"ciRunKey":text,"url":{"type":"string","maxLength":500}}},

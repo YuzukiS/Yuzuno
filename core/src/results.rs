@@ -549,7 +549,11 @@ pub(crate) fn reliable_turn(store: &Store, db: &Connection, agent: &str) -> Resu
         return Ok(None);
     }
     let Some(turn) = brief.active_turn else { return Ok(None) };
-    let session = if a.harness == "claude" { a.claude_session_id.clone() } else { a.thread_id.clone() };
+    let session = match a.harness.as_str() {
+        "claude" => a.claude_session_id.clone(),
+        "opencode" => a.opencode_session_id.clone(),
+        _ => a.thread_id.clone(),
+    };
     Ok(Some(Pinned { agent: agent.into(), session, turn }))
 }
 

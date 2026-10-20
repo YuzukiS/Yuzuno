@@ -205,6 +205,9 @@ pub struct Agent {
     pub harness: String,
     #[serde(default)]
     pub claude_session_id: Option<String>,
+    /// The OpenCode session (`ses_…`) in this Agent's own OpenCode database.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opencode_session_id: Option<String>,
     pub thread_id: Option<String>,
     pub status: String,
     #[serde(default)]

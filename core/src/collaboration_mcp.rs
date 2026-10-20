@@ -639,6 +639,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_agent_reads_a_reviews_summary_with_its_earlier_round_and_the_whole_record_when_it_asks() {
+        let (_directory, ws) = fixture();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token = ws.store.collaboration_mcp_token("agent-a").unwrap();
+        let app = router(ws.clone(), port);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let transport = StreamableHttpClientTransport::with_client(
+            reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap(),
+            StreamableHttpClientTransportConfig::with_uri(format!("http://127.0.0.1:{port}/mcp/agent-a")).auth_header(token),
+        );
+        let client = tokio::time::timeout(Duration::from_secs(10), ().serve(transport)).await.unwrap().unwrap();
+        let call = |name: &'static str, arguments: Value| {
+            CallToolRequestParams::new(name).with_arguments(arguments.as_object().unwrap().clone())
+        };
+        client.call_tool(call("task_create", json!({"requestId":"c","title":"Review it"}))).await.unwrap();
+        let task = crate::collaboration_store::task_key(&ws.store.db.read().unwrap(), "T-1").unwrap().0;
+        // As the review store keeps them: a plain round, and an incremental one
+        // after it (incremental.rs conclude) with an earlier finding still open,
+        // one it settled and one of its own.
+        let plain = json!({"id":"r1","reviewId":"r1","taskId":task,"linkId":"l","round":1,"status":"completed",
+            "conclusion":"no_findings","findings":[],"baseSha":"a","headSha":"h1","contextReads":[{"tool":"source_read"}]});
+        let carried = json!({"priority":2,"title":"still open","path":"a.rs","origin":{"reviewId":"r1","carried":true},
+            "disposition":{"state":"still_valid","reason":"a.rs did not change since that head"}});
+        let own = json!({"priority":3,"title":"new","path":"c.rs","origin":{"reviewId":"r2","carried":false}});
+        let settled = json!({"priority":2,"title":"fixed","path":"b.rs","origin":{"reviewId":"r1","carried":true},
+            "settlement":{"state":"fixed","fixPaths":["b.rs"],"settledBy":"r2"}});
+        let incremental = json!({"id":"r2","reviewId":"r2","taskId":task,"linkId":"l","round":2,"status":"completed",
+            "kind":"incremental","previousReviewId":"r1","conclusion":"changes_requested","baseSha":"a","headSha":"h2",
+            "findings":[carried, own],"settledFindings":[settled],"contextReads":[{"tool":"source_read"}],
+            "incremental":{"previousReviewId":"r1","previousRound":1,"previousBaseSha":"a","previousHeadSha":"h1",
+                "previousMergeBaseSha":"a","previousConclusion":"no_findings","previousFindings":[],"previousLedger":{"calls":40}}});
+        {
+            let db = ws.store.db.write().unwrap();
+            for (id, data) in [("r1", &plain), ("r2", &incremental)] {
+                db.execute("INSERT INTO pr_reviews(id,task_id,link_id,status,data,report) VALUES(?1,?2,'l','completed',?3,'the raw report')",
+                    rusqlite::params![id, task, data.to_string()]).unwrap();
+            }
+        }
+        let read = |arguments: Value| {
+            let request = call("review_get", arguments);
+            let client = &client;
+            async move { client.call_tool(request).await.unwrap() }
+        };
+        let summary = read(json!({"taskId":"T-1","reviewId":"r2"})).await.structured_content.unwrap();
+        assert_eq!((summary["kind"].clone(), summary["previousReviewId"].clone()), (json!("incremental"), json!("r1")));
+        assert_eq!(summary["findings"], json!([carried, own]), "the open earlier finding keeps its origin and still blocks");
+        assert_eq!(summary["conclusion"], "changes_requested");
+        assert_eq!(summary["settledFindings"], json!([settled]));
+        assert_eq!(summary["incremental"], json!({"previousReviewId":"r1","previousRound":1,"previousBaseSha":"a",
+            "previousHeadSha":"h1","previousMergeBaseSha":"a","previousConclusion":"no_findings"}));
+        assert!(summary.get("rawReport").is_none() && summary.get("contextReads").is_none(), "{summary}");
+        let full = read(json!({"taskId":"T-1","reviewId":"r2","view":"full"})).await.structured_content.unwrap();
+        assert_eq!(full["rawReport"], "the raw report");
+        assert_eq!((full["incremental"]["previousLedger"].clone(), full["contextReads"].clone()),
+            (json!({"calls":40}), json!([{"tool":"source_read"}])));
+        assert_eq!(full["settledFindings"], json!([settled]));
+        let earlier = read(json!({"taskId":"T-1","reviewId":"r1"})).await.structured_content.unwrap();
+        assert_eq!((earlier["findings"].clone(), earlier["conclusion"].clone()), (json!([]), json!("no_findings")));
+        for absent in ["kind", "previousReviewId", "settledFindings", "incremental"] {
+            assert!(earlier.get(absent).is_none(), "{absent}: {earlier}");
+        }
+        let wrong = read(json!({"taskId":"T-1","reviewId":"r2","view":"raw"})).await;
+        assert_eq!(wrong.is_error, Some(true));
+        assert!(wrong.structured_content.unwrap()["error"].as_str().unwrap().contains("view is summary or full"));
+        let _ = client.cancel().await;
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn official_sdk_client_lists_calls_and_cannot_claim_another_identity() {
         let (_directory, ws) = fixture();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

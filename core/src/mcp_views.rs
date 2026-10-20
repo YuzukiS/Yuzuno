@@ -101,12 +101,24 @@ fn receipt(value: &Value) -> Value {
 
 /// A review's summary: its identity, fixed range, conclusion and findings
 /// (whole: they are what the review says), whether a reviewer ran, how much
-/// it covered, and every changed path it did not cover with why.
+/// it covered, and every changed path it did not cover with why. A
+/// continuation or incremental round also names the round it follows; an
+/// incremental one keeps the findings it settled (whole, with their fix
+/// paths) and, of the earlier round, what its own conclusion is read against.
+/// Its unsettled earlier findings are among `findings`, each with its origin.
 fn review_summary(value: &Value) -> Value {
     let mut out = pick(value, &["id", "reviewId", "taskId", "linkId", "number", "repository", "url", "round", "status",
         "phase", "conclusion", "nativeCorrectness", "error", "reasonCodes", "outdated", "baseSha", "headSha",
         "mergeBaseSha", "comparison", "commitCount", "createdAt", "finishedAt", "actualModel", "actualHarness",
-        "contextIncomplete", "acknowledgedUnreviewable", "explanation", "findings", "evidence"]);
+        "contextIncomplete", "acknowledgedUnreviewable", "explanation", "findings", "evidence",
+        "kind", "parentReviewId", "previousReviewId", "settledFindings"]);
+    // The earlier round's identity and verdict; its findings are carried in
+    // `findings` or `settledFindings`, its ledger and reads stay in "full".
+    let earlier = &value["incremental"];
+    if earlier.is_object() {
+        out["incremental"] = pick(earlier, &["previousReviewId", "previousRound", "previousBaseSha", "previousHeadSha",
+            "previousMergeBaseSha", "previousConclusion"]);
+    }
     if let Some(name) = value["requestedBy"]["name"].as_str() {
         out["requestedBy"] = json!(name);
     }

@@ -21,7 +21,7 @@ pub(super) async fn review(
         .as_str()
         .context("Missing frozen Claude model")?
         .to_owned();
-    let started = bridge.request(json!({"op":"review_start","cwd":directory,"model":model,"prompt":reviewer::prompt(evidence),"schema":reviewer::output_schema()})).await?;
+    let started = bridge.request(json!({"op":"review_start","cwd":directory,"model":model,"prompt":reviewer::prompt(evidence),"schema":reviewer::schema(evidence)})).await?;
     run["resolvedModel"] = started["resolvedModel"].clone();
     // Which CLI and SDK ran this review, and where the CLI was found.
     if started["provenance"].is_object() {

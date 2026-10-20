@@ -20,10 +20,10 @@ fn active_turn(detail: &AgentDetail) -> Option<&str> {
         .as_str()
 }
 fn session(detail: &AgentDetail) -> Option<&str> {
-    if detail.agent.harness == "claude" {
-        detail.agent.claude_session_id.as_deref()
-    } else {
-        detail.agent.thread_id.as_deref()
+    match detail.agent.harness.as_str() {
+        "claude" => detail.agent.claude_session_id.as_deref(),
+        "opencode" => detail.agent.opencode_session_id.as_deref(),
+        _ => detail.agent.thread_id.as_deref(),
     }
 }
 fn same_turn(message: &Value, detail: &AgentDetail) -> bool {
@@ -164,6 +164,13 @@ impl Workspace {
                 )
             })
             .await?;
+            return Ok(());
+        }
+        if detail.agent.harness == "opencode" {
+            // OpenCode takes no message into a running Turn (yet).
+            let m = message.clone();
+            self.stored(move |store| store.set_update_pause_delivery(&m, "pending", "error",
+                json!({"reason":"harness_unsupported"}))).await?;
             return Ok(());
         }
         if detail.agent.connection_state != "connected"

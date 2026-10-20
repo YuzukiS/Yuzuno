@@ -104,6 +104,10 @@ async function mount({ storage = {}, agents: overrides = {}, catchupItems = [], 
   timers: scaled = {}, ready = workspaceShown } = {}) {
   const agents = fixtureAgents(overrides);
   const editorPolicies = new Map();
+  // Project services (T-151): what Core keeps, and what answers on each
+  // port of this browser's computer (the proof the page checks itself).
+  const services = [];
+  const answersHere = new Map();
   const calls = [];
   const errors = [];
   const virtualConsole = new VirtualConsole();
@@ -191,8 +195,37 @@ async function mount({ storage = {}, agents: overrides = {}, catchupItems = [], 
       }
       return respond(policy);
     }
+    if ((match = url.match(/^http:\/\/127\.0\.0\.1:(\d+)\/\.well-known\/yuzuno-service\/(\w+)$/))) {
+      const text = answersHere.get(Number(match[1]))?.(match[2]);
+      if (text === undefined) throw new TypeError("Failed to fetch");
+      return { ok: true, status: 200, json: async () => ({}), text: async () => text };
+    }
+    if ((match = url.match(/\/api\/projects\/([^/]+)\/services$/))) {
+      if (init.method === "POST") {
+        const made = { id: `s-${services.length + 1}`, projectId: match[1], ...body, author: { kind: "user" }, createdAt: "",
+          connection: { state: "closed", since: "" } };
+        services.push(made);
+        return respond(made);
+      }
+      return respond({ services: services.filter((service) => service.projectId === match[1]) });
+    }
+    if ((match = url.match(/\/api\/services\/([^/]+)\/(open|close)$/))) {
+      const service = services.find((s) => s.id === match[1]);
+      if (match[2] === "close") {
+        service.connection = { state: "closed", since: "" };
+        return respond(service);
+      }
+      const port = 4380 + services.indexOf(service);
+      service.connection = { state: "available", httpStatus: 200, localPort: port, since: "" };
+      return respond({ ...service, proof: { challenge: `c${port}`, answer: `a${port}` } });
+    }
+    if ((match = url.match(/\/api\/services\/([^/]+)$/)) && init.method === "DELETE") {
+      services.splice(services.findIndex((s) => s.id === match[1]), 1);
+      return respond({ deleted: true });
+    }
     if (url.endsWith("/api/machines"))
-      return respond({ machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/workspace" }] });
+      return respond({ machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/workspace" },
+        { id: "gpu", name: "GPU box", kind: "ssh", defaultCwd: "/srv" }] });
     if (url.endsWith("/api/projects") && init.method === "POST")
       return respond({ id: "p-new", name: body.name, defaultDirs: body.defaultDirs || {}, createdAt: "", updatedAt: "" });
     if (url.endsWith("/api/agents") && init.method === "POST") {
@@ -231,6 +264,8 @@ async function mount({ storage = {}, agents: overrides = {}, catchupItems = [], 
     calls,
     errors,
     agents,
+    services,
+    answersHere,
     reads: () => calls.filter((call) => call.url.endsWith("/review")),
     railNames: () => [...window.document.querySelectorAll(".agent-list .agent-row")].map((row) => row.textContent),
     close: () => window.close(),
@@ -692,4 +727,54 @@ test("Home content editor settings save stable IDs, explicit none and compatibil
     assert.equal(saves()[2].body.editorAgentIds, null);
     assert.equal(page.errors.length, 0, page.errors.join('\n'));
   } finally { page.close(); }
+});
+
+test("a project's service opens only once this computer proves it reaches Core's port", async () => {
+  const page = await mount({ storage: { "yuzuno.selected": "a" } });
+  try {
+    await fromScopeMenu(page, "Manage projects");
+    const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
+    button(page, "App", dialog).click();
+    const panel = await waitFor(() => dialog.querySelector('[aria-label="Services"]'), "the Services panel is shown");
+    await waitFor(() => /No services yet/.test(panel.textContent), "no services yet");
+    button(page, "Add", panel).click();
+    const form = await waitFor(() => panel.querySelector(".services-form"), "the form opens");
+    const [name, port] = form.querySelectorAll("input");
+    type(page, name, "Notebook");
+    choose(page, form.querySelector("select"), "gpu");
+    type(page, port, "8888");
+    type(page, form.querySelectorAll("input")[2], "/lab");
+    button(page, "Add service", form).click();
+    await waitFor(() => page.services.length === 1 && /Notebook/.test(panel.textContent), "the service is registered");
+    assert.deepEqual(page.calls.find((call) => call.method === "POST" && call.url.endsWith("/projects/p-app/services")).body,
+      { name: "Notebook", machineId: "gpu", port: 8888, path: "/lab" });
+    assert.match(panel.textContent, /GPU box · port 8888 · \/lab · added by you/);
+    assert.match(panel.textContent, /Not open/);
+    assert.equal(page.calls.filter((call) => call.url.includes("/open")).length, 0, "registering opens nothing");
+
+    // Something else answers on that port here: refused, no link.
+    page.answersHere.set(4380, () => "hello");
+    button(page, "Open", panel).click();
+    await waitFor(() => panel.querySelector(".services-unreached"), "the page says this computer does not reach it");
+    assert.equal(panel.querySelector(".services-open"), null, "no address is offered");
+    assert.match(panel.textContent, /Answering \(HTTP 200\) · Core port 4380/);
+
+    // Through Core's port: the answer only Core knows, then the address.
+    page.answersHere.set(4380, (challenge) => (challenge === "c4380" ? "a4380" : "nope"));
+    button(page, "Check again", panel).click();
+    const link = await waitFor(() => panel.querySelector(".services-open"), "the address is offered");
+    assert.equal(link.getAttribute("href"), "http://127.0.0.1:4380/lab");
+    assert.equal(link.getAttribute("target"), "_blank");
+    assert.match(link.getAttribute("rel"), /noopener/);
+    assert.equal(panel.querySelector(".services-unreached"), null);
+
+    // Closing forgets the proof; deleting leaves nothing listed.
+    button(page, "Close", panel).click();
+    await waitFor(() => /Not open/.test(panel.textContent) && !panel.querySelector(".services-open"), "closed");
+    panel.querySelector('[aria-label="Delete Notebook"]').click();
+    await waitFor(() => /No services yet/.test(panel.textContent), "deleted");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
 });

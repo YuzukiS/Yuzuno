@@ -124,3 +124,49 @@ fn a_reviews_summary_keeps_its_findings_counts_and_uncovered_paths_and_drops_the
     assert_eq!((summary["reviewerStarted"].clone(), summary["round"].clone()), (json!(false), json!(2)));
     assert_eq!(answer("review_get", review(), Some("full")), review(), "the full view is the record as stored");
 }
+
+/// An incremental round as the review store keeps it (incremental.rs
+/// conclude): an earlier finding still valid, one it settled, one of its own.
+fn incremental_review() -> Value {
+    let carried = json!({"priority":2,"title":"still open","body":"b","path":"a.rs","origin":{"reviewId":"r1","carried":true},
+        "disposition":{"state":"still_valid","reason":"a.rs did not change since that head"}});
+    let own = json!({"priority":3,"title":"new","body":"b","path":"c.rs","origin":{"reviewId":"r2","carried":false}});
+    let settled = json!({"priority":2,"title":"fixed","body":"b","path":"b.rs","origin":{"reviewId":"r1","carried":true},
+        "settlement":{"state":"fixed","fixPaths":["b.rs"],"explanation":"the check now runs first","settledBy":"r2"}});
+    let mut value = review();
+    value["id"] = json!("r2");
+    value["reviewId"] = json!("r2");
+    value["kind"] = json!("incremental");
+    value["previousReviewId"] = json!("r1");
+    value["conclusion"] = json!("changes_requested");
+    value["findings"] = json!([carried, own]);
+    value["settledFindings"] = json!([settled]);
+    value["incremental"] = json!({"previousReviewId":"r1","previousRound":1,"previousBaseSha":"a","previousHeadSha":"h1",
+        "previousMergeBaseSha":"a","previousConclusion":"changes_requested","previousExplanation":"e".repeat(3000),
+        "previousFindings":[{"title":"still open"},{"title":"fixed"}],"previousLedger":{"calls":40},
+        "targets":[{"path":"b.rs","changedSinceEarlierHead":true}],"leftThePr":[]});
+    value
+}
+
+#[test]
+fn an_incremental_rounds_summary_keeps_its_earlier_round_and_what_it_settled() {
+    let summary = answer("review_get", incremental_review(), Some("summary"));
+    assert_eq!((summary["kind"].clone(), summary["previousReviewId"].clone()), (json!("incremental"), json!("r1")));
+    // Findings whole, the earlier round's with their origin: an open one is never shown as passed.
+    assert_eq!(summary["findings"], incremental_review()["findings"]);
+    assert_eq!(summary["findings"][0]["origin"], json!({"reviewId":"r1","carried":true}));
+    assert_eq!(summary["conclusion"], "changes_requested");
+    assert_eq!(summary["settledFindings"], incremental_review()["settledFindings"]);
+    assert_eq!(summary["settledFindings"][0]["settlement"]["fixPaths"], json!(["b.rs"]));
+    assert_eq!(summary["incremental"], json!({"previousReviewId":"r1","previousRound":1,"previousBaseSha":"a",
+        "previousHeadSha":"h1","previousMergeBaseSha":"a","previousConclusion":"changes_requested"}));
+    for gone in ["rawReport", "contextReads"] {
+        assert!(summary.get(gone).is_none(), "{gone}");
+    }
+    assert_eq!(answer("review_get", incremental_review(), Some("full")), incremental_review(), "full is the record as stored");
+    // A review that is not part of a chain gains nothing.
+    let plain = answer("review_get", review(), Some("summary"));
+    for absent in ["kind", "previousReviewId", "parentReviewId", "settledFindings", "incremental"] {
+        assert!(plain.get(absent).is_none(), "{absent}");
+    }
+}

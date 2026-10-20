@@ -62,6 +62,12 @@ type Review = {
   };
   kind?: string;
   continuation?: { parentRound?: number; targets?: { path: string }[] } | null;
+  incremental?: {
+    previousRound?: number;
+    targets?: { path: string }[];
+    leftThePr?: string[];
+  } | null;
+  settledFindings?: Finding[] | null;
   scope?: ReviewScope | null;
   scopeConclusion?: string | null;
   evidence?: ScopeEvidence[] | null;
@@ -358,6 +364,8 @@ export function PrReviews({
                 {r.repository}#{r.number} · Round {r.round ?? 1}
                 {r.kind === "continuation" &&
                   ` · continues round ${r.continuation?.parentRound ?? "?"}`}
+                {r.kind === "incremental" &&
+                  ` · new head after round ${r.incremental?.previousRound ?? "?"}`}
               </strong>
               <span>{r.status}</span>
             </header>
@@ -419,6 +427,9 @@ export function PrReviews({
                   {r.kind === "continuation" && (
                     <>{" · "}{r.coverage.inheritedCoveredCount ?? 0} read by round {r.continuation?.parentRound ?? "?"}</>
                   )}
+                  {r.kind === "incremental" && (
+                    <>{" · "}{r.coverage.inheritedCoveredCount ?? 0} unchanged since round {r.incremental?.previousRound ?? "?"}</>
+                  )}
                 </p>
               )}
               {r.kind === "continuation" && (
@@ -429,6 +440,19 @@ export function PrReviews({
                   reviewer run with its own cost, within what that round left of its
                   budget. Coverage and conclusion are over both rounds; that round's
                   findings are kept as it recorded them.
+                </p>
+              )}
+              {r.kind === "incremental" && (
+                <p className="pr-review-incremental">
+                  Reviews a new head after round {r.incremental?.previousRound ?? "?"}:
+                  it reads the {r.incremental?.targets?.length ?? 0}{" "}
+                  {r.incremental?.targets?.length === 1
+                    ? "path that changed or wasn't read before"
+                    : "paths that changed or weren't read before"}
+                  , and keeps that round's proofs only for paths identical on both
+                  sides. A new round with its own budget and cost. That round's
+                  findings stay unless this one shows them fixed by its own
+                  reads ({r.settledFindings?.length ?? 0} settled).
                 </p>
               )}
               <p className="github-hint">

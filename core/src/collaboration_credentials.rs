@@ -97,6 +97,19 @@ impl Workspace {
         self.changed(id);
     }
 
+    /// A runtime that reports its own MCP connection (OpenCode) reported it
+    /// not connected: not ready, saying what it reported.
+    pub(crate) async fn collaboration_refused(&self, id: &str, generation: u64, native: &Value) {
+        if self.collaboration_url.get().is_some() {
+            let status = native["status"].as_str().unwrap_or("unknown");
+            let detail = match native["error"].as_str() {
+                Some(error) => format!("OpenCode 报告 MCP 状态 {status}：{error}"),
+                None => format!("OpenCode 报告 MCP 状态 {status}"),
+            };
+            self.record_collaboration_status(id, generation, unconfirmed("notConnected", &detail)).await;
+        }
+    }
+
     pub(crate) async fn collaboration_started(&self, id: &str, generation: u64) {
         if self.collaboration_url.get().is_some() {
             self.record_collaboration_status(id, generation,
