@@ -57,6 +57,18 @@ fn known_unreviewable(tx: &Connection, task: &str, link: &str, base: &str, head:
     Ok(None)
 }
 
+/// Started review rounds of one PR across tasks. Only a round recorded with
+/// a ledger that failed before its native start was recorded provably started
+/// nothing; every other one, older history and unknown ones included, counts.
+fn started_rounds(tx: &Connection, linked: &Value) -> Result<i64> {
+    Ok(tx.query_row(
+        "SELECT COUNT(*) FROM pr_reviews WHERE json_extract(data,'$.repositoryId')=?1 AND json_extract(data,'$.number')=?2
+           AND NOT (status='failed' AND json_extract(data,'$.ledger.version') IS ?3 AND json_extract(data,'$.nativeStartedAt') IS NULL)",
+        params![linked["repositoryId"].as_i64(), linked["number"].as_i64(), super::continuation::LEDGER_VERSION as i64],
+        |r| r.get(0),
+    )?)
+}
+
 impl Store {
     pub(crate) fn recover_pr_reviews(&self) -> Result<()> {
         let pending = {
@@ -146,6 +158,28 @@ impl Store {
                 }
             }
         }
+        // An incremental round relies on one completed full round of this PR
+        // at another head, admitted from its stored record, and counts toward
+        // the PR's started rounds shared with continuations.
+        let incremental = match input.previous_review_id.as_deref() {
+            None => None,
+            Some(earlier) => {
+                let stored: Option<String> = tx
+                    .query_row("SELECT data FROM pr_reviews WHERE id=?1 AND task_id=?2 AND link_id=?3", params![earlier, task, link], |r| r.get(0))
+                    .optional()?;
+                let previous: Value = serde_json::from_str(&stored.context("No review with this previousReviewId belongs to this task's PR")?)?;
+                let head = input.head_sha.as_deref().or(linked["snapshot"]["headSha"].as_str());
+                let config = serde_json::to_value(super::settings::read(&tx)?)?;
+                super::incremental::admit(&previous, head, &config).map_err(|refusal| anyhow::anyhow!("{refusal} No review was started."))?;
+                let started = started_rounds(&tx, &linked)?;
+                ensure!(
+                    started < super::continuation::MAX_STARTED_ROUNDS,
+                    "This PR already has {started} review rounds that started or may have started, across tasks; an incremental round would be one more than the {} it may use. Report the result to whoever decides. No review was started.",
+                    super::continuation::MAX_STARTED_ROUNDS
+                );
+                Some(previous)
+            }
+        };
         let round: i64 = tx.query_row(
             "SELECT COUNT(*)+1 FROM pr_reviews WHERE task_id=?1 AND link_id=?2",
             params![task, link],
@@ -167,7 +201,14 @@ impl Store {
             .transpose()?;
         let settings = super::settings::read(&tx)?;
         crate::delivery::store::attach_review(&tx,&task,link,input.base_sha.as_deref(),input.head_sha.as_deref(),&serde_json::to_value(&settings)?,&input.request_id,id)?;
-        let data = json!({"requestId":input.request_id,"notificationRecipient":recipient,"requestedHarness":settings.harness,"actualHarness":null,"reviewId":id,"round":round,"requestedBy":author,"source":source,"id":id,"taskId":task,"linkId":link,"repository":linked["repository"],"repositoryId":linked["repositoryId"],"number":linked["number"],"url":linked["url"],"status":"preparing","phase":"Fetching fixed PR revision","requestedModel":settings.model,"actualModel":null,"requestedBaseSha":input.base_sha,"requestedHeadSha":input.head_sha,"baseSha":null,"headSha":null,"mergeBaseSha":null,"createdAt":now(),"finishedAt":null,"conclusion":"unknown","findings":[],"error":null,"policyVersion":super::policy::VERSION,"coveragePolicyVersion":super::source::COVERAGE_VERSION,"reasonCodes":[],"acknowledgedUnreviewable":input.acknowledge_unreviewable == Some(true),"ledger":{"version":super::continuation::LEDGER_VERSION}});
+        let mut data = json!({"requestId":input.request_id,"notificationRecipient":recipient,"requestedHarness":settings.harness,"actualHarness":null,"reviewId":id,"round":round,"requestedBy":author,"source":source,"id":id,"taskId":task,"linkId":link,"repository":linked["repository"],"repositoryId":linked["repositoryId"],"number":linked["number"],"url":linked["url"],"status":"preparing","phase":"Fetching fixed PR revision","requestedModel":settings.model,"actualModel":null,"requestedBaseSha":input.base_sha,"requestedHeadSha":input.head_sha,"baseSha":null,"headSha":null,"mergeBaseSha":null,"createdAt":now(),"finishedAt":null,"conclusion":"unknown","findings":[],"error":null,"policyVersion":super::policy::VERSION,"coveragePolicyVersion":super::source::COVERAGE_VERSION,"reasonCodes":[],"acknowledgedUnreviewable":input.acknowledge_unreviewable == Some(true),"ledger":{"version":super::continuation::LEDGER_VERSION}});
+        let mut body = format!("Requested code review round {round} · {id}.");
+        if let Some(previous) = &incremental {
+            data["kind"] = json!("incremental");
+            data["previousReviewId"] = previous["id"].clone();
+            data["incremental"] = super::incremental::record(previous);
+            body = format!("Requested code review round {round} · {id}: an incremental review of a new head after round {}, reading what changed since, with its own budget and cost.", previous["round"]);
+        }
         tx.execute("INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,?3,'preparing',?4)", params![id,task,link,data.to_string()])?;
         let mut payload = serde_json::to_value(input)?;
         payload["taskId"] = json!(task);
@@ -178,7 +219,7 @@ impl Store {
             "comment",
             &author,
             &source,
-            json!({"body":format!("Requested code review round {round} · {id}. Review execution and task acceptance remain separate."),"reviewId":id}),
+            json!({"body":format!("{body} Review execution and task acceptance remain separate."),"reviewId":id}),
         )?;
         tx.commit()?;
         Ok((data, true))
@@ -240,12 +281,7 @@ impl Store {
         // that failed before its native start was recorded provably started
         // nothing; every other one, older history and unknown ones included,
         // counts.
-        let started: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM pr_reviews WHERE json_extract(data,'$.repositoryId')=?1 AND json_extract(data,'$.number')=?2
-               AND NOT (status='failed' AND json_extract(data,'$.ledger.version') IS ?3 AND json_extract(data,'$.nativeStartedAt') IS NULL)",
-            params![linked["repositoryId"].as_i64(), linked["number"].as_i64(), super::continuation::LEDGER_VERSION as i64],
-            |r| r.get(0),
-        )?;
+        let started = started_rounds(&tx, &linked)?;
         ensure!(
             started < super::continuation::MAX_STARTED_ROUNDS,
             "This PR already has {started} review rounds that started or may have started, across tasks; a continuation would be one more than the {} it may use. Report the result to whoever decides. No continuation was started.",
@@ -315,6 +351,9 @@ impl Store {
                 let mut body = format!("Code review {} has ended: {status}. Model conclusion: {}. Task {public_task}; PR {}. Fixed base {}, head {}, merge base {}. Read the retained report with review_get(taskId={public_task}, reviewId={id}). Findings, CI, task acceptance and merging are separate; this notification does not authorize another review or automatic rework.{}", data["round"], data["conclusion"].as_str().unwrap_or("unknown"), data["url"].as_str().unwrap_or("unknown"), data["baseSha"].as_str().unwrap_or("not resolved"), data["headSha"].as_str().unwrap_or("not resolved"), data["mergeBaseSha"].as_str().unwrap_or("not resolved"), data["error"].as_str().map(|e|format!(" Error: {e}")).unwrap_or_default());
                 if data["kind"] == "continuation" {
                     body.push_str(&format!(" It continued round {} within what that round left of its budget, as a new reviewer run; its coverage and conclusion are over both rounds.", data["continuation"]["parentRound"]));
+                }
+                if data["kind"] == "incremental" {
+                    body.push_str(&format!(" It reviewed a new head after round {}, reading what changed since; that round's findings stay unless this one shows them fixed ({} settled).", data["incremental"]["previousRound"], data["settledFindings"].as_array().map_or(0, Vec::len)));
                 }
                 if let Some(codes) = data["reasonCodes"].as_array().filter(|codes| !codes.is_empty()) {
                     body.push_str(&format!(" Review reasons: {}.", codes.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")));
@@ -437,6 +476,7 @@ impl Store {
                 "round",
                 "kind",
                 "parentReviewId",
+                "previousReviewId",
                 "status",
                 "phase",
                 "conclusion",

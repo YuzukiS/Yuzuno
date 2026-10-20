@@ -8,6 +8,8 @@ mod search_recovery;
 #[cfg(test)]
 mod continuation_tests;
 #[cfg(test)]
+mod incremental_tests;
+#[cfg(test)]
 mod tests;
 use crate::github::client::Client;
 use anyhow::{Context, Result, ensure};
@@ -986,8 +988,9 @@ impl ContextStore {
             }
         }
         let mut failures: Vec<_> = self.failures.iter().map(|f|json!({"receipt":f.receipt,"kind":f.kind,"tool":f.tool,"requested":f.input,"revision":f.revision,"resolved":f.resolved,"resolvedByReceipt":f.resolved_by,"correctionScope":f.correction_scope,"recoverySource":f.recovery_source,"searchRecovery":f.search_recovery})).collect();
-        // A continuation's union names the review behind every proof.
-        if self.reserved {
+        // A continuation's union, or an incremental round relying on
+        // another's proofs, names the review behind every proof.
+        if self.reserved || !self.inherited.is_empty() {
             for proof in &mut covered_files {
                 if proof.get("byReview").is_none() {
                     proof["byReview"] = run["id"].clone();
