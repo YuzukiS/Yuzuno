@@ -172,7 +172,10 @@ try {
   const chipAt = await centre(chip);
   await page.mouse.move(...chipAt, { steps: 8 });
   await page.waitForTimeout(100);
-  check("an Agent in the strip lights up as a target", (await chip.getAttribute("class")).includes("handoff-accept"), await chip.getAttribute("class"));
+  check("an Agent in the strip lights up as a target", (await chip.getAttribute("class")).includes("handoff-accept"), {
+    chip: await chip.getAttribute("class"),
+    under: await page.evaluate(([x, y]) => { const el = document.elementFromPoint(x, y); return el ? `${el.tagName}.${el.className}` : null; }, chipAt),
+  });
   await page.screenshot({ path: fileURLToPath(new URL("strip.png", output)) });
   await page.mouse.up();
   await page.waitForFunction((length) => {

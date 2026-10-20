@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type DragEvent, type KeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import { Forward } from "lucide-react";
 import type { Agent } from "./types";
 import { HANDOFF_TYPE, handoffRefusal, readHandoff, type HandoffSource } from "./handoff";
@@ -240,11 +241,14 @@ export function HandoffDropStrip() {
   const active = useSyncExternalStore(subscribe, () => !!dragging?.dialog);
   if (!api || !active) return null;
   const agents = api.agents().filter(agent => !agent.closedAt);
-  return (
+  // Beside the dialog's own portal, above its overlay: inside the app it
+  // would sit under the overlay and never be hit by a drag.
+  return createPortal(
     <div className="handoff-strip" role="group" aria-label="Agents to drop it on">
       <span className="handoff-strip-label">Drop on an Agent to add it to their draft</span>
       {agents.length ? agents.map(agent => <HandoffChip key={agent.id} agent={agent} />) : <span className="handoff-strip-label">No open Agent</span>}
-    </div>
+    </div>,
+    document.body,
   );
 }
 function HandoffChip({ agent }: { agent: Agent }) {
