@@ -109,10 +109,13 @@ pub(super) fn compare(previous: &Value, run: &mut Value) -> Result<Vec<Value>> {
     // Paths no review can read or that the base's policy excludes stay
     // outside this round's scope, as in any round; they aren't targets.
     let outside = source::scope::permanent_gaps(&run["scope"]);
-    let (mut proofs, mut carried, mut targets) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut proofs, mut carried, mut targets, mut outside_changed) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for p in &paths {
         let path = p["path"].as_str().unwrap_or_default();
         if outside.iter().any(|g| g["path"] == path) {
+            if before.get(path).is_none_or(|old| !same_base || identity(old) != identity(p)) {
+                outside_changed.push(path);
+            }
             continue;
         }
         let why = match before.get(path) {
@@ -143,10 +146,17 @@ pub(super) fn compare(previous: &Value, run: &mut Value) -> Result<Vec<Value>> {
     }
     let mut left: Vec<&str> = before.keys().copied().filter(|path| !paths.iter().any(|p| p["path"] == *path)).collect();
     left.sort_unstable();
-    ensure!(
-        !same_base || !left.is_empty() || targets.iter().any(|t| t["why"] != "not_covered_before"),
-        "This head changes none of the PR's paths since {named} (same merge base, paths, blobs and modes), so that round's result still describes it. Nothing was started."
-    );
+    if same_base && left.is_empty() && targets.iter().all(|t| t["why"] == "not_covered_before") {
+        // Nothing a reviewer could read changed. Say exactly that: a change
+        // to paths no review can cover is still a change, and they stay
+        // unreviewed.
+        ensure!(
+            outside_changed.is_empty(),
+            "Since {named}, this head changes only paths no review can cover: unsupported, too large or excluded by the base's scope policy ({}). A reviewer would have nothing it can read, so nothing was started; those paths stay unreviewed.",
+            outside_changed.iter().take(10).copied().collect::<Vec<_>>().join(", ")
+        );
+        anyhow::bail!("This head changes none of the PR's paths since {named} (same merge base, paths, blobs and modes), so that round's result still describes it. Nothing was started.");
+    }
     let incremental = &mut run["incremental"];
     incremental["sameMergeBase"] = json!(same_base);
     incremental["targets"] = json!(targets);

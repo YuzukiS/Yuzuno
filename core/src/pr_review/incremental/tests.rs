@@ -68,6 +68,32 @@ fn the_fetched_head_is_checked_again_before_any_model_starts() {
     assert!(compare(&previous(), &mut run).unwrap_err().to_string().contains("use review_continue"));
 }
 
+#[test]
+fn a_head_that_changes_only_paths_no_review_can_cover_is_refused_for_what_it_is() {
+    let side = |blob: &str| json!({"blobSha":blob.repeat(40),"mode":"100644"});
+    let mut earlier = previous();
+    earlier["scope"]["paths"] = json!([
+        {"path":"a.rs","status":"modified","state":"covered","head":side("1"),"mergeBase":side("0")},
+        {"path":"tool.exe","status":"modified","state":"unsupported","reason":"binary","head":side("5"),"mergeBase":side("0")}]);
+    let next = |tool: &str| json!({"headSha":D,"mergeBaseSha":C,
+        "scope":{"paths":[{"path":"a.rs","status":"modified","state":"not_read","head":side("1"),"mergeBase":side("0")},
+            {"path":"tool.exe","status":"modified","state":"unsupported","reason":"binary","head":side(tool),"mergeBase":side("0")}]},
+        "files":[{"path":"a.rs","status":"modified","sourceRevision":D,"sourceBlob":"1".repeat(40)},
+            {"path":"tool.exe","status":"modified","sourceRevision":D,"sourceBlob":tool.repeat(40)}]});
+    // Only the binary changed: refused, and it says so rather than "nothing changed".
+    let refused = compare(&earlier, &mut next("6")).unwrap_err().to_string();
+    assert!(refused.contains("changes only paths no review can cover") && refused.contains("tool.exe"), "{refused}");
+    assert!(!refused.contains("changes none"), "{refused}");
+    // Nothing changed at all: the earlier message stands.
+    assert!(compare(&earlier, &mut next("5")).unwrap_err().to_string().contains("changes none of the PR's paths"));
+    // A reviewable change beside it starts the round; the binary stays outside its scope.
+    let mut run = next("6");
+    run["scope"]["paths"][0]["head"] = side("2");
+    run["files"][0]["sourceBlob"] = json!("2".repeat(40));
+    assert!(compare(&earlier, &mut run).unwrap().is_empty());
+    assert_eq!(run["incremental"]["targets"], json!([{"path":"a.rs","status":"modified","why":"changed","changedSinceEarlierHead":true}]));
+}
+
 /// An incremental round of A → D after `previous`, as prepared: b.rs changed
 /// since B and this round read it; a.rs is carried from the earlier round.
 fn round(previous: &Value) -> Value {
