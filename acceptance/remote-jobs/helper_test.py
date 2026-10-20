@@ -45,6 +45,18 @@ def gone(pid, seconds=5):
     return False
 
 
+def group_gone(group, seconds=5):
+    """Like gone(), for every member of a process group."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
 class HelperTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -213,7 +225,10 @@ class HelperTests(unittest.TestCase):
             os.kill(child, 0)
 
     def test_a_supervisor_that_dies_leaves_the_attempt_lost_until_cancel_stops_its_group(self):
-        job = self.attempt("sleep 60")
+        # exec: the attempt is exactly one process whatever /bin/sh is. dash
+        # (Ubuntu's sh) forks a lone command and stays as the group's leader;
+        # bash replaces itself with it.
+        job = self.attempt("exec sleep 60")
         started = self.start(job)["started"]
         os.kill(started["supervisorPid"], signal.SIGKILL)
         self.assertTrue(gone(started["supervisorPid"]))
@@ -224,6 +239,8 @@ class HelperTests(unittest.TestCase):
         reply = self.call(self.bound(job, "cancel"))
         self.assertEqual((reply["status"], reply["result"]["status"]), ("terminal", "cancelled"))
         self.assertTrue(gone(started["pid"]))
+        # The leader started its own session, so its PID is the group's.
+        self.assertTrue(group_gone(started["pid"]), "a member of the attempt's group is left")
 
     def test_after_the_supervisor_dies_a_leader_that_exits_leaving_a_child_is_not_an_outcome(self):
         job = self.attempt("sleep 60 & echo $! > child.pid; while [ ! -e go ]; do sleep 0.05; done")
