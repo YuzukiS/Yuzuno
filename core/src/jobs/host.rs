@@ -346,9 +346,10 @@ pub(super) async fn observe(data: &Path, job: &Value) -> Result<Option<Value>> {
     ))
 }
 
-/// Pause or resume this attempt's own worker (host.py `pause`/`resume`).
+/// Pause or resume this attempt's own worker (host.py `pause`/`resume`), or
+/// ask its wrapper to stop the command at a checkpoint (`checkpoint`).
 pub(super) async fn control(data: &Path, job: &Value, mode: &str) -> Result<Value> {
-    ensure!(matches!(mode, "pause" | "resume"), "Unknown job control");
+    ensure!(matches!(mode, "pause" | "resume" | "checkpoint"), "Unknown job control");
     let script = helper(data).await?;
     let spec = folder(data, job)?.join("spec.json");
     ensure!(
@@ -356,6 +357,18 @@ pub(super) async fn control(data: &Path, job: &Value, mode: &str) -> Result<Valu
         "The attempt has no launch record; nothing was changed"
     );
     invoke(&script, mode, Some(&spec), None).await
+}
+
+/// Whether this attempt's wrapper recorded that its command has exited
+/// (host.py `CHECKPOINT_EXIT`). Unreadable means not known to have exited.
+pub(super) async fn command_exited(data: &Path, job: &Value) -> bool {
+    let Ok(dir) = folder(data, job) else {
+        return false;
+    };
+    let Ok(bytes) = tokio::fs::read(dir.join("checkpoint-exit.json")).await else {
+        return false;
+    };
+    serde_json::from_slice::<Value>(&bytes).is_ok_and(|exit| exit["attempt"] == job["attempt"])
 }
 
 pub(super) async fn logs(data: &Path, job: &Value, offset: Option<u64>) -> Result<Value> {

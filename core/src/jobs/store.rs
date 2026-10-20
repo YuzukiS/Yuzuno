@@ -180,9 +180,12 @@ pub(super) fn summary(job: Value) -> Value {
         "timeoutSeconds",
         "executor",
         "agentMachine",
+        "checkpoint",
+        "checkpointStop",
     ] {
         result[field] = job[field].clone();
     }
+    result["resumeOf"] = job["checkpointFrom"]["jobId"].clone();
     result["machine"] = json!({"id":job["machine"]["id"],"name":job["machine"]["name"]});
     result
 }
@@ -866,6 +869,7 @@ impl Store {
             job["reserved"] = json!(false);
             job["finishedAt"] = json!(finished_at.unwrap_or_else(now));
         }
+        super::checkpoint::settle(&mut job);
         if job["run"].is_object() {
             if matches!(status.as_str(), "failed" | "interrupted") {
                 super::runs::auto_retry(&tx, &mut job)?;

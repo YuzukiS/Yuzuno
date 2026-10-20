@@ -590,7 +590,18 @@ mod tests {
         let helper = install.path().join("yuzuno-update-helper");
         std::fs::copy("/bin/sleep", &helper).unwrap();
         let mut running = std::process::Command::new(&helper).arg("30").spawn().unwrap();
-        let refused = move_legacy(tmp.path(), None, &mut never).unwrap_err().to_string();
+        // CI run 39492395660 once moved here with the helper started: say what
+        // the helper and the scan looked like if it happens again.
+        let refused = match move_legacy(tmp.path(), None, &mut never) {
+            Err(error) => error.to_string(),
+            Ok(moved) => {
+                let pid = running.id();
+                let exe = std::fs::read_link(format!("/proc/{pid}/exe"));
+                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+                panic!("moved ({moved:?}) while update helper {pid} was started: exe {exe:?}, stat {stat:?}, scan now {:?}, /proc readable {}",
+                    running_update_helper(), std::fs::read_dir("/proc").is_ok());
+            }
+        };
         running.kill().unwrap();
         running.wait().unwrap();
         assert!(refused.contains(&format!("An update helper is running (process {})", running.id())), "{refused}");
