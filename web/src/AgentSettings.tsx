@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, LoaderCircle, Settings2 } from "lucide-react";
 import { api, errorText, post } from "./api";
 import { Modal } from "./components";
@@ -24,6 +24,7 @@ export function AgentSettings({
   observedPermissionMode,
   observedEffort,
   observedContextUsage,
+  request,
 }: {
   agent: Agent;
   disabled?: boolean;
@@ -34,8 +35,13 @@ export function AgentSettings({
   /** Effort Claude Code reported for a turn, and whether that is the latest. */
   observedEffort?: { level: string; latest: boolean } | null;
   observedContextUsage?: ContextUsage | null;
+  /** The composer's `/model [name]`: open, preselecting that model. */
+  request?: { model: string; nonce: number } | null;
 }) {
   const [open, setOpen] = useState(false);
+  const requested = useRef("");
+  // A request made before this mount (for another Agent) is not this one's.
+  const seen = useRef(request?.nonce);
   const claude = agent.harness === "claude";
   const [reload, setReload] = useState(0);
   const [models, setModels] = useState<Model[]>([]);
@@ -77,6 +83,13 @@ export function AgentSettings({
         setModels(models);
         setPermissions(permissions);
         setContext(context);
+        const wanted = requested.current;
+        requested.current = "";
+        if (wanted) {
+          const row = models.find((m) => m.model === wanted || m.id === wanted);
+          if (row) setModel(row.model || row.id);
+          else setError(`“${wanted}” is not a model this Agent's ${agent.harness === "claude" ? "Claude Code" : "Codex"} offers; choose one below.`);
+        }
         // A Claude effort is only ever the user's choice; no default fills it.
         if (agent.harness === "claude") return;
         const selected = models.find((m) => (m.model || m.id) === agent.model);
@@ -105,6 +118,15 @@ export function AgentSettings({
     setOpen(next);
     onOpenChange?.(next);
   }
+  useEffect(() => {
+    if (!request || request.nonce === seen.current || disabled) return;
+    seen.current = request.nonce;
+    requested.current = request.model;
+    // Already open: read the catalog again so the requested model is chosen.
+    if (open) setReload((n) => n + 1);
+    else changeOpen(true);
+    // Only a new request opens it; nothing else here reopens the dialog.
+  }, [request?.nonce]);
   const selected = models.find((m) => (m.model || m.id) === model);
   const efforts = selected?.supportedReasoningEfforts || [];
   // Claude's levels come from the chosen model's catalog row; no model is

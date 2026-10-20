@@ -2669,6 +2669,20 @@ pub(crate) fn project_event_at(d: &mut AgentDetail, turn_id: Option<&str>, event
             if let Some(usage) = &mut d.context_usage {
                 usage.stale = true;
             }
+            // The compaction Claude Code reports, a manual /compact or its
+            // own, shown as an Item of the turn it ran in, as Codex's are.
+            // Its figures are Claude Code's own; the same event adds it once.
+            let current = turn_id.map(str::to_owned).or_else(|| {
+                d.turns.iter().rev().find(|t| t["status"] == "inProgress").and_then(|t| t["id"].as_str()).map(str::to_owned)
+            });
+            if let (Some(turn), Some(id)) = (current, event["uuid"].as_str()) {
+                let meta = &event["compact_metadata"];
+                let items = d.turn_at(&turn, at)["items"].as_array_mut().expect("turn items");
+                if !items.iter().any(|item| item["id"] == id) {
+                    items.push(json!({"id":id,"type":"contextCompaction","trigger":meta["trigger"],
+                        "preTokens":meta["pre_tokens"],"postTokens":meta["post_tokens"]}));
+                }
+            }
             // A pre-compaction figure must not be re-measured as fresh later
             // in the same turn; only the next request's usage replaces it.
             for turn in &mut d.turns {
@@ -4264,6 +4278,24 @@ mod tests {
         json!({"type":"stream_event","event":{"type":"message_delta","usage":{
             "input_tokens":input,"cache_creation_input_tokens":0,
             "cache_read_input_tokens":cache_read,"output_tokens":output}}})
+    }
+
+    #[test]
+    fn a_compaction_claude_code_reports_is_an_item_of_its_turn_once() {
+        // Turn "t" is running. As Claude Code 2.1.280 reports a manual
+        // /compact: no turn on the frame.
+        let mut d = detail();
+        let boundary = json!({"type":"system","subtype":"compact_boundary","uuid":"boundary-1",
+            "compact_metadata":{"trigger":"manual","pre_tokens":34_307,"post_tokens":3_802,"duration_ms":7_959}});
+        project_event(&mut d, None, &boundary);
+        project_event(&mut d, None, &boundary);
+        let items: Vec<_> = d.turns[0]["items"].as_array().unwrap().iter().filter(|i| i["type"] == "contextCompaction").cloned().collect();
+        assert_eq!(items, [json!({"id":"boundary-1","type":"contextCompaction","trigger":"manual","preTokens":34_307,"postTokens":3_802})]);
+        // With no turn running there is nothing to attach it to.
+        let mut idle = detail();
+        idle.turns[0]["status"] = json!("completed");
+        project_event(&mut idle, None, &boundary);
+        assert!(idle.turns[0]["items"].as_array().unwrap().iter().all(|i| i["type"] != "contextCompaction"));
     }
 
     #[test]

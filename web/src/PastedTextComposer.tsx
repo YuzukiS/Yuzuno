@@ -43,7 +43,7 @@ import {
   type ComposerDraft,
   type PastedText,
 } from "./composer-draft";
-import { slashCommands, type CommandList } from "./slash-commands";
+import { codexControls, slashCommands, withModelControl, type CommandList } from "./slash-commands";
 import { api } from "./api";
 import "./pasted-text.css";
 import "./slash-commands.css";
@@ -59,8 +59,9 @@ type Props = {
   placeholder: string;
   draft: ComposerDraft;
   readOnly?: boolean;
-  /** List this Claude Agent's commands when its draft starts with "/". */
-  slashCommands?: boolean;
+  /** When the draft starts with "/": a Claude Agent's commands, or the
+   * controls Yuzuno runs for a Codex Agent. */
+  slashCommands?: "claude" | "codex" | false;
   onChange: (draft: ComposerDraft) => void;
   onSubmit: () => void;
   onImages?: (files: File[]) => void;
@@ -146,13 +147,15 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
         "data-composer-input": "true",
         spellcheck: "true",
       }),
-      callbacks.current.slashCommands && !callbacks.current.readOnly
+      callbacks.current.slashCommands === "claude" && !callbacks.current.readOnly
         ? slashCommands(() =>
             api<CommandList>(
               `/agents/${encodeURIComponent(callbacks.current.agentId)}/claude/commands`,
-            ),
+            ).then(withModelControl),
           )
-        : [],
+        : callbacks.current.slashCommands === "codex" && !callbacks.current.readOnly
+          ? slashCommands(() => Promise.resolve(codexControls), "codex")
+          : [],
     ];
     function stateFor(draft: ComposerDraft) {
       const initial = draftDocument(draft);

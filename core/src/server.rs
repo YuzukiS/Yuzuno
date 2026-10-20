@@ -112,6 +112,7 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         .route("/api/agents/{id}/context/apply",post(apply_codex_context))
         .route("/api/agents/{id}/models",get(agent_models))
         .route("/api/agents/{id}/interrupt",post(interrupt))
+        .route("/api/agents/{id}/compact",post(compact))
         .route("/api/agents/{id}/tasks/{task_id}/stop",post(stop_task))
         .route("/api/agents/{id}/reconnect",post(reconnect))
         .route("/api/agents/{id}/review",post(review))
@@ -738,6 +739,10 @@ async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json
         ws.update_settings(&id, input.model, settings).await?
     };
     Ok(Json(serde_json::to_value(agent)?))
+}
+/// The composer's `/compact` for a Codex Agent: Codex's own compaction.
+async fn compact(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    Ok(Json(ws.codex_compact(&id).await?))
 }
 async fn agent_models(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     Ok(Json(if ws.detail(&id).await?.agent.harness == "claude" {

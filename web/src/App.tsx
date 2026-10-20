@@ -49,6 +49,7 @@ import {
   post,
   shortcutModifier,
 } from "./api";
+import { nativeControl } from "./slash-commands";
 import {
   ArtifactModal,
   Avatar,
@@ -239,6 +240,8 @@ export function App() {
   const [updatesOpen, setUpdatesOpen] = useState(false);
   const [updatesNeedReload, setUpdatesNeedReload] = useState(false);
   const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
+  // The composer's `/model`: opens this Agent's settings, never a prompt.
+  const [modelRequest, setModelRequest] = useState<{ model: string; nonce: number } | null>(null);
   const [forkOpen, setForkOpen] = useState(false);
   const [turnDockEngaged, setTurnDockEngaged] = useState(false);
   const [inspector, setInspector] = useState(true);
@@ -1109,6 +1112,23 @@ export function App() {
     setHistoryReading(false);
     stickToBottom.current = true;
     try {
+      // `/model` and a Codex `/compact` are Yuzuno controls: run here, never
+      // sent to the model as a prompt. Anything else is a message as before.
+      const control = sentDraft.images?.length || draftTextBlocks(sentDraft)?.length ? null : nativeControl(text, agent.harness || "codex");
+      if (control?.command === "model") {
+        if (/\s/.test(control.args)) throw new Error("Give one model name, for example /model followed by a name from this Agent's settings. Your draft is kept.");
+        setModelRequest({ model: control.args, nonce: Date.now() });
+        setNotice("Model settings are open. A change applies from this Agent's next turn.");
+        return;
+      }
+      if (control?.command === "compact") {
+        if (control.args) throw new Error("Codex's own compaction takes no instructions. Send /compact alone; your draft is kept.");
+        await post(`/agents/${encodeURIComponent(target)}/compact`);
+        clearIfUnchanged(target, sentDraft);
+        setNotice("Codex accepted /compact. Its compaction shows in this conversation when it runs; until then nothing else is sent.");
+        refresh();
+        return;
+      }
       if (sentDraft.images?.some(image => image.agentId !== target)) throw new Error("These images belong to the original Agent. Attach them again in this Agent; your draft is kept.");
       await submitMessage(text, null, sentDraft.images?.map(image => image.id), undefined, draftTextBlocks(sentDraft));
       clearIfUnchanged(target, sentDraft);
@@ -1533,6 +1553,7 @@ export function App() {
                   observedContextUsage={currentDetail?.contextUsage}
                   disabled={previewMode || closed}
                   onOpenChange={setAgentSettingsOpen}
+                  request={modelRequest}
                   onSaved={() => {
                     refresh();
                     setNotice(
@@ -2032,7 +2053,7 @@ export function App() {
                     }
                     draft={draft}
                     readOnly={previewMode || draftBlocked}
-                    slashCommands={isClaude && !previewMode}
+                    slashCommands={previewMode ? false : isClaude ? "claude" : "codex"}
                     onChange={next => setDraft(selected, next)}
                     onImages={files => void imageUploads.add(files)}
                     onSubmit={() => void send()}
