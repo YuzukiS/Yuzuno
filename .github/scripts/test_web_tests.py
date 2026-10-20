@@ -104,13 +104,31 @@ while True: time.sleep(1)
         self.assertIn('1 run, 0 failed',r.stdout)
         self.assertIn('space file ran',r.stdout)
 
+    def test_shards_run_every_file_exactly_once_between_them(self):
+        for name in 'abcde':
+            self.file(f'{name}.test.mjs', f"from pathlib import Path\nwith open('ran','a') as f: f.write('{name}\\n')\n")
+        outputs = []
+        for shard in ('1/2', '2/2'):
+            self.env['WEB_TEST_SHARD'] = shard
+            r = self.invoke()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            outputs.append(r.stdout)
+        self.assertEqual(sorted((self.web / 'ran').read_text().split()), list('abcde'))
+        self.assertIn('Web test files (shard 1/2 of 5): 3 run, 0 failed', outputs[0])
+        self.assertIn('Web test files (shard 2/2 of 5): 2 run, 0 failed', outputs[1])
+        self.env['WEB_TEST_SHARD'] = '7/7'
+        r = self.invoke()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('has no files', r.stderr)
+
     def test_invalid_configuration_and_empty_discovery_fail(self):
         self.assertNotEqual(self.invoke().returncode,0)
         self.file('valid.test.mjs', "print('valid configuration')\n")
         self.assertEqual(self.invoke().returncode,0)
-        for key,value in [('WEB_TEST_JOBS','2'),('WEB_TEST_JOBS','3'),('WEB_TEST_TIMEOUT','0'),('WEB_TEST_TIMEOUT','NaN')]:
+        for key,value in [('WEB_TEST_JOBS','2'),('WEB_TEST_JOBS','3'),('WEB_TEST_TIMEOUT','0'),('WEB_TEST_TIMEOUT','NaN'),
+                          ('WEB_TEST_SHARD','0/2'),('WEB_TEST_SHARD','3/2'),('WEB_TEST_SHARD','1'),('WEB_TEST_SHARD','a/b')]:
             self.env[key]=value
             self.assertNotEqual(self.invoke().returncode,0)
-            self.env[key]='1'
+            self.env[key]='1/1' if key=='WEB_TEST_SHARD' else '1'
 
 if __name__=='__main__': unittest.main()

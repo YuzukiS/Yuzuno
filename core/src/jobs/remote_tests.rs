@@ -533,6 +533,23 @@ async fn a_core_that_stopped_between_steps_resumes_without_starting_twice_or_gue
     assert_eq!(starts(&lab), 1);
 }
 
+/// SSH that cannot connect exits 255 without reading the request. Its own
+/// message is the answer, not the pipe it closed: with a request larger than
+/// a pipe holds, writing it always meets the closed pipe.
+#[tokio::test]
+async fn an_ssh_that_exits_before_reading_the_request_is_judged_by_what_it_said() {
+    let lab = lab();
+    let refused = script(
+        lab.dir.path().join("ssh-refused"),
+        "#!/bin/sh\necho 'ssh: connect to host lab-box port 22: Connection refused' >&2\nexit 255\n".into(),
+    );
+    let request = json!({"action": "hello", "padding": "x".repeat(256 * 1024)});
+    match remote::invoke(&refused, &lab.ws.store.machine("m1").unwrap(), request).await {
+        remote::Reply::NoAnswer(why) => assert!(why.contains("Connection refused"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn an_unreachable_machine_keeps_the_slot_is_told_once_and_the_same_attempt_is_checked_again() {
     let lab = lab();
@@ -542,8 +559,8 @@ async fn an_unreachable_machine_keeps_the_slot_is_told_once_and_the_same_attempt
     tick(&lab, &lab.down).await;
     let unknown = job(&lab, &first);
     assert_eq!((unknown["status"].as_str(), unknown["reserved"].as_bool()), (Some("unknown"), Some(true)));
-    assert!(unknown["reason"].as_str().unwrap().starts_with("lab box did not answer"));
-    assert!(unknown["result"]["evidence"]["error"].as_str().unwrap().contains("Connection refused"));
+    assert!(unknown["reason"].as_str().unwrap().starts_with("lab box did not answer"), "{unknown}");
+    assert!(unknown["result"]["evidence"]["error"].as_str().unwrap().contains("Connection refused"), "{unknown}");
     let told = unknown["notifications"]["unknown"].clone();
     assert!(told.is_string());
     tick(&lab, &lab.down).await;

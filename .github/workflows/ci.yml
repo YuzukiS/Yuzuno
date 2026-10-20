@@ -132,17 +132,20 @@ jobs:
         run: .github/scripts/hosted-guard.sh
 
       # An earlier hosted run (2026-10-17) ran out of disk compiling the Core
-      # tests. Remove preinstalled SDKs that no job here uses.
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL /usr/share/swift
-          df -h / "$RUNNER_TEMP"
+      # tests. Build and test use about 15 GiB; see the script.
+      - name: Free disk space (only when short)
+        run: .github/scripts/free-disk.sh 40
 
+      # Only the pinned toolchain, in a RUSTUP_HOME of its own: rust-cache
+      # keys its cache on every installed toolchain, and the image's own
+      # stable one changes with image updates, which made the cache miss.
       - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
         run: |
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+          export RUSTUP_HOME="$RUNNER_TEMP/rustup"
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
-          rustup override set "$RUST_TOOLCHAIN"
+          rustup default "$RUST_TOOLCHAIN"
+          rustup toolchain list
           rustc --version && cargo --version
 
       # The result_publish tests run the generated validator
@@ -197,14 +200,20 @@ jobs:
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
           cargo build --locked --all-targets
 
-      # Serial: in parallel, Store drop-and-reopen tests intermittently fail
-      # with "lock acquisition failed because the operation would block".
-      # Tests that need an installed Codex CLI are #[ignore]d with a reason.
-      - name: Test (serial)
+      # One test at a time in each process, since with parallel threads
+      # Store drop-and-reopen tests intermittently fail with "lock acquisition
+      # failed because the operation would block". The test binaries run in
+      # up to one process per CPU, the lib's split by test name; the script
+      # checks that every listed test ran. Tests that need an installed Codex
+      # CLI are #[ignore]d with a reason.
+      - name: Test (one test at a time per process)
         run: |
           # Preserve runner capacity evidence when SQLite reports disk full.
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
-          cargo test --locked -- --test-threads=1
+          .github/scripts/core_tests.py
+
+      - name: Doc tests
+        run: cargo test --locked --doc -- --test-threads=1
 
       - name: Disk capacity after tests
         if: always()
@@ -234,16 +243,17 @@ jobs:
       - name: Runner details
         run: .github/scripts/hosted-guard.sh
 
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL /usr/share/swift
-          df -h / "$RUNNER_TEMP"
+      - name: Free disk space (only when short)
+        run: .github/scripts/free-disk.sh 20
 
+      # As in Core: only the pinned toolchain, for a stable cache key.
       - name: Install Rust ${{ env.RUST_TOOLCHAIN }} with clippy and rustfmt
         run: |
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+          export RUSTUP_HOME="$RUNNER_TEMP/rustup"
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt --no-self-update
-          rustup override set "$RUST_TOOLCHAIN"
+          rustup default "$RUST_TOOLCHAIN"
+          rustup toolchain list
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -287,14 +297,20 @@ jobs:
             echo "::warning title=clippy (report-only)::cargo clippy exited with $rc. Not blocking; see this step's log."
           fi
 
+  # The test files are split between two jobs, each on its own hosted VM and
+  # each running its files one at a time; see .github/scripts/web_tests.py.
   web:
-    name: Web UI (typecheck, build, test)
+    name: Web UI (typecheck, build, test ${{ matrix.shard }}/2)
     needs: scope
     if: >-
       !cancelled()
       && !(needs.scope.result == 'success' && needs.scope.outputs.docs_only == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     defaults:
       run:
         working-directory: web
@@ -334,14 +350,17 @@ jobs:
       - name: Build
         run: npm run build:bundle
 
-      # Every web/tools/*.test.mjs file, one at a time; see the script header
-      # for what is not run here and why. The hosted VM bounds memory.
+      # This shard's web/tools/*.test.mjs files, one at a time; see the script
+      # header for what is not run here and why. The hosted VM bounds memory.
       - name: Test files
+        env:
+          WEB_TEST_SHARD: ${{ matrix.shard }}/2
         run: ../.github/scripts/web-tests.sh
 
       # The desktop shell's offline connection page, in JSDOM (jsdom comes
       # from web/node_modules). Building the Tauri app itself is not in CI.
       - name: Desktop connection page test
+        if: matrix.shard == 1
         run: node ../desktop/tests/connection.test.mjs
 
   bridge:

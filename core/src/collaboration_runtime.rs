@@ -264,7 +264,9 @@ impl Workspace {
         if !self.stored(move |store| store.agent(&agent)).await.is_ok_and(|agent| peer_delivery_possible(&agent, priority)) {
             return Ok(());
         }
-        let detail = match self.detail(id).await {
+        // What delivery checks (the Agent, receipts, pending requests and Turn
+        // statuses), not a copy of every Item of a long record (T-140).
+        let detail = match self.send_view(id).await {
             Ok(d) => d,
             Err(_) => return Ok(()),
         };
@@ -321,7 +323,7 @@ impl Workspace {
             return Ok(());
         }
         self
-            .update_record(id, "peer/doorbell", json!({"throughSeq":through}), |_| {}).await?;
+            .record_meta(id, "peer/doorbell", json!({"throughSeq":through}), |_| {}).await?;
         let result = match &target {
             PeerDeliveryTarget::Steer(turn) => self.steer_locked(id, &text, turn, &client_id).await,
             PeerDeliveryTarget::Hook(turn) => {
@@ -356,7 +358,7 @@ impl Workspace {
             Ok(value) => {
                 let client = client_id.clone();
                 self.stored(move |store| {
-                    let current = store.detail(&agent)?;
+                    let current = store.send_view(&agent)?;
                     store.set_peer_delivery_for_priority(
                         &agent,
                         through,
@@ -439,7 +441,7 @@ impl Workspace {
         if !self.stored(move |store| store.agent(&agent)).await.is_ok_and(|agent| peer_delivery_possible(&agent, "normal")) {
             return Ok(false);
         }
-        let Ok(detail) = self.detail(id).await else { return Ok(false) };
+        let Ok(detail) = self.send_view(id).await else { return Ok(false) };
         let agent = id.to_owned();
         if self.stored(move |store| store.codex_handoff_pending(&agent)).await? {
             return Ok(false);
