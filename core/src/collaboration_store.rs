@@ -60,6 +60,11 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         WHERE json_extract(data,'$.kind')='dispatched' AND json_type(data,'$.materials')='object';
         CREATE INDEX IF NOT EXISTS collaboration_activity_registration ON collaboration_task_activity(task_id,seq)
         WHERE json_extract(data,'$.kind') IN ('created','updated') AND json_type(data,'$.changes.materials') IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS collaboration_activity_dispatched ON collaboration_task_activity(task_id,seq)
+        WHERE json_extract(data,'$.kind')='dispatched';
+        CREATE INDEX IF NOT EXISTS collaboration_activity_dispatch_end ON collaboration_task_activity(task_id,seq)
+        WHERE json_extract(data,'$.kind') IN ('updated','claimed') AND (json_type(data,'$.changes.archived') IS NOT NULL
+        OR json_extract(data,'$.changes.status')='cancelled' OR json_type(data,'$.changes.assigneeAgentId') IS NOT NULL);
         CREATE TABLE IF NOT EXISTS collaboration_messages(
         seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
         sender_id TEXT NOT NULL, recipient_id TEXT NOT NULL, data TEXT NOT NULL,

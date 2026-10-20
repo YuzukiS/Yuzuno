@@ -11,6 +11,14 @@ use serde_json::{json, Value};
 const TEXT: usize = 1500;
 /// The newest CI subscriptions of the task shown in its delivery.
 const SUBSCRIPTIONS: i64 = 6;
+/// The queries of the current view, each read through an index (see
+/// current_tests.rs): none reads the task's history or other tasks' records.
+pub(super) const LATEST_ACTIVITY: &str = "SELECT data FROM collaboration_task_activity WHERE task_id=?1 ORDER BY seq DESC LIMIT 1";
+pub(super) const LATEST_REVIEW: &str = "SELECT data FROM pr_reviews WHERE task_id=?1 AND link_id=?2 ORDER BY rowid DESC LIMIT 1";
+pub(super) const NEWEST_SUBSCRIPTIONS: &str = "SELECT id,watch_id FROM ci_subscriptions WHERE task_id=?1 ORDER BY rowid DESC LIMIT ?2";
+pub(super) const SUBSCRIPTION_COUNT: &str = "SELECT COUNT(*) FROM ci_subscriptions WHERE task_id=?1";
+// CROSS JOIN keeps the watch's own runs the outer loop: never every run's.
+pub(super) const LATEST_RUN: &str = "SELECT r.data FROM ci_watch_runs w CROSS JOIN ci_runs r ON r.id=w.run_id WHERE w.watch_id=?1 ORDER BY r.seq DESC LIMIT 1";
 const MORE: &str = "task_get view \"activity\" (afterSeq, limit) pages the history; view \"full\" is the whole record with \
     executions and materials; dispatchId reads the fixed materials; review_get reads a review";
 
@@ -34,9 +42,7 @@ fn actor(value: &Value) -> Value {
 /// subscriptions with their newest run: none grows with the task's history.
 pub(super) fn current(db: &Connection, task: &SharedTask) -> Result<Value> {
     let latest: Option<String> = db
-        .query_row(
-            "SELECT data FROM collaboration_task_activity WHERE task_id=?1 ORDER BY seq DESC LIMIT 1",
-            [&task.id],
+        .query_row(LATEST_ACTIVITY, [&task.id],
             |r| r.get(0),
         )
         .optional()?;
@@ -121,7 +127,7 @@ fn delivery(db: &Connection, task: &str) -> Result<Value> {
         };
         let review: Option<String> = db
             .query_row(
-                "SELECT data FROM pr_reviews WHERE task_id=?1 AND link_id=?2 ORDER BY rowid DESC LIMIT 1",
+                LATEST_REVIEW,
                 params![task, link["id"].as_str().unwrap_or_default()],
                 |r| r.get(0),
             )
@@ -143,7 +149,7 @@ fn delivery(db: &Connection, task: &str) -> Result<Value> {
             "baseSha": snapshot["baseSha"], "baseBranch": snapshot["baseBranch"], "syncedAt": link["syncedAt"],
             "stale": link["stale"], "error": link["error"], "ci": ci, "latestReview": review}));
     }
-    let mut q = db.prepare("SELECT id,watch_id FROM ci_subscriptions WHERE task_id=?1 ORDER BY rowid DESC LIMIT ?2")?;
+    let mut q = db.prepare(NEWEST_SUBSCRIPTIONS)?;
     let rows = q
         .query_map(params![task, SUBSCRIPTIONS], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -151,9 +157,7 @@ fn delivery(db: &Connection, task: &str) -> Result<Value> {
     for (id, watch) in rows {
         let sub = crate::ci_monitor::store::subscription(db, &id)?;
         let run: Option<String> = db
-            .query_row(
-                "SELECT r.data FROM ci_runs r JOIN ci_watch_runs w ON w.run_id=r.id WHERE w.watch_id=?1 ORDER BY r.seq DESC LIMIT 1",
-                [&watch],
+            .query_row(LATEST_RUN, [&watch],
                 |r| r.get(0),
             )
             .optional()?;
@@ -170,7 +174,7 @@ fn delivery(db: &Connection, task: &str) -> Result<Value> {
                 "observedAt": w["observedAt"], "error": w["error"], "url": w["url"]},
             "latestRun": run}));
     }
-    let more: i64 = db.query_row("SELECT COUNT(*) FROM ci_subscriptions WHERE task_id=?1", [task], |r| r.get(0))?;
+    let more: i64 = db.query_row(SUBSCRIPTION_COUNT, [task], |r| r.get(0))?;
     Ok(json!({"pullRequests": pulls, "issues": issues, "ciSubscriptions": subscriptions,
         "ciSubscriptionsShown": format!("{} newest of {more}", subscriptions.len()),
         "note": "Read from Core's records with the times they were observed; unknown, stale or unobserved is not passing, and nothing here merges, approves or completes anything"}))

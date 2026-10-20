@@ -199,6 +199,8 @@ fn five_agent_operations_before_and_after() {
         }
     }
     if let Ok(path) = std::env::var("T153_MEASURE_OUT") {
+        let path = std::path::Path::new(&path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, Value::Array(rows).to_string()).unwrap();
     }
 }

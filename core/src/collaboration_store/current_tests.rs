@@ -137,3 +137,25 @@ fn the_delivery_is_read_from_records_and_unknown_is_never_green() {
     assert_eq!((ci["latestRun"]["conclusion"].clone(), ci["latestRun"]["headSha"].clone()), (json!("success"), json!(head)));
     assert_eq!(ci["agent"], "Dev");
 }
+
+/// Each query of the current view, and of loading a dispatched task (every
+/// task read and write does), reads through the index named for it: the plan
+/// never walks the task's history or the Workspace's reviews, subscriptions
+/// or runs.
+#[test]
+fn the_current_path_reads_through_its_indexes() {
+    use super::super::result_dispatch::{DISPATCH_ENDS, LATEST_DISPATCH};
+    let (_dir, s) = store();
+    let db = s.db.read().unwrap();
+    for (sql, index) in [(super::LATEST_ACTIVITY, "collaboration_activity_task"), (LATEST_DISPATCH, "collaboration_activity_dispatched"),
+        (DISPATCH_ENDS, "collaboration_activity_dispatch_end"), (super::LATEST_REVIEW, "pr_reviews_task"),
+        (super::NEWEST_SUBSCRIPTIONS, "ci_subscriptions_task"), (super::SUBSCRIPTION_COUNT, "ci_subscriptions_task"),
+        (super::LATEST_RUN, "(watch_id=?)")] {
+        let mut plan = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let unbound = vec![rusqlite::types::Null; plan.parameter_count()];
+        let steps: Vec<String> = plan.query_map(rusqlite::params_from_iter(unbound), |r| r.get(3)).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+        assert!(steps.iter().all(|step| !step.starts_with("SCAN")), "{sql}: {steps:?}");
+        assert!(steps[0].contains(index), "{sql} reads through {index}: {steps:?}");
+    }
+}
