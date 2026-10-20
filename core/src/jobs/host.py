@@ -44,6 +44,8 @@ CHECKPOINT_SIGNALS = {'SIGTERM': signal.SIGTERM, 'SIGINT': signal.SIGINT, 'SIGUS
 MANIFEST_LIMIT = 1024 * 1024
 # Files one checkpoint may list: each is hashed, and listed in the Job's record.
 CHECKPOINT_FILES = 1000
+# Written when the command of an attempt with a checkpoint has exited.
+CHECKPOINT_EXIT = 'checkpoint-exit.json'
 
 def command(args, timeout=8, check=True):
     # All manager commands have small output; never capture the job's stdout.
@@ -791,6 +793,12 @@ def worker(spec, folder):
         # even if systemd removes the empty group before the collector polls.
         atomic(folder / 'finished-pids.json', {**proof, 'pids': pids_snapshot(group)})
     if forward:
+        # The command has ended: from here a stop's grace period no longer
+        # applies, and Core does not cancel the check below (checkpoint.rs).
+        try:
+            atomic(folder / CHECKPOINT_EXIT, {'attempt': spec['attempt'], 'exitCode': code, 'at': time.time()})
+        except OSError:
+            pass
         # Inside this attempt's limits and timeout, before the reservation can
         # be released; never fails the worker itself.
         try:

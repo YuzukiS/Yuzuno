@@ -1077,7 +1077,7 @@ async fn tick(ws: &Arc<Workspace>) -> Result<()> {
         return Ok(());
     };
     // A stop at a checkpoint past its grace period becomes a cancel first.
-    if ws.stored(|s| s.expire_checkpoint_stops()).await? {
+    if checkpoint::expire(ws).await? {
         changed(ws);
     }
     let active = ws.stored(|s| s.active_jobs()).await?;

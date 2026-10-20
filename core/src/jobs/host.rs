@@ -359,6 +359,18 @@ pub(super) async fn control(data: &Path, job: &Value, mode: &str) -> Result<Valu
     invoke(&script, mode, Some(&spec), None).await
 }
 
+/// Whether this attempt's wrapper recorded that its command has exited
+/// (host.py `CHECKPOINT_EXIT`). Unreadable means not known to have exited.
+pub(super) async fn command_exited(data: &Path, job: &Value) -> bool {
+    let Ok(dir) = folder(data, job) else {
+        return false;
+    };
+    let Ok(bytes) = tokio::fs::read(dir.join("checkpoint-exit.json")).await else {
+        return false;
+    };
+    serde_json::from_slice::<Value>(&bytes).is_ok_and(|exit| exit["attempt"] == job["attempt"])
+}
+
 pub(super) async fn logs(data: &Path, job: &Value, offset: Option<u64>) -> Result<Value> {
     let dir = folder(data, job)?;
     let mut chunks = Vec::new();

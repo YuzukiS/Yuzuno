@@ -18,7 +18,8 @@
 //! then is the end `checkpointed`; any other end is `notResumable`. The
 //! reservation is released as for every end, once the attempt's process
 //! groups are empty. A command still running `graceSeconds` after the request
-//! is cancelled as the user's cancel would.
+//! is cancelled as the user's cancel would; once it has exited, checking its
+//! files counts against the Job's timeout instead.
 //!
 //! Resuming is the user's too: a new Job with the same submission whose
 //! `checkpointFrom` names the verified files, and whose wrapper checks them
@@ -137,6 +138,32 @@ pub(super) fn stopping(job: &Value) -> bool {
     matches!(job["checkpointStop"]["state"].as_str(), Some("requested" | "signalled" | "pending" | "failed"))
 }
 
+/// Past its stop's grace period, not yet cancelled.
+fn expires(job: &Value) -> bool {
+    stopping(job)
+        && job["cancelRequestedAt"].is_null()
+        && job["checkpointStop"]["deadline"]
+            .as_str()
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .is_some_and(|at| at <= chrono::Utc::now())
+}
+
+/// Cancel each attempt still running past its stop's grace period. One whose
+/// command has exited is left alone: its wrapper is checking the checkpoint,
+/// which counts against the Job's timeout, not against the grace period.
+pub(super) async fn expire(ws: &Arc<Workspace>) -> Result<bool> {
+    let mut changed = false;
+    for job in ws.stored(|s| s.due_checkpoint_stops()).await? {
+        if host::command_exited(&ws.data_dir, &job).await {
+            continue;
+        }
+        let id = job["id"].as_str().context("Missing job identity")?.to_owned();
+        let attempt = job["attempt"].clone();
+        changed |= ws.stored(move |s| s.expire_checkpoint_stop(&id, &attempt)).await?;
+    }
+    Ok(changed)
+}
+
 /// Tell the Job's Agent, once per change, so a stop the user asked for is
 /// not taken for a crash and the Job is not resubmitted.
 fn tell(db: &Connection, job: &Value, event: &str, body: String) -> Result<()> {
@@ -163,7 +190,14 @@ pub(super) fn settle(job: &mut Value) {
         return;
     }
     let why = checked["reason"].as_str().unwrap_or("the attempt ended before any checkpoint was checked").to_owned();
+    // Stopped by the user only if the signal reached the command or the stop
+    // became a cancel; otherwise it ended on its own and keeps its reason.
+    let reached = checked["forward"].is_object() && checked["forward"]["problem"].is_null();
     job["checkpointStop"]["state"] = json!("notResumable");
+    if !reached && job["status"] != "cancelled" {
+        job["checkpointStop"]["reason"] = json!(format!("The job ended before the stop reached its command ({why})"));
+        return;
+    }
     job["checkpointStop"]["reason"] = json!(format!("No verified checkpoint: {why}"));
     let reason = job["reason"].as_str().unwrap_or("").to_owned();
     job["reason"] = json!(format!("Stopped at the user's request without a verified checkpoint ({why}); it cannot be resumed. {reason}"));
@@ -237,37 +271,44 @@ impl Store {
         Ok(job)
     }
 
-    /// Cancel every attempt still running past its stop's grace period, as
-    /// the user's cancel would. True when a Job changed.
-    pub(super) fn expire_checkpoint_stops(&self) -> Result<bool> {
-        let mut db = self.db.write()?;
-        let tx = db.transaction()?;
-        let ids = tx
+    /// Jobs whose stop's grace period has passed while they still hold
+    /// their reservation. Whether their command is still running is the
+    /// host's to say (host.rs `command_exited`).
+    pub(super) fn due_checkpoint_stops(&self) -> Result<Vec<Value>> {
+        let db = self.db.read()?;
+        let ids = db
             .prepare("SELECT id FROM local_jobs WHERE reserved=1 AND json_extract(data,'$.checkpointStop') IS NOT NULL")?
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut changed = false;
+        let mut due = Vec::new();
         for id in ids {
-            let mut job = get(&tx, &id)?;
-            let due = job["checkpointStop"]["deadline"]
-                .as_str()
-                .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
-                .is_some_and(|at| at <= chrono::Utc::now());
-            if !due || !stopping(&job) || job["cancelRequestedAt"].is_string() {
-                continue;
+            let job = get(&db, &id)?;
+            if expires(&job) {
+                due.push(job);
             }
-            let grace = job["checkpointStop"]["graceSeconds"].clone();
-            job["checkpointStop"]["state"] = json!("expired");
-            job["checkpointStop"]["reason"] = json!(format!("Still running {grace} s after the stop; cancelled"));
-            job["checkpointStop"]["expiredAt"] = json!(now());
-            job["cancelRequestedAt"] = json!(now());
-            job["status"] = json!("cancelling");
-            job["reason"] = json!(format!("Not stopped at a checkpoint within {grace} s of the user's stop; cancelling it, reservation held until its process groups have exited. It cannot be resumed unless a checkpoint was verified first."));
-            save(&tx, &job)?;
-            changed = true;
         }
+        Ok(due)
+    }
+
+    /// Cancel this attempt, still running past its stop's grace period, as
+    /// the user's cancel would. True when the Job changed.
+    pub(super) fn expire_checkpoint_stop(&self, id: &str, attempt: &Value) -> Result<bool> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let mut job = get(&tx, id)?;
+        if job["attempt"] != *attempt || job["reserved"] != true || !expires(&job) {
+            return Ok(false);
+        }
+        let grace = job["checkpointStop"]["graceSeconds"].clone();
+        job["checkpointStop"]["state"] = json!("expired");
+        job["checkpointStop"]["reason"] = json!(format!("Still running {grace} s after the stop; cancelled"));
+        job["checkpointStop"]["expiredAt"] = json!(now());
+        job["cancelRequestedAt"] = json!(now());
+        job["status"] = json!("cancelling");
+        job["reason"] = json!(format!("Not stopped at a checkpoint within {grace} s of the user's stop; cancelling it, reservation held until its process groups have exited. It cannot be resumed unless a checkpoint was verified first."));
+        save(&tx, &job)?;
         tx.commit()?;
-        Ok(changed)
+        Ok(true)
     }
 
     /// Link a stopped Job to the Job that resumes it, once, and tell its Agent.

@@ -164,6 +164,9 @@ def stop_resume(out, python):
     checked = (result or {}).get('checkpoint') or {}
     check('the attempt ends cancelled at a verified checkpoint', result and result['status'] == 'cancelled'
           and checked.get('ok') is True and result['reason'].startswith("Stopped at the user's request"), result)
+    exited = read(folder / 'checkpoint-exit.json')
+    check("the wrapper recorded the command's exit before checking its files",
+          exited and exited['exitCode'] == 75 and exited['at'] <= checked.get('checkedAt', 0), {'exit': exited, 'checkedAt': checked.get('checkedAt')})
     forwarded = read(folder / 'checkpoint-forward.json')
     check('the wrapper forwarded SIGTERM to the command once', forwarded and forwarded.get('signal') == 'SIGTERM', forwarded)
     final = settled(path)

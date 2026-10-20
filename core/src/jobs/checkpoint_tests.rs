@@ -47,6 +47,12 @@ fn ended(job: &Value, status: &str, reason: &str, checkpoint: Value) -> Value {
     json!({"jobId":job["id"],"attempt":job["attempt"],"status":status,"reason":reason,"finishedAtUnix":1792000100.0,
         "evidence":{},"artifacts":[],"cost":null,"progress":null,"checkpoint":checkpoint})
 }
+fn past_deadline(s: &Store, id: &str) {
+    let db = s.db.write().unwrap();
+    let mut saved = store::get(&db, id).unwrap();
+    saved["checkpointStop"]["deadline"] = json!("2026-01-01T00:00:00+00:00");
+    store::save(&db, &saved).unwrap();
+}
 fn verified(job: &Value) -> Value {
     json!({"ok":true,"reason":null,"dir":format!("/workspace/.yuzuno-checkpoints/{}", job["attempt"].as_str().unwrap()),
         "manifestSha256":"ab".repeat(32),"files":[{"path":"last.ckpt","bytes":12,"sha256":"cd".repeat(32)}],"exitCode":75})
@@ -154,20 +160,19 @@ fn past_its_grace_period_a_stop_becomes_a_cancel_and_the_end_is_not_resumable() 
     let id = job["id"].as_str().unwrap();
     s.request_checkpoint_stop(id).unwrap();
     s.record_checkpoint_stop(id, &job["attempt"], &json!({"delivered":true,"request":{}})).unwrap();
-    assert!(!s.expire_checkpoint_stops().unwrap(), "within its grace period nothing changes");
-    {
-        let db = s.db.write().unwrap();
-        let mut saved = store::get(&db, id).unwrap();
-        saved["checkpointStop"]["deadline"] = json!("2026-01-01T00:00:00+00:00");
-        store::save(&db, &saved).unwrap();
-    }
-    assert!(s.expire_checkpoint_stops().unwrap());
+    assert!(s.due_checkpoint_stops().unwrap().is_empty(), "within its grace period nothing is due");
+    assert!(!s.expire_checkpoint_stop(id, &job["attempt"]).unwrap());
+    past_deadline(&s, id);
+    let due = s.due_checkpoint_stops().unwrap();
+    assert_eq!(due.iter().map(|j| j["id"].clone()).collect::<Vec<_>>(), [job["id"].clone()]);
+    assert!(!s.expire_checkpoint_stop(id, &json!("another attempt")).unwrap(), "only the attempt that was due");
+    assert!(s.expire_checkpoint_stop(id, &job["attempt"]).unwrap());
     let expired = s.job(id).unwrap();
     assert_eq!(expired["checkpointStop"]["state"], "expired");
     assert_eq!(expired["status"], "cancelling");
     assert!(expired["cancelRequestedAt"].is_string());
     assert_eq!(expired["reserved"], true, "held until the process groups have exited");
-    assert!(!s.expire_checkpoint_stops().unwrap(), "expired once");
+    assert!(s.due_checkpoint_stops().unwrap().is_empty() && !s.expire_checkpoint_stop(id, &job["attempt"]).unwrap(), "expired once");
     s.update_job_evidence(id, ended(&job, "cancelled", "Cancellation confirmed: launcher and worker groups have exited.", Value::Null))
         .unwrap();
     let done = s.job(id).unwrap();
@@ -177,6 +182,45 @@ fn past_its_grace_period_a_stop_becomes_a_cancel_and_the_end_is_not_resumable() 
     let told = mail(&s).into_iter().find(|m| m["metadata"]["status"] == "cancelled").unwrap();
     assert!(told["body"].as_str().unwrap().contains("without a verified checkpoint"));
     assert!(checkpoint::resumable(&done).unwrap_err().to_string().contains("No verified checkpoint"));
+}
+
+#[tokio::test]
+async fn once_its_command_has_exited_the_check_of_its_files_is_not_cancelled() {
+    // The wrapper writes checkpoint-exit.json when the command exits, before
+    // it hashes the checkpoint: the grace period ends there (review bdcb4d39).
+    let dir = tempfile::tempdir().unwrap();
+    let job = json!({"id": uuid::Uuid::new_v4().to_string(), "attempt": "a1"});
+    assert!(!host::command_exited(dir.path(), &job).await, "no record: not known to have exited");
+    let folder = dir.path().join("jobs").join(job["id"].as_str().unwrap());
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("checkpoint-exit.json"), r#"{"attempt":"a0","exitCode":75}"#).unwrap();
+    assert!(!host::command_exited(dir.path(), &job).await, "another attempt's exit");
+    std::fs::write(folder.join("checkpoint-exit.json"), r#"{"attempt":"a1","exitCode":75}"#).unwrap();
+    assert!(host::command_exited(dir.path(), &job).await);
+}
+
+#[test]
+fn a_job_that_ends_before_the_stop_reaches_its_command_keeps_its_own_reason() {
+    let (_dir, s) = setup();
+    let job = running(&s, "train");
+    let id = job["id"].as_str().unwrap();
+    s.request_checkpoint_stop(id).unwrap();
+    s.record_checkpoint_stop(id, &job["attempt"], &json!({"delivered":false,"reason":"systemd did not signal the wrapper"})).unwrap();
+    let unsent = json!({"ok":false,"reason":"the command exited 0, not the declared stopped code 75","forward":null});
+    s.update_job_evidence(id, ended(&job, "succeeded", "success", unsent)).unwrap();
+    let done = s.job(id).unwrap();
+    assert_eq!((done["status"].clone(), done["reason"].clone()), (json!("succeeded"), json!("success")));
+    assert_eq!(done["checkpointStop"]["state"], "notResumable");
+    assert!(done["checkpointStop"]["reason"].as_str().unwrap().starts_with("The job ended before the stop reached its command"));
+    // One the signal reached is the user's stop, whatever its exit.
+    let other = running(&s, "other");
+    let other_id = other["id"].as_str().unwrap();
+    s.request_checkpoint_stop(other_id).unwrap();
+    s.record_checkpoint_stop(other_id, &other["attempt"], &json!({"delivered":true,"request":{}})).unwrap();
+    let sent = json!({"ok":false,"reason":"the command exited 0, not the declared stopped code 75","forward":{"signal":"SIGTERM","pid":7}});
+    s.update_job_evidence(other_id, ended(&other, "succeeded", "success", sent)).unwrap();
+    let stopped = s.job(other_id).unwrap();
+    assert!(stopped["reason"].as_str().unwrap().starts_with("Stopped at the user's request without a verified checkpoint"), "{}", stopped["reason"]);
 }
 
 #[test]
