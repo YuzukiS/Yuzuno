@@ -13,6 +13,7 @@ pub(crate) const STATUSES: [&str; 6] = ["todo", "doing", "blocked", "review", "d
 
 mod result_dispatch;
 mod dispatch_materials;
+mod current;
 use result_dispatch::TaskDispatch;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1111,9 +1112,15 @@ fn task_list(db: &Connection, input: &Value) -> Result<Value> {
 }
 
 fn task_get(db: &Connection, input: &Value) -> Result<Value> {
-    allowed(input, &["taskId", "afterSeq", "limit", "dispatchId"])?;
+    allowed(input, &["taskId", "afterSeq", "limit", "dispatchId", "view"])?;
     let id = required_text(input, "taskId", 128)?;
+    // "full" (the default here, and the GUI's) is the whole record; "current"
+    // and "activity" read none of the history they do not show (current.rs).
+    let view = optional_text(input, "view", 16)?.unwrap_or_else(|| "full".into());
+    ensure!(matches!(view.as_str(), "full" | "current" | "activity"),
+        "invalid_input: view is current, activity or full");
     if let Some(dispatch) = optional_text(input, "dispatchId", 128)? {
+        ensure!(input.get("view").is_none(), "invalid_input: dispatchId reads the fixed materials; omit view");
         // Fixed reads never assemble current dispatch state, activity, execution
         // history or repository lists. Read the latest task separately if needed.
         let (id, seq) = task_key(db, &id)?;
@@ -1121,8 +1128,16 @@ fn task_get(db: &Connection, input: &Value) -> Result<Value> {
             "latestTask":{"taskId":task_number(seq)}}));
     }
     let task = load_task(db, &id)?;
-    let registration = dispatch_materials::registered(db, &task.id)?;
+    if view == "current" {
+        ensure!(input.get("afterSeq").is_none() && input.get("limit").is_none(),
+            "invalid_input: afterSeq and limit page the history: use view \"activity\"");
+        return current::current(db, &task);
+    }
     let (after, limit) = pagination(input)?;
+    if view == "activity" {
+        return current::activity(db, &task, after, limit);
+    }
+    let registration = dispatch_materials::registered(db, &task.id)?;
     let mut q =
         db.prepare("SELECT data FROM collaboration_task_activity WHERE task_id=?1 ORDER BY seq")?;
     let rows = q.query_map([&task.id], |r| r.get::<_, String>(0))?;
@@ -1335,7 +1350,7 @@ pub fn tool_definitions() -> Vec<Value> {
         definition("peer_send", "Send durable correspondence to another existing Agent. The sender is authenticated by Core. Normal mail waits for the current turn to finish; choose urgent only when the recipient needs a reminder during current work. Delivery does not prove it was read or acted on. Use taskId for an existing shared goal and replyTo for a reply.", json!({"requestId":request,"toAgentId":string,"body":string,"taskId":nullable_task_reference,"replyTo":nullable_string,"priority":priority}), &["requestId","toAgentId","body"]),
         definition("peer_read", "Fetch your durable inbox after an explicit sequence. Retrying the same cursor returns the same messages; Core never silently advances your cursor. Keep a notification's priority filter while paging so urgent reads do not consume normal mail. firstReadAt means fetched, not understood or completed.", json!({"afterSeq":after,"limit":limit,"priority":read_priority}), &[]),
         definition("task_list", "List shared goals, not native plans or execution logs. Continue existing work by taskId. Stable creation order; every filter is applied before paging and to counts. Omit projectId for every project; null lists tasks without a project.", json!({"afterSeq":after,"limit":limit,"status":status,"statuses":{"type":"array","items":status,"minItems":1,"uniqueItems":true,"description":"Match any of these statuses, for example open work = todo, doing, blocked, review. Use instead of status, not with it."},"assigneeAgentId":nullable_string,"archived":{"type":"boolean","default":false},"query":string,"projectId":list_project}), &[]),
-        definition("task_get", "Read a shared task's stable definition, current progress/blocker/result, activity, and related execution references. Use the same taskId across implementation, review, retry, and recovery.", json!({"taskId":task_reference,"afterSeq":after,"limit":limit,"dispatchId":{"type":"string","description":"Read only immutable dispatchMaterials and a latestTask reference, without activity or execution history. Omit dispatchId to read the latest task. Normal activity pages return only material references."}}), &["taskId"]),
+        definition("task_get", "Read a shared task. Use the same taskId across implementation, review, retry, and recovery. Views (view): \"current\" (your default without afterSeq, limit or dispatchId) is what to decide with now: status, version, assignee, dispatch, a short result, the newest activity and the current delivery (each linked PR's head and base with that head's CI as last observed, its newest review, the newest CI subscriptions and their runs), without reading the history; \"activity\" (your default with afterSeq or limit) is one page of the history, oldest first; \"full\" is the whole record: description, materials, every activity page and execution references. Long text in current is cut and says so. Task writes answer you with a short receipt (taskId, version, status, the activity's seq); read the task for more.", json!({"taskId":task_reference,"afterSeq":after,"limit":limit,"view":{"type":"string","enum":["current","activity","full"]},"dispatchId":{"type":"string","description":"Read only immutable dispatchMaterials and a latestTask reference, without activity or execution history. Omit dispatchId to read the latest task. Normal activity pages return only material references."}}), &["taskId"]),
         definition("task_create", "Create an independent deliverable only when no existing task represents it. Title example: 'Preview files at a requested line with an out-of-range hint'. Do not turn native plan steps, shell calls, turn completions, or routine retries into cards. Description is stable scope/completion context; later progress belongs in progress or comments. Only title is a required content field. Task IDs are shared across projects; projectId rules are in its schema.", json!({"requestId":request,"title":string,"description":string,"status":status,"assigneeAgentId":nullable_string,"projectId":create_project,"materials":dispatch_materials::schema()}), &["requestId","title"]),
         definition("task_update", "Explicitly edit task fields with optimistic version checking. Task state is a statement about the goal; runtime completion does not automatically mean done. Assignment does not notify or start an Agent. Cancelling does not stop its process. A principal assignee does not exclude collaborators. To let the user decide a status change instead, publish it as a TaskStatus proposal with result_publish; it changes nothing until the user confirms it.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"patch":{"type":"object","minProperties":1,"additionalProperties":false,"properties":{"title":string,"description":nullable_string,"status":status,"assigneeAgentId":nullable_string,"progress":nullable_string,"blocker":nullable_string,"archived":{"type":"boolean"},"projectId":{"type":["string","null"],"description":"Move the task to this project; null removes it from its project."},"materials":dispatch_materials::schema()}}}), &["requestId","taskId","expectedVersion","patch"]),
         definition("task_claim", "Atomically become the principal assignee of an unassigned task. A competing claim fails; collaborators may still read, comment, and submit review results. start optionally changes task state to doing; it does not spawn a process or acquire a lease.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"start":{"type":"boolean","default":false}}), &["requestId","taskId","expectedVersion"]),

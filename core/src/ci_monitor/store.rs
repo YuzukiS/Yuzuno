@@ -45,7 +45,7 @@ fn watch(db: &Connection, id: &str) -> Result<Value> {
         .context("CI watch not found")?;
     Ok(serde_json::from_str(&raw)?)
 }
-fn subscription(db: &Connection, id: &str) -> Result<Value> {
+pub(crate) fn subscription(db: &Connection, id: &str) -> Result<Value> {
     let (raw, active, expires): (String, bool, i64) = db
         .query_row(
             "SELECT data,active,expires FROM ci_subscriptions WHERE id=?1",

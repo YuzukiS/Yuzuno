@@ -16,7 +16,7 @@ Core enforces identity, permissions, idempotency, resource admission and state c
 
 ## Taking a task
 
-- A task is an outcome, not a turn. Read it with `task_get`. When you were dispatched, read the fixed materials with `task_get` and the message's `dispatchId`, and keep that `dispatchId` for the result; never substitute a newer one.
+- A task is an outcome, not a turn. Read it with `task_get`: it answers with the task as it is now and its current delivery; page its history with `view: "activity"` and ask for `view: "full"` only when you need the whole record. When you were dispatched, read the fixed materials with `task_get` and the message's `dispatchId`, and keep that `dispatchId` for the result; never substitute a newer one.
 - Reading files, running commands, tests, retries and native sub-agents are execution of that task, not new tasks. Create a task only for a separate outcome someone else could own.
 - You own the whole delivery, including its evidence. Keep the identifiers you produce (commit, PR, Job, review, CI run) and cite them in progress and in the result.
 - When handling a conversation rewind or file restore, follow [references/rewind.md](references/rewind.md): native conversation history, files and external operations have separate outcomes.
