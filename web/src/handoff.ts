@@ -100,22 +100,23 @@ export function handoffText(source: HandoffSource, target: Agent, now: Date): st
   if (source.kind === "task") {
     const assigned = source.assignee ? `assigned to ${source.assignee}` : "not assigned";
     const lines = [
-      `For reference: task ${source.taskId} “${source.title}”, status ${source.status}, ${assigned}, version ${source.version}, as of ${utc(now.getTime())}. This does not assign it to you. Read its latest state with task_get(taskId="${source.taskId}").`,
+      `For reference: task ${source.taskId} “${source.title}”, status ${source.status}, ${assigned}, version ${source.version}, as of ${utc(now.getTime())}. This does not assign it to you. If you have Yuzuno’s task tools, task_get(taskId="${source.taskId}") reads its latest state.`,
     ];
     if (source.summary.trim()) lines.push("", quote(bounded(source.summary, SUMMARY_LIMIT, "characters")));
     return lines.join("\n");
   }
   const finished = source.finishedAt ? `, finished ${utc(Date.parse(source.finishedAt))}` : "";
   const lines = [
-    `For reference: Job “${source.name}” (${source.jobId}), ${source.status}${finished}, as of ${utc(now.getTime())}. Read it with job_get(jobId="${source.jobId}").`,
+    `For reference: Job “${source.name}” (${source.jobId}), ${source.status}${finished}, as of ${utc(now.getTime())}. If you have Yuzuno’s Job tools, job_get(jobId="${source.jobId}") reads it.`,
   ];
   if (source.reason) lines.push(`Reason: ${bounded(source.reason, SUMMARY_LIMIT, "characters")}`);
   if (source.artifacts.length) {
     const shown = source.artifacts.slice(0, ARTIFACT_LIMIT).join(", ");
     const more = source.artifacts.length - ARTIFACT_LIMIT;
     lines.push(`Artifacts, on ${machineLabel(source.machine)}: ${shown}${more > 0 ? ` and ${more} more` : ""}.`);
+    // Only where they are is known; whether a path opens for the Agent is not.
     if (!sameMachine(source.machine, target))
-      lines.push(`Those files are on ${machineLabel(source.machine)}, not where you run, so their paths will not open for you. Use job_get, or ask me for what you need from them.`);
+      lines.push(`These paths are on ${machineLabel(source.machine)} and you run on ${target.remote?.machine.name || "this Core’s host"}, so they may not open for you; ask me for what you need from them.`);
   }
   return lines.join("\n");
 }

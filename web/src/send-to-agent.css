@@ -55,8 +55,17 @@
 .agent-row.handoff-refuse {
   opacity: 0.55;
 }
+/* Over the row, not in it: rows must not move under a pointer mid-drag. */
 .handoff-hint {
-  margin: 6px 0 0;
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  left: 8px;
+  margin: 0;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: var(--paper, #fffdf6);
   color: var(--text-secondary, #8f9881);
   font-size: calc(9px + var(--font-adjust, 3px));
+  pointer-events: none;
 }

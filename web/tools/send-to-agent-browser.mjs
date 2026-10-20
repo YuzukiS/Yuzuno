@@ -24,6 +24,11 @@ try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await context.route("**/api/**", (route) => route.abort());
   await context.addInitScript(installConnectionFixture);
+  // The other Agent already has a draft, which must be kept.
+  await context.addInitScript(() => {
+    if (!localStorage.getItem("yuzuno.composer.v1:b"))
+      localStorage.setItem("yuzuno.composer.v1:b", JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "Existing note for b." }] }));
+  });
   const page = await context.newPage();
   page.on("pageerror", (e) => report.errors.push(e.message));
   await page.goto(`http://127.0.0.1:${port}/`);
@@ -40,28 +45,60 @@ try {
   check("the first Agent has focus", await items.first().evaluate((el) => el === document.activeElement));
   await page.screenshot({ path: fileURLToPath(new URL("menu.png", output)) });
   await page.keyboard.press("Escape");
-  check("Escape closes the menu, adds nothing and returns focus", (await page.locator('[role="menu"]').count()) === 0 && (await send.evaluate((el) => el === document.activeElement)) && (await drafts()) === "");
+  check("Escape closes the menu, adds nothing and returns focus", (await page.locator('[role="menu"]').count()) === 0 && (await send.evaluate((el) => el === document.activeElement)) && (await drafts()) === "Existing note for b.");
+
+  // A drop this window did not start (same type, built in the page) is not taken.
+  const forged = await row("b").evaluate((target) => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData("application/x-yuzuno-handoff", JSON.stringify({ kind: "task", taskId: "T-9", title: "forged", status: "todo", assignee: null, version: 1, summary: "" }));
+    const over = new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer });
+    target.dispatchEvent(over);
+    const drop = new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer });
+    target.dispatchEvent(drop);
+    return [over.defaultPrevented, drop.defaultPrevented];
+  });
+  await page.waitForTimeout(100);
+  check("a forged drop is neither offered a target nor taken", forged.every((taken) => !taken) && (await drafts()) === "Existing note for b.", forged);
 
   // A real mouse drag of the button: its own Agent refuses, the other lights up and takes it.
   const centre = async (locator) => {
     const box = await locator.boundingBox();
     return [box.x + box.width / 2, box.y + box.height / 2];
   };
+  // What is under the pointer and how both rows look, for a failed check.
+  const scene = (point) => page.evaluate(([x, y]) => ({
+    under: document.elementFromPoint(x, y)?.closest("article.agent-row")?.dataset.agentId ?? null,
+    a: document.querySelector('article.agent-row[data-agent-id="a"]').className,
+    b: document.querySelector('article.agent-row[data-agent-id="b"]').className,
+  }), point);
+  // Let go away from any Agent: nothing is added and nothing stays lit.
+  await page.mouse.move(...(await centre(send)));
+  await page.mouse.down();
+  await page.mouse.move(...(await centre(row("b"))), { steps: 8 });
+  await page.waitForTimeout(100);
+  const litBeforeCancel = (await row("b").getAttribute("class")).includes("handoff-accept");
+  await page.mouse.move(...(await centre(reply)), { steps: 8 });
+  await page.mouse.up();
+  await page.waitForTimeout(150);
+  check("a drag let go away from the Agents changes nothing", litBeforeCancel && !(await row("b").getAttribute("class")).includes("handoff") && (await drafts()) === "Existing note for b.");
+
   await page.mouse.move(...(await centre(send)));
   await page.mouse.down();
   await page.mouse.move(...(await centre(row("a"))), { steps: 8 });
   await page.waitForTimeout(100);
   check("its own Agent refuses the drop and says why", (await row("a").getAttribute("class")).includes("handoff-refuse") && (await row("a").locator(".handoff-hint").textContent()).includes("already comes from"));
-  await page.mouse.move(...(await centre(row("b"))), { steps: 8 });
+  const target = await centre(row("b"));
+  await page.mouse.move(...target, { steps: 8 });
   await page.waitForTimeout(100);
-  check("the other Agent lights up as a target", (await row("b").getAttribute("class")).includes("handoff-accept"));
+  check("the other Agent lights up as a target", (await row("b").getAttribute("class")).includes("handoff-accept"), await scene(target));
   await page.screenshot({ path: fileURLToPath(new URL("drop-target.png", output)) });
   await page.mouse.up();
   const composer = page.locator('[data-composer-input][aria-label="Message Claude fixture"]');
   await composer.waitFor();
   await page.waitForFunction(() => (localStorage.getItem("yuzuno.composer.v1:b") || "").includes("Forwarded from"));
+  check("the opened draft shows the existing note and the handoff", (await composer.textContent()).includes("Existing note for b.") && (await composer.textContent()).includes("initial fixture reply"));
   const first = await drafts();
-  check("the drop added the reply to that Agent's draft and opened it", first.startsWith("Forwarded from Codex fixture’s conversation: Codex fixture’s reply") && first.endsWith("> Codex fixture: initial fixture reply"), first);
+  check("the drop added the reply after that Agent's existing draft and opened it", first.startsWith("Existing note for b.\n\nForwarded from Codex fixture’s conversation: Codex fixture’s reply") && first.endsWith("> Codex fixture: initial fixture reply"), first);
   check("no highlight is left behind", !(await row("b").getAttribute("class")).includes("handoff"));
   await page.screenshot({ path: fileURLToPath(new URL("draft.png", output)) });
 

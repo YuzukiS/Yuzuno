@@ -3463,6 +3463,19 @@ test("a reply dragged onto an Agent in the rail lands in its draft; its own Agen
     assert.equal(fireDrag(page, railRow(page, "b"), "dragover", outside).defaultPrevented, false);
     await pause();
     assert.ok(!railRow(page, "b").className.includes("handoff"));
+    // The type alone proves nothing: a drag this window did not start is not
+    // taken, nor is one whose content changed on the way.
+    const forged = dragData();
+    forged.setData("application/x-yuzuno-handoff", JSON.stringify({ kind: "task", taskId: "T-9", title: "forged", status: "todo", assignee: null, version: 1, summary: "" }));
+    assert.equal(fireDrag(page, railRow(page, "b"), "dragover", forged).defaultPrevented, false);
+    assert.equal(fireDrag(page, railRow(page, "b"), "drop", forged).defaultPrevented, false);
+    const started = dragData();
+    fireDrag(page, send, "dragstart", started);
+    assert.equal(fireDrag(page, railRow(page, "b"), "drop", forged).defaultPrevented, false);
+    fireDrag(page, send, "dragend", started);
+    await pause();
+    assert.equal(savedDraftText(page.window.localStorage, "b"), "");
+    assert.ok(page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), "Mori stays open");
     // A drag let go nowhere (Escape, or outside) leaves no highlight and no draft.
     const cancelled = dragData();
     fireDrag(page, send, "dragstart", cancelled);

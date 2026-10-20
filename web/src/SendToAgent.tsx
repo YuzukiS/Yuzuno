@@ -13,16 +13,21 @@ export type HandoffApi = {
 };
 export const HandoffContext = createContext<HandoffApi | null>(null);
 
-/** The handoff this window is dragging, so a target can judge it before the drop. */
-let dragging: HandoffSource | null = null;
+/**
+ * The handoff this window is dragging, frozen when the drag began. The type on
+ * a drag proves nothing (any page can set it), so a drop is taken only when it
+ * carries exactly this snapshot.
+ */
+let dragging: { source: HandoffSource; raw: string } | null = null;
 function endDrag() {
   dragging = null;
 }
 
 /** Adds a handoff to a drag that is starting, beside whatever text it already carries. */
 export function startHandoffDrag(event: DragEvent, source: HandoffSource) {
-  event.dataTransfer.setData(HANDOFF_TYPE, JSON.stringify(source));
-  dragging = source;
+  const raw = JSON.stringify(source);
+  event.dataTransfer.setData(HANDOFF_TYPE, raw);
+  dragging = { source, raw };
   window.addEventListener("dragend", endDrag, { once: true });
 }
 
@@ -42,9 +47,10 @@ export function useHandoffDrop(agent: Agent) {
   }, [state]);
   if (!api) return { state, refusal: null, handlers: {} };
   // Judged during the drag: a render before it began knew no source.
-  const refusal = () => (dragging ? handoffRefusal(dragging, agent) : null);
+  const refusal = () => (dragging ? handoffRefusal(dragging.source, agent) : null);
   const over = (event: DragEvent) => {
-    if (!event.dataTransfer.types.includes(HANDOFF_TYPE)) return;
+    // Only a drag this window started; one from elsewhere is not offered a target.
+    if (!dragging || !event.dataTransfer.types.includes(HANDOFF_TYPE)) return;
     if (refusal()) {
       event.dataTransfer.dropEffect = "none";
       setState("refuse");
@@ -61,16 +67,22 @@ export function useHandoffDrop(agent: Agent) {
       onDragEnter: over,
       onDragOver: over,
       onDragLeave: (event: DragEvent) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setState("");
+        // Chromium may give no relatedTarget: then the pointer's place decides.
+        const row = event.currentTarget.getBoundingClientRect();
+        const inside = event.relatedTarget
+          ? event.currentTarget.contains(event.relatedTarget as Node)
+          : event.clientX > row.left && event.clientX < row.right && event.clientY > row.top && event.clientY < row.bottom;
+        if (!inside) setState("");
       },
       onDrop: (event: DragEvent) => {
         setState("");
-        const source = readHandoff(event.dataTransfer.getData(HANDOFF_TYPE));
-        if (!source) return;
+        const raw = event.dataTransfer.getData(HANDOFF_TYPE);
+        const started = dragging;
+        if (!started || raw !== started.raw || !readHandoff(raw)) return;
         event.preventDefault();
         endDrag();
         // App refuses it again (self, closed, gone) with a notice.
-        api.send(source, agent.id);
+        api.send(started.source, agent.id);
       },
     },
   };
