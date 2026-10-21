@@ -5,6 +5,7 @@ mod supported {
     //
     //   core_memory_paths <report.json> <synthetic MiB> paths
     //   core_memory_paths <report.json> <synthetic MiB> cycles-current|cycles-light <cycles>
+    //   core_memory_paths <report.json> <synthetic MiB> events
     //
     // `paths` measures one call of each Store read/write path a Claude send
     // or Turn end uses, cold and held. `cycles-*` repeats a send and a Turn
@@ -319,6 +320,78 @@ mod supported {
         Ok(samples)
     }
 
+    /// The Claude bridge events that commit a held record and that claude.rs
+    /// committed with `update`, discarding the copy it returns, or after
+    /// copying the record to read it (`current`); and the same changes
+    /// committed the way it does now (`light`). Each held, one call each.
+    fn events(store: &Store, id: &str) -> Result<Vec<Value>> {
+        let mut samples = vec![sample("seeded_fixture_after_diagnostic_trim", 0.)];
+        // Held, as while a Claude Turn runs.
+        store.record_event(id, "claude/turnRequested", &json!({"turnId":"turn-0"}), |d| {
+            d.turn_mut("turn-0")["status"] = "inProgress".into();
+        })?;
+        samples.push(sample("held", 0.));
+        let effort = |d: &mut AgentDetail| {
+            d.claude_runtime.get_or_insert_with(Default::default).effort = Some(json!({"level":"high","turnId":"turn-0"}));
+        };
+        let delivered = |d: &mut AgentDetail| {
+            d.turn_mut("turn-0")["_syntheticDelivered"] = true.into();
+        };
+        let decide = |d: &AgentDetail| d.turns.iter().find(|t| t["id"] == "turn-0").is_some_and(|t| t["status"] == "inProgress");
+        let request = |d: &mut AgentDetail| {
+            d.turn_mut("turn-0")["_syntheticRequest"] = true.into();
+        };
+        let cancelled = |d: &mut AgentDetail| {
+            d.pending.clear();
+        };
+        let message = json!({"synthetic":true});
+        samples.push(measured("effort_applied_current", || {
+            drop(store.update(id, "claude/effortApplied", &message, effort)?);
+            Ok(())
+        })?);
+        samples.push(measured("effort_applied_light", || {
+            store.record_event(id, "claude/effortApplied", &message, effort)?;
+            Ok(())
+        })?);
+        samples.push(measured("message_delivery_current", || {
+            drop(store.update(id, "claude/messageDelivery", &message, delivered)?);
+            Ok(())
+        })?);
+        samples.push(measured("message_delivery_light", || {
+            store.record_event(id, "claude/messageDelivery", &message, delivered)?;
+            Ok(())
+        })?);
+        samples.push(measured("permission_request_current", || {
+            let d = store.detail(id)?;
+            anyhow::ensure!(decide(&d), "turn not running");
+            drop(d);
+            drop(store.update(id, "request", &message, request)?);
+            Ok(())
+        })?);
+        samples.push(measured("permission_request_light", || {
+            anyhow::ensure!(store.peek(id, decide).context("not held")?, "turn not running");
+            store.record_event(id, "request", &message, request)?;
+            Ok(())
+        })?);
+        samples.push(measured("permission_cancelled_current", || {
+            drop(store.update(id, "claude/permissionCancelled", &message, cancelled)?);
+            Ok(())
+        })?);
+        samples.push(measured("permission_cancelled_light", || {
+            store.record_event(id, "claude/permissionCancelled", &message, cancelled)?;
+            Ok(())
+        })?);
+        samples.push(measured("bridge_event_current", || {
+            drop(store.update(id, "claude/bridgeEvent", &message, |_| {})?);
+            Ok(())
+        })?);
+        samples.push(measured("bridge_event_light", || {
+            store.update_meta(id, "claude/bridgeEvent", &message, |_| {})?;
+            Ok(())
+        })?);
+        Ok(samples)
+    }
+
     fn cycles(store: Arc<Store>, id: &str, cycles: usize, light: bool) -> Result<Vec<Value>> {
         let pool = Pool::new(4);
         let mut samples = vec![sample("seeded_fixture_after_diagnostic_trim", 0.)];
@@ -368,7 +441,7 @@ mod supported {
         );
         let mode = std::env::args()
             .nth(3)
-            .context("mode: paths, cycles-current or cycles-light")?;
+            .context("mode: paths, events, cycles-current or cycles-light")?;
         let count = if mib <= 64 { 8000 } else { 23308 };
         let dir = tempfile::tempdir()?;
         let store = Arc::new(Store::open(&dir.path().join("workspace.sqlite"))?);
@@ -379,6 +452,7 @@ mod supported {
         trim_fixture_only();
         let samples = match mode.as_str() {
             "paths" => paths(&store, id, count)?,
+            "events" => events(&store, id)?,
             "cycles-current" | "cycles-light" => {
                 let n: usize = std::env::args().nth(4).context("cycles")?.parse()?;
                 anyhow::ensure!((1..=200).contains(&n), "cycles must be 1..200");
