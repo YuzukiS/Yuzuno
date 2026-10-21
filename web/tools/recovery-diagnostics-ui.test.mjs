@@ -404,4 +404,14 @@ test("when Core's memory can't be read, the text says why and everything else is
   } finally {
     q.close();
   }
+  // A trim in progress holds the gate: Core says so, and that is not "not available".
+  const busy = await mount({ named: false, memory: { ...memoryReport, reclaim: { available: true, maintenanceTickRunning: true, gateBusy: true, gate: null } } });
+  try {
+    await waitFor(() => recovery(busy), "the recovery page shows");
+    busy.button("Copy diagnostics", recovery(busy)).click();
+    await waitFor(() => busy.copied.length === 1, "the diagnostics are copied");
+    assert.match(busy.copied[0], /^ {2}Idle trim: maintenance tick running yes; a trim held its gate as Core read it, so what it waits for was not read$/m);
+  } finally {
+    busy.close();
+  }
 });

@@ -47,6 +47,8 @@ export type MemoryRead = {
   inFlight: number | null;
   includesThisRequest: boolean | null;
   tick: boolean | null;
+  /** A trim held the gate as Core read it, so `waiting` and `last` were not read. */
+  gateBusy: boolean;
   waiting: string[] | null;
   otherWaiting: number;
   last: { result: string; at: string | null; rssBefore: number | null; rssAfter: number | null } | null;
@@ -366,6 +368,7 @@ export function memoryRead(report: unknown, at: string): MemoryRead | null {
     inFlight: count(part(r.admission).inFlight),
     includesThisRequest: flag(part(r.admission).includesThisRequest),
     tick: flag(reclaim.maintenanceTickRunning),
+    gateBusy: reclaim.available === true && reclaim.gateBusy === true,
     waiting: reclaim.available === true && waiting ? waiting.filter((w): w is string => typeof w === "string" && WAITING.includes(w)) : null,
     otherWaiting: waiting ? waiting.filter((w) => typeof w !== "string" || !WAITING.includes(w)).length : 0,
     last: result ? { result, at: time(last.at), rssBefore: count(reclaimed.rssBeforeBytes), rssAfter: count(reclaimed.rssAfterBytes) } : null,
@@ -470,7 +473,8 @@ function memoryLines(memory: MemoryRead) {
     ? `  glibc malloc, its own counts (free space need not be resident): arena ${mib(allocator.arena)}, uordblks ${mib(allocator.uordblks)}, fordblks ${mib(allocator.fordblks)}, hblkhd ${mib(allocator.hblkhd)}`
     : "  glibc malloc: not available on this Core");
   lines.push(`  Held records: ${memory.held ?? "unknown"} of ${memory.heldMax ?? "unknown"}; requests in flight: ${memory.inFlight ?? "unknown"}${memory.includesThisRequest ? " (this one included)" : ""}`);
-  if (memory.waiting === null) lines.push("  Idle trim: not available on this Core");
+  if (memory.gateBusy) lines.push(`  Idle trim: maintenance tick running ${yes(memory.tick)}; a trim held its gate as Core read it, so what it waits for was not read`);
+  else if (memory.waiting === null) lines.push("  Idle trim: not available on this Core");
   else {
     const reasons = [...memory.waiting, ...(memory.otherWaiting ? [`${memory.otherWaiting} other`] : [])];
     const waiting = reasons.length ? reasons.join(", ") : "nothing";

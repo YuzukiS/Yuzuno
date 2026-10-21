@@ -35,7 +35,8 @@ recorded in the diagnostics too.
     allocator counts them. Its free space need not be resident;
   - how many records Core holds in memory, and requests in flight;
   - the idle trim: whether its tick runs, what it waits for, by Core's own
-    names only, and its last check.
+    names only, and its last check; or that a trim held it just then, when
+    neither could be read.
 
   The parts are read one after another, not as one snapshot. A count Core
   can't read on its platform is written `not available`, never 0. If Core
