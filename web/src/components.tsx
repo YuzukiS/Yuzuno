@@ -3,9 +3,10 @@ import { RewindButton } from "./Rewind";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
 import { HANDOFF_TYPE, type HandoffSource, type MessageAuthor } from "./handoff";
 import { parseMessageLink, useMessageLinks } from "./deep-link";
+import { usePointFix } from "./point-fix";
+import { ImageAttachments, inputImageUrl } from "./ImageAttachments";
 import { MailboxNotice } from "./MailboxNotice";
 import { userRequestText, userText } from "./message-content";
-import { ImageAttachments } from "./ImageAttachments";
 import { messageImages } from "./image-input";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -16,6 +17,7 @@ import {
   Check,
   ChevronRight,
   Copy,
+  SquareDashedMousePointer,
   FileCode2,
   FileText,
   LoaderCircle,
@@ -670,6 +672,10 @@ export function Turn({
   // Set once the turn is on screen: tool blocks that arrive after that are
   // live and unfold into place.
   const drawn = useRef(false);
+  // Images in your messages can be marked up, the message named as their
+  // source (T-167, T-166).
+  const pointFix = usePointFix();
+  const links = useMessageLinks();
   const target = useConversationTarget(turn.id);
   const windowed = useConversationWindowed();
   useEffect(() => { drawn.current = true; }, []);
@@ -750,7 +756,16 @@ export function Turn({
             <CopyLinkButton agent={agent} turnId={turn.id} itemId={item.id} />
           </div>
           <div className="user-text"><MessageContent text={userText(item)} blocks={item._yuzunoTextBlocks} /></div>
-          <ImageAttachments images={messageImages(item.content)} />
+          <ImageAttachments images={messageImages(item.content)} onAnnotate={!pointFix ? undefined : ((image) => pointFix({
+            name: image.name || "Image",
+            ownerId: agent.id,
+            provenance: `an image in your message to ${agent.name}${links?.href(agent, turn.id, item.id) ? ` (${links.href(agent, turn.id, item.id)})` : ""}`,
+            load: async (signal) => {
+              const response = await fetch(inputImageUrl(image.agentId, image.id), { signal });
+              if (!response.ok) throw new Error(`HTTP ${response.status}`);
+              return response.blob();
+            },
+          }))} />
         </>
       )}
     </div>
@@ -1341,12 +1356,15 @@ export function ArtifactModal({
   onClose,
   preview,
   onCloseAutoFocus,
+  onAnnotate,
 }: {
   artifact: ArtifactPreview | null;
   agentId: string;
   onClose: () => void;
   preview: boolean;
   onCloseAutoFocus?: (event: Event) => void;
+  /** Point & Fix (T-167): mark areas on this image. */
+  onAnnotate?: () => void;
 }) {
   const [content, setContent] = useState<{
     artifact: ArtifactPreview;
@@ -1418,6 +1436,15 @@ export function ArtifactModal({
               alt={artifact.name}
             />
           ) : null}
+        </div>
+      )}
+      {artifact?.kind === "image" && onAnnotate && (
+        <div className="modal-footer">
+          <span>Read-only preview</span>
+          <button type="button" className="secondary-button" onClick={onAnnotate}>
+            <SquareDashedMousePointer size={14} />
+            Mark up
+          </button>
         </div>
       )}
       {text && (

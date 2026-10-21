@@ -1,0 +1,138 @@
+/* Point & Fix (T-167): the image with its marked areas, and their notes. */
+.point-fix-dialog.modal {
+  width: min(1180px, calc(100vw - 32px));
+}
+.point-fix {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  gap: 18px;
+  align-items: start;
+}
+.point-fix-stage {
+  min-width: 0;
+}
+.point-fix-image {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--cream);
+}
+.point-fix-image > img {
+  display: block;
+  max-width: 100%;
+  max-height: 70vh;
+  height: auto;
+  user-select: none;
+}
+.point-fix-image > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  touch-action: none;
+}
+.point-fix-image rect {
+  fill: rgb(229 72 77 / 0.08);
+  stroke: #e5484d;
+  stroke-width: 2;
+  cursor: pointer;
+}
+.point-fix-image rect.selected {
+  stroke-width: 3;
+  fill: rgb(229 72 77 / 0.16);
+}
+.point-fix-image rect.drawing {
+  stroke-dasharray: 6 4;
+  pointer-events: none;
+}
+.point-fix-badge {
+  position: absolute;
+  transform: translate(-40%, -40%);
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: #e5484d;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+  pointer-events: none;
+}
+.point-fix-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 76vh;
+  overflow: auto;
+}
+.point-fix-actions,
+.point-fix-footer {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.point-fix-footer {
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+.point-fix-areas {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.point-fix-areas li {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.point-fix-areas li[data-selected] {
+  border-color: #e5484d;
+}
+.point-fix-area-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.point-fix-box {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  font-size: 0.8em;
+  color: var(--muted);
+}
+.point-fix-box input {
+  width: 100%;
+  min-width: 0;
+}
+.point-fix-areas textarea {
+  min-height: 52px;
+  resize: vertical;
+}
+.point-fix-target {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.point-fix-original {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+@media (max-width: 760px) {
+  .point-fix {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
