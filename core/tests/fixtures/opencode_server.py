@@ -32,7 +32,8 @@ AUTHORIZATION = 'Basic ' + base64.b64encode(f'{USERNAME}:{PASSWORD}'.encode()).d
 lock = threading.Lock()
 counter = [0]
 sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], {}
-modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'heartbeat': 0.2, 'abortEvidence': True, 'refuseEventsUntil': 0}
+modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'heartbeat': 0.2, 'abortEvidence': True,
+         'abortOrder': 'answer-first', 'refuseEventsUntil': 0}
 streams = []
 generation = [0]  # a new generation ends every open event stream
 
@@ -282,8 +283,23 @@ class Handler(BaseHTTPRequestHandler):
                 without(permissions, [p for p in permissions if p['sessionID'] == session])
                 without(questions, [q for q in questions if q['sessionID'] == session])
             self.reply(200, True)
+            aborted = {'name': 'MessageAbortedError', 'data': {'message': 'The operation was aborted.'}}
+            if running and modes['abortEvidence'] and modes['abortOrder'] == 'native':
+                # As OpenCode 1.19.3's processor halts an aborted run: the
+                # session error and idle first, the aborted answer only after
+                # its cleanup, then the runner's own idle.
+                publish('session.error', {'sessionID': session, 'error': aborted})
+                go_idle(session)
+                answer_prompt(session, error=aborted)
+                go_idle(session)
+                return None
+            if running and modes['abortEvidence'] and modes['abortOrder'] == 'late':
+                # Idle first, and the aborted answer after it, with no session error.
+                go_idle(session)
+                answer_prompt(session, error=aborted)
+                return None
             if running and modes['abortEvidence']:
-                answer_prompt(session, error={'name': 'MessageAbortedError', 'data': {'message': 'The operation was aborted.'}})
+                answer_prompt(session, error=aborted)
             go_idle(session)
             return None
         return self.missing('/'.join(rest))
