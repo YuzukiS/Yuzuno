@@ -7,15 +7,15 @@ in [Workspace updates](workspace-updates.md).
 
 ## Current public-release boundary
 
-The public repository is the only active development source. Its CI builds and tests source on GitHub-hosted runners; it uploads no production inputs or installation packages. The first public delivery is source only.
+The public repository is the only active development source. Its CI builds and tests source on GitHub-hosted runners and uploads nothing. Production inputs come only from the separate [release-inputs workflow](#ci-artifact-and-compatibility), run on request for the head of `main`.
 
-The artifact-based workflow below describes the retained tooling used for historical private releases. It is not yet an end-to-end public-package pipeline: it requires a matching production-input artifact that the public CI does not produce. A future package change must establish inputs from the exact public source and resolve the package scope described in [Publication status](public-readiness.md#the-claude-agent-sdk). Do not use a historical private artifact as a substitute for those inputs, turn private CI back into an active development path, or publish a package merely because source CI passed.
+Those inputs are public, so they must not carry the Claude Agent SDK ([Publication status](public-readiness.md#the-claude-agent-sdk)); the workflow refuses inputs that do. The build leaves the SDK out of the Claude runtime: it writes `claude-agent-sdk.json`, from which Core obtains the SDK on the user's machine, and at the SDK's `package.json` a placeholder written by Yuzuno, because installed Cores refuse a release without a file there. That placeholder, with exactly its bytes, is the only file the check accepts in the SDK's directory. Do not use a historical private artifact as a substitute for those inputs, turn private CI back into an active development path, or publish a package merely because source CI passed.
 
 ## What runs by default
 
 1. Reuse the accepted PR review and successful **exact main SHA** CI. Record the
    review reference; this tool does not independently approve that review.
-2. Obtain the production artifact from that CI, package it with release identity
+2. Obtain the production artifact built on request for that SHA, package it with release identity
    and notes, and sign once using the existing local publisher key.
 3. Run one short isolated baseline → candidate upgrade: start, Core/UI identity,
    Workspace identity, persisted conversation/project/task/settings/read cursor,
@@ -44,13 +44,18 @@ release-mode Core/helper, raw Vite UI, locked production Claude SDK/runtime and
 the committed result validator. No release version or signing key is needed.
 The release version marker is added once by the existing packager.
 
+**Public inputs on request.** `.github/workflows/release-inputs.yml` runs only when someone starts it (`workflow_dispatch`), on GitHub-hosted ubuntu-24.04, with a token that reads contents and actions and no secret:
+- It builds `github.sha`, the head of `main` when it was started, and only after the `CI` workflow has passed on that commit's push to `main`. It cannot build an older commit: start it right after choosing a candidate, before anything else is merged.
+- It runs `tools/build-release-inputs-ci.py`, then `tools/release-inputs-check.py`. The check refuses inputs from another commit, repository, run or attempt, an archive that differs from `build.json`, and any file of the Claude Agent SDK (anything in its directory but the placeholder with exactly its bytes), before `core-inputs-<SHA>-<run attempt>` is uploaded for 14 days.
+- `core-release.py init` then names both runs: `--ci-run` is the CI run that tested the commit, `--inputs-run` this one. The artifact, its name and `build.json` must belong to the inputs run, and its files must not include the SDK, by the same rule.
+
 **Started main runs finish:**
 - On `main`, a later push does not cancel a run that has started, so its inputs artifact is completed. A newer push to a PR still cancels that PR's older run.
 - GitHub keeps one pending run per branch. While a main run executes, the next push's run waits; a further push cancels that waiting run and takes its place.
 - So only a run that has started is sure to finish. Choose a candidate from a started or finished run.
 - Nothing reruns or releases automatically.
 
-Historical release inputs were built by the former private repository's self-hosted WSL Rust lane; public CI produces none. The retained build tooling uses Rust 1.97.1, Node
+Historical release inputs were built by the former private repository's self-hosted WSL Rust lane; the public repository builds them only on request, as above. The retained build tooling uses Rust 1.97.1, Node
 22.23.2 and Python >= 3.11. Pinned cargo-zigbuild 0.23.4 and Zig 0.15.2
 cross-link for `x86_64-unknown-linux-gnu.2.35`, independent of the host's newer
 glibc. Both linker versions and the target are recorded in `build.json`.
@@ -87,8 +92,9 @@ build actually contains, so a dependency change updates it without a manual step
   `npm ci --omit=dev --omit=optional`. `tools/runtime_notices.py` first checks
   the installed packages against the lock file; a missing, extra or
   differently versioned package stops the build. It then writes each package's
-  declared license and the texts it ships, including the Claude Agent SDK's
-  own terms as its package declares them.
+  declared license and the texts it ships. The Claude Agent SDK, which the
+  build then leaves out, is listed as not in the release, with the source and
+  integrity Core obtains it from.
 
 Nothing is chosen for a package that offers several licenses. A package that
 ships no license text is listed as such. A new web package without one fails
@@ -115,15 +121,16 @@ run through the project's Jobs and shared heavy slots with bounded resources;
 two heavy jobs maximum, no polling/watcher jobs. A 1.5 CPU / 3 GiB / zero-swap
 Job is sufficient for prepare/smoke; account for collector reservation too.
 The old private CI and runner budget belong to the historical workflow. Active
-CI runs in the public repository on GitHub-hosted runners and builds no release inputs.
+CI runs in the public repository on GitHub-hosted runners; release inputs come from the on-request workflow.
 
-First inspect the successful CI run/artifact metadata using `gh run view` and
+Start the inputs build for the candidate with `gh workflow run release-inputs.yml --ref main`, then inspect both runs and the artifact using `gh run view` and
 `gh api repos/OWNER/REPO/actions/runs/RUN_ID/artifacts`. Freeze explicit inputs:
 
 ```sh
 python3 tools/core-release.py init \
   --work-dir "$release_work" --repository OWNER/REPO \
-  --sha "$reviewed_sha" --ci-run "$run_id" --artifact-id "$artifact_id" \
+  --sha "$reviewed_sha" --ci-run "$ci_run_id" --inputs-run "$inputs_run_id" \
+  --artifact-id "$artifact_id" \
   --release-id "$release_id" --version "$version" --review "$accepted_review" \
   --notes "$release_notes" --baseline "$previous_bundle" \
   --public-key "$existing_publisher_public_key"

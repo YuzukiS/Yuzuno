@@ -8,6 +8,12 @@ Before the public snapshot it is ci/public/ci.yml, inactive here; after it,
 - the token is read-only, no secret is used, no artifact is uploaded;
 - only the Cargo cache exists, saved only from main; npm caches nothing;
 - every action is pinned to a full commit.
+
+.github/workflows/release-inputs.yml (T-159) builds release inputs on request
+and is the one workflow that uploads: only workflow_dispatch triggers it; its
+token reads contents and actions only; no secret, cache or other runner; it
+builds only main whose push CI passed, checks the inputs (never the Claude
+Agent SDK) before uploading the one core-inputs artifact.
 """
 from pathlib import Path
 import os
@@ -21,6 +27,7 @@ CANDIDATE = ROOT / 'ci/public/ci.yml'
 PATCH = ROOT / 'ci/public/public-docs.patch'
 GUARD = ROOT / '.github/scripts/hosted-guard.sh'
 FREE_DISK = ROOT / '.github/scripts/free-disk.sh'
+RELEASE_INPUTS = ROOT / '.github/workflows/release-inputs.yml'
 JOB = re.compile(r'^  ([A-Za-z0-9_-]+):\s*$')
 
 
@@ -50,19 +57,51 @@ def jobs(lines):
     return found
 
 
+def section(top, key):
+    """The keys directly under a top-level key, such as on: or permissions:."""
+    found = []
+    if key + ':' in top:
+        for line in top[top.index(key + ':') + 1:]:
+            if line and not line.startswith(' '):
+                break
+            match = re.match(r'^  ([a-z_-]+):\s*(.*)$', line)
+            if match:
+                found.append((match.group(1), match.group(2)))
+    return found
+
+
+def unpinned(lines):
+    found = []
+    for line in lines:
+        match = re.match(r'^\s*-?\s*uses:\s*(\S+)', line)
+        if match and not re.fullmatch(r'[\w.-]+/[\w./-]+@[0-9a-f]{40}', match.group(1)):
+            found.append(f'{match.group(1)} is not pinned to a full commit')
+    return found
+
+
+def steps_of(job):
+    """The job's steps, each as its lines joined."""
+    starts = [i for i, line in enumerate(job) if re.match(r'^      - ', line)]
+    return ['\n'.join(job[start:end]) for start, end in zip(starts, starts[1:] + [None])]
+
+
+def runner_problems(name, job):
+    found = []
+    runs_on = [line.split(':', 1)[1].strip() for line in job if re.match(r'^    runs-on:', line)]
+    if runs_on != ['ubuntu-24.04']:
+        found.append(f'job {name} runs on {runs_on}, not ubuntu-24.04')
+    first = (steps_of(job) or [''])[0]
+    if '[ "$RUNNER_ENVIRONMENT" = github-hosted ] ||' not in first or 'uses:' in first:
+        found.append(f'job {name} does not refuse a non-hosted runner in its first step')
+    return found
+
+
 def problems(text):
     lines = code_lines(text)
     found = []
     body = '\n'.join(lines)
     top = lines[:lines.index('jobs:')]
-    triggers = []
-    if 'on:' in top:
-        for line in top[top.index('on:') + 1:]:
-            if line and not line.startswith(' '):
-                break
-            match = re.match(r'^  ([a-z_]+):', line)
-            if match:
-                triggers.append(match.group(1))
+    triggers = [key for key, _ in section(top, 'on')]
     if triggers != ['push', 'pull_request']:
         found.append(f'triggers are {triggers}, not push and pull_request')
     if 'permissions:' not in top or top[top.index('permissions:') + 1].strip() != 'contents: read':
@@ -74,22 +113,13 @@ def problems(text):
                           (r'upload-artifact|upload-pages-artifact|actions/cache/save', 'an upload or cache save')]:
         if re.search(pattern, body):
             found.append(f'it uses {what}')
-    for line in lines:
-        match = re.match(r'^\s*-?\s*uses:\s*(\S+)', line)
-        if match and not re.fullmatch(r'[\w.-]+/[\w./-]+@[0-9a-f]{40}', match.group(1)):
-            found.append(f'{match.group(1)} is not pinned to a full commit')
+    found += unpinned(lines)
     all_jobs = jobs(lines)
     if not all_jobs:
         found.append('no jobs')
     for name, job in all_jobs.items():
-        runs_on = [line.split(':', 1)[1].strip() for line in job if re.match(r'^    runs-on:', line)]
-        if runs_on != ['ubuntu-24.04']:
-            found.append(f'job {name} runs on {runs_on}, not ubuntu-24.04')
+        found += runner_problems(name, job)
         steps = '\n'.join(job)
-        starts = [i for i, line in enumerate(job) if re.match(r'^      - ', line)]
-        first = '\n'.join(job[starts[0]:starts[1] if len(starts) > 1 else None]) if starts else ''
-        if '[ "$RUNNER_ENVIRONMENT" = github-hosted ] ||' not in first or 'uses:' in first:
-            found.append(f'job {name} does not refuse a non-hosted runner in its first step')
         node = steps.count('actions/setup-node@')
         if node and (steps.count('package-manager-cache: false') != node or re.search(r'^\s+cache(-dependency-path)?:', steps, re.M)):
             found.append(f'job {name} may cache npm packages')
@@ -99,6 +129,51 @@ def problems(text):
             saves = re.findall(r'save-if:\s*(.+)', steps)
             if saves != ["${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"] * steps.count('rust-cache@'):
                 found.append(f'job {name} may save the Rust cache outside a push to main')
+    return found
+
+
+UPLOAD_NAME = 'name: core-inputs-${{ github.sha }}-${{ github.run_attempt }}'
+
+
+def release_inputs_problems(text):
+    lines = code_lines(text)
+    found = []
+    body = '\n'.join(lines)
+    top = lines[:lines.index('jobs:')]
+    triggers = [key for key, _ in section(top, 'on')]
+    if triggers != ['workflow_dispatch']:
+        found.append(f'triggers are {triggers}, not workflow_dispatch only')
+    if sorted(section(top, 'permissions')) != [('actions', 'read'), ('contents', 'read')]:
+        found.append('the top-level permissions are not contents: read and actions: read')
+    for pattern, what in [(r'pull_request_target|workflow_run', 'a privileged trigger'),
+                          (r'secrets\.', 'a secret'),
+                          (r':\s*write\b', 'a write permission'),
+                          (r'self-hosted', 'a self-hosted label'),
+                          (r'upload-pages-artifact|actions/cache|rust-cache@', 'a cache or pages upload')]:
+        if re.search(pattern, body):
+            found.append(f'it uses {what}')
+    found += unpinned(lines)
+    all_jobs = jobs(lines)
+    if len(all_jobs) != 1:
+        found.append(f'{len(all_jobs)} jobs, not one')
+    for name, job in all_jobs.items():
+        found += runner_problems(name, job)
+        steps = steps_of(job)
+        def first(predicate):
+            return next((i for i, step in enumerate(steps) if predicate(step)), None)
+        gate = first(lambda step: '[ "$GITHUB_REF" = refs/heads/main ]' in step
+                     and 'actions/workflows/ci.yml/runs' in step and 'status=success' in step)
+        checkout = first(lambda step: 'actions/checkout@' in step)
+        check = first(lambda step: 'tools/release-inputs-check.py' in step)
+        uploads = [i for i, step in enumerate(steps) if 'actions/upload-artifact@' in step]
+        if gate is None or checkout is None or gate > checkout:
+            found.append(f'job {name} does not require main with passed CI before checkout')
+        if checkout is not None and 'persist-credentials: false' not in steps[checkout]:
+            found.append(f'job {name} keeps the checkout credentials')
+        if len(uploads) != 1 or UPLOAD_NAME not in steps[uploads[0]]:
+            found.append(f'job {name} does not upload exactly the one core-inputs artifact')
+        elif check is None or check > uploads[0]:
+            found.append(f'job {name} does not check the inputs before uploading')
     return found
 
 
@@ -128,6 +203,33 @@ class PublicCi(unittest.TestCase):
             with self.subTest(label):
                 self.assertNotEqual(text, good, 'the fixture edit did not apply')
                 self.assertTrue(any(message in problem for problem in problems(text)), problems(text))
+
+    def test_the_release_inputs_workflow_keeps_its_rules(self):
+        self.assertEqual(release_inputs_problems(RELEASE_INPUTS.read_text()), [])
+
+    def test_each_broken_release_inputs_rule_is_reported(self):
+        good = RELEASE_INPUTS.read_text()
+        upload = '      - uses: actions/upload-artifact@'
+        cases = {
+            'a push trigger': (good.replace('  workflow_dispatch:\n', '  workflow_dispatch:\n  push:\n', 1), 'triggers'),
+            'a write permission': (good.replace('  actions: read', '  actions: write', 1), 'permissions'),
+            'a wider token': (good.replace('  actions: read\n', '  actions: read\n  pull-requests: read\n', 1), 'permissions'),
+            'a secret': (good.replace('GH_TOKEN: ${{ github.token }}', 'GH_TOKEN: ${{ secrets.X }}', 1), 'a secret'),
+            'a self-hosted runner': (good.replace('runs-on: ubuntu-24.04', 'runs-on: [self-hosted, linux]', 1), 'self-hosted'),
+            'a Rust cache': (good.replace('      - name: Runner details', '      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6\n      - name: Runner details', 1), 'cache'),
+            'an unpinned action': (good.replace('@3d3c42e5aac5ba805825da76410c181273ba90b1', '@v7', 1), 'not pinned'),
+            'no first-step runner check': (good.replace('[ "$RUNNER_ENVIRONMENT" = github-hosted ] ||', 'true ||', 1), 'first step'),
+            'any branch': (good.replace('[ "$GITHUB_REF" = refs/heads/main ] ||', 'true ||', 1), 'passed CI before checkout'),
+            'no CI lookup': (good.replace('-f status=success', '-f status=completed', 1), 'passed CI before checkout'),
+            'checkout credentials kept': (good.replace('          persist-credentials: false\n', '', 1), 'credentials'),
+            'another artifact name': (good.replace('name: core-inputs-${{ github.sha }}', 'name: inputs-${{ github.sha }}', 1), 'one core-inputs artifact'),
+            'a second upload': (good.replace(upload, upload + 'ea165f8d65b6e75b540449e92b4886f43607fa02\n        with:\n          path: target\n' + upload, 1), 'one core-inputs artifact'),
+            'no check before upload': (good.replace('-I tools/release-inputs-check.py', '-I tools/other.py', 1), 'check the inputs'),
+        }
+        for label, (text, message) in cases.items():
+            with self.subTest(label):
+                self.assertNotEqual(text, good, 'the fixture edit did not apply')
+                self.assertTrue(any(message in problem for problem in release_inputs_problems(text)), release_inputs_problems(text))
 
     def test_the_guard_refuses_any_runner_but_a_github_hosted_one(self):
         for environment, code in [('self-hosted', 1), ('', 1), ('github-hosted', 0)]:
