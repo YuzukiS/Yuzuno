@@ -618,19 +618,37 @@ mod tests {
                 let _ = self.0.wait();
             }
         }
+        // CI runs 39492395660, 39513045319, 39534080239 and 39534937391 moved
+        // a few milliseconds after spawn() returned, and a scan a moment later
+        // found the helper. spawn() may return before the child's exec has
+        // finished, while it does not yet read as the helper. So the helper is
+        // a copy of sh that says when it runs its own code; from then on it
+        // is the helper the guard must see. (A real helper starts after its
+        // operation is in the journal, which the guard also reads.)
         let path = install.path().join("yuzuno-update-helper");
-        std::fs::copy("/bin/sleep", &path).unwrap();
-        let started = std::time::Instant::now();
-        let mut helper = Helper(std::process::Command::new(&path).arg("30").spawn().unwrap());
+        std::fs::copy("/bin/sh", &path).unwrap();
+        let mut helper = Helper(std::process::Command::new(&path).args(["-c", "echo ready; read line"])
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap());
         let pid = helper.0.id();
-        // CI runs 39492395660 and 39513045319 moved here with the helper
-        // started. If it happens again, say what /proc shows of the helper
-        // (read before it is reaped), whether it still ran (a sleep that
-        // outlived its 30 seconds exits 0; one killed names the signal) and
-        // what the scan sees now.
+        let exe_at_spawn = std::fs::read_link(format!("/proc/{pid}/exe"));
+        let stdout = helper.0.stdout.take().unwrap();
+        let (said, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            let _ = std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line);
+            let _ = said.send(line);
+        });
+        let line = heard.recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap_or_else(|_| panic!("update helper {pid} did not say within 30 s that it runs (exe at spawn {exe_at_spawn:?})"));
+        assert_eq!(line, "ready\n", "update helper {pid}");
+        let started = std::time::Instant::now();
+        // If it moves anyway, say what /proc showed of the helper when spawn
+        // returned and shows now (read before it is reaped), whether it still
+        // runs and what the scan sees now.
         let refused = match move_legacy(tmp.path(), None, &mut never) {
             Err(error) => error.to_string(),
-            Ok(moved) => panic!("moved ({moved:?}) {:?} after update helper {pid} started: exe {:?}, stat {:?}, then it {:?}, scan now {:?}",
+            Ok(moved) => panic!("moved ({moved:?}) {:?} after update helper {pid} said it runs: exe at spawn {exe_at_spawn:?}, \
+                exe {:?}, stat {:?}, then it {:?}, scan now {:?}",
                 started.elapsed(), std::fs::read_link(format!("/proc/{pid}/exe")),
                 std::fs::read_to_string(format!("/proc/{pid}/stat")), helper.0.try_wait(), running_update_helper()),
         };
