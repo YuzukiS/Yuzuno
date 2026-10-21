@@ -878,6 +878,39 @@ mod tests {
         assert!(plan(&d, &entries).steps.is_empty());
     }
 
+    /// T-26: Claude's saved history keeps an Agent call's input and its
+    /// result text, never the result object (`tool_use_result`) the live
+    /// stream carries; SDK 0.3.296's session reader leaves it out. A call
+    /// launched in the background returns at once, so its return says
+    /// nothing of how its sub-agent ends: unknown until something reports it.
+    #[test]
+    fn a_background_agent_filled_from_saved_history_is_unknown_never_completed() {
+        let agent = |uuid: &str, mid: &str, id: &str, background: bool| {
+            let mut input = json!({"description":format!("Survey {id}"),"prompt":"Do: survey","subagent_type":"general-purpose"});
+            if background { input["run_in_background"] = true.into(); }
+            json!({"type":"assistant","uuid":uuid,"session_id":SESSION,"parent_tool_use_id":null,"timestamp":"2026-10-17T00:30:02Z",
+                "message":{"id":mid,"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":id,"name":"Agent","input":input}]}})
+        };
+        let chain = [prompt("p1", "Survey the notes"), agent("a1", "m1", "agent-bg", true), answers("r1", "agent-bg", "Async agent launched.", false, None),
+            agent("a2", "m2", "agent-fg", false), answers("r2", "agent-fg", "The notes are fine.", false, None),
+            said("a3", "m3", "One survey is running in the background.", "end_turn")];
+        let (entries, messages) = saved(&chain, &[]);
+        let mut d = detail(json!([]));
+        apply(&mut d, &plan_import(&d, &entries), &entries, &messages, Utc::now());
+        let t = turn(&d, "native-p1");
+        let item = |id: &str| t["items"].as_array().unwrap().iter().find(|i| i["id"] == id).unwrap().clone();
+        let background = item("agent-bg");
+        assert_eq!((background["status"].clone(), background["subAgent"].clone()),
+            (json!("completed"), json!({"status":"unknown","background":true})), "the call returned; its sub-agent's end is unknown");
+        // A foreground call returns when its sub-agent has ended: as before.
+        assert!(item("agent-fg")["subAgent"].is_null());
+        // A report of its end is what completes it.
+        claude::project_event_at(&mut d, None, &json!({"type":"system","subtype":"task_notification","task_id":"task-bg","tool_use_id":"agent-bg",
+            "status":"completed","summary":"Surveyed."}), Utc::now());
+        let sub = &turn(&d, "native-p1")["items"].as_array().unwrap().iter().find(|i| i["id"] == "agent-bg").unwrap()["subAgent"];
+        assert_eq!((sub["status"].as_str(), sub["result"].as_str()), (Some("completed"), Some("Surveyed.")));
+    }
+
     fn thinks(uuid: &str, mid: &str, text: &str) -> Value {
         json!({"type":"assistant","uuid":uuid,"session_id":SESSION,"parent_tool_use_id":null,"timestamp":"2026-10-17T00:30:01Z",
             "message":{"id":mid,"role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":text,"signature":"s"}]}})
