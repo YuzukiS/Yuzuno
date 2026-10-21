@@ -373,4 +373,32 @@ mod tests {
         assert_eq!(metadata["nativeClientIds"],json!(["confirmed"]));
         assert_eq!(metadata["index"][0]["items"][0]["_yuzunoSource"],"peer");
     }
+    /// T-26: a background sub-agent outlives the Items after its call, and a
+    /// window holds the newest only. One still running stays listed, as its
+    /// call's preview, wherever the window is; one that ended or whose end
+    /// is unknown is history like any other Item.
+    #[test]
+    fn running_subagents_outside_the_window_stay_listed() {
+        let mut saved = giant(200);
+        let call = |id: &str, status: &str| json!({"id":id,"type":"claudeToolUse","name":"Agent","status":"completed",
+            "input":{"description":id,"prompt":"Do: the goal","run_in_background":true},"output":[{"type":"text","text":"Async agent launched"}],
+            "subAgent":{"status":status,"background":true,"description":id,"prompt":"Do: the goal","progress":"p","result":"r","taskId":format!("task-{id}")}});
+        let items = saved.turns[0]["items"].as_array_mut().unwrap();
+        items[1] = call("early", "running");
+        items[2] = call("done", "completed");
+        items[3] = call("lost", "unknown");
+        items[150] = call("later", "running");
+        let listed = |id: &str, at: usize| json!({"turnId":"giant","position":[0,at],"item":{"id":id,"type":"historyPreview","status":"completed",
+            "name":"Agent","_yuzunoWindowPreview":{"type":"claudeToolUse"},"subAgent":{"status":"running","background":true,"description":id,"taskId":format!("task-{id}")}}});
+        let mut latest = saved.clone();
+        let metadata = project(&mut latest, &Query::default()).unwrap();
+        let loaded = |d: &AgentDetail, id: &str| d.turns[0]["items"].as_array().unwrap().iter().any(|i| i["id"] == id);
+        assert!(!loaded(&latest, "early") && loaded(&latest, "later"));
+        assert_eq!(metadata["runningSubAgents"], json!([listed("early", 1)]));
+        // Reading from the first: the later one is outside it now.
+        let mut first = saved.clone();
+        let metadata = project(&mut first, &Query {turn_id:Some("giant".into()),item_id:Some("early".into()),..Default::default()}).unwrap();
+        assert!(loaded(&first, "early") && !loaded(&first, "later"));
+        assert_eq!(metadata["runningSubAgents"], json!([listed("later", 150)]));
+    }
 }

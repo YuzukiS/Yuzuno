@@ -3894,6 +3894,33 @@ mod tests {
         assert_eq!(turn_item(&d, "t", "agent-2")["subAgent"]["status"], "failed");
     }
 
+    /// T-26 report: one message started a background Agent and a Bash call
+    /// side by side; the Agent returned async_launched and no task_started
+    /// came. As CLI 2.1.280 streams it: both blocks, one assistant frame per
+    /// block, one user frame per result.
+    #[test]
+    fn a_background_agent_beside_a_bash_call_without_task_started_runs_in_the_background() {
+        let mut d = detail();
+        let start = |index: u64, id: &str, name: &str| json!({"type":"stream_event","event":{"type":"content_block_start","index":index,
+            "content_block":{"type":"tool_use","id":id,"name":name,"input":{}}}});
+        let block = |uuid: &str, content: Value| json!({"type":"assistant","uuid":uuid,"parent_tool_use_id":null,"message":{"id":"m","content":[content]}});
+        let agent = json!({"type":"tool_use","id":"agent-bg","name":"Agent","input":{"description":"Survey the notes","prompt":"Do: survey",
+            "subagent_type":"general-purpose","run_in_background":true}});
+        let bash = json!({"type":"tool_use","id":"bash-1","name":"Bash","input":{"command":"ls"}});
+        for event in [json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"m","usage":{}}}}),
+                      start(0, "agent-bg", "Agent"), start(1, "bash-1", "Bash"), block("u-agent", agent), block("u-bash", bash),
+                      tool_result(None, "agent-bg", json!([{"type":"text","text":"Async agent launched"}]),
+                          json!({"status":"async_launched","isAsync":true,"agentId":"x","description":"Survey the notes","prompt":"Do: survey","outputFile":"/o"})),
+                      tool_result(None, "bash-1", json!("a.txt"), json!({"stdout":"a.txt","stderr":"","interrupted":false}))] {
+            project_event(&mut d, Some("t"), &event);
+        }
+        let agent = turn_item(&d, "t", "agent-bg");
+        assert_eq!((agent["name"].clone(), agent["status"].clone(), agent["subAgent"]["status"].clone(), agent["subAgent"]["background"].clone()),
+            (json!("Agent"), json!("completed"), json!("running"), json!(true)));
+        assert_eq!(agent["subAgent"]["description"], "Survey the notes");
+        assert_eq!((turn_item(&d, "t", "bash-1")["status"].clone(), turn_item(&d, "t", "bash-1")["subAgent"].clone()), (json!("completed"), Value::Null));
+    }
+
     /// A stop goes to Claude only for the task the user picked, only while
     /// the latest snapshot of this connection lists it as running, and once
     /// until that task ends or the wait runs out; a refused or failed stop
