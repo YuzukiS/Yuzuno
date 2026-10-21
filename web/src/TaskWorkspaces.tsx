@@ -102,7 +102,8 @@ function Cleanup({ taskId, view }: { taskId: string; view: WorkspaceView }) {
     setRemoval(null);
     setSelected(new Set());
     try {
-      setPreview(await post<Preview>(`${base}/preview`));
+      const value = await post<Preview>(`${base}/preview`);
+      setPreview({ ...value, candidates: value?.candidates ?? [], kept: value?.kept ?? [], bounds: value?.bounds ?? { complete: false, visitedFolders: 0 } });
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -114,7 +115,8 @@ function Cleanup({ taskId, view }: { taskId: string; view: WorkspaceView }) {
     setBusy(true);
     setError("");
     try {
-      setRemoval(await post<Removal>(base, { previewId: preview.id, candidates: [...selected] }));
+      const value = await post<Removal>(base, { previewId: preview.id, candidates: [...selected] });
+      setRemoval({ ...value, results: value?.results ?? [] });
       // A preview is used once: what remains is looked at again.
       setPreview(null);
     } catch (e) {
@@ -140,7 +142,7 @@ function Cleanup({ taskId, view }: { taskId: string; view: WorkspaceView }) {
                   <label>
                     <input
                       type="checkbox"
-                      disabled={c.protected.length > 0}
+                      disabled={c.protected?.length !== 0}
                       checked={selected.has(c.id)}
                       onChange={(event) => {
                         const next = new Set(selected);
@@ -149,11 +151,11 @@ function Cleanup({ taskId, view }: { taskId: string; view: WorkspaceView }) {
                         setSelected(next);
                       }}
                     />
-                    <code>{c.relative}</code> · about {bytes(c.estimate.bytes)}
-                    {c.estimate.sharedBytes > 0 && ` (+${bytes(c.estimate.sharedBytes)} hard-linked, may stay)`}
-                    {!c.estimate.complete && " · size estimate incomplete"}
+                    <code>{c.relative}</code> · about {bytes(c.estimate?.bytes ?? 0)}
+                    {(c.estimate?.sharedBytes ?? 0) > 0 && ` (+${bytes(c.estimate.sharedBytes)} hard-linked, may stay)`}
+                    {!c.estimate?.complete && " · size estimate incomplete"}
                   </label>
-                  {c.protected.length > 0 && <p className="task-workspace-kept">Kept: {c.protected.join("; ")}</p>}
+                  {!!c.protected?.length && <p className="task-workspace-kept">Kept: {c.protected.join("; ")}</p>}
                 </li>
               ))}
             </ul>
@@ -238,7 +240,9 @@ export function TaskWorkspaces({ taskId, materialsWorktree }: { taskId: string; 
     }
   }
   const named = materialsWorktree?.trim();
-  const registered = listing?.workspaces.some((w) => w.path === named);
+  // Whatever Core answers, the task page keeps rendering.
+  const workspaces = Array.isArray(listing?.workspaces) ? listing.workspaces : [];
+  const registered = workspaces.some((w) => w.path === named);
   return (
     <section className="collab-section task-workspaces" aria-label="Workspace">
       <div className="collab-section-heading">
@@ -252,7 +256,7 @@ export function TaskWorkspaces({ taskId, materialsWorktree }: { taskId: string; 
         </button>
       </div>
       {error && <p className="inline-error" role="alert">{error}</p>}
-      {listing?.workspaces.map((view) => (
+      {workspaces.map((view) => (
         <div key={view.id} className="task-workspace">
           <p className="task-workspace-path">
             <code>{view.path}</code> · Core host · {view.origin === "created" ? `created on ${view.branch}` : "registered"}
@@ -279,7 +283,7 @@ export function TaskWorkspaces({ taskId, materialsWorktree }: { taskId: string; 
           </div>
         </div>
       ))}
-      {listing && listing.workspaces.length === 0 && (
+      {listing && workspaces.length === 0 && (
         <p className="job-footnote">No folder is registered for this task. Registering one lets you see who uses it and clean its build output.</p>
       )}
       {named && listing && !registered && (
