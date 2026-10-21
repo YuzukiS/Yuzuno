@@ -134,6 +134,57 @@ pub struct HistoryPage {
     pub has_more: bool,
 }
 
+impl HistoryPage {
+    /// Where earlier native pages continue after this one: before its oldest Turn.
+    pub(crate) fn window(&self) -> HistoryWindow {
+        HistoryWindow {
+            loaded_count: self.turns.len(), has_more: self.has_more, next_cursor: self.next_cursor.clone(),
+            anchor_turn_id: self.turns.first().and_then(|turn| turn["id"].as_str()).map(str::to_owned),
+        }
+    }
+}
+
+/// Where earlier native pages continue once a reconnect has merged the recent
+/// `page` of an imported thread into `saved` (T-161).
+///
+/// If the page overlaps the saved Turns, the record holds every native Turn
+/// from its oldest one on, so earlier pages continue before that oldest saved
+/// Turn: the window kept from import, or one anchored there. Codex anchors a
+/// Turn cursor to a Turn ID (`{"turn_id","include_anchor"}`), so it stays valid
+/// as Turns are added; one is built only when this Codex's own cursor has that
+/// form. Without an overlap, Turns another client added may be missing between
+/// the record and the page, and the page's own cursor keeps them reachable.
+pub(crate) fn history_after_reconnect(page: &HistoryPage, saved: &AgentDetail) -> HistoryWindow {
+    let recent = page.window();
+    let Some(oldest) = saved.turns.first().and_then(|turn| turn["id"].as_str()) else { return recent };
+    let saved_ids: HashSet<&str> = saved.turns.iter().filter_map(|turn| turn["id"].as_str()).collect();
+    let overlaps = page.turns.iter().any(|turn| turn["id"].as_str().is_some_and(|id| saved_ids.contains(id)));
+    if !overlaps || recent.anchor_turn_id.as_deref() == Some(oldest) || !recent.has_more {
+        return recent;
+    }
+    if let Some(kept) = saved.history.as_ref().filter(|history| history.anchor_turn_id.as_deref() == Some(oldest)) {
+        return kept.clone();
+    }
+    if !page.next_cursor.as_deref().is_some_and(anchored_turn_cursor) {
+        return recent;
+    }
+    HistoryWindow {
+        next_cursor: Some(json!({"turn_id":oldest,"include_anchor":false}).to_string()),
+        // Codex says whether anything precedes it when that page is read.
+        has_more: true,
+        loaded_count: recent.loaded_count,
+        anchor_turn_id: Some(oldest.to_owned()),
+    }
+}
+
+/// A cursor of the form Codex 0.162 gives `thread/turns/list` pages.
+fn anchored_turn_cursor(cursor: &str) -> bool {
+    serde_json::from_str::<Value>(cursor).ok().and_then(|value| value.as_object().map(|fields| {
+        fields.len() == 2 && fields.get("turn_id").is_some_and(Value::is_string)
+            && fields.get("include_anchor").is_some_and(Value::is_boolean)
+    })).unwrap_or(false)
+}
+
 pub(crate) struct ReadSession(pub(crate) Arc<Rpc>);
 impl Drop for ReadSession {
     fn drop(&mut self) { self.0.close(); }
@@ -316,7 +367,7 @@ impl Workspace {
                 last_message: None, last_seq: 0, reviewed_seq: 0, rev: 0, error: None, remote: None,
                 connection_state: "disconnected".into(),
             },
-            history: Some(HistoryWindow { loaded_count: page.turns.len(), has_more: page.has_more, next_cursor: page.next_cursor }),
+            history: Some(page.window()),
             turns: page.turns, pending: vec![], artifacts: vec![], context_usage: None, message_receipts: vec![], claude_runtime: None,
             codex_handoff: None,
         };
@@ -681,7 +732,7 @@ impl Workspace {
                 created_at: at.clone(), updated_at: at.clone(), unread_count: 0, pending_count: 0, last_message: None,
                 last_seq: 0, reviewed_seq: 0, rev: 0, error: None, remote: None, connection_state: "disconnected".into(),
             },
-            history: Some(HistoryWindow { loaded_count: page.turns.len(), has_more: page.has_more, next_cursor: page.next_cursor }),
+            history: Some(page.window()),
             turns: page.turns, pending: vec![], artifacts: vec![], context_usage: None, message_receipts: vec![],
             claude_runtime: None,
             codex_handoff: Some(CodexHandoff { forked_from: Some(link(&source.agent.id, &row.source_thread_id)), ..Default::default() }),

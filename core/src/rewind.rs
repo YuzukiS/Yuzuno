@@ -451,11 +451,7 @@ impl Workspace {
                 d.agent.thread_id.as_deref() == Some(thread.as_str()),
                 "The session changed while confirming rewind"
             );
-            let window = HistoryWindow {
-                loaded_count: page.turns.len(),
-                has_more: page.has_more,
-                next_cursor: page.next_cursor,
-            };
+            let window = page.window();
             s.update(
                 &agent,
                 if accept_current {
