@@ -261,6 +261,7 @@ export function App() {
   const [forkOpen, setForkOpen] = useState(false);
   const [turnDockEngaged, setTurnDockEngaged] = useState(false);
   const [inspector, setInspector] = useState(true);
+  // A wide window's choice; on a phone the list is a screen of its own.
   const [railOpen, setRailOpen] = useState(true);
   // Phones (T-170): one screen at a time, the Agent list or what is open.
   // The list covers the open view instead of replacing it, so its drafts,
@@ -1593,7 +1594,7 @@ export function App() {
     <PointFixOpen.Provider value={previewMode ? null : openPointFix}>
     <MessageLinks.Provider value={messageLinks}>
     <div
-      className={`app ${isNative ? "native" : "web"} ${railOpen ? "" : "rail-hidden"} ${inspectorShown && !phone ? "with-inspector" : ""}${phone ? ` phone${listShown ? " phone-list" : ""}${inspectorShown ? " phone-inspector" : ""}` : ""}`}
+      className={`app ${isNative ? "native" : "web"} ${railOpen || phone ? "" : "rail-hidden"} ${inspectorShown && !phone ? "with-inspector" : ""}${phone ? ` phone${listShown ? " phone-list" : ""}${inspectorShown ? " phone-inspector" : ""}` : ""}`}
       style={panelWidths.style}
     >
       {previewMode && (

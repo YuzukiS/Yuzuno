@@ -184,6 +184,17 @@ try {
       assert.ok(reachable(seen, ...Object.keys(entries)), JSON.stringify(seen.entries));
       assert.equal(seen.mainWidth, 764, "the conversation is as wide as before");
       check("a wide window keeps the side-by-side layout and every entry", { mainWidth: seen.mainWidth });
+      // A sidebar hidden here does not leave a phone without its list.
+      await page.locator('[aria-label="Hide agent sidebar"]').click();
+      await page.setViewportSize({ width: portrait.width, height: portrait.height });
+      await page.waitForTimeout(300);
+      assert.match(await page.locator(".app").getAttribute("class"), /phone-list/);
+      assert.equal(await topAt(page, 195, 200), "rail", "the phone shows its Agent list");
+      assert.ok(await page.locator('.agent-row .agent-select[aria-label="Open Mori"]').isVisible());
+      await page.setViewportSize({ width: wide.width, height: wide.height });
+      await page.waitForTimeout(300);
+      assert.equal(await page.locator(".rail").isVisible(), false, "wide again, the sidebar stays hidden as chosen");
+      check("a sidebar hidden in a wide window still leaves a phone its list, and stays hidden wide");
       await context.close();
       continue;
     }

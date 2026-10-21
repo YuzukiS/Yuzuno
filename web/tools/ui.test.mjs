@@ -3897,6 +3897,41 @@ test("on a phone the Agent list and what is open are one screen each, and the wa
   }
 });
 
+test("a sidebar hidden in a wide window still leaves the phone its Agent list, and comes back wide (T-170)", async () => {
+  // One media query list per query, so the window can turn into a phone.
+  let phone = false;
+  const lists = new Map();
+  const page = await mount({ beforeLoad(window) {
+    window.matchMedia = (media) => {
+      if (!lists.has(media)) {
+        const listeners = new Set();
+        lists.set(media, { listeners, list: {
+          media, get matches() { return media === PHONE && phone; },
+          addEventListener: (_, listener) => listeners.add(listener),
+          removeEventListener: (_, listener) => listeners.delete(listener),
+        } });
+      }
+      return lists.get(media).list;
+    };
+  } });
+  try {
+    page.document.querySelector('[aria-label="Hide agent sidebar"]').click();
+    await pause();
+    assert.match(appClass(page), /\brail-hidden\b/);
+    phone = true;
+    for (const listener of lists.get(PHONE)?.listeners || []) listener();
+    await pause();
+    assert.match(appClass(page), /\bphone\b.*\bphone-list\b/);
+    assert.doesNotMatch(appClass(page), /rail-hidden/, "the phone list is not the wide sidebar");
+    phone = false;
+    for (const listener of lists.get(PHONE)?.listeners || []) listener();
+    await pause();
+    assert.match(appClass(page), /\brail-hidden\b/, "wide again, the sidebar stays as it was chosen");
+  } finally {
+    page.close();
+  }
+});
+
 test("wider windows keep the side-by-side layout, with the context panel as it was (T-170)", async () => {
   const page = await mount();
   try {
