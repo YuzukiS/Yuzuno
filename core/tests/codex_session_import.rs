@@ -35,12 +35,19 @@ for line in sys.stdin:
     elif method == 'thread/turns/list':
         if p.get('itemsView') not in ['notLoaded', 'summary', 'full']:
             emit({'id':req['id'],'error':{'code':-32600,'message':'Invalid itemsView enum'}}); continue
+        # As Codex 0.162 pages: a cursor names the Turn it continues from.
         rows = turns()[::-1]
-        cursor = int(p.get('cursor') or 0)
-        rows = rows[cursor:cursor+p.get('limit',3)]
+        ids = [t['id'] for t in rows]
+        start = 0
+        if p.get('cursor'):
+            anchor = json.loads(p['cursor'])
+            if anchor['turn_id'] not in ids:
+                emit({'id':req['id'],'error':{'code':-32600,'message':'invalid cursor: anchor turn is no longer present'}}); continue
+            start = ids.index(anchor['turn_id']) + (0 if anchor['include_anchor'] else 1)
+        rows = rows[start:start+p.get('limit',3)]
         if p.get('itemsView') == 'notLoaded': rows = [dict(t,items=[]) for t in rows]
-        end = cursor+len(rows)
-        result = {'data':rows,'nextCursor':str(end) if end<len(turns()) else None,'backwardsCursor':None}
+        end = start+len(rows)
+        result = {'data':rows,'nextCursor':json.dumps({'turn_id':rows[-1]['id'],'include_anchor':False}) if rows and end<len(ids) else None,'backwardsCursor':None}
     elif method == 'config/read': result = {'config':{'approval_policy':'never','sandbox_mode':'danger-full-access'}}
     elif method == 'configRequirements/read':
         result = {'requirements':{'allowedSandboxModes':['read-only']} if (root/'restricted').exists() else None}
@@ -232,6 +239,33 @@ async fn history_cursor_tracks_new_tail_and_queued_messages_cannot_claim_handoff
 }
 
 #[tokio::test]
+async fn earlier_native_pages_skip_the_turns_saved_while_the_session_ran() {
+    let lab = Lab::new();
+    let agent = lab.ws.import_codex_session(lab.input()).await.unwrap();
+    let turn = |i: usize| json!({"id":format!("t-{i}"),"status":"completed","items":[
+        {"id":format!("item-{i}"),"type":"agentMessage","phase":"final_answer","text":format!("Native result {i}")}]});
+    // Yuzuno saved six live Turns as they ran; the reconnect after them points
+    // the cursor behind the recent page, t-15..t-17.
+    std::fs::write(lab.root.path().join("extra"), "6").unwrap();
+    lab.ws.store.update(&agent.id, "test/live", &json!({}), |d| d.turns.extend((12..18).map(turn))).unwrap();
+    lab.ws.reconnect(&agent.id).await.unwrap();
+    let cursor = lab.ws.store.detail(&agent.id).unwrap().history.unwrap().next_cursor;
+    let before = lab.calls().len();
+    let page = lab.ws.codex_session_history(&agent.id, cursor.as_deref()).await.unwrap();
+    // Not t-12..t-14 or t-9..t-11, which the conversation already shows.
+    assert_eq!(page.turns.iter().map(|t| t["id"].as_str().unwrap()).collect::<Vec<_>>(), ["t-6", "t-7", "t-8"]);
+    assert!(page.has_more);
+    let reads: Vec<Value> = lab.calls()[before..].iter().filter(|r| r["method"] == "thread/turns/list")
+        .map(|r| r["params"]["itemsView"].clone()).collect();
+    assert_eq!(reads, ["full", "notLoaded", "full"], "saved Turns are skipped by ID, without their Items");
+    // With every earlier Turn saved, the page says so instead of repeating them.
+    lab.ws.store.update(&agent.id, "test/all", &json!({}), |d| { d.turns.splice(0..0, (0..9).map(turn)); }).unwrap();
+    let page = lab.ws.codex_session_history(&agent.id, cursor.as_deref()).await.unwrap();
+    assert!(page.turns.is_empty() && !page.has_more && page.next_cursor.is_none());
+    lab.ws.close_agent(&agent.id).await.unwrap();
+}
+
+#[tokio::test]
 async fn cached_unfinished_turn_outside_recent_page_gets_its_native_result() {
     let lab = Lab::new();
     let agent = lab.ws.import_codex_session(lab.input()).await.unwrap();
@@ -324,7 +358,7 @@ async fn pasted_receipt_identity_survives_core_restart_reconnect_and_full_native
     assert_eq!(recent["items"][0]["id"],"live-t-11-0");
     assert_eq!(recent["items"][0]["_yuzunoTextBlocks"],blocks);
     let seq=current.agent.last_seq;
-    let page = ws.codex_session_history(&agent.id,Some("3")).await.unwrap();
+    let page = ws.codex_session_history(&agent.id,Some(&json!({"turn_id":"t-9","include_anchor":false}).to_string())).await.unwrap();
     let older = page.turns.iter().find(|t|t["id"]=="t-8").unwrap();
     assert_eq!(older["items"][0]["id"],"live-t-8-0");
     assert_eq!(older["items"][0]["_yuzunoTextBlocks"],blocks);

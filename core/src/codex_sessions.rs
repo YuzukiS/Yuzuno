@@ -214,6 +214,45 @@ pub(crate) async fn history_page(rpc: &Rpc, id: &str, cursor: Option<&str>) -> R
     Ok(HistoryPage { turns, has_more: next_cursor.is_some(), next_cursor })
 }
 
+/// The earlier native page from `cursor`, or, when that page holds only Turns
+/// the record already has, the page from the newest earlier Turn it does not
+/// (T-161). A reconnect points the cursor behind the recent page, so the pages
+/// right after it repeat Turns saved while the session ran and a reader would
+/// see nothing load. They are skipped by Turn ID only, as `baseline` reads
+/// them; a Turn another client added between saved ones is still reached first.
+async fn unsaved_page(rpc: &Rpc, id: &str, cursor: Option<&str>, saved: &HashSet<&str>) -> Result<HistoryPage> {
+    let page = history_page(rpc, id, cursor).await?;
+    let unsaved = |turn: &Value| turn["id"].as_str().is_some_and(|tid| !saved.contains(tid));
+    if page.turns.is_empty() || page.turns.iter().any(unsaved) { return Ok(page); }
+    let mut next = page.next_cursor.clone();
+    for _ in 0..50 {
+        let Some(current) = next else {
+            return Ok(HistoryPage { turns: vec![], next_cursor: None, has_more: false });
+        };
+        // Codex 0.162 anchors a cursor to a Turn, so a page can start at any
+        // Turn. With another form the saved page is returned as before.
+        if !anchored_turn_cursor(&current) { return Ok(page); }
+        let ids = rpc.request("thread/turns/list", json!({
+            "threadId":id,"cursor":current,"limit":100,"sortDirection":"desc","itemsView":"notLoaded"
+        })).await?;
+        let data = ids["data"].as_array().context("Codex 历史分页格式无效")?;
+        if let Some(tid) = data.iter().find(|turn| unsaved(turn)).and_then(|turn| turn["id"].as_str()) {
+            return history_page(rpc, id, Some(&json!({"turn_id":tid,"include_anchor":true}).to_string())).await;
+        }
+        next = ids["nextCursor"].as_str().map(str::to_owned);
+        anyhow::ensure!(next.as_deref() != Some(current.as_str()), "Codex 历史分页没有前进");
+    }
+    Ok(page)
+}
+
+/// A cursor of the form Codex 0.162 gives `thread/turns/list` pages.
+fn anchored_turn_cursor(cursor: &str) -> bool {
+    serde_json::from_str::<Value>(cursor).ok().and_then(|value| value.as_object().map(|fields| {
+        fields.len() == 2 && fields.get("turn_id").is_some_and(Value::is_string)
+            && fields.get("include_anchor").is_some_and(Value::is_boolean)
+    })).unwrap_or(false)
+}
+
 /// Refresh the recent window and any cached unfinished Turn that fell outside
 /// it while another client advanced the session. Metadata pages locate those
 /// specific Turns; only their full pages are loaded. Never infer tool success
@@ -334,7 +373,9 @@ impl Workspace {
             && imported, "此 Agent 没有可分页的本机导入历史");
         let _permit = self.session_reads.try_acquire().context("正在读取另一份原生历史，请稍后重试")?;
         let session = ReadSession::open(&self.program).await?;
-        let mut result = history_page(&session.0, detail.agent.thread_id.as_deref().context("缺少原生会话 ID")?, cursor).await?;
+        let thread = detail.agent.thread_id.as_deref().context("缺少原生会话 ID")?;
+        let saved: HashSet<&str> = detail.turns.iter().filter_map(|turn| turn["id"].as_str()).collect();
+        let mut result = unsaved_page(&session.0, thread, cursor, &saved).await?;
         session.close().await?;
         crate::message_content::restore(&mut result.turns, &detail.message_receipts, true);
         Ok(result)

@@ -485,6 +485,9 @@ export function App() {
   }, [agent?.id, agent?.closedAt]);
   const sessionHistory = useSessionHistory(detail, selected);
   const currentDetail = sessionHistory.detail;
+  // Earlier native Turns come before the oldest saved one, so they are
+  // offered only where the saved conversation starts (T-161).
+  const nativeHistoryHere = !currentDetail?.conversation?.hasBefore;
   const [pageTarget, setPageTarget] = useState<{agentId:string; turnId:string; itemId?:string; top:number; start:string|null; end:string|null} | null>(null);
   const [pageSpace, setPageSpace] = useState<"before" | "after" | null>(null);
   useEffect(() => { setPageTarget(null); setPageSpace(null); }, [selected]);
@@ -1789,11 +1792,13 @@ export function App() {
                     <div className="session-history-loader">
                       <p>
                         {currentDetail.history.hasMore
-                          ? "Recent conversation is loaded. Earlier turns are available on demand."
+                          ? nativeHistoryHere
+                            ? "Recent conversation is loaded. Earlier turns are available on demand."
+                            : "Earlier native turns come before the start of the saved conversation. Load earlier messages to reach them."
                           : currentDetail.conversation ? "All earlier native history pages are loaded." : "All saved turns are loaded."}
                       </p>
-                      {currentDetail.history.hasMore && <p className="question-history-note">Earlier history has not been checked for questions.</p>}
-                      {currentDetail.history.hasMore && (
+                      {currentDetail.history.hasMore && nativeHistoryHere && <p className="question-history-note">Earlier history has not been checked for questions.</p>}
+                      {currentDetail.history.hasMore && nativeHistoryHere && (
                         <button
                           type="button"
                           className="secondary-button"
@@ -1824,6 +1829,13 @@ export function App() {
                             ? "Loading earlier turns…"
                             : "Load earlier turns"}
                         </button>
+                      )}
+                      {sessionHistory.added !== null && !sessionHistory.loading && (
+                        <p role="status" className="field-hint">
+                          {sessionHistory.added
+                            ? `Loaded ${sessionHistory.added} earlier ${sessionHistory.added === 1 ? "turn" : "turns"}.`
+                            : "That page had no turns beyond the saved conversation."}
+                        </p>
                       )}
                       {sessionHistory.error && (
                         <p role="alert" className="inline-error">

@@ -88,6 +88,8 @@ export function useSessionHistory(
   >(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // How many Turns the last page added that were not already shown (T-161).
+  const [added, setAdded] = useState<number | null>(null);
   const request = useRef<AbortController | null>(null);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
@@ -97,6 +99,7 @@ export function useSessionHistory(
     setPages(null);
     setLoading(false);
     setError("");
+    setAdded(null);
     return () => request.current?.abort();
   }, [selected]);
   const current = detail?.agent.id === selected ? detail : null;
@@ -106,7 +109,11 @@ export function useSessionHistory(
       ? pages
       : null;
   useEffect(() => {
-    if (pages && !earlier) setPages(null);
+    if (pages && !earlier) {
+      setPages(null);
+      // What the last load added is no longer shown either.
+      setAdded(null);
+    }
   }, [pages, earlier]);
   const history = earlier || current?.history;
   const nativeTurns = useMemo(() => {
@@ -142,6 +149,7 @@ export function useSessionHistory(
     request.current = controller;
     setLoading(true);
     setError("");
+    setAdded(null);
     try {
       const page = await api<HistoryPage>(
         `/agents/${encodeURIComponent(selected)}/history?${new URLSearchParams({ cursor: history.nextCursor })}`,
@@ -149,6 +157,8 @@ export function useSessionHistory(
       );
       if (controller.signal.aborted || selectedRef.current !== selected) return;
       beforeApply?.();
+      const known = new Set([...(current.conversation?.index || current.turns), ...(earlier?.turns || [])].map(turn => turn.id));
+      setAdded(page.turns.filter(turn => !known.has(turn.id)).length);
       setPages({
         ...page,
         agentId: selected,
@@ -171,6 +181,7 @@ export function useSessionHistory(
     navigationTurns,
     loading,
     error,
+    added,
     loadEarlier,
   };
 }
