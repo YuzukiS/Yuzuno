@@ -566,6 +566,13 @@ thread_local! {
 
 #[cfg(test)]
 thread_local! {
+    /// How many Agents `Store::open` marked restarted on this thread by
+    /// their metadata alone (`Store::restart_meta_only`).
+    pub(super) static RESTARTED_META_ONLY: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
     /// How many whole records `Store::detail` read on this thread.
     pub(crate) static DETAIL_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -808,6 +815,26 @@ fn damage_note(db: &Connection, damage: &Damaged, shown: Option<&Recovery>) -> S
 
 /// Whether the journal has rows after `seq` that loading this record would
 /// replay (see `restore`).
+/// What a Core that stopped leaves an Agent's record saying (`Store::open`):
+/// disconnected and offline, its requests and context usage stale, a message
+/// it was sending of unknown outcome, and an error when its newest Turn was
+/// still running. No Turn changes.
+fn mark_restarted(d: &mut AgentDetail, newest_in_progress: bool) {
+    if let Some(usage) = &mut d.context_usage { usage.stale = true; }
+    for receipt in &mut d.message_receipts {
+        if receipt.status == "sending" { receipt.status = "uncertain".into(); }
+    }
+    d.agent.connection_state = "disconnected".into();
+    // An unknown RPC outcome stays unknown across service restarts.
+    // In particular, thread/start may have executed before its reply
+    // was lost; silently creating another session would duplicate it.
+    if d.agent.status != "uncertain" {d.agent.status = "offline".into();}
+    for r in &mut d.pending { r.stale = true; }
+    if newest_in_progress {
+        d.agent.error = Some("Workspace 服务已重启；上次执行是否完成尚未确认。发送新消息时将恢复原会话。".into());
+    }
+}
+
 fn replays(db: &Connection, id: &str, seq: i64) -> Result<bool> {
     let mut query = db.prepare_cached("SELECT kind,data FROM journal WHERE agent_id=?1 AND seq>?2")?;
     let rows = query.query_map(params![id, seq], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
@@ -1023,22 +1050,15 @@ impl Store {
         // Disk is historical evidence, never proof a process is still running.
         for a in store.agents()? {
             if a.closed_at.is_some() { continue; }
+            // Usually only the metadata changes: written alone, without
+            // reading the record (see `restart_meta_only`). Otherwise, or if
+            // that fails, the whole record is read and committed, as before.
+            if store.restart_meta_only(&a.id).unwrap_or(false) { continue; }
             // A damaged record is shown as it is (see `stand_in`) and holds
             // back no other Agent.
             let restarted = store.record_meta_change(&a.id, "workspace/restarted", &json!({}), |d| {
-                if let Some(usage) = &mut d.context_usage { usage.stale = true; }
-                for receipt in &mut d.message_receipts {
-                    if receipt.status == "sending" { receipt.status = "uncertain".into(); }
-                }
-                d.agent.connection_state = "disconnected".into();
-                // An unknown RPC outcome stays unknown across service restarts.
-                // In particular, thread/start may have executed before its reply
-                // was lost; silently creating another session would duplicate it.
-                if d.agent.status != "uncertain" {d.agent.status = "offline".into();}
-                for r in &mut d.pending { r.stale = true; }
-                if d.turns.last().is_some_and(|t| t["status"] == "inProgress") {
-                    d.agent.error = Some("Workspace 服务已重启；上次执行是否完成尚未确认。发送新消息时将恢复原会话。".into());
-                }
+                let newest_in_progress = d.turns.last().is_some_and(|t| t["status"] == "inProgress");
+                mark_restarted(d, newest_in_progress);
             });
             if let Err(error) = restarted {
                 eprintln!("Workspace could not mark Agent {} restarted: {error:#}", a.id);
@@ -1049,6 +1069,69 @@ impl Store {
         }
         store.settle_older_cores();
         Ok(store)
+    }
+
+    /// `Store::open`'s restart marking written as the metadata alone, when
+    /// that is all the whole-record commit would write (T-140): the record is
+    /// stored as rows and fits together, the journal has nothing to replay
+    /// into it, no message is still being sent, and binding and restoring its
+    /// receipts against its user messages (all `message_content::bind` reads)
+    /// would change nothing. Reads the metadata, the user messages and the
+    /// newest Turn's own fields, not the record. The journal row, last_seq,
+    /// unread count and metadata are written in one transaction as that
+    /// commit writes them; the listed view is rebuilt from the rows when next
+    /// read. Returns false, having written nothing, when the record is needed.
+    fn restart_meta_only(&self, id: &str) -> Result<bool> {
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        if self.held(id).is_some() || self.memory.lock().unwrap().damaged.contains(id) {
+            return Ok(false);
+        }
+        let (mut d, newest_in_progress) = {
+            let db = self.db.read()?;
+            if record_rows::layout(&db, id)? != Some(Layout::Rows) || !record_rows::rows_fit(&db, id)? {
+                return Ok(false);
+            }
+            let Some(meta) = record_rows::load_meta(&db, id)? else { return Ok(false) };
+            // A message being sent when Core stopped is left to the whole
+            // record's commit, as it always was.
+            if meta.message_receipts.iter().any(|r| r.status == "sending") || replays(&db, id, meta.agent.last_seq)? {
+                return Ok(false);
+            }
+            let (users, newest_in_progress) = record_rows::restart_view(&db, id)?;
+            let mut bound = meta.message_receipts.clone();
+            crate::message_content::bind_receipts(&users, &mut bound);
+            if bound.iter().zip(&meta.message_receipts).any(|(after, before)| after.binding != before.binding)
+                || crate::message_content::restoring(&users, &bound, false)
+            {
+                return Ok(false);
+            }
+            (meta, newest_in_progress)
+        };
+        mark_restarted(&mut d, newest_in_progress);
+        d.agent.pending_count = d.pending.len() as u64;
+        d.agent.updated_at = now();
+        let body = record_rows::MetaBody::of(&d)?;
+        let data = json!({});
+        let rewrite;
+        {
+            let mut db = self.db.write()?;
+            rewrite = self.rewrite(id);
+            let tx = db.transaction()?;
+            tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,'workspace/restarted',?2,?3)",
+                params![id, data.to_string(), now()])?;
+            d.agent.last_seq = tx.last_insert_rowid();
+            d.agent.unread_count = unread(&tx, id, d.agent.reviewed_seq)?;
+            record_rows::write_meta(&tx, id, &body, &d.agent)?;
+            tx.commit()?;
+        }
+        #[cfg(test)]
+        RESTARTED_META_ONLY.with(|n| n.set(n.get() + 1));
+        rewrite.done(|memory| {
+            memory.event(id, "workspace/restarted", &data);
+            memory.briefs.remove(id);
+        });
+        Ok(true)
     }
 
     /// The Agent's record lock (see the lock order on `Store`).
@@ -3420,3 +3503,5 @@ mod tests {
 mod window_tests;
 #[cfg(test)]
 mod scoped_tests;
+#[cfg(test)]
+mod restart_tests;

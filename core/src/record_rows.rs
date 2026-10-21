@@ -695,6 +695,42 @@ pub fn load_recent(db: &Connection, id: &str) -> Result<Option<AgentDetail>> {
     Ok(Some(detail))
 }
 
+/// What `Store::open` reads to mark an Agent restarted without its record
+/// (T-140): every Turn that has user messages, with its ID and those Items
+/// alone, in order and without payloads (all `message_content::bind` reads),
+/// and whether the newest Turn is in progress. SQLite picks the user
+/// messages; no other Item is parsed. For a record stored as rows; `Damaged`
+/// if a row read does not parse.
+pub fn restart_view(db: &Connection, id: &str) -> Result<(Vec<Value>, bool)> {
+    let _snapshot = snapshot(db)?;
+    let newest = db.prepare_cached("SELECT data FROM agent_turns WHERE agent_id=?1 ORDER BY ord DESC LIMIT 1")?
+        .query_row([id], |r| r.get::<_, String>(0)).optional()?;
+    let in_progress = match newest {
+        Some(data) => serde_json::from_str::<Value>(&data).map_err(|e| damaged(id, e.into()))?["status"] == "inProgress",
+        None => false,
+    };
+    let rows = db.prepare_cached(
+        "SELECT t.turn_id, t.data, i.data FROM agent_items i
+         JOIN agent_turns t ON t.agent_id=i.agent_id AND t.turn_id=i.turn_id
+         WHERE i.agent_id=?1 AND json_extract(i.data,'$.type')='userMessage' ORDER BY t.ord, i.ord")?
+        .query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut turns: Vec<Value> = Vec::new();
+    let mut current: Option<String> = None;
+    for (key, turn, item) in rows {
+        let item: Value = serde_json::from_str(&item).map_err(|e| damaged(id, e.into()))?;
+        if current.as_deref() != Some(key.as_str()) {
+            let turn: Value = serde_json::from_str(&turn).map_err(|e| damaged(id, e.into()))?;
+            turns.push(json!({"id": turn["id"], "items": []}));
+            current = Some(key);
+        }
+        if let Some(items) = turns.last_mut().and_then(|t| t["items"].as_array_mut()) {
+            items.push(item);
+        }
+    }
+    Ok((turns, in_progress))
+}
+
 /// Where a Turn's rows are: its key, or None if the Agent has no such Turn.
 /// With repeated IDs the newest such Turn is meant, as the client view does.
 fn turn_key(db: &Connection, agent: &str, turn_id: &str) -> Result<Option<String>> {
