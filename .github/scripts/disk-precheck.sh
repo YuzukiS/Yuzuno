@@ -11,6 +11,11 @@ shift
 status=0
 for path in "$@"; do
   avail=$(df --output=avail -B1 -- "$path" 2>/dev/null | tail -n 1 | tr -d ' ')
+  # macOS's df has no --output; its POSIX form counts 1024-byte blocks.
+  if [[ ! $avail =~ ^[0-9]+$ ]]; then
+    kib=$(df -Pk -- "$path" 2>/dev/null | awk 'NR == 2 { print $4 }')
+    [[ $kib =~ ^[0-9]+$ ]] && avail=$((kib * 1024))
+  fi
   if [[ ! $avail =~ ^[0-9]+$ ]]; then
     echo "::error title=Disk space unknown::Could not read the free space of $path; not starting this job's build."
     status=1

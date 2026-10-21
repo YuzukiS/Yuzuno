@@ -72,6 +72,13 @@ scripts/desktop-macos.sh --tools ~/Library/Caches/Yuzuno/toolchains --out ~/yuzu
 
 It builds the pinned Tauri CLI with cargo into `--tools` (nothing is installed globally), runs the desktop tests with `--test`, and writes `Yuzuno.app`, `Yuzuno_<version>_aarch64.dmg`, `Yuzuno.app.zip` and `build.json` to `--out`. `build.json` records the source commit, the tool versions, each file's SHA-256, and what `codesign`, `spctl` and `syspolicy_check` say about the app. Bundling uses `desktop/tauri.macos.conf.json`, which Tauri merges on macOS only.
 
+**CI builds.** [`desktop-macos.yml`](../.github/workflows/desktop-macos.yml) runs the same script with `--test` on GitHub's standard Apple silicon runner (`macos-26`, arm64), with CI's pinned Rust:
+- **A pull request** that changes `desktop/` or the script builds and tests it, and uploads nothing.
+- **A candidate** is built only on request, and only from main after its CI has passed: `gh workflow run desktop-macos.yml --ref main`.
+  - Its one artifact, `yuzuno-macos-arm64-<commit>-<attempt>`, holds the disk image, `Yuzuno.app.zip`, `build.json` and `SHA256SUMS`. It is kept 14 days, and nothing is published as a Release.
+  - To check one, run `gh run download <run> -n <artifact>`, then `shasum -a 256 -c SHA256SUMS`. Compare the sums with those in the run's summary on GitHub, and check that `build.json`'s `sourceCommit` is the commit you expect.
+  - The version inside is the source's (`desktop/tauri.conf.json`), not a release's. The commit and the SHA-256 identify a candidate.
+
 **Signing.** The app is signed ad hoc: it has no Developer ID signature and is not notarized, because no Developer ID exists for this project. `codesign --verify` passes; Gatekeeper's assessment (`spctl --assess`) rejects it, and `syspolicy_check distribution` reports the ad hoc signature and the missing notarization ticket. A copy built on the Mac, or copied there without a quarantine attribute (for example over SSH), opens normally. A copy downloaded with a browser carries the quarantine attribute, and macOS refuses its first open. To allow this one app, open it once, then choose **Open Anyway** under System Settings, Privacy & Security, and confirm. That dialog has not been checked on macOS 27 yet. Leave Gatekeeper itself on.
 
 **Install.** Open the disk image and drag `Yuzuno.app` to `/Applications` (an administrator account can write there), or to `~/Applications` for your account only. To check what you got, compare `shasum -a 256 Yuzuno.app/Contents/MacOS/yuzuno-desktop` with `app.executableSha256` in the build's `build.json`. The checked installs were copied out of the disk image into a folder of their own, not into either of these. The app keeps its saved Core in `~/Library/Application Support/dev.yuzuno.workspace/core.json`, and WebKit keeps its data under `~/Library/WebKit/dev.yuzuno.workspace` and `~/Library/Caches/dev.yuzuno.workspace`. To uninstall, quit it and delete the app and those folders.
@@ -79,6 +86,21 @@ It builds the pinned Tauri CLI with cargo into `--tools` (nothing is installed g
 **Connect.** On the Mac, `scripts/mac-tunnel.sh start` forwards `127.0.0.1:5317` on the Mac to Core's port on the Core host, with its own key and a pinned host key (see the script's header for its settings); `stop` and `status` do what they say, asking that ssh itself through its control socket. It accepts no new or changed host key, and refuses a local port that something else already answers on. Open the app, enter `http://127.0.0.1:5317` and connect; the app remembers it. If the tunnel drops, start it again: the open window reaches Core again by itself. (That an unsent draft survives this was checked in a browser, not yet in the Mac app.) [Install a Linux Core](../docs/independent-core.md#mac-desktop-app) describes the SSH account side and what each way of authorizing the key allows.
 
 On macOS the app has the usual menus: Yuzuno (Quit), Edit (copy and paste in the workspace's text fields), Workspace (**Connection…**, `Cmd+,`) and Window. It does not update itself; install a newer build by hand. Only Apple silicon (arm64) is built; Intel Macs are not.
+
+**What has been checked on a Mac.** T-141 checked a package built on a Mac (`b5`, see [acceptance/t141](../acceptance/t141/README.md)). No CI-built candidate has been opened on a Mac yet; [acceptance/t165](../acceptance/t165/README.md) is the prepared check, not run.
+
+| Behaviour | Checked | Not yet |
+|---|---|---|
+| Build and desktop tests | Each CI run on `macos-26`, which also records `codesign --verify` in `build.json`; T-141 on a Mac (19/19 tests) | |
+| Opens the Core it is given, saves it (`core.json`), reopens it without arguments | T-141 lab, measured through a relay | A CI-built candidate |
+| Tunnel stopped and started: the open window reaches Core again | T-141 lab, measured through a relay | An unsent draft surviving it, measured on a Mac (a browser was) |
+| A turn in a lab Workspace: a message with an image, a command after an approval, the reply | T-141, a person at the Mac. 13 checks: 11 passed, 2 failed because the message was sent twice. The second turn was recorded; whether the approval answered exactly that request is unknown. The window, drafts and reopening are as the user reported them | A real send on the daily Core |
+| The daily Workspace, read only | T-141: Core version, Workspace and page measured through the tunnel; the user's view as reported | |
+| Links to web pages and mail (system browser or mail app) | The rule, in the desktop tests | Clicking one on a Mac |
+| macOS menus, `Cmd+,` | No record of a check | On a Mac |
+| First open of a browser download (Gatekeeper, **Open Anyway**) | `build.json` records `spctl` rejecting the app and `syspolicy_check` reporting the ad hoc signature and missing notarization | On a Mac |
+| Install to `/Applications`, uninstall | | On a Mac (the checks used a folder of their own) |
+| Intel Macs | | Not built |
 
 ## Native boundary
 
