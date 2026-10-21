@@ -260,7 +260,7 @@ mod tests {
 
     fn store() -> (tempfile::TempDir, Store) {
         let tmp = tempfile::tempdir().unwrap();
-        let store = Store::open(tmp.path()).unwrap();
+        let store = Store::open(&tmp.path().join("workspace.sqlite")).unwrap();
         (tmp, store)
     }
 

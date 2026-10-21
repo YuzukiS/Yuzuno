@@ -2,8 +2,8 @@
  * Where the user was reading each conversation (T-166): following the latest
  * messages, or at a message. Kept by this client only; reopening a
  * conversation returns there. Another device's position is never applied
- * without the user choosing it (T-170 can add such a store behind the same
- * interface).
+ * without the user choosing it (T-170: reading-handoff.ts shares the message
+ * and `progress`, never the pixel offset).
  */
 export type ReadingPosition =
   | { mode: "latest"; savedAt: number }
@@ -13,6 +13,9 @@ export type ReadingPosition =
       itemId?: string;
       /** The message's top relative to the conversation's top, in px. */
       offset: number;
+      /** How far into the message the pane's top was, 0..1 (T-170): what
+       * another screen, with other heights, can use. */
+      progress?: number;
       /** The Agent's native session when it was saved. */
       threadId?: string;
       savedAt: number;
@@ -37,6 +40,8 @@ function valid(value: unknown): value is ReadingPosition {
     !!position.turnId &&
     (position.itemId === undefined || typeof position.itemId === "string") &&
     (position.threadId === undefined || typeof position.threadId === "string") &&
+    (position.progress === undefined ||
+      (typeof position.progress === "number" && Number.isFinite(position.progress) && position.progress >= 0 && position.progress <= 1)) &&
     typeof position.offset === "number" &&
     Number.isFinite(position.offset)
   );
@@ -89,7 +94,11 @@ export function readingAnchor(pane: HTMLElement, threadId?: string): ReadingPosi
     if (box.height <= 0 || box.bottom <= top + 1) continue;
     const turnId = element.closest<HTMLElement>("[data-turn-id]")?.dataset.turnId;
     if (!turnId) return null;
-    return { mode: "anchor", turnId, itemId: element.dataset.itemId, offset: Math.round(box.top - top), threadId, savedAt: Date.now() };
+    const progress = box.height > 0 ? Math.min(1, Math.max(0, (top - box.top) / box.height)) : 0;
+    return {
+      mode: "anchor", turnId, itemId: element.dataset.itemId, offset: Math.round(box.top - top),
+      progress: Math.round(progress * 10_000) / 10_000, threadId, savedAt: Date.now(),
+    };
   }
   return null;
 }

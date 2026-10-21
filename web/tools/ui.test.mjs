@@ -2238,13 +2238,144 @@ test("a conversation reopens where it was left, and one left at the latest stays
     page.window.HTMLElement.prototype.getBoundingClientRect = rect;
     button(page, "Hana").click();
     await until(() => stored().mode === "anchor", "the reading position is kept");
-    assert.deepEqual({ ...stored(), savedAt: 0 }, { mode: "anchor", turnId: "t4", itemId: "t4-r", offset: -15, threadId: "thread-1", savedAt: 0 });
+    assert.deepEqual({ ...stored(), savedAt: 0 }, { mode: "anchor", turnId: "t4", itemId: "t4-r", offset: -15, progress: 0.2727, threadId: "thread-1", savedAt: 0 });
     // A position whose message is gone opens the latest and says so.
     page.window.localStorage.setItem("yuzuno.reading.ws-1", saved({ mode: "anchor", turnId: "t9", itemId: "t9-u", offset: 0 }));
     button(page, "Mori").click();
     await until(() => /Where you left off is no longer in this conversation/.test(page.document.querySelector(".toast")?.textContent || ""), "a lost position is explained");
     await until(() => /Answer 5/.test(text()) && !page.document.querySelector(".source-navigation"), "the latest messages are shown");
     assert.equal(requests.filter((r) => r.startsWith("turnId=t9")).length, 1, requests.join(" | "));
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+// T-170: another browser's place, as Core would hold it. GET answers for
+// Mori only; `hold` keeps the next GET waiting until `release()`.
+function readingCore(state) {
+  return (window) => {
+    const fetch = window.fetch;
+    window.fetch = async (url, init = {}) => {
+      const [path] = url.split("?");
+      const reading = path.match(/\/api\/agents\/(\w+)\/reading$/);
+      if (!reading) return fetch(url, init);
+      const json = (value) => ({ ok: true, status: 200, json: async () => value, text: async () => JSON.stringify(value) });
+      if ((init.method || "GET") === "PUT") {
+        const body = JSON.parse(init.body);
+        state.puts.push({ agentId: reading[1], body, keepalive: init.keepalive });
+        return json({ accepted: true, handoff: null, sourceSeq: body.clientSeq });
+      }
+      state.gets.push(reading[1]);
+      if (state.hold) await new Promise((resolve) => (state.release = resolve));
+      return json({ handoff: reading[1] === "a" ? state.handoff : null, sourceSeq: 0 });
+    };
+  };
+}
+
+test("another browser's place is offered in the open conversation, opened only by Continue, and nothing is read or sent (T-170)", async () => {
+  const requests = [];
+  const state = { puts: [], gets: [], handoff: { mode: "anchor", turnId: "t2", itemId: "t2-r", threadId: "thread-1", progress: 0.5,
+    source: "f".repeat(32), label: "desktop", version: 3, ageSeconds: 300 } };
+  const page = await mount({
+    workspaceIdentity: "ws-1", agentFields: { threadId: "thread-1" },
+    beforeLoad: (window) => { windowedMori(requests)(window); readingCore(state)(window); },
+    stored: { "yuzuno.selected": JSON.stringify("a") },
+  });
+  try {
+    const offer = () => page.document.querySelector(".reading-offer");
+    const bar = () => page.document.querySelector(".source-navigation")?.textContent || "";
+    const text = () => page.document.querySelector(".conversation-scroll").textContent;
+    const writes = () => page.calls.filter((c) => c.init?.method === "POST" && /\/(review|messages|turns|respond)$/.test(c.url));
+    const reopen = async () => {
+      button(page, "Hana").click();
+      await until(() => page.document.querySelector('[aria-label="Message Hana"]'), "Hana is open");
+      button(page, "Mori").click();
+      await until(() => /Answer 5/.test(text()) && state.gets.at(-1) === "a", "Mori is open again");
+      await pause();
+    };
+    // Offered, not applied: the conversation stays at the latest messages.
+    await until(() => offer(), "the place is offered");
+    assert.match(offer().textContent, /Continue where you were reading in the desktop app · 5 min ago/);
+    assert.ok(!requests.some((r) => r.includes("turnId=t2")), "nothing was opened");
+    // Not now: that version is not offered again here.
+    offer().querySelector(".quiet-button").click();
+    await pause();
+    assert.equal(offer(), null);
+    await reopen();
+    assert.equal(offer(), null, "a dismissed version stays dismissed");
+    // A newer place is; Continue opens it through the usual restore.
+    state.handoff = { ...state.handoff, version: 4 };
+    await reopen();
+    await until(() => offer(), "the newer place is offered");
+    const local = page.window.localStorage.getItem("yuzuno.reading.ws-1");
+    offer().querySelector(".secondary-button").click();
+    await until(() => requests.includes("turnId=t2&itemId=t2-r") && /Question 2|Answer 2/.test(text()), "the place opens");
+    assert.match(bar(), /Where you were reading in the desktop app/);
+    assert.equal(offer(), null);
+    assert.equal(page.window.localStorage.getItem("yuzuno.reading.ws-1"), local, "this browser's own place is not changed by Continue");
+    // This browser's own place is never offered back to it.
+    const source = page.window.localStorage.getItem('yuzuno.reading-source.v1:["ws-1"]');
+    assert.match(source, /^[0-9a-f]{32}$/);
+    state.handoff = { ...state.handoff, source, version: 5 };
+    await reopen();
+    assert.equal(offer(), null, "its own place");
+    // An answer that comes after the user moved on is dropped.
+    state.handoff = { ...state.handoff, source: "e".repeat(32), version: 6 };
+    button(page, "Hana").click();
+    await until(() => page.document.querySelector('[aria-label="Message Hana"]'), "Hana is open");
+    state.hold = true;
+    button(page, "Mori").click();
+    await until(() => state.release, "Mori's place is being read");
+    state.hold = false;
+    button(page, "Hana").click();
+    await until(() => page.document.querySelector('[aria-label="Message Hana"]'), "Hana is open again");
+    state.release();
+    await pause(); await pause();
+    assert.equal(offer(), null, "Mori's late answer is not shown in Hana's conversation");
+    // A place from an earlier native session that is gone says so, not the general notice.
+    state.handoff = { ...state.handoff, turnId: "t9", itemId: "t9-r", threadId: "thread-0", version: 7 };
+    button(page, "Mori").click();
+    await until(() => offer(), "the old session's place is offered");
+    offer().querySelector(".secondary-button").click();
+    await until(() => /earlier native session of Mori/.test(page.document.querySelector(".toast")?.textContent || ""), "the earlier session is named");
+    await until(() => /Answer 5/.test(text()), "the latest messages are shown");
+    assert.deepEqual(writes(), [], "nothing was marked read, sent, answered or approved");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("leaving a conversation shares the message and how far into it, once, never pixels (T-170)", async () => {
+  const requests = [];
+  const state = { puts: [], gets: [], handoff: null };
+  const page = await mount({
+    workspaceIdentity: "ws-1", agentFields: { threadId: "thread-1" },
+    beforeLoad: (window) => { windowedMori(requests)(window); readingCore(state)(window); },
+    stored: { "yuzuno.selected": JSON.stringify("a"), 'yuzuno.reading-seq.v1:["ws-1"]': String(Date.now() + 3_600_000) },
+  });
+  try {
+    const pane = () => page.document.querySelector(".conversation-scroll");
+    await until(() => /Answer 5/.test(pane().textContent), "Mori is open");
+    Object.defineProperty(pane(), "scrollHeight", { configurable: true, value: 2000 });
+    const rect = page.window.HTMLElement.prototype.getBoundingClientRect;
+    page.window.HTMLElement.prototype.getBoundingClientRect = function () {
+      const top = this.dataset?.itemId === "t4-r" ? -15 : this.dataset?.itemId ? 100 : 0;
+      return { top, bottom: top + 55, height: this.dataset?.itemId ? 55 : 0, left: 0, right: 0, width: 0, x: 0, y: top };
+    };
+    pane().dispatchEvent(new page.window.Event("scroll"));
+    await pause();
+    page.window.HTMLElement.prototype.getBoundingClientRect = rect;
+    button(page, "Hana").click();
+    await until(() => state.puts.length, "the place is shared on leaving");
+    const [put] = state.puts;
+    assert.equal(put.agentId, "a");
+    assert.equal(put.keepalive, true);
+    assert.deepEqual(put.body.position, { mode: "anchor", turnId: "t4", itemId: "t4-r", threadId: "thread-1", progress: 0.2727 });
+    assert.equal(put.body.label, "browser");
+    assert.equal(put.body.source, page.window.localStorage.getItem('yuzuno.reading-source.v1:["ws-1"]'));
+    // Past the number kept here, even with this clock behind it.
+    assert.ok(put.body.clientSeq > Date.now() + 3_000_000, String(put.body.clientSeq));
+    assert.equal(page.window.localStorage.getItem('yuzuno.reading-seq.v1:["ws-1"]'), String(put.body.clientSeq));
+    await pause();
+    assert.equal(state.puts.length, 1);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
