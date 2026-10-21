@@ -324,6 +324,8 @@ test("without the list (another Harness) or read-only, / is plain text", async (
 const REPO = "/w/.codex/skills/deploy/SKILL.md";
 const USER = "C:\\Users\\me\\.codex\\skills\\deploy\\SKILL.md";
 const skill = (name, path, scope, description = `${name} skill`) => ({ name, description, argumentHint: "", aliases: [], source: "skill", path, scope });
+// What the composer handed to the draft, as plain values of this realm.
+const chosen = (p) => Array.from(p.w.events.skills, (s) => [s.name, s.path, s.scope]);
 const skills = ready([skill("deploy", REPO, "repo"), skill("deploy", USER, "user"), skill("review", "/w/.codex/skills/review/SKILL.md", "repo")],
   { disabled: 1, errors: 0 });
 
@@ -344,7 +346,7 @@ test("a Codex Agent lists Yuzuno's controls and the skills its Codex lists; choo
     p.key("ArrowDown");
     p.key("Enter");
     assert.equal(p.text(), "$deploy ");
-    assert.deepEqual(p.w.events.skills.map((s) => [s.name, s.path, s.scope]), [["deploy", USER, "user"]], "the one chosen, by its own path");
+    assert.deepEqual(chosen(p), [["deploy", USER, "user"]], "the one chosen, by its own path");
     assert.equal(p.w.events.submits, 0, "choosing sends nothing");
     // A control is filled in as before, and is no skill.
     p.view().dispatch({ changes: { from: 0, to: p.text().length, insert: "" } });
@@ -370,7 +372,7 @@ test("$ at the start of a word lists only skills; text alone, $ inside a word or
     await until(() => p.options().length === 1, "filtered");
     p.key("Enter");
     assert.equal(p.text(), "Ship it $review ");
-    assert.deepEqual(p.w.events.skills.map((s) => s.name), ["review"]);
+    assert.deepEqual(chosen(p).map(([name]) => name), ["review"]);
     // A word with "$" in it is no skill.
     p.type("cost a$b");
     assert.equal(p.menu(), null);
