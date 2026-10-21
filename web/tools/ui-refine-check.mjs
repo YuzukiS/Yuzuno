@@ -999,7 +999,7 @@ try {
   releaseMessage();
   await page
     .locator(".outgoing-message")
-    .getByText("Received by Codex · syncing conversation", { exact: true })
+    .getByText("Received by Codex · added when its Turn continues", { exact: true })
     .waitFor();
   const sent = report.mutations[0].input;
   current.items.push({

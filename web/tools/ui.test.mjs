@@ -1133,7 +1133,7 @@ test("working messages carry the active turn and retries retain the same identit
     const messages = () => page.calls.filter((r) => r.url.endsWith("/messages"));
     await waitForPreviewState(
       () => messages().length === 2 && composerText(composer) === ""
-        && /Received by Codex · syncing conversation/.test(page.document.querySelector(".outgoing-message")?.textContent || ""),
+        && /Received by Codex · added when its Turn continues/.test(page.document.querySelector(".outgoing-message")?.textContent || ""),
       "the retry to be accepted",
     );
     const requests = messages();
@@ -1853,13 +1853,53 @@ test("Codex sends echo immediately, keep drafts during submission and replace th
     complete({ ok: true, status: 200, json: async () => ({ input, status: "accepted", turnId: "live", error: null }) });
     await pause(); await pause();
     assert.equal(composerText(composer), "");
-    assert.match(page.document.querySelector(".outgoing-message").textContent, /Received by Codex · syncing conversation/);
+    // A steer: Codex adds it when it next continues the Turn (T-120).
+    assert.match(page.document.querySelector(".outgoing-message").textContent, /Received by Codex · added when its Turn continues/);
     extraTurns[0].items.push({ id: "native-user", clientId: input.clientMessageId, type: "userMessage", content: [{ type: "text", text: input.text }] });
     page.window.dispatchEvent(new page.window.Event("focus"));
     await pause(); await pause();
     assert.ok(page.document.querySelector(".outgoing-message") === null, ".outgoing-message is absent");
     assert.match(page.document.querySelector('[data-item-id="native-user"]').textContent, /Show my message immediately/);
     assert.equal(page.calls.filter((r) => r.init.method === "POST").length, 1);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a steer Codex accepted but never added says so once its Turn ends, and stays until hidden (T-120)", async () => {
+  // Codex 0.162.1 answers turn/steer at once, adds the message only when it
+  // next continues the Turn, and drops it if the Turn is interrupted first.
+  const extraTurns = [{ id: "live", status: "inProgress", items: [] }];
+  const reply = (url, init) => {
+    const receipt = { input: JSON.parse(init.body), status: "accepted", turnId: "live", error: null };
+    return { ok: true, status: 200, json: async () => receipt, text: async () => JSON.stringify(receipt) };
+  };
+  const page = await mount({ status: "working", turnStatus: "completed", extraTurns, messageResponse: reply });
+  try {
+    const note = () => page.document.querySelector(".outgoing-message [role=status]")?.textContent;
+    const hide = () => page.document.querySelector(".outgoing-message .outgoing-hide");
+    setValue(page.window, page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), "Also check the tests.");
+    await pause();
+    page.document.querySelector('[aria-label="Send while working"]').click();
+    await until(() => note() === "Received by Codex · added when its Turn continues", "the waiting steer");
+    assert.equal(JSON.parse(page.calls.find((r) => r.url.endsWith("/messages")).init.body).expectedTurnId, "live");
+    assert.equal(hide(), null, "a waiting steer is not offered for hiding");
+    // Another Agent never shows it; back here it is still waiting.
+    button(page, "Hana").click();
+    await until(() => page.document.querySelector('[data-composer-input][aria-label="Message Hana"]'), "Hana's conversation");
+    assert.equal(page.document.querySelector(".outgoing-message"), null);
+    button(page, "Mori").click();
+    await until(() => note() === "Received by Codex · added when its Turn continues", "the steer shown again");
+    // The Turn ends without it: said so, not shown as syncing or cleared.
+    extraTurns[0].status = "interrupted";
+    page.window.dispatchEvent(new page.window.Event("focus"));
+    await until(() => note() === "Received by Codex · not added before its Turn ended", "the dropped steer");
+    page.window.dispatchEvent(new page.window.Event("focus"));
+    await pause(); await pause();
+    assert.equal(note(), "Received by Codex · not added before its Turn ended");
+    assert.match(page.document.querySelector(".outgoing-message").textContent, /Also check the tests/);
+    hide().click();
+    await until(() => page.document.querySelector(".outgoing-message") === null, "the hidden preview");
+    assert.equal(page.calls.filter((r) => r.url.endsWith("/messages")).length, 1, "nothing was sent again");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
