@@ -323,6 +323,54 @@ impl Client {
         }
     }
 
+    /// The commit SHA GitHub resolves `reference` to in `repo`, with GitHub's
+    /// status (T-164). Only the SHA is asked for (application/vnd.github.sha),
+    /// so a large commit's files and patches are never read.
+    pub(crate) async fn commit_sha(&self, repo: &str, reference: &str) -> Result<(u16, String)> {
+        let endpoint = format!("repos/{repo}/commits/{reference}");
+        let mut child = self.spawn_with_headers(
+            &endpoint, "Accept: application/vnd.github.sha", "GET", false, &["--include".into()])?;
+        let mut stdout = child.stdout.take().context("gh stdout unavailable")?.take(64 * 1024 + 1);
+        let mut stderr = child.stderr.take().context("gh stderr unavailable")?.take(64 * 1024 + 1);
+        let result = tokio::time::timeout(self.deadline, async {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            tokio::try_join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err))?;
+            ensure!(
+                out.len() <= 64 * 1024 && err.len() <= 64 * 1024,
+                "response_too_large: GitHub response exceeded the read limit"
+            );
+            let status = child.wait().await?;
+            let text = String::from_utf8(out).context("invalid_response: Invalid GitHub response")?;
+            let (head, body) = text
+                .split_once("\r\n\r\n")
+                .or_else(|| text.split_once("\n\n"))
+                .context("invalid_response: Missing GitHub response headers")?;
+            let code = head
+                .lines()
+                .next()
+                .and_then(|s| s.split_whitespace().nth(1))
+                .and_then(|s| s.parse::<u16>().ok())
+                .context("invalid_response: Missing GitHub response status")?;
+            Ok::<_, anyhow::Error>(if code == 200 && status.success() {
+                (code, body.trim().to_owned())
+            } else {
+                (code, failure(&err, status.code()).to_string())
+            })
+        })
+        .await;
+        match result {
+            Ok(Ok(v)) => Ok(v),
+            other => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                match other {
+                    Ok(Err(e)) => Err(e),
+                    _ => bail!("timeout: GitHub commit read timed out"),
+                }
+            }
+        }
+    }
+
     /// Bounded authenticated conditional read. Headers are retained only for
     /// cache/pagination/backoff; diagnostics and credentials never enter storage.
     pub(crate) async fn conditional(&self, endpoint: &str, etag: Option<&str>) -> Result<Value> {

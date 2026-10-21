@@ -105,17 +105,17 @@ pub async fn resolve(ws: &Workspace, repo: &str, key: &str, short: &str) -> Resu
     if !abbreviated(short) {
         bail!("invalid_input: {key} {short:?} is neither a full commit SHA nor an abbreviation of 4 to 39 hexadecimal characters. {HOW}");
     }
-    let response = ws.github.client.conditional(&format!("repos/{repo}/commits/{short}"), None).await
+    // Only the SHA is asked for, so a large commit's patches are never read.
+    let (code, answer) = ws.github.client.commit_sha(repo, short).await
         .map_err(|error| anyhow::anyhow!("{key} {short} could not be resolved in {repo}: {error:#}; nothing was saved. {HOW}"))?;
-    let sha = response["value"]["sha"].as_str().unwrap_or_default().to_ascii_lowercase();
-    match response["code"].as_u64() {
-        Some(200) if Form::GitHub.accepts(&sha) && sha.starts_with(&short.to_ascii_lowercase()) => Ok(sha),
-        Some(200) => bail!("invalid_input: {key} {short} is not the start of the commit {repo} gives for it; give the full SHA. {HOW}"),
-        Some(422) => bail!("invalid_input: {key} {short} is not exactly one commit of {repo}: no commit starts with it, \
+    let sha = answer.to_ascii_lowercase();
+    match code {
+        200 if Form::GitHub.accepts(&sha) && sha.starts_with(&short.to_ascii_lowercase()) => Ok(sha),
+        200 => bail!("invalid_input: {key} {short} is not the start of the commit {repo} gives for it; give the full SHA. {HOW}"),
+        422 => bail!("invalid_input: {key} {short} is not exactly one commit of {repo}: no commit starts with it, \
             more than one object does, or it names a tree, blob or tag. Give more characters or the full SHA. {HOW}"),
-        Some(404) => bail!("invalid_input: {repo} could not be read to resolve {key} {short}; give the full SHA. {HOW}"),
-        code => bail!("{key} {short} could not be resolved in {repo} ({}{}); nothing was saved. {HOW}",
-            code.map_or_else(String::new, |c| format!("HTTP {c}: ")), response["error"].as_str().unwrap_or("GitHub read failed")),
+        404 => bail!("invalid_input: {repo} could not be read to resolve {key} {short}; give the full SHA. {HOW}"),
+        code => bail!("{key} {short} could not be resolved in {repo} (HTTP {code}: {answer}); nothing was saved. {HOW}"),
     }
 }
 
@@ -215,7 +215,8 @@ with (root/'requests').open('a') as f:f.write(ep+'\n')
 answers={{'repos/o/r/commits/abc1234':(200,{{'sha':'{FULL}'}}),'repos/o/r/commits/ABC1234':(200,{{'sha':'{FULL}'}}),
  'repos/o/r/commits/deadbee':(200,{{'sha':'f'*40}}),'repos/o/r/commits/1111111':(503,None)}}
 code,data=answers.get(ep,(422,None))
-if code==200:print('HTTP/2.0 200 OK\r\n\r\n'+json.dumps(data));sys.exit(0)
+assert 'Accept: application/vnd.github.sha' in sys.argv, 'asks for the SHA only'
+if code==200:print('HTTP/2.0 200 OK\r\n\r\n'+data['sha']);sys.exit(0)
 print('HTTP/2.0 %d Error\r\n\r\n' % code);print('HTTP %d' % code,file=sys.stderr);sys.exit(1)
 "##)).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();

@@ -111,7 +111,6 @@ pub(super) fn validate(db: &Connection, value: &Value) -> Result<Value> {
     Ok(value)
 }
 
-/// An old typed task rewrite cannot erase explicit registration history.
 impl Store {
     /// The repositoryId of a task's registered materials, or None: where a
     /// dispatch that names none resolves an abbreviated SHA (T-164).
@@ -122,6 +121,7 @@ impl Store {
     }
 }
 
+/// An old typed task rewrite cannot erase explicit registration history.
 pub(super) fn registered(db: &Connection, task: &str) -> Result<Value> {
     let raw: Option<String> = db
         .query_row(
