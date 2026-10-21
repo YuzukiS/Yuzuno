@@ -23,7 +23,7 @@ It runs only inside a disposable Windows guest, never on a daily account.
   - the machine is Windows Sandbox (`WDAGUtilityAccount` on a machine reporting `Microsoft Corporation` / `Virtual Machine`) or is the registered guest;
   - no Yuzuno install, folder or key exists yet.
   - The username and computer name come from Windows, not from environment variables.
-- `guest-accept.ps1` (in the guest) runs that admission first. On a refusal it exits 2 and records only the reasons and counts, no identifier or path; `result.json` is written only if the results folder already exists. Then:
+- `guest-accept.ps1` (in the guest) runs that admission first, then the steps in `upgrade-steps.ps1`, which `identity-check.ps1` shares (below). On a refusal it exits 2 and records only the reasons and counts, no identifier or path; `result.json` is written only if the results folder already exists. Then:
   1. It checks both packages: SHA-256 and product version. It also records their Authenticode status as found and does not bypass it. It checks that the WebView2 runtime is installed. Without it, the installer would try to download it, which the offline guest cannot do, so the run stops there as a gap, not a pass.
   2. It installs the old package with `/S` and records its uninstall entry.
   3. It writes a test connection (`core.json` with `coreUrl`) and a marker into `%APPDATA%\dev.yuzuno.workspace` and `%LOCALAPPDATA%\dev.yuzuno.workspace`.
@@ -35,6 +35,8 @@ It runs only inside a disposable Windows guest, never on a daily account.
 - `test_admission.py` runs `guest-lib.ps1`'s real digest and admission functions on made-up machines (`python3 test_admission.py`; it needs Windows PowerShell and is skipped without it).
   - The fixtures include the host with a valid `params.json`, the host under the sandbox account name or with every sandbox fact, the host renamed, a copy of the host, missing or placeholder identity facts, an unregistered VM and a used guest.
   - PowerShell gets the library and fixtures as commands on stdin. No script file runs, no policy changes, `guest-accept.ps1` never runs, and the host's own identity is never read.
+
+- `test_identity.py` checks `identity-command.py`'s command and that every script parses in Windows PowerShell (`python3 test_identity.py`). The scripts are parsed from text, never run.
 
 ## Running it
 
@@ -48,6 +50,39 @@ It runs only inside a disposable Windows guest, never on a daily account.
 - **Sandbox facts unconfirmed:** the facts expected of Windows Sandbox have not been seen in a real Sandbox: the account, `Microsoft Corporation` / `Virtual Machine`, and a MachineGuid different from the host's. If a real Sandbox reports otherwise, the harness refuses. The values are then to be confirmed and registered, not loosened.
 - **What admission protects against:** a mistaken run on the host or on a copy of it. It does not stop someone who edits `params.json` on the host. The guest cannot edit it, since the config folder is mapped read-only.
 - **Host read not run:** `prepare.py`'s real read of the host identity has not run; the tests pass given facts only.
+
+## On an ordinary account, under a test identity
+
+Until a guest exists, `identity-check.ps1` runs the same steps on an ordinary Windows account, under a test identity of its own: **Yuzuno T137**, `dev.yuzuno.workspace.t137`, binary `yuzuno-t137.exe`. It never installs, starts or changes the regular app or Yuzuno Lab.
+
+**What it shows, and what it does not.** It shows that an installer built from the old template (0.2.0's sources) upgrades to one built from the current template under the same identity: the install folder stays, a test connection and markers in both app data folders are kept, nothing is named `-next`, and it records what the uninstaller leaves. It does not show the real 0.2.0 package, the regular identity, or Authenticode and SmartScreen on a real asset. The new candidate also carries no notices. Those need the guest above.
+
+**Candidates.** Both are unreleased local builds: never signed with the updater key, never uploaded, used only in the lab folder. Each is built as a Windows Job running the pinned Tauri CLI directly (no PowerShell script), in a copy of `desktop/`:
+
+    node <Tauri CLI 2.12.3>\tauri.js build --bundles nsis --ci --config <lab>\config\t137-identity.json --config <lab>\config\t137-v020.json -- --locked
+
+- old: `desktop/` of `faf3282`, the commit of release `desktop-0.2.0` in the development repository, with `t137-v020.json`;
+- new: `desktop/` of this repository's `main` when the check is prepared, with `t137-v021.json`.
+
+The three configs in `<lab>\config`, one line each, give the identity (which also turns off updater artifacts) and the two versions:
+
+- `t137-identity.json`: `{"productName":"Yuzuno T137","mainBinaryName":"yuzuno-t137","identifier":"dev.yuzuno.workspace.t137","bundle":{"createUpdaterArtifacts":false}}`
+- `t137-v020.json`: `{"version":"0.2.0"}`
+- `t137-v021.json`: `{"version":"0.2.1"}`
+
+The build needs `CARGO_HOME`, `RUSTUP_HOME` and `PATH` for the Rust toolchain, and `CARGO_TARGET_DIR` inside the copy.
+
+**Running it.** `identity-command.py` writes the Windows Job's argv: Windows PowerShell with one `-Command`, made of lines setting the five inputs, then `upgrade-steps.ps1` and `identity-check.ps1` as they are. No script file runs and the execution policy is not changed. Submit it as a Windows Job (`machineId` `windows`) with `cwd` the lab folder and `--out` a new empty folder, then read `report.json` there.
+
+- **Before anything,** it refuses (exit 2) unless nothing of the test identity exists: no uninstall entry, install folder, data folder, shortcut, key or process.
+- **No Core is used.** Before anything is installed, it sets the identity's Core to `http://127.0.0.1:1/`, where nothing listens. Both installs are silent and start no process, and it checks that.
+- **What it writes:**
+  - `%LOCALAPPDATA%\Yuzuno T137`;
+  - both `dev.yuzuno.workspace.t137` data folders;
+  - the uninstall entry `Yuzuno T137` and the key `HKCU\Software\yuzuno\Yuzuno T137`;
+  - the two `Yuzuno T137.lnk` shortcuts.
+- **Cleanup, whatever happened:** it removes exactly those, by name, and checks that nothing of the identity is left. The other Yuzuno uninstall entries, folders and keys must be as they were. It never removes `HKCU\Software\yuzuno` itself.
+- **Not removed:** the lab folder, and the shared caches the builds use (the Rust toolchain's registry cache and Tauri's NSIS cache). Delete the lab folder when the check is done.
 
 ## Status (2026-10-19)
 
