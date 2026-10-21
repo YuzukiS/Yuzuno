@@ -2908,8 +2908,12 @@ pub(crate) fn project_event_at(d: &mut AgentDetail, turn_id: Option<&str>, event
         }
         Some("user") => {
             let blocks = event["message"]["content"].as_array();
-            // The tool's own result object belongs to the frame's one result.
+            // The tool's own result object belongs to the frame's one result;
+            // a frame answering several calls is one no call can claim, so
+            // each goes without it.
             let single = blocks.is_some_and(|b| b.iter().filter(|b| b["type"] == "tool_result").count() == 1);
+            let unclaimed = Value::Null;
+            let result = if single { &event["tool_use_result"] } else { &unclaimed };
             for block in blocks.into_iter().flatten() {
                 if block["type"] != "tool_result" {
                     continue;
@@ -2933,9 +2937,7 @@ pub(crate) fn project_event_at(d: &mut AgentDetail, turn_id: Option<&str>, event
                 if let Some(parent) = event["parent_tool_use_id"].as_str() {
                     item["parentToolUseId"] = parent.into();
                 }
-                if single {
-                    project_agent_result(item, &event["tool_use_result"], block["is_error"] == true, at);
-                }
+                project_agent_result(item, result, block["is_error"] == true, at);
                 let ended = subagent_terminal(&item["subAgent"]["status"]);
                 let artifact = if block["is_error"] != true
                     && matches!(item["name"].as_str(), Some("Write" | "Edit" | "MultiEdit"))
