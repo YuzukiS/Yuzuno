@@ -783,18 +783,32 @@ fn settle(turn: &mut Value) {
         turn["error"] = json!({"message":error_text(error),"native":error});
     } else if !answers.is_empty() && answers.iter().all(|a| a["completed"].is_number()) {
         turn["status"] = "completed".into();
-    } else if turn["_opencodeSessionError"]["name"] == "MessageAbortedError" {
-        // OpenCode (1.19.3) halts an aborted run by reporting the session's
-        // abort and going idle before it writes the aborted answer: the
-        // abort it reported while this Turn ran is how the Turn ended.
+    } else if let Some(status) = halted(&turn["_opencodeSessionError"]) {
+        // OpenCode (1.19.3) halts a run by reporting the session's error and
+        // going idle before it writes the answer that carries it: an error
+        // only that halt reports, reported while this Turn ran, is how the
+        // Turn ended.
         let error = turn["_opencodeSessionError"].clone();
-        turn["status"] = "interrupted".into();
+        turn["status"] = status.into();
         turn["error"] = json!({"message":error_text(&error),"native":error});
     } else {
         unknown(turn, "OpenCode 回到空闲，但没有为这条消息留下完成的回答；结果未确认，不会重发。");
         return;
     }
     settle_tools(turn);
+}
+
+/// How a run ended that OpenCode halted with this session error, for the
+/// errors only its processor's halt reports to the session (1.19.3, after any
+/// retries). ContextOverflowError and UnknownError are also reported when the
+/// run goes on (auto-compaction, a file that could not be read): they decide
+/// nothing.
+fn halted(error: &Value) -> Option<&'static str> {
+    match error["name"].as_str()? {
+        "MessageAbortedError" => Some("interrupted"),
+        "APIError" | "ProviderAuthError" | "MessageOutputLengthError" => Some("failed"),
+        _ => None,
+    }
 }
 
 fn error_text(error: &Value) -> String {
