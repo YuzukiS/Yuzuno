@@ -109,7 +109,11 @@ export function useSessionHistory(
       ? pages
       : null;
   useEffect(() => {
-    if (pages && !earlier) setPages(null);
+    if (pages && !earlier) {
+      setPages(null);
+      // What the last load added is no longer shown either.
+      setAdded(null);
+    }
   }, [pages, earlier]);
   const history = earlier || current?.history;
   const nativeTurns = useMemo(() => {
