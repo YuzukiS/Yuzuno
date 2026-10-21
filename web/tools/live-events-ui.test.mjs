@@ -212,8 +212,12 @@ test("an open stream does not poll; a closed one polls and a reopened one refetc
 });
 
 test("a page that becomes visible, is restored or comes back online acts as focus does; hidden does nothing (T-170)", async () => {
-  // A phone's browser brings a page back with these, often without a focus event.
+  // A phone's browser brings a page back with these, often without a focus
+  // event. Other parts of the app read on their own when the page becomes
+  // visible (Jobs, CI, the job budget); what is counted here is what the event
+  // stream starts: a workspace refetch and the shown Agent's read.
   const p = await mount();
+  const snapshots = () => p.count("/api/workspace") + p.count("/api/agents/a");
   const triggers = {
     visibilitychange: () => p.d.dispatchEvent(new p.w.Event("visibilitychange")),
     pageshow: () => p.w.dispatchEvent(new p.w.Event("pageshow")),
@@ -225,29 +229,29 @@ test("a page that becomes visible, is restored or comes back online acts as focu
     p.stream().onopen?.({});
     p.send({ type: "resumed", from: "e-1" });
     await until(() => p.core.calls.slice(opened).some((c) => c.path === "/api/reviews"), "the status bar's read after the stream opened");
-    const quiet = p.core.calls.length;
+    const quiet = snapshots();
     const streams = p.core.streams.length;
     for (const fire of Object.values(triggers)) fire();
     // Real time: a refetch they started would be immediate; this covers its reads.
     await pause(200);
-    assert.equal(p.core.calls.length, quiet, "nothing is read while live updates flow");
+    assert.equal(snapshots(), quiet, "nothing is refetched while live updates flow");
     assert.equal(p.core.streams.length, streams, "and the open stream is kept");
     // The stream drops: each of them reads again at once.
     p.stream().readyState = 0;
     p.stream().onerror?.({});
     await until(() => p.d.querySelector(".event-connection-banner"), "reconnecting banner");
     for (const [name, fire] of Object.entries(triggers)) {
-      const before = p.core.calls.length;
+      const before = snapshots();
       fire();
-      await until(() => p.core.calls.length > before, `${name} reads while disconnected`);
+      await until(() => snapshots() > before, `${name} refetches while disconnected`);
       await pause(200);
     }
-    // A page that becomes hidden reads nothing.
+    // A page that becomes hidden refetches nothing.
     Object.defineProperty(p.d, "visibilityState", { value: "hidden", configurable: true });
-    const hidden = p.core.calls.length;
+    const hidden = snapshots();
     triggers.visibilitychange();
     await pause(200);
-    assert.equal(p.core.calls.length, hidden, "becoming hidden reads nothing");
+    assert.equal(snapshots(), hidden, "becoming hidden refetches nothing");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
