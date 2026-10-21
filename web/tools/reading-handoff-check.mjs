@@ -153,6 +153,13 @@ try {
   async function tab(context) {
     const page = await context.newPage();
     page.on("pageerror", (error) => (report.pageErrors ??= []).push(String(error)));
+    // Every answer about Mori's place this page received, in order.
+    page.readings = [];
+    page.on("response", (response) => {
+      if (response.request().method() !== "GET" || !response.url().includes(`/api/agents/${mori}/reading`)) return;
+      const slot = page.readings.push(undefined) - 1;
+      response.json().then((value) => (page.readings[slot] = value), () => (page.readings[slot] = null));
+    });
     await page.goto(base + "/");
     await page.locator(".agent-row").first().waitFor();
     await page.waitForTimeout(300);
@@ -163,15 +170,24 @@ try {
   const offer = (page) => page.locator(".source-navigation.reading-offer");
   const shot = (page, name) => page.screenshot({ path: join(output, `${name}.png`) });
   const reading = (page, method) => page.waitForResponse((r) => r.url().includes(`/api/agents/${mori}/reading`) && r.request().method() === method);
-  /** Opens an Agent from the list and waits for Core's answer about its reading place. */
-  async function openAgent(page, name, { awaitReading = true } = {}) {
-    const answer = awaitReading && name === "Mori" ? reading(page, "GET") : null;
-    if (await page.locator(".phone-back").isVisible().catch(() => false)) await page.locator(".phone-back").click();
-    await page.locator(`.agent-row .agent-select[aria-label="Open ${name}"]`).click();
-    await composer(page, name).waitFor();
-    const seen = answer ? await (await answer).json() : null;
+  /** Opens an Agent (from the list on a phone; `reopen` goes back to the
+   * list first) and returns Core's answer about Mori's reading place. A page
+   * that opened Mori by itself has asked already. */
+  async function openAgent(page, name, { awaitReading = true, reopen = false } = {}) {
+    const asked = page.readings.length;
+    const already = !reopen && (await composer(page, name).isVisible());
+    if (!already) {
+      if (await page.locator(".phone-back").isVisible()) await page.locator(".phone-back").click();
+      await page.locator(`.agent-row .agent-select[aria-label="Open ${name}"]`).click();
+      await composer(page, name).waitFor();
+    }
+    let answer = null;
+    if (awaitReading && name === "Mori") {
+      await until(async () => page.readings.length > (already ? 0 : asked) && page.readings.at(-1) !== undefined, "the place to be read", 15);
+      answer = page.readings.at(-1);
+    }
     await page.waitForTimeout(400);
-    return seen;
+    return answer;
   }
   /** Where the pane's top is in a message: px from the message's top, its height, and the pane's. */
   const where = (page, { turn, item }) => pane(page).evaluate((el, [turn, item]) => {
@@ -256,11 +272,8 @@ try {
   const own = await openAgent(desk.page, "Mori");
   assert.equal(own.handoff.source, first.sent.source);
   assert.equal(await offer(desk.page).count(), 0);
-  const opened = Date.now();
   const second = await tab(desk.context);
-  if (!(await composer(second, "Mori").isVisible())) await openAgent(second, "Mori");
-  await until(async () => desk.sent.some((r) => r.at >= opened && r.method === "GET" && r.path.startsWith(`/api/agents/${mori}/reading`)), "the second tab to read the place", 10);
-  await second.waitForTimeout(400);
+  assert.equal((await openAgent(second, "Mori")).handoff.source, first.sent.source);
   assert.equal(await offer(second).count(), 0, "a second tab of the same browser");
   check("the browser that left the place, and its other tabs (one source per browser), are not offered it");
 
@@ -276,7 +289,7 @@ try {
   check("a clock set back does not stop the next write: its number still goes up", { before: first.sent.clientSeq, after: later.sent.clientSeq });
 
   // 6. Not now: nothing moves, and that version is not offered again.
-  const offered = await openAgent(phone.page, "Mori");
+  const offered = await openAgent(phone.page, "Mori", { reopen: true });
   assert.equal(offered.handoff.version, 2);
   await offer(phone.page).waitFor();
   const top = await pane(phone.page).evaluate((el) => el.scrollTop);
@@ -286,7 +299,7 @@ try {
   assert.equal(await offer(phone.page).count(), 0);
   assert.equal(await pane(phone.page).evaluate((el) => el.scrollTop), top);
   assert.deepEqual(changes(phone.sent, dismissed), []);
-  const again = await openAgent(phone.page, "Mori");
+  const again = await openAgent(phone.page, "Mori", { reopen: true });
   assert.equal(again.handoff.version, 2);
   assert.equal(await offer(phone.page).count(), 0, "a handled version is not offered again");
   check("Not now leaves the conversation where it is and that version is not offered again");
