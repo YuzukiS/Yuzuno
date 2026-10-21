@@ -749,6 +749,13 @@ p {
   font-size: calc(10px + var(--font-adjust, 3px));
   color: #7b876b;
 }
+/* Another browser's place, offered in the open conversation (T-170). */
+.source-navigation.reading-offer {
+  gap: 6px 10px;
+}
+.source-navigation.reading-offer > span {
+  margin-right: auto;
+}
 .source-highlight {
   background: #faf6df;
   outline: 2px solid #d9c984;

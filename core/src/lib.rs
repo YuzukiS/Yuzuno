@@ -44,6 +44,7 @@ pub mod older_cores;
 pub mod opencode;
 mod opencode_agent;
 pub mod rail;
+pub mod reading_handoff;
 pub mod record_rows;
 pub mod remote;
 pub mod services;
