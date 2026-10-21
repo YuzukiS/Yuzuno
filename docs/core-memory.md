@@ -129,6 +129,43 @@ These are allocator measurements of a synthetic workload with one Agent. Product
 RSS also depends on how many Agents send and end Turns at once. Rust counters
 exclude SQLite's C allocations.
 
+## Claude bridge events
+
+Five Claude bridge events still committed with `update` and discarded the copy
+of the record it returns, or copied the record only to read it:
+
+- the effort a Turn ran at (`effort`, at each Turn end when an effort is set);
+- a message delivery (a message appended to a running Turn, then taken by the
+  next one);
+- a permission request, which also read the record with `detail`;
+- a cancelled permission request;
+- any other bridge event, which changes nothing.
+
+They now use `record_event`, and the request reads the held record in place
+(`peek`). The event that changes nothing uses `update_meta`. The commit itself
+still copies the record once (`commit_locked`), as above.
+
+`core_memory_paths` measures each one held, once as before and once as now:
+
+```sh
+target/release/examples/core_memory_paths target/events-128.json 128 events
+```
+
+T-140 Job run `85cba1f0-fc36-444f-88cf-dcf783d1ed5a`, source `d6e4706` plus this
+change, 2026-10-21, 128 MiB synthetic record (145 MiB in use):
+
+| Held event | Allocated before | After | Time before | After |
+| --- | ---: | ---: | ---: | ---: |
+| Effort applied | 290 MiB | 145 MiB | 106 ms | 42 ms |
+| Message delivery | 290 MiB | 145 MiB | 93 ms | 40 ms |
+| Permission request | 436 MiB | 145 MiB | 88 ms | 41 ms |
+| Permission cancelled | 290 MiB | 145 MiB | 63 ms | 40 ms |
+| Other bridge event | 290 MiB | 0.1 MiB | 63 ms | 4 ms |
+
+The memory in use after each call is the same either way: these are copies
+that are freed again, which the allocator may keep. As above, these are
+allocator measurements of one synthetic Agent, not the daily Core's RSS.
+
 ## Reconnect, restart and idle writes
 
 On core.13 (2026-10-21) the daily Core reached 5.08 GiB RSS, peak 5.46 GiB,

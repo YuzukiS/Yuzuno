@@ -1445,7 +1445,7 @@ impl Workspace {
                     return;
                 }
                 let at = Utc::now();
-                let _ = self.store.update(id, "claude/messageDelivery", &message, |d| {
+                let _ = self.store.record_event(id, "claude/messageDelivery", &message, |d| {
                     deliver_message(d, &self.data_dir, client_id, turn_id, status, at)
                 });
             }
@@ -1455,7 +1455,7 @@ impl Workspace {
                     return;
                 };
                 let applied = json!({"level": level, "turnId": message["turnId"]});
-                let _ = self.store.update(id, "claude/effortApplied", &message, |d| {
+                let _ = self.store.record_event(id, "claude/effortApplied", &message, |d| {
                     d.claude_runtime.get_or_insert_with(Default::default).effort = Some(applied);
                 });
                 self.changed(id);
@@ -1582,28 +1582,36 @@ impl Workspace {
                 let Some(native_id) = message["requestId"].as_str() else {
                     return;
                 };
-                let Ok(detail) = self.store.detail(id) else {
-                    return;
+                // The Turn the request belongs to, or None to ignore it.
+                let decide = |detail: &AgentDetail| -> Option<String> {
+                    // A background sub-agent's call while no turn runs asks with
+                    // no turn: it belongs to the turn of the sub-agent's call,
+                    // which has ended. No turn is opened for it, so nothing is
+                    // left running once it is answered.
+                    let subagent = message["turnId"].is_null().then(|| subagent_request_turn(detail, &message)).flatten();
+                    let tid = message["turnId"].as_str().map(str::to_owned).or_else(|| subagent.clone())?;
+                    // A turn of Claude's own may ask before it shows anything.
+                    let open = subagent.is_some()
+                        || detail
+                            .turns
+                            .iter()
+                            .find(|t| t["id"] == tid.as_str())
+                            .map_or(native_turn(&tid), |t| t["status"] == "inProgress");
+                    open.then_some(tid)
                 };
-                // A background sub-agent's call while no turn runs asks with
-                // no turn: it belongs to the turn of the sub-agent's call,
-                // which has ended. No turn is opened for it, so nothing is
-                // left running once it is answered.
-                let subagent = message["turnId"].is_null().then(|| subagent_request_turn(&detail, &message)).flatten();
-                let Some(tid) = message["turnId"].as_str().map(str::to_owned).or_else(|| subagent.clone()) else {
+                // Read where it is held (a Turn is running), without copying a
+                // long record; otherwise from its rows (T-140).
+                let decided = match self.store.peek(id, decide) {
+                    Some(decided) => decided,
+                    None => match self.store.detail(id) {
+                        Ok(detail) => decide(&detail),
+                        Err(_) => return,
+                    },
+                };
+                let Some(tid) = decided else {
                     return;
                 };
                 let tid = tid.as_str();
-                // A turn of Claude's own may ask before it shows anything.
-                if subagent.is_none()
-                    && !detail
-                        .turns
-                        .iter()
-                        .find(|t| t["id"] == tid)
-                        .map_or(native_turn(tid), |t| t["status"] == "inProgress")
-                {
-                    return;
-                }
                 let mut params = message.clone();
                 params["turnId"] = tid.into();
                 params["_runtimeGeneration"] = generation.into();
@@ -1616,7 +1624,7 @@ impl Workspace {
                     created_at: now(),
                     stale: false,
                 };
-                let _ = self.store.update(id, "request", &message, |d| {
+                let _ = self.store.record_event(id, "request", &message, |d| {
                     if !d.turns.iter().any(|t| t["id"] == tid) {
                         open_native_turn(d, tid, Utc::now(), false);
                     }
@@ -1633,7 +1641,7 @@ impl Workspace {
             Some("permission_cancelled") => {
                 let _ = self
                     .store
-                    .update(id, "claude/permissionCancelled", &message, |d| {
+                    .record_event(id, "claude/permissionCancelled", &message, |d| {
                         d.pending.retain(|p| {
                             p.params["requestId"] != message["requestId"]
                                 || p.params["_runtimeGeneration"] != generation
@@ -1693,9 +1701,9 @@ impl Workspace {
                 }
             }
             _ => {
-                let _ = self
-                    .store
-                    .update(id, "claude/bridgeEvent", &message, |_| {});
+                // Journaled only: nothing of the record changes, so it is
+                // committed as metadata, without copying the Turns (T-140).
+                let _ = self.store.update_meta(id, "claude/bridgeEvent", &message, |_| {});
             }
         }
         self.changed(id);
