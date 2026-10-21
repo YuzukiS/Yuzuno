@@ -332,7 +332,7 @@ try {
   check("a browser that reopens its own place is still offered another's, and Continue takes it there on the wider screen",
     { own: Math.round(ownPlace.into), progress: phoneShared.progress, landed: Math.round(onDesk.into), height: Math.round(onDesk.height) });
 
-  // 8. Two tabs of one browser leave at once: one write is kept, neither is stuck.
+  // 8. Two tabs of one browser leave at once: Core keeps a write it took, neither is stuck.
   const tabs = [desk.page, second];
   await scrollInto(desk.page, long[0], 0.2);
   await scrollInto(second, long[1], 0.5);
@@ -350,7 +350,7 @@ try {
   put = reading(second, "PUT");
   await second.evaluate(() => window.dispatchEvent(new Event("pagehide")));
   assert.equal((await (await put).json()).accepted, true, "the next write after a collision is accepted");
-  check("two tabs leaving at once keep one write and the next is accepted", { seqs: answers.map((a) => [a.sent.clientSeq, a.answer.accepted]) });
+  check("two tabs leaving at once: each write is taken or refused by its number, Core keeps one it took, and the next is accepted", { seqs: answers.map((a) => [a.sent.clientSeq, a.answer.accepted]) });
 
   // 9. A Core without the endpoint: local reading as before, one attempt, draft kept.
   const old = await open("old-core", { width: 1280, height: 800 }, { oldCore: true });
