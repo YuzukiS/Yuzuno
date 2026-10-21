@@ -165,7 +165,7 @@ const GPU0 = "GPU-0d1e2f30-4a5b-6c7d-8e9f-a0b1c2d3e4f5";
 const gib = 1073741824;
 const budget = {
   machine: { name: "LabWorkstation", memoryAvailableMiB: 9523, scope: "fixture",
-    maximumBudget: { cpuMillis: 24000, memoryMiB: 20053, swapMiB: 4096 }, suggestedBudget: { cpuMillis: 4000, memoryMiB: 8192, swapMiB: 0 } },
+    logicalCpus: 32, memoryTotalMiB: 40107, swapTotalMiB: 16384, hostHeadroomMiB: 2048, suggestedBudget: { cpuMillis: 4000, memoryMiB: 8192, swapMiB: 0 } },
   collectorOverhead: { cpuMillis: 100, memoryMiB: 64, swapMiB: 0 },
   budget: { cpuMillis: 8000, memoryMiB: 16384, swapMiB: 0 },
   reserved: { cpuMillis: 4200, memoryMiB: 14438, swapMiB: 0 },

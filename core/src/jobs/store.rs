@@ -355,9 +355,6 @@ pub(super) fn new_job(
     // A remote machine's declared resources are recorded, not admitted here.
     if !remote {
         let limit = budget(tx, Some(&machine["suggestedBudget"]))?;
-        if machine["maximumBudget"].is_object() {
-            ensure!(limit.fits(&serde_json::from_value(machine["maximumBudget"].clone())?),"Stored budget exceeds this host's capacity; adjust the machine budget before submitting");
-        }
         tx.execute(
             "INSERT OR IGNORE INTO local_job_settings(id,data) VALUES(1,?1)",
             [serde_json::to_string(&limit)?],
@@ -913,7 +910,7 @@ impl Store {
         let windows = json!({"maxJobs": windows_cap.map_or(super::remote::SLOTS, i64::from), "set": windows_cap.is_some(),
             "defaultMaxJobs": super::remote::SLOTS, "activeCount": windows_active, "sharesThisBudget": true});
         Ok(
-            json!({"machine":machine,"budget":limit,"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"maxActive":MAX_ACTIVE,"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?}),
+            json!({"machine":machine,"budget":limit,"budgetBounds":{"minimum":super::BUDGET_MIN,"maximum":super::BUDGET_MAX},"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"maxActive":MAX_ACTIVE,"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?}),
         )
     }
     pub(super) fn set_job_budget(&self, value: Resources) -> Result<Value> {

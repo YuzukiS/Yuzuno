@@ -81,12 +81,13 @@ def validate_bundle(path):
 
 def save_fixture_budget(api):
     machine = api('jobs/budget')['machine']
-    suggested, maximum = machine['suggestedBudget'], machine['maximumBudget']
+    # Cores before T-160 cap a budget at a share of the host; later ones do not.
+    suggested, maximum = machine['suggestedBudget'], machine.get('maximumBudget')
     # Keep the disposable budget small and distinct from the fallback, including
     # on resume: comparing two unsaved defaults would not prove restoration.
     budget = {'cpuMillis': 201 if suggested['cpuMillis'] == 200 else 200,
               'memoryMiB': 128, 'swapMiB': 0}
-    if any(value > maximum[key] for key, value in budget.items()):
+    if maximum and any(value > maximum[key] for key, value in budget.items()):
         raise ValueError('Host cannot accommodate the disposable saved-budget fixture')
     api('jobs/budget', budget)
     if api('jobs/budget')['budget'] != budget:

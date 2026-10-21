@@ -703,9 +703,7 @@ async fn set_budget(
     Json(input): Json<Resources>,
 ) -> Result<Json<Value>, ApiError> {
     let _permit = ws.admission.enter_work()?;
-    let machine = host::machine_info().await?;
-    let limits: Resources = serde_json::from_value(machine["maximumBudget"].clone())?;
-    validate_budget(&input, &limits)?;
+    validate_budget(&input)?;
     let value = ws.stored(move |s| s.set_job_budget(input)).await?;
     ws.start_jobs();
     ws.jobs.wake.notify_one();
@@ -757,10 +755,16 @@ async fn disk_view(ws: &Arc<Workspace>) -> Result<Value> {
     Ok(disk::view(&samples, configured, &crate::model::now()))
 }
 
-fn validate_budget(input: &Resources, limits: &Resources) -> Result<()> {
-    ensure!(input.cpu_millis >= 200 && input.memory_mi_b >= 128 && input.fits(limits),
-        "Budget must be at least 200 mCPU / 128 MiB RAM and within this host's ceiling: {} mCPU / {} MiB RAM / {} MiB swap (including collectors)",
-        limits.cpu_millis, limits.memory_mi_b, limits.swap_mi_b);
+/// What a saved budget may hold, whatever the host: all of this host's CPU,
+/// RAM and swap, or more, is the user's to budget. The upper bounds only keep
+/// the numbers far from overflow.
+const BUDGET_MIN: Resources = Resources { cpu_millis: 200, memory_mi_b: 128, swap_mi_b: 0 };
+const BUDGET_MAX: Resources = Resources { cpu_millis: 4_096_000, memory_mi_b: 67_108_864, swap_mi_b: 67_108_864 };
+fn validate_budget(input: &Resources) -> Result<()> {
+    ensure!(BUDGET_MIN.fits(input) && input.fits(&BUDGET_MAX),
+        "Budget must be {}–{} mCPU, {}–{} MiB RAM and {}–{} MiB swap (including collectors)",
+        BUDGET_MIN.cpu_millis, BUDGET_MAX.cpu_millis, BUDGET_MIN.memory_mi_b, BUDGET_MAX.memory_mi_b,
+        BUDGET_MIN.swap_mi_b, BUDGET_MAX.swap_mi_b);
     Ok(())
 }
 
@@ -1317,7 +1321,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         make("job_run_decide", "Record your analysis decision for one successful stage. Read job_run_get first and pass its exact gateId and attemptId. Continue releases only the frozen DAG, subject to update drain, budget, Git/input and artifact checks; it neither authorizes additional work nor accepts command changes. Cancel stops the run without changing successful Jobs. Only the owner Agent or user may decide. A stable requestId makes lost-reply retries idempotent; stale gates and cancelled runs cannot be reopened. For changed commands/inputs submit a new run with explicit reuse.", json!({"requestId":string,"runId":string,"stage":string,"gateId":string,"attemptId":string,"decision":{"type":"string","enum":["continue","cancel"]},"reason":{"type":"string","maxLength":4000}}), vec!["requestId","runId","stage","gateId","attemptId","decision"]),
         make("job_run_retry", "Start a new attempt of a stage whose latest attempt failed, was cancelled, rejected or interrupted: the same command and frozen inputs (a changed input rejects it), its own job, log and usage file; earlier attempts and their cost are kept. Stages waiting on it start after it succeeds. An unknown outcome must be cancelled first. Use a stable requestId.", json!({"requestId":string,"runId":string,"stage":string}), vec!["requestId","runId","stage"]),
         make("job_run_cancel", "Cancel your run: stages that have not started never will; running stages are cancelled as any job, their reservation released only when their process groups are gone. Succeeded attempts and their artifacts are kept for an explicit reuse in a new run. Does not cancel the business task.", run_id, vec!["runId"]),
-        make("job_budget", "Read this host's shared job budget, reservations, collector overhead and real host availability, plus the free space of the filesystems jobs write to (Core's data folder and each live job's working directory) and the reserve below which no new job starts, and the local NVIDIA GPUs: their latest memory sample, what managed jobs reserve on them and whether each takes new jobs. available remains budget minus reservations. requestCapacity.submission.maxRequest subtracts a new collector from total budget; requestCapacity.snapshot also accounts for active reservations and host RAM/headroom, with observedAt and meetsMinimum (false = no valid request; null = unknown). These local request bounds do not guarantee immediate start: queue, slots, exclusive jobs, GPU and disk can still delay it. CPU quota is not reserved physical cores; the disk reserve is a check before each start, not a quota; GPU figures are the whole card's. windows: whether machineId \"windows\" exists here (available), its attempts at once (activeCount) and their ceiling (maxJobs, the user's setting or defaultMaxJobs), inside this same budget.", json!({}), vec![]),
+        make("job_budget", "Read this host's shared job budget, reservations, collector overhead and real host availability, plus the free space of the filesystems jobs write to (Core's data folder and each live job's working directory) and the reserve below which no new job starts, and the local NVIDIA GPUs: their latest memory sample, what managed jobs reserve on them and whether each takes new jobs. budget is the user's setting (machine.suggestedBudget is only the default before one is saved); the host totals in machine are for reference, not a ceiling, and budgetBounds are the fixed input bounds. available remains budget minus reservations. requestCapacity.submission.maxRequest subtracts a new collector from total budget; requestCapacity.snapshot also accounts for active reservations and host RAM/headroom, with observedAt and meetsMinimum (false = no valid request; null = unknown). These local request bounds do not guarantee immediate start: queue, slots, exclusive jobs, GPU and disk can still delay it. CPU quota is not reserved physical cores; the disk reserve is a check before each start, not a quota; GPU figures are the whole card's. windows: whether machineId \"windows\" exists here (available), its attempts at once (activeCount) and their ceiling (maxJobs, the user's setting or defaultMaxJobs), inside this same budget.", json!({}), vec![]),
         make("job_gpu_admission", "Open or close one local GPU (by UUID, from job_budget) to new managed jobs. Closing only stops new admission there; jobs already running or paused on it keep their reservation. Queued jobs that need it wait with this reason. A device the user closed stays closed until the user opens it.", json!({"uuid":string,"open":{"type":"boolean"},"reason":string}), vec!["uuid","open"]),
     ]
 }

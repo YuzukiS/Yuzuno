@@ -39,8 +39,10 @@ fn evidence(job: &Value, status: &str) -> Value {
 }
 
 #[test]
-fn configurable_ceiling_keeps_defaults_and_scales_with_host_headroom() {
-    let (default, maximum, headroom) = host::budget_limits(32, 40107, 16384);
+fn a_budget_may_hold_the_whole_host_and_the_default_stays_conservative() {
+    // T-160: the budget is the user's, not a share of the host. This host
+    // (32 CPU, 40107 MiB RAM, 16384 MiB swap) may be budgeted whole, or more.
+    let (default, headroom) = host::budget_defaults(32, 40107);
     assert_eq!(
         default,
         Resources {
@@ -49,60 +51,73 @@ fn configurable_ceiling_keeps_defaults_and_scales_with_host_headroom() {
             swap_mi_b: 0
         }
     );
-    assert_eq!(
-        maximum,
-        Resources {
-            cpu_millis: 24000,
-            memory_mi_b: 20053,
-            swap_mi_b: 4096
-        }
-    );
     assert_eq!(headroom, 2048);
-    assert!(validate_budget(
-        &Resources {
-            cpu_millis: 6000,
-            memory_mi_b: 10240,
-            swap_mi_b: 0
-        },
-        &maximum
-    )
-    .is_ok());
+    for budget in [
+        Resources { cpu_millis: 32000, memory_mi_b: 40107, swap_mi_b: 16384 },
+        Resources { cpu_millis: 64000, memory_mi_b: 80214, swap_mi_b: 0 },
+        BUDGET_MIN,
+        BUDGET_MAX,
+    ] {
+        assert!(validate_budget(&budget).is_ok(), "{budget:?}");
+    }
+    for budget in [
+        Resources { cpu_millis: 199, ..BUDGET_MIN },
+        Resources { memory_mi_b: 127, ..BUDGET_MIN },
+        Resources { cpu_millis: BUDGET_MAX.cpu_millis + 1, ..BUDGET_MIN },
+        Resources { memory_mi_b: BUDGET_MAX.memory_mi_b + 1, ..BUDGET_MIN },
+        Resources { swap_mi_b: BUDGET_MAX.swap_mi_b + 1, ..BUDGET_MIN },
+    ] {
+        let error = validate_budget(&budget).unwrap_err().to_string();
+        assert!(error.contains("Budget must be 200–4096000 mCPU, 128–67108864 MiB RAM"), "{error}");
+    }
+    // The default leaves the headroom on any host.
     for cpus in [1, 2, 4] {
         for total in [256, 512, 2048, 8192] {
-            let (default, maximum, headroom) = host::budget_limits(cpus, total, 0);
-            assert!(default.fits(&maximum));
-            assert!(maximum.cpu_millis <= cpus * 750);
-            assert!(maximum.memory_mi_b <= total / 2);
-            assert!(maximum.memory_mi_b + headroom <= total);
-            assert_eq!(maximum.swap_mi_b, 0);
-            for oversized in [
-                Resources {
-                    cpu_millis: maximum.cpu_millis + 1,
-                    ..maximum.clone()
-                },
-                Resources {
-                    memory_mi_b: maximum.memory_mi_b + 1,
-                    ..maximum.clone()
-                },
-                Resources {
-                    swap_mi_b: 1,
-                    ..maximum.clone()
-                },
-            ] {
-                assert!(validate_budget(&oversized, &maximum)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("host's ceiling"));
-            }
+            let (default, headroom) = host::budget_defaults(cpus, total);
+            assert!((200..=4000).contains(&default.cpu_millis));
+            assert!(default.memory_mi_b + headroom <= total);
+            assert_eq!(default.swap_mi_b, 0);
         }
     }
 }
 
 #[test]
+fn a_whole_host_budget_admits_more_than_the_old_shares_and_waits_only_for_free_memory() {
+    let (_dir, s) = setup();
+    let (default, headroom) = host::budget_defaults(32, 40107);
+    let machine = json!({"id":"local-test","suggestedBudget":default,"hostHeadroomMiB":headroom});
+    // Above the 24000 mCPU / 20053 MiB an older Core allowed on this host.
+    s.set_job_budget(Resources { cpu_millis: 32000, memory_mi_b: 40107, swap_mi_b: 0 }).unwrap();
+    let mut request = input("whole-host");
+    request.resources = Resources { cpu_millis: 30000, memory_mi_b: 30000, swap_mi_b: 0 };
+    let job = s
+        .create_job(Some("a"), request, json!({"cwd":"/workspace"}), machine.clone(), json!({}))
+        .unwrap();
+    assert_eq!(job["reservation"], json!({"cpuMillis":30100,"memoryMiB":30064,"swapMiB":0}));
+    let view = s.job_budget_view(machine).unwrap();
+    assert_eq!(view["budget"], json!({"cpuMillis":32000,"memoryMiB":40107,"swapMiB":0}));
+    assert_eq!(
+        view["requestCapacity"]["submission"]["maxRequest"],
+        json!({"cpuMillis":31900,"memoryMiB":40043,"swapMiB":0})
+    );
+    assert_eq!(view["budgetBounds"], json!({"minimum":BUDGET_MIN,"maximum":BUDGET_MAX}));
+    // Too little RAM free on the host now: it stays queued and says why.
+    assert!(s.reserve_next_job(Some(20000), None, None).unwrap().is_none());
+    let reason = s.job(job["id"].as_str().unwrap()).unwrap()["reason"].clone();
+    assert!(reason.as_str().unwrap().starts_with("Waiting for host memory"), "{reason}");
+    assert!(reason.as_str().unwrap().contains("short 10064 MiB"), "{reason}");
+    // Once it is free, the same job starts without being submitted again.
+    assert_eq!(
+        s.reserve_next_job(Some(31000), None, None).unwrap().unwrap()["id"],
+        job["id"]
+    );
+}
+
+#[test]
 fn two_development_jobs_need_collector_capacity_and_budget_edits_resume_same_queue() {
     let (dir, s) = setup();
-    let (default, maximum, _) = host::budget_limits(32, 40107, 16384);
-    let machine = json!({"id":"local-test","suggestedBudget":default,"maximumBudget":maximum});
+    let (default, _) = host::budget_defaults(32, 40107);
+    let machine = json!({"id":"local-test","suggestedBudget":default});
     let jobs: Vec<_> = (0..3)
         .map(|i| {
             let mut request = input(&format!("development-{i}"));

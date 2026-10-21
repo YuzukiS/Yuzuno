@@ -142,8 +142,7 @@ pub(super) async fn machine_info() -> Result<Value> {
     };
     let total = value("MemTotal:").context("Host memory capacity unavailable")?;
     let cpus = std::thread::available_parallelism()?.get() as u64;
-    let (suggested, maximum, headroom) =
-        budget_limits(cpus, total, value("SwapTotal:").unwrap_or(0));
+    let (suggested, headroom) = budget_defaults(cpus, total);
     let identity = tokio::fs::read_to_string("/etc/machine-id").await?;
     let boot = tokio::fs::read_to_string("/proc/sys/kernel/random/boot_id").await?;
     let name = tokio::fs::read_to_string("/proc/sys/kernel/hostname")
@@ -153,34 +152,23 @@ pub(super) async fn machine_info() -> Result<Value> {
     Ok(
         json!({"id":format!("local-{:x}",Sha256::digest(identity.trim().as_bytes())),"name":name,"bootId":boot.trim(),
         "memoryTotalMiB":total,"memoryAvailableMiB":value("MemAvailable:"),"swapTotalMiB":value("SwapTotal:"),"swapFreeMiB":value("SwapFree:"),"logicalCpus":cpus,
-        "suggestedBudget":suggested,"maximumBudget":maximum,
+        "suggestedBudget":suggested,
         "hostHeadroomMiB":headroom,
         "scope":"Only jobs managed by this Core share this budget. CPU is a quota, not physical-core reservation. WSL shares host RAM with Windows; other applications are outside this budget."}),
     )
 }
-// Defaults stay conservative; explicit configuration may use more of a larger
-// host. Keep at least a quarter of CPU quota and half of RAM outside this
-// Core's budget. Admission also checks current available RAM with headroom.
-pub(super) fn budget_limits(
-    cpus: u64,
-    total: u64,
-    swap: u64,
-) -> (super::Resources, super::Resources, u64) {
+// The budget a Workspace starts with stays conservative. The user may save
+// any budget within the fixed input bounds (see validate_budget): this host's
+// totals are shown for reference, not as a ceiling. Admission still checks
+// the RAM available now, keeping this headroom for Core and the desktop.
+pub(super) fn budget_defaults(cpus: u64, total: u64) -> (super::Resources, u64) {
     let headroom = (total / 16).clamp(128, 2048);
-    let maximum = super::Resources {
-        cpu_millis: cpus.saturating_mul(750),
-        memory_mi_b: (total / 2).min(total.saturating_sub(headroom)),
-        swap_mi_b: swap.min(total) / 4,
-    };
     let suggested = super::Resources {
-        cpu_millis: cpus
-            .saturating_mul(500)
-            .clamp(200, 4000)
-            .min(maximum.cpu_millis),
-        memory_mi_b: (total / 4).min(8192).min(maximum.memory_mi_b),
+        cpu_millis: cpus.saturating_mul(500).clamp(200, 4000),
+        memory_mi_b: (total / 4).min(8192).min(total.saturating_sub(headroom)),
         swap_mi_b: 0,
     };
-    (suggested, maximum, headroom)
+    (suggested, headroom)
 }
 fn folder(data: &Path, job: &Value) -> Result<PathBuf> {
     let id = job["id"].as_str().context("Job identity missing")?;

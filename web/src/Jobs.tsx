@@ -23,6 +23,8 @@ import {
   UsageMeter,
   useMachineLoad,
   WindowsJobs,
+  type BudgetBounds,
+  type BudgetHost,
   type DiskView,
   type GpuView,
   type WindowsJobsView,
@@ -138,9 +140,11 @@ const uniqueJobs = (jobs: Job[]) => [
   ...new Map(jobs.map((j) => [j.id, j])).values(),
 ];
 type Budget = {
-  machine: { name: string; memoryAvailableMiB: number | null; scope: string; maximumBudget?: Resources; suggestedBudget?: Resources };
+  machine: BudgetHost & { name: string; memoryAvailableMiB: number | null; scope: string; suggestedBudget?: Resources };
   collectorOverhead?: Resources;
   budget: Resources;
+  /** Absent from Cores before T-160. */
+  budgetBounds?: BudgetBounds;
   reserved: Resources;
   queuedCount: number;
   activeCount: number;
@@ -1104,7 +1108,8 @@ function JobsBudget({
             </span>
             <BudgetSettings
               budget={budget.budget}
-              maximum={budget.machine.maximumBudget}
+              bounds={budget.budgetBounds}
+              host={budget.machine}
               suggested={budget.machine.suggestedBudget}
               collector={budget.collectorOverhead}
               onSaved={onSaved}
