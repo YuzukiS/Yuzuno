@@ -25,6 +25,7 @@ import {
   Clock3,
   History,
   House,
+  Link2,
   ImagePlus,
   Leaf,
   LoaderCircle,
@@ -78,6 +79,8 @@ import { UpdateBanner, WorkspaceUpdatesHost } from "./WorkspaceUpdates";
 import { RemoteCreateAgent } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
+import { MessageLinks, messageLinkHref, parseMessageLink, type MessageLink, type MessageLinkApi } from "./deep-link";
+import { localReadingPositions, readingAnchor, type ReadingPosition } from "./reading-position";
 import { MachineBadge, RemoteControls } from "./RemoteControls";
 import { ConversationSearch } from "./ConversationSearch";
 import { hasAgentContent, isCompacting } from "./conversation-blocks";
@@ -282,9 +285,16 @@ export function App() {
   const [atBottom, setAtBottom] = useState(true);
   const [jumpToTurn, setJumpToTurn] = useState<string | null>(null);
   const [readingTurn, setReadingTurn] = useState<string>();
-  const [catchupSource, setCatchupSource] = useState<(CatchupItem & { openDetails?: boolean }) | null>(null);
+  // A message link (T-166) or a saved reading position opens like a source.
+  const [catchupSource, setCatchupSource] = useState<(CatchupItem & { openDetails?: boolean; link?: MessageLink; restore?: number }) | null>(null);
   const [sourceJump, setSourceJump] = useState(false);
   const [sourceNotice, setSourceNotice] = useState("");
+  // A message link waiting for the Workspace to load.
+  const [incomingLink, setIncomingLink] = useState<MessageLink | null>(null);
+  // Where the shown conversation was last being read, kept when it is left.
+  const reading = useRef<{ agentId: string; position: ReadingPosition } | null>(null);
+  const readingFrame = useRef(0);
+  const initialReading = useRef(false);
   const scroll = useRef<HTMLDivElement>(null);
   const readEnd = useRef<HTMLDivElement>(null);
   const composer = useRef<ComposerHandle>(null);
@@ -458,6 +468,10 @@ export function App() {
   const agent = workspace?.agents.find((a) => a.id === selected);
   const projects = workspace?.projects || [];
   const workspaceId = workspace?.workspace?.id || "";
+  const readingPositions = useMemo(
+    () => (workspaceId && !previewMode ? localReadingPositions(workspaceId) : null),
+    [workspaceId],
+  );
   useEffect(() => {
     // Unfinished jobs per Agent for the Agent list, read again on every job
     // change and reconnect (jobsRevision); rows subscribe, App keeps no copy.
@@ -718,6 +732,48 @@ export function App() {
     setArtifact(null);
   }, [selected]);
   useEffect(() => { pruneResultViewCache(); }, []);
+  // A message link in the address (T-166): read once, then removed, so a
+  // reload returns to where the user is reading rather than to the link.
+  useEffect(() => {
+    if (previewMode) return;
+    const take = () => {
+      const link = parseMessageLink(window.location.href);
+      if (!link) return;
+      history.replaceState(history.state, "", window.location.pathname + window.location.search);
+      setIncomingLink(link);
+    };
+    take();
+    window.addEventListener("hashchange", take);
+    return () => window.removeEventListener("hashchange", take);
+  }, []);
+  useEffect(() => {
+    if (!incomingLink || !workspace) return;
+    setIncomingLink(null);
+    initialReading.current = true;
+    openMessageLink(incomingLink);
+  }, [incomingLink, workspace]);
+  // After a reload, the shown conversation opens where it was left.
+  useEffect(() => {
+    if (initialReading.current || !workspace || !selected || homeOpen || incomingLink) return;
+    initialReading.current = true;
+    const saved = readingPositions?.get(selected);
+    if (saved?.mode === "anchor") restoreReading(selected, saved);
+  }, [workspace, selected, homeOpen, incomingLink, readingPositions]);
+  // Leaving a conversation (another Agent, Home, a hidden or closed page)
+  // keeps where it was being read.
+  useEffect(() => {
+    const save = () => {
+      if (reading.current) readingPositions?.set(reading.current.agentId, reading.current.position);
+    };
+    const hidden = () => { if (document.visibilityState === "hidden") save(); };
+    window.addEventListener("pagehide", save);
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      save();
+      window.removeEventListener("pagehide", save);
+      document.removeEventListener("visibilitychange", hidden);
+    };
+  }, [selected, homeOpen, readingPositions]);
   useEffect(() => {
     if (notice) {
       const timer = setTimeout(() => setNotice(""), 4000);
@@ -748,11 +804,31 @@ export function App() {
     if (!sourceJump || !catchupSource || homeOpen || !currentDetail) return;
     if (currentDetail.agent.id !== catchupSource.agentId) return;
     if (live.windowLoading) return;
+    // A link or a saved position may name a message that is gone (T-166).
+    const owner = workspace?.agents.find(a => a.id === catchupSource.agentId);
+    const gone = catchupSource.restore !== undefined
+      ? "Where you left off is no longer in this conversation. Showing the latest messages."
+      : catchupSource.link?.threadId && owner?.threadId && catchupSource.link.threadId !== owner.threadId
+        ? `This message was in an earlier native session of ${catchupSource.agentName}, not the current one. Showing the conversation.`
+        : catchupSource.link
+          ? `This message is no longer in ${catchupSource.agentName}’s conversation, for example after Rewind. Showing the conversation.`
+          : "";
     if (currentDetail.conversation && catchupSource.turnId) {
       const loaded = currentDetail.turns.find(t => t.id === catchupSource.turnId);
       if (!loaded || (catchupSource.itemId && catchupSource.itemId !== `yuzuno-plan-${loaded.id}` && !loaded.items.some(i => i.id === catchupSource.itemId))) {
         if (detailError) { setSourceNotice(`Could not load the original: ${detailError}`); return; }
-        void live.navigate({turnId:catchupSource.turnId, ...(catchupSource.itemId && catchupSource.itemId !== `yuzuno-plan-${catchupSource.turnId}` ? {itemId:catchupSource.itemId} : {})});
+        const wanted = {turnId:catchupSource.turnId, ...(catchupSource.itemId && catchupSource.itemId !== `yuzuno-plan-${catchupSource.turnId}` ? {itemId:catchupSource.itemId} : {})};
+        if (live.missing === JSON.stringify(wanted)) {
+          // Core has no such Turn or Item: say so once, at the latest
+          // messages, instead of asking for it again.
+          if (catchupSource.restore !== undefined) { setNotice(gone); backToLatest(); return; }
+          setSourceNotice(gone || (catchupSource.itemId ? "The original reply is unavailable. Showing the available conversation." : "The original turn is unavailable. Showing this conversation."));
+          stickToBottom.current = true;
+          scroll.current?.scrollTo({ top: scroll.current.scrollHeight });
+          setSourceJump(false);
+          return;
+        }
+        void live.navigate(wanted);
         return;
       }
     }
@@ -780,9 +856,13 @@ export function App() {
         ? document.getElementById(`runtime-error-${selected}`)
         : null) ||
       turn;
+    const absent = (!!catchupSource.itemId && !message) || (!!catchupSource.turnId && !turn);
+    if (absent && catchupSource.restore !== undefined) { setNotice(gone); backToLatest(); return; }
     setSourceNotice(
       catchupSource.kind === "pending" && !request
         ? "This request is no longer pending. Showing its conversation."
+        : absent && gone
+          ? gone
         : catchupSource.itemId && !message
           ? "The original reply is unavailable. Showing the available conversation."
           : catchupSource.turnId && !turn
@@ -806,6 +886,8 @@ export function App() {
         if (!target.isConnected) return;
         target.tabIndex = -1;
         target.scrollIntoView({ behavior: "instant", block: "start" });
+        // Where the user left it, not just its start.
+        if (catchupSource.restore !== undefined && scroll.current) scroll.current.scrollTop -= catchupSource.restore;
         target.focus({ preventScroll: true });
         setSourceJump(false);
       };
@@ -826,7 +908,7 @@ export function App() {
       scroll.current?.scrollTo({ top: 0 });
       setSourceJump(false);
     }
-  }, [sourceJump, catchupSource, homeOpen, currentDetail, live.windowLoading, detailError, live.navigate]);
+  }, [sourceJump, catchupSource, homeOpen, currentDetail, live.windowLoading, live.missing, detailError, live.navigate, workspace]);
   useEffect(() => {
     if (!busy) setInterrupting(false);
   }, [busy]);
@@ -898,6 +980,9 @@ export function App() {
       persistScope(scopeForAgent(target, projects));
   }
   function selectAgent(id: string, turnId?: string) {
+    // Reopening a conversation returns where it was left (T-166).
+    const saved = !turnId && (id !== selected || homeOpen) ? readingPositions?.get(id) : null;
+    if (saved?.mode === "anchor" && restoreReading(id, saved)) return;
     revealAgent(workspace?.agents.find((a) => a.id === id));
     setAgentScope(
       workspace?.agents.find((a) => a.id === id)?.closedAt
@@ -925,6 +1010,7 @@ export function App() {
     item: CatchupItem,
     origin: "home" | "rail" = "home",
     openDetails = false,
+    extra: { link?: MessageLink; restore?: number } = {},
   ) {
     revealAgent(workspace?.agents.find((a) => a.id === item.agentId));
     setHistoryReading(true);
@@ -934,7 +1020,7 @@ export function App() {
     setAtBottom(false);
     setSelected(item.agentId);
     setHomeOpen(false);
-    setCatchupSource({ ...item, openDetails });
+    setCatchupSource({ ...item, openDetails, ...extra });
     setSourceNotice("");
     setSourceJump(true);
     setJumpToTurn(null);
@@ -963,6 +1049,75 @@ export function App() {
       );
     else
       openCatchupSource({ ...source, id: target.requestId, kind: "pending", title: "Pending request" });
+  }
+  /** Opens a saved reading position like a source, without highlighting it. */
+  function restoreReading(agentId: string, saved: Extract<ReadingPosition, { mode: "anchor" }>) {
+    const owner = workspace?.agents.find((a) => a.id === agentId);
+    if (!owner) return false;
+    openCatchupSource(
+      { id: `reading:${agentId}`, agentId, agentName: owner.name, kind: "progress", title: "Where you left off",
+        body: "", turnId: saved.turnId, itemId: saved.itemId, seq: owner.lastSeq },
+      "rail", false, { restore: saved.offset },
+    );
+    return true;
+  }
+  /**
+   * Opens the message a link names (T-166). Only navigates: an Ask, approval
+   * or Task it shows is left as it is.
+   */
+  function openMessageLink(link: MessageLink) {
+    if (!workspace) { setIncomingLink(link); return; }
+    if (link.workspaceId !== workspaceId) {
+      setNotice("This link is to a message in another Workspace. Open it in the Yuzuno that holds that Workspace.");
+      return;
+    }
+    const owner = workspace.agents.find((a) => a.id === link.agentId);
+    if (!owner) {
+      setNotice("The Agent this link points to is no longer in this Workspace.");
+      return;
+    }
+    openCatchupSource(
+      { id: `link:${link.turnId}:${link.itemId || ""}`, agentId: owner.id, agentName: owner.name, kind: "progress",
+        title: "Linked message", body: "", turnId: link.turnId, itemId: link.itemId, seq: owner.lastSeq },
+      homeOpen ? "home" : "rail", false, { link },
+    );
+  }
+  const openLink = useRef(openMessageLink);
+  openLink.current = openMessageLink;
+  const linkBase = /^https?:$/.test(window.location.protocol) ? `${window.location.origin}${window.location.pathname}` : "";
+  const messageLinks = useMemo<MessageLinkApi>(() => ({
+    href: (owner, turnId, itemId) => linkBase && workspaceId && !previewMode
+      ? messageLinkHref(linkBase, { workspaceId, agentId: owner.id, turnId, itemId, threadId: owner.threadId })
+      : null,
+    open: (link) => openLink.current(link),
+  }), [linkBase, workspaceId]);
+  /** Notes where the shown conversation is being read (T-166). */
+  function noteReading(latest: boolean) {
+    const shown = currentDetail?.agent.id;
+    if (!shown || shown !== selected || homeOpen || previewMode) return;
+    if (latest) {
+      cancelAnimationFrame(readingFrame.current);
+      readingFrame.current = 0;
+      reading.current = { agentId: shown, position: { mode: "latest", savedAt: Date.now() } };
+      return;
+    }
+    if (readingFrame.current) return;
+    const threadId = currentDetail?.agent.threadId;
+    readingFrame.current = requestAnimationFrame(() => {
+      readingFrame.current = 0;
+      const pane = scroll.current;
+      // The pane may already show another Agent.
+      if (!pane || pane.dataset.agentId !== shown) return;
+      const position = readingAnchor(pane, threadId);
+      if (position) reading.current = { agentId: shown, position };
+    });
+  }
+  const searchLink = searchOpen ? parseMessageLink(search) : null;
+  function openSearchLink() {
+    if (!searchLink) return;
+    setSearchOpen(false);
+    setSearch("");
+    openMessageLink(searchLink);
   }
   function navigateToTurn(turnId: string) {
     setHistoryReading(true);
@@ -1329,6 +1484,7 @@ export function App() {
 
   return (
     <HandoffContext.Provider value={handoffApi}>
+    <MessageLinks.Provider value={messageLinks}>
     <div
       className={`app ${isNative ? "native" : "web"} ${railOpen ? "" : "rail-hidden"} ${inspector && agent && !homeOpen ? "with-inspector" : ""}`}
       style={panelWidths.style}
@@ -1446,9 +1602,15 @@ export function App() {
               <Search size={13} />
               <input
                 autoFocus
-                placeholder="Find an agent…"
+                placeholder="Find an agent or paste a message link…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && searchLink) {
+                    e.preventDefault();
+                    openSearchLink();
+                  }
+                }}
                 aria-label="Search agents"
               />
               <button
@@ -1462,6 +1624,12 @@ export function App() {
                 <X size={12} />
               </button>
             </div>
+          )}
+          {searchLink && (
+            <button className="quiet-button open-message-link" onClick={openSearchLink}>
+              <Link2 size={13} />
+              Open linked message
+            </button>
           )}
         </div>
         <nav className="agent-list" aria-label="Agents">
@@ -1509,7 +1677,7 @@ export function App() {
               filteredAgents.map(row)
             );
           })()}
-          {!loading && filteredAgents.length === 0 && (
+          {!loading && filteredAgents.length === 0 && !searchLink && (
             <div className="rail-empty">
               {search
                 ? "No agents match your search."
@@ -1721,7 +1889,10 @@ export function App() {
                     ? "Back to Home"
                     : "Back to latest"}
                 </button>
-                <span role="status">{sourceNotice || "Original source"}</span>
+                <span role="status">
+                  {sourceNotice || (catchupSource.restore !== undefined ? "Where you left off"
+                    : catchupSource.link ? "Linked message" : "Original source")}
+                </span>
               </div>
             )}
             <div className="conversation-body">
@@ -1743,6 +1914,7 @@ export function App() {
               <div
                 className="conversation-scroll"
                 ref={scroll}
+                data-agent-id={selected}
                 onWheel={(e) => {
                   if (e.deltaY < 0) {
                     live.pinWindow();
@@ -1792,6 +1964,7 @@ export function App() {
                     const latest = bottom && !searchReading.current && !currentDetail?.conversation?.hasAfter;
                     setAtBottom(latest);
                     stickToBottom.current = latest;
+                    noteReading(latest);
                   }
                 }}
               >
@@ -1892,12 +2065,14 @@ export function App() {
                         pendingToolIds={pendingToolIds}
                         sourceItemId={
                           catchupSource?.agentId === selected &&
+                          catchupSource.restore === undefined &&
                           catchupSource.turnId === turn.id
                             ? catchupSource.itemId
                             : undefined
                         }
                         highlightSource={
                           catchupSource?.agentId === selected &&
+                          catchupSource.restore === undefined &&
                           catchupSource.turnId === turn.id &&
                           (!catchupSource.itemId ||
                             (catchupSource.itemId !==
@@ -2590,6 +2765,7 @@ export function App() {
       )}
       <HandoffDropStrip />
     </div>
+    </MessageLinks.Provider>
     </HandoffContext.Provider>
   );
 }
