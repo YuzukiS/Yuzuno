@@ -553,8 +553,8 @@ impl Workspace {
         connection.rpc.close();
         if id != "_catalog" {
             let detached = id.to_owned();
-            let _ = self.stored_owned(owned, move |store| store.update(&detached, "runtime/detached", &json!({}), |d| {
-                d.agent.connection_state = "disconnected".into();
+            let _ = self.stored_owned(owned, move |store| store.update_meta(&detached, "runtime/detached", &json!({}), |m| {
+                m.agent.connection_state = "disconnected".into();
             })).await;
             self.changed(id); // perf-sse: clients no longer poll for it
         }
@@ -579,8 +579,9 @@ impl Workspace {
             }
             return Ok(connection);
         }
-        // Attaching keeps the Agent as `detail` assembles it.
-        let a = self.detail(id).await?.agent;
+        // Attaching keeps the Agent as it is now. The send view has it, with
+        // its project, without copying the record's Items and payloads.
+        let a = self.send_view(id).await?.agent;
         if a.status == "uncertain" && a.thread_id.is_none() {
             bail!("会话创建结果尚未确认且没有会话 ID；不会自动创建另一会话，请先检查原生会话记录");
         }
@@ -612,7 +613,9 @@ impl Workspace {
                 return Err(error);
             }
         };
-        let before_attach = self.detail(id).await?;
+        // Where the record stood when the request went out: its rev and seq,
+        // and for an imported thread the status of each Turn (`recovery_page`).
+        let before_attach = self.send_view(id).await?;
         let agent = id.to_owned();
         let imported = self.stored(move |store| store.is_codex_import(&agent)).await?;
         let reply = if let Some(thread) = &a.thread_id {
@@ -665,8 +668,8 @@ impl Workspace {
         let owned = self.owner(id).await;
         if !same_generation(self.rpcs.lock().unwrap().get(id), generation) { return Ok(()); }
         let agent = id.to_owned();
-        self.stored_owned(owned, move |store| store.update(&agent, "runtime/attachState",
-            &json!({"connectionState":state}), |d| d.agent.connection_state = state.into())).await?;
+        self.stored_owned(owned, move |store| store.update_meta(&agent, "runtime/attachState",
+            &json!({"connectionState":state}), |m| m.agent.connection_state = state.into())).await?;
         self.changed(id);
         Ok(())
     }
@@ -709,7 +712,7 @@ impl Workspace {
             if self.stored(move |store| store.begin_empty_thread_replacement(&agent, &thread)).await? {
                 attempt.replacing_empty_thread = true;
                 attempt.new_empty_thread = true;
-                let reserved = self.detail(id).await?.agent;
+                let reserved = self.send_view(id).await?.agent;
                 attempt.request_seq = reserved.last_seq;
                 attempt.request_rev = reserved.rev;
                 attempt.reply = connection.rpc.begin_request("thread/start", attempt.initial_params.clone()).await?;
@@ -789,7 +792,10 @@ impl Workspace {
             let id = agent.as_str();
             let changes = store.changed_items_since(id, request_rev)?;
             let has_new_error = store.has_error_since(id, request_seq)?;
-            store.update(
+            // The snapshot's Turns are merged by value: a resumed thread's
+            // whole history is not copied again (T-140).
+            let turns = take_turns(&mut result["thread"]);
+            store.record_event(
                 id,
                 "thread/attached",
                 &json!({"threadId":thread_id,
@@ -800,7 +806,7 @@ impl Workspace {
                     // Yuzuno now owns the writer; an earlier conflict is resolved.
                     if let Some(handoff) = &mut d.codex_handoff { handoff.writer_conflict_at = None; }
                     if let Some(history) = imported_history { d.history = Some(history); }
-                    apply_snapshot(d, &result["thread"], &changes);
+                    apply_snapshot_turns(d, &result["thread"], turns, &changes);
                     d.confirm_message_receipts();
                     if !has_new_error { clear_transport_error(d, &result["thread"]); }
                     if replacing_empty_thread {
@@ -886,6 +892,7 @@ impl Workspace {
             let id = agent.as_str();
             let changes = store.changed_items_since(id, requested_rev)?;
             let has_new_error = store.has_error_since(id, requested_at)?;
+            let turns = take_turns(&mut result["thread"]);
             store.record_event(
                 id,
                 "thread/reconciled",
@@ -893,7 +900,7 @@ impl Workspace {
                 |current| {
                     current.agent.connection_state = "connected".into();
                     if let Some(history) = imported_history { current.history = Some(history); }
-                    apply_snapshot(current, &result["thread"], &changes);
+                    apply_snapshot_turns(current, &result["thread"], turns, &changes);
                     current.confirm_message_receipts();
                     if !has_new_error { clear_transport_error(current, &result["thread"]); }
                 },
@@ -908,6 +915,11 @@ impl Workspace {
     async fn record_recovered_completions(&self, id: &str) -> Result<()> {
         let id = id.to_owned();
         self.stored(move |store| {
+            // Live Turns journal their completion; the whole record is read
+            // only when a finished Turn has none (T-140).
+            if !store.has_unrecorded_completion(&id, &store.send_view(&id)?.turns)? {
+                return Ok(());
+            }
             let after = store.detail(&id)?;
             store.record_recovered_completions(&id, &after.turns)
         }).await
@@ -921,11 +933,29 @@ impl Workspace {
 
     pub(crate) async fn reconnect_accepted(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit) -> Result<AgentDetail> {
         permit.validate(&self.admission)?;
-        match self.detail(id).await?.agent.harness.as_str() {
+        match self.send_view(id).await?.agent.harness.as_str() {
             "claude" => return self.claude_reconnect_accepted(id, permit).await,
             "opencode" => return self.opencode_reconnect_accepted(id, permit).await,
             _ => {}
         }
+        self.reconnect_codex(id, true).await?.context("record")
+    }
+
+    /// `reconnect_accepted` for a caller that does not use the record, which
+    /// for a long history saves reading it whole (T-140).
+    pub(crate) async fn reconnect_settled(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit) -> Result<()> {
+        permit.validate(&self.admission)?;
+        match self.send_view(id).await?.agent.harness.as_str() {
+            "claude" => return self.claude_reconnect_accepted(id, permit).await.map(drop),
+            "opencode" => return self.opencode_reconnect_accepted(id, permit).await.map(drop),
+            _ => {}
+        }
+        self.reconnect_codex(id, false).await.map(drop)
+    }
+
+    /// Reconnects a Codex Agent under its gate; with `read`, returns the
+    /// record as the reconnect left it, read under the same gate.
+    async fn reconnect_codex(self: &Arc<Self>, id: &str, read: bool) -> Result<Option<AgentDetail>> {
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
         let agent = id.to_owned();
@@ -938,8 +968,8 @@ impl Workspace {
             && !readiness.as_ref().is_some_and(|s| s.ready)
             // An unconfirmed attach still owns its native request and process.
             // Missing MCP readiness is not permission to kill accepted work.
-            && self.detail(id).await?.agent.connection_state == "connected"
-            && (self.detail(id).await?.agent.remote.is_some() || readiness.is_none()) {
+            && self.send_view(id).await?.agent.connection_state == "connected"
+            && (self.send_view(id).await?.agent.remote.is_some() || readiness.is_none()) {
             let owned = self.owner(id).await;
             let connection = self.rpcs.lock().unwrap().get(id).cloned();
             if let Some(connection) = connection {
@@ -947,7 +977,7 @@ impl Workspace {
                 // Keep this transport while an approval (even a sent response
                 // awaiting resolution) still belongs to it. Check under owner
                 // so dispatch cannot insert an approval between check/detach.
-                let pending = self.detail(id).await?.pending.iter().any(|p|
+                let pending = self.send_view(id).await?.pending.iter().any(|p|
                     !p.stale && p.params["_runtimeGeneration"].as_u64() == Some(connection.generation));
                 if !pending && !self.codex_context.needs_resume(id, connection.generation) {
                     self.remove_connection_owned(id, connection.generation, owned).await;
@@ -958,7 +988,7 @@ impl Workspace {
             self.failed(id, &error).await;
             return Err(error);
         }
-        self.detail(id).await
+        if read { Ok(Some(self.detail(id).await?)) } else { Ok(None) }
     }
 
     /// Close is a reversible Workspace lifecycle action, independent of native
@@ -1134,7 +1164,7 @@ impl Workspace {
                     let delay = (2u64.saturating_pow(attempts.min(5))).min(30);
                     retry.insert(agent.id.clone(), (now + std::time::Duration::from_secs(delay), attempts + 1));
                     // Each attempt is serialized by the same gate as send and manual reconnect.
-                    let _ = ws.reconnect_accepted(&agent.id, &_permit).await;
+                    let _ = ws.reconnect_settled(&agent.id, &_permit).await;
                 }
             }
         });
@@ -2323,8 +2353,12 @@ fn same_message(left: &Value, right: &Value) -> bool {
 /// Codex history can synthesize item-N IDs for messages that had live IDs.
 /// Match occurrences in order, never collapse repeated prose indiscriminately.
 /// Retain live IDs so existing source/search anchors continue to resolve.
+#[cfg(test)]
 fn normalize_snapshot_message_ids(existing: &mut Value, incoming: &Value) -> Value {
-    let mut incoming = incoming.clone();
+    normalize_snapshot_message_ids_owned(existing, incoming.clone())
+}
+
+fn normalize_snapshot_message_ids_owned(existing: &mut Value, mut incoming: Value) -> Value {
     let (Some(saved), Some(items)) = (existing["items"].as_array_mut(), incoming["items"].as_array_mut()) else {
         return incoming;
     };
@@ -2347,24 +2381,53 @@ fn normalize_snapshot_message_ids(existing: &mut Value, incoming: &Value) -> Val
     // After a runtime reload Codex may return the live IDs again. Repair
     // aliases already cached by an earlier read, using occurrence counts from
     // this snapshot. Empty/metadata-only snapshots cannot remove any message.
-    let real_items: Vec<_> = saved.iter().filter(|item| !synthetic_message(item)).cloned().collect();
-    let mut retained_aliases: Vec<Value> = Vec::new();
-    saved.retain(|item| {
-        if !synthetic_message(item) { return true; }
-        let confirmed_live = real_items.iter().filter(|real| same_message(real, item)
-            && items.iter().any(|incoming| incoming["id"] == real["id"] && same_message(incoming, real))).count();
-        let incoming_count = items.iter().filter(|incoming| same_message(incoming, item)).count();
-        let kept = retained_aliases.iter().filter(|old| same_message(old, item)).count();
-        if confirmed_live > 0 && confirmed_live + kept >= incoming_count { return false; }
-        retained_aliases.push(item.clone());
-        true
-    });
+    // Decided first, over borrowed Items, then applied: a Turn's Items are
+    // not copied to be read while some are removed.
+    let keep: Vec<bool> = {
+        let real_items: Vec<&Value> = saved.iter().filter(|item| !synthetic_message(item)).collect();
+        let mut retained_aliases: Vec<&Value> = Vec::new();
+        saved.iter().map(|item| {
+            if !synthetic_message(item) { return true; }
+            let confirmed_live = real_items.iter().filter(|real| same_message(real, item)
+                && items.iter().any(|incoming| incoming["id"] == real["id"] && same_message(incoming, real))).count();
+            let incoming_count = items.iter().filter(|incoming| same_message(incoming, item)).count();
+            let kept = retained_aliases.iter().filter(|old| same_message(old, item)).count();
+            if confirmed_live > 0 && confirmed_live + kept >= incoming_count { return false; }
+            retained_aliases.push(item);
+            true
+        }).collect()
+    };
+    let mut keep = keep.into_iter();
+    saved.retain(|_| keep.next().unwrap_or(true));
     incoming
 }
 
 /// Merges a native snapshot requested before `changes` (see
 /// Store::changed_items_since): what changed since is newer than it.
+#[cfg(test)]
 fn apply_snapshot(d: &mut AgentDetail, thread: &Value, changes: &crate::store::Changes) {
+    apply_snapshot_turns(d, thread, thread["turns"].as_array().cloned(), changes);
+}
+
+/// A snapshot's Turns, taken out of it for `apply_snapshot_turns`.
+fn take_turns(thread: &mut Value) -> Option<Vec<Value>> {
+    match thread.get_mut("turns").map(Value::take) {
+        Some(Value::Array(turns)) => Some(turns),
+        _ => None,
+    }
+}
+
+/// A Value's `items`, taken out of it.
+fn take_items(value: &mut Value) -> Option<Vec<Value>> {
+    match value.get_mut("items").map(Value::take) {
+        Some(Value::Array(items)) => Some(items),
+        _ => None,
+    }
+}
+
+/// Merges the snapshot `thread`, whose Turns (`take_turns`) are given by
+/// value so a long history is merged without being copied.
+fn apply_snapshot_turns(d: &mut AgentDetail, thread: &Value, turns: Option<Vec<Value>>, changes: &crate::store::Changes) {
     let newer_events = changes.newer;
     let mut newer_items = changes.items.clone();
     if newer_events && !changes.complete {
@@ -2373,19 +2436,19 @@ fn apply_snapshot(d: &mut AgentDetail, thread: &Value, changes: &crate::store::C
         newer_items.extend(unfinished_items(d));
     }
     let newer_items = &newer_items;
-    if let Some(turns) = thread["turns"].as_array() {
-        let mut restored = turns.clone();
+    if let Some(mut restored) = turns {
         crate::message_content::restore(&mut restored, &d.message_receipts, true);
-        for incoming in &restored {
+        for incoming in restored {
             if let Some(existing) = d.turns.iter_mut().find(|t| t["id"] == incoming["id"]) {
-                let incoming = normalize_snapshot_message_ids(existing, incoming);
+                let mut incoming = normalize_snapshot_message_ids_owned(existing, incoming);
+                let items = take_items(&mut incoming);
                 if !newer_events {
                     // A metadata-only or paginated snapshot cannot erase cached items.
-                    let cached = existing["items"].as_array().cloned().unwrap_or_default();
+                    let cached = take_items(existing).unwrap_or_default();
                     let started_at = existing["startedAt"].clone();
                     let local_started_at = existing["_yuzunoStartedAt"].clone();
                     let times = crate::conversation_time::turn_times(existing);
-                    *existing = incoming.clone();
+                    *existing = incoming;
                     crate::conversation_time::restore_turn_times(existing, times);
                     if existing["startedAt"].is_null() && !started_at.is_null() {
                         existing["startedAt"] = started_at;
@@ -2394,13 +2457,13 @@ fn apply_snapshot(d: &mut AgentDetail, thread: &Value, changes: &crate::store::C
                         existing["_yuzunoStartedAt"] = local_started_at;
                     }
                     existing["items"] = cached.into();
-                    if let Some(items) = incoming["items"].as_array() {
+                    if let Some(items) = items {
                         let saved = existing["items"].as_array_mut().unwrap();
                         for item in items {
                             if let Some(old) = saved.iter_mut().find(|i| i["id"] == item["id"]) {
-                                crate::conversation_time::replace_item(old, item);
+                                crate::conversation_time::replace_item_owned(old, item);
                             } else {
-                                saved.push(item.clone());
+                                saved.push(item);
                             }
                         }
                     }
@@ -2413,24 +2476,21 @@ fn apply_snapshot(d: &mut AgentDetail, thread: &Value, changes: &crate::store::C
                         existing["error"] = incoming["error"].clone();
                         crate::conversation_time::merge_native_turn_times(existing, &incoming);
                     }
-                    if let (Some(saved), Some(items)) = (
-                        existing["items"].as_array_mut(),
-                        incoming["items"].as_array(),
-                    ) {
+                    if let (Some(saved), Some(items)) = (existing["items"].as_array_mut(), items) {
                         for item in items {
                             if let Some(old) = saved.iter_mut().find(|i| i["id"] == item["id"]) {
                                 let terminal_item = matches!(item["status"].as_str(), Some("completed" | "failed" | "declined" | "interrupted"))
                                     && !matches!(old["status"].as_str(), Some("completed" | "failed" | "declined" | "interrupted"));
                                 let changed = item["id"].as_str().is_some_and(|id| newer_items.contains(id));
-                                if newly_finished || terminal_item || !changed { crate::conversation_time::replace_item(old, item); }
+                                if newly_finished || terminal_item || !changed { crate::conversation_time::replace_item_owned(old, item); }
                             } else {
-                                saved.push(item.clone());
+                                saved.push(item);
                             }
                         }
                     }
                 }
             } else {
-                d.turns.push(incoming.clone());
+                d.turns.push(incoming);
             }
         }
     }

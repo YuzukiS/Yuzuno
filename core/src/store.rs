@@ -264,6 +264,13 @@ fn send_turn(turn: &Value) -> Value {
     light.into()
 }
 
+/// A finished Turn whose completion is not among `known` (see
+/// `Store::record_recovered_completions`).
+fn unrecorded_completion(turn: &Value, known: &HashSet<String>) -> bool {
+    matches!(turn["status"].as_str(), Some("completed" | "failed" | "interrupted"))
+        && !turn["id"].as_str().is_some_and(|id| known.contains(id))
+}
+
 /// The part of a record outside its Turns that a change through
 /// `Store::update_meta` may make: no Turn can be reached from it, so what such
 /// a change wrote need not be found by comparing the whole record.
@@ -2442,20 +2449,29 @@ impl Store {
         Ok(true)
     }
 
+    /// The Turns whose completion the journal has (or an import recorded).
+    fn recorded_completions(&self, id: &str) -> Result<HashSet<String>> {
+        let db = self.db.read()?;
+        let mut query = db.prepare("SELECT json_extract(data,'$.turn.id') FROM journal
+            WHERE agent_id=?1 AND kind='turn/completed' AND json_type(data,'$.turn.id')='text'
+            UNION SELECT turn_id FROM codex_import_turns WHERE agent_id=?1")?;
+        let ids = query.query_map([id], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<HashSet<_>>>()?;
+        Ok(ids)
+    }
+
+    /// Whether `record_recovered_completions` would find a Turn to record.
+    /// Reads only each Turn's id and status, so `turns` need no Items.
+    pub fn has_unrecorded_completion(&self, id: &str, turns: &[Value]) -> Result<bool> {
+        let known = self.recorded_completions(id)?;
+        Ok(turns.iter().any(|turn| unrecorded_completion(turn, &known)))
+    }
+
     /// Reconciliation checks a whole history. Read completion IDs once, instead
     /// of parsing the same journal bodies again for each historical Turn.
     pub fn record_recovered_completions(&self, id: &str, turns: &[Value]) -> Result<()> {
-        let known = {
-            let db = self.db.read()?;
-            let mut query = db.prepare("SELECT json_extract(data,'$.turn.id') FROM journal
-                WHERE agent_id=?1 AND kind='turn/completed' AND json_type(data,'$.turn.id')='text'
-                UNION SELECT turn_id FROM codex_import_turns WHERE agent_id=?1")?;
-            let ids = query.query_map([id], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<HashSet<_>>>()?;
-            ids
-        };
+        let known = self.recorded_completions(id)?;
         for turn in turns {
-            if matches!(turn["status"].as_str(), Some("completed" | "failed" | "interrupted"))
-                && !turn["id"].as_str().is_some_and(|id| known.contains(id)) {
+            if unrecorded_completion(turn, &known) {
                 // Keep the existing check and atomic write: a live completion
                 // may have arrived since the set above was read.
                 self.record_recovered_completion(id, turn)?;

@@ -42,8 +42,13 @@ pub fn stamp_message(item: &mut Value, at: Option<i64>, source: &str) {
 
 /// Replaces an item body while keeping Core's first-seen time.
 pub fn replace_item(old: &mut Value, new: &Value) {
+    replace_item_owned(old, new.clone());
+}
+
+/// `replace_item` with an Item the caller no longer needs.
+pub fn replace_item_owned(old: &mut Value, new: Value) {
     let time = old.get(ITEM_TIME).cloned();
-    *old = new.clone();
+    *old = new;
     if let (Some(time), Some(item)) = (time, old.as_object_mut()) {
         item.entry(ITEM_TIME).or_insert(time);
     }
