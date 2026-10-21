@@ -584,7 +584,9 @@ impl Workspace {
     }
 
     /// Ends the Agent's OpenCode process: a running Turn is aborted first,
-    /// and whatever did not end by itself is left unknown, never resent.
+    /// and whatever did not end by itself is left unknown, never resent. The
+    /// connection goes before OpenCode is asked to end what its tools run, so
+    /// the end of its stream that follows is not read as a break.
     pub(crate) async fn opencode_close_runtime(&self, id: &str) -> Result<()> {
         let Some(c) = self.opencodes.lock().unwrap().get(id).cloned() else {
             return Ok(());
@@ -604,18 +606,42 @@ impl Workspace {
             }
         }
         let generation = c.generation;
-        // Let OpenCode end cleanly when nothing else holds it; else dropping
-        // the last holder ends its group.
-        match Arc::try_unwrap(c.server) {
-            Ok(server) => server.shutdown().await?,
-            Err(server) => drop(server),
-        }
+        stop(c.server).await?;
         self.update_record(id, "opencode/closed", json!({"generation":generation}), |d| {
             ended(d, "OpenCode 关闭前没有确认这一轮结束；结果未确认，不会重发。原 Session 与历史保留。");
             d.agent.connection_state = "disconnected".into();
         }).await?;
         self.changed(id);
         Ok(())
+    }
+
+    /// When Core stops normally: every Agent's OpenCode is stopped as a close
+    /// stops it, all at once, so within one stop's bound. Their connections
+    /// go first. Nothing is recorded: the next Core connects again to the
+    /// same session (`restarted`). A process started after this, or one
+    /// still held elsewhere, ends with the Workspace instead (`Server`).
+    pub async fn opencode_stop_all(&self) {
+        let connections: Vec<Connection> = std::mem::take(&mut *self.opencodes.lock().unwrap()).into_values().collect();
+        futures_util::future::join_all(connections.into_iter().map(|c| async move {
+            if let Err(error) = stop(c.server).await {
+                eprintln!("OpenCode did not stop with Core: {error:#}");
+            }
+        })).await;
+    }
+}
+
+/// Lets OpenCode end cleanly when nothing else holds it; else it is only asked
+/// to end what its tools run, and dropping the last holder ends its group.
+/// Either way a refused or unanswered dispose does not stop the stop.
+async fn stop(server: Arc<Server>) -> Result<()> {
+    match Arc::try_unwrap(server) {
+        Ok(server) => server.shutdown().await,
+        Err(server) => {
+            if let Err(error) = server.dispose().await {
+                eprintln!("OpenCode did not end what its tools run before it was stopped: {error:#}");
+            }
+            Ok(())
+        }
     }
 }
 

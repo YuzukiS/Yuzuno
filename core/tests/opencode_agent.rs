@@ -459,3 +459,56 @@ async fn http_create_and_models_refuse_opencode_unless_core_turned_it_on() {
     assert_eq!(lab.ws.store.agents().unwrap().len(), 1);
     lab.ws.close_agent(ID).await.unwrap();
 }
+
+/// What an OpenCode tool runs is in a session of its own, out of OpenCode's
+/// group: closing the Agent, and a Core that stops normally, ask OpenCode to
+/// end it first. Only that Agent's OpenCode is asked, and the end of its
+/// stream that follows is neither a break nor a reason to connect again.
+#[tokio::test]
+async fn closing_or_stopping_core_ends_what_opencodes_tools_run_and_only_that_agents() {
+    const OTHER: &str = "oc2";
+    let lab = lab(&[("tool", "1")], false).await;
+    let session = lab.session();
+    let other_root = lab.dir.path().join("data/opencode").join(OTHER);
+    std::fs::create_dir_all(&other_root).unwrap();
+    std::fs::write(other_root.join("tool"), "1").unwrap();
+    let mut other = agent(&lab.dir.path().join("work").to_string_lossy());
+    other.agent.id = OTHER.into();
+    lab.ws.store.insert(&other).unwrap();
+    assert_eq!(lab.ws.reconnect(OTHER).await.unwrap().agent.connection_state, "connected");
+    let pid = |seen: &Value, key: &str| seen[key].as_u64().unwrap();
+    let other_seen: Value = serde_json::from_str(&std::fs::read_to_string(other_root.join("start.json")).unwrap()).unwrap();
+    let kinds = |agent: &str| {
+        let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
+        let mut query = db.prepare("SELECT kind FROM journal WHERE agent_id=?1 ORDER BY seq").unwrap();
+        query.query_map([agent], |r| r.get::<_, String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+    };
+    let breaks = |kinds: &[String]| kinds.iter().filter(|k| matches!(k.as_str(),
+        "opencode/resynced" | "runtime/error" | "opencode/connecting" | "opencode/ready")).count();
+
+    let before = kinds(ID);
+    lab.ws.close_agent(ID).await.unwrap();
+    assert!(ends(pid(&lab.seen(), "tool")).await, "the tool's process outlived the close");
+    assert!(ends(pid(&lab.seen(), "pid")).await);
+    assert_eq!(lab.posts("/global/dispose").len(), 1);
+    // Long enough for a reaction to the stream's end to be recorded.
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let after = kinds(ID);
+    assert!(after.contains(&"opencode/closed".to_owned()));
+    assert_eq!(breaks(&after), breaks(&before), "{:?}", &after[before.len()..]);
+    let d = lab.detail();
+    assert_eq!(d.agent.connection_state, "disconnected");
+    assert_eq!(d.agent.opencode_session_id.as_deref(), Some(session.as_str()), "the session is kept");
+
+    // The other Agent's OpenCode and its tool were not touched.
+    assert!(!ended(pid(&other_seen, "tool")) && !ended(pid(&other_seen, "pid")));
+    assert_eq!(lab.ws.store.detail(OTHER).unwrap().agent.connection_state, "connected");
+
+    // Core stops normally: it is asked too, and nothing is recorded for it.
+    let before = kinds(OTHER);
+    lab.ws.opencode_stop_all().await;
+    assert!(ends(pid(&other_seen, "tool")).await, "the tool's process outlived Core's stop");
+    assert!(ends(pid(&other_seen, "pid")).await);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(kinds(OTHER), before);
+}

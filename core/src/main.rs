@@ -203,6 +203,7 @@ async fn run(
     // Leaving the Workspace, older Cores may open it again if nothing in it is
     // what they would mishandle (older_cores.rs).
     let store = ws.store.clone();
+    let opencode = ws.clone();
     if let Some((listener, port, entry)) = remote {
         eprintln!("Remote entry: http://127.0.0.1:{port} for Tailscale Serve, as {}", entry.origin());
         let app = server::remote_router(ws.clone(), options.web_dir.clone(), Some(updates.clone()), entry);
@@ -243,6 +244,10 @@ async fn run(
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         } => eprintln!("Core shutdown: closing remaining client streams after native work and events drained"),
     }
+    // What OpenCode's tools run outlives its process group: each OpenCode is
+    // asked to end it before the Workspace goes (opencode.rs).
+    opencode.opencode_stop_all().await;
+    drop(opencode);
     yuzuno_workspace::db::blocking(move || { store.settle_older_cores(); Ok(()) }).await?;
     Ok(())
 }
