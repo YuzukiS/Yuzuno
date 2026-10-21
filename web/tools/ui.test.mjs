@@ -5154,3 +5154,29 @@ test("a Claude Agent's /new and /resume open New agent for Claude; its /status i
     page.close();
   }
 });
+
+// Review cd948eaf (P2): what /new fills in is chosen afresh, as choosing a
+// harness or machine is: a model picked at an earlier opening is not kept.
+test("/new starts New agent without a model left from an earlier opening for another harness", async () => {
+  const page = await mount({ harness: "claude", beforeLoad(window) {
+    const fetch = window.fetch;
+    window.fetch = (url, init = {}) => /\/api\/claude\/sessions\?/.test(url)
+      ? Promise.resolve({ ok: true, status: 200, json: async () => ({ sessions: [], next: null }), text: async () => "{}" })
+      : fetch(url, init);
+  } });
+  try {
+    page.document.querySelector(".add-agent").click();
+    await until(() => chipGroup(page, "Model")?.querySelector('input[value="test-model"]'), "Codex's models in New agent");
+    assert.equal(chosen(page, "Harness"), "codex");
+    await choose(page, "Model", "test-model");
+    assert.equal(chosen(page, "Model"), "test-model");
+    await closeModal(page);
+    await sendDraft(page, "/new");
+    await until(() => chosen(page, "Harness") === "claude", "New agent for this Claude Agent");
+    assert.equal(chosen(page, "Model"), "", "Harness default, not the Codex model picked before");
+    assert.deepEqual(posts(page), []);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});

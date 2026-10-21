@@ -153,9 +153,20 @@ export function RemoteCreateAgent({
     if (!open || !initial || startedFrom.current === initial.nonce) return;
     startedFrom.current = initial.nonce;
     setMode(initial.mode);
-    if (initial.harness) setHarness(initial.harness);
-    if (initial.machineId) setMachineId(initial.machineId);
-    if (initial.projectId !== undefined) setProjectId(initial.projectId);
+    if (initial.harness || initial.machineId) {
+      // As choosing them does: a model or a machine check of an earlier
+      // opening is not this harness's or machine's.
+      if (initial.harness) setHarness(initial.harness);
+      if (initial.machineId) setMachineId(initial.machineId);
+      checkRequest.current += 1;
+      setModel("");
+      setCheckError("");
+      setChecking(false);
+      setError("");
+    }
+    // A project that is no longer active is not offered, as at the usual start.
+    if (initial.projectId !== undefined)
+      setProjectId(projects.some((p) => p.id === initial.projectId && !p.archivedAt) ? initial.projectId : "");
     if (initial.cwd) {
       cwdTyped.current = true;
       setCwd(initial.cwd);
