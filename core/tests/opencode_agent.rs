@@ -519,9 +519,9 @@ async fn closing_or_stopping_core_ends_what_opencodes_tools_run_and_only_that_ag
 async fn a_summary_reconnect_answers_with_the_agent_only() {
     let lab = lab(&[], false).await;
     let session = lab.session();
-    let turn = lab.send("c1", "work").await.unwrap().turn_id.unwrap();
+    let sent = lab.send("c1", "work").await.unwrap().turn_id.unwrap();
     lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
-    lab.until("the answer", |d| turn_of(d, &turn) == "completed").await;
+    lab.until("the answer", |d| d.turns.iter().any(|t| t["id"] == sent.as_str() && t["status"] == "completed")).await;
     let pid = lab.seen()["pid"].as_u64().unwrap();
     let router = server::router_on_port(lab.ws.clone(), lab.dir.path().join("assets"), 4317);
     let request = Request::post(format!("/api/agents/{ID}/reconnect?view=summary")).header("host", "localhost:4317")
@@ -535,11 +535,7 @@ async fn a_summary_reconnect_answers_with_the_agent_only() {
     assert_eq!(lab.seen()["pid"].as_u64().unwrap(), pid, "the same OpenCode");
     assert_eq!(lab.prompts().len(), 1, "never sent again");
     let d = lab.detail();
-    assert_eq!(turn(&d, &turn)["status"], "completed");
-    assert_eq!(items(turn(&d, &turn), "agentMessage").len(), 1);
+    assert_eq!(turn(&d, &sent)["status"], "completed");
+    assert_eq!(items(turn(&d, &sent), "agentMessage").len(), 1);
     lab.ws.close_agent(ID).await.unwrap();
-}
-
-fn turn_of(d: &AgentDetail, id: &str) -> String {
-    d.turns.iter().find(|t| t["id"] == id).and_then(|t| t["status"].as_str()).unwrap_or_default().to_owned()
 }
