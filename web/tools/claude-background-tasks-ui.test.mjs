@@ -25,9 +25,9 @@ import {ConversationBackgroundTaskDock} from ${JSON.stringify(path.join(root, "s
 import {ConversationSubAgentDock} from ${JSON.stringify(path.join(root, "src/ClaudeSubAgentDock.tsx"))};
 const root=createRoot(document.getElementById('root'));
 window.navigated=[];
-window.renderDock=(turns,agent)=>flushSync(()=>root.render(<nav className="work-dock">
-  <ConversationSubAgentDock agent={agent} turns={turns} onNavigate={(id)=>window.navigated.push(id)}/>
-  <ConversationBackgroundTaskDock agent={agent} turns={turns} onNavigate={(id)=>window.navigated.push(id)}/></nav>));`);
+window.renderDock=(turns,agent,running,runningTasks)=>flushSync(()=>root.render(<nav className="work-dock">
+  <ConversationSubAgentDock agent={agent} turns={turns} running={running} onNavigate={(id)=>window.navigated.push(id)}/>
+  <ConversationBackgroundTaskDock agent={agent} turns={turns} running={runningTasks} onNavigate={(id)=>window.navigated.push(id)}/></nav>));`);
   const result = await build({
     root, configFile: false, logLevel: "silent", plugins: [react()],
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
@@ -210,4 +210,53 @@ test("a sub-agent running in the background stops from its own card, by its task
   page.button(page.card(), "Stop Read c.txt").click();
   await tick();
   assert.deepEqual(page.requests.filter(([method]) => method === "POST"), [["POST", "/api/agents/a/tasks/task-c/stop"]]);
+});
+
+test("a background task still running whose call is outside the loaded window stays on the dock, in its place, and stops only by its own id", async (t) => {
+  // T-25: a shell or monitor in the background outlives the Items after its
+  // call, and the window holds the newest only. Core lists those still
+  // running, starting or paused (conversation.runningBackgroundTasks) as
+  // core/src/conversation_window.rs previews their calls: the task's facts,
+  // not its result or progress.
+  const listed = (turnId, position, id, name, backgroundTask) => ({ turnId, position, item: { id, type: "historyPreview", status: "completed",
+    name, _yuzunoWindowPreview: { type: "claudeToolUse" }, backgroundTask } });
+  const page = mount();
+  t.after(page.close);
+  const done = { taskId: "task-new", type: "local_bash", status: "completed", background: true, description: "make test", startedAt: started };
+  const loaded = [{ id: "t5", status: "inProgress", _yuzunoSlice: { start: 50, total: 60, index: 4 }, items: [bash("toolu-new", "make test", done)] }];
+  page.window.renderDock(loaded, agent());
+  assert.deepEqual(page.nodes("Background tasks").map(page.row), [["make test", "Completed", "succeeded"]],
+    "without Core's list, only the loaded Items' tasks");
+  const running = [
+    listed("t5", [4, 3], "toolu-tail", "Bash", alpha({ taskId: "task-tail", description: "tail -f build.log" })),
+    listed("t7", [6, 2], "toolu-watch", "Monitor", { taskId: "m2", type: "monitor", status: "paused", description: "watch the deploy" }),
+    // Loaded as well (an earlier page joined): once.
+    listed("t5", [4, 50], "toolu-new", "Bash", done),
+  ];
+  page.window.renderDock(loaded, agent(), undefined, running);
+  assert.deepEqual(page.nodes("Background tasks").map(page.row).sort(), [
+    ["make test", "Completed", "succeeded"],
+    ["tail -f build.log", "Shell", "running"],
+    ["watch the deploy", "Monitor", "running"],
+  ]);
+  assert.equal(page.group("Sub-agents"), null, "a background task is never a sub-agent");
+  await open(page, "tail -f build.log");
+  assert.match(page.card().textContent, /Status\s*Running in the background/);
+  assert.match(page.card().textContent, /Task\s*task-tail/);
+  // Stopping goes to Core for this task only; Core checks Claude's latest
+  // report of it as it does for any task.
+  page.button(page.card(), "Stop tail -f build.log").click();
+  await tick();
+  assert.deepEqual(page.requests, [["POST", "/api/agents/a/tasks/task-tail/stop"]]);
+  page.button(page.card(), "Go to its Turn").click();
+  await tick();
+  assert.deepEqual([...page.window.navigated], ["t5"]);
+  // Not connected: a listed task is not confirmed running, and nothing stops.
+  page.window.renderDock(loaded, agent("claude", "disconnected"), undefined, running);
+  await tick();
+  assert.equal(page.row(page.nodes("Background tasks").find((n) => page.row(n)[0] === "tail -f build.log"))[2], "unconfirmed");
+  await open(page, "tail -f build.log");
+  assert.ok(!page.button(page.card(), "Stop tail -f build.log") || page.button(page.card(), "Stop tail -f build.log").disabled);
+  assert.equal(page.requests.length, 1);
+  assert.deepEqual(page.errors, []);
 });

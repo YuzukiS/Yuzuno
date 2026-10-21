@@ -43,8 +43,9 @@ pub struct ReadStats {
 }
 
 /// The shape of a cached entry (`conversation_window::item_index`). An entry
-/// of another version is rebuilt when read: 2 keeps a sub-agent call's status.
-const INDEX_VERSION: u8 = 2;
+/// of another version is rebuilt when read: 2 keeps a sub-agent call's status,
+/// 3 a background task's too.
+const INDEX_VERSION: u8 = 3;
 
 #[derive(Serialize, Deserialize)]
 struct Entry {

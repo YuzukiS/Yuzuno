@@ -12,7 +12,8 @@ import {
 } from "./claude-background-tasks";
 import { moment } from "./conversation-time";
 import { SubAgentDock, type DockGroup, type DockSubAgent } from "./SubAgents";
-import type { Agent, NativeTurn } from "./types";
+import type { Agent, NativeTurn, RunningCall } from "./types";
+import { withRunningCalls } from "./running-calls";
 import "./claude-background-tasks.css";
 
 const GROUP: DockGroup = { label: "Background tasks", one: "Background task", icon: (size) => <Terminal size={size} /> };
@@ -165,14 +166,17 @@ export function claudeBackgroundDockEntries(agentId: string, turns: readonly Nat
  * monitors, workflows and MCP tasks Claude runs in the background, read from
  * the loaded Turns (no request of its own). Sub-agents keep their own group.
  */
-export function ConversationBackgroundTaskDock({ agent, turns, onNavigate }: {
+export function ConversationBackgroundTaskDock({ agent, turns: loaded, running, onNavigate }: {
   agent: Agent;
   turns: readonly NativeTurn[];
+  /** Those Core lists from outside the loaded window while they run. */
+  running?: readonly RunningCall[];
   onNavigate: (turnId: string) => void;
 }) {
   const live = agent.connectionState === "connected";
   const claude = agent.harness === "claude";
   const [now, setNow] = useState(() => Date.now());
+  const turns = useMemo(() => withRunningCalls(loaded, running), [loaded, running]);
   const entries = useMemo(
     () => (claude ? claudeBackgroundDockEntries(agent.id, turns, live, now) : NONE),
     [agent.id, claude, turns, live, now],
