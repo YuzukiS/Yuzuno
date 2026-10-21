@@ -23,6 +23,7 @@ import {
   ArrowUpRight,
   Bell,
   Check,
+  ChevronLeft,
   ChevronRight,
   CircleAlert,
   Clock3,
@@ -162,6 +163,7 @@ import { DraftRecovery } from "./DraftRecovery";
 import { PendingQuestions, type PendingQuestionsHandle } from "./PendingQuestions";
 import { QuestionIndex, questionKey } from "./pending-questions";
 import { pruneRequestDrafts } from "./request-draft";
+import { usePhone } from "./phone-layout";
 import type { QuestionSource } from "./types";
 import { Home, type HomeTarget } from "./home/Home";
 import { useOpenAsks } from "./home/open-asks";
@@ -260,6 +262,14 @@ export function App() {
   const [turnDockEngaged, setTurnDockEngaged] = useState(false);
   const [inspector, setInspector] = useState(true);
   const [railOpen, setRailOpen] = useState(true);
+  // Phones (T-170): one screen at a time, the Agent list or what is open.
+  // The list covers the open view instead of replacing it, so its drafts,
+  // reading place and any annotation stay as they were.
+  const phone = usePhone();
+  const [phoneList, setPhoneList] = useState(true);
+  const [phoneInspector, setPhoneInspector] = useState(false);
+  const phoneBack = useRef<HTMLButtonElement>(null);
+  const listShown = phone && phoneList;
   // Without a system frame (Windows desktop), the toolbar is the title bar.
   const frame = useCustomFrame();
   const [homeOpen, setHomeOpen] = useState(false);
@@ -475,6 +485,7 @@ export function App() {
   }, [workspaceFailure, eventConnection, workspaceRefresh]);
   const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode);
   const agent = workspace?.agents.find((a) => a.id === selected);
+  const inspectorShown = (phone ? phoneInspector : inspector) && !!agent && !homeOpen;
   const projects = workspace?.projects || [];
   const workspaceId = workspace?.workspace?.id || "";
   const readingPositions = useMemo(
@@ -686,6 +697,8 @@ export function App() {
       !pageTarget &&
       !workspaceError &&
       !homeOpen &&
+      !listShown &&
+      !(phone && phoneInspector) &&
       !collaborationOpen &&
       !historyReading &&
       !sourceJump &&
@@ -998,7 +1011,23 @@ export function App() {
     if (target && !inScope(target, scope))
       persistScope(scopeForAgent(target, projects));
   }
+  /** Phones: back to the Agent list, with focus on the open Agent's row. */
+  function showAgentList() {
+    setPhoneList(true);
+    setPhoneInspector(false);
+    requestAnimationFrame(() =>
+      (document.querySelector<HTMLElement>(".agent-row.selected .agent-select")
+        || document.querySelector<HTMLElement>(".agent-row .agent-select"))?.focus());
+  }
+  /** An Agent chosen in the list. On a phone the open one comes back as it
+   * was left, not at its latest message, and focus moves to the way back. */
+  function openFromList(id: string) {
+    if (phone && id === selected && !homeOpen) setPhoneList(false);
+    else selectAgent(id);
+    if (phone) requestAnimationFrame(() => phoneBack.current?.focus());
+  }
   function selectAgent(id: string, turnId?: string) {
+    setPhoneList(false);
     // Reopening a conversation returns where it was left (T-166).
     const saved = !turnId && (id !== selected || homeOpen) ? readingPositions?.get(id) : null;
     if (saved?.mode === "anchor" && restoreReading(id, saved)) return;
@@ -1031,6 +1060,7 @@ export function App() {
     openDetails = false,
     extra: { link?: MessageLink; restore?: number } = {},
   ) {
+    setPhoneList(false);
     revealAgent(workspace?.agents.find((a) => a.id === item.agentId));
     setHistoryReading(true);
     setSourceOrigin(origin);
@@ -1563,7 +1593,7 @@ export function App() {
     <PointFixOpen.Provider value={previewMode ? null : openPointFix}>
     <MessageLinks.Provider value={messageLinks}>
     <div
-      className={`app ${isNative ? "native" : "web"} ${railOpen ? "" : "rail-hidden"} ${inspector && agent && !homeOpen ? "with-inspector" : ""}`}
+      className={`app ${isNative ? "native" : "web"} ${railOpen ? "" : "rail-hidden"} ${inspectorShown && !phone ? "with-inspector" : ""}${phone ? ` phone${listShown ? " phone-list" : ""}${inspectorShown ? " phone-inspector" : ""}` : ""}`}
       style={panelWidths.style}
     >
       {previewMode && (
@@ -1587,11 +1617,25 @@ export function App() {
         onMouseDown={(event) => moveWindow(frame, event)}
       >
         <div className="toolbar-brand">
-          <Yuzu size={32} />
-          <span>
-            yuzuno<span className="brand-dot">.</span>
-          </span>
-          <span className="early-label">early days</span>
+          {phone && !phoneList ? (
+            <button
+              ref={phoneBack}
+              className="phone-back"
+              title="Back to the Agent list"
+              onClick={showAgentList}
+            >
+              <ChevronLeft size={18} />
+              Agents
+            </button>
+          ) : (
+            <>
+              <Yuzu size={32} />
+              <span>
+                yuzuno<span className="brand-dot">.</span>
+              </span>
+              <span className="early-label">early days</span>
+            </>
+          )}
         </div>
         <div className="toolbar-middle">
           <span className="toolbar-separator" />
@@ -1613,7 +1657,10 @@ export function App() {
               className={`catchup-nav ${homeOpen ? "selected" : ""}`}
               aria-current={homeOpen ? "page" : undefined}
               title={needsYou > 0 ? `Home · ${needsYou} waiting for your response` : "Home"}
-              onClick={() => setHomeOpen(true)}
+              onClick={() => {
+                setHomeOpen(true);
+                setPhoneList(false);
+              }}
             >
               <House size={15} />
               <span className="toolbar-nav-label">Home</span>
@@ -1652,17 +1699,22 @@ export function App() {
               <Settings2 size={16} />
             </button>
           <button
-            className={`icon-button ${inspector ? "active" : ""}`}
+            className={`icon-button ${(phone ? phoneInspector : inspector) ? "active" : ""}`}
             title="Toggle context panel"
             aria-label="Toggle context panel"
-            onClick={() => setInspector((v) => !v)}
+            onClick={() => {
+              if (!phone) return setInspector((v) => !v);
+              // On a phone the panel is a screen of its own, over what is open.
+              setPhoneInspector((v) => !v);
+              setPhoneList(false);
+            }}
           >
             <PanelRight size={17} />
           </button>
         </div>
         {frame && <WindowControls frame={frame} />}
       </header>
-      <aside className="rail" id="agent-sidebar">
+      <aside className="rail" id="agent-sidebar" inert={phone && !phoneList ? true : undefined}>
         <PanelResizeHandle side="rail" size={panelWidths.rail} />
         <div className="rail-top">
           <RailHeading
@@ -1728,7 +1780,7 @@ export function App() {
                 !(a.id === selected && compacting) &&
                 a.status === "idle"
               }
-              onSelect={() => selectAgent(a.id)}
+              onSelect={() => openFromList(a.id)}
             />
             );
             // All projects, grouped as Settings chooses; a project's own
@@ -1772,7 +1824,10 @@ export function App() {
         {outsidePending > 0 && (
           <button
             className="elsewhere-notice"
-            onClick={() => setHomeOpen(true)}
+            onClick={() => {
+              setHomeOpen(true);
+              setPhoneList(false);
+            }}
             title="Open Home to see them"
           >
             <Bell size={14} />
@@ -1797,7 +1852,8 @@ export function App() {
       </aside>
 
       <ClarificationHost.Provider value={{ detail: currentDetail, outgoing, pendingInputs, readOnly: previewMode, submit: submitMessage, refresh }}>
-      <main className="main-panel">
+      {/* On a phone the list or the context panel covers it, still mounted. */}
+      <main className="main-panel" inert={listShown || (phone && inspectorShown) ? true : undefined}>
         {workspaceError && (
           <div className="connection-banner core-connection-banner" role="alert">
             <WifiOff size={15} />
@@ -2598,7 +2654,7 @@ export function App() {
       </main>
       </ClarificationHost.Provider>
 
-      {inspector && agent && !homeOpen && (
+      {inspectorShown && (
         <aside className="inspector" id="context-panel">
           <PanelResizeHandle side="inspector" size={panelWidths.inspector} />
           <div className="inspector-content">
@@ -2607,7 +2663,7 @@ export function App() {
               <button
                 className="icon-button"
                 aria-label="Close context panel"
-                onClick={() => setInspector(false)}
+                onClick={() => (phone ? setPhoneInspector(false) : setInspector(false))}
               >
                 <X size={14} />
               </button>

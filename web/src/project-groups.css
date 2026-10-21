@@ -254,35 +254,3 @@
   border: 1.5px solid var(--line);
   background: none;
 }
-
-/* The avatar-only rail of the narrowest windows: a thin line between groups,
-   nothing to read or fold. */
-@media (max-width: 520px) {
-  .project-group > .project-group-head {
-    position: static;
-    height: 1px;
-    margin: 6px 4px 8px;
-    padding: 0;
-    overflow: hidden;
-    border: 0;
-    background: var(--line);
-  }
-  .project-group > .project-group-head > * {
-    display: none;
-  }
-  .agent-list > .project-group:first-child > .project-group-head {
-    display: none;
-  }
-  .project-group-cards,
-  .project-group-bands {
-    padding: 0;
-    border: 0;
-    background: none;
-  }
-  .project-group-bands::before {
-    display: none;
-  }
-  .project-group-cards .agent-row {
-    padding-inline: 8px;
-  }
-}

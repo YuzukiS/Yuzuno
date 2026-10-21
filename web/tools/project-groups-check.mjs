@@ -7,8 +7,8 @@
 //   is too narrow for both), and remembers it. A search
 //   opens every group; choosing an Agent opens its group.
 // - Each group's + starts a new Agent in its project (none for No project).
-// - The Closed list groups the same way; the narrowest rail draws only a
-//   line between groups.
+// - The Closed list groups the same way. On a phone (T-170) the list is a
+//   screen of its own at full width, with the same group headings.
 // Production bundle in an isolated browser with an explicit API fixture; no
 // Core, daily window or writes.
 import assert from "node:assert/strict";
@@ -327,7 +327,7 @@ try {
   await page.getByRole("group", { name: "Show agents" }).getByRole("button", { name: /^Active/ }).click();
   check("one project's list is not grouped; the Closed list groups the same way");
 
-  // Dark, and the narrowest rail: a line between groups, every group open.
+  // Dark, and a phone: the list at full width, with its group headings.
   await page.evaluate(() => {
     const saved = JSON.parse(localStorage.getItem("yuzuno.appearance"));
     localStorage.setItem("yuzuno.appearance", JSON.stringify({ ...saved, theme: "dark" }));
@@ -340,7 +340,12 @@ try {
   await shot(page, "cards-dark.png");
   await setStyle(page, "Colour bands");
   await shot(page, "bands-dark.png");
+  // Folds are kept on a phone too: open Paper notes again to see every row.
+  await toggle(page, "Paper notes").click();
+  await settled(page, "Paper notes", false);
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(300);
+  if (await page.locator(".phone-back").isVisible()) await page.locator(".phone-back").click();
   await page.waitForTimeout(300);
   const narrow = await page.evaluate(() => {
     const list = document.querySelector(".agent-list");
@@ -350,10 +355,10 @@ try {
       hidden: [...list.querySelectorAll(".agent-row")].filter((r) => r.getBoundingClientRect().height < 1).length,
     };
   });
-  assert.ok(!narrow.overflow && narrow.heads.every((h) => h <= 1) && narrow.hidden === 0, JSON.stringify(narrow));
+  assert.ok(!narrow.overflow && narrow.heads.every((h) => h > 1) && narrow.hidden === 0, JSON.stringify(narrow));
   await shot(page, "bands-dark-390.png");
   await setStyle(page, "Headers");
-  check("dark headings, cards and bands; the narrowest rail draws a line between open groups", narrow);
+  check("dark headings, cards and bands; a phone's list keeps its group headings at full width", narrow);
   assert.deepEqual(report.errors, []);
   await page.close();
 

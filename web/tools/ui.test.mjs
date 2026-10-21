@@ -3809,6 +3809,107 @@ test("agent settings suspend automatic reading until the closed dialog starts a 
   }
 });
 
+// Phones (T-170): the same queries the app reads, answered as a phone would.
+const PHONE = "(max-width: 520px), (max-height: 500px) and (hover: none) and (pointer: coarse)";
+function asPhone(window) {
+  window.matchMedia = (media) => ({ media, matches: media === PHONE, addEventListener() {}, removeEventListener() {} });
+}
+const appClass = (page) => page.document.querySelector(".app").className;
+const openAgent = (page, name) =>
+  page.document.querySelector(`.agent-row .agent-select[aria-label="Open ${name}"]`).click();
+/** Makes the conversation readable to useAutoRead, as the settings test does. */
+function readable(page) {
+  const scroller = page.document.querySelector(".conversation-scroll");
+  const end = page.document.querySelector(".read-end-marker");
+  Object.defineProperty(page.document, "hasFocus", { configurable: true, value: () => true });
+  Object.defineProperty(page.document, "visibilityState", { configurable: true, value: "visible" });
+  Object.defineProperties(scroller, {
+    clientHeight: { configurable: true, value: 500 },
+    clientWidth: { configurable: true, value: 700 },
+    scrollHeight: { configurable: true, value: 500 },
+    scrollTop: { configurable: true, writable: true, value: 0 },
+  });
+  scroller.getBoundingClientRect = () => ({ top: 100, left: 100, bottom: 600, right: 800, width: 700, height: 500 });
+  end.getBoundingClientRect = () => ({ top: 598, left: 110, bottom: 599, right: 790, width: 680, height: 1 });
+  page.window.dispatchEvent(new page.window.Event("focus"));
+}
+
+test("on a phone the Agent list and what is open are one screen each, and the way back keeps the conversation (T-170)", async () => {
+  const page = await mount({ beforeLoad: asPhone, stored: { "yuzuno.selected": JSON.stringify("a") } });
+  try {
+    // It starts on the list; the conversation is there underneath, out of reach.
+    assert.match(appClass(page), /\bphone\b.*\bphone-list\b/);
+    assert.equal(page.document.querySelector(".main-panel").hasAttribute("inert"), true);
+    assert.equal(page.document.querySelector(".rail").hasAttribute("inert"), false);
+    assert.equal(button(page, "Agents"), undefined);
+    readable(page);
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+    assert.equal(page.calls.filter((r) => r.url.endsWith("/review")).length, 0, "nothing is read while the list covers it");
+    openAgent(page, "Mori");
+    await pause();
+    assert.doesNotMatch(appClass(page), /phone-list/);
+    assert.equal(page.document.querySelector(".main-panel").hasAttribute("inert"), false);
+    assert.equal(page.document.querySelector(".rail").hasAttribute("inert"), true);
+    const back = button(page, "Agents");
+    assert.equal(page.document.activeElement, back, "focus moves to the way back");
+    readable(page);
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+    assert.equal(page.calls.filter((r) => r.url.endsWith("/review")).length, 1, "the open conversation is read as before");
+    // A draft stays with its Agent across the list and another Agent.
+    setValue(page.window, page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), "Mori's draft.");
+    await pause();
+    back.click();
+    await pause();
+    assert.match(appClass(page), /phone-list/);
+    assert.equal(page.document.activeElement, page.document.querySelector('.agent-row.selected .agent-select'), "focus returns to the open Agent's row");
+    assert.ok(page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), "the conversation stays mounted under the list");
+    openAgent(page, "Hana");
+    await waitForPreviewState(() => page.document.querySelector('[data-composer-input][aria-label="Message Hana"]'), "Hana's conversation");
+    assert.equal(composerText(page.document.querySelector('[data-composer-input][aria-label="Message Hana"]')), "");
+    button(page, "Agents").click();
+    await pause();
+    openAgent(page, "Mori");
+    await waitForPreviewState(() => page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), "Mori's conversation");
+    assert.equal(composerText(page.document.querySelector('[data-composer-input][aria-label="Message Mori"]')), "Mori's draft.");
+    assert.equal(savedDraftText(page.window.localStorage, "b"), null);
+    // The context panel is a screen of its own over the conversation.
+    assert.equal(page.document.querySelector(".inspector"), null);
+    page.document.querySelector('[aria-label="Toggle context panel"]').click();
+    await pause();
+    assert.ok(page.document.querySelector(".inspector"));
+    assert.match(appClass(page), /phone-inspector/);
+    assert.equal(page.document.querySelector(".main-panel").hasAttribute("inert"), true);
+    page.document.querySelector('[aria-label="Close context panel"]').click();
+    await pause();
+    assert.equal(page.document.querySelector(".inspector"), null);
+    assert.equal(page.document.querySelector(".main-panel").hasAttribute("inert"), false);
+    // Home opens from the toolbar whichever screen shows.
+    button(page, "Agents").click();
+    await pause();
+    page.document.querySelector(".toolbar-nav .catchup-nav").click();
+    await pause();
+    assert.doesNotMatch(appClass(page), /phone-list/);
+    assert.equal(page.document.querySelector(".toolbar-nav .catchup-nav").getAttribute("aria-current"), "page");
+    assert.ok(button(page, "Agents"), "the way back to the list stays");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("wider windows keep the side-by-side layout, with the context panel as it was (T-170)", async () => {
+  const page = await mount();
+  try {
+    assert.doesNotMatch(appClass(page), /phone/);
+    assert.equal(page.document.querySelector(".main-panel").hasAttribute("inert"), false);
+    assert.equal(page.document.querySelector(".rail").hasAttribute("inert"), false);
+    assert.equal(button(page, "Agents"), undefined);
+    assert.ok(page.document.querySelector(".inspector"), "the context panel starts open, as before");
+  } finally {
+    page.close();
+  }
+});
+
 test("offline Claude can resume despite stale in-progress history and keeps its draft on a failed response", async () => {
   const page = await mount({ harness: "claude", status: "offline", turnStatus: "inProgress", failMessageResponseOnce: true });
   try {
