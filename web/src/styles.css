@@ -3091,6 +3091,12 @@ p {
 .app.phone:not(.phone-list) > .rail {
   display: none;
 }
+/* Covered, the open view keeps its layout and scroll position but shows
+   nothing, not even its turn dock or other positioned parts. */
+.app.phone.phone-list > .main-panel,
+.app.phone.phone-inspector > .main-panel {
+  visibility: hidden;
+}
 .app.phone > .rail {
   z-index: 3;
   border-right: 0;
@@ -3142,4 +3148,20 @@ p {
 }
 .app.phone .agent-select {
   min-height: 44px;
+}
+/* A phone held sideways: room for the conversation above the composer.
+   The status bar, the composer's project and model line and the turn dock
+   (which would sit over Send) wait for a taller screen. */
+@media (max-height: 500px) {
+  .app.phone {
+    grid-template-rows: 57px minmax(0, 1fr) 0;
+  }
+  .app.phone:has(.preview-strip) {
+    grid-template-rows: 28px 57px minmax(0, 1fr) 0;
+  }
+  .app.phone .statusbar,
+  .app.phone .composer-footnote,
+  .app.phone .turn-dock {
+    display: none;
+  }
 }

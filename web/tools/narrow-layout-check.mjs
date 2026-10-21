@@ -153,6 +153,11 @@ async function back(page) {
   await page.locator(".phone-back").click();
   await page.waitForTimeout(250);
 }
+/** Which part of the app is on top at a point: nothing of a covered view may show through. */
+const topAt = (page, x, y) => page.evaluate(([x, y]) => {
+  const el = document.elementFromPoint(x, y);
+  return el?.closest(".rail") ? "rail" : el?.closest(".inspector") ? "inspector" : el?.closest(".main-panel") ? "main" : el?.tagName || null;
+}, [x, y]);
 /** The touch targets on screen that are smaller than 44 × 44 CSS px. */
 const smallTouch = (page) => page.evaluate((selector) => [...document.querySelectorAll(selector)]
   .filter((el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !el.closest("[inert]") && (r.width < 44 || r.height < 44); })
@@ -191,6 +196,7 @@ try {
     await page.locator(".project-switcher").scrollIntoViewIfNeeded();
     assert.ok(await page.locator(".project-switcher").isVisible(), "the project switcher is in the list");
     assert.deepEqual(await smallTouch(page), [], "list targets are at least 44 × 44");
+    for (const y of [0.3, 0.5, 0.7]) assert.equal(await topAt(page, viewport.width - 30, Math.round(viewport.height * y)), "rail", "nothing of the conversation shows over the list");
     check(`${viewport.name}: the list is one screen with search, projects and every entry`, { rail });
 
     // An Agent opens its conversation at full width, with the way back.
@@ -201,8 +207,16 @@ try {
     assert.ok(reachable(opened, "Composer", "Send", "Home", "Settings", "Context panel"), JSON.stringify(opened.entries));
     assert.equal(await page.evaluate(() => document.activeElement?.className), "phone-back", "focus moves to the way back");
     assert.deepEqual(await smallTouch(page), [], "conversation targets are at least 44 × 44");
+    const send = await page.locator(".send-button").evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { onTop: el.contains(hit), bottom: Math.round(r.bottom) };
+    });
+    assert.ok(send.onTop && send.bottom <= viewport.height, `Send is on screen and nothing covers it: ${JSON.stringify(send)}`);
+    const room = await scroller(page).evaluate((el) => Math.round(el.getBoundingClientRect().height));
+    assert.ok(room >= (viewport === landscape ? 120 : 300), `room for the conversation: ${room}px`);
     await shot(page, `${viewport.name}-conversation`);
-    check(`${viewport.name}: an Agent opens full width, Send on screen, focus on ‹ Agents`, { send: opened.entries.Send.box });
+    check(`${viewport.name}: an Agent opens full width, Send on screen and uncovered, focus on ‹ Agents`, { send: opened.entries.Send.box, room });
 
     if (viewport === landscape) {
       await context.close();
@@ -244,6 +258,7 @@ try {
     await page.waitForTimeout(250);
     const panel = await page.locator(".inspector").evaluate((el) => Math.round(el.getBoundingClientRect().width));
     assert.equal(panel, viewport.width);
+    for (const y of [0.3, 0.5, 0.7]) assert.equal(await topAt(page, viewport.width - 30, Math.round(viewport.height * y)), "inspector", "nothing of the conversation shows over the panel");
     await shot(page, `${viewport.name}-context`);
     await page.locator('[aria-label="Close context panel"]').click();
     await page.waitForTimeout(200);
