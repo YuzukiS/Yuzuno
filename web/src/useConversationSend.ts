@@ -6,6 +6,7 @@ import type {
   MessageInput,
   MessageReceipt,
   QuestionSource,
+  SkillRef,
 } from "./types";
 
 const storageKey = "yuzuno.outbox";
@@ -84,8 +85,9 @@ export function useConversationSend(
       /* In-memory retry protection still applies. */
     }
   };
-  async function submit(text: string, question: QuestionSource | null = null, images: readonly string[] = [], clarification?: MessageInput["clarification"], textBlocks?: MessageInput["textBlocks"]) {
+  async function submit(text: string, question: QuestionSource | null = null, images: readonly string[] = [], clarification?: MessageInput["clarification"], textBlocks?: MessageInput["textBlocks"], skills: readonly SkillRef[] = []) {
     if (images.length && (harness !== "codex" && harness !== "claude")) throw new Error("Images are supported by Codex and Claude Agents.");
+    if (skills.length && (harness !== "codex" || question || clarification)) throw new Error("Skills are sent only to a Codex Agent, in a new or follow-up message.");
     // Covers both the composer and answers to nonblocking model questions.
     // Native pending approvals use their own respond endpoint and stay usable.
     if (detail?.collaboration?.ready === false)
@@ -108,12 +110,14 @@ export function useConversationSend(
     const input: MessageInput =
       previous?.text === text && sameMessageImages(previous.images, images)
         && JSON.stringify(previous.clarification) === JSON.stringify(clarification)
+        && JSON.stringify(previous.skills ?? []) === JSON.stringify(skills)
         ? previous
         : {
             clientMessageId: crypto.randomUUID(),
             text,
             ...(textBlocks ? { textBlocks } : {}),
             ...(images.length ? { images: [...images] } : {}),
+            ...(skills.length ? { skills: skills.map(({ name, path }) => ({ name, path })) } : {}),
             expectedTurnId: turnId,
             question,
             ...(clarification ? { clarification: structuredClone(clarification) } : {}),

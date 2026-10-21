@@ -155,12 +155,28 @@ pub struct MessageInput {
     pub clarification: Option<ClarificationAnswer>,
 }
 
+/// A Codex skill a message invokes, as the Agent's own Codex listed it
+/// (`codex_skills`): its name and its path on the Agent's machine, an
+/// identifier there, never interpreted here.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillRef {
+    pub name: String,
+    pub path: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageReceipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<crate::message_content::MessageBinding>,
     pub input: MessageInput,
+    /// The Codex skills the message invokes. Beside `input`, not in it:
+    /// `MessageInput` refuses unknown fields, so a Core that predates this
+    /// still reads a receipt that has them (and leaves them out when it
+    /// writes the receipt again).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<SkillRef>,
     pub status: String,
     pub turn_id: Option<String>,
     pub error: Option<String>,

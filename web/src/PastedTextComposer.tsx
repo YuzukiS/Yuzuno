@@ -44,7 +44,7 @@ import {
   type ComposerDraft,
   type PastedText,
 } from "./composer-draft";
-import { codexControls, slashCommands, withModelControl, type CommandList } from "./slash-commands";
+import { slashCommands, withCodexSkills, withModelControl, type CommandList, type SlashCommand } from "./slash-commands";
 import { api } from "./api";
 import "./pasted-text.css";
 import "./slash-commands.css";
@@ -61,9 +61,12 @@ type Props = {
   draft: ComposerDraft;
   readOnly?: boolean;
   /** When the draft starts with "/": a Claude Agent's commands, or the
-   * controls Yuzuno runs for a Codex Agent. */
+   * controls Yuzuno runs for a Codex Agent and the skills its Codex lists
+   * (also after "$"). */
   slashCommands?: "claude" | "codex" | false;
   onChange: (draft: ComposerDraft) => void;
+  /** A Codex skill chosen from the list: for the draft's chosen skills. */
+  onSkill?: (skill: SlashCommand) => void;
   onSubmit: () => void;
   onImages?: (files: File[]) => void;
 };
@@ -155,7 +158,14 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
             ).then(withModelControl),
           )
         : callbacks.current.slashCommands === "codex" && !callbacks.current.readOnly
-          ? slashCommands(() => Promise.resolve(codexControls), "codex")
+          ? slashCommands(
+              () =>
+                api<CommandList>(
+                  `/agents/${encodeURIComponent(callbacks.current.agentId)}/codex/skills`,
+                ).then(withCodexSkills, () => withCodexSkills({ state: "failed", reason: "read_failed" })),
+              "codex",
+              (skill) => callbacks.current.onSkill?.(skill),
+            )
           : [],
     ];
     function stateFor(draft: ComposerDraft) {
@@ -323,7 +333,7 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
                 update.state.field(pasteField).anchors
             )
               return;
-            const next = { ...editorDraft(update.state), images: callbacks.current.draft.images };
+            const next = { ...editorDraft(update.state), images: callbacks.current.draft.images, skills: callbacks.current.draft.skills };
             published.current = next;
             callbacks.current.onChange(next);
           }),

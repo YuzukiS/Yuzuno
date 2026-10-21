@@ -1,5 +1,5 @@
 use crate::{
-    model::{ensure_agent_open, now, Agent, AgentDetail, AgentSettings, MessageInput, MessageReceipt, PendingRequest, RemoteAgent},
+    model::{ensure_agent_open, now, Agent, AgentDetail, AgentSettings, MessageInput, MessageReceipt, PendingRequest, RemoteAgent, SkillRef},
     rpc::{OutcomeUnknown, Rpc, RpcError},
     store::Store,
     remote,
@@ -1238,10 +1238,10 @@ impl Workspace {
     }
 
     pub(crate) async fn send_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>) -> Result<Value> {
-        self.send_images_locked(id, text, client_id, &[]).await
+        self.send_images_locked(id, text, client_id, &[], &[]).await
     }
 
-    async fn send_images_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String]) -> Result<Value> {
+    async fn send_images_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String], skills: &[SkillRef]) -> Result<Value> {
         self.ensure_rewind_settled(id).await?;
         let detail = self.send_view(id).await?;
         ensure_agent_open(&detail.agent)?;
@@ -1263,6 +1263,7 @@ impl Workspace {
             .context("会话 ID 尚未确认，未发送新任务")?;
         let mut params = turn_params(&detail.agent, &thread, &text, client_id);
         if !images.is_empty() { params["input"] = self.image_input(id, &detail.agent, &connection, &text, images).await?; }
+        if let Some(input) = params["input"].as_array_mut() { input.extend(crate::codex_skills::input_items(skills)); }
         let params = permission_params(&connection, &detail.agent, params, true).await?;
         self.require_collaboration(id).await?;
         anyhow::ensure!(same_generation(self.rpcs.lock().unwrap().get(id), connection.generation),
@@ -1369,6 +1370,13 @@ impl Workspace {
     }
 
     pub async fn send_message(self: &Arc<Self>, id: &str, input: MessageInput) -> Result<MessageReceipt> {
+        self.send_message_with_skills(id, input, Vec::new()).await
+    }
+
+    /// A message that also invokes Codex skills the Agent's Codex listed
+    /// (`codex_skills`): typed `skill` items after its text, kept on its
+    /// receipt beside the input.
+    pub async fn send_message_with_skills(self: &Arc<Self>, id: &str, input: MessageInput, skills: Vec<SkillRef>) -> Result<MessageReceipt> {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
@@ -1378,7 +1386,7 @@ impl Workspace {
         // the first send may have gone, and the client keeps its id.
         let detail = self.send_view(id).await?;
         if let Some(previous) = detail.message_receipts.iter().find(|r| r.input.client_message_id == input.client_message_id) {
-            if previous.input != input { bail!("同一消息编号不能提交不同的内容"); }
+            if previous.input != input || previous.skills != skills { bail!("同一消息编号不能提交不同的内容"); }
             return Ok(previous.clone());
         }
         // No receipt: nothing is sent before message/requested is recorded,
@@ -1390,7 +1398,10 @@ impl Workspace {
                 bail!("消息或消息编号无效");
             }
             crate::message_content::validate(&input)?;
+            crate::codex_skills::check(&skills)?;
             ensure_agent_open(&detail.agent)?;
+            anyhow::ensure!(skills.is_empty() || (detail.agent.harness == "codex" && input.question.is_none() && input.clarification.is_none()),
+                "Skills are sent only to a Codex Agent, in a new or follow-up message");
             let claude = detail.agent.harness == "claude";
             anyhow::ensure!(input.clarification.is_none() || (input.question.is_none() && input.images.is_empty()),
                 "Submit form answers separately from image attachments and native questions");
@@ -1432,6 +1443,13 @@ impl Workspace {
                 self.stored(move |store| store.activate_codex_import(&agent)).await?;
             }
             self.admit_message(id, &input, &detail).await?;
+            if !skills.is_empty() {
+                // On the connection the message goes out on, for the Agent's
+                // own folder: each skill as chosen, still listed and on.
+                let connection = self.rpcs.lock().unwrap().get(id).cloned()
+                    .context("No connection to this Agent's Codex; the message was not sent")?;
+                crate::codex_skills::verify(&connection.rpc, &detail.agent.cwd, &skills).await?;
+            }
             if let Some(form) = &input.clarification {
                 self.validate_clarification(&self.detail(id).await?.agent, form, &input.text).await?;
             }
@@ -1442,7 +1460,7 @@ impl Workspace {
             Err(error) if error.is::<crate::collaboration_credentials::MessageNotSubmitted>() => return Err(error),
             Err(error) => return Err(crate::collaboration_credentials::MessageNotSubmitted(error).into()),
         };
-        let receipt = MessageReceipt { binding: None, input: input.clone(), status: "sending".into(), turn_id: None, error: None };
+        let receipt = MessageReceipt { binding: None, input: input.clone(), skills: skills.clone(), status: "sending".into(), turn_id: None, error: None };
         self.record_meta(id, "message/requested", serde_json::to_value(&receipt)?, move |m| m.message_receipts.push(receipt)).await?;
         self.changed(id);
         let result = if detail.agent.harness == "opencode" {
@@ -1455,10 +1473,10 @@ impl Workspace {
             if claude {
                 self.claude_steer_locked(id, &input.text, expected, &input.client_message_id, &input.images).await
             } else {
-                self.steer_images_locked(id, &input.text, expected, &input.client_message_id, &input.images).await
+                self.steer_images_locked(id, &input.text, expected, &input.client_message_id, &input.images, &skills).await
             }
         } else {
-            self.send_images_locked(id, input.text.clone(), Some(&input.client_message_id), &input.images).await
+            self.send_images_locked(id, input.text.clone(), Some(&input.client_message_id), &input.images, &skills).await
         };
         let (status, turn_id, error) = match result {
             // Queued at Claude, not yet confirmed: a turn naming its uuid confirms it.
@@ -1500,7 +1518,7 @@ impl Workspace {
         let active = detail.turns.iter().rev().find(|t| t["status"] == "inProgress")
             .and_then(|t| t["id"].as_str());
         if let Some(turn) = active {
-            let result = self.steer_images_locked(id, &input.text, turn, &input.client_message_id, &input.images).await;
+            let result = self.steer_images_locked(id, &input.text, turn, &input.client_message_id, &input.images, &[]).await;
             let rejected_as_finished = result.as_ref().err().and_then(|e| e.downcast_ref::<RpcError>())
                 .is_some_and(|e| e.code == -32600 && e.message == "no active turn to steer");
             if !rejected_as_finished { return result; }
@@ -1511,14 +1529,14 @@ impl Workspace {
                 bail!("原 Turn 刚结束，会话状态仍在更新。回答已保留，请稍后重试");
             }
         }
-        self.send_images_locked(id, input.text.clone(), Some(&input.client_message_id), &input.images).await
+        self.send_images_locked(id, input.text.clone(), Some(&input.client_message_id), &input.images, &[]).await
     }
 
     pub(crate) async fn steer_locked(self: &Arc<Self>, id: &str, text: &str, expected: &str, client_id: &str) -> Result<Value> {
-        self.steer_images_locked(id, text, expected, client_id, &[]).await
+        self.steer_images_locked(id, text, expected, client_id, &[], &[]).await
     }
 
-    async fn steer_images_locked(self: &Arc<Self>, id: &str, text: &str, expected: &str, client_id: &str, images: &[String]) -> Result<Value> {
+    async fn steer_images_locked(self: &Arc<Self>, id: &str, text: &str, expected: &str, client_id: &str, images: &[String], skills: &[SkillRef]) -> Result<Value> {
         let detail = self.send_view(id).await?;
         ensure_agent_open(&detail.agent)?;
         if detail.agent.connection_state != "connected" || matches!(detail.agent.status.as_str(), "offline" | "uncertain") {
@@ -1529,8 +1547,9 @@ impl Workspace {
         }
         let connection = self.rpcs.lock().unwrap().get(id).cloned().context("连接已断开，补充消息未发送")?;
         self.require_collaboration(id).await?;
-        let input = if images.is_empty() { json!([{"type":"text","text":text}]) }
+        let mut input = if images.is_empty() { json!([{"type":"text","text":text}]) }
             else { self.image_input(id, &detail.agent, &connection, text, images).await? };
+        if let Some(input) = input.as_array_mut() { input.extend(crate::codex_skills::input_items(skills)); }
         anyhow::ensure!(same_generation(self.rpcs.lock().unwrap().get(id), connection.generation),
             "连接已变化，补充消息未发送；草稿保留");
         let result = connection.rpc.request("turn/steer", json!({
@@ -2671,6 +2690,10 @@ mod collaboration_admission_tests;
 #[cfg(all(test, unix))]
 #[path = "native_compact_tests.rs"]
 mod native_compact_tests;
+
+#[cfg(all(test, unix))]
+#[path = "codex_skills_tests.rs"]
+mod codex_skills_tests;
 
 #[cfg(all(test, unix))]
 #[path = "subagent_requests_tests.rs"]

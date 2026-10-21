@@ -8,6 +8,8 @@ import { ImageAttachments, inputImageUrl } from "./ImageAttachments";
 import { MailboxNotice } from "./MailboxNotice";
 import { userRequestText, userText } from "./message-content";
 import { messageImages } from "./image-input";
+import { messageSkills } from "./skill-refs";
+import { SkillChips } from "./SkillChips";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { marked } from "marked";
@@ -757,6 +759,7 @@ export function Turn({
             <CopyLinkButton agent={agent} turnId={turn.id} itemId={item.id} />
           </div>
           <div className="user-text"><MessageContent text={userText(item)} blocks={item._yuzunoTextBlocks} /></div>
+          <SkillChips skills={messageSkills(item.content)} />
           <ImageAttachments images={messageImages(item.content)} onAnnotate={!pointFix ? undefined : ((image) => pointFix({
             name: image.name || "Image",
             ownerId: agent.id,

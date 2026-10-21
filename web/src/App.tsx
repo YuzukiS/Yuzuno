@@ -1,4 +1,6 @@
 import { ImageAttachments, inputImageUrl } from "./ImageAttachments";
+import { SkillChips } from "./SkillChips";
+import { MAX_DRAFT_SKILLS } from "./composer-draft";
 import { useImageUploads } from "./useImageUploads";
 import { PointFix, imageRefusal } from "./PointFix";
 import { PointFixOpen, type PointFixSource } from "./point-fix";
@@ -1417,7 +1419,7 @@ export function App() {
     try {
       // `/model` and a Codex `/compact` are Yuzuno controls: run here, never
       // sent to the model as a prompt. Anything else is a message as before.
-      const control = sentDraft.images?.length || draftTextBlocks(sentDraft)?.length ? null : nativeControl(text, agent.harness || "codex");
+      const control = sentDraft.images?.length || sentDraft.skills?.length || draftTextBlocks(sentDraft)?.length ? null : nativeControl(text, agent.harness || "codex");
       if (control?.command === "model") {
         if (/\s/.test(control.args)) throw new Error("Give one model name, for example /model followed by a name from this Agent's settings. Your draft is kept.");
         // The notice comes once the settings have opened for it.
@@ -1433,7 +1435,9 @@ export function App() {
         return;
       }
       if (sentDraft.images?.some(image => image.agentId !== target)) throw new Error("These images belong to the original Agent. Attach them again in this Agent; your draft is kept.");
-      await submitMessage(text, null, sentDraft.images?.map(image => image.id), undefined, draftTextBlocks(sentDraft));
+      if (sentDraft.skills?.some(skill => skill.agentId !== target)) throw new Error("These skills were listed for another Agent. Choose them again for this Agent; your draft is kept.");
+      await submitMessage(text, null, sentDraft.images?.map(image => image.id), undefined, draftTextBlocks(sentDraft),
+        sentDraft.skills?.map(({ name, path }) => ({ name, path })));
       clearIfUnchanged(target, sentDraft);
       refresh();
       if (currentSelected.current === target) composer.current?.focus();
@@ -2551,11 +2555,18 @@ export function App() {
                     readOnly={previewMode || draftBlocked}
                     slashCommands={previewMode || isOpenCode ? false : isClaude ? "claude" : "codex"}
                     onChange={next => setDraft(selected, next)}
+                    onSkill={skill => skill.path && setDraft(selected, current => {
+                      const others = (current.skills || []).filter(s => s.agentId === selected && !(s.name === skill.name && s.path === skill.path));
+                      return { ...current, skills: [...others, { agentId: selected, name: skill.name, path: skill.path!, scope: skill.scope || "" }].slice(-MAX_DRAFT_SKILLS) };
+                    })}
                     onImages={files => void imageUploads.add(files)}
                     onSubmit={() => void send()}
                   />
                   <ImageAttachments images={draft.images || []} description={agent?.harness === "claude" ? CLAUDE_IMAGE_NOTE : undefined} onRemove={previewMode || draftBlocked ? undefined : id => setDraft(selected, current => ({ ...current, images: current.images?.filter(image => image.id !== id) }))}
                     annotateThumbnails onAnnotate={previewMode || draftBlocked ? undefined : image => markUpDraftImage(image)} />
+                  <SkillChips skills={(draft.skills || []).filter(skill => skill.agentId === selected)}
+                    onRemove={previewMode || draftBlocked ? undefined : skill => setDraft(selected, current => ({ ...current,
+                      skills: current.skills?.filter(s => !(s.name === skill.name && s.path === skill.path)) }))} />
                   {imageUploads.error && <p className="inline-error" role="alert">{imageUploads.error}</p>}
                   {draftError && <p className="inline-error" role="alert">{draftError}</p>}
                   {draftBlocked && !previewMode && <DraftRecovery key={selected} onDiscard={() => discardSavedDraft(selected)} />}
