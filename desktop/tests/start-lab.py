@@ -328,14 +328,16 @@ def main():
         step("two-starts-one-core", answers=answers)
 
         # 7. The window is killed while its start runs. What becomes of the
-        #    start is observed, not assumed: the wsl.exe running it (and its
-        #    parent) on Windows, the helper and Core in WSL. Whatever Core it
-        #    started must stay.
+        #    start is observed: the wsl.exe running it (and its parent) on
+        #    Windows, the helper and Core in WSL. The start goes on without the
+        #    window, and the Core it starts stays.
         stop(third, managed)
 
         def observe():
-            helpers = [pid for pid in lab_processes(managed) if os.readlink(f"/proc/{pid}/exe").endswith("/yuzuno-update-helper")]
-            return {"wsl": windows("Starts", InstallDir=str(managed)), "helpers": helpers,
+            running = {pid: os.readlink(f"/proc/{pid}/exe").rsplit("/", 1)[1] for pid in lab_processes(managed)}
+            return {"wsl": windows("Starts", InstallDir=str(managed)),
+                    "helpers": [pid for pid, name in running.items() if name == "yuzuno-update-helper"],
+                    "cores": [pid for pid, name in running.items() if name == "yuzuno-workspace"],
                     "listener": listener(args.port), "starts": starts()}
 
         window("click-start")
@@ -343,21 +345,22 @@ def main():
                                     "the start to be under way")}
         windows("Kill", DesktopProcessId=desktop)
         desktop = None
+        killed_at = time.monotonic()
         time.sleep(3)
         seen["3sAfterKill"] = observe()
-        time.sleep(12)
-        seen["15sAfterKill"] = observe()
-        fourth = listener(args.port)
-        if fourth:
-            lab_cores.append(fourth)
-            until(lambda: (health(args.port) or {}).get("workspaceId") == workspace, 120, "that Core to answer")
-            time.sleep(20)
-            assert listener(args.port) == fourth, "the Core a killed window started was stopped"
-            seen["core"] = process(fourth)
-        step("window-killed-mid-start", started=bool(fourth), **seen)
+        # A debug Core checks its 1 GB release before it listens.
+        fourth = until(lambda: listener(args.port), 180, "the start to go on after the window was killed")
+        lab_cores.append(fourth)
+        until(lambda: (health(args.port) or {}).get("workspaceId") == workspace, 120, "that Core to answer")
+        seen["answering"] = {"secondsAfterKill": round(time.monotonic() - killed_at, 1), **observe()}
+        time.sleep(20)
+        assert listener(args.port) == fourth, "the Core a killed window started was stopped"
+        seen["20sLater"] = observe()
+        seen["core"] = process(fourth)
+        assert starts() == 3, starts()
+        step("window-killed-mid-start", **seen)
         until(lambda: not devtools(args.cdp_port), 60, "the killed window's DevTools to go")
-        if fourth:
-            stop(fourth, managed)
+        stop(fourth, managed)
         desktop = windows("Launch", CoreUrl=url, CdpPort=args.cdp_port)["pid"]
         until(lambda: devtools(args.cdp_port), 60, "the lab window's DevTools")
 
