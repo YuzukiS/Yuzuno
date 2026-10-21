@@ -293,3 +293,61 @@ async fn reconnect_over_http_answers_the_whole_record_or_only_the_agent() {
     assert_eq!(ids(&d.turns), ids(whole["turns"].as_array().unwrap()), "the history is unchanged");
     ws.close_agent("a").await.unwrap();
 }
+
+/// POST /api/agents/{id}/reopen answers with the Agent as the whole record
+/// has it (its project too), now without reading the history to check that
+/// it was closed; the history is kept, nothing is sent again, and an Agent
+/// that is open already is answered without reconnecting.
+#[tokio::test]
+async fn reopen_over_http_answers_the_agent_as_the_whole_record_has_it() {
+    use axum::{body::{to_bytes, Body}, http::Request};
+    use tower::ServiceExt;
+    let (dir, ws) = fixture().await;
+    let project = ws.store.create_project("P", Default::default()).unwrap();
+    ws.store.set_agent_project("a", Some(&project.id)).unwrap();
+    ws.send("a", "A real native protocol fixture task".into()).await.unwrap();
+    let router = yuzuno_workspace::server::router_on_port(ws.clone(), dir.path().join("assets"), 4317);
+    let post = |uri: &str| {
+        let request = Request::post(uri).header("host", "localhost:4317").header("x-yuzuno-client", "desktop")
+            .header("content-type", "application/json").body(Body::from("{}")).unwrap();
+        let router = router.clone();
+        async move {
+            let response = router.oneshot(request).await.unwrap();
+            let status = response.status().as_u16();
+            let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+            (status, body)
+        }
+    };
+    let calls = || std::fs::read_to_string(dir.path().join("calls.jsonl")).unwrap().lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>();
+    let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+
+    let (status, summary) = post("/api/agents/a/reconnect?view=summary").await;
+    assert_eq!(status, 200);
+    assert_eq!(summary["agent"]["projectId"], project.id.as_str(), "the summary's Agent has its project");
+
+    let closed = ws.close_agent("a").await.unwrap();
+    let before = calls().len();
+    let (status, reopened) = post("/api/agents/a/reopen").await;
+    assert_eq!(status, 200, "{reopened}");
+    let whole = serde_json::to_value(ws.store.detail("a").unwrap().agent).unwrap();
+    assert_eq!(keys(&reopened), keys(&whole), "the same Agent fields as before");
+    for key in ["id", "threadId", "projectId", "workSummary", "closedAt", "harness", "cwd"] {
+        assert_eq!(reopened[key], whole[key], "{key}");
+    }
+    assert!(reopened["closedAt"].is_null());
+    assert_eq!(reopened["projectId"], project.id.as_str());
+    let d = ws.store.detail("a").unwrap();
+    assert_eq!(d.turns, closed.turns, "the history is kept");
+    let since = &calls()[before..];
+    assert!(since.iter().any(|c| matches!(c["method"].as_str(), Some("thread/resume" | "thread/read"))), "it reconnected");
+    assert!(since.iter().all(|c| c["method"] != "turn/start" && c["method"] != "thread/start"), "nothing was sent again");
+
+    let before = calls().len();
+    let (status, again) = post("/api/agents/a/reopen").await;
+    assert_eq!(status, 200);
+    assert_eq!(again["id"], "a");
+    assert!(again["closedAt"].is_null());
+    assert_eq!(calls().len(), before, "an open Agent is not reconnected");
+    ws.close_agent("a").await.unwrap();
+}
