@@ -5,8 +5,11 @@ Core starts it with, and keeps its state in memory. It writes what it saw to
 the folder of OPENCODE_DB (start.json, calls.jsonl), where a test may leave a
 switch before it starts: `host` (the address it reports), `version` (the
 version it reports), `exit` (exit before listening), `noise` (a long line
-that is not UTF-8 before listening), `mcp` (the MCP status it reports) or
-`stubborn` (it and a child of its own ignore SIGTERM).
+that is not UTF-8 before listening), `mcp` (the MCP status it reports),
+`stubborn` (it and a child of its own ignore SIGTERM), `tool` (it starts a
+process in a session of its own, as OpenCode's tools run, which only
+/global/dispose ends) or `dispose` (`refuse`: it answers that with 500;
+`hang`: it answers only after 30 s, ending nothing).
 Sessions and messages are kept in state.json there, as OpenCode keeps them
 in its database; pending requests, as in OpenCode, live only in the process. Routes under
 /__fixture/ are the test's own controls and need no password.
@@ -36,6 +39,7 @@ modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'heartbeat': 0.2, 'a
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0}
 streams = []
 generation = [0]  # a new generation ends every open event stream
+tools = []
 
 
 def switch(name):
@@ -238,6 +242,8 @@ class Handler(BaseHTTPRequestHandler):
         if url.path in modes['fail']:
             return self.reply(modes['fail'][url.path], {'name': 'UnknownError', 'data': {'message': 'fixture failure'}})
         key = (method, *parts)
+        if key == ('POST', 'global', 'dispose'):
+            return self.dispose()
         if key == ('GET', 'global', 'health'):
             return self.reply(200, {'healthy': True, 'version': switch('version') or '1.19.3'})
         if key == ('GET', 'event'):
@@ -340,6 +346,28 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         return None
 
+    def dispose(self):
+        how = switch('dispose')
+        if how == 'refuse':
+            return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: dispose failed'}})
+        if how == 'hang':
+            time.sleep(30)
+            return self.reply(200, True)
+        # As OpenCode releasing its instances: what its tools run is ended
+        # (SIGTERM to its session's group, then waited for), the instance's
+        # disposal is announced, and its event streams end.
+        for tool in tools:
+            try:
+                os.killpg(tool.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            tool.wait()
+        publish('server.instance.disposed', {'directory': os.getcwd()})
+        time.sleep(0.05)
+        with lock:
+            generation[0] += 1
+        return self.reply(200, True)
+
     def answer(self, pending, request_id, reply, body):
         with lock:
             found = next((r for r in pending if r['id'] == request_id), None)
@@ -410,6 +438,11 @@ def main():
         seen['stubborn'] = subprocess.Popen(
             [sys.executable, '-c', 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)'],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid
+    if switch('tool'):
+        tool = subprocess.Popen(['sleep', '600'], start_new_session=True, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        tools.append(tool)
+        seen['tool'] = tool.pid
     if switch('exit'):
         (ROOT / 'start.json').write_text(json.dumps(seen))
         sys.exit(3)

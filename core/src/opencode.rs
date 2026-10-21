@@ -15,9 +15,15 @@
 //! subscriber before it sends `server.connected`, so what happened after that
 //! is either in the snapshot or still to come as an event, possibly both.
 //!
-//! OpenCode runs in a process group of its own, so its own children (language
-//! servers, local MCP servers) end with it: on `shutdown`, when the `Server`
-//! is dropped, or (on Unix) when Core ends without either.
+//! OpenCode runs in a process group of its own, so the children that stay in
+//! it (language servers, local MCP servers) end with it: on `shutdown`, when
+//! the `Server` is dropped, or (on Unix) when Core ends without either. What
+//! its tools run (a shell command, the bash tool) is in a session of its own
+//! (`cross-spawn-spawner.ts`, detached), out of the group's reach: OpenCode
+//! ends it only when it releases its instances, so `shutdown` first asks it
+//! to (`dispose`). Dropping a `Server`, a Core or an OpenCode that is killed,
+//! or an OpenCode that does not answer in time skips that, and such a process
+//! runs on until it ends by itself.
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use reqwest::{Method, Response, Url};
 use serde_json::{json, Value};
@@ -43,6 +49,9 @@ const USERNAME: &str = "opencode";
 const START_LIMIT: Duration = Duration::from_secs(30);
 const REQUEST_LIMIT: Duration = Duration::from_secs(15);
 const GRACE: Duration = Duration::from_secs(3);
+/// How long a stop waits for OpenCode to end what its tools run: longer than
+/// the 3 s it gives a session's shell command after SIGTERM (`prompt.ts`).
+pub const DISPOSE_LIMIT: Duration = Duration::from_secs(5);
 /// OpenCode sends `server.heartbeat` every 10 s on an open stream.
 pub const EVENT_IDLE_LIMIT: Duration = Duration::from_secs(30);
 const BODY_LIMIT: usize = 2048;
@@ -295,9 +304,14 @@ impl Server {
         Ok(server)
     }
 
-    /// Ends OpenCode and its own children: SIGTERM to the group, up to 3 s
-    /// for OpenCode to finish, then SIGKILL to whatever of it is left.
+    /// Ends OpenCode and its own children: `dispose` (at most DISPOSE_LIMIT),
+    /// then SIGTERM to the group, up to GRACE for OpenCode to finish, then
+    /// SIGKILL to whatever of it is left. A refused or unanswered dispose only
+    /// goes on to the signals.
     pub async fn shutdown(mut self) -> Result<()> {
+        if let Err(error) = self.dispose().await {
+            eprintln!("OpenCode did not end what its tools run before it was stopped: {error:#}");
+        }
         #[cfg(unix)]
         {
             self.group.signal(false);
@@ -313,6 +327,16 @@ impl Server {
         // Reaped: the group's ID may now be reused, so it is not signalled again.
         self.group.0 = None;
         waited.context("OpenCode did not end")?;
+        Ok(())
+    }
+
+    /// Asks this server to release all its instances (`POST /global/dispose`),
+    /// which ends what its tools run; it keeps its sessions (the database) and
+    /// runs on. Its answer is waited for at most DISPOSE_LIMIT. Its event
+    /// stream then ends, after `server.instance.disposed`.
+    pub async fn dispose(&self) -> Result<()> {
+        let sent = self.request(Method::POST, "/global/dispose").timeout(DISPOSE_LIMIT).send().await;
+        success(sent.context("OpenCode did not answer /global/dispose")?).await?;
         Ok(())
     }
 
@@ -639,10 +663,10 @@ mod tests {
         }
     }
 
-    /// The stand-in OpenCode in `dir`, started; with `stubborn`, it and a
-    /// child of its own ignore SIGTERM. Its PIDs: itself and its children.
+    /// The stand-in OpenCode in `dir`, started with these switches (see the
+    /// fixture). Its PIDs: itself and the children in its group.
     #[cfg(target_os = "linux")]
-    async fn stand_in(dir: &std::path::Path, stubborn: bool) -> (Server, Vec<u64>) {
+    async fn stand_in(dir: &std::path::Path, switches: &[&str]) -> (Server, Vec<u64>) {
         use std::os::unix::fs::PermissionsExt;
         let program = dir.join("opencode");
         let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
@@ -651,8 +675,9 @@ mod tests {
         let (directory, root) = (dir.join("work"), dir.join("db"));
         std::fs::create_dir(&directory).unwrap();
         std::fs::create_dir(&root).unwrap();
-        if stubborn {
-            std::fs::write(root.join("stubborn"), "1").unwrap();
+        for switch in switches {
+            let (name, value) = switch.split_once('=').unwrap_or((switch, "1"));
+            std::fs::write(root.join(name), value).unwrap();
         }
         let server = Server::start(&Launch { program, directory, database: root.join("opencode.db") }).await.unwrap();
         let seen: Value = serde_json::from_str(&std::fs::read_to_string(root.join("start.json")).unwrap()).unwrap();
@@ -683,7 +708,7 @@ mod tests {
     async fn closing_cores_end_of_the_pipe_ends_opencodes_group() {
         for stubborn in [false, true] {
             let dir = tempfile::tempdir().unwrap();
-            let (mut server, pids) = stand_in(dir.path(), stubborn).await;
+            let (mut server, pids) = stand_in(dir.path(), if stubborn { &["stubborn"] } else { &[] }).await;
             assert_eq!(pids.len(), if stubborn { 3 } else { 2 });
             drop(server.child.stdin.take());
             assert!(all_end(&pids, GRACE + Duration::from_secs(5)).await, "stubborn {stubborn}: OpenCode outlived the pipe: {pids:?}");
@@ -695,13 +720,72 @@ mod tests {
     #[tokio::test]
     async fn shutdown_and_drop_end_a_group_that_ignores_term() {
         let dir = tempfile::tempdir().unwrap();
-        let (server, pids) = stand_in(dir.path(), true).await;
+        let (server, pids) = stand_in(dir.path(), &["stubborn"]).await;
         server.shutdown().await.unwrap();
         assert!(all_end(&pids, Duration::from_secs(5)).await, "after shutdown: {pids:?}");
         let dir = tempfile::tempdir().unwrap();
-        let (server, pids) = stand_in(dir.path(), true).await;
+        let (server, pids) = stand_in(dir.path(), &["stubborn"]).await;
         drop(server);
         assert!(all_end(&pids, Duration::from_secs(5)).await, "after drop: {pids:?}");
+    }
+
+    /// The process a tool of the stand-in runs, in a session of its own.
+    #[cfg(target_os = "linux")]
+    fn tool_pid(dir: &std::path::Path) -> u64 {
+        let seen: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("db/start.json")).unwrap()).unwrap();
+        seen["tool"].as_u64().unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn calls(dir: &std::path::Path, path: &str) -> Vec<Value> {
+        std::fs::read_to_string(dir.join("db/calls.jsonl")).unwrap_or_default().lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap()).filter(|c| c["path"] == path).collect()
+    }
+
+    /// What OpenCode's tools run is out of its group: `shutdown` asks
+    /// OpenCode to end it, while dropping the `Server` (as a killed Core
+    /// would) ends only the group.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn only_shutdown_ends_what_opencodes_tools_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, pids) = stand_in(dir.path(), &["tool"]).await;
+        let tool = tool_pid(dir.path());
+        server.shutdown().await.unwrap();
+        assert!(all_end(&[tool], Duration::from_secs(1)).await, "the tool's process outlived shutdown");
+        assert!(all_end(&pids, Duration::from_secs(5)).await, "after shutdown: {pids:?}");
+        let disposed = calls(dir.path(), "/global/dispose");
+        assert_eq!(disposed.len(), 1);
+        assert_eq!(disposed[0]["authorized"], true, "with the server's own password");
+
+        let dir = tempfile::tempdir().unwrap();
+        let (server, pids) = stand_in(dir.path(), &["tool"]).await;
+        let tool = tool_pid(dir.path());
+        drop(server);
+        assert!(all_end(&pids, Duration::from_secs(5)).await, "after drop: {pids:?}");
+        let ran_on = !all_end(&[tool], Duration::from_millis(500)).await;
+        let _ = rustix::process::kill_process_group(rustix::process::Pid::from_raw(tool as i32).unwrap(), rustix::process::Signal::KILL);
+        assert!(ran_on, "dropping skips dispose; if this changed, so did what the module says");
+        assert!(calls(dir.path(), "/global/dispose").is_empty());
+    }
+
+    /// A dispose refused or not answered goes on to the signals, within
+    /// DISPOSE_LIMIT and GRACE.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_refused_or_unanswered_dispose_still_stops_opencode() {
+        for how in ["refuse", "hang"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (server, pids) = stand_in(dir.path(), &["tool", &format!("dispose={how}")]).await;
+            let tool = tool_pid(dir.path());
+            let started = Instant::now();
+            server.shutdown().await.unwrap();
+            let took = started.elapsed();
+            assert!(took < DISPOSE_LIMIT + GRACE + Duration::from_secs(2), "{how}: the stop took {took:?}");
+            assert!(all_end(&pids, Duration::from_secs(5)).await, "{how}: {pids:?}");
+            assert_eq!(calls(dir.path(), "/global/dispose").len(), 1, "{how}: asked once, not again");
+            let _ = rustix::process::kill_process_group(rustix::process::Pid::from_raw(tool as i32).unwrap(), rustix::process::Signal::KILL);
+        }
     }
 
     #[cfg(unix)]

@@ -22,6 +22,12 @@ OpenCode Agent keeps working either way.
 - **History:** each Agent keeps its session in an OpenCode database in Core's
   data folder (`opencode/<agent id>/opencode.db`). Deleting the Agent keeps
   it, as deleting a Codex or Claude Agent keeps their native sessions.
+- **Stopping:** OpenCode runs the commands of its tools (a shell command,
+  for example) apart from itself, so they do not end with it. When you close
+  the Agent, or Core stops normally (Ctrl+C), Core first asks that Agent's
+  OpenCode to end them, waits at most 5 seconds, then ends OpenCode. If Core
+  or OpenCode is killed instead, or OpenCode does not answer in time, a
+  command still running goes on until it ends by itself.
 
 ## What OpenCode does by itself
 
@@ -36,5 +42,4 @@ OpenCode Agent keeps working either way.
 ## Not yet
 
 Remote machines, images, rewind, slash commands, model choice, messages added
-to a running turn, and following OpenCode's sub-agent sessions. A process
-that OpenCode moves out of its own process group is not ended with it.
+to a running turn, and following OpenCode's sub-agent sessions.
