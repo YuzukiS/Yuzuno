@@ -2,7 +2,7 @@ use crate::{client_view, workspace::Workspace, model::{AgentSettings, MessageInp
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
-    http::{header, Method, StatusCode},
+    http::{header, HeaderMap, Method, StatusCode},
     middleware::{self, Next},
     response::{sse::Event, IntoResponse, Response, Sse},
     routing::{get, patch, post},
@@ -53,16 +53,45 @@ pub fn router_on_port(ws: Arc<Workspace>, assets: PathBuf, port: u16) -> Router 
 }
 
 pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updates: Option<Arc<crate::updates::controller::Controller>>) -> Router {
-    let boundary = BrowserBoundary::new();
     ws.start_collaboration(port);
     ws.start_jobs();
     ws.start_ci_monitor();
     ws.start_delivery();
     let mcp = crate::collaboration_mcp::router(ws.clone(), port);
+    let router = browser_routes(assets, updates.clone())
+        .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
+        .with_state(ws)
+        .merge(mcp);
+    finish(router, updates)
+}
+
+/// Core's entry for a phone through Tailscale Serve (T-170), on a loopback
+/// port of its own that only Serve is pointed at. It serves the pages, API,
+/// events and artifacts the local port serves, never the Agents' MCP
+/// endpoints, and starts nothing: the local router runs Core's services.
+/// Every request must pass `RemoteEntry::admit`; none falls back to the
+/// local port's rules.
+pub fn remote_router(ws: Arc<Workspace>, assets: PathBuf, updates: Option<Arc<crate::updates::controller::Controller>>, entry: RemoteEntry) -> Router {
+    let router = browser_routes(assets, updates.clone())
+        .layer(middleware::from_fn_with_state(Arc::new(entry), remote_browser_boundary))
+        .with_state(ws);
+    finish(router, updates)
+}
+
+fn finish(router: Router, updates: Option<Arc<crate::updates::controller::Controller>>) -> Router {
+    if let Some(updates) = updates {
+        router.layer(middleware::from_fn_with_state(updates.admission.clone(), update_admission))
+            .layer(Extension(updates))
+    } else { router }
+    .layer(middleware::from_fn(run_to_completion))
+}
+
+/// The routes a browser uses: pages, API, events and artifacts.
+fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controller::Controller>>) -> Router<Arc<Workspace>> {
     let update_routes = updates.as_ref().map(|controller| crate::updates::api::router(controller.clone())).unwrap_or_else(Router::new);
-    let asset_updates = updates.clone();
+    let asset_updates = updates;
     let asset_service = tower::service_fn(move |request: Request| crate::updates::assets::serve(assets.clone(), asset_updates.clone(), request));
-    let router = Router::new()
+    Router::new()
         .merge(update_routes)
         .merge(crate::pr_review::router())
         .merge(crate::pr_operations::router())
@@ -129,14 +158,6 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         .route("/api/catchup/summarize",post(||async {(StatusCode::NOT_IMPLEMENTED,Json(json!({"error":"按需摘要仍在实验；当前显示可追溯的原始更新，不会用样例冒充生成结果。"})))}))
         .fallback_service(asset_service)
         .layer(DefaultBodyLimit::max(128*1024))
-        .layer(middleware::from_fn_with_state(boundary, local_browser_boundary))
-        .with_state(ws)
-        .merge(mcp);
-    if let Some(updates) = updates {
-        router.layer(middleware::from_fn_with_state(updates.admission.clone(), update_admission))
-            .layer(Extension(updates))
-    } else { router }
-    .layer(middleware::from_fn(run_to_completion))
 }
 
 async fn update_admission(State(admission): State<Arc<crate::updates::admission::Admission>>, request: Request, next: Next) -> Response {
@@ -266,11 +287,21 @@ impl BrowserBoundary {
     }
 }
 
+/// Headers only a proxy adds. Tailscale Serve sets the first three (after
+/// removing any a client sent) and X-Forwarded-For on every request it passes
+/// on; no local client sends them. A request with one came through a proxy
+/// pointed at the local port, which is the remote entry's job (T-170), so it
+/// is refused even if that proxy kept a loopback Host.
+const PROXY_HEADERS: [&str; 4] = ["tailscale-user-login", "tailscale-headers-info", "tailscale-funnel-request", "x-forwarded-for"];
+
 async fn local_browser_boundary(
     State(boundary): State<BrowserBoundary>,
     req: Request,
     next: Next,
 ) -> Response {
+    if PROXY_HEADERS.iter().any(|name| req.headers().contains_key(*name)) {
+        return (StatusCode::FORBIDDEN, "Proxied request: a phone uses Core's remote entry").into_response();
+    }
     let host = req
         .headers()
         .get(header::HOST)
@@ -296,7 +327,10 @@ async fn local_browser_boundary(
     {
         return (StatusCode::FORBIDDEN, "Workspace client header required").into_response();
     }
-    let mut response = next.run(req).await;
+    harden(next.run(req).await)
+}
+
+fn harden(mut response: Response) -> Response {
     response
         .headers_mut()
         .insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
@@ -307,6 +341,106 @@ async fn local_browser_boundary(
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     response
+}
+
+/// Who may use the remote entry (T-170): one Tailscale login, through one
+/// origin. Tailscale Serve keeps the browser's Host, removes any identity
+/// headers a client sent, and sets `Tailscale-User-Login` only for a node
+/// owned by a user: never for a tagged node, a request from the local machine
+/// or Funnel. A shared-in user from another tailnet gets their own login, so
+/// only the configured one is let in.
+#[derive(Clone, Debug)]
+pub struct RemoteEntry {
+    origin: String,
+    host: String,
+    login: String,
+}
+
+impl RemoteEntry {
+    /// `origin` is `https://<host>[:<port>]` as the browser shows it, with
+    /// nothing after the host and port; `login` is compared byte for byte.
+    pub fn new(origin: &str, login: &str) -> anyhow::Result<Self> {
+        use anyhow::Context;
+        let url = reqwest::Url::parse(origin).context("YUZUNO_REMOTE_ORIGIN is not a URL")?;
+        anyhow::ensure!(url.scheme() == "https", "YUZUNO_REMOTE_ORIGIN must be https://");
+        anyhow::ensure!(
+            url.username().is_empty() && url.password().is_none() && url.path() == "/"
+                && url.query().is_none() && url.fragment().is_none(),
+            "YUZUNO_REMOTE_ORIGIN is https://<host>[:<port>] with nothing after it"
+        );
+        let host = url.host_str().filter(|h| !h.is_empty()).context("YUZUNO_REMOTE_ORIGIN names no host")?;
+        // The port is None for https' own 443, which a browser leaves out too.
+        let authority = url.port().map_or_else(|| host.to_owned(), |port| format!("{host}:{port}"));
+        anyhow::ensure!(
+            !login.is_empty() && login.trim() == login && !login.chars().any(char::is_control),
+            "YUZUNO_REMOTE_LOGIN is one Tailscale login, without spaces around it"
+        );
+        Ok(Self { origin: format!("https://{authority}"), host: authority, login: login.to_owned() })
+    }
+
+    /// From the YUZUNO_REMOTE_PORT, _ORIGIN and _LOGIN settings: all three
+    /// (a port of its own, not Core's) or none, which means no remote entry.
+    pub fn from_settings(port: Option<String>, origin: Option<String>, login: Option<String>, core_port: u16) -> anyhow::Result<Option<(u16, Self)>> {
+        use anyhow::Context;
+        match (port, origin, login) {
+            (None, None, None) => Ok(None),
+            (Some(port), Some(origin), Some(login)) => {
+                let port = port.parse::<u16>().ok().filter(|port| *port != 0)
+                    .context("YUZUNO_REMOTE_PORT is not a port number")?;
+                anyhow::ensure!(port != core_port, "YUZUNO_REMOTE_PORT must differ from Core's own port");
+                Ok(Some((port, Self::new(&origin, &login)?)))
+            }
+            _ => anyhow::bail!("YUZUNO_REMOTE_PORT, YUZUNO_REMOTE_ORIGIN and YUZUNO_REMOTE_LOGIN go together: set all three or none"),
+        }
+    }
+
+    pub fn origin(&self) -> &str {
+        &self.origin
+    }
+
+    /// Whether a request may enter: the configured login, this host and, for
+    /// a change, this origin and the client header. Each header counts only
+    /// if it appears once; nothing else is read, X-Forwarded-* included.
+    pub fn admit(&self, method: &Method, headers: &HeaderMap) -> Result<(), &'static str> {
+        fn one<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+            let mut values = headers.get_all(name).iter();
+            let value = values.next()?;
+            if values.next().is_some() {
+                return None;
+            }
+            value.to_str().ok()
+        }
+        if headers.contains_key("tailscale-funnel-request") {
+            return Err("Funnel requests are not accepted");
+        }
+        if one(headers, "tailscale-user-login") != Some(self.login.as_str()) {
+            return Err("Not the Tailscale login this workspace allows");
+        }
+        if one(headers, "host") != Some(self.host.as_str()) {
+            return Err("Unrecognized workspace host");
+        }
+        let origins = headers.get_all(header::ORIGIN).iter().count();
+        let origin = one(headers, "origin");
+        if origins > 0 && origin != Some(self.origin.as_str()) {
+            return Err("Unrecognized workspace origin");
+        }
+        if !matches!(*method, Method::GET | Method::HEAD) {
+            if origin != Some(self.origin.as_str()) {
+                return Err("A change must come from this workspace's page");
+            }
+            if one(headers, "x-yuzuno-client") != Some("desktop") {
+                return Err("Workspace client header required");
+            }
+        }
+        Ok(())
+    }
+}
+
+async fn remote_browser_boundary(State(entry): State<Arc<RemoteEntry>>, req: Request, next: Next) -> Response {
+    if let Err(reason) = entry.admit(req.method(), req.headers()) {
+        return (StatusCode::FORBIDDEN, reason).into_response();
+    }
+    harden(next.run(req).await)
 }
 
 /// Native events Core has received but not yet applied, per connected Agent

@@ -126,10 +126,20 @@ async fn run(
     if options.revert_record_rows {
         return revert_record_rows(&data.join("workspace.sqlite"));
     }
+    let remote = remote_entry(options.port)?;
     // Bind before touching the database: another process must not mark a live
     // workspace offline. Windows-to-WSL uses localhost, without LAN exposure.
     let listener=tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,options.port))
         .await.context("Cannot bind Core's loopback port; check permissions or whether Core is already running")?;
+    let remote = match remote {
+        Some((port, entry)) => Some((
+            tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+                .await.context("Cannot bind the remote entry's loopback port (YUZUNO_REMOTE_PORT)")?,
+            port,
+            entry,
+        )),
+        None => None,
+    };
     let cwd = options.cwd.unwrap_or(std::env::current_dir()?);
     if let Some(layout) = &layout {
         let absolute = std::path::absolute(&data)?;
@@ -193,6 +203,25 @@ async fn run(
     // Leaving the Workspace, older Cores may open it again if nothing in it is
     // what they would mishandle (older_cores.rs).
     let store = ws.store.clone();
+    if let Some((listener, port, entry)) = remote {
+        eprintln!("Remote entry: http://127.0.0.1:{port} for Tailscale Serve, as {}", entry.origin());
+        let app = server::remote_router(ws.clone(), options.web_dir.clone(), Some(updates.clone()), entry);
+        let mut stop = updates.shutdown.subscribe();
+        tokio::spawn(async move {
+            let served = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    while !*stop.borrow_and_update() {
+                        if stop.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                })
+                .await;
+            if let Err(error) = served {
+                eprintln!("Remote entry stopped: {error}");
+            }
+        });
+    }
     let graceful = axum::serve(
         listener,
         server::router_with_updates(ws, options.web_dir, options.port, Some(updates.clone())),
@@ -216,6 +245,20 @@ async fn run(
     }
     yuzuno_workspace::db::blocking(move || { store.settle_older_cores(); Ok(()) }).await?;
     Ok(())
+}
+
+/// The phone entry through Tailscale Serve (T-170; docs/independent-core.md),
+/// a second loopback port that only Serve is pointed at. It is read from the
+/// environment, not from options: a Core update starts the new Core with only
+/// its own options but the same environment, so the entry stays.
+fn remote_entry(core_port: u16) -> anyhow::Result<Option<(u16, server::RemoteEntry)>> {
+    let var = |name: &str| match std::env::var(name) {
+        Ok(value) if value.is_empty() => Ok(None),
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(anyhow::anyhow!("{name}: {error}")),
+    };
+    server::RemoteEntry::from_settings(var("YUZUNO_REMOTE_PORT")?, var("YUZUNO_REMOTE_ORIGIN")?, var("YUZUNO_REMOTE_LOGIN")?, core_port)
 }
 
 /// `--move-workspace` (data_dir::move_legacy). A development build can be

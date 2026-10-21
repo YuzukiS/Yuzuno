@@ -13,7 +13,7 @@ This guide installs a signed Yuzuno Core release on a Linux host and connects to
 | **Client** | Any computer with a browser, or the Windows desktop app. The Mac app is built from source only and has no release. | Nothing durable except the browser's own storage, which holds unsent drafts. A client never starts a Workspace. |
 | **Agent machine** | The Core host, or an SSH machine for remote Agents | Separate from connecting a client to Core; see the README's SSH Agents. |
 
-Core has no user accounts. Anyone who can reach its port can use the Workspace, so the port stays on loopback. Other computers reach it only through an SSH tunnel, never through a public or LAN port.
+Core has no user accounts. Anyone who can reach its port can use the Workspace, so the port stays on loopback. Other computers reach it only through an SSH tunnel, never through a public or LAN port. A phone can instead use [a second loopback port behind Tailscale Serve](#connect-from-a-phone-tailscale-serve), which lets in only one Tailscale login.
 
 ## Supported platforms
 
@@ -152,7 +152,7 @@ Then open http://127.0.0.1:4317 on the client.
 - **A different local port:** if 4317 is taken on the client, use another one, e.g. `-L 127.0.0.1:5317:127.0.0.1:4317`, then open http://127.0.0.1:5317. Core accepts any local tunnel port on `127.0.0.1`, `localhost` or `[::1]`, and only pages served from that same address and port. Releases up to core.7 (2026.10.16-core.7) need the local port to equal Core's port.
 - **Mac:** run the command in Terminal using its built-in OpenSSH client, then open the loopback URL in Chrome. The Mac needs no Linux Core package, Node or model CLI for this browser path. A bookmark can retain the URL, but cannot start the SSH tunnel for you. For a non-default SSH server port, add `-p <ssh port>` before `you@core-host`; that port is distinct from both HTTP ports in `-L`.
 - **Windows:** the built-in OpenSSH client (`ssh.exe`) works. It ignores a private key that other accounts can read; a key made with `ssh-keygen` in `%USERPROFILE%\.ssh` is private already. A copied key may need `icacls <key> /inheritance:r /grant:r "%USERNAME%:F"` (in Command Prompt).
-- **Keep the tunnel private:** forward to `127.0.0.1` only. Don't add `-g`, `GatewayPorts`, a reverse proxy or a public bind; Core has no login.
+- **Keep the tunnel private:** forward to `127.0.0.1` only. Don't add `-g`, `GatewayPorts`, a reverse proxy or a public bind; Core has no login. The one proxy Core accepts is Tailscale Serve, on [a port of its own](#connect-from-a-phone-tailscale-serve); Core's own port refuses requests a proxy passed on.
 - **If the tunnel drops:** the status shows **Core unreachable** and sending pauses. Your unsent text stays in the composer and in the browser's storage. Restart the tunnel, and the same page reconnects to the same Workspace within seconds. A reload while the tunnel is down fails in the browser; reload again once it is back, and the draft returns. Nothing starts another Workspace.
 - **Browser storage:** this is separate for each address and port. A draft typed at `127.0.0.1:5317` is kept for that address.
 
@@ -233,6 +233,33 @@ A [project service](project-services.md) opens on a port of Core's services rang
 **To undo:** remove the added `permitopen` entries (A), or put back `PermitOpen 127.0.0.1:4317` and check and reload the server (B). Then `scripts/mac-tunnel.sh stop` and start it again without `YUZUNO_TUNNEL_SERVICE_PORTS`: the service ports close with the old tunnel, and nothing else changes.
 
 The Projects dialog offers a service's address only after the page has proved that the port reaches this Core. Where a port on the Mac leads elsewhere, or nowhere, the dialog says so and offers no address. These checks ran with a Mac stand-in (another loopback address with its own restricted tunnel) and real OpenSSH. They have not been run on a real Mac.
+
+## Connect from a phone (Tailscale Serve)
+
+A phone's browser has no SSH tunnel. Instead, Core can open a **second loopback port** that only [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) is pointed at. Serve gives it an HTTPS address on your tailnet (not the internet: that would be Funnel, which Core refuses), and tells Core which tailnet login each request comes from. Core lets in exactly one login. This is off unless all three settings below are made, and it has not yet been checked with a real phone.
+
+**What Core checks on that port**, for every page, API call, live update and artifact:
+- `Tailscale-User-Login` appears once and is exactly the configured login. Serve removes any copy a client sent and sets it only for a device owned by a tailnet user, so a tagged device, a request from the host itself or one through Funnel is refused. A user from another tailnet the device was shared with has their own login and is refused too.
+- `Host` is the configured address, as Serve passes the browser's own.
+- A change also needs the page's own `Origin` and Yuzuno's client header, so another site open on the phone cannot make one.
+- Nothing falls back to the loopback rules, and `X-Forwarded-*` headers are not read. The Agents' MCP endpoints are not served there.
+
+Core's own port is unchanged, except that it refuses a request carrying Tailscale's or a proxy's headers, in case Serve is pointed at it by mistake. A program on the Core host can still reach both ports directly, as it always could reach Core's.
+
+**Set it up** (the names here are examples; use your node's name from `tailscale status`):
+1. **Tailnet:** MagicDNS and [HTTPS certificates](https://tailscale.com/docs/how-to/set-up-https-certificates) must be on. Turning certificates on publishes your machine names and tailnet name in public Certificate Transparency logs, and turning them off later does not revoke issued certificates.
+2. **Choose a free HTTPS port.** `tailscale serve status` lists what Serve already uses on this node; never reuse or reset another entry. Funnel's port limits do not apply to Serve.
+3. **Core's environment** (not options, so that a Core update, which keeps the environment, keeps the entry):
+   ```sh
+   YUZUNO_REMOTE_PORT=4318
+   YUZUNO_REMOTE_ORIGIN=https://core.example-tailnet.ts.net:8444
+   YUZUNO_REMOTE_LOGIN=person@example.com
+   ```
+   All three or none. The port is Core's second loopback port; the origin is exactly what the phone's browser shows, `https://<node>:<Serve port>` (no port for 443); the login is your tailnet login as Tailscale shows it. Core says `Remote entry: http://127.0.0.1:4318 …` when it starts.
+4. **On the machine where Tailscale runs** (on Windows with WSL, Windows; it reaches WSL's loopback port as the Windows app reaches Core's): `tailscale serve --bg --https=8444 http://127.0.0.1:4318`.
+5. On the phone, signed in to the same tailnet, open `https://core.example-tailnet.ts.net:8444`.
+
+**To undo:** `tailscale serve --https=8444 off`, which removes only that entry, then unset the three variables and restart Core: its second port closes. Never use `tailscale serve reset`, which would also remove other services' entries. The certificate logs keep any name already published.
 
 ## Update
 
