@@ -297,7 +297,7 @@ its kind in the process: the reopen follows a close of the Agent.
 | `view=summary` reconnect, 1 KiB per Item: allocated | 161 MiB | 135 MiB |
 
 The reopen's answer is 505 bytes on both sides. Its peak comes from the
-reconnect that follows, which starts OpenCode's or Codex's process again and
-reads the native history, so the peak does not change. Each row is one process.
+reconnect that follows, which starts the scripted Codex app-server again and
+reads its history, so the peak does not change. Each row is one process.
 A Claude reopen or reconnect is covered by tests here, not measured. These are
 synthetic allocator measurements, not the daily Core's RSS.
