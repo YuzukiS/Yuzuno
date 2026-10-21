@@ -51,23 +51,24 @@ class DownloadTests(unittest.TestCase):
 
 class SmokeBudgetTests(unittest.TestCase):
     def test_saves_a_distinct_valid_budget_and_reuses_it_on_seed_retry(self):
-        for cpu in (200, 500, 4000):
-            with self.subTest(suggested_cpu=cpu):
+        for cpu, ceiling in ((200, True), (500, True), (4000, True), (500, False)):
+            with self.subTest(suggested_cpu=cpu, ceiling=ceiling):
                 suggested = {'cpuMillis': cpu, 'memoryMiB': 8192, 'swapMiB': 0}
-                maximum = {'cpuMillis': max(750, cpu), 'memoryMiB': 16384, 'swapMiB': 0}
+                maximum = {'cpuMillis': max(750, cpu), 'memoryMiB': 16384, 'swapMiB': 0} if ceiling else None
                 saved, writes = None, []
                 def api(path, body=None):
                     nonlocal saved
                     self.assertEqual(path, 'jobs/budget')
                     if body is not None:
-                        self.assertTrue(all(body[key] <= maximum[key] for key in body))
+                        self.assertTrue(not maximum or all(body[key] <= maximum[key] for key in body))
                         self.assertGreaterEqual(body['cpuMillis'], 200)
                         self.assertGreaterEqual(body['memoryMiB'], 128)
                         writes.append(body.copy())
                         saved = body.copy()
                         return body
-                    return {'budget': saved or suggested,
-                            'machine': {'suggestedBudget': suggested, 'maximumBudget': maximum}}
+                    # A Core from T-160 on reports no ceiling.
+                    machine = {'suggestedBudget': suggested, **({'maximumBudget': maximum} if maximum else {})}
+                    return {'budget': saved or suggested, 'machine': machine}
                 first = smoke.save_fixture_budget(api)
                 self.assertNotEqual(first['saved'], suggested)
                 self.assertEqual(first['saved'], saved)

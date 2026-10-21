@@ -43,7 +43,7 @@ function mount(state) {
   w.fetch = async (url, init = {}) => {
     calls.push({ url, method: init.method || 'GET' });
     let value;
-    if (url === '/api/jobs/budget') value = { budget: { cpuMillis: 2000, memoryMiB: 2048, swapMiB: 0 }, reserved: resources, activeCount: 1, queuedCount: 0, collectorOverhead: { cpuMillis: 100, memoryMiB: 64, swapMiB: 0 }, machine: { name: 'WSL', memoryAvailableMiB: 2000, suggestedBudget: { cpuMillis: 4000, memoryMiB: 8192, swapMiB: 0 }, maximumBudget: { cpuMillis: 24000, memoryMiB: 20053, swapMiB: 4096 } } };
+    if (url === '/api/jobs/budget') value = { budget: { cpuMillis: 2000, memoryMiB: 2048, swapMiB: 0 }, reserved: resources, activeCount: 1, queuedCount: 0, collectorOverhead: { cpuMillis: 100, memoryMiB: 64, swapMiB: 0 }, machine: { name: 'WSL', memoryAvailableMiB: 2000, suggestedBudget: { cpuMillis: 4000, memoryMiB: 8192, swapMiB: 0 }, logicalCpus: 32, memoryTotalMiB: 40107, swapTotalMiB: 16384, hostHeadroomMiB: 2048 } };
     else if (url.endsWith('/logs')) value = { text: '', oldestOffset: 0, totalBytes: 0 };
     else if (url === '/api/jobs/job-1/pause') {
       state.job = { ...state.job, pause: { intent: 'pause', state: 'paused', requestedAt: started, confirmedAt: started,

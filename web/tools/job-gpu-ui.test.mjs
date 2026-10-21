@@ -217,7 +217,7 @@ const plain = { ...base, id: "job-c", name: "cpu only", status: "succeeded", res
 
 const budget = { budget: { cpuMillis: 2000, memoryMiB: 2048, swapMiB: 0 }, reserved: resources, activeCount: 1, queuedCount: 1,
   collectorOverhead: { cpuMillis: 100, memoryMiB: 64, swapMiB: 0 }, gpus: gpus(),
-  machine: { name: "WSL", memoryAvailableMiB: 2000, suggestedBudget: { cpuMillis: 4000, memoryMiB: 8192, swapMiB: 0 }, maximumBudget: { cpuMillis: 24000, memoryMiB: 20053, swapMiB: 4096 } } };
+  machine: { name: "WSL", memoryAvailableMiB: 2000, suggestedBudget: { cpuMillis: 4000, memoryMiB: 8192, swapMiB: 0 }, logicalCpus: 32, memoryTotalMiB: 40107, swapTotalMiB: 16384, hostHeadroomMiB: 2048 } };
 function mountJobs(jobs) {
   const { window, errors } = dom();
   const calls = [];

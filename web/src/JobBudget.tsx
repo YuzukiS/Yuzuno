@@ -104,15 +104,27 @@ export function UsageMeter({
   );
 }
 
+/** What Core accepts as a saved budget: fixed bounds, not this host's size. */
+export type BudgetBounds = { minimum: Resources; maximum: Resources };
+/** This host's totals, shown beside the budget for reference only. */
+export type BudgetHost = {
+  logicalCpus?: number;
+  memoryTotalMiB?: number;
+  swapTotalMiB?: number | null;
+  hostHeadroomMiB?: number;
+};
+
 export function BudgetSettings({
   budget,
-  maximum,
+  bounds,
+  host,
   suggested,
   collector,
   onSaved,
 }: {
   budget: Resources;
-  maximum?: Resources;
+  bounds?: BudgetBounds;
+  host?: BudgetHost;
   suggested?: Resources;
   collector?: Resources;
   onSaved: () => void;
@@ -154,8 +166,8 @@ export function BudgetSettings({
           CPU quota
           <input
             type="number"
-            min="0.2"
-            max={maximum && maximum.cpuMillis / 1000}
+            min={(bounds?.minimum.cpuMillis ?? 200) / 1000}
+            max={bounds && bounds.maximum.cpuMillis / 1000}
             step="0.1"
             required
             value={value.cpuMillis / 1000}
@@ -171,8 +183,8 @@ export function BudgetSettings({
           RAM (MiB)
           <input
             type="number"
-            min="128"
-            max={maximum?.memoryMiB}
+            min={bounds?.minimum.memoryMiB ?? 128}
+            max={bounds?.maximum.memoryMiB}
             required
             value={value.memoryMiB}
             onChange={(e) =>
@@ -184,8 +196,8 @@ export function BudgetSettings({
           Swap (MiB)
           <input
             type="number"
-            min="0"
-            max={maximum?.swapMiB}
+            min={bounds?.minimum.swapMiB ?? 0}
+            max={bounds?.maximum.swapMiB}
             required
             value={value.swapMiB}
             onChange={(e) =>
@@ -198,19 +210,31 @@ export function BudgetSettings({
           original limits. A lower budget pauses new starts until reservations
           fit.
         </p>
-        {maximum && (
+        {(host?.logicalCpus != null || suggested) && (
           <p className="job-footnote">
-            Host ceiling: {maximum.cpuMillis / 1000} CPU · {maximum.memoryMiB}{" "}
-            MiB RAM · {maximum.swapMiB} MiB swap.
+            {host?.logicalCpus != null && host.memoryTotalMiB != null && (
+              <>
+                For reference, this host has {host.logicalCpus} CPU ·{" "}
+                {host.memoryTotalMiB} MiB RAM
+                {host.swapTotalMiB != null && <> · {host.swapTotalMiB} MiB swap</>}
+                ; the budget may use all of it.{" "}
+              </>
+            )}
             {suggested && (
               <>
-                {" "}
                 Conservative default: {suggested.cpuMillis / 1000} CPU ·{" "}
                 {suggested.memoryMiB} MiB RAM · {suggested.swapMiB} MiB swap.
               </>
             )}
           </p>
         )}
+        <p className="job-footnote">
+          A job starts only when the host also has its RAM free at that moment
+          {host?.hostHeadroomMiB != null && (
+            <>, keeping {host.hostHeadroomMiB} MiB for Core and the desktop</>
+          )}
+          . CPU is a shared quota, not reserved cores.
+        </p>
         {collector && (
           <p className="job-footnote">
             Each job also reserves {collector.cpuMillis / 1000} CPU and{" "}

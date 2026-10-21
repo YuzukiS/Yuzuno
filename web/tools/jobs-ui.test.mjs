@@ -36,7 +36,7 @@ function mount(handler = () => page([]), stored = {}) {
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push({ url, body });
     let value;
-    if (url === '/api/jobs/budget' && !body) value = { budget: { cpuMillis: 2000, memoryMiB: 2048, swapMiB: 0 }, reserved: resources, activeCount: 1, queuedCount: 1, collectorOverhead: {cpuMillis:100,memoryMiB:64,swapMiB:0}, machine: { name: 'WSL', memoryAvailableMiB: 2000, suggestedBudget:{cpuMillis:4000,memoryMiB:8192,swapMiB:0}, maximumBudget:{cpuMillis:24000,memoryMiB:20053,swapMiB:4096} } };
+    if (url === '/api/jobs/budget' && !body) value = { budget: { cpuMillis: 2000, memoryMiB: 2048, swapMiB: 0 }, reserved: resources, activeCount: 1, queuedCount: 1, collectorOverhead: {cpuMillis:100,memoryMiB:64,swapMiB:0}, budgetBounds: {minimum:{cpuMillis:200,memoryMiB:128,swapMiB:0},maximum:{cpuMillis:4096000,memoryMiB:67108864,swapMiB:67108864}}, machine: { name: 'WSL', memoryAvailableMiB: 2000, logicalCpus: 32, memoryTotalMiB: 40107, swapTotalMiB: 16384, hostHeadroomMiB: 2048, suggestedBudget:{cpuMillis:4000,memoryMiB:8192,swapMiB:0} } };
     else if (url.endsWith('/logs')) value = { text: 'bounded output', oldestOffset: 1000, totalBytes: 1200 };
     else value = await handler(url, body);
     if (value instanceof Error) throw value;
@@ -472,28 +472,31 @@ test('the machine card puts what jobs use on the bars of what they reserve, and 
   } finally { q.close(); }
 });
 
-test('machine budget separates defaults and ceilings, includes collectors and retains validation errors', async () => {
+test('machine budget takes the whole host, keeps the default apart, includes collectors and retains validation errors', async () => {
   let saves=0;
   const p=mount((url, body) => {
-    if(url==='/api/jobs/budget' && body) return ++saves===1 ? {httpStatus:400,error:'Host ceiling changed; check the current maximum'} : body;
+    if(url==='/api/jobs/budget' && body) return ++saves===1 ? {httpStatus:400,error:'Budget must be 200–4096000 mCPU, 128–67108864 MiB RAM and 0–67108864 MiB swap (including collectors)'} : body;
     return page([]);
   });
   try {
     await open(p);
     p.doc.querySelector('.job-budget-settings summary').click(); await wait();
     const form=p.doc.querySelector('.job-budget-settings');
-    assert.match(form.textContent,/Conservative default: 4 CPU/);
+    // T-160: this host's totals are for reference; no share of them is a ceiling.
+    assert.match(form.textContent,/this host has 32 CPU · 40107 MiB RAM · 16384 MiB swap; the budget may use all of it\. Conservative default: 4 CPU/);
+    assert.match(form.textContent,/RAM free at that moment, keeping 2048 MiB for Core and the desktop\. CPU is a shared quota, not reserved cores/);
+    assert.doesNotMatch(form.textContent,/ceiling/i);
     assert.match(form.textContent,/4.2 CPU and 8320 MiB/);
     assert.match(form.textContent,/Running jobs keep their original limits/);
-    assert.equal(field(p,'CPU quota').max,'24');
-    assert.equal(field(p,'RAM (MiB)').max,'20053');
-    await fill(p,'CPU quota','6'); await fill(p,'RAM (MiB)','10240');
+    assert.deepEqual(['CPU quota','RAM (MiB)','Swap (MiB)'].map(name=>[field(p,name).min,field(p,name).max]),[['0.2','4096'],['128','67108864'],['0','67108864']]);
+    await fill(p,'CPU quota','32'); await fill(p,'RAM (MiB)','40107'); await fill(p,'Swap (MiB)','16384');
+    for (const name of ['CPU quota','RAM (MiB)','Swap (MiB)']) assert.equal(field(p,name).validity.valid,true,name);
     button(p,'Save budget').click(); await until(()=>form.querySelector('[role="alert"]'));
-    assert.match(form.textContent,/Host ceiling changed/);
-    assert.equal(field(p,'CPU quota').value,'6');
+    assert.match(form.textContent,/Budget must be 200–4096000 mCPU/);
+    assert.equal(field(p,'CPU quota').value,'32');
     assert.equal(form.open,true);
     const payload=p.calls.find(c=>c.url==='/api/jobs/budget' && c.body).body;
-    assert.deepEqual(payload,{cpuMillis:6000,memoryMiB:10240,swapMiB:0});
+    assert.deepEqual(payload,{cpuMillis:32000,memoryMiB:40107,swapMiB:16384});
     button(p,'Save budget').click(); await until(()=>!form.open);
     assert.equal(saves,2);
     assert.equal(p.calls.some(c=>c.url.endsWith('/cancel') || (c.url==='/api/jobs' && c.body)),false);
