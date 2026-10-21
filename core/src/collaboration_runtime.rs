@@ -50,6 +50,13 @@ impl Workspace {
             return tokio::spawn(crate::project_brief::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Brief operation ended unexpectedly")?;
         }
+        // An abbreviated base or head in task materials becomes the full SHA
+        // before the store sees it; the store keeps taking full SHAs only.
+        let input = if matches!(operation, "task_create" | "task_update" | "task_dispatch") {
+            crate::commit_sha::resolve_materials(self, operation, input).await?
+        } else {
+            input
+        };
         let permit = self.admission.enter_completion()?;
         // Called from MCP too, whose requests can be dropped: the change and
         // its announcement are one job, so neither happens without the other.

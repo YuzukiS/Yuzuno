@@ -37,7 +37,8 @@ pub(super) fn validate(db: &Connection, value: &Value) -> Result<Value> {
     }
     for key in ["baseSha", "headSha"] {
         if let Some(sha) = optional_text(value, key, 64)? {
-            ensure!(Form::Any.accepts(&sha), "invalid_input: {}", commit_sha::problem(key, &sha, Form::Any));
+            // An abbreviation was resolved before the store (commit_sha::resolve_materials).
+            ensure!(Form::Any.accepts(&sha), "invalid_input: {}", commit_sha::problem_resolved(key, &sha, Form::Any));
         }
     }
     if let Some(id) = value.get("repositoryId").filter(|v| !v.is_null()) {
@@ -108,6 +109,16 @@ pub(super) fn validate(db: &Connection, value: &Value) -> Result<Value> {
         }
     }
     Ok(value)
+}
+
+impl Store {
+    /// The repositoryId of a task's registered materials, or None: where a
+    /// dispatch that names none resolves an abbreviated SHA (T-164).
+    pub(crate) fn registered_materials_repository(&self, task: &str) -> Result<Option<i64>> {
+        let db = self.db.read()?;
+        let (id, _) = task_key(&db, task)?;
+        Ok(registered(&db, &id)?["value"]["repositoryId"].as_i64())
+    }
 }
 
 /// An old typed task rewrite cannot erase explicit registration history.
@@ -250,8 +261,8 @@ pub(super) fn schema() -> Value {
     json!({"type":["object","null"],"additionalProperties":false,
         "description":"Explicit saved work materials (max 32768 UTF-8 bytes). task_create/update replaces the registration; null clears it. On task_dispatch, supplied fields override registration only for this dispatch; null clears all. Missing fields are not inferred. Paths/links are information, never additional permission. Large text is available via the fixed dispatchId snapshot.",
         "properties":{"acceptance":text(16384),"repositoryId":{"type":["integer","null"],"minimum":1},
-            "baseSha":commit_sha::schema(Form::Any, true, "The commit the work starts from."),
-            "headSha":commit_sha::schema(Form::Any, true, "The commit to deliver or review."),"baseline":text(1024),"worktree":text(4096),"returnRequirements":text(8192),
+            "baseSha":commit_sha::schema_resolved(Form::Any, true, "The commit the work starts from.", "of the materials' repositoryId (on task_dispatch without one, the registered materials')"),
+            "headSha":commit_sha::schema_resolved(Form::Any, true, "The commit to deliver or review.", "of the materials' repositoryId (on task_dispatch without one, the registered materials')"),"baseline":text(1024),"worktree":text(4096),"returnRequirements":text(8192),
             "references":{"type":["array","null"],"maxItems":20,"items":{"type":"object","additionalProperties":false,
                 "properties":{"kind":{"type":"string","enum":["acceptance","decision","evidence"]},"label":{"type":"string","maxLength":300},
                     "url":{"type":"string","maxLength":4096,"description":"An explicit http(s) reference, not automatically fetched. Give url, or taskId with activitySeq, not both."},
