@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { MessageContent } from "./MessageContent";
 import { ImageAttachments } from "./ImageAttachments";
+import { agentHarnessName } from "./machine-checks";
 import { memo } from "react";
 import type { AgentDetail } from "./types";
 import type { OutgoingMessage } from "./useConversationSend";
@@ -48,6 +49,9 @@ export const OutgoingMessages = memo(function OutgoingMessages({
     ),
   );
   for (const id of detail?.conversation?.nativeClientIds || []) nativeIds.add(id);
+  // The harness whose own evidence each state reports; unnamed until this
+  // Agent's detail is shown.
+  const harness = detail?.agent.id === agentId ? agentHarnessName(detail.agent) : null;
   const pending = new Map((detail?.messageReceipts || [])
     .filter(r => !r.binding && (r.status === "sending" || r.status === "uncertain" || r.status === "queued" || (r.status === "accepted" && r.input.textBlocks !== undefined)))
     .map(receipt => [receipt.input.clientMessageId, { agentId, receipt }]));
@@ -64,13 +68,16 @@ export const OutgoingMessages = memo(function OutgoingMessages({
         (r) => r.input.clientMessageId === local.input.clientMessageId,
       );
       const receipt = saved && saved.status !== "sending" ? saved : local;
+      // Accepted is the harness's own word, not Core's: Codex answered
+      // turn/start or turn/steer, Claude named it in a turn, OpenCode stored
+      // it. Only the conversation's copy of it is still on its way.
       const status = {
         sending: "Sending…",
-        queued: "Sent · waiting for Claude to confirm",
-        accepted: "Sent · syncing conversation",
+        queued: `Sent · waiting for ${harness ?? "the harness"} to confirm`,
+        accepted: harness ? `Received by ${harness} · syncing conversation` : "Sent · syncing conversation",
         rejected: "Not sent · draft kept",
         uncertain: "Delivery unconfirmed · draft kept",
-        unknown: "Not confirmed by Claude · not sent again",
+        unknown: `Not confirmed by ${harness ?? "the harness"} · not sent again`,
       }[receipt.status];
       return (
         <div

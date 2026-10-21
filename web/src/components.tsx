@@ -724,8 +724,8 @@ export function Turn({
             {item._yuzunoDelivery && (
               <small role="status" className="message-delivery">
                 {item._yuzunoDelivery === "queued"
-                  ? "Sent · waiting for Claude to confirm"
-                  : "Not confirmed by Claude · not sent again"}
+                  ? `Sent · waiting for ${agentHarnessName(agent)} to confirm`
+                  : `Not confirmed by ${agentHarnessName(agent)} · not sent again`}
               </small>
             )}
             {agent.harness === "claude" && item.nativeUuid && !item._yuzunoDelivery && (
