@@ -11,11 +11,24 @@ export type PastedText = {
   preview: string;
 };
 export type DraftPart = { kind: "text"; text: string } | PastedText;
+/**
+ * A Codex skill chosen for this draft from what the Agent's own Codex listed
+ * (T-29): the Agent it was listed for, and its name and path there. Only a
+ * choice adds one; text, even "$name", never does.
+ */
+export type DraftSkill = { agentId: string; name: string; path: string; scope: string };
+export const MAX_DRAFT_SKILLS = 16;
+export function validDraftSkills(value: unknown): value is DraftSkill[] {
+  return Array.isArray(value) && value.length <= MAX_DRAFT_SKILLS && value.every((s) =>
+    !!s && typeof s === "object" && typeof s.agentId === "string" && typeof s.name === "string" && !!s.name
+    && typeof s.path === "string" && !!s.path && typeof s.scope === "string");
+}
 export type ComposerDraft = {
   version: 1;
   nextNumber: number;
   parts: readonly DraftPart[];
   images?: readonly DraftImage[];
+  skills?: readonly DraftSkill[];
 };
 export const emptyDraft = (): ComposerDraft => ({
   version: 1,
@@ -26,6 +39,12 @@ export const textDraft = (text: string): ComposerDraft => ({
   ...emptyDraft(),
   parts: text ? [{ kind: "text", text }] : [],
 });
+/** A draft copied to another Agent (a fork): its text and images, never
+ * the skills chosen here, which this Agent's own Codex listed. */
+export function copiedDraft(draft: ComposerDraft): ComposerDraft {
+  const { skills: _chosen, ...copied } = draft;
+  return copied;
+}
 export const draftText = (draft: ComposerDraft) =>
   draft.parts.map((p) => p.text).join("");
 export const hasDraftContent = (draft: ComposerDraft) =>
@@ -72,7 +91,7 @@ const bodyPrefix = "yuzuno.paste.v1:";
 type SavedPart =
   | { kind: "text"; text: string }
   | Pick<PastedText, "kind" | "id" | "number" | "bodyId">;
-type SavedDraft = { version: 1; nextNumber: number; parts: SavedPart[]; images?: DraftImage[] };
+type SavedDraft = { version: 1; nextNumber: number; parts: SavedPart[]; images?: DraftImage[]; skills?: DraftSkill[] };
 
 /** Cache only identities, so nearby keystrokes never stringify/read paste bodies. */
 export class DraftStorage {
@@ -103,6 +122,9 @@ export class DraftStorage {
     )
       throw new Error("Invalid saved draft");
     if (saved.images !== undefined && !validDraftImages(saved.images)) throw new Error("Invalid saved image references");
+    if (saved.skills !== undefined && !validDraftSkills(saved.skills)) throw new Error("Invalid saved skill references");
+    // A skill is this Agent's: one saved for another is never offered here.
+    const skills = (saved.skills || []).filter((skill) => skill.agentId === agent);
     const keys = new Set<string>();
     const parts = saved.parts.map((p): DraftPart => {
       if (p.kind === "text" && typeof p.text === "string") return p;
@@ -124,7 +146,8 @@ export class DraftStorage {
     });
     this.bodies.set(agent, keys);
     this.manifests.set(agent, raw);
-    return { version: 1, nextNumber: saved.nextNumber, parts, ...(saved.images?.length ? { images: saved.images } : {}) };
+    return { version: 1, nextNumber: saved.nextNumber, parts, ...(saved.images?.length ? { images: saved.images } : {}),
+      ...(skills.length ? { skills } : {}) };
   }
 
   save(agent: string, draft: ComposerDraft) {
@@ -178,6 +201,7 @@ export class DraftStorage {
         nextNumber: draft.nextNumber,
         parts,
         ...(draft.images?.length ? { images: draft.images } : {}),
+        ...(draft.skills?.length ? { skills: draft.skills } : {}),
       });
       this.storage.setItem(prefix + agent, manifest);
       this.manifests.set(agent, manifest);

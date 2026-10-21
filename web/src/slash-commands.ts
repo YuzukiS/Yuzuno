@@ -14,6 +14,7 @@ import {
   type TooltipView,
   type ViewUpdate,
 } from "@codemirror/view";
+import { pathTail } from "./skill-refs";
 
 /**
  * A command a Claude Agent can be sent, as Claude Code lists it
@@ -26,6 +27,9 @@ export type SlashCommand = {
   argumentHint: string;
   aliases: string[];
   source: "builtin" | "skill" | "custom" | "control";
+  /** A Codex skill's path on the Agent's machine and its scope (T-29). */
+  path?: string;
+  scope?: string;
 };
 export type CommandList =
   | {
@@ -39,6 +43,8 @@ export type CommandList =
       total: number;
       truncated: boolean;
       skillsKnown: boolean;
+      /** Codex: why its skills are not listed, beside the controls that are. */
+      skillsNote?: string;
     }
   | { state: "unavailable" | "unsupported" | "failed"; reason: string };
 
@@ -69,6 +75,32 @@ export const codexControls: CommandList = {
   truncated: false,
   skillsKnown: false,
 };
+
+const skillsNotes: Record<string, string> = {
+  not_connected: "Skills are listed once this Agent is connected to Codex.",
+  closed: "This Agent is closed.",
+  old_protocol: "This Agent's Codex does not list skills.",
+};
+
+/**
+ * A Codex Agent's list: Yuzuno's controls, then the skills its own Codex
+ * lists for its folder (`/agents/{id}/codex/skills`). The controls stay
+ * whatever the skills' answer is.
+ */
+export function withCodexSkills(skills: CommandList): CommandList {
+  if (codexControls.state !== "ready") return codexControls;
+  if (skills.state !== "ready") {
+    return { ...codexControls, skillsNote: skillsNotes[skills.reason] ?? "Could not read this Agent's Codex skills." };
+  }
+  return {
+    ...codexControls,
+    source: "session",
+    commands: [...codexControls.commands, ...skills.commands.map((c) => ({ ...c, source: "skill" as const }))],
+    total: codexControls.total + skills.total,
+    truncated: skills.truncated,
+    skillsKnown: true,
+  };
+}
 
 /** Claude Code's list, with `/model` as the settings control it is here. */
 export function withModelControl(list: CommandList): CommandList {
@@ -105,6 +137,19 @@ export function slashToken(start: string, cursor: number) {
   return cursor >= 1 && cursor <= to ? { to, query: match[1] } : null;
 }
 
+/**
+ * A Codex skill being typed: "$" at the start of a word, then its name so
+ * far, with the cursor in it. "$" inside a word ("a$b") is not one.
+ */
+export function skillToken(text: string, cursor: number) {
+  const before = text.slice(Math.max(0, cursor - 200), cursor);
+  const match = /(^|\s)\$([A-Za-z0-9_.:-]*)$/.exec(before);
+  if (!match) return null;
+  const from = cursor - match[2].length - 1;
+  const rest = /^[A-Za-z0-9_.:-]*/.exec(text.slice(cursor, cursor + 200))?.[0] ?? "";
+  return { from, to: cursor + rest.length, query: match[2] };
+}
+
 /** Commands whose name (or alias) starts with what was typed first, then those containing it; Claude Code's order otherwise. */
 export function matching(commands: readonly SlashCommand[], query: string) {
   const q = query.toLowerCase();
@@ -129,6 +174,8 @@ type Menu = {
   id: string;
   open: boolean;
   query: string | null;
+  /** "/" at the start of the draft, or a Codex skill's "$". */
+  kind: "slash" | "skill";
   active: number;
   listing: Listing | null;
 };
@@ -137,11 +184,19 @@ const closeMenu = StateEffect.define<null>();
 const moveTo = StateEffect.define<number>();
 const setListing = StateEffect.define<Listing | null>();
 let menus = 0;
-const head = (state: EditorState) =>
-  slashToken(state.sliceDoc(0, Math.min(state.doc.length, 200)), state.selection.main.head);
+/** What is being typed at the cursor, if it is a command or (Codex) a skill. */
+function head(state: EditorState): { from: number; to: number; query: string; kind: "slash" | "skill" } | null {
+  const cursor = state.selection.main.head;
+  const slash = slashToken(state.sliceDoc(0, Math.min(state.doc.length, 200)), cursor);
+  if (slash) return { from: 0, ...slash, kind: "slash" };
+  if (state.facet(kindFacet) !== "codex") return null;
+  const start = Math.max(0, cursor - 200);
+  const skill = skillToken(state.sliceDoc(start, Math.min(state.doc.length, cursor + 200)), cursor - start);
+  return skill ? { from: start + skill.from, to: start + skill.to, query: skill.query, kind: "skill" } : null;
+}
 
 const menuField = StateField.define<Menu>({
-  create: () => ({ id: `slash-menu-${++menus}`, open: false, query: null, active: 0, listing: null }),
+  create: () => ({ id: `slash-menu-${++menus}`, open: false, query: null, kind: "slash", active: 0, listing: null }),
   update(menu, tr) {
     let { open, active, listing } = menu;
     for (const effect of tr.effects) {
@@ -156,10 +211,11 @@ const menuField = StateField.define<Menu>({
     else if (tr.docChanged && (tr.isUserEvent("input") || tr.isUserEvent("delete")) && !tr.isUserEvent("input.complete"))
       open = true;
     const query = open && token ? token.query : null;
-    if (query !== menu.query) active = 0;
-    return open === menu.open && query === menu.query && active === menu.active && listing === menu.listing
+    const kind = token?.kind ?? menu.kind;
+    if (query !== menu.query || kind !== menu.kind) active = 0;
+    return open === menu.open && query === menu.query && kind === menu.kind && active === menu.active && listing === menu.listing
       ? menu
-      : { ...menu, open, query, active, listing };
+      : { ...menu, open, query, kind, active, listing };
   },
   provide: (field) => [
     showTooltip.from(field, (menu): Tooltip | null =>
@@ -187,6 +243,10 @@ const loadFacet = Facet.define<() => Promise<CommandList>, (() => Promise<Comman
 const kindFacet = Facet.define<"claude" | "codex", "claude" | "codex">({
   combine: (values) => values[0] ?? "claude",
 });
+/** Where a chosen Codex skill goes: the draft's own list of chosen skills. */
+const skillFacet = Facet.define<(skill: SlashCommand) => void, ((skill: SlashCommand) => void) | null>({
+  combine: (values) => values[0] ?? null,
+});
 
 function list(menu: Menu) {
   if (!menu.listing) return null;
@@ -194,26 +254,36 @@ function list(menu: Menu) {
 }
 function shown(menu: Menu) {
   const current = list(menu);
-  return menu.open && current?.state === "ready" ? matching(current.commands, menu.query ?? "") : [];
+  if (!menu.open || current?.state !== "ready") return [];
+  const commands = menu.kind === "skill" ? current.commands.filter((c) => c.source === "skill" && c.path) : current.commands;
+  return matching(commands, menu.query ?? "");
 }
 const activeOf = (menu: Menu, items: readonly SlashCommand[]) => Math.min(menu.active, items.length - 1);
 
-/** Fill the chosen command into the draft: its name only, keeping what follows. Nothing is sent. */
+/**
+ * Fill the chosen command into the draft: its name only, keeping what
+ * follows. A Codex skill is written "$name", as Codex itself writes it, and
+ * added to the draft's chosen skills, which is what Send invokes. Nothing is
+ * sent.
+ */
 function choose(view: EditorView, command: SlashCommand) {
   const token = head(view.state);
   if (!token) return;
+  const skill = view.state.facet(kindFacet) === "codex" && command.source === "skill" && !!command.path;
   const after = view.state.sliceDoc(token.to, token.to + 1);
-  const insert = `/${command.name}${after === " " ? "" : " "}`;
+  const insert = `${skill ? "$" : "/"}${command.name}${after === " " ? "" : " "}`;
   view.dispatch({
-    changes: { from: 0, to: token.to, insert },
-    selection: { anchor: insert.length + (after === " " ? 1 : 0) },
+    changes: { from: token.from, to: token.to, insert },
+    selection: { anchor: token.from + insert.length + (after === " " ? 1 : 0) },
     effects: closeMenu.of(null),
     userEvent: "input.complete",
   });
+  if (skill) view.state.facet(skillFacet)?.(command);
 }
 
+
 const sourceLabel = (c: SlashCommand, skillsKnown: boolean) =>
-  c.source === "control" ? "Yuzuno control" : c.source === "builtin" ? "Claude Code" : c.source === "skill" ? "Skill" : skillsKnown ? "Command" : "Custom";
+  c.source === "control" ? "Yuzuno control" : c.source === "builtin" ? "Claude Code" : c.source === "skill" ? (c.path ? "Codex skill" : "Skill") : skillsKnown ? "Command" : "Custom";
 const unavailable: Record<string, string> = {
   closed: "This Agent is closed.",
   remote: "Commands of a Claude on another machine are not listed here.",
@@ -250,9 +320,10 @@ function createMenuView(view: EditorView): TooltipView {
       dom.append(p);
     };
     const codex = view.state.facet(kindFacet) === "codex";
-    box.setAttribute("aria-label", codex ? "Codex controls" : "Claude commands");
+    const skills = menu.kind === "skill";
+    box.setAttribute("aria-label", skills ? "Codex skills" : codex ? "Codex controls and skills" : "Claude commands");
     if (!current) {
-      note(codex ? "Reading Codex controls…" : "Reading Claude's commands…");
+      note(skills ? "Reading this Agent's Codex skills…" : codex ? "Reading Codex controls and skills…" : "Reading Claude's commands…");
       return;
     }
     if (current.state !== "ready") {
@@ -260,7 +331,9 @@ function createMenuView(view: EditorView): TooltipView {
       return;
     }
     if (!items.length) {
-      note(`No command matches “/${menu.query ?? ""}”. Enter sends the text as it is.`);
+      note(skills
+        ? `No skill matches “$${menu.query ?? ""}”. The text stays as typed and invokes no skill.`
+        : `No command matches “/${menu.query ?? ""}”. Enter sends the text as it is.`);
     } else {
       items.forEach((command, index) => {
         const option = document.createElement("div");
@@ -270,10 +343,11 @@ function createMenuView(view: EditorView): TooltipView {
         option.className = `slash-menu-item${index === active ? " is-active" : ""}`;
         const name = document.createElement("span");
         name.className = "slash-menu-name";
-        name.textContent = `/${command.name}`;
+        name.textContent = `${command.path ? "$" : "/"}${command.name}`;
         const hint = document.createElement("span");
         hint.className = "slash-menu-hint";
-        hint.textContent = command.argumentHint;
+        // Two skills of one name are told apart by where they are.
+        hint.textContent = command.path ? [command.scope, pathTail(command.path)].filter(Boolean).join(" · ") : command.argumentHint;
         const tag = document.createElement("span");
         tag.className = `slash-menu-source is-${command.source}`;
         tag.textContent = sourceLabel(command, current.skillsKnown);
@@ -281,7 +355,7 @@ function createMenuView(view: EditorView): TooltipView {
         description.className = "slash-menu-description";
         description.textContent = command.description;
         option.append(name, hint, tag, description);
-        option.title = [`/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`, command.description, command.aliases.length ? `Also /${command.aliases.join(", /")}` : ""]
+        option.title = [command.path ? `$${command.name}\n${command.path}` : `/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`, command.description, command.aliases.length ? `Also /${command.aliases.join(", /")}` : ""]
           .filter(Boolean)
           .join("\n");
         option.addEventListener("click", () => choose(view, command));
@@ -301,12 +375,21 @@ function createMenuView(view: EditorView): TooltipView {
         },
       });
     }
-    note(
-      current.source === "controls"
-        ? "Codex lists no commands here. Yuzuno runs these itself, never as a prompt: choosing one fills it in, and Send runs it."
-        : `${current.source === "session" ? "Listed by this conversation's Claude Code" : "Listed by Claude Code for this folder; the conversation may add more once it runs"}${current.truncated ? `; ${current.total} in all, the first ${current.commands.length} shown` : ""}. Choosing one only fills it in.`,
-      "is-source",
-    );
+    if (codex) {
+      note(
+        skills
+          ? "Skills this Agent's Codex lists for its folder. Choosing one adds it to this message; Send invokes it."
+          : "Yuzuno runs its controls itself, never as a prompt: choosing one fills it in, and Send runs it. A skill chosen here is added to this message; Send invokes it.",
+        "is-source",
+      );
+      if (current.skillsNote) note(current.skillsNote, "is-failed");
+      else if (current.truncated) note(`${current.total} in all; the first ${current.commands.length} shown.`, "is-source");
+    } else {
+      note(
+        `${current.source === "session" ? "Listed by this conversation's Claude Code" : "Listed by Claude Code for this folder; the conversation may add more once it runs"}${current.truncated ? `; ${current.total} in all, the first ${current.commands.length} shown` : ""}. Choosing one only fills it in.`,
+        "is-source",
+      );
+    }
     if (menu.listing?.status === "loading") note("Checking for changes…", "is-loading");
   };
   return {
@@ -386,8 +469,9 @@ const keys = Prec.highest(
         choose(view, chosen);
         return handled();
       }
-      // Enter fills in the chosen command; a name typed in full is sent as typed.
-      if (event.key === "Enter" && !event.shiftKey && chosen.name !== menu.query) {
+      // Enter fills in the chosen command; a name typed in full is sent as
+      // typed. A skill is chosen either way: text alone invokes none.
+      if (event.key === "Enter" && !event.shiftKey && (menu.kind === "skill" || chosen.name !== menu.query)) {
         choose(view, chosen);
         return handled();
       }
@@ -398,9 +482,11 @@ const keys = Prec.highest(
 
 /**
  * The slash list for one Agent's composer: typing "/" at the very start of
- * the draft lists the commands `load` reads for that Agent. Choosing one
- * fills in its name and keeps the rest of the draft; nothing is sent or run.
+ * the draft lists the commands `load` reads for that Agent, and for a Codex
+ * Agent "$" at the start of a word lists its skills. Choosing one fills in
+ * its name and keeps the rest of the draft; a Codex skill also goes to
+ * `onSkill`. Nothing is sent or run.
  */
-export function slashCommands(load: () => Promise<CommandList>, kind: "claude" | "codex" = "claude"): Extension {
-  return [menuField, loader, keys, loadFacet.of(load), kindFacet.of(kind)];
+export function slashCommands(load: () => Promise<CommandList>, kind: "claude" | "codex" = "claude", onSkill?: (skill: SlashCommand) => void): Extension {
+  return [menuField, loader, keys, loadFacet.of(load), kindFacet.of(kind), ...(onSkill ? [skillFacet.of(onSkill)] : [])];
 }

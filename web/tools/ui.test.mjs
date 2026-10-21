@@ -107,6 +107,7 @@ async function mount({
   claudeRuntime,
   settingsResponse,
   compactResponse,
+  skillsResponse,
 } = {}) {
   const calls = [];
   const eventUrls = [];
@@ -153,6 +154,7 @@ async function mount({
     if (url.endsWith("/messages") && messageResponse) return messageResponse(url, init);
     if (url.endsWith("/settings") && settingsResponse) return settingsResponse(url, init);
     if (url.endsWith("/compact") && compactResponse) return compactResponse(url, init);
+    if (url.endsWith("/codex/skills") && skillsResponse) return skillsResponse(url, init);
     if (url.endsWith("/models") && modelsResponse) return modelsResponse(url, init);
     if (url.includes("/api/artifact?") && artifactResponse)
       return artifactResponse(url, init);
@@ -5010,4 +5012,55 @@ test("an OpenCode Agent at work takes no message into its turn and shows OpenCod
     assert.equal(page.calls.some((call) => /codex\/usage/.test(call.url)), false);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
+});
+
+// T-29: a skill chosen in a Codex Agent's composer is a chip beside the
+// draft; Send invokes it. Text alone, even "$name", invokes none.
+test("a skill chosen in a Codex Agent's composer is a chip its message invokes; removing it, or text alone, invokes none", async () => {
+  const path = "/w/.codex/skills/deploy/SKILL.md";
+  const listed = { state: "ready", reason: "listed", source: "session", total: 1, truncated: false, skillsKnown: true, disabled: 0, errors: 0,
+    commands: [{ name: "deploy", description: "Deploy from this repo", argumentHint: "", aliases: [], source: "skill", path, scope: "repo" }] };
+  const page = await mount({ skillsResponse: async () => ({ ok: true, status: 200, json: async () => listed }) });
+  try {
+    // JSDOM does no layout: the list's tooltip measures empty ranges here.
+    page.window.Range.prototype.getClientRects = () => [];
+    page.window.Range.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 });
+    const composer = page.document.querySelector('[data-composer-input][aria-label="Message Mori"]');
+    const view = composerView(composer);
+    const type = (text) => view.dispatch({ changes: { from: view.state.doc.length, insert: text }, selection: { anchor: view.state.doc.length + text.length }, userEvent: "input.type" });
+    const choose = async () => {
+      for (let i = 0; i < 40 && !page.document.querySelector(".slash-menu [role=option]"); i++) await pause();
+      composer.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      await pause();
+    };
+    const sent = () => page.calls.filter((r) => r.url.endsWith("/messages")).map((r) => JSON.parse(r.init.body));
+    type("Ship it ");
+    type("$");
+    await choose();
+    assert.equal(composerText(composer), "Ship it $deploy ");
+    const chip = page.document.querySelector(".skill-chip");
+    assert.match(chip.textContent, /Skill\$deployrepo · skills\/deploy/);
+    assert.equal(chip.title, path);
+    page.document.querySelector('[aria-label="Send message"]').click();
+    for (let i = 0; i < 20 && !sent().length; i++) await pause();
+    assert.deepEqual(sent()[0].skills, [{ name: "deploy", path }]);
+    assert.equal(sent()[0].text, "Ship it $deploy ");
+    await pause(); await pause();
+    assert.equal(page.document.querySelector(".skill-chip"), null, "sent: the draft and its skills are cleared");
+    // Chosen, then removed: the message invokes none, though its text says "$deploy".
+    type("$");
+    await choose();
+    page.document.querySelector('[aria-label="Remove skill deploy"]').click();
+    await pause();
+    assert.equal(page.document.querySelector(".skill-chip"), null);
+    page.document.querySelector('[aria-label="Send message"]').click();
+    for (let i = 0; i < 20 && sent().length < 2; i++) await pause();
+    assert.equal(sent()[1].text, "$deploy ");
+    assert.equal(sent()[1].skills, undefined, "text alone invokes no skill");
+    assert.deepEqual(page.calls.filter((r) => r.url.endsWith("/codex/skills")).map((r) => r.init.method ?? "GET"), ["GET", "GET"],
+      "read once per opening of the list, never per key");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
 });

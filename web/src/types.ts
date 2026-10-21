@@ -379,8 +379,15 @@ export interface QuestionSource {
   turnId: string;
   itemId: string;
 }
+/** A Codex skill a message invokes: its name and path on the Agent's machine. */
+export interface SkillRef {
+  name: string;
+  path: string;
+}
 export interface MessageInput {
   textBlocks?: import("./message-content").TextBlock[];
+  /** Codex only. Sent beside the input; Core keeps them on the receipt. */
+  skills?: SkillRef[];
   clarification?: import("./intelligent-ui/clarification").ClarificationAnswer;
   images?: string[];
   clientMessageId: string;
@@ -391,6 +398,7 @@ export interface MessageInput {
 export interface MessageReceipt {
   binding?: { turnId: string; itemId: string; userIndex: number };
   input: MessageInput;
+  skills?: SkillRef[];
   /**
    * Claude adds "queued" (sent to Claude, not yet read) and "unknown" (its
    * connection ended before it said it read it; never sent again).

@@ -26,12 +26,13 @@ import {PastedTextComposer} from ${JSON.stringify(path.join(root, "src/PastedTex
 import {pastedText, textDraft} from ${JSON.stringify(path.join(root, "src/composer-draft.ts"))};
 import {nativeControl} from ${JSON.stringify(path.join(root, "src/slash-commands.ts"))};
 window.pastedText = pastedText; window.textDraft = textDraft; window.nativeControl = nativeControl;
-window.events = {changes: 0, submits: 0, last: null};
+window.events = {changes: 0, submits: 0, last: null, skills: []};
 const root = createRoot(document.getElementById('root'));
 let props = {agentId: 'a1', draft: textDraft(''), slash: 'claude', readOnly: false};
 window.show = (next) => { props = {...props, ...next}; flushSync(() => root.render(<PastedTextComposer agentId={props.agentId} label="Message" placeholder="Write" draft={props.draft}
   readOnly={props.readOnly} slashCommands={props.slash}
   onChange={(d) => { window.events.changes++; window.events.last = d; props = {...props, draft: d}; }}
+  onSkill={(s) => { window.events.skills.push(s); }}
   onSubmit={() => { window.events.submits++; }}/>)); };`,
   );
   const result = await build({
@@ -79,8 +80,9 @@ function page(answers) {
   const calls = [];
   w.fetch = async (url) => {
     calls.push(url);
-    const agent = /\/api\/agents\/([^/]+)\/claude\/commands$/.exec(new URL(url, "http://isolated.test").pathname)?.[1];
-    const answer = agent && answers[decodeURIComponent(agent)];
+    const found = /\/api\/agents\/([^/]+)\/(claude\/commands|codex\/skills)$/.exec(new URL(url, "http://isolated.test").pathname);
+    // A Codex Agent's skills are answered as `codex:<agent>`.
+    const answer = found && answers[`${found[2] === "codex/skills" ? "codex:" : ""}${decodeURIComponent(found[1])}`];
     if (!answer) return { ok: false, status: 404, json: async () => ({ error: "not in fixture" }), text: async () => "{}" };
     const value = typeof answer === "function" ? await answer() : answer;
     if (value === "fail") return { ok: false, status: 500, json: async () => ({ error: "boom" }), text: async () => "boom" };
@@ -121,6 +123,7 @@ function page(answers) {
       name: o.querySelector(".slash-menu-name").textContent,
       selected: o.getAttribute("aria-selected") === "true",
       source: o.querySelector(".slash-menu-source").textContent,
+      hint: o.querySelector(".slash-menu-hint").textContent,
     })),
     notes: () => [...w.document.querySelectorAll(".slash-menu-note")].map((n) => n.textContent),
   };
@@ -316,19 +319,100 @@ test("without the list (another Harness) or read-only, / is plain text", async (
   }
 });
 
-test("a Codex Agent lists only the controls Yuzuno runs itself, read from nowhere", async () => {
-  const p = page({});
+// T-29: a Codex Agent's skills, as its own Codex lists them for its folder
+// (`/agents/{id}/codex/skills`), beside Yuzuno's controls.
+const REPO = "/w/.codex/skills/deploy/SKILL.md";
+const USER = "C:\\Users\\me\\.codex\\skills\\deploy\\SKILL.md";
+const skill = (name, path, scope, description = `${name} skill`) => ({ name, description, argumentHint: "", aliases: [], source: "skill", path, scope });
+// What the composer handed to the draft, as plain values of this realm.
+const chosen = (p) => Array.from(p.w.events.skills, (s) => [s.name, s.path, s.scope]);
+const skills = ready([skill("deploy", REPO, "repo"), skill("deploy", USER, "user"), skill("review", "/w/.codex/skills/review/SKILL.md", "repo")],
+  { disabled: 1, errors: 0 });
+
+test("a Codex Agent lists Yuzuno's controls and the skills its Codex lists; choosing a skill writes $name and adds it to the draft", async () => {
+  const p = page({ "codex:a1": skills });
   try {
     p.w.show({ slash: "codex" });
     p.type("/");
-    await until(() => p.options().length === 2, "Codex's controls");
-    assert.deepEqual(p.options().map((o) => [o.name, o.source]), [["/compact", "Yuzuno control"], ["/model", "Yuzuno control"]]);
-    assert.deepEqual(p.calls, [], "Codex lists no commands, so nothing is read");
-    assert.match(p.notes().join(" "), /Codex lists no commands here.*never as a prompt/);
-    assert.equal(p.w.document.querySelector(".slash-menu [role=listbox]").getAttribute("aria-label"), "Codex controls");
+    await until(() => p.options().length === 5, "controls and skills");
+    assert.deepEqual(p.calls, ["/api/agents/a1/codex/skills"], "read from this Agent's own Codex");
+    assert.deepEqual(p.options().map((o) => [o.name, o.source, o.hint]), [
+      ["/compact", "Yuzuno control", ""], ["/model", "Yuzuno control", "<model>"],
+      ["$deploy", "Codex skill", "repo · skills/deploy"], ["$deploy", "Codex skill", "user · skills/deploy"], ["$review", "Codex skill", "repo · skills/review"],
+    ], "two skills of one name show where each is");
+    assert.equal(p.w.document.querySelector(".slash-menu [role=listbox]").getAttribute("aria-label"), "Codex controls and skills");
+    p.type("dep");
+    await until(() => p.options().length === 2, "filtered");
+    p.key("ArrowDown");
+    p.key("Enter");
+    assert.equal(p.text(), "$deploy ");
+    assert.deepEqual(chosen(p), [["deploy", USER, "user"]], "the one chosen, by its own path");
+    assert.equal(p.w.events.submits, 0, "choosing sends nothing");
+    // A control is filled in as before, and is no skill.
+    p.view().dispatch({ changes: { from: 0, to: p.text().length, insert: "" } });
+    p.type("/comp");
+    await until(() => p.options().length === 1, "the control");
     p.key("Enter");
     assert.equal(p.text(), "/compact ");
-    assert.equal(p.w.events.submits, 0, "choosing only fills it in; Send runs it");
+    assert.equal(p.w.events.skills.length, 1);
+  } finally {
+    p.close();
+  }
+});
+
+test("$ at the start of a word lists only skills; text alone, $ inside a word or an IME composition chooses none", async () => {
+  const p = page({ "codex:a1": skills });
+  try {
+    p.w.show({ slash: "codex" });
+    p.type("Ship it ");
+    p.type("$");
+    await until(() => p.options().length === 3, "skills only");
+    assert.ok(p.options().every((o) => o.name.startsWith("$") && o.source === "Codex skill"));
+    p.type("rev");
+    await until(() => p.options().length === 1, "filtered");
+    p.key("Enter");
+    assert.equal(p.text(), "Ship it $review ");
+    assert.deepEqual(chosen(p).map(([name]) => name), ["review"]);
+    // A word with "$" in it is no skill.
+    p.type("cost a$b");
+    assert.equal(p.menu(), null);
+    // "$HOME" matches no skill: Enter sends the text as typed, choosing none.
+    p.type(" $HOME");
+    await until(() => /No skill matches/.test(p.notes().join(" ")), "no match");
+    p.key("Enter");
+    assert.equal(p.w.events.submits, 1);
+    assert.equal(p.w.events.skills.length, 1, "text alone invokes no skill");
+    // An IME composition never chooses.
+    p.type(" $de");
+    await until(() => p.options().length === 2, "listed");
+    const composing = p.key("Enter", { isComposing: true });
+    assert.equal(composing.defaultPrevented, false);
+    assert.equal(p.w.events.skills.length, 1);
+  } finally {
+    p.close();
+  }
+});
+
+test("when a Codex Agent's skills cannot be listed, its controls stay and the list says why; a Claude composer's $ is text", async () => {
+  for (const [answer, why] of [[{ state: "unavailable", reason: "not_connected" }, /once this Agent is connected/],
+                               [{ state: "unsupported", reason: "old_protocol" }, /does not list skills/],
+                               ["fail", /Could not read this Agent's Codex skills/]]) {
+    const p = page({ "codex:a1": answer });
+    try {
+      p.w.show({ slash: "codex" });
+      p.type("/");
+      await until(() => p.options().length === 2 && why.test(p.notes().join(" ")), `controls and ${why}`);
+      assert.deepEqual(p.options().map((o) => o.name), ["/compact", "/model"]);
+    } finally {
+      p.close();
+    }
+  }
+  const p = page({ a1: ready(catalog) });
+  try {
+    p.type("Cost is ");
+    p.type("$5");
+    assert.equal(p.menu(), null, "no skills list for Claude here");
+    assert.deepEqual(p.calls, []);
   } finally {
     p.close();
   }

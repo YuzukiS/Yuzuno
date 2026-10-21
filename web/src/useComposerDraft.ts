@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { DraftStorage, emptyDraft, type ComposerDraft } from "./composer-draft";
+import { DraftStorage, copiedDraft, emptyDraft, type ComposerDraft } from "./composer-draft";
 
 export function useComposerDraft(agentId: string) {
   const storage = useRef<DraftStorage | null>(null);
@@ -102,7 +102,7 @@ export function useComposerDraft(agentId: string) {
         emptyDraft();
       const original = drafts.current.get(source);
       if (original && (original.parts.length || original.images?.length) && !current.parts.length && !current.images?.length)
-        setDraft(target, original);
+        setDraft(target, copiedDraft(original));
     } catch {
       errors.current.set(
         target,

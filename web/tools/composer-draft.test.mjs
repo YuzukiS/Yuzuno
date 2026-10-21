@@ -4,6 +4,7 @@ import { EditorState } from "@codemirror/state";
 import { history, undo, redo, isolateHistory } from "@codemirror/commands";
 import {
   DraftStorage,
+  copiedDraft,
   draftText,
   emptyDraft,
   hasDraftContent,
@@ -420,4 +421,31 @@ test("merged ordinary typing and deletion history restores every block through u
     e.state.field(pasteField).anchors.map((a) => a.paste.id),
     ids,
   );
+});
+
+test("chosen Codex skills survive refresh as this Agent's own; another Agent's or a malformed one never comes back", () => {
+  const disk = memory();
+  const storage = new DraftStorage(disk);
+  const deploy = { agentId: "a", name: "deploy", path: "C:\\Users\\me\\.codex\\skills\\deploy\\SKILL.md", scope: "user" };
+  storage.save("a", { ...textDraft("$deploy now"), skills: [deploy] });
+  assert.deepEqual(new DraftStorage(disk).load("a").skills, [deploy]);
+  // Saved under another Agent's key (a copied manifest): not this Agent's skill.
+  disk.setItem("yuzuno.composer.v1:b", disk.getItem("yuzuno.composer.v1:a"));
+  assert.equal(new DraftStorage(disk).load("b").skills, undefined);
+  assert.equal(draftText(new DraftStorage(disk).load("b")), "$deploy now", "the text stays; it chooses nothing");
+  // Without skills the saved manifest is as before.
+  storage.save("a", textDraft("plain"));
+  assert.equal(JSON.parse(disk.getItem("yuzuno.composer.v1:a")).skills, undefined);
+  disk.setItem("yuzuno.composer.v1:a", JSON.stringify({ version: 1, nextNumber: 1, parts: [], skills: [{ agentId: "a", name: "deploy" }] }));
+  assert.throws(() => new DraftStorage(disk).load("a"), /Invalid saved skill references/);
+});
+
+test("a draft copied to a fork keeps its text and images, never the skills chosen for the original Agent", () => {
+  const image = { id: `${"a".repeat(64)}.png`, agentId: "a", name: "shot.png", width: 1, height: 1, bytes: 1 };
+  const draft = { ...textDraft("$deploy now"), images: [image], skills: [{ agentId: "a", name: "deploy", path: "/w/SKILL.md", scope: "repo" }] };
+  const copied = copiedDraft(draft);
+  assert.equal(draftText(copied), "$deploy now", "the text stays; it chooses nothing in the fork");
+  assert.deepEqual(copied.images, [image]);
+  assert.equal("skills" in copied, false);
+  assert.equal(draft.skills.length, 1, "the original draft is not changed");
 });
