@@ -345,3 +345,31 @@ fn the_routes_register_without_conflict_and_mounts_are_read() {
     let mounts = mounts().expect("Linux exposes /proc/self/mountinfo");
     assert!(mounts.contains(&PathBuf::from("/")), "{mounts:?}");
 }
+
+#[tokio::test]
+async fn a_large_git_answer_fails_fast_and_a_linked_folder_still_counts_as_inside() {
+    let lab = lab();
+    // More than 64 KiB of untracked names (at the top: an untracked folder
+    // is listed once): refused at once, not after 8 s.
+    std::fs::create_dir(lab.repo.join("many")).unwrap();
+    for n in 0..2500 {
+        std::fs::write(lab.repo.join(format!("untracked-file-with-a-long-name-{n:05}.txt")), "").unwrap();
+    }
+    let started = Instant::now();
+    let facts = git_facts(&lab.repo).await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(GIT_SECONDS / 2), "{:?}", started.elapsed());
+    assert_eq!(facts["changes"]["complete"], false);
+    assert!(facts["changes"]["reason"].as_str().unwrap().contains("exceeded"), "{facts}");
+
+    // An Agent and a Job reaching the worktree through a link are its users.
+    let link = lab._dir.path().join("via-link");
+    std::os::unix::fs::symlink(&lab.repo, &link).unwrap();
+    let agent: AgentDetail = serde_json::from_value(json!({"agent":{"id":"b","name":"Kai","cwd":link.join("many"),"model":"test","color":"sage","status":"working","createdAt":"now","updatedAt":"now","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    lab.ws.store.insert(&agent).unwrap();
+    job(&lab, "linked", "running", json!({"cwd": "/srv/elsewhere", "env": {"CARGO_TARGET_DIR": link.join("target")}}));
+    std::fs::create_dir(lab.repo.join("target")).unwrap();
+    let agents = lab.ws.store.workspace_agents(&lab.repo).unwrap();
+    assert!(agents.iter().any(|a| a["name"] == "Kai" && a["relation"] == "inside"), "{agents:?}");
+    let jobs = lab.ws.store.workspace_live_jobs(&lab.repo).unwrap();
+    assert!(jobs.iter().any(|j| j["id"] == "linked"), "{jobs:?}");
+}

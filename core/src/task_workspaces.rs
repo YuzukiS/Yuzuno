@@ -95,9 +95,31 @@ fn unchanged(record: &Value) -> Result<Identity> {
     Ok(now)
 }
 
+/// path as this host resolves it now, or as given where it does not resolve
+/// (a folder that was removed): roots are compared resolved.
+fn real(path: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
 /// path is root or below it.
 pub(crate) fn inside(path: &Path, root: &Path) -> bool {
     path == root || path.starts_with(root)
+}
+
+/// At most limit bytes of reader, and whether there was more. The rest is
+/// read and dropped: a writer left blocked on a full pipe would never exit.
+async fn bounded(mut reader: impl tokio::io::AsyncRead + Unpin, limit: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let (mut kept, mut more) = (Vec::new(), false);
+    let mut chunk = vec![0u8; 16 * 1024];
+    loop {
+        let n = reader.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok((kept, more));
+        }
+        let room = limit.saturating_sub(kept.len());
+        kept.extend_from_slice(&chunk[..n.min(room)]);
+        more |= n > room;
+    }
 }
 
 /// One bounded Git command in dir: no hooks, no fsmonitor, no optional
@@ -115,20 +137,17 @@ async fn git(dir: &Path, args: &[&str]) -> Result<std::result::Result<String, St
         .kill_on_drop(true)
         .spawn()
         .context("Git could not be started on this Core's host")?;
-    let mut out = child.stdout.take().context("Missing Git output")?.take(GIT_BYTES as u64 + 1);
-    let mut err = child.stderr.take().context("Missing Git errors")?.take(4096);
+    let out = child.stdout.take().context("Missing Git output")?;
+    let err = child.stderr.take().context("Missing Git errors")?;
     let run = async {
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let (a, b, status) = tokio::join!(out.read_to_end(&mut stdout), err.read_to_end(&mut stderr), child.wait());
-        a?;
-        b?;
-        Ok::<_, anyhow::Error>((status?, stdout, stderr))
+        let (a, b, status) = tokio::join!(bounded(out, GIT_BYTES), bounded(err, 4096), child.wait());
+        let ((stdout, more), (stderr, _)) = (a?, b?);
+        Ok::<_, anyhow::Error>((status?, stdout, more, stderr))
     };
-    let (status, stdout, stderr) = tokio::time::timeout(Duration::from_secs(GIT_SECONDS), run)
+    let (status, stdout, more, stderr) = tokio::time::timeout(Duration::from_secs(GIT_SECONDS), run)
         .await
         .map_err(|_| anyhow::anyhow!("Git did not answer within {GIT_SECONDS} s"))??;
-    ensure!(stdout.len() <= GIT_BYTES, "Git's answer exceeded {} KiB", GIT_BYTES / 1024);
+    ensure!(!more, "Git's answer exceeded {} KiB", GIT_BYTES / 1024);
     Ok(if status.success() {
         Ok(String::from_utf8_lossy(&stdout).into_owned())
     } else {
@@ -291,7 +310,7 @@ impl Store {
             .into_iter()
             .filter(|a| a.remote.is_none() && a.closed_at.is_none())
             .filter_map(|a| {
-                let cwd = PathBuf::from(&a.cwd);
+                let cwd = real(PathBuf::from(&a.cwd));
                 let relation = if inside(&cwd, root) { "inside" } else if root.starts_with(&cwd) { "above" } else { return None };
                 Some(json!({"id": a.id, "name": a.name, "status": a.status, "relation": relation,
                     "working": a.status != "idle"}))
@@ -316,8 +335,8 @@ impl Store {
         let mut jobs = Vec::new();
         for row in rows {
             let (id, name, status, cwd, task, target) = row?;
-            let cwd = cwd.map(PathBuf::from);
-            let target = target.map(|t| cwd.as_deref().map_or(PathBuf::from(&t), |c| c.join(&t)));
+            let target = target.map(|t| cwd.as_deref().map_or(PathBuf::from(&t), |c| Path::new(c).join(&t))).map(real);
+            let cwd = cwd.map(|c| real(PathBuf::from(c)));
             if cwd.as_deref().is_some_and(|c| inside(c, root)) || target.as_deref().is_some_and(|t| inside(t, root)) {
                 jobs.push(json!({"id": id, "name": name, "status": status, "taskRef": task}));
             }
