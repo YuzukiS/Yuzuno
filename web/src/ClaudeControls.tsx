@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowUpRight, Bot, ChevronRight, ClipboardList, LoaderCircle, MessageSquare, ShieldCheck, SquareTerminal } from "lucide-react";
-import { api, errorText, post } from "./api";
+import { api, errorText, respondToRequest } from "./api";
 import { claudeCodeFacts } from "./claude-runtime";
 import { callToward, formatUsage, turnSubAgents, type ClaudeSubAgentEntry, type ClaudeSubAgentRecord } from "./claude-subagents";
 import { Prose } from "./components";
@@ -419,12 +419,12 @@ export function ClaudePermission({ request, refresh, disabled, highlightSource, 
     answering.current = true;
     setSending(true); setError("");
     try {
-      await post(`/requests/${encodeURIComponent(request.id)}/respond`, { response: {
+      await respondToRequest(request.id, {
         decision,
         ...(scope ? { scope } : {}),
         ...(decision === "deny" && reasonText && !questions.length ? { message: reasonText } : {}),
         ...(decision === "allow" && questions.length ? { updatedInput: { ...input, answers: Object.fromEntries(questions.map(q => [q.question, answer(q)])) } } : {}),
-      } });
+      });
       setAnswered(true);
       refresh();
     } catch (e) { answering.current = false; setError(errorText(e)); } finally { setSending(false); }

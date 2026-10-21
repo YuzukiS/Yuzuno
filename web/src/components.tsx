@@ -35,7 +35,7 @@ import type {
   PendingRequest,
   MessageReceipt,
 } from "./types";
-import { api, artifactUrl, errorText, post } from "./api";
+import { api, artifactUrl, errorText, respondToRequest } from "./api";
 import { ClaudePermission, ClaudeSubAgentScope, ClaudeTool } from "./ClaudeControls";
 import { OpenCodeRequest, OpenCodeTool } from "./OpenCodeControls";
 import { agentHarnessName } from "./machine-checks";
@@ -1027,9 +1027,7 @@ function CodexPendingCard({
     setSending(true);
     setError("");
     try {
-      await post(`/requests/${encodeURIComponent(request.id)}/respond`, {
-        response,
-      });
+      await respondToRequest(request.id, response);
       setAnswered(true);
       refresh();
     } catch (e) {

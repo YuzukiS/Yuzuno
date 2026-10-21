@@ -1165,6 +1165,83 @@ test("working messages carry the active turn and retries retain the same identit
   }
 });
 
+// A phone's request can hang after sleep or a network change (T-170). Such
+// a request is given up after DELIVERY_WAIT_MS (shortened here) and treated
+// as unconfirmed, like a lost reply: nothing is sent again by itself.
+const DELIVERY_WAIT_MS = 60_000;
+function noReplyTo(path, hung) {
+  return (window) => {
+    const setTimeout = window.setTimeout;
+    // Only this wait is shortened: no other app timer is a 60 s setTimeout
+    // while a conversation is shown.
+    window.setTimeout = function (handler, delay, ...args) {
+      return setTimeout.call(window, handler, delay === DELIVERY_WAIT_MS ? 40 : delay, ...args);
+    };
+    const fetch = window.fetch;
+    window.fetch = (url, init = {}) => {
+      if (!url.includes(path)) return fetch(url, init);
+      hung.push({ url, init });
+      return new Promise((_, reject) =>
+        init.signal?.addEventListener("abort", () => reject(new window.DOMException("The operation was aborted.", "AbortError"))));
+    };
+  };
+}
+
+test("a message with no reply in time is unconfirmed: the draft stays, nothing is sent again, Send works (T-170)", async () => {
+  const hung = [];
+  const page = await mount({ beforeLoad: noReplyTo("/messages", hung) });
+  try {
+    const composer = page.document.querySelector('[data-composer-input][aria-label="Message Mori"]');
+    setValue(page.window, composer, "Sent from a phone.");
+    const send = await waitForPreviewState(() => {
+      const button = page.document.querySelector('[aria-label="Send message"]');
+      return button && !button.disabled && button;
+    }, "the send button to accept the draft");
+    send.click();
+    await waitForPreviewState(
+      () => /Delivery unconfirmed · draft kept/.test(page.document.querySelector(".outgoing-message")?.textContent || ""),
+      "the unconfirmed delivery to be shown",
+    );
+    assert.match(page.document.body.textContent, /No reply from Core within 60 seconds\. It may have arrived; nothing is sent again by itself\./);
+    assert.equal(composerText(composer), "Sent from a phone.");
+    await pause();
+    await pause();
+    assert.equal(hung.length, 1, "sent once, not again");
+    assert.equal(page.document.querySelector('[aria-label="Send message"]').disabled, false, "Send is usable again");
+  } finally {
+    page.close();
+  }
+});
+
+test("an answer with no reply in time can be given again, which Core refuses if the first arrived (T-170)", async () => {
+  const hung = [];
+  const question = {
+    id: "ask",
+    agentId: "a",
+    method: "item/tool/requestUserInput",
+    createdAt: "",
+    params: {
+      questions: [{ id: "pick", question: "Which one?", options: [{ label: "A", description: "a" }, { label: "B", description: "b" }] }],
+    },
+  };
+  const page = await mount({ status: "waiting", pending: [question], beforeLoad: noReplyTo("/respond", hung) });
+  try {
+    const card = page.document.querySelector(".pending-card");
+    card.querySelector("label.answer-option input").click();
+    await pause();
+    button(page, "Send answer").click();
+    await waitForPreviewState(
+      () => /No reply from Core within 60 seconds\. Your answer may have arrived; if you answer again, Core refuses a second answer\./.test(card.textContent),
+      "the answer without a reply to say so",
+    );
+    assert.equal(hung.length, 1);
+    assert.equal(button(page, "Send answer").disabled, false, "the card can be answered again");
+    assert.doesNotMatch(card.textContent, /Response sent/);
+  } finally {
+    page.close();
+  }
+});
+
 test("collaboration recovery holds composer and async answers, keeps drafts and native interrupt, and refreshes without a new record revision", async () => {
   const collaboration = { ready: false, error: "Workspace MCP check failed; reconnect to verify." };
   const backgroundShells = { state: "known", count: 1, checkedAt: Date.now() };
