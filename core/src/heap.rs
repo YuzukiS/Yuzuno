@@ -322,3 +322,40 @@ pub fn diagnostics(
             "updateOperation":activity.operation_id.is_some(),"sealed":activity.sealed},
         "reclaim":reclaim})
 }
+
+#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+mod tests {
+    use super::*;
+
+    fn waiting(report: &Value) -> Option<Vec<String>> {
+        // A trim in progress elsewhere in this process holds the gate.
+        (report["reclaim"]["gateBusy"] == false).then(|| {
+            report["reclaim"]["gate"]["waitingFor"].as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_owned()).collect()
+        })
+    }
+
+    #[test]
+    fn its_own_permit_is_counted_but_is_not_another_request_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+        let admission = std::sync::Arc::new(crate::updates::admission::Admission::default());
+        let report = diagnostics(&store, &admission, false, false);
+        assert_eq!(report["admission"]["inFlight"], 0);
+        assert_eq!(report["allocator"]["available"], true);
+        assert_eq!(report["reclaim"]["maintenanceTickRunning"], false);
+        let own = admission.enter_completion().unwrap();
+        let report = diagnostics(&store, &admission, true, true);
+        assert_eq!((report["admission"]["inFlight"].clone(), report["admission"]["includesThisRequest"].clone()), (json!(1), json!(true)));
+        assert_eq!(report["reclaim"]["maintenanceTickRunning"], true);
+        if let Some(waiting) = waiting(&report) {
+            assert!(!waiting.contains(&"requestsInFlight".to_owned()), "{waiting:?}");
+        }
+        let other = admission.enter_completion().unwrap();
+        let report = diagnostics(&store, &admission, true, true);
+        assert_eq!(report["admission"]["inFlight"], 2);
+        if let Some(waiting) = waiting(&report) {
+            assert!(waiting.contains(&"requestsInFlight".to_owned()), "{waiting:?}");
+        }
+        drop((own, other));
+    }
+}
