@@ -319,3 +319,43 @@ fn window_fallback_keeps_replay_and_damage_behavior() {
     assert!(damaged.detail.agent.error.is_some());
     assert_equivalent(&store, &Query::default());
 }
+
+#[test]
+fn window_cache_is_published_only_for_rows_unchanged_since_it_was_built() {
+    let (_dir, store) = lab();
+    let mut d = detail("a");
+    d.turns[0]["items"] = json!([
+        {"id":"same","type":"agentMessage","text":"kept"},
+        {"id":"big","type":"commandExecution","command":"ls","aggregatedOutput":"x".repeat(20000)},
+        {"id":"text","type":"agentMessage","text":"before"},
+        {"id":"none","type":"agentMessage","text":"no previews"},
+        {"id":"count","type":"agentMessage","text":"payload count"},
+        {"id":"gone","type":"agentMessage","text":"deleted"}
+    ]);
+    store.insert(&d).unwrap();
+    let sql = |q: &str| store.db.write().unwrap().execute(q, []).unwrap();
+    sql("DELETE FROM agent_window_items WHERE agent_id='a'");
+    let previews: Vec<(String, bool)> = store.db.read().unwrap()
+        .prepare("SELECT item_id, previews IS NOT NULL FROM agent_items WHERE agent_id='a' ORDER BY ord").unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert_eq!(previews.iter().filter(|(_, some)| *some).map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["big"],
+        "one row has previews, the others none");
+    let index = record_rows::window::index(&store.db.read().unwrap(), "a").unwrap();
+    assert_eq!(index.fills.len(), 6);
+    // Between the read and the write, as another writer or an older Core could.
+    sql("UPDATE agent_items SET data=replace(data,'before','beforX') WHERE agent_id='a' AND item_id='text'");
+    sql("UPDATE agent_items SET previews='' WHERE agent_id='a' AND item_id='none'");
+    sql("UPDATE agent_items SET payloads=1 WHERE agent_id='a' AND item_id='count'");
+    sql("DELETE FROM agent_items WHERE agent_id='a' AND item_id='gone'");
+    {
+        let mut writer = store.db.write().unwrap();
+        let tx = writer.transaction().unwrap();
+        record_rows::window::fill(&tx, "a", index.fills).unwrap();
+        tx.commit().unwrap();
+    }
+    let published: Vec<(String, i64)> = store.db.read().unwrap()
+        .prepare("SELECT item_id, json_extract(data,'$.version') FROM agent_window_items WHERE agent_id='a' ORDER BY item_id").unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert_eq!(published, [("big".to_string(), 3), ("same".to_string(), 3)],
+        "same-length data, an empty preview where there was none, a payload count and a deleted row are not published");
+}

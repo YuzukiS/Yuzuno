@@ -3,7 +3,9 @@
 //! writes from older Core builds and manual edits as well as this build.
 use super::*;
 use crate::conversation_window;
+use rusqlite::types::ValueRef;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub(super) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch(
@@ -53,9 +55,34 @@ struct Entry {
     item: Value,
 }
 
+/// A cache entry to publish, and what it was built from: the row's identity
+/// and payload count, and the length and SHA-256 of its `data` and `previews`
+/// (`None` stays apart from an empty preview), not the text itself. A first
+/// read after a cache version change builds an entry for every Item; holding
+/// each row's text until the writer published them kept about the record's
+/// whole Item text alive through that read.
 pub(crate) struct Fill {
-    row: ItemRow,
-    data: String,
+    turn: String,
+    key: String,
+    payloads: usize,
+    data: Seen,
+    previews: Option<Seen>,
+    entry: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Seen {
+    len: usize,
+    sha256: [u8; 32],
+}
+
+impl Seen {
+    fn of(text: &[u8]) -> Self {
+        Self {
+            len: text.len(),
+            sha256: Sha256::digest(text).into(),
+        }
+    }
 }
 
 pub(crate) struct Index {
@@ -153,11 +180,18 @@ pub(crate) fn index(db: &Connection, id: &str) -> Result<Index> {
                 stats.index_build_items += 1;
                 let value = decode(db, id, &raw, false, None)?;
                 let item = conversation_window::item_index(&value);
-                let data = serde_json::to_string(&Entry {
+                let entry = serde_json::to_string(&Entry {
                     version: INDEX_VERSION,
                     item: item.clone(),
                 })?;
-                fills.push(Fill { row: raw, data });
+                fills.push(Fill {
+                    data: Seen::of(raw.data.as_bytes()),
+                    previews: raw.previews.as_deref().map(|p| Seen::of(p.as_bytes())),
+                    turn: raw.turn,
+                    key: raw.key,
+                    payloads: raw.payloads,
+                    entry,
+                });
                 item
             };
             let t = *turn_at.get(&turn).context("Item without Turn")?;
@@ -185,23 +219,38 @@ pub(crate) fn index(db: &Connection, id: &str) -> Result<Index> {
 }
 
 /// Publish a prepared cache only if the source row is still exactly the one
-/// read. The writer never parses/serializes history; concurrent rewrites are
-/// left for the next read. Triggers remove entries on subsequent changes.
+/// read: in the caller's write transaction, each row is read again and its
+/// data, previews (absent or text) and payload count compared with what the
+/// entry was built from. The writer never parses/serializes history;
+/// concurrent rewrites are left for the next read. Triggers remove entries on
+/// subsequent changes.
 pub(crate) fn fill(db: &Connection, id: &str, fills: Vec<Fill>) -> Result<()> {
-    let mut query = db.prepare_cached("INSERT INTO agent_window_items(agent_id,turn_id,item_id,data)
-        SELECT agent_id,turn_id,item_id,?4 FROM agent_items
-        WHERE agent_id=?1 AND turn_id=?2 AND item_id=?3 AND data IS ?5 AND previews IS ?6 AND payloads=?7
+    let mut current = db.prepare_cached(
+        "SELECT data,previews,payloads FROM agent_items WHERE agent_id=?1 AND turn_id=?2 AND item_id=?3",
+    )?;
+    let mut publish = db.prepare_cached("INSERT INTO agent_window_items(agent_id,turn_id,item_id,data) VALUES(?1,?2,?3,?4)
         ON CONFLICT(agent_id,turn_id,item_id) DO UPDATE SET data=excluded.data WHERE data IS NOT excluded.data")?;
-    for Fill { row, data } in fills {
-        query.execute(params![
-            id,
-            row.turn,
-            row.key,
-            data,
-            row.data,
-            row.previews,
-            row.payloads as i64
-        ])?;
+    for fill in fills {
+        let unchanged = current
+            .query_row(params![id, fill.turn, fill.key], |r| {
+                let data = match r.get_ref(0)? {
+                    ValueRef::Text(text) => Some(Seen::of(text)),
+                    _ => None,
+                };
+                let previews = match r.get_ref(1)? {
+                    ValueRef::Null => Some(None),
+                    ValueRef::Text(text) => Some(Some(Seen::of(text))),
+                    _ => None,
+                };
+                Ok(data == Some(fill.data)
+                    && previews == Some(fill.previews)
+                    && r.get::<_, i64>(2)? == fill.payloads as i64)
+            })
+            .optional()?
+            .unwrap_or(false);
+        if unchanged {
+            publish.execute(params![id, fill.turn, fill.key, fill.entry])?;
+        }
     }
     Ok(())
 }
