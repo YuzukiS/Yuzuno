@@ -1,11 +1,12 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Paths', 'Launch', 'CloseWindow', 'Kill')]
+    [ValidateSet('Paths', 'Launch', 'CloseWindow', 'Kill', 'Starts')]
     [string]$Action,
     [string]$CoreUrl,
     [int]$CdpPort,
-    [int]$DesktopProcessId
+    [int]$DesktopProcessId,
+    [string]$InstallDir
 )
 # Windows half of the T-171 start lab (desktop/tests/start-lab.py). It runs
 # only the lab build of the desktop (identifier dev.yuzuno.workspace.t171lab,
@@ -49,6 +50,13 @@ switch ($Action) {
         $sent = $handle.CloseMainWindow()
         $exited = $handle.WaitForExit(15000)
         [pscustomobject]@{ pid = $process.ProcessId; closeSent = $sent; exited = $exited } | ConvertTo-Json
+    }
+    'Starts' {
+        # The wsl.exe processes running this lab installation's start entry.
+        if (-not $InstallDir -or -not $InstallDir.StartsWith('/var/tmp/t171-')) { throw 'Name the lab installation.' }
+        $found = @(Get-CimInstance Win32_Process -Filter "Name = 'wsl.exe'" | Where-Object { $_.CommandLine -like "*$InstallDir/updates/start*" } |
+            ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; parent = $_.ParentProcessId } })
+        ConvertTo-Json -InputObject $found -Compress
     }
     'Kill' {
         $process = Get-LabProcess $DesktopProcessId

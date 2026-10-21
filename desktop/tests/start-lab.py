@@ -138,6 +138,19 @@ def parent(pid):
     return {"ppid": ppid, "name": name}
 
 
+def lab_processes(managed):
+    """Running processes whose executable is in the lab installation."""
+    found = []
+    for proc in Path("/proc").iterdir():
+        if proc.name.isdigit():
+            try:
+                if os.readlink(proc / "exe").startswith(str(managed) + "/"):
+                    found.append(int(proc.name))
+            except OSError:
+                continue
+    return sorted(found)
+
+
 def stop(pid, managed):
     """Stops a lab Core, and only one: its executable must be the lab's."""
     if not os.readlink(f"/proc/{pid}/exe").startswith(str(managed / "releases") + "/"):
@@ -314,33 +327,48 @@ def main():
         assert starts() == 2, starts()
         step("two-starts-one-core", answers=answers)
 
-        # 7. The window is killed while its start runs: the start goes on in
-        #    WSL (wsl.exe is not the window's to end), and what it started stays.
+        # 7. The window is killed while its start runs. What becomes of the
+        #    start is observed, not assumed: the wsl.exe running it (and its
+        #    parent) on Windows, the helper and Core in WSL. Whatever Core it
+        #    started must stay.
         stop(third, managed)
+
+        def observe():
+            helpers = [pid for pid in lab_processes(managed) if os.readlink(f"/proc/{pid}/exe").endswith("/yuzuno-update-helper")]
+            return {"wsl": windows("Starts", InstallDir=str(managed)), "helpers": helpers,
+                    "listener": listener(args.port), "starts": starts()}
+
         window("click-start")
-        killed_at = time.monotonic()
+        seen = {"beforeKill": until(lambda: (lambda o: o if o["wsl"] or o["helpers"] or o["listener"] else None)(observe()), 20,
+                                    "the start to be under way")}
         windows("Kill", DesktopProcessId=desktop)
         desktop = None
-        fourth = until(lambda: listener(args.port), 180, "a Core after the window was killed mid-start")
-        lab_cores.append(fourth)
-        until(lambda: (health(args.port) or {}).get("workspaceId") == workspace, 120, "that Core to answer")
-        time.sleep(20)
-        assert listener(args.port) == fourth and starts() == 3
-        step("window-killed-mid-start", secondsToListen=round(time.monotonic() - killed_at, 1),
-             core=process(fourth), session=session(fourth))
+        time.sleep(3)
+        seen["3sAfterKill"] = observe()
+        time.sleep(12)
+        seen["15sAfterKill"] = observe()
+        fourth = listener(args.port)
+        if fourth:
+            lab_cores.append(fourth)
+            until(lambda: (health(args.port) or {}).get("workspaceId") == workspace, 120, "that Core to answer")
+            time.sleep(20)
+            assert listener(args.port) == fourth, "the Core a killed window started was stopped"
+            seen["core"] = process(fourth)
+        step("window-killed-mid-start", started=bool(fourth), **seen)
         until(lambda: not devtools(args.cdp_port), 60, "the killed window's DevTools to go")
+        if fourth:
+            stop(fourth, managed)
         desktop = windows("Launch", CoreUrl=url, CdpPort=args.cdp_port)["pid"]
         until(lambda: devtools(args.cdp_port), 60, "the lab window's DevTools")
-        window("connected")
 
         # 8. Something else holds the port: nothing is started.
-        stop(fourth, managed)
         other = subprocess.Popen([sys.executable, "-m", "http.server", str(args.port), "--bind", "127.0.0.1"],
                                  cwd=lab, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             until(lambda: listener(args.port) == other.pid, 10, "the other program's listener")
             taken = window("port-taken")
-            assert "Nothing was started" in taken["error"] and starts() == 3 and listener(args.port) == other.pid, taken
+            assert "Nothing was started" in taken["error"] and listener(args.port) == other.pid, taken
+            assert not any(os.readlink(f"/proc/{pid}/exe").endswith("/yuzuno-workspace") for pid in lab_processes(managed))
             step("port-held-by-another-program", error=taken["error"])
         finally:
             other.terminate()
@@ -360,7 +388,7 @@ def main():
             until(lambda: devtools(args.cdp_port), 60, "the lab window's DevTools")
             refused = window("refused")
             assert refused["startShown"] and refused["error"].startswith("WSL could not run Yuzuno's start"), refused
-            assert starts() == 3 and listener(args.port) is None
+            assert listener(args.port) is None and not lab_processes(managed)
             step(name, label=refused["startLabel"], error=refused["error"])
         report["passed"] = True
     except Exception as error:  # noqa: BLE001 - recorded, then raised
