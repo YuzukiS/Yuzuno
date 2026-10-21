@@ -35,6 +35,7 @@ import {
 } from "./projects";
 import "./collaboration.css";
 import { GitHubLinks, GitHubSummary, type GitHubLink } from "./GitHubLinks";
+import { TaskWorkspaces } from "./TaskWorkspaces";
 import { relative } from "./home/format";
 
 type TaskStatus =
@@ -80,6 +81,8 @@ export interface SharedTask {
   archivedAt?: string | null;
   /** Project membership; null or absent means no project. */
   projectId?: string | null;
+  /** Registered work materials (full view only); paths are information. */
+  materials?: { worktree?: string | null } | null;
   version: number;
   createdAt: string;
   createdBy: Person;
@@ -1917,6 +1920,7 @@ function TaskPane({
               manage={managing}
             />
           </section>
+          <TaskWorkspaces key={`workspaces-${task.id}`} taskId={task.id} materialsWorktree={task.materials?.worktree} />
           {!!detail.executions?.length && (
             <section className="collab-section">
               <h4>Related conversations</h4>

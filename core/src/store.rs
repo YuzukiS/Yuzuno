@@ -981,6 +981,7 @@ impl Store {
         crate::results::migrate(&db)?;
         crate::project_brief::migrate(&db)?;
         crate::brief_turns::migrate(&db)?;
+        crate::task_workspaces::migrate(&db)?;
         record_rows::migrate(&db)?;
         // Records stored whole (by an older Core) become rows, before any
         // other connection is open. One that cannot is left whole, and Core

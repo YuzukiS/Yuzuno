@@ -318,6 +318,7 @@ test("Messages is an observation view with a canonical task link and no user mes
     delivery: { state: "pending", detail: {} },
   };
   const page = mount((operation) => {
+    if (operation === "workspaces") return { taskId: "T-1", repositories: [], workspaces: [] };
     if (operation === "task_list") return { tasks: [task()], hasMore: false };
     if (operation === "peer_read")
       return { messages: [message], hasMore: false };
@@ -388,7 +389,7 @@ test("Messages is an observation view with a canonical task link and no user mes
       task_list: "POST", peer_read: "POST", task_get: "POST",
       github_links: "POST", github_refresh: "POST", delivery_get: "POST",
       peers_list: "POST", "pr-reviews?taskId=T-1": "GET",
-      "pr-operations?taskId=T-1": "GET",
+      "pr-operations?taskId=T-1": "GET", workspaces: "GET",
     };
     assert.deepEqual(
       page.calls.filter(call => readMethods[call.operation] !== call.method),
