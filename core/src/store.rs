@@ -1018,7 +1018,7 @@ impl Store {
             if a.closed_at.is_some() { continue; }
             // A damaged record is shown as it is (see `stand_in`) and holds
             // back no other Agent.
-            let restarted = store.update(&a.id, "workspace/restarted", &json!({}), |d| {
+            let restarted = store.record_meta_change(&a.id, "workspace/restarted", &json!({}), |d| {
                 if let Some(usage) = &mut d.context_usage { usage.stale = true; }
                 for receipt in &mut d.message_receipts {
                     if receipt.status == "sending" { receipt.status = "uncertain".into(); }
@@ -1036,6 +1036,9 @@ impl Store {
             if let Err(error) = restarted {
                 eprintln!("Workspace could not mark Agent {} restarted: {error:#}", a.id);
             }
+            // Just written and nothing streams yet: released, so opening
+            // holds one record at a time, not every open Agent's (T-140).
+            store.release(&a.id);
         }
         store.settle_older_cores();
         Ok(store)
@@ -2093,6 +2096,13 @@ impl Store {
         Ok(self.commit(id, kind, data, Scope::Compare, mutate, |_, _| ())?.0)
     }
 
+    /// `record_event` for Store's own change to the metadata alone (see
+    /// `Meta`) that reads the Turns: written as the metadata, without
+    /// comparing a long record. `mutate` must not change a Turn.
+    fn record_meta_change(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut AgentDetail)) -> Result<u64> {
+        Ok(self.commit(id, kind, data, Scope::Meta, mutate, |_, _| ())?.0)
+    }
+
     /// `record_event` for a change to the record's metadata only: `mutate`
     /// gets no Turn (see `Meta`). What it wrote is found without comparing the
     /// whole record: the metadata, and the Items `message_content::restore`
@@ -2168,8 +2178,10 @@ impl Store {
                     self.list_damaged(id, error);
                 }
                 let (detail, replayed) = loaded?;
-                let before = detail.clone();
-                (detail, replayed, Some(before))
+                // Kept only to compare with: a scope that names what it
+                // writes needs no second copy of a long history (T-140).
+                let before = matches!(scope, Scope::Compare).then(|| detail.clone());
+                (detail, replayed, before)
             }
         };
         let ((), restored) = crate::message_content::collect_restored(|| {
@@ -2184,7 +2196,7 @@ impl Store {
         unwritten.merge(match (&held, &loaded) {
             (Some(detail), _) => scoped(&scope, &d, data, restored).unwrap_or_else(|| Dirty::between(&detail.read(), &d)),
             (None, Some(before)) => Dirty::between(before, &d),
-            (None, None) => Dirty::all(),
+            (None, None) => scoped(&scope, &d, data, restored).unwrap_or_else(Dirty::all),
         });
         drop(loaded);
         let plan = record_rows::plan(&*self.db.read()?, id, &d, &unwritten)?;
