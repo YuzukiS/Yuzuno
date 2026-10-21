@@ -35,7 +35,7 @@ const RED = "#e5484d";
  * The original with the areas drawn on it and numbered, within Core's image
  * limits: PNG first, then JPEG and smaller sizes if it would pass 10 MiB.
  */
-async function annotate(loaded: Loaded, regions: readonly Region[]): Promise<Blob> {
+async function annotate(loaded: Loaded, regions: readonly Region[]): Promise<{ blob: Blob; size: Size }> {
   const base = outputScale(loaded.size);
   const attempts: [string, number | undefined, number][] = [
     ["image/png", undefined, 1], ["image/jpeg", 0.9, 1], ["image/jpeg", 0.85, 0.7], ["image/jpeg", 0.8, 0.5],
@@ -67,7 +67,7 @@ async function annotate(loaded: Loaded, regions: readonly Region[]): Promise<Blo
       g.fillText(String(index + 1), cx, cy);
     });
     const blob = await new Promise<Blob | null>((done) => canvas.toBlob(done, type, quality));
-    if (blob && blob.size > 0 && blob.size <= MAX_IMAGE_BYTES) return blob;
+    if (blob && blob.size > 0 && blob.size <= MAX_IMAGE_BYTES) return { blob, size: { width: canvas.width, height: canvas.height } };
   }
   throw new Error("The annotated image stays larger than 10 MiB even when reduced.");
 }
@@ -92,7 +92,7 @@ const BOX = [["x", "Left"], ["y", "Top"], ["width", "Width"], ["height", "Height
 export function PointFix({ source, agents, room, onAdd, onClose }: {
   source: PointFixSource | null;
   agents: readonly Agent[];
-  /** Why that Agent's draft cannot take images of these sizes, or null. */
+  /** Why that Agent's draft cannot take these images (none: any images), or null. */
   room: (agentId: string, images: { bytes: number }[]) => string | null;
   /** Adds to that Agent's draft: why it could not, or null once added. */
   onAdd: (agentId: string, images: DraftImage[], text: string) => string | null;
@@ -160,11 +160,13 @@ export function PointFix({ source, agents, room, onAdd, onClose }: {
     change(regions.filter((r) => r.id !== id));
     if (selected === id) setSelected(null);
   }
+  // Undo takes back an area's shape or its adding, never a note typed since:
+  // an area that stays keeps the note it has now.
   function undo() {
     const last = history.at(-1);
     if (!last) return;
     setHistory(history.slice(0, -1));
-    setRegions(last);
+    setRegions(last.map((r) => ({ ...r, note: regions.find((now) => now.id === r.id)?.note ?? r.note })));
     if (!last.some((r) => r.id === selected)) setSelected(null);
   }
   const point = (event: ReactPointerEvent) =>
@@ -185,15 +187,20 @@ export function PointFix({ source, agents, room, onAdd, onClose }: {
     setBusy(true);
     setProblem("");
     try {
+      // Whether that Agent's draft can take images at all. How many it can
+      // take is checked once the images are saved: an image already in the
+      // draft has the same ID and is not added again.
+      const blocked = room(target, []);
+      if (blocked) throw new Error(blocked);
       const marked = await annotate(loaded, regions);
       const withOriginal = original && originalFits;
-      const full = room(target, [{ bytes: marked.size }, ...(withOriginal ? [{ bytes: loaded.blob.size }] : [])]);
-      if (full) throw new Error(full);
       // Saved as that Agent's images, which are content-addressed: trying
       // again after a failure adds the same images, never a second copy.
-      const images = [await upload(target, marked, `Annotated ${source.name}`)];
+      const images = [await upload(target, marked.blob, `Annotated ${source.name}`)];
       if (withOriginal) images.push(await upload(target, loaded.blob, source.name));
-      const text = feedbackText({ name: source.name, provenance: source.provenance, regions, size: loaded.size, original: withOriginal });
+      const text = feedbackText({
+        name: source.name, provenance: source.provenance, regions, size: loaded.size, original: withOriginal, annotated: marked.size,
+      });
       const refused = onAdd(target, images, text);
       if (refused) throw new Error(refused);
       onClose();

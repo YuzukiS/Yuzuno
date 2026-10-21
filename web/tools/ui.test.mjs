@@ -2057,7 +2057,7 @@ test("a conversation reopens where it was left, and one left at the latest stays
 // content-addressed images do: the same bytes, the same ID.
 function pointFixBrowser(window, uploads, { failFirst = false } = {}) {
   const drawn = [];
-  window.createImageBitmap = async () => ({ width: 400, height: 300, close() {} });
+  window.createImageBitmap = async () => ({ ...(window.pointFixSize || { width: 400, height: 300 }), close() {} });
   window.URL.createObjectURL = () => "blob:point-fix";
   window.URL.revokeObjectURL = (url) => drawn.push(["revoked", url]);
   // Each canvas draws its own picture: the same areas, the same bytes.
@@ -2149,10 +2149,12 @@ test("Point & Fix marks areas on an image and adds it, the original and the note
     const third = svg.querySelectorAll("rect[data-region]")[2];
     assert.deepEqual(["x", "y", "width", "height"].map((k) => third.getAttribute(k)), ["40", "40", "80", "60"]);
     assert.equal(dialog().querySelectorAll(".point-fix-badge")[2].style.left, "10%");
+    // A note typed after the last area was drawn survives Undo.
+    typeText(page, field("Area 1 comment"), "Too tight, by 4 px");
     button(page, "Undo").click();
     await pause();
     assert.equal(field("Area 3 comment"), null, "Undo takes the last area back");
-    assert.equal(field("Area 1 comment").value, "Too tight");
+    assert.equal(field("Area 1 comment").value, "Too tight, by 4 px");
     // Another Agent: checked again, and enabled.
     const select = dialog().querySelector(".point-fix-target select");
     select.value = "b";
@@ -2177,7 +2179,7 @@ test("Point & Fix marks areas on an image and adds it, the original and the note
     assert.ok(text.startsWith("Hana’s own draft"), text);
     assert.match(text, /Point & Fix feedback on “shot.png” \(400×300 px\): 2 marked areas in the attached annotated image, with the original image attached\./);
     assert.match(text, /Source: the file \/workspace\/shot.png in Mori’s conversation/);
-    assert.match(text, /1\. Area at x 10, y 20, 50×40 px: Too tight\n2\. Area at x 150, y 113, 100×75 px: Wrong colour/);
+    assert.match(text, /1\. Area at x 10, y 20, 50×40 px: Too tight, by 4 px\n2\. Area at x 150, y 113, 100×75 px: Wrong colour/);
     assert.equal(page.document.querySelector(".composer-area").querySelectorAll(".input-image").length, 2);
     assert.equal(page.calls.filter((c) => c.init.method === "POST" && /\/(messages|turns)$/.test(c.url)).length, 0, "nothing is sent");
     assert.deepEqual(page.errors, []);
@@ -2212,6 +2214,14 @@ test("a screenshot you choose is marked up with the keyboard alone, into this Ag
     // The same again: the same images, not a second copy of each.
     await choose();
     assert.equal(images(), 2);
+    // An image larger than Core takes: the annotated copy is reduced, the
+    // text says so, and the original is not attached.
+    page.window.pointFixSize = { width: 9000, height: 4000 };
+    await choose();
+    const big = composerText(composer).split("Point & Fix feedback").at(-1);
+    assert.match(big, /^ on “screen.png” \(9000×4000 px\): 1 marked area in the attached annotated image\.\n/);
+    assert.match(big, /The annotated image is reduced to 7348×3266 px; the areas below are in the original’s 9000×4000 pixels\./);
+    assert.equal(images(), 3);
     assert.equal(page.calls.filter((c) => c.init.method === "POST" && /\/(messages|turns)$/.test(c.url)).length, 0);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }

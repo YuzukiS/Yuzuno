@@ -46,3 +46,13 @@ test("the draft text names the source apart from the notes, each area numbered a
     "2. Area at x 0, y 0, 5×5 px: (no comment)",
   ].join("\n"));
 });
+
+test("an annotated image reduced to fit says so, and which pixels the areas are in", () => {
+  const text = feedbackText({
+    name: "big.png", provenance: "an image you chose (big.png)", original: false,
+    size: { width: 9000, height: 4000 }, annotated: { width: 7348, height: 3266 },
+    regions: [{ id: 1, x: 3375, y: 1500, width: 2250, height: 1000, note: "Here" }],
+  });
+  assert.match(text, /^Point & Fix feedback on “big.png” \(9000×4000 px\): 1 marked area in the attached annotated image\.\n/);
+  assert.match(text, /\nThe annotated image is reduced to 7348×3266 px; the areas below are in the original’s 9000×4000 pixels\.\n\n1\. Area at x 3375, y 1500, 2250×1000 px: Here$/);
+});

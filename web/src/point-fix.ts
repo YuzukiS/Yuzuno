@@ -78,17 +78,23 @@ export function outputScale(size: Size) {
  * The text added to the draft with the annotated image: where the image came
  * from, apart from what the user says about each area.
  */
-export function feedbackText({ name, provenance, regions, size, original }: {
+export function feedbackText({ name, provenance, regions, size, original, annotated = size }: {
   name: string;
   provenance: string;
   regions: readonly Region[];
   size: Size;
   original: boolean;
+  /** The annotated image's own size, when it had to be reduced. */
+  annotated?: Size;
 }) {
   const areas = `${regions.length} marked area${regions.length === 1 ? "" : "s"}`;
+  const reduced = annotated.width !== size.width || annotated.height !== size.height;
   return [
     `Point & Fix feedback on “${name}” (${size.width}×${size.height} px): ${areas} in the attached annotated image${original ? ", with the original image attached" : ""}.`,
     `Source: ${provenance}`,
+    ...(reduced
+      ? [`The annotated image is reduced to ${annotated.width}×${annotated.height} px; the areas below are in the original’s ${size.width}×${size.height} pixels.`]
+      : []),
     "",
     ...regions.map((region, index) =>
       `${index + 1}. Area at x ${region.x}, y ${region.y}, ${region.width}×${region.height} px: ${region.note.trim() || "(no comment)"}`),
