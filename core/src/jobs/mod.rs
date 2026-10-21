@@ -12,7 +12,7 @@ mod pause;
 mod queue;
 mod remote;
 mod ssh_mux;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
 #[path = "ssh_mux_tests.rs"]
 mod ssh_mux_tests;
 pub(crate) use remote::WINDOWS_LEGACY_ROOT;

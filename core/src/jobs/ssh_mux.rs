@@ -16,7 +16,9 @@
 //!   those of Cores that have ended;
 //! - it is this Core's child. Dropped, it is killed. On Linux it is also sent
 //!   SIGTERM when the runtime thread that started it ends, which a killed
-//!   Core's threads do (PR_SET_PDEATHSIG; tested with SIGKILL);
+//!   Core's threads do (PR_SET_PDEATHSIG; tested with SIGKILL). Where libc
+//!   is not available to Core (other than Linux with glibc), no directory
+//!   is made, and every call connects itself;
 //! - after `idle` without a call or after `age`, it ends once no call is
 //!   using it: a call in progress is never cut off;
 //! - a call uses a master only for where OpenSSH would connect now: the
@@ -24,7 +26,11 @@
 //!   configuration (`ssh -G`, which connects to nothing), so a target or an
 //!   SSH configuration pointed elsewhere is another connection. A name whose
 //!   address changes in DNS is followed once its master retires (`age`);
-//! - one that cannot be made is not tried again for `retry`.
+//! - one that cannot be made is not tried again for `retry`;
+//! - a master carries one call at a time. sshd allows `MaxSessions`
+//!   sessions per connection (10 by default, as few as 1 where hardened)
+//!   and refuses the rest, and OpenSSH does not then connect directly: a
+//!   call that finds its master busy connects itself, as before.
 //!
 //! The master authenticates and checks the host key as any call did (the
 //! same options); calls through it reuse that authenticated connection. A
@@ -46,6 +52,8 @@ use std::time::{Duration, Instant};
 const SOCKET_PATH_LIMIT: usize = 108 - 1 - 17;
 /// How long a master may take to connect: `ConnectTimeout` and a margin.
 const CONNECT_WAIT: Duration = Duration::from_secs(12);
+/// Calls a master carries at once; within any sshd's `MaxSessions`.
+const SESSIONS: usize = 1;
 
 pub(crate) struct Mux {
     /// Where this process's sockets are made, chosen on first use; None when
@@ -55,6 +63,7 @@ pub(crate) struct Mux {
     idle: Duration,
     age: Duration,
     retry: Duration,
+    sessions: usize,
     slots: Mutex<HashMap<String, Arc<Mutex<Slot>>>>,
 }
 
@@ -107,13 +116,20 @@ impl Mux {
     /// `base` is where the process directory is made (None: the default),
     /// and the durations as in the module's description.
     pub(crate) fn new(base: Option<PathBuf>, idle: Duration, age: Duration, retry: Duration) -> Self {
-        Self { dir: OnceLock::new(), base, idle, age, retry, slots: Default::default() }
+        Self { dir: OnceLock::new(), base, idle, age, retry, sessions: SESSIONS, slots: Default::default() }
+    }
+
+    /// The same, with masters that carry `sessions` calls at once, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_sessions(self, sessions: usize) -> Self {
+        Self { sessions, ..self }
     }
 
     /// The socket of a live master for `machine`, for one call; None when
-    /// none is ready, and the call connects itself. A master is then
-    /// started for the calls after it, unless one is being started or the
-    /// last one could not be made within `retry`.
+    /// none is ready or it is carrying all the calls it may, and the call
+    /// connects itself. Where none is ready, a master is then started for
+    /// the calls after it, unless one is being started or the last one could
+    /// not be made within `retry`.
     pub(crate) fn client(&self, program: &str, machine: &RemoteMachine, destination: &str) -> Option<Lease> {
         let dir = self.dir()?;
         let key = key(machine, destination);
@@ -123,6 +139,8 @@ impl Mux {
             if let Some(master) = &mut held.master {
                 if self.spent(master) {
                     held.master = None;
+                } else if Arc::strong_count(&master.calls) > self.sessions {
+                    return None;
                 } else {
                     master.used = Instant::now();
                     return Some(Lease { path: master.path.clone(), _call: master.calls.clone() });
@@ -241,7 +259,7 @@ async fn start(program: &str, target: &str, path: &Path) -> Option<Master> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     // SAFETY: prctl is async-signal-safe and touches only the child.
     unsafe {
         command.pre_exec(|| {
@@ -277,7 +295,7 @@ impl Drop for Mux {
 /// a socket name; directories left by Cores that have ended are removed.
 fn private_dir(base: Option<PathBuf>) -> Option<PathBuf> {
     let base = base.or_else(default_base)?;
-    let uid = unsafe { libc::geteuid() };
+    let uid = euid()?;
     let private = |path: &Path| std::fs::symlink_metadata(path)
         .is_ok_and(|meta| meta.is_dir() && meta.uid() == uid && meta.mode() & 0o077 == 0);
     if !private(&base) {
@@ -311,7 +329,7 @@ fn private_dir(base: Option<PathBuf>) -> Option<PathBuf> {
 }
 
 fn default_base() -> Option<PathBuf> {
-    let uid = unsafe { libc::geteuid() };
+    let uid = euid()?;
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
         .filter(|dir| dir.is_absolute() && std::fs::symlink_metadata(dir)
             .is_ok_and(|meta| meta.is_dir() && meta.uid() == uid && meta.mode() & 0o077 == 0));
@@ -319,4 +337,17 @@ fn default_base() -> Option<PathBuf> {
         Some(dir) => dir.join("yuzuno-ssh"),
         None => PathBuf::from(format!("/tmp/yuzuno-ssh-{uid}")),
     })
+}
+
+/// This process's effective user, where Core has libc.
+fn euid() -> Option<u32> {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        // SAFETY: geteuid only reads this process's credentials.
+        Some(unsafe { libc::geteuid() })
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    {
+        None
+    }
 }

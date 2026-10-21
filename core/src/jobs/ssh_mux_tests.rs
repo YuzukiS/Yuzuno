@@ -3,8 +3,8 @@
 //! the user's SSH configuration, keys or known hosts is read: calls go
 //! through a wrapper that gives OpenSSH this test's own configuration.
 use super::remote::{call, Machine, Programs, Reply};
-use super::ssh_mux::{destination, Mux};
-use crate::remote::RemoteMachine;
+use super::ssh_mux::{destination, Lease, Mux};
+use crate::remote::{ssh_with_control, Control, RemoteMachine};
 use serde_json::json;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -44,7 +44,8 @@ impl Sshd {
         let port = free_port();
         std::fs::write(path("sshd_config"), format!(
             "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nPidFile {}\nAuthorizedKeysFile {}\nStrictModes no\n\
-             UsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nLogLevel INFO\n",
+             UsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nLogLevel INFO\n\
+             MaxSessions 1\n",
             path("host"), path("sshd.pid"), path("authorized_keys"))).unwrap();
         let sshd = ["/usr/sbin/sshd", "/usr/bin/sshd"].into_iter().find(|p| Path::new(p).exists())
             .expect("these tests need OpenSSH's sshd");
@@ -168,6 +169,63 @@ async fn calls_share_one_private_connection_and_each_without_it_makes_its_own() 
     drop(mux);
     assert!(!dir.exists(), "a Core's sockets go with it");
     gone(pid).await;
+}
+
+/// A command on `lease`'s master that holds its session for a while, once
+/// that session is open.
+async fn occupy(sshd: &Sshd, lease: &Lease, marker: &Path) -> tokio::process::Child {
+    let mut command = ssh_with_control(&sshd.wrapper, Control::Client(&lease.path));
+    command.arg("box-a").arg(format!("touch '{}' && sleep 3", marker.display()))
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let child = command.spawn().unwrap();
+    for _ in 0..500 {
+        if marker.exists() {
+            return child;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the session did not open");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_busy_master_is_never_asked_for_a_second_session() {
+    // This sshd is hardened: one session per connection (MaxSessions 1).
+    let sshd = Sshd::start();
+    let base = short_base();
+    let box_a = machine("m1", "box-a");
+    let to = destination(&sshd.wrapper, "box-a").await.unwrap();
+    // A master asked for a second session has it refused here, and the
+    // call has no answer: OpenSSH does not then connect directly.
+    let crowded = mux(base.path()).with_sessions(2);
+    assert!(answered(&hello(&sshd, Some(&crowded), &box_a).await));
+    assert!(settled(&crowded, &box_a).await);
+    let lease = crowded.client(&sshd.wrapper, &box_a, &to).unwrap();
+    let mut long = occupy(&sshd, &lease, &base.path().join("crowded")).await;
+    let refused = hello(&sshd, Some(&crowded), &box_a).await;
+    assert!(!answered(&refused), "this sshd refuses a second session");
+    long.wait().await.unwrap();
+    drop(lease);
+    // A master carries one call at a time: a call that finds it busy
+    // connects itself, and answers.
+    let shared = mux(base.path());
+    assert!(answered(&hello(&sshd, Some(&shared), &box_a).await));
+    assert!(settled(&shared, &box_a).await);
+    let lease = shared.client(&sshd.wrapper, &box_a, &to).unwrap();
+    let mut long = occupy(&sshd, &lease, &base.path().join("shared")).await;
+    let before = sshd.connections();
+    let call = hello(&sshd, Some(&shared), &box_a).await;
+    assert!(answered(&call), "{}", kind(&call));
+    assert_eq!(sshd.connections(), before + 1, "it connected itself");
+    long.wait().await.unwrap();
+    drop(lease);
+    // Calls at once all answer; free again, the master carries the next.
+    let calls = futures_util::future::join_all((0..4).map(|_| hello(&sshd, Some(&shared), &box_a))).await;
+    assert!(calls.iter().all(answered));
+    let before = sshd.connections();
+    assert!(answered(&hello(&sshd, Some(&shared), &box_a).await));
+    assert_eq!(sshd.connections(), before, "the master carried it");
+    assert_eq!(shared.starts(&box_a), 1);
 }
 
 /// Until process `pid` has ended (an ended child of this process is
