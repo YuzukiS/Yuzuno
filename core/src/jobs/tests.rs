@@ -1137,3 +1137,30 @@ fn an_agent_on_a_remote_machine_submits_jobs_for_the_core_host() {
     assert_eq!(job["machine"]["id"], "local-test");
     assert!(submit(&s, "from-local-agent")["agentMachine"].is_null());
 }
+
+#[test]
+fn machine_id_local_and_a_local_agents_agent_are_this_host_and_the_target_says_so() {
+    let (_dir, s) = setup();
+    let named = |id: &str, name: &str| -> Submit {
+        let mut sent = input(id);
+        sent.machine_id = Some(name.into());
+        sent.outputs = vec!["out.txt".into()];
+        sent
+    };
+    for (id, name) in [("here-agent", "agent"), ("here-local", "local")] {
+        let sent = named(id, name);
+        // Host-only features are not refused for a name that may be this host...
+        sent.validate().unwrap();
+        let resolved = s.resolve_machine(Some("a"), sent.clone()).unwrap();
+        assert_eq!(resolved.machine_id, None, "{name}");
+        // ...and hold, now that it is.
+        resolved.validate().unwrap();
+        let job = s.create_job(Some("a"), resolved, json!({"cwd":"/workspace"}), machine(), json!({"bootId":"boot"})).unwrap();
+        assert_eq!(job["target"], json!({"requested":name,"kind":"local","machineId":"local","machineName":"test"}));
+        assert!(job["machineId"].is_null() && job["executor"].is_null(), "{job}");
+        assert_eq!(s.previous_job(Some("a"), &sent).unwrap().unwrap()["id"], job["id"], "retried as sent");
+    }
+    // Named nothing: this host, as before, and the target says that too.
+    let job = submit(&s, "unnamed");
+    assert_eq!(job["target"], json!({"requested":null,"kind":"local","machineId":"local","machineName":"test"}));
+}

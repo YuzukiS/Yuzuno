@@ -2058,3 +2058,56 @@ async fn a_status_read_around_a_resume_settles_it_once() {
     let ended = until(&lab, &lab.ssh, &first, |j| j["reserved"] == false).await;
     assert_eq!(ended["status"], "cancelled", "{ended}");
 }
+
+/// An Agent whose record says it runs on the registered machine `machine`.
+fn agent_on(lab: &Lab, id: &str, machine: &str) {
+    let on = serde_json::to_value(lab.ws.store.machine(machine).unwrap()).unwrap();
+    let agent: AgentDetail = serde_json::from_value(json!({"agent":{"id":id,"name":id,"cwd":"/home/u","model":"test","color":"sage",
+        "status":"idle","createdAt":"now","updatedAt":"now","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0,
+        "remote":{"machine":on,"runtime":null}},"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    lab.ws.store.insert(&agent).unwrap();
+}
+
+fn create_as(lab: &Lab, actor: &str, input: Submit) -> anyhow::Result<Value> {
+    let machine = lab.ws.store.machine(input.machine_id.as_deref().unwrap()).unwrap();
+    let cwd = input.cwd.clone();
+    lab.ws.store.create_job(Some(actor), input, json!({"cwd":cwd,"remote":true}), remote::machine_snapshot(&machine), remote::capabilities())
+}
+
+#[test]
+fn machine_id_agent_is_where_the_submitting_agent_runs_and_the_job_keeps_that_machine() {
+    let lab = lab();
+    agent_on(&lab, "r", "m1");
+    // Named as sent; resolved from the authenticated Agent's own record.
+    let sent = input(&lab, "on-agent", "true", json!({"machineId":"agent"}));
+    sent.validate().unwrap();
+    let resolved = lab.ws.store.resolve_machine(Some("r"), sent.clone()).unwrap();
+    assert_eq!(resolved.machine_id.as_deref(), Some("m1"));
+    resolved.validate().unwrap();
+    let job = create_as(&lab, "r", resolved.clone()).unwrap();
+    assert_eq!(job["target"], json!({"requested":"agent","kind":"ssh","machineId":"m1","machineName":"lab box"}));
+    assert_eq!(job["executor"]["machineId"], "m1");
+    assert_eq!(job["agentMachine"]["id"], "m1");
+    // A retry is the same Job, matched as it was sent: before and after resolving.
+    assert_eq!(lab.ws.store.previous_job(Some("r"), &sent).unwrap().unwrap()["id"], job["id"]);
+    assert_eq!(create_as(&lab, "r", resolved).unwrap()["id"], job["id"]);
+    // The machine's rules hold for what it resolved to: guardGit reads this host.
+    let checked = lab.ws.store.resolve_machine(Some("r"), input(&lab, "git", "true", json!({"machineId":"agent","guardGit":true}))).unwrap();
+    assert!(checked.validate().unwrap_err().to_string().contains("guardGit"));
+    // No calling Agent: nothing is guessed, and nothing runs anywhere.
+    let error = lab.ws.store.resolve_machine(None, input(&lab, "nobody", "true", json!({"machineId":"agent"}))).unwrap_err();
+    assert!(error.to_string().contains("this submission has none"), "{error}");
+    // An explicit id is left as it was named.
+    let named = lab.ws.store.resolve_machine(Some("r"), input(&lab, "named", "true", json!({}))).unwrap();
+    assert_eq!((named.machine_id.as_deref(), named.requested_machine.as_deref()), (Some("m1"), None));
+    // Its machine removed while it was closed, then reopened: refused, never
+    // another machine (Machines refuses removal under an open Agent).
+    lab.ws.store.add_machine(&RemoteMachine { id: "m2".into(), name: "spare box".into(), target: "spare-box".into(),
+        codex: "codex".into(), default_cwd: "/tmp".into(), ..Default::default() }).unwrap();
+    agent_on(&lab, "r2", "m2");
+    lab.ws.store.update("r2", "agent/closed", &json!({}), |d| d.agent.closed_at = Some("now".into())).unwrap();
+    lab.ws.store.remove_machine("m2").unwrap();
+    lab.ws.store.update("r2", "agent/reopened", &json!({}), |d| d.agent.closed_at = None).unwrap();
+    let error = lab.ws.store.resolve_machine(Some("r2"), input(&lab, "gone", "true", json!({"machineId":"agent"}))).unwrap_err();
+    assert!(error.to_string().contains("spare box, which is no longer registered"), "{error}");
+}

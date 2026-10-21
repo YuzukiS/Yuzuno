@@ -76,6 +76,9 @@ type Job = {
   machine: { id?: string; name: string };
   /** Where it runs when not on this host: an SSH machine or Windows (T-108). */
   executor?: { kind: string; machineId?: string; machineName?: string } | null;
+  /** Where it runs as the submission named it (`agent`, `local`, an id or
+   * null) and as Core resolved it then (T-162). Older Jobs have none. */
+  target?: { requested?: string | null; kind: string; machineId: string; machineName?: string } | null;
   resources: Resources;
   exclusive?: boolean;
   reservation: Resources;
@@ -196,6 +199,15 @@ const statusName: Record<string, string> = {
   rejected: "Inputs rejected",
   interrupted: "Interrupted",
   unknown: "Outcome unknown",
+};
+/** What the Machine row adds to the machine's name: that it is the Core host,
+ * and that Core chose it as the machine the submitting Agent runs on. */
+export const targetNote = (job: Pick<Job, "target" | "executor">) => {
+  const here = job.target ? job.target.kind === "local" : !job.executor || job.executor.kind === "local";
+  if (job.target?.requested === "agent") {
+    return here ? "Core host, where the submitting Agent runs" : "the machine the submitting Agent runs on";
+  }
+  return here ? "Core host" : "";
 };
 /** Why this job cannot be paused, or null; Core's rule (remote.rs
  * pause_refusal): on another machine only an attempt that runs in a scope of
@@ -1319,7 +1331,10 @@ function JobDetail({
             {job.taskRef} · {job.agent.name}
           </dd>
           <dt>Machine</dt>
-          <dd>{job.machine.name}</dd>
+          <dd>
+            {job.machine.name}
+            {targetNote(job) && ` · ${targetNote(job)}`}
+          </dd>
           <dt>Execution</dt>
           <dd>{job.exclusive ? "Exclusive — this Core's managed local jobs" : "Normal"}</dd>
           <dt>Resources</dt>
