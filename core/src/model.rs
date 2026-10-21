@@ -261,10 +261,6 @@ pub struct HistoryWindow {
     pub next_cursor: Option<String>,
     pub has_more: bool,
     pub loaded_count: usize,
-    /// The Turn earlier native pages continue before: the oldest Turn of the
-    /// page `next_cursor` follows. Records from before T-161 have none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub anchor_turn_id: Option<String>,
 }
 
 /// One side of an explicit official Codex fork between two Workspace Agents.

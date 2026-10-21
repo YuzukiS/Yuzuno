@@ -1880,7 +1880,7 @@ mod tests {
             "pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
         let mut full = sparse.clone();
         full.turns = vec![json!({"id":"t","status":"completed","items":[{"id":"i","type":"agentMessage","text":"q\" {x}"}]})];
-        full.history = Some(crate::model::HistoryWindow { next_cursor: Some("c".into()), has_more: true, loaded_count: 1, anchor_turn_id: Some("t".into()) });
+        full.history = Some(crate::model::HistoryWindow { next_cursor: Some("c".into()), has_more: true, loaded_count: 1 });
         full.pending = serde_json::from_value(json!([{"id":"p","agentId":"a","method":"m","params":{"z":1,"a":2},"createdAt":"now"}])).unwrap();
         full.artifacts = serde_json::from_value(json!([{"path":"/x","name":"x","kind":"file","sourceItemId":"i"}])).unwrap();
         full.context_usage = crate::model::ContextUsage::measured(10, 100, "t", Utc::now());

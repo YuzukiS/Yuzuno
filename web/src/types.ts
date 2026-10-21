@@ -241,8 +241,6 @@ export interface SessionHistory {
   hasMore: boolean;
   loadedCount?: number;
   totalCount?: number;
-  /** The Turn earlier native pages continue before; absent from older Cores. */
-  anchorTurnId?: string | null;
 }
 /** Facts reported by the native Claude Code runtime, for display only. */
 /** One side of an explicit official Codex fork between two Agents. */

@@ -771,7 +771,7 @@ impl Workspace {
                     return Err(error);
                 }
             };
-            let history = crate::codex_sessions::history_after_reconnect(&page, &attempt.before);
+            let history = crate::model::HistoryWindow { loaded_count: page.turns.len(), has_more: page.has_more, next_cursor: page.next_cursor };
             result["thread"]["turns"] = page.turns.into();
             Some(history)
         } else { None };
@@ -878,7 +878,7 @@ impl Workspace {
         anyhow::ensure!(result["thread"]["id"].as_str() == Some(thread.as_str()), "Codex 核对返回了不同会话；原会话未确认");
         let imported_history = if imported {
             let page = crate::codex_sessions::recovery_page(&connection.rpc, &thread, &d).await?;
-            let history = crate::codex_sessions::history_after_reconnect(&page, &d);
+            let history = crate::model::HistoryWindow { loaded_count: page.turns.len(), has_more: page.has_more, next_cursor: page.next_cursor };
             result["thread"]["turns"] = page.turns.into();
             Some(history)
         } else { None };

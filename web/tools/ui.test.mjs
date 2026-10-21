@@ -3285,17 +3285,28 @@ test("read-only imported history questions stay distinct from Core-known pending
 });
 
 
-test("earlier native turns are offered beside the turn they precede and each load says what it added (T-161)", async () => {
-  // Their pages continue before a Turn this window does not show: loading them
-  // here would put them next to unrelated messages.
-  const away = await mount({ history: { hasMore: true, nextCursor: "older", loadedCount: 3, anchorTurnId: "t-not-shown" } });
+test("earlier native turns are offered where the saved conversation starts and each load says what it added (T-161)", async () => {
+  // A saved window that starts later: the native Turns come before the oldest
+  // saved one, so loading them here would put them next to unrelated messages.
+  const away = await mount({ history: { hasMore: true, nextCursor: "older", loadedCount: 3 }, beforeLoad(window) {
+    const fetch = window.fetch;
+    window.fetch = async (url, init) => {
+      const response = await fetch(url, init);
+      if (!/\/api\/agents\/a$/.test(url)) return response;
+      const body = await response.json();
+      const conversation = { index: body.turns.map((turn, i) => ({ ...turn, number: i + 4, itemCount: turn.items.length })),
+        questions: [], nativeClientIds: [], start: '["t1","u1"]', end: '["t1","r1"]', hasBefore: true, hasAfter: false, totalItems: 8 };
+      return { ...response, json: async () => ({ ...body, conversation }) };
+    };
+  } });
   try {
     const loader = away.document.querySelector(".session-history-loader");
     assert.match(loader.textContent, /come before the start of the saved conversation/);
     assert.equal(button(away, "Load earlier turns"), undefined);
+    assert.ok(button(away, "Load earlier messages"));
   } finally { away.close(); }
   const saved = { id: "t1", status: "completed", items: [{ id: "u1", type: "userMessage", content: [{ type: "text", text: "Please review." }] }] };
-  const known = await mount({ history: { hasMore: true, nextCursor: "older", loadedCount: 3, anchorTurnId: "t1" },
+  const known = await mount({ history: { hasMore: true, nextCursor: "older", loadedCount: 3 },
     historyPage: { turns: [saved], hasMore: true, nextCursor: "older-still" } });
   try {
     button(known, "Load earlier turns").click(); await pause(); await pause();
@@ -3305,7 +3316,7 @@ test("earlier native turns are offered beside the turn they precede and each loa
     assert.ok(button(known, "Load earlier turns"), "the next page can still be read");
   } finally { known.close(); }
   const turn = (id) => ({ id, status: "completed", items: [{ id: `${id}-reply`, type: "agentMessage", text: `Earlier ${id}` }] });
-  const fresh = await mount({ history: { hasMore: true, nextCursor: "older", loadedCount: 3, anchorTurnId: "t1" },
+  const fresh = await mount({ history: { hasMore: true, nextCursor: "older", loadedCount: 3 },
     historyPage: { turns: [turn("t-old-1"), turn("t-old-2")], hasMore: false, nextCursor: null } });
   try {
     button(fresh, "Load earlier turns").click(); await pause(); await pause();

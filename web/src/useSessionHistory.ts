@@ -134,8 +134,6 @@ export function useSessionHistory(
         hasMore: earlier.hasMore,
         loadedCount: turns.length,
         totalCount: current.history?.totalCount ?? earlier.totalCount,
-        // Earlier pages continue before the oldest Turn read so far.
-        anchorTurnId: earlier.turns[0]?.id ?? current.history?.anchorTurnId,
       },
     };
   }, [current, earlier, nativeTurns, navigationTurns]);

@@ -485,10 +485,9 @@ export function App() {
   }, [agent?.id, agent?.closedAt]);
   const sessionHistory = useSessionHistory(detail, selected);
   const currentDetail = sessionHistory.detail;
-  // Earlier native Turns appear just before the Turn their pages continue
-  // from, so they are offered only while that Turn is on screen (T-161).
-  const nativeAnchor = currentDetail?.history?.anchorTurnId;
-  const nativeHistoryHere = !nativeAnchor || !!currentDetail?.turns.some(turn => turn.id === nativeAnchor);
+  // Earlier native Turns come before the oldest saved one, so they are
+  // offered only where the saved conversation starts (T-161).
+  const nativeHistoryHere = !currentDetail?.conversation?.hasBefore;
   const [pageTarget, setPageTarget] = useState<{agentId:string; turnId:string; itemId?:string; top:number; start:string|null; end:string|null} | null>(null);
   const [pageSpace, setPageSpace] = useState<"before" | "after" | null>(null);
   useEffect(() => { setPageTarget(null); setPageSpace(null); }, [selected]);
