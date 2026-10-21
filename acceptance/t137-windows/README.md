@@ -37,6 +37,8 @@ It runs only inside a disposable Windows guest, never on a daily account.
   - PowerShell gets the library and fixtures as commands on stdin. No script file runs, no policy changes, `guest-accept.ps1` never runs, and the host's own identity is never read.
 
 - `test_identity.py` checks `identity-command.py`'s command and that every script parses in Windows PowerShell (`python3 test_identity.py`). The scripts are parsed from text, never run.
+  - It also runs the shared name check and snapshot on made-up names and made-up folders (WSL folders reached from Windows, standing in for keys). No real place or registry key is read.
+  - Neighbours like `t137old` and `t137new` are not the identity's; its own folder and key are.
 
 ## Running it
 
@@ -75,6 +77,8 @@ The build needs `CARGO_HOME`, `RUSTUP_HOME` and `PATH` for the Rust toolchain, a
 **Running it.** `identity-command.py` writes the Windows Job's argv: Windows PowerShell with one `-Command`, made of lines setting the five inputs, then `upgrade-steps.ps1` and `identity-check.ps1` as they are. No script file runs and the execution policy is not changed. Submit it as a Windows Job (`machineId` `windows`) with `cwd` the lab folder and `--out` a new empty folder, then read `report.json` there.
 
 - **Before anything,** it refuses (exit 2) unless nothing of the test identity exists: no uninstall entry, install folder, data folder, shortcut, key or process.
+  - It goes by the identity's **exact** names, ignoring case as Windows does: `Yuzuno T137`, `dev.yuzuno.workspace.t137` and `Yuzuno T137.lnk`. A neighbour such as `dev.yuzuno.workspace.t137old` is not the identity's. It is neither a reason to refuse nor ever removed, and it counts among the other folders that must stay as they were.
+  - The guest's check still counts anything named like yuzuno.
 - **No Core is used.** Before anything is installed, it sets the identity's Core to `http://127.0.0.1:1/`, where nothing listens. Both installs are silent and start no process, and it checks that.
 - **What it writes:**
   - `%LOCALAPPDATA%\Yuzuno T137`;
@@ -86,7 +90,20 @@ The build needs `CARGO_HOME`, `RUSTUP_HOME` and `PATH` for the Rust toolchain, a
 
 ## Status (2026-10-21), on an ordinary account
 
-**Prepared, not run:** nothing has been installed. The run needs the user's approval: it installs and uninstalls the test identity on their Windows account.
+**Run once with the user's approval** (Home), with `identity-check.ps1` as of `e44b942`:
+
+- **First attempt** (Windows Job 31aa0f1c): exited at its own pre-check (exit 2), so nothing was installed or removed.
+  - Its name match was a pattern, and it took two leftover folders from earlier T-137 runs for the identity: `%LOCALAPPDATA%\dev.yuzuno.workspace.t137old` and `…t137new`, holding only WebView2 data.
+  - The user chose to delete those two folders and run once more.
+  - The pre-check now goes by exact names, so neighbours like these no longer stop a run.
+- **Second attempt** (Windows Job 7c7ec6e4, 03:48:49–03:48:56Z): **passed**.
+  - The old package installed silently and recorded its `InstallLocation` (`%LOCALAPPDATA%\Yuzuno T137`), so the no-process check had a folder to check. No process ran.
+  - The upgrade kept that location and left the test connection and both markers byte-identical.
+  - Nothing it created is named `-next`.
+  - The silent uninstall removed the entry, the install folder and both shortcuts. It left both data folders and `HKCU\Software\yuzuno\Yuzuno T137`, which upstream keeps unless "delete app data" is chosen.
+  - Cleanup removed those, and the other Yuzuno entries, folders and keys were unchanged.
+  - `report.json` sha256 `ef83c09bd0231dc5b39c20b57b44ad5c7de6e1614cf0115b5e19877a4cb1f972`.
+- **What this does not show:** it covers the template upgrade under the test identity only, not the real 0.2.0 package or identity, Authenticode or SmartScreen.
 
 - **Old candidate:** `Yuzuno T137_0.2.0_x64-setup.exe`, 3,740,203 bytes, SHA-256 `4bb38a788f097e579020c3ec2f4a70388d755da05afecf3184472dd423fd2fa6`. Built by Windows Job 1423cf30 from `desktop/` of `faf3282` (tree `18989177`).
 - **New candidate:** `Yuzuno T137_0.2.1_x64-setup.exe`, 3,762,821 bytes, SHA-256 `1031611739f7056a68be68592a07b989b5a48c018d9782ea0fc95006e3e60753`. Built by Windows Job 895ece2a from `desktop/` of `3c13e27` (tree `0ff7fc20`, installer template `9e829b8a`).

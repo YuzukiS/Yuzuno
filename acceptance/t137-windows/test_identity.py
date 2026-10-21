@@ -1,11 +1,18 @@
-"""identity-command.py's command, and that every script parses (python3 test_identity.py).
+"""identity-command.py's command, that every script parses, and the shared
+name check and snapshot (python3 test_identity.py).
 
-Windows PowerShell only parses the scripts, given as text on stdin: nothing
-runs, no script file is executed and no execution policy is changed. Those
-tests are skipped without Windows PowerShell.
+Windows PowerShell gets the scripts as text on stdin: no script file is
+executed and no execution policy is changed. The parse tests only parse.
+The name tests run Test-Named and Snapshot on made-up names and made-up
+folders, never a real place or registry key; install, uninstall and cleanup
+never run. Those tests are skipped without Windows PowerShell.
 """
 import base64
 import importlib.util
+import json
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -72,10 +79,73 @@ class Command(unittest.TestCase):
         check = (HERE / 'identity-check.ps1').read_text(encoding='utf-8')
         # One removal, in the loop over $own, after the guard on each path's name.
         self.assertEqual(check.count('Remove-Item'), 1)
-        guard = check.index("-notin $ownLeaves) { throw")
+        guard = check.index("-notin $ExactNames) { throw")
         self.assertLess(check.index('foreach ($name in @($own.Keys))'), guard)
         self.assertLess(guard, check.index('Remove-Item'))
-        self.assertIn("$ownLeaves = @($p.product, $identity, \"$($p.product).lnk\")", check)
+        self.assertIn("$ExactNames = @($p.product, $identity, \"$($p.product).lnk\")", check)
+
+
+def windows_path(path):
+    """A WSL path as Windows reaches it (\\\\wsl.localhost\\...)."""
+    return subprocess.run(['wslpath', '-w', str(path)], capture_output=True, text=True, check=True).stdout.strip()
+
+
+HAVE_WSLPATH = shutil.which('wslpath') is not None
+STEPS = (HERE / 'upgrade-steps.ps1').read_text(encoding='utf-8')
+EXACT = "$ExactNames = @('Yuzuno T137', 'dev.yuzuno.workspace.t137', 'Yuzuno T137.lnk')\n"
+
+
+def run_steps(body):
+    """upgrade-steps.ps1's definitions, then body; only pure functions and reads."""
+    encoded = base64.b64encode((STEPS + '\n' + body).encode('utf-8')).decode()
+    return prepare.powershell(
+        f"$text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}'))\n"
+        ". ([scriptblock]::Create($text))\n")
+
+
+@unittest.skipUnless(HAVE_POWERSHELL, 'needs Windows PowerShell')
+class Names(unittest.TestCase):
+    """Only the test identity's exact names are its own (T-137: two leftover
+    folders named dev.yuzuno.workspace.t137old/new stopped a run)."""
+
+    def named(self, names, exact=True):
+        prefix = EXACT if exact else "$Names = 'yuzuno'\n"
+        return run_steps(prefix + f"@($('{json.dumps(names)}' | ConvertFrom-Json) | ForEach-Object {{ [ordered]@{{ name = $_; named = (Test-Named $_) }} }}) | ConvertTo-Json -Compress")
+
+    def test_exact_names_ignore_case_and_nothing_else_of_the_family(self):
+        own = ['Yuzuno T137', 'yuzuno t137', 'dev.yuzuno.workspace.t137', 'DEV.YUZUNO.WORKSPACE.T137', 'Yuzuno T137.lnk']
+        others = ['dev.yuzuno.workspace.t137old', 'dev.yuzuno.workspace.t137new', 'Yuzuno T1370', 'Yuzuno T137 (old)',
+                  'xYuzuno T137', 'Yuzuno T137.lnk.bak', 'Yuzuno', 'Yuzuno Lab', 'dev.yuzuno.workspace', 'Yuzuno T148']
+        seen = {r['name']: r['named'] for r in self.named(own + others)}
+        self.assertEqual({n for n, v in seen.items() if v}, set(own))
+
+    def test_the_guest_still_counts_anything_named_like_yuzuno(self):
+        seen = {r['name']: r['named'] for r in self.named(['dev.yuzuno.workspace.t137old', 'Yuzuno Lab', 'Other'], exact=False)}
+        self.assertEqual(seen, {'dev.yuzuno.workspace.t137old': True, 'Yuzuno Lab': True, 'Other': False})
+
+    @unittest.skipUnless(HAVE_WSLPATH, 'needs wslpath')
+    def test_a_snapshot_finds_the_identity_and_not_its_neighbours(self):
+        # Made-up folders and keys (folders standing in for keys); no real place or registry is read.
+        with tempfile.TemporaryDirectory() as tmp:
+            local, keys = Path(tmp, 'local'), Path(tmp, 'keys')
+            for d in ('dev.yuzuno.workspace.t137old', 'dev.yuzuno.workspace.t137new', 'Yuzuno Lab'):
+                (local / d).mkdir(parents=True)
+            (keys / 'yuzuno' / 'Yuzuno T137old').mkdir(parents=True)
+            (keys / 'yuzuno' / 'Yuzuno Lab').mkdir(parents=True)
+            fake = (f"$places = @('{windows_path(local)}'); $keyRoot = '{windows_path(keys)}'; $uninstallKeys = @()\n"
+                    "$p = [pscustomobject]@{ product = 'Yuzuno T137' }\n")
+            snapshot = "Snapshot | ConvertTo-Json -Compress\n"
+            # Neighbours only: nothing is the identity's, so the run would not refuse.
+            clear = run_steps(EXACT + fake + snapshot)
+            self.assertEqual((clear['files'], clear['keys'], clear['entries']), ([], [], []))
+            # The identity's own folder and key exist: both are found, so the run refuses.
+            (local / 'Yuzuno T137').mkdir()
+            (local / 'dev.yuzuno.workspace.t137').mkdir()
+            (keys / 'yuzuno' / 'Yuzuno T137').mkdir()
+            found = run_steps(EXACT + fake + snapshot)
+            self.assertEqual(sorted(Path(f.replace('\\', '/')).name for f in found['files']),
+                             ['Yuzuno T137', 'dev.yuzuno.workspace.t137'])
+            self.assertEqual([Path(k.replace('\\', '/')).name for k in found['keys']], ['Yuzuno T137'])
 
 
 @unittest.skipUnless(HAVE_POWERSHELL, 'needs Windows PowerShell')

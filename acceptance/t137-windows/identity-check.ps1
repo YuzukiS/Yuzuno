@@ -19,7 +19,9 @@ $p = [pscustomobject]@{ product = 'Yuzuno T137'; identifier = $identity; token =
     testCoreUrl = 'http://127.0.0.1:1/'
     old = [pscustomobject]@{ path = $T137Old; sha256 = "$T137OldSha256".ToLowerInvariant(); version = '0.2.0' }
     new = [pscustomobject]@{ path = $T137New; sha256 = "$T137NewSha256".ToLowerInvariant(); version = '0.2.1' } }
-$Names = 'Yuzuno T137|dev\.yuzuno\.workspace\.t137|yuzuno-t137'
+# Its exact names: the install folder, uninstall entry and key; the data
+# folders; the shortcuts. Others of the family (t137old, a T1370) are not it.
+$ExactNames = @($p.product, $identity, "$($p.product).lnk")
 $local = $env:LOCALAPPDATA
 $roaming = $env:APPDATA
 # Everything of the test identity, by its exact names. Nothing else is removed.
@@ -31,22 +33,21 @@ $own = [ordered]@{
     desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) "$($p.product).lnk"
     uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$($p.product)"
     productKey = "HKCU:\Software\yuzuno\$($p.product)" }
-$ownLeaves = @($p.product, $identity, "$($p.product).lnk")
 # The other Yuzuno identities: their uninstall entries, folders and keys, by name.
 function Others {
     $entries = foreach ($root in $uninstallKeys) {
         if (Test-Path $root) {
             Get-ChildItem $root | ForEach-Object { Get-ItemProperty $_.PSPath } |
-                Where-Object { $_.DisplayName -like 'Yuzuno*' -and $_.DisplayName -notmatch $Names } |
+                Where-Object { $_.DisplayName -like 'Yuzuno*' -and $_.DisplayName -ne $p.product } |
                 ForEach-Object { "$($_.DisplayName) | $($_.DisplayVersion) | $($_.InstallLocation) | $($_.UninstallString)" }
         }
     }
     $folders = foreach ($place in $local, $roaming) {
         Get-ChildItem -LiteralPath $place -Force -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match 'yuzuno' -and $_.Name -notmatch $Names } | ForEach-Object { $_.FullName }
+            Where-Object { $_.Name -match 'yuzuno' -and -not (Test-Named $_.Name) } | ForEach-Object { $_.FullName }
     }
     $keys = Get-ChildItem 'HKCU:\Software\yuzuno' -ErrorAction SilentlyContinue |
-        Where-Object { $_.PSChildName -notmatch $Names } | ForEach-Object { $_.Name }
+        Where-Object { -not (Test-Named $_.PSChildName) } | ForEach-Object { $_.Name }
     [ordered]@{ entries = @($entries | Sort-Object); folders = @($folders | Sort-Object); keys = @($keys | Sort-Object) }
 }
 function Save {
@@ -104,7 +105,7 @@ finally {
         $removed = [ordered]@{}
         foreach ($name in @($own.Keys)) {
             $path = $own[$name]
-            if ((Split-Path -Leaf $path) -notin $ownLeaves) { throw "not the test identity's: $path" }
+            if ((Split-Path -Leaf $path) -notin $ExactNames) { throw "not the test identity's: $path" }
             if (Test-Path -LiteralPath $path) {
                 Remove-Item -LiteralPath $path -Recurse -Force
                 $removed[$name] = -not (Test-Path -LiteralPath $path)
