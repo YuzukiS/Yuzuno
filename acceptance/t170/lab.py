@@ -249,9 +249,14 @@ class Lab:
         events = http.client.HTTPConnection('127.0.0.1', a.remote_port, timeout=15)
         events.request('GET', '/api/events', headers=self.remote_headers(Accept='text/event-stream'))
         stream = events.getresponse()
-        first = stream.fp.readline().decode()
+        # The raw stream is chunked: read on to the first event itself.
+        first = ''
+        end = time.time() + 10
+        while time.time() < end and not first.startswith('data:'):
+            first = stream.fp.readline().decode()
         self.check('live events open through the remote entry', stream.status == 200
-                   and stream.getheader('content-type') == 'text/event-stream' and first, first.strip())
+                   and stream.getheader('content-type') == 'text/event-stream' and first.startswith('data:'),
+                   first.strip()[:120])
 
         request = self.agent()['pending'][0]['id']
         before = self.completed()
