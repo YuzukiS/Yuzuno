@@ -38,9 +38,10 @@ It checks the installed bytes against `build.json`. It also checks that the app 
 
 1. On the Mac, in Safari, sign in to GitHub and download the artifact from the run's page. Unzip it, open the disk image, and copy `Yuzuno.app` to a new folder `~/yuzuno-t165-lab/app/`, not to `/Applications`.
 2. Run `xattr -p com.apple.quarantine ~/yuzuno-t165-lab/app/Yuzuno.app` and record the output.
-3. Open the app, then record what macOS shows, with a screenshot.
-4. If it refuses: in System Settings, Privacy & Security, choose **Open Anyway** and confirm. Record each dialog.
-5. The app should show its connection page. With no Core to reach, it says Core is not reachable; that is the expected result here, since A covers connecting. Quit it.
+3. Run `syspolicy_check distribution ~/yuzuno-t165-lab/app/Yuzuno.app` and record the output. On the CI runner it also reported an "Internal Xprotect Error", which T-141's build on a Mac did not; this shows whether a Mac reports that error for the candidate.
+4. Open the app, then record what macOS shows, with a screenshot.
+5. If it refuses: in System Settings, Privacy & Security, choose **Open Anyway** and confirm. Record each dialog.
+6. The app should show its connection page. With no Core to reach, it says Core is not reachable; that is the expected result here, since A covers connecting. Quit it.
 
 The result says what macOS showed on that macOS version. It does not say that Gatekeeper is solved: the app is still ad hoc and not notarized.
 

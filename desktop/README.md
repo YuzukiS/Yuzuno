@@ -98,7 +98,7 @@ On macOS the app has the usual menus: Yuzuno (Quit), Edit (copy and paste in the
 | The daily Workspace, read only | T-141: Core version, Workspace and page measured through the tunnel; the user's view as reported | |
 | Links to web pages and mail (system browser or mail app) | The rule, in the desktop tests | Clicking one on a Mac |
 | macOS menus, `Cmd+,` | No record of a check | On a Mac |
-| First open of a browser download (Gatekeeper, **Open Anyway**) | `build.json` records `spctl` rejecting the app and `syspolicy_check` reporting the ad hoc signature and missing notarization | On a Mac |
+| First open of a browser download (Gatekeeper, **Open Anyway**) | `build.json` records `spctl` rejecting the app and `syspolicy_check` reporting the ad hoc signature and missing notarization. On the CI runner `syspolicy_check` also reports an "Internal Xprotect Error", which T-141's build on a Mac did not; its cause is not known | On a Mac, including whether a Mac reports that error for a CI build |
 | Install to `/Applications`, uninstall | | On a Mac (the checks used a folder of their own) |
 | Intel Macs | | Not built |
 
