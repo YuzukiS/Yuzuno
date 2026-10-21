@@ -1,0 +1,126 @@
+# Builds the macOS desktop app (T-165) with scripts/desktop-macos.sh on a
+# standard GitHub-hosted Apple silicon runner, and runs the desktop tests:
+# - A pull request that changes desktop/, the script or this workflow builds
+#   and tests it. Nothing is uploaded; the checksums and build.json are in
+#   the run's log and summary.
+# - Run on request (workflow_dispatch) for the current head of main, after
+#   the CI workflow has passed on that commit's push to main, it is a
+#   candidate: the disk image, the app as a ZIP, build.json and SHA256SUMS,
+#   one artifact kept 14 days. Never a Release.
+#
+# The app is signed ad hoc and not notarized: there is no Developer ID, and
+# this workflow uses no secret. See desktop/README.md.
+name: Desktop macOS
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - desktop/**
+      - scripts/desktop-macos.sh
+      - .github/workflows/desktop-macos.yml
+      - .github/scripts/hosted-guard.sh
+      - .github/scripts/disk-precheck.sh
+  workflow_dispatch:
+
+# Read-only: actions: read only to look up the CI run of a candidate's commit.
+permissions:
+  contents: read
+  actions: read
+
+# A newer push to a PR cancels its older run; a started candidate finishes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The CI workflow's Rust; bump them together.
+  RUST_TOOLCHAIN: 1.97.1
+
+jobs:
+  app:
+    name: macOS app (arm64)
+    # The standard Apple silicon runner (macOS 26, arm64), free for public
+    # repositories; not a paid -xlarge or a self-hosted one.
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      # Before anything else, refuse any runner but a GitHub-hosted one.
+      - name: GitHub-hosted runner
+        working-directory: .
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ] || { echo "::error::not a GitHub-hosted runner"; exit 1; }
+
+      # A candidate is only main, and only a commit whose push CI has passed.
+      # The build is of github.sha: the head of main when the run was requested.
+      - name: Main, with passed CI (candidate only)
+        if: github.event_name == 'workflow_dispatch'
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ "$GITHUB_REF" = refs/heads/main ] || { echo "::error::candidates are built from main only, not $GITHUB_REF"; exit 1; }
+          passed=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$GITHUB_SHA" -f event=push -f branch=main -f status=success --jq '.total_count')
+          [ "${passed:-0}" -ge 1 ] || { echo "::error::CI has not passed on the push of $GITHUB_SHA to main; wait for it, then run again"; exit 1; }
+          echo "CI passed on $GITHUB_SHA"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Runner details
+        run: .github/scripts/hosted-guard.sh
+
+      # Read-only check of free disk before building; see the script.
+      - name: Disk space precheck
+        run: .github/scripts/disk-precheck.sh 6 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+
+      # Only the pinned toolchain, in a RUSTUP_HOME of its own, as in CI: the
+      # image's own stable Rust changes with image updates.
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+          export RUSTUP_HOME="$RUNNER_TEMP/rustup"
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup toolchain list
+
+      # The pinned Tauri CLI and the crates are fetched fresh; nothing is
+      # cached. SOURCE_COMMIT, which build.json records, is the commit checked
+      # out: for a PR, GitHub's merge of it into main.
+      - name: Desktop tests, app and disk image
+        run: |
+          SOURCE_COMMIT=$(git rev-parse HEAD)
+          export SOURCE_COMMIT
+          scripts/desktop-macos.sh --toolchain "$RUST_TOOLCHAIN" --tools "$RUNNER_TEMP/tools" --out "$RUNNER_TEMP/out" --test
+
+      - name: Checksums
+        run: |
+          cd "$RUNNER_TEMP/out"
+          shasum -a 256 *.dmg Yuzuno.app.zip build.json > SHA256SUMS
+          cat SHA256SUMS build.json
+          {
+            echo "### macOS app"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+            echo
+            echo '```json'
+            cat build.json
+            echo
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          name: yuzuno-macos-arm64-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/out/*.dmg
+            ${{ runner.temp }}/out/Yuzuno.app.zip
+            ${{ runner.temp }}/out/build.json
+            ${{ runner.temp }}/out/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

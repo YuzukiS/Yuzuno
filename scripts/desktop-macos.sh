@@ -2,11 +2,12 @@
 # Builds the macOS desktop app (Yuzuno.app) and a disk image on a Mac, and
 # writes what was built and with what to build.json.
 #
-#   scripts/desktop-macos.sh --tools DIR --out DIR [--version X.Y.Z] [--test]
+#   scripts/desktop-macos.sh --tools DIR --out DIR [--version X.Y.Z] [--toolchain NAME] [--test]
 #
 # Run from a checkout's root (or an export of desktop/ and this script). Needs
 # Xcode's command line tools and a rustup toolchain for this Mac's
-# architecture; nothing is installed globally. The Tauri CLI is built with
+# architecture: stable, or the one --toolchain names (CI passes its pinned
+# version). Nothing is installed globally. The Tauri CLI is built with
 # cargo into --tools, pinned to the tauri crate in desktop/Cargo.lock, and
 # cargo's own downloads stay under --tools too.
 #
@@ -16,12 +17,13 @@
 set -eu
 
 TAURI_CLI_VERSION=2.12.3 # matches desktop/Cargo.lock; bump both together
-tools= out= version= test=
+tools= out= version= test= channel=stable
 while [ $# -gt 0 ]; do
   case "$1" in
     --tools) tools=$2; shift 2 ;;
     --out) out=$2; shift 2 ;;
     --version) version=$2; shift 2 ;;
+    --toolchain) channel=$2; shift 2 ;;
     --test) test=1; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 64 ;;
   esac
@@ -34,8 +36,8 @@ grep -A1 '^name = "tauri"$' desktop/Cargo.lock | grep -q "^version = \"$TAURI_CL
 
 arch=$(uname -m)
 case "$arch" in arm64) triple=aarch64-apple-darwin ;; x86_64) triple=x86_64-apple-darwin ;; *) echo "Unknown architecture $arch" >&2; exit 69 ;; esac
-toolchain=$(ls -d "${RUSTUP_HOME:-$HOME/.rustup}"/toolchains/stable-"$triple" 2>/dev/null) ||
-  { echo "No stable-$triple toolchain under ${RUSTUP_HOME:-$HOME/.rustup}." >&2; exit 69; }
+toolchain=$(ls -d "${RUSTUP_HOME:-$HOME/.rustup}"/toolchains/"$channel-$triple" 2>/dev/null) ||
+  { echo "No $channel-$triple toolchain under ${RUSTUP_HOME:-$HOME/.rustup}." >&2; exit 69; }
 mkdir -p "$tools" "$out"
 tools=$(cd "$tools" && pwd) out=$(cd "$out" && pwd)
 # The toolchain itself, not rustup's proxies, and no global cargo home.
