@@ -15,7 +15,7 @@ import type { Agent, Model, Project } from "./types";
 import { activeProjects } from "./projects";
 import { ImportCodexSession } from "./ImportCodexSession";
 import { ImportClaudeSession } from "./ImportClaudeSession";
-import { runMachineCheck, type MachineCheck } from "./machine-checks";
+import { harnessName, runMachineCheck, type MachineCheck } from "./machine-checks";
 import { LastCheck } from "./MachinesPage";
 import "./remote.css";
 
@@ -46,6 +46,7 @@ export function RemoteCreateAgent({
   onCreated,
   projects = [],
   initialProjectId = "",
+  opencode = false,
 }: {
   open: boolean;
   close: () => void;
@@ -58,6 +59,8 @@ export function RemoteCreateAgent({
   projects?: Project[];
   /** The project being viewed, if any; the user can still choose another. */
   initialProjectId?: string;
+  /** Whether Core creates OpenCode Agents (`opencode.enabled` of /workspace). */
+  opencode?: boolean;
 }) {
   const localMachine: WorkspaceMachine = {
     id: "local",
@@ -75,7 +78,13 @@ export function RemoteCreateAgent({
   const [name, setName] = useState("");
   const [cwd, setCwd] = useState(defaultCwd);
   const [model, setModel] = useState("");
-  const [harness, setHarness] = useState<"codex" | "claude">("codex");
+  const [harness, setHarness] = useState<"codex" | "claude" | "opencode">("codex");
+  // OpenCode is offered only while Core says it creates such Agents, and
+  // only on the Core host, with OpenCode's own default model.
+  const isOpenCode = harness === "opencode";
+  useEffect(() => {
+    if (!opencode && isOpenCode) setHarness("codex");
+  }, [opencode, isOpenCode]);
   const [projectId, setProjectId] = useState(initialProjectId);
   const [saveDefault, setSaveDefault] = useState(false);
   const activeProjectList = activeProjects(projects);
@@ -151,6 +160,14 @@ export function RemoteCreateAgent({
 
   useEffect(() => {
     if (!open || disabled || remote || mode !== "new") return;
+    if (harness === "opencode") {
+      // No list to load: the model is OpenCode's own default. A list still
+      // loading for another harness was aborted above.
+      setModels([]);
+      setLoadingModels(false);
+      setModelError("");
+      return;
+    }
     const controller = new AbortController();
     setModels([]);
     setLoadingModels(true);
@@ -193,7 +210,8 @@ export function RemoteCreateAgent({
       ...(current.length ? current : [localMachine]),
       saved,
     ]);
-    selectMachine(saved);
+    // An OpenCode Agent stays on the Core host; the machine is kept for later.
+    if (!isOpenCode) selectMachine(saved);
     setAdding(false);
   }
 
@@ -326,12 +344,15 @@ export function RemoteCreateAgent({
               name="create-harness"
               value={harness}
               onChange={(value) => {
-                setHarness(value as "codex" | "claude");
+                setHarness(value as "codex" | "claude" | "opencode");
                 setModel("");
+                if (value === "opencode" && remote)
+                  selectMachine(machines.find((m) => m.kind === "local") || localMachine);
               }}
               choices={[
                 { value: "codex", label: "Codex" },
                 { value: "claude", label: "Claude Code" },
+                ...(opencode ? [{ value: "opencode", label: "OpenCode", note: "Experimental" }] : []),
               ]}
             />
             <ChoiceChips
@@ -349,7 +370,8 @@ export function RemoteCreateAgent({
                 label: m.name,
                 note: m.kind === "ssh" ? "SSH" : "Local",
                 icon: m.kind === "ssh" ? <Server size={13} /> : <Monitor size={13} />,
-                title: m.kind === "ssh" ? m.target : "The machine running your workspace Core",
+                title: m.kind === "ssh" ? isOpenCode ? "OpenCode Agents run only on the Core host for now" : m.target : "The machine running your workspace Core",
+                disabled: isOpenCode && m.kind === "ssh",
               }))}
               after={
                 <button
@@ -357,7 +379,8 @@ export function RemoteCreateAgent({
                   className="choice-chip-action"
                   aria-expanded={adding}
                   aria-controls="new-ssh-machine"
-                  disabled={disabled || adding || loadingMachines}
+                  disabled={disabled || adding || loadingMachines || isOpenCode}
+                  title={isOpenCode ? "OpenCode Agents run only on the Core host for now" : undefined}
                   onClick={() => setAdding(true)}
                 >
                   <Plus size={13} /> Add SSH machine
@@ -467,7 +490,14 @@ export function RemoteCreateAgent({
                   : `Save as ${project.name}’s default folder on ${machine.name}`}
               </label>
             )}
-            {remote ? (
+            {isOpenCode ? (
+              <p className="remote-field-note">
+                Uses OpenCode’s own default model, login and permission rules on
+                your Core host; OpenCode may download or update its own
+                dependencies when it starts. Experimental: no images, rewind or
+                slash commands, and a message waits until the current turn ends.
+              </p>
+            ) : remote ? (
               <label>
                 Model
                 <input
@@ -500,7 +530,7 @@ export function RemoteCreateAgent({
             {!remote && loadingModels && (
               <p className="remote-field-note" role="status">
                 <LoaderCircle size={13} className="spin" /> Loading{" "}
-                {harness === "claude" ? "Claude Code" : "Codex"} models…
+                {harnessName(harness)} models…
               </p>
             )}
             {!remote && modelError && (
@@ -522,6 +552,7 @@ export function RemoteCreateAgent({
               </div>
             )}
             {!remote &&
+              !isOpenCode &&
               !loadingModels &&
               !modelError &&
               models.length === 0 && (
@@ -538,16 +569,18 @@ export function RemoteCreateAgent({
               )}
             {remote && (
               <p className="remote-field-note">
-                Leave the model empty to use {harness === "claude" ? "Claude Code" : "Codex"}’s default on {machine.name}.
+                Leave the model empty to use {harnessName(harness)}’s default on {machine.name}.
               </p>
             )}
-            <p className="remote-login-note">
-              <Server size={13} />
-              <span>
-                Uses the {harness === "claude" ? "Claude Code" : "Codex"} login
-                on {remote ? machine.name : "your Core host"}.
-              </span>
-            </p>
+            {!isOpenCode && (
+              <p className="remote-login-note">
+                <Server size={13} />
+                <span>
+                  Uses the {harnessName(harness)} login
+                  on {remote ? machine.name : "your Core host"}.
+                </span>
+              </p>
+            )}
           </fieldset>
           {disabled && (
             <p className="field-hint">

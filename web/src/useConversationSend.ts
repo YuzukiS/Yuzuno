@@ -27,7 +27,7 @@ export function useConversationSend(
   agentId: string,
   turnId: string | null,
   refresh: () => void,
-  harness?: "codex" | "claude",
+  harness?: "codex" | "claude" | "opencode",
   detail?: AgentDetail | null,
 ) {
   // A failed send may contain a large paste. Load its retry record once,

@@ -88,6 +88,8 @@ export function nativeControl(text: string, harness: string): { command: "compac
   const match = /^\/(compact|model)(?:\s+([\s\S]*))?$/.exec(text.trim());
   if (!match) return null;
   if (match[1] === "compact" && harness !== "codex") return null;
+  // An OpenCode Agent's model is OpenCode's own configuration: no control.
+  if (harness === "opencode") return null;
   return { command: match[1] as "compact" | "model", args: (match[2] ?? "").trim() };
 }
 

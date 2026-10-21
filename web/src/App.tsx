@@ -82,6 +82,7 @@ import { ConversationSearch } from "./ConversationSearch";
 import { hasAgentContent, isCompacting } from "./conversation-blocks";
 import { ContextUsage } from "./ContextUsage";
 import { AgentSettings } from "./AgentSettings";
+import { agentHarnessName, nativeSession } from "./machine-checks";
 import { observedEffort } from "./claude-effort";
 import { CodexWriterNotice, ForkCodexDialog } from "./ForkCodexSession";
 import { RecoveryNotice, recoveryReason } from "./RecoveryNotice";
@@ -556,6 +557,7 @@ export function App() {
   const scopedClosed = closedAgents.filter((a) => inScope(a, scope));
   const outsidePending = pendingElsewhere(workspace?.agents || [], scope);
   const isClaude = agent?.harness === "claude";
+  const isOpenCode = agent?.harness === "opencode";
   const logicalTurns = sessionHistory.navigationTurns;
   // Claude takes a follow-up to your running turn, not to a turn of its own.
   const claudeFollowUpTurnId = isClaude && busy
@@ -564,7 +566,8 @@ export function App() {
         .reverse()
         .find((turn) => turn.status === "inProgress" && turn._yuzunoSource !== "native")?.id || null
     : null;
-  const cannotSendWhileWorking = isClaude && busy && !claudeFollowUpTurnId;
+  // OpenCode takes no message into a running turn.
+  const cannotSendWhileWorking = (isClaude && busy && !claudeFollowUpTurnId) || (isOpenCode && busy);
   // Codex would refuse to add to a Turn whose result is unconfirmed; the
   // draft waits until reconnecting has checked it. Claude resumes on send.
   const recovery =
@@ -599,6 +602,9 @@ export function App() {
       .slice()
       .reverse()
       .find((turn) => turn.status === "inProgress")?.id || null;
+  // The turn a message joins: Claude's follow-up, Codex's running turn;
+  // none for OpenCode.
+  const sendTurnId = isClaude ? claudeFollowUpTurnId : isOpenCode ? null : activeTurnId;
   const {
     submit: submitMessage,
     sending,
@@ -606,7 +612,7 @@ export function App() {
     pendingInputs,
   } = useConversationSend(
     selected,
-    isClaude ? claudeFollowUpTurnId : activeTurnId,
+    sendTurnId,
     refresh,
     agent?.harness,
     currentDetail,
@@ -1593,7 +1599,7 @@ export function App() {
                 role="group"
                 aria-label="Conversation tools"
               >
-                <AgentSettings
+                {!isOpenCode && <AgentSettings
                   key={`settings-${selected}`}
                   agent={agent}
                   observedPermissionMode={
@@ -1613,7 +1619,7 @@ export function App() {
                         : "Agent settings saved. Context changes need Apply in Agent settings.",
                     );
                   }}
-                />
+                />}
                 <ConversationSearch
                   savedAgentId={currentDetail?.conversation && !previewMode ? selected : undefined}
                   key={selected}
@@ -2104,7 +2110,7 @@ export function App() {
                     }
                     draft={draft}
                     readOnly={previewMode || draftBlocked}
-                    slashCommands={previewMode ? false : isClaude ? "claude" : "codex"}
+                    slashCommands={previewMode || isOpenCode ? false : isClaude ? "claude" : "codex"}
                     onChange={next => setDraft(selected, next)}
                     onImages={files => void imageUploads.add(files)}
                     onSubmit={() => void send()}
@@ -2180,7 +2186,7 @@ export function App() {
                           !!workspaceError
                         }
                         aria-label={
-                          (isClaude ? claudeFollowUpTurnId : activeTurnId)
+                          sendTurnId
                             ? "Send while working"
                             : "Send message"
                         }
@@ -2191,7 +2197,7 @@ export function App() {
                               ? recovery === "collaboration"
                                 ? "Reconnect and check the workspace connection first"
                                 : "Reconnect and check the last turn first"
-                              : activeTurnId && !isClaude
+                              : sendTurnId && !isClaude
                               ? "Add input to the current turn"
                               : "Send message"
                         }
@@ -2329,7 +2335,7 @@ export function App() {
                 <div>
                   <dt>Harness</dt>
                   <dd>
-                    {agent.harness === "claude" ? "Claude Code" : "Codex"}
+                    {agentHarnessName(agent)}
                   </dd>
                 </div>
                 <div>
@@ -2341,10 +2347,8 @@ export function App() {
                 </div>
                 <div>
                   <dt>Session</dt>
-                  <dd title={agent.claudeSessionId || agent.threadId}>
-                    {agent.claudeSessionId || agent.threadId
-                      ? (agent.claudeSessionId || agent.threadId)!.slice(0, 8)
-                      : "Not started yet"}
+                  <dd title={nativeSession(agent)}>
+                    {nativeSession(agent)?.slice(0, 8) || "Not started yet"}
                   </dd>
                 </div>
                 {isClaude && (
@@ -2353,7 +2357,7 @@ export function App() {
                 {isClaude && currentDetail && !agent.remote && (
                   <AutoContinueSetting key={agent.id} detail={currentDetail} disabled={!!agent.closedAt} />
                 )}
-                {!isClaude && <CodexPlanUsage key={agent.id} agent={agent} streamConnected={eventConnection === "open"} />}
+                {!isClaude && !isOpenCode && <CodexPlanUsage key={agent.id} agent={agent} streamConnected={eventConnection === "open"} />}
               </dl>
             </section>
             <ArtifactsPanel
@@ -2443,7 +2447,7 @@ export function App() {
         scope={scope}
         focus={taskFocus}
       />
-      {agent && !isClaude && (
+      {agent && !isClaude && !isOpenCode && (
         <ForkCodexDialog
           key={`fork-${agent.id}`}
           agent={agent}
@@ -2485,6 +2489,7 @@ export function App() {
           setCreateProject(null);
         }}
         defaultCwd={workspace?.defaultCwd || ""}
+        opencode={!!workspace?.opencode?.enabled}
         disabled={previewMode}
         projects={projects}
         initialProjectId={createProject ?? (scopeProjectId(scope) || "")}

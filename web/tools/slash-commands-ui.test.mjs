@@ -345,7 +345,7 @@ test("Claude Code's own /model becomes the settings control, listed once", async
   }
 });
 
-test("only a draft that is exactly a control runs it: /model for any Agent, /compact for Codex", async () => {
+test("only a draft that is exactly a control runs it: /model for Codex and Claude, /compact for Codex", async () => {
   const p = page({});
   try {
     // Copied out of the page's realm so plain objects compare.
@@ -356,6 +356,9 @@ test("only a draft that is exactly a control runs it: /model for any Agent, /com
     assert.equal(c("/compact", "claude"), null, "Claude Code runs its own /compact as a message");
     assert.deepEqual(c("/model"), { command: "model", args: "" });
     assert.deepEqual(c("/model gpt-x", "claude"), { command: "model", args: "gpt-x" });
+    // OpenCode's model is its own configuration; its drafts are messages.
+    assert.equal(c("/model gpt-x", "opencode"), null);
+    assert.equal(c("/compact", "opencode"), null);
     for (const text of ["/modelx", "/compacting", "see /model", "use /compact later", "```\n/compact\n```", "//compact", "/ compact"]) {
       assert.equal(c(text), null, text);
     }
