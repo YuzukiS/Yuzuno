@@ -175,7 +175,7 @@ async fn calls_share_one_private_connection_and_each_without_it_makes_its_own() 
 /// that session is open.
 async fn occupy(sshd: &Sshd, lease: &Lease, marker: &Path) -> tokio::process::Child {
     let mut command = ssh_with_control(&sshd.wrapper, Control::Client(&lease.path));
-    command.arg("box-a").arg(format!("touch '{}' && sleep 3", marker.display()))
+    command.arg("box-a").arg(format!("touch '{}' && sleep 5", marker.display()))
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
         .kill_on_drop(true);
     let child = command.spawn().unwrap();
@@ -312,7 +312,7 @@ async fn a_target_pointed_elsewhere_never_uses_its_old_connection() {
 async fn a_refusing_or_unreachable_machine_answers_as_before_and_is_not_retried_early() {
     let sshd = Sshd::start();
     let base = short_base();
-    let mux = Mux::new(Some(base.path().join("mux")), Duration::from_secs(60), Duration::from_secs(600), Duration::from_millis(500));
+    let mux = Mux::new(Some(base.path().join("mux")), Duration::from_secs(60), Duration::from_secs(600), Duration::from_secs(3));
     let down = machine("m3", "box-down");
     let before = kind(&hello(&sshd, None, &down).await);
     assert_eq!(before, "no answer", "without a master");
@@ -321,7 +321,7 @@ async fn a_refusing_or_unreachable_machine_answers_as_before_and_is_not_retried_
         assert!(!settled(&mux, &down).await);
     }
     assert_eq!(mux.starts(&down), 1, "not tried again within its retry time");
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    tokio::time::sleep(Duration::from_millis(3200)).await;
     assert_eq!(kind(&hello(&sshd, Some(&mux), &down).await), before);
     assert!(!settled(&mux, &down).await);
     assert_eq!(mux.starts(&down), 2);
@@ -343,12 +343,13 @@ async fn idle_and_old_masters_end_but_never_under_a_call() {
     let sshd = Sshd::start();
     let base = short_base();
     let box_a = machine("m1", "box-a");
-    let idle = Mux::new(Some(base.path().join("idle")), Duration::from_millis(300), Duration::from_secs(600), Duration::from_secs(60));
+    // Read first: no slow step between a ready master and the lease.
+    let here = destination(&sshd.wrapper, "box-a").await.unwrap();
+    let idle = Mux::new(Some(base.path().join("idle")), Duration::from_secs(2), Duration::from_secs(600), Duration::from_secs(60));
     assert!(answered(&hello(&sshd, Some(&idle), &box_a).await));
     assert!(settled(&idle, &box_a).await);
-    let here = destination(&sshd.wrapper, "box-a").await.unwrap();
     let held = idle.client(&sshd.wrapper, &box_a, &here).expect("the live master");
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(2200)).await;
     idle.sweep();
     assert!(idle.state(&box_a).0, "a call still uses it");
     drop(held);

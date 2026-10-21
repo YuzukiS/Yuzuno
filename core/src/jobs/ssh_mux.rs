@@ -121,8 +121,9 @@ impl Mux {
 
     /// The same, with masters that carry `sessions` calls at once, for tests.
     #[cfg(test)]
-    pub(crate) fn with_sessions(self, sessions: usize) -> Self {
-        Self { sessions, ..self }
+    pub(crate) fn with_sessions(mut self, sessions: usize) -> Self {
+        self.sessions = sessions;
+        self
     }
 
     /// The socket of a live master for `machine`, for one call; None when
