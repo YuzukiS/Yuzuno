@@ -778,7 +778,7 @@ test("claude: a follow-up while your turn runs is sent once, as queued and not y
     const body = JSON.parse(posts[0].init.body);
     assert.equal(body.expectedTurnId, "t1");
     assert.equal(body.text, "Also run the linter.");
-    assert.match(page.document.querySelector(".outgoing-message")?.textContent ?? "", /Sent · waiting for Claude to confirm/);
+    assert.match(page.document.querySelector(".outgoing-message")?.textContent ?? "", /Sent · waiting for Claude Code to confirm/);
     assert.equal(composerText(field), "");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
@@ -789,8 +789,8 @@ test("claude: a follow-up while your turn runs is sent once, as queued and not y
   ] }] });
   try {
     const label = (id) => unread.document.querySelector(`[data-item-id="${id}"] .message-delivery`)?.textContent;
-    assert.equal(label("q"), "Sent · waiting for Claude to confirm");
-    assert.equal(label("u"), "Not confirmed by Claude · not sent again");
+    assert.equal(label("q"), "Sent · waiting for Claude Code to confirm");
+    assert.equal(label("u"), "Not confirmed by Claude Code · not sent again");
     assert.equal(label("u1"), undefined, "an ordinary message has no delivery note");
   } finally { unread.close(); }
   // Only a turn of Claude's own is running: there is no turn of yours to add to.
@@ -1132,7 +1132,7 @@ test("working messages carry the active turn and retries retain the same identit
     const messages = () => page.calls.filter((r) => r.url.endsWith("/messages"));
     await waitForPreviewState(
       () => messages().length === 2 && composerText(composer) === ""
-        && /Sent · syncing conversation/.test(page.document.querySelector(".outgoing-message")?.textContent || ""),
+        && /Received by Codex · syncing conversation/.test(page.document.querySelector(".outgoing-message")?.textContent || ""),
       "the retry to be accepted",
     );
     const requests = messages();
@@ -1545,7 +1545,7 @@ test("Codex sends echo immediately, keep drafts during submission and replace th
     complete({ ok: true, status: 200, json: async () => ({ input, status: "accepted", turnId: "live", error: null }) });
     await pause(); await pause();
     assert.equal(composerText(composer), "");
-    assert.match(page.document.querySelector(".outgoing-message").textContent, /Sent · syncing/);
+    assert.match(page.document.querySelector(".outgoing-message").textContent, /Received by Codex · syncing conversation/);
     extraTurns[0].items.push({ id: "native-user", clientId: input.clientMessageId, type: "userMessage", content: [{ type: "text", text: input.text }] });
     page.window.dispatchEvent(new page.window.Event("focus"));
     await pause(); await pause();
@@ -1554,6 +1554,30 @@ test("Codex sends echo immediately, keep drafts during submission and replace th
     assert.equal(page.calls.filter((r) => r.init.method === "POST").length, 1);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
+});
+
+test("a delivery note names the Agent's own harness, and only its acceptance reads as received (T-120)", async () => {
+  for (const [status, note] of [
+    ["accepted", "Received by OpenCode · syncing conversation"],
+    ["unknown", "Not confirmed by OpenCode · not sent again"],
+  ]) {
+    const reply = (url, init) => {
+      const receipt = { input: JSON.parse(init.body), status, turnId: null, error: status === "unknown" ? "Not confirmed; not sent again" : null };
+      return { ok: true, status: 200, json: async () => receipt, text: async () => JSON.stringify(receipt) };
+    };
+    const page = await mount({ harness: "opencode", agentFields: { opencodeSessionId: "ses_0123456789" }, messageResponse: reply });
+    try {
+      setValue(page.window, page.document.querySelector("[data-composer-input]"), "One more thing");
+      await pause();
+      page.document.querySelector('[aria-label="Send message"]').click();
+      const shown = await until(() => {
+        const text = page.document.querySelector(".outgoing-message [role=status]")?.textContent;
+        return text && text !== "Sending…" && text;
+      }, `the ${status} note`);
+      assert.equal(shown, note);
+      assert.doesNotMatch(page.document.querySelector(".outgoing-message").textContent, /Claude/);
+    } finally { page.close(); }
+  }
 });
 
 test("the current request stays outside the scrolling log, includes human follow-ups and resets on turn or Agent changes", async () => {
@@ -2281,6 +2305,62 @@ test("session approval is offered only when native supports it and leaves Pendin
     assert.equal(page.document.querySelectorAll(".pending-card").length, 1);
   } finally {
     page.close();
+  }
+});
+test("a delivered answer stays locked and says so before a refetch marks it sent (T-120)", async () => {
+  const question = {
+    id: "ask",
+    agentId: "a",
+    method: "item/tool/requestUserInput",
+    createdAt: "",
+    params: {
+      questions: [{ id: "pick", question: "Which one?", options: [{ label: "A", description: "a" }, { label: "B", description: "b" }] }],
+    },
+  };
+  // Core's later detail reads still list the request without _responseSent,
+  // as one taken before the reply was recorded does.
+  const page = await mount({ status: "waiting", pending: [question] });
+  try {
+    const card = page.document.querySelector(".pending-card");
+    card.querySelector("label.answer-option input").click();
+    await pause();
+    button(page, "Send answer").click();
+    await pause();
+    await pause();
+    assert.equal(page.calls.filter((c) => c.url.includes("/respond")).length, 1);
+    assert.equal(page.document.querySelectorAll(".pending-card").length, 1);
+    assert.equal(button(page, "Send answer").disabled, true);
+    assert.match(card.textContent, /Response sent\. Waiting for the harness to confirm\./);
+    page.document.querySelector(".pending-card form").requestSubmit();
+    await pause();
+    assert.equal(page.calls.filter((c) => c.url.includes("/respond")).length, 1);
+  } finally {
+    page.close();
+  }
+  // A reply Core refused was not sent: the card can be answered again.
+  const refused = await mount({
+    status: "waiting",
+    pending: [question],
+    beforeLoad: (window) => {
+      const fetch = window.fetch;
+      window.fetch = async (url, init) =>
+        url.includes("/respond")
+          ? { ok: false, status: 409, text: async () => JSON.stringify({ error: "Session disconnected; the request was not sent" }) }
+          : fetch(url, init);
+    },
+  });
+  try {
+    refused.document.querySelector(".pending-card label.answer-option input").click();
+    await pause();
+    button(refused, "Send answer").click();
+    await pause();
+    await pause();
+    const card = refused.document.querySelector(".pending-card");
+    assert.match(card.textContent, /the request was not sent/);
+    assert.doesNotMatch(card.textContent, /Response sent/);
+    assert.equal(button(refused, "Send answer").disabled, false);
+  } finally {
+    refused.close();
   }
 });
 test("Escape interrupts the current turn but not while the creation dialog is open", async () => {

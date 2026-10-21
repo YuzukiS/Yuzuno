@@ -651,8 +651,12 @@ fn project(d: &mut AgentDetail, generation: u64, session: &str, event: &Value) {
         "session.status" => status(d, &p["status"]),
         "session.error" => {
             // It names no message, so it decides no Turn: the idle that
-            // follows does, from what the Turn's own messages say.
-            d.agent.error = Some(format!("OpenCode 报告了会话错误：{}", error_text(&p["error"])));
+            // follows does, from what the Turn's own messages say, or from
+            // an abort reported here before those say it (see `settle`).
+            // An abort is how an interrupt ends, not an error of the Agent.
+            if p["error"]["name"] != "MessageAbortedError" {
+                d.agent.error = Some(format!("OpenCode 报告了会话错误：{}", error_text(&p["error"])));
+            }
             if let Some(turn) = running(d) {
                 turn["_opencodeSessionError"] = p["error"].clone();
             }
@@ -779,6 +783,13 @@ fn settle(turn: &mut Value) {
         turn["error"] = json!({"message":error_text(error),"native":error});
     } else if !answers.is_empty() && answers.iter().all(|a| a["completed"].is_number()) {
         turn["status"] = "completed".into();
+    } else if turn["_opencodeSessionError"]["name"] == "MessageAbortedError" {
+        // OpenCode (1.19.3) halts an aborted run by reporting the session's
+        // abort and going idle before it writes the aborted answer: the
+        // abort it reported while this Turn ran is how the Turn ended.
+        let error = turn["_opencodeSessionError"].clone();
+        turn["status"] = "interrupted".into();
+        turn["error"] = json!({"message":error_text(&error),"native":error});
     } else {
         unknown(turn, "OpenCode 回到空闲，但没有为这条消息留下完成的回答；结果未确认，不会重发。");
         return;

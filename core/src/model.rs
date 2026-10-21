@@ -537,19 +537,7 @@ impl AgentDetail {
                     items[idx][key] = value.into();
                 }
             }
-            "serverRequest/resolved" => {
-                // Resolution names its request and, since 0.162, the thread it
-                // was asked on: a sub-agent's resolution never clears another
-                // thread's request.
-                let wire_id = &p["requestId"];
-                self.pending
-                    .retain(|r| r.params.get("_rpcId") != Some(wire_id)
-                        || (p.get("_runtimeGeneration").is_some()
-                            && r.params.get("_runtimeGeneration") != p.get("_runtimeGeneration"))
-                        || (p["threadId"].is_string()
-                            && r.params["threadId"].is_string()
-                            && r.params["threadId"] != p["threadId"]));
-            }
+            "serverRequest/resolved" => resolve_request(&mut self.pending, p),
             "error" => {
                 self.agent.error = p["error"]["message"]
                     .as_str()
@@ -559,26 +547,12 @@ impl AgentDetail {
                     self.agent.status = "error".into();
                 }
             }
-            "thread/status/changed" if p["status"]["type"] == "systemError" => {
-                self.agent.status = "error".into();
-            }
+            "thread/status/changed" => thread_status_changed(&mut self.agent, p),
             _ => {}
         }
         self.agent.pending_count = self.pending.len() as u64;
-        if self.pending.iter().any(|r| {
-            !r.stale
-                && (r.method != "item/tool/requestUserInput" || r.params["isBlocking"] != false)
-        }) && !["offline", "uncertain"].contains(&self.agent.status.as_str())
-        {
-            self.agent.status = "waiting".into();
-        } else if self.agent.status == "waiting" {
-            self.agent.status = if self.turns.iter().any(|t| t["status"] == "inProgress") {
-                "working"
-            } else {
-                "idle"
-            }
-            .into();
-        }
+        let turns = &self.turns;
+        settle_status(&mut self.agent, &self.pending, || turns.iter().any(|t| t["status"] == "inProgress"));
         self.agent.updated_at = at.to_rfc3339();
         self.confirm_message_receipts();
     }
@@ -652,6 +626,42 @@ impl AgentDetail {
             kind: kind.into(),
             source_item_id: item.map(str::to_owned),
         });
+    }
+}
+
+/// `serverRequest/resolved`: the request it names is no longer pending.
+/// Resolution names its request and, since 0.162, the thread it was asked
+/// on: a sub-agent's resolution never clears another thread's request.
+pub(crate) fn resolve_request(pending: &mut Vec<PendingRequest>, p: &Value) {
+    let wire_id = &p["requestId"];
+    pending.retain(|r| r.params.get("_rpcId") != Some(wire_id)
+        || (p.get("_runtimeGeneration").is_some()
+            && r.params.get("_runtimeGeneration") != p.get("_runtimeGeneration"))
+        || (p["threadId"].is_string()
+            && r.params["threadId"].is_string()
+            && r.params["threadId"] != p["threadId"]));
+}
+
+/// `thread/status/changed`: of its statuses only a system error changes the
+/// Agent.
+pub(crate) fn thread_status_changed(agent: &mut Agent, p: &Value) {
+    if p["status"]["type"] == "systemError" {
+        agent.status = "error".into();
+    }
+}
+
+/// The status every applied event leaves: waiting while a request blocks,
+/// unless offline or uncertain; out of waiting, working while a Turn is in
+/// progress (`running`, asked only then), else idle.
+pub(crate) fn settle_status(agent: &mut Agent, pending: &[PendingRequest], running: impl FnOnce() -> bool) {
+    if pending.iter().any(|r| {
+        !r.stale
+            && (r.method != "item/tool/requestUserInput" || r.params["isBlocking"] != false)
+    }) && !["offline", "uncertain"].contains(&agent.status.as_str())
+    {
+        agent.status = "waiting".into();
+    } else if agent.status == "waiting" {
+        agent.status = if running() { "working" } else { "idle" }.into();
     }
 }
 

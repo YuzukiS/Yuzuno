@@ -139,12 +139,13 @@ pub(super) fn build(store: &Store) -> Result<Value> {
     // Each of these takes its own reader; the Briefs are read on one after.
     let agents = store.agents()?;
     let by_id: HashMap<String, Agent> = agents.iter().map(|a| (a.id.clone(), a.clone())).collect();
-    // Records are parsed only for Agents with requests waiting.
+    // Only the requests of Agents with requests waiting, not their records:
+    // Home is rebuilt on every change while one waits (T-120).
     let mut pending: HashMap<&str, Vec<PendingRequest>> = HashMap::new();
     for agent in agents.iter().filter(|a| a.closed_at.is_none() && a.pending_count > 0) {
-        match store.detail(&agent.id) {
-            Ok(detail) => {
-                pending.insert(agent.id.as_str(), detail.pending);
+        match store.pending(&agent.id) {
+            Ok(requests) => {
+                pending.insert(agent.id.as_str(), requests);
             }
             Err(error) => eprintln!("Home skipped the requests of Agent {}: {error:#}", agent.id),
         }
