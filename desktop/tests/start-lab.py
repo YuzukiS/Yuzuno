@@ -215,6 +215,18 @@ def main():
         log = managed / "core.log"
         return log.read_text(errors="replace").count(f"Yuzuno Core: http://127.0.0.1:{args.port}") if log.exists() else 0
 
+    def observe():
+        running = {}
+        for pid in lab_processes(managed):
+            try:
+                running[pid] = os.readlink(f"/proc/{pid}/exe").rsplit("/", 1)[1]
+            except OSError:
+                continue
+        return {"wsl": windows("Starts", InstallDir=str(managed)),
+                "helpers": [pid for pid, name in running.items() if name == "yuzuno-update-helper"],
+                "cores": [pid for pid, name in running.items() if name == "yuzuno-workspace"],
+                "listener": listener(args.port), "starts": starts()}
+
     desktop = None
     lab_cores = []
     try:
@@ -291,8 +303,12 @@ def main():
         assert facts["session"] == second, "its own session"
         assert facts["servicePorts"] == "4492-4493", facts
         assert health(args.port)["workspaceId"] == workspace and starts() == 1
+        # The start stays while Core runs, and with it a hidden wsl.exe, so
+        # WSL keeps the distribution running.
+        keeping = observe()
+        assert keeping["wsl"] and len(keeping["helpers"]) == 1, keeping
         step("started-from-the-window", seconds=started["seconds"], offered=started["connectError"],
-             during=started["duringStart"], core=facts)
+             during=started["duringStart"], core=facts, keeping=keeping)
 
         # 4. It outlives wsl.exe, which has exited by now (the start waited for it).
         time.sleep(20)
@@ -309,7 +325,9 @@ def main():
         after = session(second)
         assert listener(args.port) == second and health(args.port)["workspaceId"] == workspace
         assert set(before) <= set(after), (before, after)
-        step("window-closed-core-stays", close=closed, sessionBefore=before, sessionAfter=after)
+        still = observe()
+        assert still["wsl"] == keeping["wsl"] and still["helpers"] == keeping["helpers"], (keeping, still)
+        step("window-closed-core-stays", close=closed, sessionBefore=before, sessionAfter=after, keeping=still)
         until(lambda: not devtools(args.cdp_port), 60, "the closed window's DevTools to go")
         desktop = windows("Launch", CoreUrl=url, CdpPort=args.cdp_port)["pid"]
         until(lambda: devtools(args.cdp_port), 60, "the lab window's DevTools")
@@ -337,12 +355,6 @@ def main():
         #    window, and the Core it starts stays.
         stop(third, managed)
 
-        def observe():
-            running = {pid: os.readlink(f"/proc/{pid}/exe").rsplit("/", 1)[1] for pid in lab_processes(managed)}
-            return {"wsl": windows("Starts", InstallDir=str(managed)),
-                    "helpers": [pid for pid, name in running.items() if name == "yuzuno-update-helper"],
-                    "cores": [pid for pid, name in running.items() if name == "yuzuno-workspace"],
-                    "listener": listener(args.port), "starts": starts()}
 
         window("click-start")
         seen = {"beforeKill": until(lambda: (lambda o: o if o["wsl"] or o["helpers"] or o["listener"] else None)(observe()), 20,
@@ -375,7 +387,7 @@ def main():
             until(lambda: listener(args.port) == other.pid, 10, "the other program's listener")
             taken = window("port-taken")
             assert "Nothing was started" in taken["error"] and listener(args.port) == other.pid, taken
-            assert not any(os.readlink(f"/proc/{pid}/exe").endswith("/yuzuno-workspace") for pid in lab_processes(managed))
+            assert not observe()["cores"]
             step("port-held-by-another-program", error=taken["error"])
         finally:
             other.terminate()
@@ -395,8 +407,13 @@ def main():
             until(lambda: devtools(args.cdp_port), 60, "the lab window's DevTools")
             refused = window("refused")
             assert refused["startShown"] and refused["error"].startswith("WSL could not run Yuzuno's start"), refused
-            assert listener(args.port) is None and not lab_processes(managed)
+            assert listener(args.port) is None and not observe()["cores"]
             step(name, label=refused["startLabel"], error=refused["error"])
+        # 10. With no Core left, the start that kept WSL running ends within
+        #     its grace (two minutes), and its wsl.exe with it.
+        ended = time.monotonic()
+        until(lambda: (lambda seen: not seen["helpers"] and not seen["wsl"])(observe()), 240, "the keeping start to end")
+        step("keeping-ends-without-core", seconds=round(time.monotonic() - ended, 1))
         report["passed"] = True
     except Exception as error:  # noqa: BLE001 - recorded, then raised
         report["passed"] = False

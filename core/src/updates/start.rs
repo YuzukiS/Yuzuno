@@ -4,7 +4,8 @@
 //! the installed release (`current.json`) with the port, Workspace folder,
 //! working folder and Codex the Core last ran with, and the few environment
 //! values in [`ENVIRONMENT`]. It starts only that Core, only when nothing
-//! answers on its port, and supervises nothing afterwards.
+//! answers on its port. Then it only stays while that Core runs
+//! ([`keep_running`]), so WSL keeps the distribution, and Core, running.
 use super::{
     package::{self, Bundle},
     state::{self, Launch, Layout, ReleaseRef},
@@ -29,6 +30,8 @@ pub const RECORD: &str = "launch.json";
 /// same across updates. The desktop runs it; nothing else is executed.
 pub const ENTRY: &str = "start";
 const LOCK: &str = "start.lock";
+/// Held by the one start that keeps the distribution running ([`keep_running`]).
+const KEEP_LOCK: &str = "keep.lock";
 /// Where the documented start command writes Core's output too.
 const LOG: &str = "core.log";
 
@@ -235,12 +238,7 @@ fn try_start(root: &Path, port: u16, workspace_id: &str, budget: Budget) -> Resu
             return Err(refused("updating", "A Core update is switching releases right now. Wait for it to finish."));
         }
     }
-    let client = reqwest::blocking::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(3))
-        .build()
-        .map_err(|error| failed("error", error.to_string()))?;
+    let client = client().map_err(|error| failed("error", error.to_string()))?;
     // Whatever holds the port: this Core (running or still starting),
     // another one, or something else.
     let until = Instant::now() + budget.ready;
@@ -290,6 +288,54 @@ fn try_start(root: &Path, port: u16, workspace_id: &str, budget: Budget) -> Resu
             _ => return Ok(json!({"state":"starting","pid":pid,"releaseId":release.release_id,"workspaceId":workspace_id})),
         }
     }
+}
+
+/// How long [`keep_running`] stays once Core is gone, and how often it looks.
+#[derive(Clone, Copy)]
+pub struct Keep {
+    pub grace: Duration,
+    pub poll: Duration,
+}
+impl Default for Keep {
+    fn default() -> Self {
+        Self { grace: Duration::from_secs(120), poll: Duration::from_secs(5) }
+    }
+}
+
+/// After a start that launched Core, the start stays (and with it the
+/// `wsl.exe` that ran it from Windows) while this installation's Core holds
+/// `port`. WSL may end a distribution that no `wsl.exe` is attached to,
+/// background processes and all: the first start after Windows restarts
+/// has nothing else attached. It returns once the port has been free, or
+/// held by something else, for `grace`, which an update's restart stays
+/// within. It starts, stops and restarts nothing. One per installation: if
+/// another start already keeps the distribution, it returns at once.
+pub fn keep_running(root: &Path, port: u16, workspace_id: &str, keep: Keep) -> Result<()> {
+    let lock = state::private_file(&root.join("updates").join(KEEP_LOCK))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => return Ok(()),
+        Err(fs::TryLockError::Error(error)) => return Err(error.into()),
+    }
+    let client = client()?;
+    let mut gone = None::<Instant>;
+    loop {
+        // Silent: a Core that has its port but does not answer yet.
+        if matches!(probe(&client, port, workspace_id), Answer::Ours { .. } | Answer::Silent) {
+            gone = None;
+        } else if gone.get_or_insert_with(Instant::now).elapsed() >= keep.grace {
+            return Ok(());
+        }
+        std::thread::sleep(keep.poll);
+    }
+}
+
+fn client() -> reqwest::Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(3))
+        .build()
 }
 
 /// The installed Core, detached from this helper and from `wsl.exe`, with
@@ -358,7 +404,8 @@ fn probe(client: &reqwest::blocking::Client, port: u16, workspace_id: &str) -> A
         return Answer::Silent;
     };
     if !response.status().is_success() {
-        return Answer::Silent;
+        // A definite answer, and not a Core's health.
+        return Answer::Other;
     }
     let mut body = Vec::new();
     if response.take(64 * 1024).read_to_end(&mut body).is_err() {
@@ -464,8 +511,11 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
         Started(outcome["pid"].as_i64().map(|pid| pid as i32))
     }
 
-    /// Answers every connection on `port` with `body` as an HTTP 200, until dropped.
+    /// Answers every connection with `body` as an HTTP 200, until stopped.
     fn answer(body: &'static str) -> (u16, Arc<std::sync::atomic::AtomicBool>) {
+        answer_with("200 OK", body)
+    }
+    fn answer_with(status: &'static str, body: &'static str) -> (u16, Arc<std::sync::atomic::AtomicBool>) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -478,7 +528,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
                         stream.set_nonblocking(false).unwrap();
                         let mut request = [0u8; 2048];
                         let _ = stream.read(&mut request);
-                        let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                        let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                     }
                     Err(_) => std::thread::sleep(Duration::from_millis(10)),
                 }
@@ -562,7 +612,42 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
             stop.store(true, std::sync::atomic::Ordering::SeqCst);
             assert_eq!((outcome["state"].as_str(), outcome["code"].as_str()), (Some(state), code), "{body}: {outcome}");
         }
+        // A definite answer that is not a Core's health is refused at once,
+        // not after the whole wait.
+        let (port, stop) = answer_with("404 Not Found", "nothing here");
+        record(&install.layout, &install.running, &launch(&install, port), WORKSPACE, |_| None).unwrap();
+        let asked = Instant::now();
+        let outcome = start(&install.layout.root, port, WORKSPACE, QUICK);
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(outcome["code"], "portInUse", "{outcome}");
+        assert!(asked.elapsed() < Duration::from_secs(5), "{:?}", asked.elapsed());
         assert!(starts_seen(&notes).is_empty(), "nothing was started");
+    }
+
+    #[test]
+    fn a_start_stays_while_its_core_runs_then_goes() {
+        let install = install();
+        let root = install.layout.root.clone();
+        let (port, stop) = answer(r#"{"product":"yuzuno","workspaceId":"workspace-1","apiReady":true}"#);
+        let keep = Keep { grace: Duration::from_millis(800), poll: Duration::from_millis(100) };
+        let staying = {
+            let root = root.clone();
+            std::thread::spawn(move || keep_running(&root, port, WORKSPACE, keep))
+        };
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!staying.is_finished(), "it stays while Core answers");
+        // Another start that launched a Core finds this one keeping and returns.
+        let other = Instant::now();
+        keep_running(&root, port, WORKSPACE, keep).unwrap();
+        assert!(other.elapsed() < Duration::from_millis(500));
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let gone = Instant::now();
+        while !staying.is_finished() {
+            assert!(gone.elapsed() < Duration::from_secs(10), "it stayed after Core had gone");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        staying.join().unwrap().unwrap();
+        assert!(gone.elapsed() >= keep.grace, "it waited out the grace: {:?}", gone.elapsed());
     }
 
     #[test]

@@ -37,7 +37,9 @@ enum Command {
         operation: String,
     },
     /// Start this installation's Core as it last started, unless it already
-    /// answers on its port. Prints one JSON result; supervises nothing.
+    /// answers on its port. Prints one JSON result; after starting Core it
+    /// stays while that Core runs, so WSL keeps the distribution running.
+    /// It supervises nothing.
     Start {
         #[arg(long)]
         install_dir: PathBuf,
@@ -82,10 +84,13 @@ fn main() -> anyhow::Result<()> {
             use yuzuno_workspace::updates::start;
             let outcome = start::start(&install_dir, port, &workspace_id, start::Budget::default());
             println!("{outcome}");
-            if !matches!(outcome["state"].as_str(), Some("started" | "running" | "starting")) {
-                std::process::exit(3);
+            match outcome["state"].as_str() {
+                Some("started" | "starting") => {
+                    start::keep_running(&install_dir, port, &workspace_id, start::Keep::default())
+                }
+                Some("running") => Ok(()),
+                _ => std::process::exit(3),
             }
-            Ok(())
         }
     }
 }

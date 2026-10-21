@@ -71,6 +71,7 @@ After a restart of Windows, Core in WSL is not running until something starts it
   - `updates/start` is the installed release's update helper; each Core points it at its own release when it starts. It starts the release named in `current.json` with what that Core last started with, recorded in `updates/launch.json` (readable by your account only): the port, the Workspace folder, the working folder and Codex.
   - It also passes on these environment values, as they were then: `PATH`, `LANG`, `LC_ALL`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and Core's own settings (`YUZUNO_NODE`, `YUZUNO_OPENCODE_BIN`, `YUZUNO_EXPERIMENTAL_OPENCODE`, `YUZUNO_CLAUDE_RUNTIME_CACHE`, `YUZUNO_SERVICE_PORTS`, `YUZUNO_WINDOWS_JOBS_ROOT`, `YUZUNO_REMOTE_PORT`, `YUZUNO_REMOTE_ORIGIN`, `YUZUNO_REMOTE_LOGIN`). Nothing else is recorded.
   - Core runs in a session of its own, so it does not end with `wsl.exe`. Its output goes to `<folder>/core.log`, as with the documented start command.
+  - **WSL stays running for it.** WSL may end a distribution that no `wsl.exe` is attached to, background processes and all, and right after Windows starts nothing else is attached. So the start prints its result, and the page goes on, but it stays while that Core holds its port, keeping its hidden `wsl.exe` attached. It outlives the window. It ends two minutes after the port has been free or taken by something else; an update's restart stays within that. It starts, stops and restarts nothing. Only one start per installation stays this way.
 - **After it starts.** The helper waits up to two minutes for Core to answer with the same Workspace; the app then checks that answer itself and opens the Workspace. Your unsent drafts are in the window's storage, as always.
 - **What it never does.**
   - Start a Core that already answers. That one is opened, not restarted.
@@ -80,7 +81,10 @@ After a restart of Windows, Core in WSL is not running until something starts it
   - Add a service, a scheduled task or an administrator right, or install or change a WSL distribution.
 - **One start at a time.** Clicking again while it starts does nothing. Starts of the same installation from two windows wait for each other (`updates/start.lock`); the second finds Core running.
 - **When it cannot start, it says why:** WSL missing, the distribution or the installation gone (WSL's own message), no start recorded yet, the port taken, or Core stopping while it started (the last line of its output).
-- **What has been checked** ([acceptance/t171](../acceptance/t171/README.md)): with a real window, `wsl.exe` and a lab installation in a running WSL distribution. Core started this way outlives `wsl.exe`, the window's close button, and a window killed while it starts. Not checked: a distribution that is not running yet, and a real reboot.
+- **What has been checked** ([acceptance/t171](../acceptance/t171/README.md)): with a real window, `wsl.exe` and a lab installation in a running WSL distribution.
+  - Core started this way survives the window's close button, and a window killed while it starts.
+  - The start, and its `wsl.exe`, stay while Core runs and end once it has gone.
+  - Not checked: a distribution that is not running yet, and a real reboot. Whether WSL would end the distribution without the waiting start is therefore not known either.
 
 ## macOS desktop, Core on another computer
 

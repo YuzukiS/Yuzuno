@@ -186,15 +186,18 @@ pub enum Started {
     Slow,
 }
 
-/// Reads the start entry's one-line JSON result (`yuzuno-update-helper
-/// start`), or says why WSL did not run it. `output` is what `wsl.exe`
-/// printed on both streams.
+/// The start entry's one-line JSON result (`yuzuno-update-helper start`),
+/// if `line` is it. The entry prints it as soon as it knows, then may stay
+/// while Core runs, so the result is read before `wsl.exe` ends.
+pub fn start_result_line(line: &str) -> Option<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(line.trim()).ok().filter(|v| v["state"].is_string())
+}
+
+/// Reads the start entry's result, or says why WSL did not run it.
+/// `output` is what `wsl.exe` printed.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn start_result(profile: &StartProfile, output: &str) -> Result<Started, String> {
-    let result = output
-        .lines()
-        .rev()
-        .find_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok().filter(|v| v["state"].is_string()));
+    let result = output.lines().rev().find_map(start_result_line);
     let Some(result) = result else {
         let said = output.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("no output");
         // WSL's own log lines begin with a syslog level, such as "<3>".
@@ -528,6 +531,11 @@ mod tests {
         assert_eq!(start_result(&p, r#"{"state":"started","pid":12,"releaseId":"r"}"#), Ok(Started::Ready));
         assert_eq!(start_result(&p, "noise\n{\"state\":\"running\"}\n"), Ok(Started::Ready));
         assert_eq!(start_result(&p, r#"{"state":"starting","pid":12}"#), Ok(Started::Slow));
+        // The line is recognized as it arrives, before wsl.exe ends.
+        assert!(start_result_line("{\"state\":\"started\",\"pid\":12}\r").is_some());
+        for line in ["", "Starting…", "{\"pid\":12}", "[1,2]", "{\"state\":3}"] {
+            assert!(start_result_line(line).is_none(), "{line}");
+        }
         let said = |output: &str| start_result(&p, output).unwrap_err();
         assert!(said(r#"{"state":"refused","code":"portInUse","message":"Port 4317 is used by something other than Yuzuno Core."}"#)
             .starts_with("Port 4317 is used"));

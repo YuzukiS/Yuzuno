@@ -371,14 +371,18 @@ async fn open_core(
 #[cfg(windows)]
 const START_WAIT: Duration = Duration::from_secs(180);
 
-/// Runs the installation's start entry in its WSL distribution. Waiting
-/// ends after [`START_WAIT`]; nothing is stopped then.
+/// Runs the installation's start entry in its WSL distribution and reads
+/// its result as soon as it is printed. After starting Core the entry stays
+/// while Core runs, so WSL keeps the distribution running: that `wsl.exe`
+/// is left running, hidden, and outlives this window. Waiting ends after
+/// [`START_WAIT`]; nothing is stopped then.
 #[cfg(windows)]
 fn wsl_start(profile: &StartProfile) -> Result<Started, String> {
     use std::{
-        io::Read,
+        io::{BufRead, BufReader, Read},
         os::windows::process::CommandExt,
         process::{Command, Stdio},
+        sync::mpsc::{self, RecvTimeoutError},
         time::Instant,
     };
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -409,20 +413,47 @@ fn wsl_start(profile: &StartProfile) -> Result<Started, String> {
             bytes
         })
     }
-    let (stdout, stderr) = (read_all(child.stdout.take()), read_all(child.stderr.take()));
+    let stderr = read_all(child.stderr.take());
+    let (lines, arriving) = mpsc::channel();
+    if let Some(stdout) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let mut stdout = BufReader::new(stdout.take(64 * 1024));
+            let mut line = Vec::new();
+            while matches!(stdout.read_until(b'\n', &mut line), Ok(read) if read > 0) {
+                if lines.send(String::from_utf8_lossy(&line).into_owned()).is_err() {
+                    break;
+                }
+                line.clear();
+            }
+        });
+    }
     let deadline = Instant::now() + START_WAIT;
+    let mut output = String::new();
     loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
-            Ok(None) => return Ok(Started::Slow),
-            Err(error) => return Err(format!("Could not follow WSL: {error}")),
+        match arriving.recv_timeout(Duration::from_millis(200)) {
+            Ok(line) if connection::start_result_line(&line).is_some() => {
+                return connection::start_result(profile, &line);
+            }
+            Ok(line) => output.push_str(&line),
+            // wsl.exe ended without a result: what it said is why.
+            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        if Instant::now() >= deadline {
+            return Ok(Started::Slow);
         }
     }
-    let mut output = stdout.join().unwrap_or_default();
-    output.push(b'\n');
-    output.extend(stderr.join().unwrap_or_default());
-    connection::start_result(profile, &String::from_utf8_lossy(&output))
+    // Its output has closed; give it and its error stream a moment to end,
+    // never more.
+    let ending = Instant::now() + Duration::from_secs(5);
+    while (matches!(child.try_wait(), Ok(None)) || !stderr.is_finished()) && Instant::now() < ending {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if stderr.is_finished() {
+        output.push('\n');
+        output.push_str(&String::from_utf8_lossy(&stderr.join().unwrap_or_default()));
+    }
+    connection::start_result(profile, &output)
 }
 
 #[cfg(windows)]
