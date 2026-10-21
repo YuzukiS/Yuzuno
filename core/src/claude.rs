@@ -504,14 +504,15 @@ impl Workspace {
         let Some(c) = connection else {
             return Ok(());
         };
-        let d = self.detail(id).await?;
+        // Each Turn's status, as the send view has it (T-140).
+        let d = self.send_view(id).await?;
         let mut unconfirmed = false;
         if d.turns.iter().any(|turn| turn["status"] == "inProgress") {
             let ended = match self.claude_interrupt(id).await {
                 Ok(()) => match timeout(STOP_CONFIRMATION, async {
                     loop {
                         let busy = self
-                            .detail(id)
+                            .send_view(id)
                             .await?
                             .turns
                             .iter()

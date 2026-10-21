@@ -539,3 +539,25 @@ async fn a_summary_reconnect_answers_with_the_agent_only() {
     assert_eq!(items(turn(&d, &sent), "agentMessage").len(), 1);
     lab.ws.close_agent(ID).await.unwrap();
 }
+
+/// A closed OpenCode Agent is refused a reconnect before any OpenCode starts;
+/// reopening reconnects it to the same session, and nothing is sent again.
+#[tokio::test]
+async fn a_closed_opencode_agent_is_refused_before_anything_starts() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    lab.ws.close_agent(ID).await.unwrap();
+    let pid = lab.seen()["pid"].as_u64().unwrap();
+    for refused in [lab.ws.reconnect(ID).await.map(drop), lab.ws.reconnect_summary(ID).await.map(drop)] {
+        let error = refused.unwrap_err();
+        assert!(error.to_string().contains("已关闭"), "{error}");
+    }
+    assert_eq!(lab.seen()["pid"].as_u64().unwrap(), pid, "no OpenCode was started");
+    let reopened = lab.ws.reopen_agent_summary(ID).await.unwrap();
+    assert!(reopened.closed_at.is_none());
+    assert_eq!(reopened.opencode_session_id.as_deref(), Some(session.as_str()), "the same session");
+    assert_ne!(lab.seen()["pid"].as_u64().unwrap(), pid, "a new OpenCode for it");
+    assert_eq!(lab.detail().agent.connection_state, "connected");
+    assert!(lab.prompts().is_empty(), "nothing was sent");
+    lab.ws.close_agent(ID).await.unwrap();
+}

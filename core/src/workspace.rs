@@ -970,7 +970,7 @@ impl Workspace {
         permit.validate(&self.admission)?;
         match self.listed(id).await?.harness.as_str() {
             "claude" => return self.claude_reconnect_gated(id, permit, false).await.map(drop),
-            "opencode" => return self.opencode_reconnect_accepted(id, permit).await.map(drop),
+            "opencode" => return self.opencode_reconnect_gated(id, permit, false).await.map(drop),
             _ => {}
         }
         self.reconnect_codex(id, false).await.map(drop)
@@ -1024,36 +1024,38 @@ impl Workspace {
     }
 
     async fn close_agent_locked(self: &Arc<Self>, id: &str) -> Result<AgentDetail> {
-        let mut detail = self.detail(id).await?;
-        if detail.agent.closed_at.is_some() { return Ok(detail); }
-        if detail.agent.harness == "claude" {
+        // Its state and each Turn's status, as the send view has them; the
+        // whole record only where it is the answer (T-140).
+        let mut view = self.send_view(id).await?;
+        if view.agent.closed_at.is_some() { return self.detail(id).await; }
+        if view.agent.harness == "claude" {
             self.claude_close_runtime(id).await?;
-        } else if detail.agent.harness == "opencode" {
+        } else if view.agent.harness == "opencode" {
             self.opencode_close_runtime(id).await?;
         } else {
             // A detached remote turn may still be running. Reconcile native
             // history first, without sending/replaying any task.
-            if detail.agent.remote.is_some() && detail.agent.thread_id.is_some()
+            if view.agent.remote.is_some() && view.agent.thread_id.is_some()
                 && !self.rpcs.lock().unwrap().contains_key(id) {
                 self.reconcile(id).await.context("远程状态尚未确认，Agent 未关闭")?;
-                detail = self.detail(id).await?;
+                view = self.send_view(id).await?;
             }
             let connection = self.rpcs.lock().unwrap().get(id).cloned();
             if let Some(connection) = &connection {
-                if let Some(turn_id) = detail.turns.iter().rev()
+                if let Some(turn_id) = view.turns.iter().rev()
                     .find(|t| t["status"] == "inProgress")
                     .and_then(|t| t["id"].as_str()).map(str::to_owned) {
                     let interrupted = connection.rpc.request("turn/interrupt", json!({
-                        "threadId":detail.agent.thread_id,"turnId":turn_id
+                        "threadId":view.agent.thread_id,"turnId":turn_id
                     })).await;
                     // A completion can win the race with the interrupt request.
                     let finished = |d: &AgentDetail| d.turns.iter().any(|t| t["id"] == turn_id
                         && matches!(t["status"].as_str(), Some("completed" | "interrupted" | "failed")));
-                    if !finished(&self.detail(id).await?) {
+                    if !finished(&self.send_view(id).await?) {
                         interrupted.context("无法确认中断，Agent 未关闭")?;
                         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
                         loop {
-                            if finished(&self.detail(id).await?) { break; }
+                            if finished(&self.send_view(id).await?) { break; }
                             anyhow::ensure!(tokio::time::Instant::now() < deadline,
                                 "中断尚未得到原生执行结果确认；Agent 未关闭，请稍后重试");
                             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -1061,13 +1063,13 @@ impl Workspace {
                     }
                 }
             }
-            detail = self.detail(id).await?;
+            let agent = self.listed(id).await?;
             {
                 let _owned = self.owner(id).await;
                 if let Some(current) = self.rpcs.lock().unwrap().get_mut(id) { current.closing = true; }
             }
             let shutdown = async {
-                if let Some(remote_agent) = &detail.agent.remote {
+                if let Some(remote_agent) = &agent.remote {
                     remote::stop_runtime(&remote_agent.machine, &self.stored(|store| store.workspace_id()).await?, id,
                         remote_agent.runtime.as_ref()).await?;
                 }
