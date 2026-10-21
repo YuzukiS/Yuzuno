@@ -456,7 +456,7 @@ fn save_run(db: &Connection, run: &Value) -> Result<()> {
 }
 
 /// Every attempt of every stage, oldest first.
-fn attempts(db: &Connection, run: &str) -> Result<BTreeMap<String, Vec<Value>>> {
+pub(super) fn attempts(db: &Connection, run: &str) -> Result<BTreeMap<String, Vec<Value>>> {
     let mut q = db.prepare(
         "SELECT stage,job_id FROM local_job_run_attempts WHERE run_id=?1 ORDER BY attempt",
     )?;

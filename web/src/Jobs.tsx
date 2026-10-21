@@ -31,6 +31,7 @@ import {
 } from "./JobBudget";
 import { ArtifactsCard, ReportedLines, RunCard, PendingAnalysisRuns, type Artifact, type Cost, type Progress } from "./JobRun";
 import { openTaskReview, ReviewJobs, type ReviewOpen } from "./ReviewJobs";
+import { ProvenanceCard } from "./Provenance";
 import type { Agent } from "./types";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
 import type { HandoffSource } from "./handoff";
@@ -1455,6 +1456,7 @@ function JobDetail({
           ))}
         </JobCard>
       )}
+      <ProvenanceCard key={job.id} jobId={job.id} runId={job.run?.id} />
       <details className="job-evidence-details">
         <summary>Execution evidence</summary>
         <pre className="job-evidence">
