@@ -428,4 +428,36 @@ mod tests {
         assert!(loaded(&first, "early") && !loaded(&first, "later"));
         assert_eq!(metadata["runningSubAgents"], json!([listed("later", 150)]));
     }
+    /// T-25: a background shell or monitor outlives the Items after its call
+    /// as a sub-agent does. One still running, starting or paused stays
+    /// listed, apart from sub-agents, as its call's preview, wherever the
+    /// window is; one that ended or whose end is unknown is history.
+    #[test]
+    fn running_background_tasks_outside_the_window_stay_listed() {
+        let mut saved = giant(200);
+        let call = |id: &str, name: &str, status: &str| json!({"id":id,"type":"claudeToolUse","name":name,"status":"completed",
+            "input":{"command":format!("watch {id}"),"run_in_background":true},"output":[{"type":"text","text":"Running in the background"}],
+            "backgroundTask":{"status":status,"background":true,"type":"local_bash","description":id,"result":"r","progress":"p","taskId":format!("task-{id}")}});
+        let items = saved.turns[0]["items"].as_array_mut().unwrap();
+        items[1] = call("shell", "Bash", "running");
+        items[2] = call("watch", "Monitor", "paused");
+        items[3] = call("done", "Bash", "completed");
+        items[4] = call("lost", "Bash", "unknown");
+        items[5] = call("halted", "Bash", "stopped");
+        items[150] = call("later", "Bash", "running");
+        let listed = |id: &str, name: &str, status: &str, at: usize| json!({"turnId":"giant","position":[0,at],"item":{"id":id,
+            "type":"historyPreview","status":"completed","name":name,"_yuzunoWindowPreview":{"type":"claudeToolUse"},
+            "backgroundTask":{"status":status,"background":true,"type":"local_bash","description":id,"taskId":format!("task-{id}")}}});
+        let mut latest = saved.clone();
+        let metadata = project(&mut latest, &Query::default()).unwrap();
+        let loaded = |d: &AgentDetail, id: &str| d.turns[0]["items"].as_array().unwrap().iter().any(|i| i["id"] == id);
+        assert!(!loaded(&latest, "shell") && loaded(&latest, "later"));
+        assert_eq!(metadata["runningBackgroundTasks"], json!([listed("shell", "Bash", "running", 1), listed("watch", "Monitor", "paused", 2)]));
+        assert_eq!(metadata["runningSubAgents"], json!([]));
+        // Reading from the first: the later one is outside it now.
+        let mut first = saved.clone();
+        let metadata = project(&mut first, &Query {turn_id:Some("giant".into()),item_id:Some("shell".into()),..Default::default()}).unwrap();
+        assert!(loaded(&first, "shell") && !loaded(&first, "later"));
+        assert_eq!(metadata["runningBackgroundTasks"], json!([listed("later", "Bash", "running", 150)]));
+    }
 }

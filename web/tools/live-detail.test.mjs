@@ -71,6 +71,22 @@ test("a running sub-agent Core listed from outside the window is read again when
   assert.equal(text(patchDetail(base,item(11,{id:"new",type:"agentMessage",text:"new"})),"new").text,"new", "a new Item is placed as before");
 });
 
+test("a running background task Core listed from outside the window is read again when it changes, never placed among the loaded Items", () => {
+  // T-25: as a running sub-agent's call (T-26): placed at the end it would be
+  // out of place; while reading history, left alone it would go stale.
+  const running = [{turnId:"t1", position:[1,0], item:{id:"shell-bg",type:"historyPreview",status:"completed",name:"Bash",
+    backgroundTask:{status:"running",background:true,type:"local_bash"}}}];
+  const ended = item(11,{id:"shell-bg",type:"claudeToolUse",name:"Bash",status:"completed",backgroundTask:{status:"completed",background:true}});
+  for (const hasAfter of [false, true]) {
+    const base = detail();
+    base.conversation = {index:[], hasAfter, hasBefore:true, start:'["t0","old"]', end:'["t1","c"]', totalItems:1000, runningBackgroundTasks:running};
+    assert.equal(patchDetail(base, ended), null, `read again (hasAfter ${hasAfter})`);
+  }
+  const base = detail();
+  base.conversation = {index:[], hasAfter:false, hasBefore:true, start:'["t0","old"]', end:'["t1","c"]', totalItems:1000, runningBackgroundTasks:running};
+  assert.equal(text(patchDetail(base,item(11,{id:"new",type:"agentMessage",text:"new"})),"new").text,"new", "a new Item is placed as before");
+});
+
 test("changing body window cancels an older read without clearing the reading view", async () => {
   const requests = [], shown = [];
   const sync = new DetailSync({fetch:(_id,signal)=>new Promise(resolve=>requests.push({resolve,signal})),publish:d=>shown.push(d),error:()=>{}});

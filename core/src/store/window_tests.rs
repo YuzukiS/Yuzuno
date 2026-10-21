@@ -124,6 +124,32 @@ fn window_rows_list_running_subagents_outside_the_window() {
     assert_eq!(rebuilt.conversation["runningSubAgents"], listed);
 }
 
+/// T-25: the stored index lists a running background shell whose call is
+/// outside the window, as the full record does; an entry cached before it
+/// kept a background task's status (version 2) is rebuilt.
+#[test]
+fn window_rows_list_running_background_tasks_outside_the_window() {
+    let (_dir, store) = lab();
+    let mut d = history();
+    d.turns[1]["items"].as_array_mut().unwrap().insert(2, json!({"id":"shell-bg","type":"claudeToolUse","name":"Bash",
+        "status":"completed","input":{"command":"tail -f build.log","run_in_background":true},
+        "backgroundTask":{"status":"running","background":true,"type":"local_bash","description":"tail -f build.log","taskId":"task-sh"}}));
+    store.insert(&d).unwrap();
+    let listed = json!([{"turnId":"t","position":[1,2],"item":{"id":"shell-bg","type":"historyPreview","status":"completed","name":"Bash",
+        "_yuzunoWindowPreview":{"type":"claudeToolUse"},
+        "backgroundTask":{"status":"running","background":true,"type":"local_bash","description":"tail -f build.log","taskId":"task-sh"}}}]);
+    let page = assert_equivalent(&store, &Query::default());
+    assert_eq!(page.stats.source, "rows");
+    assert_eq!(page.conversation["runningBackgroundTasks"], listed);
+    store.db.write().unwrap().execute(
+        "UPDATE agent_window_items SET data='{\"version\":2,\"item\":{\"id\":\"shell-bg\",\"type\":\"claudeToolUse\"}}' WHERE agent_id='a' AND item_id='shell-bg'",
+        [],
+    ).unwrap();
+    let rebuilt = assert_equivalent(&store, &Query::default());
+    assert_eq!(rebuilt.stats.index_build_items, 1);
+    assert_eq!(rebuilt.conversation["runningBackgroundTasks"], listed);
+}
+
 #[test]
 fn window_rows_rebuild_only_changed_entries_and_keep_duplicate_ids_and_pending_payloads() {
     let (_dir, store) = lab();
