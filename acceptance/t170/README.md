@@ -21,15 +21,16 @@ It never touches the daily Core: [`lab.py`](lab.py) starts a lab Core of its own
 
 ## Before (read-only)
 
-1. **The artifacts:** the lab Core and web build from the reviewed main commit, copied into one folder with a `manifest.json` that gives the commit, the Core's SHA-256 and the web build's file digest. Check the digests before starting.
-2. **Ports:** the lab's two loopback ports (e.g. 4419 and 4318) are free, and neither is 4317.
+1. **The artifacts:** the lab Core, the web build and `runtimes/result-validator/` from the reviewed main commit, copied into one folder with a `manifest.json` that gives the commit and their digests. Check the digests before starting. The lab starts Core without the caller's `YUZUNO_*` settings, so a shell under the daily Core lends it nothing; Home sections are checked by the copied validator.
+2. **Ports:** the lab's two loopback ports (e.g. 4419 and 4318) are free, and neither is 4317. `lab.py` checks this, and that the lab folder is new, before it writes anything.
 3. **Serve:** on the machine running Tailscale, save `tailscale serve status --json`. If the chosen HTTPS port (e.g. 8444) is already in it, **stop**: nothing is overwritten, and no other port is picked without asking again.
 
 ## Run
 
 1. **Start the lab and keep it up** for at most the agreed time:
    ```sh
-   python3 acceptance/t170/lab.py --core <artifacts>/bin/yuzuno-workspace --web <artifacts>/web --dir <new lab folder> \
+   python3 acceptance/t170/lab.py --core <artifacts>/bin/yuzuno-workspace --web <artifacts>/web \
+     --validator <artifacts>/runtimes/result-validator/validator.mjs --dir <new lab folder> \
      --port 4419 --remote-port 4318 --origin https://core.example-tailnet.ts.net:8444 --login person@example.com \
      --source-commit <commit> --hold 90
    ```

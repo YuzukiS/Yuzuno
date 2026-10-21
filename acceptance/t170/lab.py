@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """T-170: a lab Core with the phone entry, for a phone through Tailscale Serve.
 
-    python3 acceptance/t170/lab.py --core BIN --web DIST --dir LAB \
+    python3 acceptance/t170/lab.py --core BIN --web DIST --validator VALIDATOR --dir LAB \
         --port 4419 --remote-port 4318 --origin https://<node>:8444 --login <login> \
         (--verify | --hold MINUTES)
 
 It never touches the daily Core or its data: its own ports (never 4317), a
 new data folder under LAB, and the scripted Codex stand-in
-acceptance/turn-cost/fake_codex.py instead of a model.
+acceptance/turn-cost/fake_codex.py instead of a model. It starts Core without
+the caller's YUZUNO_* settings: a shell under the daily Core has them, and
+they name that release's helpers. Home sections are checked by VALIDATOR,
+runtimes/result-validator/validator.mjs from the same commit as BIN.
 
 It seeds a synthetic Workspace: a project, one Agent with a finished
 conversation, a native command approval waiting for an answer, and on Home a
@@ -111,26 +114,39 @@ class Lab:
                          self.remote_headers(write=method not in ('GET', 'HEAD'), **extra))
 
     # ---- Core ---------------------------------------------------------------
-    def start(self):
+    def preflight(self):
+        """Refuses before anything is written, so an earlier run's evidence in
+        another LAB folder, or this one, is never replaced."""
         a = self.a
+        if a.port == a.remote_port:
+            raise SystemExit('--port and --remote-port must differ; nothing was started')
         for port in (a.port, a.remote_port):
             if port == DAILY_PORT:
-                raise SystemExit(f'Port {port} is the daily Core\'s; choose another')
+                raise SystemExit(f'Port {port} is the daily Core\'s; choose another. Nothing was started')
             if not free(port):
                 raise SystemExit(f'Port {port} is in use on 127.0.0.1; nothing was started')
-        if (self.dir / 'data').exists():
-            raise SystemExit(f'{self.dir}/data exists: use a new LAB folder')
+        for name in ('core', 'web', 'validator'):
+            if not pathlib.Path(getattr(a, name)).exists():
+                raise SystemExit(f'--{name} {getattr(a, name)} does not exist. Nothing was started')
+        if self.dir.exists() and any(self.dir.iterdir()):
+            raise SystemExit(f'{self.dir} is not empty: use a new LAB folder. Nothing was started')
+
+    def start(self):
+        a = self.a
         for sub in ('data', 'task', 'timeline'):
             (self.dir / sub).mkdir(parents=True)
         web_digest, web_files = tree_sha256(a.web)
         self.report['facts']['sources'] = {
             'core': {'path': str(pathlib.Path(a.core).resolve()), 'sha256': sha256(a.core)},
             'web': {'path': str(pathlib.Path(a.web).resolve()), 'treeSha256': web_digest, 'files': web_files},
+            'validator': {'path': str(pathlib.Path(a.validator).resolve()), 'sha256': sha256(a.validator)},
             'fakeCodex': {'path': str(FAKE_CODEX), 'sha256': sha256(FAKE_CODEX)},
             'sourceCommit': a.source_commit,
         }
-        env = dict(os.environ, YUZUNO_REMOTE_PORT=str(a.remote_port), YUZUNO_REMOTE_ORIGIN=a.origin,
-                   YUZUNO_REMOTE_LOGIN=a.login, T9_TIMELINE=str(self.dir / 'timeline'))
+        env = {k: v for k, v in os.environ.items() if not k.startswith('YUZUNO_')}
+        env.update(YUZUNO_REMOTE_PORT=str(a.remote_port), YUZUNO_REMOTE_ORIGIN=a.origin, YUZUNO_REMOTE_LOGIN=a.login,
+                   YUZUNO_RESULT_VALIDATOR=str(pathlib.Path(a.validator).resolve()),
+                   T9_TIMELINE=str(self.dir / 'timeline'))
         log = (self.dir / 'core.log').open('ab')
         self.core = subprocess.Popen(
             [a.core, '--port', str(a.port), '--data-dir', str(self.dir / 'data'), '--web-dir', a.web,
@@ -203,8 +219,8 @@ class Lab:
         if text.startswith(('data:', 'event:')):
             text = next(line[5:] for line in text.splitlines() if line.startswith('data:'))
         value = json.loads(text)
-        if status != 200 or value.get('error'):
-            raise RuntimeError(f'MCP {method}: {status} {text[:300]}')
+        if status != 200 or value.get('error') or value['result'].get('isError'):
+            raise RuntimeError(f'MCP {method}: {status} {text[:600]}')
         return value['result'].get('structuredContent', value['result'])
 
     def seed(self):
@@ -221,7 +237,7 @@ class Lab:
             'body': {'type': 'BriefBody', 'props': {}, 'children': ['text']},
             'text': {'type': 'Markdown', 'props': {'text': text}}}}
         brief = self.mcp('tools/call', {'name': 'brief_get', 'arguments': {}})
-        self.mcp('tools/call', {'name': 'brief_update', 'arguments': {
+        update = self.mcp('tools/call', {'name': 'brief_update', 'arguments': {
             'requestId': 'lab-seed', 'expectedVersion': brief['version'], 'changes': [
                 {'op': 'put', 'key': 'phone-status', 'kind': 'status', 'title': 'Phone check status',
                  'body': body('A synthetic status section, written by the lab Agent.'),
@@ -229,6 +245,8 @@ class Lab:
                 {'op': 'put', 'key': 'phone-ask', 'kind': 'ask', 'title': 'Phone check question',
                  'body': body('Reply from the phone to check Home replies.'),
                  'ask': {'question': 'Does this read well on the phone?', 'reply': {'freeText': True}}}]}})
+        if update.get('accepted') is not True:
+            raise RuntimeError(f'brief_update was not accepted: {json.dumps(update)[:600]}')
         self.report['facts']['seed'] = {'projectId': self.project_id, 'agentId': self.agent_id,
                                         'pendingRequest': request['id']}
         (self.dir / 'lab.json').write_text(json.dumps({
@@ -318,6 +336,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--core', required=True)
     p.add_argument('--web', required=True)
+    p.add_argument('--validator', required=True)
     p.add_argument('--dir', required=True)
     p.add_argument('--port', type=int, required=True)
     p.add_argument('--remote-port', type=int, required=True)
@@ -328,6 +347,7 @@ def main():
     mode.add_argument('--verify', action='store_true')
     mode.add_argument('--hold', type=float, metavar='MINUTES')
     lab = Lab(p.parse_args())
+    lab.preflight()
     try:
         lab.start()
         lab.seed()
@@ -337,7 +357,7 @@ def main():
     finally:
         lab.stop()
         lab.report['finishedAt'] = time.time()
-        lab.report['passed'] = all(c['ok'] for c in lab.report['checks'])
+        lab.report['passed'] = bool(lab.report['checks']) and all(c['ok'] for c in lab.report['checks'])
         lab.save()
         print('passed', lab.report['passed'], flush=True)
     sys.exit(0 if lab.report['passed'] else 1)
