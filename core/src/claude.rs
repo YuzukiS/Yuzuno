@@ -2556,6 +2556,12 @@ fn project_agent_result(item: &mut Value, result: &Value, failed: bool, at: Date
                 sub["endedAt"] = at.to_rfc3339().into();
             }
         }
+        // Launched in the background, as its own input says: its return is
+        // the launch, not the end. Without the result object (Claude's saved
+        // history keeps none) its end is unknown until something reports it.
+        if !failed && !item["subAgent"].is_object() && item["input"]["run_in_background"] == true {
+            item["subAgent"] = json!({"status":"unknown","background":true});
+        }
         return;
     }
     if !item["subAgent"].is_object() {
