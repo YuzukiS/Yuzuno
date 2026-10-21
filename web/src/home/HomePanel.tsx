@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -10,6 +10,7 @@ import {
   History,
   LoaderCircle,
   Workflow,
+  ShieldCheck,
 } from "lucide-react";
 import { errorText } from "../api";
 import { PendingCard } from "../components";
@@ -18,6 +19,7 @@ import { openJobs } from "../Jobs";
 import type { Agent, PendingRequest } from "../types";
 import { ProjectReply } from "./AskReply";
 import { changedSinceSeen, groupSections, projectDomId, requestDomId } from "./brief-layout";
+import { FoldButton, useCardFold } from "./card-fold";
 import { absolute, plural, relative } from "./format";
 import { readLinkedRepositories, type LinkedRepositories, type SeenMark } from "./home-api";
 import type { HomeTarget } from "./home-navigation";
@@ -86,6 +88,7 @@ function useOverflow(active: boolean) {
 function RepoBlock({ projectId, readOnly }: { projectId: string; readOnly: boolean }) {
   const [page, setPage] = useState<LinkedRepositories | null>(null);
   const [manage, setManage] = useState(false);
+  const [collapsed, toggleFold] = useCardFold(`repos:${projectId}`);
   useEffect(() => {
     if (readOnly) return;
     const controller = new AbortController();
@@ -98,17 +101,47 @@ function RepoBlock({ projectId, readOnly }: { projectId: string; readOnly: boole
     return () => controller.abort();
   }, [projectId, readOnly]);
   if (!page?.repositories.length) return null;
+  // Its own fold, apart from the project's (T-115). Collapsed, it reads no
+  // activity (read again on expanding); GitHub, Jobs and CI go on as they
+  // are. Repository details stay mounted, with anything typed in them.
+  const body = `${projectDomId(projectId)}-repos`;
   return (
-    <div className="home-widget home-repos">
-      <h4>
-        <Github size={13} /> Repositories
-      </h4>
-      <RepoActivity projectId={projectId} linked={page.repositories} />
-      <GitHubSummary links={page.links} />
-      <button type="button" className="quiet-button" aria-expanded={manage} onClick={() => setManage((v) => !v)}>
-        {manage ? "Hide repository details" : "Repository details…"}
-      </button>
-      {manage && <GitHubLinks projectId={projectId} disabled={readOnly} />}
+    <div className={`home-widget home-repos${collapsed ? " is-collapsed" : ""}`}>
+      <div className="home-card-head">
+        <FoldButton collapsed={collapsed} onToggle={toggleFold} label="Repositories" controls={body} />
+        <h4>
+          <Github size={13} /> Repositories
+        </h4>
+        {collapsed && <span className="home-card-count">{page.repositories.length}</span>}
+      </div>
+      <div className="home-card-body" id={body} hidden={collapsed}>
+        {!collapsed && <RepoActivity projectId={projectId} linked={page.repositories} />}
+        <GitHubSummary links={page.links} />
+        <button type="button" className="quiet-button" aria-expanded={manage} onClick={() => setManage((v) => !v)}>
+          {manage ? "Hide repository details" : "Repository details…"}
+        </button>
+        {manage && <GitHubLinks projectId={projectId} disabled={readOnly} />}
+      </div>
+    </div>
+  );
+}
+
+/** A project's waiting approvals; collapsed, its count still shows (T-115). */
+function Approvals({ projectId, count, children }: { projectId: string; count: number; children: ReactNode }) {
+  const [collapsed, toggleFold] = useCardFold(`approvals:${projectId}`);
+  const body = `${projectDomId(projectId)}-approvals`;
+  return (
+    <div className={`home-widget home-approvals${collapsed ? " is-collapsed" : ""}`}>
+      <div className="home-card-head">
+        <FoldButton collapsed={collapsed} onToggle={toggleFold} label="Waiting for approval" controls={body} />
+        <h4>
+          <ShieldCheck size={13} /> Waiting for approval
+        </h4>
+        <span className="home-card-count">{count}</span>
+      </div>
+      <div className="home-card-body" id={body} hidden={collapsed}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -320,7 +353,7 @@ export function HomePanel({
         <div className="home-panel-content" id={`${projectDomId(id)}-content`}>
           <div className="home-widgets">
             {panel.pending.length > 0 && (
-              <div className="home-widget home-approvals">
+              <Approvals projectId={id} count={panel.pending.length}>
                 {panel.pending.map((request) => (
                   <div key={request.id} id={requestDomId(request.id)} tabIndex={-1} className="home-approval">
                     <span className="home-from">From {request.agentName}</span>
@@ -332,7 +365,7 @@ export function HomePanel({
                     />
                   </div>
                 ))}
-              </div>
+              </Approvals>
             )}
             <RepoBlock projectId={id} readOnly={readOnly} />
           </div>

@@ -15,6 +15,7 @@ import { previewHome, previewProjectAgents } from "./preview-home";
 import type { HomeData, NeedsYouItem, ProjectPanel, Section } from "./types";
 import { PinsContext, pinSource, pinWidgetId, resolvePin, useWidgetLayout, type PinControl } from "./widget-layout";
 import "./home.css";
+import { CardFoldWorkspace } from "./card-fold";
 
 export type { HomeTarget } from "./home-navigation";
 
@@ -282,6 +283,8 @@ export function Home({
     data?.needsYou.filter((item) => item.projectId === panel.project.id) || [];
   return (
     <HomeNavigation.Provider value={onNavigate}>
+    {/* Which cards are collapsed is kept per Workspace; the preview keeps none (T-115). */}
+    <CardFoldWorkspace.Provider value={readOnly ? "" : workspaceId}>
     <PinsContext.Provider value={pins}>
     <div className="home-view">
       <header className="home-header">
@@ -377,6 +380,7 @@ export function Home({
       )}
     </div>
     </PinsContext.Provider>
+    </CardFoldWorkspace.Provider>
     </HomeNavigation.Provider>
   );
 }
