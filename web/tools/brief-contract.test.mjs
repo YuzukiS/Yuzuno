@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
-  BRIEF_COMPONENT_DESCRIPTIONS, BRIEF_EXAMPLES, BRIEF_GUIDE_PARTS, BRIEF_HARD_RULES, BRIEF_KEY_PATTERN, BRIEF_LIMITS,
+  BRIEF_COMPONENT_DESCRIPTIONS, BRIEF_EXAMPLES, BRIEF_GUIDE_PARTS, BRIEF_HARD_RULES, BRIEF_KEY_PATTERN, BRIEF_LIMITS, BRIEF_OUTCOME_HINT,
   BRIEF_PROBLEM_CODES, BRIEF_SCHEMA_VERSION, BRIEF_TOOL_DESCRIPTIONS, BriefError, DESCRIPTION_CAP, briefComponentProps,
   briefGuide, checkBriefSection, describeBrief, fencedBlockLines,
 } from "../src/intelligent-ui/brief-contract.ts";
@@ -417,10 +417,14 @@ test("hard rules, tool descriptions and the guide are generated within their cap
     assert.match(description, /brief_guide/, `${name} names the guide`);
   }
   assert.deepEqual(Object.keys(BRIEF_TOOL_DESCRIPTIONS), ["brief_get", "brief_update", "brief_guide"]);
-  // The per-turn obligation follows current capabilities, including revocation.
+  // T-154: no turn has to end with a Brief update; outcomes have a place.
   const rules = BRIEF_HARD_RULES.split("\n");
-  assert.match(rules[1], /requiresTurnUpdate is true.*brief_get.*brief_update.*noChange:true/);
-  assert.match(rules[1], /otherwise there is no per-turn obligation or missing mark/);
+  assert.match(rules[1], /No Brief update is required each turn: write when something changed/);
+  assert.match(rules[1], /status.*report linked to its Task.*ask; result_publish never reaches Home/);
+  assert.doesNotMatch(BRIEF_HARD_RULES, /requiresTurnUpdate|noChange/);
+  for (const description of Object.values(BRIEF_TOOL_DESCRIPTIONS)) assert.doesNotMatch(description, /requiresTurnUpdate|per turn\b|each turn then/);
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_get, /keys: omit for every section with its body; \[\] for an index/);
+  assert.match(briefGuide("sections"), new RegExp(`What goes where: ${BRIEF_OUTCOME_HINT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   assert.match(BRIEF_HARD_RULES, /editContent is false.*only your own Asks/);
   assert.match(briefGuide("errors"), /ask_only.*Only the user/);
   for (const phrase of [/expectedVersion/, /version_conflict.*re-read.*merge/, /only their own sections.*topic\/sub/, /question plus .*options, freeText, a form or a choice/, /Resolve your asks explicitly/, /never executes actions/, /brief_guide/])
@@ -473,7 +477,8 @@ test("contract.json carries the brief, generated from this file", async () => {
   const committed = JSON.parse(await readFile(new URL("../../runtimes/result-validator/contract.json", import.meta.url), "utf8"));
   const brief = describeBrief();
   assert.deepEqual(committed.brief, JSON.parse(JSON.stringify(brief)), "stale: npm run build:result-validator");
-  assert.deepEqual(Object.keys(committed.brief).sort(), ["guide", "guideParts", "hardRules", "limits", "schemaVersion", "toolDescriptions"]);
+  assert.deepEqual(Object.keys(committed.brief).sort(), ["guide", "guideParts", "hardRules", "limits", "outcomeHint", "schemaVersion", "toolDescriptions"]);
+  assert.equal(committed.brief.outcomeHint, BRIEF_OUTCOME_HINT);
   assert.equal(committed.brief.schemaVersion, BRIEF_SCHEMA_VERSION);
   assert.deepEqual(Object.keys(committed.brief.guideParts), [...BRIEF_GUIDE_PARTS]);
   assert.equal(committed.brief.guide, briefGuide());

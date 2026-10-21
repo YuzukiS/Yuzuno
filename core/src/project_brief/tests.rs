@@ -218,8 +218,8 @@ async fn only_the_owner_changes_a_section_and_others_add_sub_topics() {
     assert_eq!(read["version"], 2);
     assert_eq!(section(&read, "round-12")["owner"]["agentId"], "a");
     assert_eq!(section(&read, "round-12/review")["owner"]["agentId"], "b");
-    assert_eq!(read["you"], json!({"agentId":"b","ownsKeys":["round-12/review"],"openAsks":0,"repliedAsks":[],
-        "capabilities":{"editContent":true,"requiresTurnUpdate":true,"writeOwnAsk":true}}));
+    assert_eq!(read["you"], json!({"agentId":"b","ownsKeys":["round-12/review"],"openAsks":0,"repliedAsks":[],"staleStatus":[],
+        "capabilities":{"editContent":true,"requiresTurnUpdate":false,"writeOwnAsk":true},"homeHint":outcome_hint()}));
     for change in [op("remove", "round-12"), op("claim", "round-12")] {
         let codes = codes(&reject(&ws, "b", input("b3", 2, vec![change])).await);
         assert!(codes == ["not_owner"] || codes == ["not_orphan"], "{codes:?}");
@@ -634,7 +634,7 @@ async fn home_orders_projects_and_needs_you_by_priority_then_wait() {
     // An archived Project leaves Home and needs no Brief.
     ws.store.update_project(&second, crate::projects::ProjectChange { name: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
     assert_eq!(home::build(&ws.store).unwrap()["order"], json!([first]));
-    assert_eq!(agent_requires_brief(&ws.store, "e").unwrap(), None);
+    assert_eq!(agent_edits_brief(&ws.store, "e").unwrap(), None);
 }
 
 #[tokio::test]
@@ -660,8 +660,8 @@ async fn live_references_show_core_state_or_not_found() {
 #[tokio::test]
 async fn turn_outcomes_are_final_except_reminded_and_follow_project_membership() {
     let (_dir, ws, project) = lab();
-    assert_eq!(agent_requires_brief(&ws.store, "a").unwrap(), Some(project.clone()));
-    assert_eq!(agent_requires_brief(&ws.store, "d").unwrap(), None);
+    assert_eq!(agent_edits_brief(&ws.store, "a").unwrap(), Some(project.clone()));
+    assert_eq!(agent_edits_brief(&ws.store, "d").unwrap(), None);
     assert!(record_turn_outcome(&ws.store, "a", "t9", &project, "reminded").unwrap());
     assert_eq!(turn_outcome(&ws.store, "a", "t9").unwrap(), Some(("reminded".into(), 1)));
     assert!(record_turn_outcome(&ws.store, "a", "t9", &project, "reminded").unwrap());
@@ -1349,4 +1349,117 @@ async fn a_key_whose_history_went_before_the_upgrade_continues_above_its_seen_ve
     let again = live(&ws, "notes");
     assert_eq!((again["version"].clone(), again["seen"]["version"].clone()), (json!(4), json!(3)), "{again}");
     assert_eq!(home::build(&ws.store).unwrap()["projects"][0]["unseen"], 1, "new content is not taken for the version seen");
+}
+
+/// T-154: keys reads an index of every section without its body, and the
+/// named sections in full beside it; without keys, every section as before.
+#[tokio::test]
+async fn keys_read_an_index_without_bodies_or_only_the_named_sections() {
+    let (_dir, ws, _project) = lab();
+    accept(&ws, "a", input("a1", 0, vec![put("plan", "report"), put("state", "status"), put("decide", "ask")])).await;
+    let read = |input: Value| get(&ws.store, Some("b"), &input);
+    let index = read(json!({"keys":[]})).unwrap();
+    assert_eq!((index["sections"].clone(), index["missingKeys"].clone(), index["version"].clone()), (json!([]), json!([]), json!(1)));
+    let entries = index["index"].as_array().unwrap();
+    assert_eq!(entries.iter().map(|e| e["key"].clone()).collect::<Vec<_>>(), [json!("plan"), json!("state"), json!("decide")]);
+    assert!(entries.iter().all(|e| e.get("body").is_none() && e.get("attachments").is_none() && e.get("refs").is_none()));
+    assert_eq!((entries[0]["title"].clone(), entries[0]["owner"]["agentId"].clone()), (json!("About plan"), json!("a")));
+    assert_eq!(entries[1]["status"]["stale"], false);
+    assert_eq!(entries[2]["ask"]["state"], "open");
+    assert_eq!(index["you"]["capabilities"]["editContent"], true);
+    let named = read(json!({"keys":["plan","nope"]})).unwrap();
+    assert_eq!(named["sections"].as_array().unwrap().len(), 1);
+    assert_eq!(named["sections"][0]["body"], body("Hello"));
+    assert_eq!((named["missingKeys"].clone(), named["index"].as_array().unwrap().len()), (json!(["nope"]), 3));
+    let all = read(json!({})).unwrap();
+    assert_eq!(all["sections"].as_array().unwrap().len(), 3);
+    assert!(all.get("index").is_none() && all.get("missingKeys").is_none());
+    let too_many: Vec<String> = (0..61).map(|n| format!("k{n}")).collect();
+    for bad in [json!({"keys":"plan"}), json!({"keys":[1]}), json!({"keys":[""]}), json!({"keys":too_many}), json!({"fields":["plan"]})] {
+        assert!(read(bad.clone()).unwrap_err().to_string().starts_with("invalid_input"), "{bad}");
+    }
+}
+
+/// T-154: an editor owes no update and is told where outcomes go. Nothing is
+/// resolved or refreshed for it: an authorized action may still be running,
+/// and a stale status waits for new facts. Ask-only members get no advice.
+#[tokio::test]
+async fn editors_get_advice_never_a_duty_and_nothing_is_resolved_or_refreshed_for_them() {
+    let (_dir, ws, project) = lab();
+    let mut old = put("state", "status");
+    old["status"] = json!({"asOf":"2026-01-01T00:00:00Z","validFor":60});
+    accept(&ws, "a", input("a1", 0, vec![old, put("decide", "ask")])).await;
+    assert!(sections::mark_replied(&ws.store, &project, "decide", "Left: go").unwrap());
+    let before = version(&ws, &project);
+    assert_eq!(agent_must_update_brief(&ws.store, "a").unwrap(), None);
+    let you = brief(&ws, "a")["you"].clone();
+    assert_eq!(you["capabilities"]["requiresTurnUpdate"], false);
+    assert_eq!((you["homeHint"].clone(), you["staleStatus"].clone()), (json!(outcome_hint()), json!(["state"])));
+    assert_eq!(you["repliedAsks"][0]["key"], "decide");
+    let read = brief(&ws, "a");
+    assert_eq!(section(&read, "decide")["ask"]["state"], "replied");
+    assert_eq!(section(&read, "state")["status"], json!({"asOf":"2026-01-01T00:00:00Z","validFor":60,"stale":true}));
+    assert_eq!(version(&ws, &project), before, "reading changed nothing");
+    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    let ask_only = brief(&ws, "b")["you"].clone();
+    assert_eq!(ask_only["capabilities"]["editContent"], false);
+    assert!(ask_only.get("homeHint").is_none());
+}
+
+/// T-154: a task result tells its author, and the Agent it reaches, where an
+/// outcome goes on Home, only while each may edit that task's Project Brief.
+#[tokio::test]
+async fn a_task_result_carries_home_advice_only_for_editors_of_its_project() {
+    let (_dir, ws, project) = lab();
+    let call = |actor: &str, op: &str, input: Value| ws.store.collaboration_call(Some(actor), op, input).unwrap();
+    let deliver = |request: &str, project: Value| {
+        let task = call("a", "task_create", json!({"requestId":format!("{request}-c"),"title":"Measure","projectId":project}))["task"].clone();
+        let sent = call("a", "task_dispatch", json!({"requestId":format!("{request}-d"),"taskId":task["id"],
+            "expectedVersion":task["version"],"toAgentId":"b"}));
+        call("b", "task_submit_result", json!({"requestId":format!("{request}-s"),"taskId":task["id"],
+            "expectedVersion":sent["task"]["version"],"dispatchId":sent["message"]["dispatchId"],"summary":"Found it."}))
+    };
+    let mail = |submitted: &Value| submitted["message"]["body"].as_str().unwrap().to_owned();
+    let both = deliver("both", json!(project));
+    assert_eq!(both["homeHint"], outcome_hint());
+    assert!(mail(&both).ends_with(outcome_hint()), "{}", mail(&both));
+    // A task outside any Project: no Brief to keep, no advice.
+    let none = deliver("none", Value::Null);
+    assert!(none.get("homeHint").is_none() && !mail(&none).contains(outcome_hint()));
+    // The user made b Ask-only: its result has no advice; a still gets it.
+    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    let ask_only = deliver("ask-only", json!(project));
+    assert!(ask_only.get("homeHint").is_none());
+    assert!(mail(&ask_only).ends_with(outcome_hint()));
+}
+
+/// Review a490d813: the Home hint is advice. When its lookup fails, a task
+/// result is still submitted and mailed, without the hint; the result's own
+/// version and assignment checks still refuse what they refused before.
+#[tokio::test]
+async fn a_failed_home_hint_lookup_never_fails_a_task_result() {
+    let (_dir, ws, project) = lab();
+    let call = |actor: &str, op: &str, input: Value| ws.store.collaboration_call(Some(actor), op, input);
+    let task = call("a", "task_create", json!({"requestId":"c","title":"Measure","projectId":project})).unwrap()["task"].clone();
+    let sent = call("a", "task_dispatch", json!({"requestId":"d","taskId":task["id"],"expectedVersion":task["version"],"toAgentId":"b"})).unwrap();
+    // An editor policy Core cannot read: every hint lookup for this Project fails.
+    ws.store.db.write().unwrap().execute(
+        "INSERT OR REPLACE INTO project_brief_editors(project_id,version,editor_ids) VALUES(?1,1,'not json')", [&project]).unwrap();
+    let id = task["id"].as_str().unwrap();
+    // home_hint takes the task's own key, as task_submit_result passes it.
+    let key: String = ws.store.db.read().unwrap()
+        .query_row("SELECT task_id FROM project_tasks WHERE project_id=?1", [&project], |r| r.get(0)).unwrap();
+    assert!(home_hint(&ws.store, &ws.store.db.read().unwrap(), &key, "b").is_err());
+    let submit = |actor: &str, request: &str, version: &Value| call(actor, "task_submit_result", json!({"requestId":request,
+        "taskId":id,"expectedVersion":version,"dispatchId":sent["message"]["dispatchId"],"summary":"Found it."}));
+    let version = sent["task"]["version"].clone();
+    assert!(submit("b", "stale", &json!(1)).unwrap_err().to_string().starts_with("version_conflict"));
+    assert!(submit("c", "not-the-executor", &version).is_err());
+    let submitted = submit("b", "s", &version).unwrap();
+    assert!(submitted.get("homeHint").is_none());
+    assert_eq!(submitted["task"]["status"], "review");
+    let mail = submitted["message"]["body"].as_str().unwrap();
+    assert!(mail.contains("submitted a result") && !mail.contains(outcome_hint()), "{mail}");
+    let inbox = call("a", "peer_read", json!({})).unwrap();
+    assert!(inbox["messages"].as_array().unwrap().iter().any(|m| m["metadata"]["kind"] == "task_result"));
 }

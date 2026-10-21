@@ -15,8 +15,11 @@ fn json_file(path: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
+/// A running Claude Stop hook still asks Core's real policy, after the user
+/// revokes and grants editing; since T-154 the answer is never to hold the
+/// Turn for a Brief update, editor or not.
 #[tokio::test]
-async fn running_claude_stop_reads_real_core_policy_after_revoke_and_grant() {
+async fn running_claude_stop_asks_real_core_policy_and_is_never_held_for_the_brief() {
     std::env::set_var("YUZUNO_CLAUDE_BRIDGE", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/home_editors_bridge.mjs"));
     let lab = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let ws = Workspace::new(lab.path().join("data"), lab.path().to_string_lossy().into(), "unused".into()).unwrap();
@@ -37,7 +40,7 @@ async fn running_claude_stop_reads_real_core_policy_after_revoke_and_grant() {
     let client = reqwest::Client::new();
     let endpoint = format!("http://127.0.0.1:{port}/api/projects/{project}/home-editors");
 
-    for (n, ids, required) in [(1, json!([]), false), (2, json!(["claude-policy"]), true)] {
+    for (n, ids) in [(1, json!([])), (2, json!(["claude-policy"]))] {
         let sent = ws.send("claude-policy", format!("fixture turn {n}")).await.unwrap();
         until(|| lab.path().join(format!("ready-{n}")).is_file()).await;
         assert_eq!(ws.store.agent("claude-policy").unwrap().status, "working");
@@ -50,11 +53,11 @@ async fn running_claude_stop_reads_real_core_policy_after_revoke_and_grant() {
         let stopped = lab.path().join(format!("stop-{n}.json"));
         until(|| stopped.is_file()).await;
         let decision = json_file(&stopped);
-        assert_eq!(decision["decision"].as_str(), required.then_some("block"));
+        assert!(decision["decision"].is_null(), "the Turn ends without a hold: {decision}");
         let replies: Vec<Value> = std::fs::read_to_string(lab.path().join("policy-replies.jsonl")).unwrap()
             .lines().map(|line| serde_json::from_str(line).unwrap()).collect();
         assert_eq!(replies.len(), n as usize);
-        assert_eq!(replies.last().unwrap()["required"], required);
+        assert_eq!(replies.last().unwrap()["required"], json!(false));
         assert_eq!(replies.last().unwrap()["turnId"], sent["turnId"]);
         // A logged input alone could time out without being consumed by the
         // production bridge. Require its matching acceptance response too.
@@ -65,11 +68,9 @@ async fn running_claude_stop_reads_real_core_policy_after_revoke_and_grant() {
         let ack = accepted.iter().find(|row| &row["id"] == reply_id).expect("matching bridge acknowledgment");
         assert_eq!(ack["result"]["accepted"], true);
         until(|| ws.store.agent("claude-policy").unwrap().status != "working").await;
-        if !required {
-            let home: Value = client.get(format!("http://127.0.0.1:{port}/api/home"))
-                .header("X-Yuzuno-Client", "desktop").send().await.unwrap().json().await.unwrap();
-            assert_eq!(home["projects"][0]["missing"], json!([]));
-        }
+        let home: Value = client.get(format!("http://127.0.0.1:{port}/api/home"))
+            .header("X-Yuzuno-Client", "desktop").send().await.unwrap().json().await.unwrap();
+        assert_eq!(home["projects"][0]["missing"], json!([]), "no Turn is marked as missing an update");
     }
     ws.close_agent("claude-policy").await.unwrap();
     serving.abort();

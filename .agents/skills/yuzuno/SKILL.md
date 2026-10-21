@@ -61,8 +61,9 @@ Report what is true, in separate terms: result submitted, review passed, merged,
 
 ## Keeping the Project Brief
 
-- Read `brief_get` to learn your Project's current `you.capabilities`, when the connected Core provides it. Only `requiresTurnUpdate:true` requires an accepted `brief_update` each Turn; pass the read `version` as `expectedVersion`, or send `noChange:true` when nothing changed. Ask-only members have no per-turn update obligation. If capabilities are absent, follow that Core's existing turn rules; source code or a newer skill does not switch an older Core to the new policy.
-- The user selects Home content editors per Project. `editContent:false` with `writeOwnAsk:true` means Ask-only: submit valid Asks when you need an answer, maintain/resolve your own Asks, or send optional `noChange`. `writeOwnAsk:false` means read-only, including no `noChange` writes. Do not invent questions to satisfy a reminder. Internal progress and delivery belong in tasks and mail. Never grant yourself access.
+- Nothing requires a Brief update each Turn: update it when something changed. Read `brief_get` for your Project's `you.capabilities`; `keys: []` lists the sections without their bodies and `keys: ["plan"]` reads just those. Pass its `version` as `expectedVersion`. On Cores up to 2026.10.19-core.12, `requiresTurnUpdate:true` still asks for an accepted `brief_update` (or `noChange:true`) every Turn; follow what your connected Core reports.
+- Where an outcome goes: a lasting finding, decision or stage result in a short report linked to its task and sources; the current state in a status; a choice for the user in an Ask. `result_publish` shows only in this Turn and never reaches Home. A content editor sees this as `homeHint` in `brief_get`, in task results it submits or receives, and in `result_publish`: advice, not a request to write. A status past its `validFor` (`you.staleStatus`) is refreshed when there are new facts, not to look current.
+- The user selects Home content editors per Project. `editContent:false` with `writeOwnAsk:true` means Ask-only: submit valid Asks when you need an answer and maintain or resolve your own Asks; reports and status are not yours to write. `writeOwnAsk:false` means read-only. Do not invent questions to satisfy a reminder. Internal progress and delivery belong in tasks and mail. Never grant yourself access.
 - The tool descriptions and Core's rules are a summary. Before your first section in a session, read `brief_guide`: pass a `part`, or nothing for the whole guide. It has the section kinds, components, limits and errors, from the same contract Core checks sections with.
 
 ### Write for Home
@@ -93,7 +94,7 @@ A development overview might show the running release and two active outcomes; a
   - Resolve an action the reply authorizes only after that action is confirmed done, with its result on the existing task or a Brief section. A green CI or a finished task is not that action.
   - While the action runs, or after it fails, keep the ask replied and report progress on the task or Brief: `edit` keeps it replied, while `put` asks again. Ask again only when the user has something new to decide.
   - A reply executes nothing by itself. Act on what the user has authorized, an explicit reply included, without asking for it again; never infer a retry, merge or wider permission from an answer that does not grant it.
-- If Core holds your Turn for a Brief update, re-read your capabilities: permissions may change during a session. When still required, make the update and end without another message. If a stale reminder conflicts with current Ask-only permission, do not write unauthorized content; report the mismatch through the task or requester.
+- On a Core that still holds a Turn for a Brief update (up to 2026.10.19-core.12), re-read your capabilities: permissions may change during a session. When still required, make the update and end without another message. If a stale reminder conflicts with current Ask-only permission, do not write unauthorized content; report the mismatch through the task or requester.
 
 ## When the tools disagree with your instructions
 

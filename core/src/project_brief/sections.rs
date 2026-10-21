@@ -48,7 +48,17 @@ impl Row {
 }
 
 fn read(db: &Connection, condition: &str, values: impl rusqlite::Params) -> Result<Vec<Row>> {
-    let mut query = db.prepare(&format!("SELECT {COLUMNS} FROM project_brief_sections WHERE {condition}"))?;
+    read_columns(db, COLUMNS, condition, values)
+}
+
+/// A section's data without its body and attachments: what an index needs.
+/// SQLite extracts these, so a large body is never read into Core.
+const INDEX_COLUMNS: &str = "seq,project_id,key,live,kind,version,owner_id,owner_name,\
+json_object('title',data->>'$.title','status',data->'$.status','time',data->'$.time'),ask_state,ask_since,\
+replied_at,reply_text,deferred_until,updated_at,updated_turn_id,history_reason,history_at,COALESCE(lineage,seq)";
+
+fn read_columns(db: &Connection, columns: &str, condition: &str, values: impl rusqlite::Params) -> Result<Vec<Row>> {
+    let mut query = db.prepare(&format!("SELECT {columns} FROM project_brief_sections WHERE {condition}"))?;
     let rows = query.query_map(values, |r| {
         Ok((
             Row {
@@ -90,6 +100,17 @@ pub(super) fn history_cutoff() -> String {
 /// changes keeps its place.
 pub(super) fn live(db: &Connection, project: &str) -> Result<Vec<Row>> {
     read(db, "project_id=?1 AND live=1 ORDER BY seq", [project])
+}
+
+/// The live sections without their bodies (see INDEX_COLUMNS).
+pub(super) fn live_index(db: &Connection, project: &str) -> Result<Vec<Row>> {
+    read_columns(db, INDEX_COLUMNS, "project_id=?1 AND live=1 ORDER BY seq", [project])
+}
+
+/// The live sections with these keys, in full.
+pub(super) fn live_keys(db: &Connection, project: &str, keys: &[String]) -> Result<Vec<Row>> {
+    read(db, "project_id=?1 AND live=1 AND key IN (SELECT value FROM json_each(?2)) ORDER BY seq",
+        params![project, serde_json::to_string(keys)?])
 }
 
 pub(super) fn live_key(db: &Connection, project: &str, key: &str) -> Result<Option<Row>> {
@@ -216,12 +237,30 @@ fn public_attachment(stored: &Value) -> Value {
     shown
 }
 
-fn stale(status: &Value, now: DateTime<Utc>) -> bool {
+pub(super) fn stale(status: &Value, now: DateTime<Utc>) -> bool {
     let as_of = status["asOf"].as_str().and_then(|at| DateTime::parse_from_rfc3339(at).ok());
     match (as_of, status["validFor"].as_i64()) {
         (Some(as_of), Some(valid)) => as_of.with_timezone(&Utc) + chrono::Duration::seconds(valid) < now,
         _ => true,
     }
+}
+
+/// One section in brief_get's index: what it is and its state, no body.
+pub(super) fn index_json(row: &Row, owner: &Owner, seen: Option<&(i64, String)>, now: DateTime<Utc>) -> Value {
+    let mut entry = json!({"key":row.key,"kind":row.kind,"title":row.data["title"],"version":row.version,
+        "owner":{"agentId":row.owner_id,"name":owner.name,"state":owner.state},"updatedAt":row.updated_at,
+        "seen":seen.map(|(version, at)| json!({"version":version,"at":at}))});
+    if row.kind == "ask" {
+        entry["ask"] = json!({"state":row.ask_state.as_deref().unwrap_or("open"),"repliedAt":row.replied_at});
+    }
+    if row.kind == "status" {
+        let status = &row.data["status"];
+        entry["status"] = json!({"asOf":status["asOf"],"validFor":status["validFor"],"stale":stale(status, now)});
+    }
+    if row.data["time"].is_object() {
+        entry["time"] = row.data["time"].clone();
+    }
+    entry
 }
 
 /// The Section shape of web/src/home/types.ts. `refs` are its Live

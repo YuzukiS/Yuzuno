@@ -68,8 +68,9 @@ fn a_task_writes_receipt_is_its_identity_version_and_the_activity_it_recorded() 
 
     let submitted = json!({"task":task(),"activity":{"seq":42,"kind":"result","at":"now"},
         "message":{"id":"m","seq":9,"dispatchId":"d1","recipient":{"kind":"agent","id":"l","name":"Lead"},
-            "delivery":{"state":"pending","attempts":[]},"body":"x".repeat(3000)}});
+            "delivery":{"state":"pending","attempts":[]},"body":"x".repeat(3000)},"homeHint":"Home: a report."});
     let result = answer("task_submit_result", submitted.clone(), None);
+    assert_eq!(result["homeHint"], "Home: a report.", "a content editor's advice survives the short receipt");
     assert_eq!(result["task"]["result"], json!({"id":"r1","dispatchId":"d1","notification":{"state":"pending","messageId":"m"}}));
     assert_eq!(result["message"], json!({"id":"m","seq":9,"dispatchId":"d1","recipient":{"kind":"agent","id":"l","name":"Lead"},
         "delivery":{"state":"pending"}}));
