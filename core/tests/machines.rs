@@ -384,6 +384,17 @@ async fn health_names_the_product_and_keeps_the_identifier_released_desktops_req
 }
 
 #[tokio::test]
+async fn a_core_outside_a_managed_installation_offers_the_desktop_no_start() {
+    // T-171: only an installed release records how it starts.
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(tmp.path().join("data"), tmp.path().to_string_lossy().into_owned(), "codex".into()).unwrap();
+    let router = server::router_on_port(ws, tmp.path().join("assets"), 4317);
+    let (status, profile) = request(&router, "GET", "/api/desktop/start-profile", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(profile, json!({"available":false,"reason":"notManaged"}));
+}
+
+#[tokio::test]
 async fn while_an_update_drains_a_machine_cannot_get_a_setting_that_keeps_older_cores_out() {
     // The release being replaced may still have to take the Workspace back
     // (an automatic rollback): nothing may close it to that release meanwhile.

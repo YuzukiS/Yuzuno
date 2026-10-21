@@ -49,18 +49,174 @@ pub(crate) fn configured_url(
     startup_url(launch_url(args, env), None)
 }
 
-/// What is kept of the Core last connected from the connection page.
-pub fn saved_record(core: &Url) -> String {
-    serde_json::json!({ "coreUrl": core.as_str() }).to_string()
+/// What is kept of the Core last connected from the connection page, and
+/// where it is installed in WSL when it said so (T-171).
+pub fn saved_record(core: &Url, start: Option<&StartProfile>) -> String {
+    let mut record = serde_json::json!({ "coreUrl": core.as_str() });
+    if let Some(start) = start {
+        record["start"] = serde_json::json!({
+            "wslDistro": start.wsl_distro,
+            "user": start.user,
+            "installDir": start.install_dir,
+            "workspaceId": start.workspace_id,
+        });
+    }
+    record.to_string()
+}
+
+fn saved_json(bytes: &[u8]) -> Option<serde_json::Value> {
+    if bytes.len() > 4096 {
+        return None;
+    }
+    serde_json::from_slice(bytes).ok()
 }
 
 /// The Core in a saved record, if it is one this app would accept now.
 pub fn saved_core(bytes: &[u8]) -> Option<Url> {
-    if bytes.len() > 4096 {
-        return None;
+    parse_core_url(saved_json(bytes)?["coreUrl"].as_str()?).ok()
+}
+
+/// The saved Core's start profile, checked again as when it was saved.
+pub fn saved_start(bytes: &[u8]) -> Option<StartProfile> {
+    let record = saved_json(bytes)?;
+    let core = parse_core_url(record["coreUrl"].as_str()?).ok()?;
+    let start = &record["start"];
+    StartProfile::new(
+        &core,
+        start["wslDistro"].as_str()?,
+        start["user"].as_str()?,
+        start["installDir"].as_str()?,
+        start["workspaceId"].as_str()?,
+    )
+}
+
+/// Where a Core on this computer's WSL is installed, as that Core said when
+/// the user connected to it (`/api/desktop/start-profile`), so the connection
+/// page can start it again (T-171). Only a loopback Core has one; each part
+/// is checked, since it becomes part of one fixed `wsl.exe` command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartProfile {
+    /// The Core's origin; its port is the one the Core starts on.
+    pub core: Url,
+    pub wsl_distro: String,
+    pub user: String,
+    pub install_dir: String,
+    pub workspace_id: String,
+}
+
+impl StartProfile {
+    pub fn new(core: &Url, wsl_distro: &str, user: &str, install_dir: &str, workspace_id: &str) -> Option<Self> {
+        let named = |text: &str, max: usize, more: &[char]| {
+            !text.is_empty()
+                && text.len() <= max
+                && text.chars().all(|c| c.is_ascii_alphanumeric() || more.contains(&c))
+        };
+        let path_ok = install_dir.starts_with('/')
+            && install_dir.len() <= 512
+            && install_dir.chars().all(|c| c.is_ascii_alphanumeric() || "._-+@/".contains(c))
+            && install_dir[1..].split('/').all(|part| !matches!(part, "" | "." | ".."))
+            // Windows folders seen from WSL: not a Linux installation.
+            && !install_dir.starts_with("/mnt/");
+        let ok = is_loopback(core)
+            && core.port_or_known_default().is_some()
+            && named(wsl_distro, 64, &['.', '_', '-'])
+            && !wsl_distro.starts_with(['-', '.'])
+            && named(user, 32, &['_', '-'])
+            && !user.starts_with('-')
+            && path_ok
+            && named(workspace_id, 64, &['-', '_']);
+        ok.then(|| Self {
+            core: core.clone(),
+            wsl_distro: wsl_distro.into(),
+            user: user.into(),
+            install_dir: install_dir.into(),
+            workspace_id: workspace_id.into(),
+        })
     }
-    let record: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    parse_core_url(record["coreUrl"].as_str()?).ok()
+
+    /// From a Core's start-profile answer, for the Core at `core` whose
+    /// health named `workspace_id`; None when it offers none or it differs.
+    pub fn offered(core: &Url, workspace_id: &str, profile: &serde_json::Value) -> Option<Self> {
+        if profile["available"] != true
+            || profile["workspaceId"] != workspace_id
+            || profile["port"].as_u64() != core.port_or_known_default().map(u64::from)
+        {
+            return None;
+        }
+        Self::new(
+            core,
+            profile["wslDistro"].as_str()?,
+            profile["user"].as_str()?,
+            profile["installDir"].as_str()?,
+            workspace_id,
+        )
+    }
+
+    /// The arguments to `wsl.exe`: run this installation's start entry as
+    /// its user, in its distribution, with nothing else.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn wsl_arguments(&self) -> Vec<String> {
+        let port = self.core.port_or_known_default().unwrap_or(4317).to_string();
+        let entry = format!("{}/updates/start", self.install_dir);
+        let arguments: [&str; 13] = [
+            "--distribution",
+            &self.wsl_distro,
+            "--user",
+            &self.user,
+            "--exec",
+            &entry,
+            "start",
+            "--install-dir",
+            &self.install_dir,
+            "--port",
+            &port,
+            "--workspace-id",
+            &self.workspace_id,
+        ];
+        arguments.map(str::to_owned).to_vec()
+    }
+}
+
+/// What a start in WSL came to.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Started {
+    /// Started, or it was already running: connect.
+    Ready,
+    /// Started but not answering yet; nothing was stopped.
+    Slow,
+}
+
+/// Reads the start entry's one-line JSON result (`yuzuno-update-helper
+/// start`), or says why WSL did not run it. `output` is what `wsl.exe`
+/// printed on both streams.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn start_result(profile: &StartProfile, output: &str) -> Result<Started, String> {
+    let result = output
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok().filter(|v| v["state"].is_string()));
+    let Some(result) = result else {
+        let said = output.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("no output");
+        return Err(format!(
+            "WSL could not run Yuzuno's start in {}: {}. Start Core in WSL yourself, or check that the distribution and installation still exist.",
+            profile.wsl_distro,
+            shortened(said, 240)
+        ));
+    };
+    let message = shortened(result["message"].as_str().unwrap_or(""), 300);
+    match result["state"].as_str().unwrap_or("") {
+        "started" | "running" => Ok(Started::Ready),
+        "starting" => Ok(Started::Slow),
+        "refused" if result["code"] == "noRecord" => Err(format!(
+            "{message} Then this button can start it."
+        )),
+        "failed" if result["code"] == "exited" => {
+            let log = result["log"].as_str().unwrap_or("").trim();
+            let last = log.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("");
+            Err(format!("Core stopped while starting. {}", shortened(last, 300)).trim_end().to_owned())
+        }
+        _ => Err(if message.is_empty() { "Core could not be started.".into() } else { message }),
+    }
 }
 
 pub fn parse_core_url(input: &str) -> Result<Url, String> {
@@ -288,10 +444,101 @@ mod tests {
         );
     }
 
+    fn profile() -> StartProfile {
+        StartProfile::new(
+            &parse_core_url("http://127.0.0.1:4317").unwrap(),
+            "Ubuntu-24.04",
+            "ada",
+            "/home/ada/.local/share/yuzuno-core",
+            "4f9c2a1e-0b7d-4c55-9a51-2e0f6f1c3b8d",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_start_profile_is_kept_only_for_a_core_on_this_computer_that_offered_one() {
+        let core = parse_core_url("http://127.0.0.1:4317").unwrap();
+        let workspace = "4f9c2a1e-0b7d-4c55-9a51-2e0f6f1c3b8d";
+        let offered = serde_json::json!({"available":true,"wslDistro":"Ubuntu-24.04","user":"ada",
+            "installDir":"/home/ada/.local/share/yuzuno-core","port":4317,"workspaceId":workspace});
+        assert_eq!(StartProfile::offered(&core, workspace, &offered), Some(profile()));
+        // Saved and read back with the Core it belongs to.
+        let saved = saved_record(&core, Some(&profile()));
+        assert_eq!(saved_start(saved.as_bytes()), Some(profile()));
+        assert_eq!(saved_core(saved.as_bytes()).as_ref(), Some(&core));
+        // Older records and Cores without one.
+        assert_eq!(saved_start(saved_record(&core, None).as_bytes()), None);
+        assert_eq!(saved_start(br#"{"coreUrl":"http://127.0.0.1:4317"}"#), None);
+        let mut refused = Vec::new();
+        for (name, change) in [
+            ("unavailable", serde_json::json!({"available":false})),
+            ("another workspace", serde_json::json!({"workspaceId":"other"})),
+            ("another port", serde_json::json!({"port":4318})),
+            ("an option as distro", serde_json::json!({"wslDistro":"--system"})),
+            ("a spaced distro", serde_json::json!({"wslDistro":"My Distro"})),
+            ("an option as user", serde_json::json!({"user":"-root"})),
+            ("a relative folder", serde_json::json!({"installDir":"home/ada/core"})),
+            ("a parent folder", serde_json::json!({"installDir":"/home/ada/../root/core"})),
+            ("a doubled slash", serde_json::json!({"installDir":"/home/ada//core"})),
+            ("a shell character", serde_json::json!({"installDir":"/home/ada/core;rm"})),
+            ("a space", serde_json::json!({"installDir":"/home/ada/my core"})),
+            ("a Windows folder", serde_json::json!({"installDir":"/mnt/c/Users/Public/core"})),
+        ] {
+            let mut profile = offered.clone();
+            for (key, value) in change.as_object().unwrap() {
+                profile[key] = value.clone();
+            }
+            if StartProfile::offered(&core, workspace, &profile).is_none() {
+                refused.push(name);
+            }
+        }
+        assert_eq!(refused.len(), 12, "{refused:?}");
+        // A Core reached at another address never gets one.
+        let tunnel = parse_core_url("https://core.example.com").unwrap();
+        assert_eq!(StartProfile::offered(&tunnel, workspace, &offered), None);
+        // A saved profile that would not be accepted now is not used.
+        let mut stale: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        stale["start"]["installDir"] = "/mnt/c/core".into();
+        assert_eq!(saved_start(stale.to_string().as_bytes()), None);
+    }
+
+    #[test]
+    fn the_start_runs_one_fixed_command_in_the_cores_distribution() {
+        assert_eq!(
+            profile().wsl_arguments(),
+            [
+                "--distribution", "Ubuntu-24.04", "--user", "ada", "--exec",
+                "/home/ada/.local/share/yuzuno-core/updates/start", "start",
+                "--install-dir", "/home/ada/.local/share/yuzuno-core",
+                "--port", "4317", "--workspace-id", "4f9c2a1e-0b7d-4c55-9a51-2e0f6f1c3b8d",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_start_result_is_read_from_its_json_line() {
+        let p = profile();
+        assert_eq!(start_result(&p, r#"{"state":"started","pid":12,"releaseId":"r"}"#), Ok(Started::Ready));
+        assert_eq!(start_result(&p, "noise\n{\"state\":\"running\"}\n"), Ok(Started::Ready));
+        assert_eq!(start_result(&p, r#"{"state":"starting","pid":12}"#), Ok(Started::Slow));
+        let said = |output: &str| start_result(&p, output).unwrap_err();
+        assert!(said(r#"{"state":"refused","code":"portInUse","message":"Port 4317 is used by something other than Yuzuno Core."}"#)
+            .starts_with("Port 4317 is used"));
+        assert!(said(r#"{"state":"refused","code":"noRecord","message":"This installation has not recorded how its Core starts. Start Core in WSL once with this version."}"#)
+            .ends_with("Then this button can start it."));
+        let exited = said(r#"{"state":"failed","code":"exited","message":"Core exited before it answered (exit status: 1).","log":"loading\nError: Cannot bind Core's loopback port\n"}"#);
+        assert_eq!(exited, "Core stopped while starting. Error: Cannot bind Core's loopback port");
+        // WSL itself could not run it: its own words, shortened.
+        let missing = said("There is no distribution with the supplied name.\r\nError code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND\r\n");
+        assert!(missing.contains("Ubuntu-24.04") && missing.contains("There is no distribution"), "{missing}");
+        assert!(said("").contains("no output"));
+        assert!(said(&"x".repeat(1000)).len() < 600);
+    }
+
     #[test]
     fn the_core_last_connected_opens_unless_the_launch_names_one() {
         let saved =
-            saved_core(saved_record(&parse_core_url("http://127.0.0.1:5317").unwrap()).as_bytes());
+            saved_core(saved_record(&parse_core_url("http://127.0.0.1:5317").unwrap(), None).as_bytes());
         assert_eq!(
             saved.as_ref().map(Url::as_str),
             Some("http://127.0.0.1:5317/")

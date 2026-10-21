@@ -168,6 +168,15 @@ async fn run(
         updates::control::listen(updates.clone())?;
         updates.monitor();
     }
+    // How this Core started, so the desktop app can start it again (T-171).
+    if let Ok((layout, running)) = updates.managed() {
+        let recorded = updates.runtime_read(|runtime| runtime.workspace_id()).await.and_then(|workspace| {
+            updates::start::record(layout, running, &updates.launch, &workspace, |name| std::env::var(name).ok())
+        });
+        if let Err(error) = recorded {
+            eprintln!("Could not record how Core started; the desktop app cannot start it: {error:#}");
+        }
+    }
     ws.start_remote_recovery();
     ws.start_claude_quota_resume();
     let probe = Arc::clone(&ws);

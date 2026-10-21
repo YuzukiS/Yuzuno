@@ -2,28 +2,69 @@ const form = document.querySelector('#connection-form');
 const address = document.querySelector('#core-url');
 const button = document.querySelector('#connect-button');
 const message = document.querySelector('#connection-message');
+const startRow = document.querySelector('#start-row');
+const startButton = document.querySelector('#start-button');
 const invoke = window.__TAURI__?.core?.invoke;
+
+// The saved Core this app may start in WSL ({ coreUrl, distro }), offered
+// once connecting to that same address has failed.
+let startable = null;
+let unreachable = false;
 
 function show(text, error = false) {
   message.textContent = text;
   message.dataset.error = String(error);
 }
 
+function sameCore(value, coreUrl) {
+  try {
+    return new URL(value.trim()).origin === new URL(coreUrl).origin;
+  } catch {
+    return false;
+  }
+}
+
+function showStart() {
+  startRow.hidden = !(startable && unreachable && sameCore(address.value, startable.coreUrl));
+}
+
+function busy(on) {
+  button.disabled = on;
+  address.disabled = on;
+  startButton.disabled = on;
+}
+
 async function connect() {
   if (button.disabled) return;
-  button.disabled = true;
-  address.disabled = true;
+  busy(true);
   show('Finding your workspace…');
   try {
     const target = await invoke('connect_core', { url: address.value });
     show('Found it. Opening your workspace…');
     window.location.replace(target);
   } catch (error) {
+    unreachable = true;
     show(String(error), true);
     button.textContent = 'Try again ↗';
   } finally {
-    button.disabled = false;
-    address.disabled = false;
+    busy(false);
+    showStart();
+  }
+}
+
+async function start() {
+  if (startButton.disabled || !startable) return;
+  busy(true);
+  show(`Starting Core in WSL (${startable.distro})… This can take a minute.`);
+  try {
+    const target = await invoke('start_core', { url: address.value });
+    show('Core is running. Opening your workspace…');
+    window.location.replace(target);
+  } catch (error) {
+    show(String(error), true);
+  } finally {
+    busy(false);
+    showStart();
   }
 }
 
@@ -31,6 +72,10 @@ form.addEventListener('submit', (event) => {
   event.preventDefault();
   if (invoke) void connect();
 });
+startButton.addEventListener('click', () => {
+  if (invoke) void start();
+});
+address.addEventListener('input', showStart);
 
 async function init() {
   if (!invoke) {
@@ -44,6 +89,10 @@ async function init() {
   try {
     const info = await invoke('connection_info');
     address.value = info.coreUrl;
+    if (info.startDistro) {
+      startable = { coreUrl: info.coreUrl, distro: info.startDistro };
+      startButton.textContent = `Start Core in WSL (${info.startDistro})`;
+    }
     if (info.error) show(info.error, true);
     else if (info.autoConnect) await connect();
     else show('Choose a workspace, then connect.');

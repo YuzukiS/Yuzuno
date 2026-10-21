@@ -36,6 +36,16 @@ enum Command {
         #[arg(long)]
         operation: String,
     },
+    /// Start this installation's Core as it last started, unless it already
+    /// answers on its port. Prints one JSON result; supervises nothing.
+    Start {
+        #[arg(long)]
+        install_dir: PathBuf,
+        #[arg(long)]
+        port: u16,
+        #[arg(long)]
+        workspace_id: String,
+    },
 }
 fn main() -> anyhow::Result<()> {
     match Options::parse().command {
@@ -64,5 +74,18 @@ fn main() -> anyhow::Result<()> {
             install_dir,
             operation,
         } => yuzuno_workspace::updates::helper::run(&install_dir, &operation),
+        Command::Start {
+            install_dir,
+            port,
+            workspace_id,
+        } => {
+            use yuzuno_workspace::updates::start;
+            let outcome = start::start(&install_dir, port, &workspace_id, start::Budget::default());
+            println!("{outcome}");
+            if !matches!(outcome["state"].as_str(), Some("started" | "running" | "starting")) {
+                std::process::exit(3);
+            }
+            Ok(())
+        }
     }
 }
