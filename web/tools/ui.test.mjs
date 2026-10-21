@@ -5064,3 +5064,75 @@ test("a skill chosen in a Codex Agent's composer is a chip its message invokes; 
     page.close();
   }
 });
+
+// T-29: Yuzuno's controls for what the CLI's /permissions, /fork, /new,
+// /resume, /status and /usage are for. Each opens that part of Yuzuno on
+// Send, as /model opens settings: nothing is sent or created until the user
+// acts there, and the draft stays.
+test("a Codex Agent's /permissions, /fork, /new, /resume and /status open their part of Yuzuno and send nothing", async () => {
+  const page = await mount({ harness: "codex", agentFields: { cwd: "/work/mori" } });
+  try {
+    const dialog = () => page.document.querySelector('[role="dialog"]');
+    const closeDialog = async () => {
+      dialog().dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await pause(); await pause();
+    };
+    let composer = await sendDraft(page, "/permissions");
+    await until(() => chipGroup(page, "Model"), "Agent settings to open");
+    assert.match(page.document.body.textContent, /Agent settings are open, with this Agent's permissions/);
+    assert.equal(composerText(composer), "/permissions", "the draft stays");
+    await closeDialog();
+
+    await sendDraft(page, "/fork");
+    await until(() => page.document.querySelector('[title="Continue in a Codex fork"]'), "Fork to open");
+    await closeDialog();
+
+    await sendDraft(page, "/new");
+    await until(() => chipGroup(page, "Harness"), "New agent to open");
+    assert.equal(chosen(page, "Harness"), "codex");
+    assert.equal([...dialog().querySelectorAll("label")].find((l) => /Working folder/.test(l.textContent)).querySelector("input").value,
+      "/work/mori", "this Agent's folder, not the workspace default");
+    await closeDialog();
+
+    await sendDraft(page, "/resume");
+    await until(() => [...page.document.querySelectorAll('[aria-pressed="true"]')].some((b) => b.textContent === "Existing Codex session"),
+      "Existing Codex session to open");
+    await closeDialog();
+
+    page.scrollTargets.length = 0;
+    composer = await sendDraft(page, "/status");
+    await until(() => page.document.querySelector("aside.inspector"), "the context panel");
+    await until(() => page.scrollTargets.some((t) => t.id === "agent-plan-usage"), "its plan usage in view");
+
+    // A word after one of these is not the command: it says so, and keeps the draft.
+    composer = await sendDraft(page, "/fork now");
+    assert.match(page.document.body.textContent, /\/fork takes nothing after it here/);
+    assert.equal(composerText(composer), "/fork now");
+    assert.deepEqual(posts(page), [], "nothing was sent, saved or created");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a Claude Agent's /new and /resume open New agent for Claude; its /status is Claude Code's own and goes as a message", async () => {
+  const page = await mount({ harness: "claude" });
+  try {
+    await sendDraft(page, "/new");
+    await until(() => chipGroup(page, "Harness"), "New agent to open");
+    assert.equal(chosen(page, "Harness"), "claude");
+    page.document.querySelector('[role="dialog"]').dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await pause(); await pause();
+    await sendDraft(page, "/resume");
+    await until(() => [...page.document.querySelectorAll('[aria-pressed="true"]')].some((b) => b.textContent === "Existing Claude session"),
+      "Existing Claude session to open");
+    page.document.querySelector('[role="dialog"]').dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await pause(); await pause();
+    assert.deepEqual(posts(page), []);
+    await sendDraft(page, "/status");
+    assert.deepEqual(posts(page), ["/api/agents/a/messages"]);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});

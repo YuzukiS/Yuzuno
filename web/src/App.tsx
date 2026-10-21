@@ -86,7 +86,7 @@ import type {
   WorkSummary,
 } from "./types";
 import { UpdateBanner, WorkspaceUpdatesHost } from "./WorkspaceUpdates";
-import { RemoteCreateAgent } from "./RemoteCreateAgent";
+import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
 import { MessageLinks, messageLinkHref, parseMessageLink, type MessageLink, type MessageLinkApi } from "./deep-link";
@@ -262,7 +262,16 @@ export function App() {
   const [updatesNeedReload, setUpdatesNeedReload] = useState(false);
   const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
   // The composer's `/model`: opens this Agent's settings, never a prompt.
-  const [modelRequest, setModelRequest] = useState<{ model: string; nonce: number } | null>(null);
+  const [modelRequest, setModelRequest] = useState<{ model: string; nonce: number; kind?: "permissions" } | null>(null);
+  // What /new and /resume open New agent with (T-29); null is its usual start.
+  const [createInitial, setCreateInitial] = useState<CreateInitial | null>(null);
+  // /status and /usage: the context panel, at this Agent's plan usage.
+  const [usageFocus, setUsageFocus] = useState(0);
+  useEffect(() => {
+    if (!usageFocus) return;
+    const frame = requestAnimationFrame(() => document.getElementById("agent-plan-usage")?.scrollIntoView({ block: "nearest" }));
+    return () => cancelAnimationFrame(frame);
+  }, [usageFocus]);
   const [forkOpen, setForkOpen] = useState(false);
   const [turnDockEngaged, setTurnDockEngaged] = useState(false);
   const [inspector, setInspector] = useState(true);
@@ -1426,6 +1435,35 @@ export function App() {
         setModelRequest({ model: control.args, nonce: Date.now() });
         return;
       }
+      // The rest open their part of Yuzuno, as the CLI command opens its
+      // own: nothing is sent, and the draft stays until the user acts there.
+      if (control && control.command !== "compact" && control.args)
+        throw new Error(`/${control.command} takes nothing after it here. Send /${control.command} alone; your draft is kept.`);
+      if (control?.command === "permissions") {
+        setModelRequest({ model: "", nonce: Date.now(), kind: "permissions" });
+        return;
+      }
+      if (control?.command === "fork") {
+        setForkOpen(true);
+        return;
+      }
+      if (control?.command === "new" || control?.command === "resume") {
+        const claudeAgent = agent.harness === "claude";
+        setCreateInitial(control.command === "new"
+          ? { nonce: Date.now(), mode: "new", harness: claudeAgent ? "claude" : "codex", machineId: agent.remote?.machine.id || "local",
+            cwd: agent.cwd, projectId: agent.projectId || "" }
+          : { nonce: Date.now(), mode: claudeAgent ? "claude" : "existing" });
+        setCreateOpen(true);
+        return;
+      }
+      if (control?.command === "status" || control?.command === "usage") {
+        if (phone) {
+          setPhoneInspector(true);
+          setPhoneList(false);
+        } else setInspector(true);
+        setUsageFocus(Date.now());
+        return;
+      }
       if (control?.command === "compact") {
         if (control.args) throw new Error("Codex's own compaction takes no instructions. Send /compact alone; your draft is kept.");
         await post(`/agents/${encodeURIComponent(target)}/compact`);
@@ -2022,7 +2060,9 @@ export function App() {
                   disabled={previewMode || closed}
                   onOpenChange={setAgentSettingsOpen}
                   request={modelRequest}
-                  onRequestOpened={() => setNotice("Model settings are open. A change applies from this Agent's next turn.")}
+                  onRequestOpened={() => setNotice(modelRequest?.kind === "permissions"
+                    ? "Agent settings are open, with this Agent's permissions. A change applies from its next turn."
+                    : "Model settings are open. A change applies from this Agent's next turn.")}
                   onSaved={() => {
                     refresh();
                     setNotice(
@@ -2960,9 +3000,11 @@ export function App() {
       )}
       <RemoteCreateAgent
         open={createOpen}
+        initial={createInitial}
         close={() => {
           setCreateOpen(false);
           setCreateProject(null);
+          setCreateInitial(null);
         }}
         defaultCwd={workspace?.defaultCwd || ""}
         opencode={!!workspace?.opencode?.enabled}

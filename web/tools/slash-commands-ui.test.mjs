@@ -133,11 +133,11 @@ test("typing / lists this Agent's commands; arrows choose, Enter fills in the na
   const p = page({ a1: ready(catalog) });
   try {
     p.type("/");
-    await until(() => p.options().length === 6, "the Agent's commands");
+    await until(() => p.options().length === 9, "the Agent's commands");
     assert.deepEqual(p.calls, ["/api/agents/a1/claude/commands"]);
     assert.deepEqual(p.options().map((o) => [o.name, o.source]), [
       ["/compact", "Claude Code"], ["/context", "Claude Code"], ["/usage", "Claude Code"], ["/yuzuno", "Skill"], ["/expo:expo-router", "Command"],
-      ["/model", "Yuzuno control"],
+      ["/model", "Yuzuno control"], ["/permissions", "Yuzuno control"], ["/new", "Yuzuno control"], ["/resume", "Yuzuno control"],
     ]);
     assert.equal(p.view().contentDOM.getAttribute("aria-expanded"), "true");
     p.type("co");
@@ -251,13 +251,13 @@ test("what Claude Code lists now shows on each opening; failures say so and leav
   const p = page(answers);
   try {
     p.type("/");
-    await until(() => p.options().length === 2, "first list");
+    await until(() => p.options().length === 5, "first list");
     p.key("Escape");
     answers.a1 = ready([...catalog.slice(0, 1), command("archify", "skill")], { source: "folder", skillsKnown: false });
     p.backspace();
     p.type("/");
-    await until(() => p.options().length === 3, "the new list");
-    assert.deepEqual(p.options().map((o) => o.source), ["Claude Code", "Skill", "Yuzuno control"]);
+    await until(() => p.options().length === 6, "the new list");
+    assert.deepEqual(p.options().map((o) => o.source), ["Claude Code", "Skill", ...Array(4).fill("Yuzuno control")]);
     assert.match(p.notes().join(" "), /for this folder/);
     p.key("Escape");
     answers.a1 = { state: "unavailable", reason: "initializing" };
@@ -291,8 +291,8 @@ test("an answer for another Agent never shows in this one's list", async () => {
     await sleep(50);
     assert.equal(p.menu(), null, "a1's answer does not open a2's list");
     p.type("/");
-    await until(() => p.options().length === 2, "a2's own list");
-    assert.deepEqual(p.options().map((o) => o.name), ["/only-a2", "/model"]);
+    await until(() => p.options().length === 5, "a2's own list");
+    assert.deepEqual(p.options().map((o) => o.name), ["/only-a2", "/model", "/permissions", "/new", "/resume"]);
     // Back to a1: its draft starts with "/", but nothing opens until typed.
     p.w.show({ agentId: "a1", draft: p.w.textDraft("/") });
     await sleep(30);
@@ -334,10 +334,12 @@ test("a Codex Agent lists Yuzuno's controls and the skills its Codex lists; choo
   try {
     p.w.show({ slash: "codex" });
     p.type("/");
-    await until(() => p.options().length === 5, "controls and skills");
+    await until(() => p.options().length === 11, "controls and skills");
     assert.deepEqual(p.calls, ["/api/agents/a1/codex/skills"], "read from this Agent's own Codex");
     assert.deepEqual(p.options().map((o) => [o.name, o.source, o.hint]), [
-      ["/compact", "Yuzuno control", ""], ["/model", "Yuzuno control", "<model>"],
+      ["/compact", "Yuzuno control", ""], ["/model", "Yuzuno control", "<model>"], ["/permissions", "Yuzuno control", ""],
+      ["/fork", "Yuzuno control", ""], ["/new", "Yuzuno control", ""], ["/resume", "Yuzuno control", ""], ["/status", "Yuzuno control", ""],
+      ["/usage", "Yuzuno control", ""],
       ["$deploy", "Codex skill", "repo · skills/deploy"], ["$deploy", "Codex skill", "user · skills/deploy"], ["$review", "Codex skill", "repo · skills/review"],
     ], "two skills of one name show where each is");
     assert.equal(p.w.document.querySelector(".slash-menu [role=listbox]").getAttribute("aria-label"), "Codex controls and skills");
@@ -401,8 +403,8 @@ test("when a Codex Agent's skills cannot be listed, its controls stay and the li
     try {
       p.w.show({ slash: "codex" });
       p.type("/");
-      await until(() => p.options().length === 2 && why.test(p.notes().join(" ")), `controls and ${why}`);
-      assert.deepEqual(p.options().map((o) => o.name), ["/compact", "/model"]);
+      await until(() => p.options().length === 8 && why.test(p.notes().join(" ")), `controls and ${why}`);
+      assert.deepEqual(p.options().map((o) => o.name), ["/compact", "/model", "/permissions", "/fork", "/new", "/resume", "/status", "/usage"]);
     } finally {
       p.close();
     }
@@ -418,18 +420,18 @@ test("when a Codex Agent's skills cannot be listed, its controls stay and the li
   }
 });
 
-test("Claude Code's own /model becomes the settings control, listed once", async () => {
-  const p = page({ a1: ready([command("compact"), command("model"), command("context")]) });
+test("Claude Code's own /model, /permissions, /new and /resume become Yuzuno's controls, each listed once", async () => {
+  const p = page({ a1: ready([command("compact"), command("model"), command("context"), command("resume"), command("permissions")]) });
   try {
     p.type("/");
-    await until(() => p.options().length === 3, "the list");
-    assert.deepEqual(p.options().map((o) => [o.name, o.source]), [["/compact", "Claude Code"], ["/context", "Claude Code"], ["/model", "Yuzuno control"]]);
+    await until(() => p.options().length === 6, "the list");
+    assert.deepEqual(p.options().map((o) => [o.name, o.source]), [["/compact", "Claude Code"], ["/context", "Claude Code"], ["/model", "Yuzuno control"], ["/permissions", "Yuzuno control"], ["/new", "Yuzuno control"], ["/resume", "Yuzuno control"]]);
   } finally {
     p.close();
   }
 });
 
-test("only a draft that is exactly a control runs it: /model for Codex and Claude, /compact for Codex", async () => {
+test("only a draft that is exactly a control for its harness runs it", async () => {
   const p = page({});
   try {
     // Copied out of the page's realm so plain objects compare.
@@ -443,7 +445,16 @@ test("only a draft that is exactly a control runs it: /model for Codex and Claud
     // OpenCode's model is its own configuration; its drafts are messages.
     assert.equal(c("/model gpt-x", "opencode"), null);
     assert.equal(c("/compact", "opencode"), null);
-    for (const text of ["/modelx", "/compacting", "see /model", "use /compact later", "```\n/compact\n```", "//compact", "/ compact"]) {
+    // What opens a part of Yuzuno (T-29): for Codex all of them; for Claude
+    // those Claude Code has no better command for; none for OpenCode.
+    for (const name of ["permissions", "fork", "new", "resume", "status", "usage"]) {
+      assert.deepEqual(c(`/${name}`), { command: name, args: "" }, name);
+      assert.equal(c(`/${name}`, "opencode"), null, name);
+    }
+    assert.deepEqual(c("/fork later"), { command: "fork", args: "later" }, "App refuses what follows; the parser reports it");
+    for (const name of ["permissions", "new", "resume"]) assert.deepEqual(c(`/${name}`, "claude"), { command: name, args: "" }, name);
+    for (const name of ["fork", "status", "usage"]) assert.equal(c(`/${name}`, "claude"), null, `Claude Code's own /${name}, or none`);
+    for (const text of ["/modelx", "/compacting", "see /model", "use /compact later", "```\n/compact\n```", "//compact", "/ compact", "/constructor", "/toString"]) {
       assert.equal(c(text), null, text);
     }
   } finally {

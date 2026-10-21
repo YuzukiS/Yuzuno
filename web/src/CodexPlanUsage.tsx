@@ -297,7 +297,7 @@ export function CodexPlanUsage({
           <dd title={`${who}\n${source}`}>{who}</dd>
         </div>
       )}
-      <div className="codex-plan-usage">
+      <div className="codex-plan-usage" id="agent-plan-usage">
         <dt>Plan usage</dt>
         <dd>
           <div className="codex-plan-values" aria-live="polite">

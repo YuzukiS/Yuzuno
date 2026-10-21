@@ -38,8 +38,20 @@ export interface WorkspaceMachine {
   lastCheck?: MachineCheck | null;
 }
 
+/** How the dialog opens for /new and /resume (T-29): the tab, and for a
+ * new Agent the machine, folder, harness and project to start from. */
+export type CreateInitial = {
+  nonce: number;
+  mode: "new" | "existing" | "claude";
+  harness?: "codex" | "claude";
+  machineId?: string;
+  cwd?: string;
+  projectId?: string;
+};
+
 export function RemoteCreateAgent({
   open,
+  initial = null,
   close,
   defaultCwd,
   disabled,
@@ -49,6 +61,8 @@ export function RemoteCreateAgent({
   opencode = false,
 }: {
   open: boolean;
+  /** Where to start, once per opening (`nonce`); null is the usual start. */
+  initial?: CreateInitial | null;
   close: () => void;
   defaultCwd: string;
   disabled: boolean;
@@ -131,6 +145,22 @@ export function RemoteCreateAgent({
     if (id !== projectId || !cwdTyped.current) fillCwd(folderFor(machine, id));
     setProjectId(id);
   }, [open, initialProjectId]);
+
+  // After the effects above, so what /new or /resume asked for wins over
+  // the usual start: a folder given counts as one the user typed.
+  const startedFrom = useRef<number | null>(null);
+  useEffect(() => {
+    if (!open || !initial || startedFrom.current === initial.nonce) return;
+    startedFrom.current = initial.nonce;
+    setMode(initial.mode);
+    if (initial.harness) setHarness(initial.harness);
+    if (initial.machineId) setMachineId(initial.machineId);
+    if (initial.projectId !== undefined) setProjectId(initial.projectId);
+    if (initial.cwd) {
+      cwdTyped.current = true;
+      setCwd(initial.cwd);
+    }
+  }, [open, initial?.nonce]);
 
   useEffect(() => {
     if (!open || disabled || mode !== "new") return;
