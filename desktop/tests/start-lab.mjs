@@ -58,8 +58,9 @@ try {
     if (opened) await page.goto(opened.ok);
     result.url = page.url();
   } else if (step === 'refused') {
-    // The start is offered after connecting fails, and its error is shown.
-    if (!page.url().startsWith(page_)) await page.goto(page_);
+    // A fresh window opens the page at the embedded origin's root and
+    // connects by itself; the start is offered once that fails.
+    if (new URL(page.url()).origin !== new URL(page_).origin) await page.goto(page_);
     await page.getByText(/not reachable|Core returned HTTP|not a Yuzuno Core/).waitFor({ timeout: 30_000 });
     result.connectError = await status.textContent();
     result.startShown = await page.locator('#start-row').isVisible();

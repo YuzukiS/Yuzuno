@@ -153,7 +153,11 @@ def lab_processes(managed):
 
 def stop(pid, managed):
     """Stops a lab Core, and only one: its executable must be the lab's."""
-    if not os.readlink(f"/proc/{pid}/exe").startswith(str(managed / "releases") + "/"):
+    try:
+        exe = os.readlink(f"/proc/{pid}/exe")
+    except FileNotFoundError:
+        return  # already gone
+    if not exe.startswith(str(managed / "releases") + "/"):
         raise AssertionError(f"{pid} is not a lab Core")
     os.kill(pid, signal.SIGINT)
     until(lambda: not Path(f"/proc/{pid}").exists() or "Z" == Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0], 60, "the lab Core to stop")
