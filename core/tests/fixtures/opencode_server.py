@@ -161,7 +161,18 @@ def control(name, body):
     if name == 'error':
         # As OpenCode's session.error: it names no message.
         publish('session.error', {'sessionID': body['sessionID'],
-                                  'error': {'name': 'UnknownError', 'data': {'message': 'fixture: session error'}}})
+                                  'error': {'name': body.get('name', 'UnknownError'),
+                                            'data': {'message': body.get('message', 'fixture: session error')}}})
+        return True
+    if name == 'halt':
+        # As OpenCode 1.19.3's processor halts a run with an error: the
+        # session error and idle first, the answer carrying it only after its
+        # cleanup, then the runner's own idle.
+        error = {'name': body['name'], 'data': {'message': body.get('message', 'fixture: halted')}}
+        publish('session.error', {'sessionID': body['sessionID'], 'error': error})
+        go_idle(body['sessionID'])
+        answer_prompt(body['sessionID'], error=error)
+        go_idle(body['sessionID'])
         return True
     if name == 'die':
         threading.Timer(0.1, lambda: os._exit(9)).start()

@@ -317,6 +317,45 @@ async fn an_abort_is_read_in_the_order_opencode_reports_it() {
 }
 
 #[tokio::test]
+async fn a_run_halted_with_an_error_ends_as_opencode_reports_it() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let answered = |d: &AgentDetail, id: &str| turn(d, id)["_opencodeAnswers"].as_object()
+        .is_some_and(|a| a.values().any(|x| x["error"].is_object()));
+    // OpenCode 1.19.3 halts a run with these only when it ends: the session's
+    // error and idle first, the answer carrying it after.
+    for (n, name) in ["APIError", "ProviderAuthError", "MessageOutputLengthError"].into_iter().enumerate() {
+        let id = lab.send(&format!("f{n}"), "work").await.unwrap().turn_id.unwrap();
+        lab.control("halt", json!({"sessionID":session,"name":name,"message":"provider said no"})).await;
+        let d = lab.until("the halted end", |d| turn(d, &id)["status"] != "inProgress").await;
+        assert_eq!(turn(&d, &id)["status"], "failed", "{name}");
+        assert_eq!(turn(&d, &id)["error"]["message"], "provider said no", "{name}");
+        assert_eq!(turn(&d, &id)["error"]["native"]["name"], name);
+        let d = lab.until("the late answer", |d| answered(d, &id)).await;
+        assert_eq!(turn(&d, &id)["status"], "failed", "{name}: the answer after changes nothing");
+    }
+    // These are also reported while a run goes on (auto-compaction, a file
+    // that could not be read): they decide nothing.
+    for (n, name) in ["ContextOverflowError", "UnknownError"].into_iter().enumerate() {
+        let id = lab.send(&format!("u{n}"), "work").await.unwrap().turn_id.unwrap();
+        lab.control("halt", json!({"sessionID":session,"name":name})).await;
+        let d = lab.until("the bare end", |d| turn(d, &id)["status"] != "inProgress").await;
+        assert_eq!(turn(&d, &id)["status"], "outcomeUnknown", "{name}");
+        let d = lab.until("the late answer", |d| answered(d, &id)).await;
+        assert_eq!(turn(&d, &id)["status"], "outcomeUnknown", "{name}: not decided again after the Turn ended");
+    }
+    // A completed Turn: an error OpenCode reports afterwards belongs to no Turn.
+    let done = lab.send("c1", "quick").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("the answer", |d| turn(d, &done)["status"] != "inProgress").await;
+    lab.control("error", json!({"sessionID":session,"name":"APIError","message":"late"})).await;
+    let d = lab.until("the late error", |d| d.agent.error.as_deref().is_some_and(|e| e.contains("late"))).await;
+    assert_eq!(turn(&d, &done)["status"], "completed");
+    assert!(turn(&d, &done)["_opencodeSessionError"].is_null(), "recorded on no Turn");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+#[tokio::test]
 async fn reopening_the_workspace_keeps_the_session_and_never_resends() {
     let lab = lab(&[], false).await;
     let session = lab.session();
