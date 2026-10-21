@@ -671,8 +671,8 @@ test("a replied ask shows in short, waiting for its owner; the question and the 
     assert.match(budget.querySelector(".home-ask-replied").textContent, /Replied · waiting for Hana\s*Plan B/);
     assert.equal(budget.querySelector(".home-ask-reply"), null);
     assert.equal(p.button("Defer", budget), undefined);
-    assert.equal(budget.querySelector(":scope > .home-question"), null, "the question is folded away");
-    assert.equal(budget.querySelector(":scope > .home-section-body"), null, "so are the details");
+    assert.equal(budget.querySelector(":scope > .home-card-body > .home-question"), null, "the question is folded away");
+    assert.equal(budget.querySelector(":scope > .home-card-body > .home-section-body"), null, "so are the details");
     const details = budget.querySelector(".home-replied-details");
     assert.equal(details.open, false);
     assert.equal(details.querySelector("summary").textContent.trim(), "Question and details");
@@ -684,7 +684,7 @@ test("a replied ask shows in short, waiting for its owner; the question and the 
     // Updated by its owner after the reply: that update stays in view, still replied.
     const deploy = card(p, "p-app", "deploy");
     assert.ok(deploy.classList.contains("is-replied"));
-    assert.match(deploy.querySelector(":scope > .home-section-body").textContent, /Deploy started; waiting for CI/);
+    assert.match(deploy.querySelector(":scope > .home-card-body > .home-section-body").textContent, /Deploy started; waiting for CI/);
     assert.match(deploy.querySelector(".home-ask-updated").textContent, /^Hana updated it .+, after your reply$/);
     assert.match(deploy.querySelector(".home-ask-replied").textContent, /Replied · waiting for Hana\s*Yes, deploy/);
     assert.equal(deploy.querySelector(".home-replied-details summary").textContent.trim(), "Question");
@@ -692,7 +692,7 @@ test("a replied ask shows in short, waiting for its owner; the question and the 
     const release = card(p, "p-app", "release");
     assert.ok(!release.classList.contains("is-replied"));
     assert.equal(release.querySelector(".home-kind").textContent.trim(), "Ask");
-    assert.equal(release.querySelector(":scope > .home-question").textContent, "Ship the release today?");
+    assert.equal(release.querySelector(":scope > .home-card-body > .home-question").textContent, "Ship the release today?");
     assert.ok(p.button("Defer", release), "an open ask can be deferred");
     // A resolved ask keeps its question and the user's answer in history.
     const history = p.panel("p-app").querySelector(".home-history");
@@ -741,11 +741,11 @@ test("a replied ask marks its changed blocks where its body shows: the owner's u
       const details = budget.querySelector(".home-replied-details");
       if (updatedSinceReply) {
         // The owner's update after the reply stays in view, its changed block marked.
-        assert.deepEqual(marks(budget.querySelector(":scope > .home-section-body")), [["updated", "UpdatedPlan B is under way."]]);
+        assert.deepEqual(marks(budget.querySelector(":scope > .home-card-body > .home-section-body")), [["updated", "UpdatedPlan B is under way."]]);
         assert.equal(details.querySelectorAll(".brief-change").length, 0, "only the question is folded away");
       } else {
         // Changed before the reply: the body is folded with the question, and marked there.
-        assert.equal(budget.querySelector(":scope > .home-section-body"), null);
+        assert.equal(budget.querySelector(":scope > .home-card-body > .home-section-body"), null);
         details.open = true;
         assert.deepEqual(marks(details), [["updated", "UpdatedPlan B is under way."]]);
       }
