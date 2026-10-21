@@ -77,6 +77,7 @@ import type {
 import { UpdateBanner, WorkspaceUpdatesHost } from "./WorkspaceUpdates";
 import { RemoteCreateAgent } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
+import { useSavedPages } from "./useSavedPages";
 import { MachineBadge, RemoteControls } from "./RemoteControls";
 import { ConversationSearch } from "./ConversationSearch";
 import { hasAgentContent, isCompacting } from "./conversation-blocks";
@@ -483,7 +484,8 @@ export function App() {
   useEffect(() => {
     if (agent) setAgentScope(agent.closedAt ? "closed" : "active");
   }, [agent?.id, agent?.closedAt]);
-  const sessionHistory = useSessionHistory(detail, selected);
+  const savedPages = useSavedPages(detail, selected);
+  const sessionHistory = useSessionHistory(savedPages.detail, selected);
   const currentDetail = sessionHistory.detail;
   // Earlier native Turns come before the oldest saved one, so they are
   // offered only where the saved conversation starts (T-161).
@@ -492,6 +494,8 @@ export function App() {
   const [pageSpace, setPageSpace] = useState<"before" | "after" | null>(null);
   useEffect(() => { setPageTarget(null); setPageSpace(null); }, [selected]);
   useEffect(() => { if (sourceJump || jumpToTurn) setPageSpace(null); }, [sourceJump, jumpToTurn]);
+  // An earlier window that could not be read moves nothing to hold in place.
+  useEffect(() => { if (savedPages.error) setPageTarget(null); }, [savedPages.error]);
   function pageAnchor(turnId: string, itemId?: string) {
     const turn = document.getElementById(`turn-${turnId}`);
     if (!itemId) return turn;
@@ -994,6 +998,7 @@ export function App() {
   function backToLatest() {
     setPageTarget(null);
     setPageSpace(null);
+    savedPages.drop();
     if (currentDetail?.conversation) void live.navigate({});
     setHistoryReading(false);
     searchReading.current = false;
@@ -1014,14 +1019,14 @@ export function App() {
   function changeHistoryPage(direction: "before" | "after") {
     const window = currentDetail?.conversation;
     let cursor = direction === "before" ? window?.start : window?.end;
-    if (!window || !cursor || live.windowLoading) return;
+    if (!window || !cursor || live.windowLoading || savedPages.loading) return;
     // Native reasoning lifecycle entries may have no visible content. Use a
     // rendered boundary when possible, so the overlapping item can actually
     // preserve the reader's position. The page still includes all earlier or
     // later entries, including the invisible lifecycle records.
     // Native pages are a separate read-through source. Their IDs are not
     // necessarily stored in Core, so never use them as a saved-body cursor.
-    const positions = (detail?.turns || []).flatMap(turn => turn.items
+    const positions = (savedPages.detail?.turns || []).flatMap(turn => turn.items
       .filter(item => item.type === "userMessage" || hasAgentContent(item))
       .map(item => ({turnId:turn.id, itemId:item.id})));
     const boundary = direction === "before" ? positions[0] : positions.at(-1);
@@ -1033,16 +1038,28 @@ export function App() {
     }
     const [turnId, itemId] = JSON.parse(cursor) as [string, string | null];
     const item = pageAnchor(turnId, itemId || undefined);
+    const target = {agentId:selected, turnId, itemId:itemId || undefined,
+      top:item?.getBoundingClientRect().top ?? (scroll.current?.getBoundingClientRect().top ?? 0) + 32,
+      start:window.start, end:window.end};
+    stickToBottom.current = false;
+    setHistoryReading(true);
+    setAtBottom(false);
+    if (direction === "before") {
+      // The earlier window goes in front of what is being read (T-161). The
+      // live window is pinned, so new messages do not move it out from
+      // under the earlier ones.
+      live.pinWindow();
+      if (savedPages.loadEarlier(cursor)) {
+        setPageSpace(null);
+        setPageTarget(target);
+        return;
+      }
+    }
     // Replacing a page removes content on the opposite side of its overlap.
     // Reserve at most one viewport there so scrollTop is not clamped before
     // the overlapping item can return to the same screen position.
     setPageSpace(direction === "before" ? "after" : "before");
-    setPageTarget({agentId:selected, turnId, itemId:itemId || undefined,
-      top:item?.getBoundingClientRect().top ?? (scroll.current?.getBoundingClientRect().top ?? 0) + 32,
-      start:window.start, end:window.end});
-    stickToBottom.current = false;
-    setHistoryReading(true);
-    setAtBottom(false);
+    setPageTarget(target);
     void live.navigate({[direction]:cursor}, true);
   }
   function readerScrollIntent() {
@@ -1783,10 +1800,11 @@ export function App() {
                     target={sourceJump && catchupSource?.turnId ? { turnId: catchupSource.turnId, itemId: catchupSource.itemId }
                       : jumpToTurn ? { turnId: jumpToTurn } : pageTarget}>
                   {currentDetail?.conversation && <div className="conversation-history-window">
-                    {currentDetail.conversation.hasBefore && <button className="inline-link" disabled={live.windowLoading} onClick={() => changeHistoryPage("before")}>
-                      {live.windowLoading ? "Loading history…" : "Load earlier messages"}
+                    {currentDetail.conversation.hasBefore && <button className="inline-link" disabled={live.windowLoading || savedPages.loading} onClick={() => changeHistoryPage("before")}>
+                      {live.windowLoading || savedPages.loading ? "Loading history…" : "Load earlier messages"}
                     </button>}
                     <p>Showing part of the saved conversation. Search finds saved messages; Copy turn includes the full turn. Text selection covers visible messages.</p>
+                    {savedPages.error && <p role="alert" className="inline-error">{savedPages.error}</p>}
                   </div>}
                   {currentDetail?.history && (
                     <div className="session-history-loader">

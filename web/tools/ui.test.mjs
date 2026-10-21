@@ -1716,6 +1716,79 @@ test("turn dock offers keyboard navigation and exact jumps without interrupting 
   } finally { page.close(); }
 });
 
+test("earlier saved messages load in front of what is being read, within three windows (T-161)", async () => {
+  // Five Turns, three Items to a window as Core pages them (T-77): a window
+  // before an Item ends at it, a pinned one starts at it.
+  const turns = [1, 2, 3, 4, 5].map((n) => ({ id: `t${n}`, status: "completed", items: [
+    { id: `t${n}-u`, type: "userMessage", content: [{ type: "text", text: `Question ${n}` }] },
+    { id: `t${n}-r`, type: "agentMessage", phase: "final_answer", text: `Answer ${n}` },
+  ] }));
+  const all = turns.flatMap((turn) => turn.items.map((item) => JSON.stringify([turn.id, item.id])));
+  const windowFrom = (from) => {
+    const shown = all.slice(Math.max(0, from), Math.max(0, from) + 3);
+    const start = all.indexOf(shown[0]), end = start + shown.length - 1;
+    return {
+      turns: turns.map((turn) => ({ ...turn, items: turn.items.filter((item) => shown.includes(JSON.stringify([turn.id, item.id]))) }))
+        .filter((turn) => turn.items.length),
+      conversation: { index: turns.map((turn, i) => ({ ...turn, number: i + 1, itemCount: 2 })), questions: [], nativeClientIds: [],
+        start: shown[0], end: shown.at(-1), hasBefore: start > 0, hasAfter: end < all.length - 1, totalItems: all.length },
+    };
+  };
+  const requests = [];
+  let failEarlier = false;
+  const page = await mount({ beforeLoad(window) {
+    const fetch = window.fetch;
+    window.fetch = async (url, init) => {
+      const [path, search = ""] = url.split("?");
+      if (!/\/api\/agents\/a$/.test(path)) return fetch(url, init);
+      requests.push(url);
+      const query = new URLSearchParams(search);
+      if (failEarlier && query.has("before"))
+        return { ok: false, status: 500, text: async () => JSON.stringify({ error: "The saved window could not be read" }) };
+      const response = await fetch(path, init);
+      const from = query.has("before") ? all.indexOf(query.get("before")) - 2
+        : query.has("after") ? all.indexOf(query.get("after"))
+        : query.has("turnId") ? all.indexOf(JSON.stringify([query.get("turnId"), query.get("itemId")]))
+        : all.length - 3;
+      const body = { ...(await response.json()), ...windowFrom(from) };
+      return { ...response, json: async () => body };
+    };
+  } });
+  try {
+    const text = () => page.document.querySelector(".conversation-scroll").textContent;
+    const earlier = () => requests.filter((url) => url.includes("before=")).length;
+    assert.match(text(), /Answer 4[\s\S]*Question 5[\s\S]*Answer 5/);
+    button(page, "Load earlier messages").click();
+    await until(() => /Question 4/.test(text()), "the earlier window is shown");
+    // In front of what was being read, not instead of it.
+    assert.match(text(), /Answer 3[\s\S]*Question 4[\s\S]*Answer 4[\s\S]*Question 5[\s\S]*Answer 5/);
+    assert.equal(text().match(/Answer 4/g).length, 1, "the Item both windows hold is shown once");
+    assert.equal(earlier(), 1);
+    assert.equal(button(page, "Continue to newer messages"), undefined);
+    button(page, "Load earlier messages").click();
+    await until(() => /Question 3/.test(text()), "a second earlier window is shown");
+    assert.match(text(), /Answer 2[\s\S]*Question 3[\s\S]*Answer 3[\s\S]*Answer 5/);
+    assert.equal(earlier(), 2);
+    // A third would pass the bound: the windows are replaced as before, and
+    // the newer messages are one click away.
+    button(page, "Load earlier messages").click();
+    await until(() => /Question 2/.test(text()) && !/Answer 5/.test(text()), "the window before them replaces them");
+    assert.match(text(), /Answer 1[\s\S]*Question 2[\s\S]*Answer 2/);
+    assert.equal(earlier(), 3);
+    assert.ok(button(page, "Continue to newer messages"));
+    button(page, "Back to latest").click();
+    await until(() => /Answer 5/.test(text()) && !/Question 2/.test(text()), "back at the latest window");
+    // A failed read keeps what is shown and says why; it can be tried again.
+    failEarlier = true;
+    button(page, "Load earlier messages").click();
+    const alert = await until(() => page.document.querySelector(".conversation-history-window [role=alert]"), "the failure is shown");
+    assert.match(alert.textContent, /could not be read/);
+    assert.match(text(), /Answer 4[\s\S]*Answer 5/);
+    assert.equal(button(page, "Load earlier messages").disabled, false);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("the composer says something under the draft only when it needs you", async () => {
   for (const [status, notice] of [
     ["idle", null],
