@@ -5065,6 +5065,12 @@ test("a skill chosen in a Codex Agent's composer is a chip its message invokes; 
   }
 });
 
+/** Closes the open Modal with its own close button and waits until it is gone. */
+async function closeModal(page) {
+  page.document.querySelector('[role="dialog"] [aria-label="Close dialog"]').click();
+  await until(() => !page.document.querySelector('[role="dialog"]'), "the dialog to close");
+}
+
 // T-29: Yuzuno's controls for what the CLI's /permissions, /fork, /new,
 // /resume, /status and /usage are for. Each opens that part of Yuzuno on
 // Send, as /model opens settings: nothing is sent or created until the user
@@ -5073,10 +5079,7 @@ test("a Codex Agent's /permissions, /fork, /new, /resume and /status open their 
   const page = await mount({ harness: "codex", agentFields: { cwd: "/work/mori" } });
   try {
     const dialog = () => page.document.querySelector('[role="dialog"]');
-    const closeDialog = async () => {
-      dialog().dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-      await pause(); await pause();
-    };
+    const closeDialog = () => closeModal(page);
     let composer = await sendDraft(page, "/permissions");
     await until(() => chipGroup(page, "Model"), "Agent settings to open");
     assert.match(page.document.body.textContent, /Agent settings are open, with this Agent's permissions/);
@@ -5121,13 +5124,11 @@ test("a Claude Agent's /new and /resume open New agent for Claude; its /status i
     await sendDraft(page, "/new");
     await until(() => chipGroup(page, "Harness"), "New agent to open");
     assert.equal(chosen(page, "Harness"), "claude");
-    page.document.querySelector('[role="dialog"]').dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await pause(); await pause();
+    await closeModal(page);
     await sendDraft(page, "/resume");
     await until(() => [...page.document.querySelectorAll('[aria-pressed="true"]')].some((b) => b.textContent === "Existing Claude session"),
       "Existing Claude session to open");
-    page.document.querySelector('[role="dialog"]').dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await pause(); await pause();
+    await closeModal(page);
     assert.deepEqual(posts(page), []);
     await sendDraft(page, "/status");
     assert.deepEqual(posts(page), ["/api/agents/a/messages"]);
