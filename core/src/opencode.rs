@@ -731,7 +731,7 @@ mod tests {
 
     /// The process a tool of the stand-in runs, in a session of its own.
     #[cfg(target_os = "linux")]
-    fn tool(dir: &std::path::Path) -> u64 {
+    fn tool_pid(dir: &std::path::Path) -> u64 {
         let seen: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("db/start.json")).unwrap()).unwrap();
         seen["tool"].as_u64().unwrap()
     }
@@ -750,7 +750,7 @@ mod tests {
     async fn only_shutdown_ends_what_opencodes_tools_run() {
         let dir = tempfile::tempdir().unwrap();
         let (server, pids) = stand_in(dir.path(), &["tool"]).await;
-        let tool = tool(dir.path());
+        let tool = tool_pid(dir.path());
         server.shutdown().await.unwrap();
         assert!(all_end(&[tool], Duration::from_secs(1)).await, "the tool's process outlived shutdown");
         assert!(all_end(&pids, Duration::from_secs(5)).await, "after shutdown: {pids:?}");
@@ -760,7 +760,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let (server, pids) = stand_in(dir.path(), &["tool"]).await;
-        let tool = tool(dir.path());
+        let tool = tool_pid(dir.path());
         drop(server);
         assert!(all_end(&pids, Duration::from_secs(5)).await, "after drop: {pids:?}");
         let ran_on = !all_end(&[tool], Duration::from_millis(500)).await;
@@ -777,7 +777,7 @@ mod tests {
         for how in ["refuse", "hang"] {
             let dir = tempfile::tempdir().unwrap();
             let (server, pids) = stand_in(dir.path(), &["tool", &format!("dispose={how}")]).await;
-            let tool = tool(dir.path());
+            let tool = tool_pid(dir.path());
             let started = Instant::now();
             server.shutdown().await.unwrap();
             let took = started.elapsed();
