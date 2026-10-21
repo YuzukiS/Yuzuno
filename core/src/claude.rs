@@ -2556,11 +2556,17 @@ fn project_agent_result(item: &mut Value, result: &Value, failed: bool, at: Date
                 sub["endedAt"] = at.to_rfc3339().into();
             }
         }
-        // Launched in the background, as its own input says: its return is
-        // the launch, not the end. Without the result object (Claude's saved
-        // history keeps none) its end is unknown until something reports it.
-        if !failed && !item["subAgent"].is_object() && item["input"]["run_in_background"] == true {
-            item["subAgent"] = json!({"status":"unknown","background":true});
+        // The call returned, but without the result object (Claude's saved
+        // history keeps none) nothing says how its sub-agent ended: one
+        // launched in the background returns at once, and a foreground call
+        // returns when its sub-agent ended or when it was moved to the
+        // background. Unknown until something reports it; in the background
+        // only when the call's own input says so.
+        if !failed && !item["subAgent"].is_object() {
+            item["subAgent"] = json!({"status":"unknown"});
+            if item["input"]["run_in_background"] == true {
+                item["subAgent"]["background"] = true.into();
+            }
         }
         return;
     }
