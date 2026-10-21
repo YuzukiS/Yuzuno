@@ -254,7 +254,7 @@ async fn reconnect_over_http_answers_the_whole_record_or_only_the_agent() {
     };
     let calls = || std::fs::read_to_string(dir.path().join("calls.jsonl")).unwrap().lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>();
-    let reads = |calls: &[Value]| calls.iter().filter(|c| matches!(c["method"].as_str(), Some("thread/read" | "thread/resume"))).count();
+    let methods = |calls: &[Value]| calls.iter().map(|c| c["method"].as_str().unwrap_or_default().to_owned()).collect::<Vec<_>>();
 
     let (before, seq) = (calls().len(), ws.store.detail("a").unwrap().agent.last_seq);
     let (status, refused) = post("/api/agents/a/reconnect?view=window").await;
@@ -263,13 +263,17 @@ async fn reconnect_over_http_answers_the_whole_record_or_only_the_agent() {
     assert_eq!(calls().len(), before, "nothing was asked of the native session");
     assert_eq!(ws.store.detail("a").unwrap().agent.last_seq, seq, "nothing was recorded");
 
-    let before_whole = reads(&calls());
+    // The first reconnect after a send may ask the native session more; the
+    // two compared below run in the same state.
+    let (status, _) = post("/api/agents/a/reconnect").await;
+    assert_eq!(status, 200);
+    let before_whole = calls().len();
     let (status, whole) = post("/api/agents/a/reconnect").await;
     assert_eq!(status, 200);
     assert_eq!(whole["agent"]["id"], "a");
     assert_eq!(whole["turns"].as_array().unwrap().len(), 1, "the whole record, as before");
     assert!(!whole["turns"][0]["items"].as_array().unwrap().is_empty());
-    let after_whole = reads(&calls());
+    let after_whole = calls().len();
 
     let (status, summary) = post("/api/agents/a/reconnect?view=summary").await;
     assert_eq!(status, 200);
@@ -277,8 +281,9 @@ async fn reconnect_over_http_answers_the_whole_record_or_only_the_agent() {
     assert_eq!(summary["agent"]["id"], "a");
     assert_eq!(summary["agent"]["connectionState"], "connected");
     assert_eq!(summary["agent"]["threadId"], "native-thread", "the same session");
-    assert!(after_whole > before_whole);
-    assert_eq!(reads(&calls()) - after_whole, after_whole - before_whole, "the same reconcile as without a view");
+    let all = calls();
+    assert!(methods(&all[before_whole..after_whole]).iter().any(|m| m == "thread/read"));
+    assert_eq!(methods(&all[after_whole..]), methods(&all[before_whole..after_whole]), "the same native requests as without a view");
     let calls = calls();
     assert_eq!(calls.iter().filter(|c| c["method"] == "turn/start").count(), 1, "nothing was sent again");
     assert_eq!(calls.iter().filter(|c| c["method"] == "thread/start").count(), 0);
