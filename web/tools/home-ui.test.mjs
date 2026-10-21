@@ -115,7 +115,7 @@ const machineLoad = () => ({
   jobs: [{ id: "job-1", name: "cargo test", agentId: "a", agentName: "Mori", projectId: "p-app", cpuPct: null, memMiB: 512 }],
 });
 
-async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", workspace = "ws-home", holdWorkspace = false, load = machineLoad } = {}) {
+async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [] } = {}) {
   // holdWorkspace: /api/workspace answers only on releaseWorkspace(), so Home opens first.
   let releaseWorkspace = () => {};
   const workspaceRead = holdWorkspace ? new Promise((resolve) => (releaseWorkspace = resolve)) : null;
@@ -173,7 +173,10 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
       return respond({ input: { ...request.body, expectedTurnId: null, question: null }, status: replyStatus, turnId: "t10", error: null });
     }
     if (/\/api\/requests\/[^/]+\/respond$/.test(url)) return respond({ ok: true });
-    if (url.endsWith("/api/collaboration/github_repositories")) return respond({ repositories: [], links: [] });
+    if (url.endsWith("/api/collaboration/github_repositories"))
+      return respond({ repositories: request.body?.projectId === "p-app" ? linked : [], links: [] });
+    if (url.endsWith("/api/projects/p-app/repo-activity"))
+      return respond({ observedAt: at(1), repositories: linked.map((repo) => ({ ...repo, observedAt: at(1), commits: [], pulls: [], runs: [], stale: false })) });
     const detail = url.match(/\/api\/agents\/(\w)$/);
     if (detail) {
       const agent = agents.find((a) => a.id === detail[1]);
@@ -668,8 +671,8 @@ test("a replied ask shows in short, waiting for its owner; the question and the 
     assert.match(budget.querySelector(".home-ask-replied").textContent, /Replied · waiting for Hana\s*Plan B/);
     assert.equal(budget.querySelector(".home-ask-reply"), null);
     assert.equal(p.button("Defer", budget), undefined);
-    assert.equal(budget.querySelector(":scope > .home-question"), null, "the question is folded away");
-    assert.equal(budget.querySelector(":scope > .home-section-body"), null, "so are the details");
+    assert.equal(budget.querySelector(":scope > .home-card-body > .home-question"), null, "the question is folded away");
+    assert.equal(budget.querySelector(":scope > .home-card-body > .home-section-body"), null, "so are the details");
     const details = budget.querySelector(".home-replied-details");
     assert.equal(details.open, false);
     assert.equal(details.querySelector("summary").textContent.trim(), "Question and details");
@@ -681,7 +684,7 @@ test("a replied ask shows in short, waiting for its owner; the question and the 
     // Updated by its owner after the reply: that update stays in view, still replied.
     const deploy = card(p, "p-app", "deploy");
     assert.ok(deploy.classList.contains("is-replied"));
-    assert.match(deploy.querySelector(":scope > .home-section-body").textContent, /Deploy started; waiting for CI/);
+    assert.match(deploy.querySelector(":scope > .home-card-body > .home-section-body").textContent, /Deploy started; waiting for CI/);
     assert.match(deploy.querySelector(".home-ask-updated").textContent, /^Hana updated it .+, after your reply$/);
     assert.match(deploy.querySelector(".home-ask-replied").textContent, /Replied · waiting for Hana\s*Yes, deploy/);
     assert.equal(deploy.querySelector(".home-replied-details summary").textContent.trim(), "Question");
@@ -689,7 +692,7 @@ test("a replied ask shows in short, waiting for its owner; the question and the 
     const release = card(p, "p-app", "release");
     assert.ok(!release.classList.contains("is-replied"));
     assert.equal(release.querySelector(".home-kind").textContent.trim(), "Ask");
-    assert.equal(release.querySelector(":scope > .home-question").textContent, "Ship the release today?");
+    assert.equal(release.querySelector(":scope > .home-card-body > .home-question").textContent, "Ship the release today?");
     assert.ok(p.button("Defer", release), "an open ask can be deferred");
     // A resolved ask keeps its question and the user's answer in history.
     const history = p.panel("p-app").querySelector(".home-history");
@@ -738,11 +741,11 @@ test("a replied ask marks its changed blocks where its body shows: the owner's u
       const details = budget.querySelector(".home-replied-details");
       if (updatedSinceReply) {
         // The owner's update after the reply stays in view, its changed block marked.
-        assert.deepEqual(marks(budget.querySelector(":scope > .home-section-body")), [["updated", "UpdatedPlan B is under way."]]);
+        assert.deepEqual(marks(budget.querySelector(":scope > .home-card-body > .home-section-body")), [["updated", "UpdatedPlan B is under way."]]);
         assert.equal(details.querySelectorAll(".brief-change").length, 0, "only the question is folded away");
       } else {
         // Changed before the reply: the body is folded with the question, and marked there.
-        assert.equal(budget.querySelector(":scope > .home-section-body"), null);
+        assert.equal(budget.querySelector(":scope > .home-card-body > .home-section-body"), null);
         details.open = true;
         assert.deepEqual(marks(details), [["updated", "UpdatedPlan B is under way."]]);
       }
@@ -927,6 +930,130 @@ test("Home is laid out in columns: Machines is a widget beside Needs you and the
     assert.equal(again.calls.filter((c) => c.url.endsWith("/api/machine-load")).length, 0, "never read while hidden");
   } finally {
     again.close();
+  }
+});
+
+// T-115: every Home card folds on its own, the project's Repositories too.
+const repo = { id: 1, fullName: "acme/app", url: "https://github.com/acme/app", syncedAt: at(1), error: null };
+const fold = (root) => root.querySelector(".home-fold");
+const storageOf = (p) => Object.fromEntries(Array.from({ length: p.w.localStorage.length }, (_, i) => p.w.localStorage.key(i)).map((k) => [k, p.w.localStorage.getItem(k)]));
+
+test("every Home card folds on its own and keeps its header; nothing is seen, answered or read meanwhile (T-115)", async () => {
+  const p = await mount({ linked: [repo] });
+  try {
+    await waitFor(() => p.panel("p-app").querySelector(".home-repos .repo-activity"), "the Repositories block is read");
+    await waitFor(() => p.panel("p-res").querySelector(".home-approvals"), "the approval is shown");
+    const cards = {
+      needs: p.doc.querySelector(".home-needs-you"),
+      machines: p.doc.querySelector(".home-machines"),
+      notes: card(p, "p-app", "notes"),
+      review: card(p, "p-app", "notes/review"),
+      approvals: p.panel("p-res").querySelector(".home-approvals"),
+      repos: p.panel("p-app").querySelector(".home-repos"),
+    };
+    for (const [name, root] of Object.entries(cards)) {
+      const button = fold(root);
+      assert.ok(button, `${name} has its own fold`);
+      assert.equal(button.getAttribute("aria-expanded"), "true", name);
+      const body = p.doc.getElementById(button.getAttribute("aria-controls"));
+      assert.ok(body && root.contains(body) && !body.hidden, `${name} controls its own body`);
+    }
+    const machineReads = () => p.calls.filter((c) => c.url.endsWith("/api/machine-load")).length;
+    const activityReads = () => p.calls.filter((c) => c.url.endsWith("/repo-activity")).length;
+    for (const root of Object.values(cards)) fold(root).click();
+    await pause();
+    for (const [name, root] of Object.entries(cards)) {
+      assert.equal(fold(root).getAttribute("aria-expanded"), "false", name);
+      assert.equal(p.doc.getElementById(fold(root).getAttribute("aria-controls")).hidden, true, `${name}'s body is hidden`);
+    }
+    // The headers still say what is new and what waits.
+    assert.match(cards.review.querySelector(".home-section-head").textContent, /Review notes.*New/);
+    assert.ok(cards.review.querySelector(".home-seen"), "Seen is still offered");
+    assert.match(cards.needs.querySelector("h2").textContent, /Needs you\s*2/);
+    assert.match(cards.approvals.querySelector(".home-card-head").textContent, /Waiting for approval\s*1/);
+    assert.match(cards.repos.querySelector(".home-card-head").textContent, /Repositories\s*1/);
+    // The Repositories fold is its own: the project stays open; activity and load are not read.
+    assert.equal(p.panel("p-app").classList.contains("is-collapsed"), false);
+    assert.equal(cards.repos.querySelector(".repo-activity"), null);
+    const machines = machineReads(), activity = activityReads();
+    await pause(2600);
+    assert.equal(machineReads(), machines, "a collapsed Machines widget reads no load");
+    assert.equal(activityReads(), activity);
+    assert.deepEqual(p.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories")).map((c) => c.url), [],
+      "folding marks nothing seen, answers nothing and approves nothing");
+    // Kept for this Workspace, by each card's own identity.
+    const stored = storageOf(p);
+    p.close();
+    const again = await mount({ linked: [repo], storage: stored });
+    try {
+      await waitFor(() => again.panel("p-app").querySelector(".home-repos"), "the Repositories block is drawn again");
+      assert.equal(fold(card(again, "p-app", "notes/review")).getAttribute("aria-expanded"), "false");
+      assert.equal(fold(card(again, "p-app", "notes")).getAttribute("aria-expanded"), "false");
+      assert.equal(fold(card(again, "p-app", "release")).getAttribute("aria-expanded"), "true", "another card is not folded with it");
+      assert.equal(fold(again.panel("p-app").querySelector(".home-repos")).getAttribute("aria-expanded"), "false");
+      assert.equal(fold(again.doc.querySelector(".home-machines")).getAttribute("aria-expanded"), "false");
+      fold(card(again, "p-app", "notes")).click();
+      await pause();
+      assert.equal(again.doc.getElementById(fold(card(again, "p-app", "notes")).getAttribute("aria-controls")).hidden, false, "expanded again");
+    } finally {
+      again.close();
+    }
+    const other = await mount({ linked: [repo], storage: stored, workspace: "ws-other" });
+    try {
+      assert.equal(fold(card(other, "p-app", "notes/review")).getAttribute("aria-expanded"), "true", "another Workspace keeps its own");
+    } finally {
+      other.close();
+    }
+  } finally {
+    p.close();
+  }
+});
+
+test("a jump from Needs you opens a collapsed card to show its approval or Ask (T-115)", async () => {
+  const p = await mount();
+  try {
+    await waitFor(() => p.panel("p-res").querySelector(".home-approvals"), "the approval is shown");
+    const approvals = p.panel("p-res").querySelector(".home-approvals");
+    const release = card(p, "p-app", "release");
+    fold(approvals).click();
+    fold(release).click();
+    await pause();
+    assert.equal(fold(approvals).getAttribute("aria-expanded"), "false");
+    assert.equal(fold(release).getAttribute("aria-expanded"), "false");
+    const needs = (pattern) => [...p.doc.querySelectorAll(".home-needs-item")].find((b) => pattern.test(b.textContent));
+    needs(/Run the test suite/).click();
+    await waitFor(() => p.doc.getElementById("home-request-r-1")?.hasAttribute("data-home-highlight"), "the approval is highlighted");
+    const request = p.doc.getElementById("home-request-r-1");
+    assert.equal(fold(approvals).getAttribute("aria-expanded"), "true", "its card opened");
+    assert.equal(request.closest(".home-card-body").hidden, false);
+    assert.equal(p.doc.activeElement, request);
+    needs(/Ship today\?/).click();
+    await waitFor(() => release.hasAttribute("data-home-highlight"), "the Ask is highlighted");
+    assert.equal(fold(release).getAttribute("aria-expanded"), "true", "the Ask's own card opened");
+    assert.ok(release.querySelector("textarea"), "its reply is in view");
+    assert.equal(p.posts(/\/brief\/(reply|seen)$|\/respond$/).length, 0, "jumping answers nothing");
+  } finally {
+    p.close();
+  }
+});
+
+test("a collapsed Ask keeps what was typed in it, and folding sends nothing (T-115)", async () => {
+  const p = await mount();
+  try {
+    const release = card(p, "p-app", "release");
+    const field = release.querySelector("textarea");
+    assert.ok(field, "the Ask has a reply field");
+    await type(p, field, "Only after the docs land.");
+    fold(release).click();
+    await pause();
+    assert.equal(p.doc.getElementById(fold(release).getAttribute("aria-controls")).hidden, true);
+    assert.equal(release.querySelector(".home-kind").textContent, "Ask", "the header still says it is an Ask");
+    fold(release).click();
+    await pause();
+    assert.equal(release.querySelector("textarea").value, "Only after the docs land.");
+    assert.equal(p.posts(/\/brief\/(reply|seen)$/).length, 0);
+  } finally {
+    p.close();
   }
 });
 

@@ -15,6 +15,7 @@ import { previewHome, previewProjectAgents } from "./preview-home";
 import type { HomeData, NeedsYouItem, ProjectPanel, Section } from "./types";
 import { PinsContext, pinSource, pinWidgetId, resolvePin, useWidgetLayout, type PinControl } from "./widget-layout";
 import "./home.css";
+import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 
 export type { HomeTarget } from "./home-navigation";
 
@@ -190,13 +191,21 @@ export function Home({
     pendingJump.current = null;
     const target = jumpTo.target();
     if (!target) return;
-    // Only the user's click scrolls Home; new content never does.
-    target.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
-    target.focus({ preventScroll: true });
-    target.setAttribute("data-home-highlight", "");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let frame = 0;
     const clear = () => target.removeAttribute("data-home-highlight");
-    const timer = setTimeout(clear, 2400);
+    const show = () => {
+      // Only the user's click scrolls Home; new content never does.
+      target.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "center" });
+      target.focus({ preventScroll: true });
+      target.setAttribute("data-home-highlight", "");
+      timer = setTimeout(clear, 2400);
+    };
+    // A card the user collapsed opens to show what the jump is to (T-115).
+    if (unfoldAround(target)) frame = requestAnimationFrame(show);
+    else show();
     return () => {
+      cancelAnimationFrame(frame);
       clearTimeout(timer);
       clear();
     };
@@ -282,6 +291,8 @@ export function Home({
     data?.needsYou.filter((item) => item.projectId === panel.project.id) || [];
   return (
     <HomeNavigation.Provider value={onNavigate}>
+    {/* Which cards are collapsed is kept per Workspace; the preview keeps none (T-115). */}
+    <CardFoldWorkspace.Provider value={readOnly ? "" : workspaceId}>
     <PinsContext.Provider value={pins}>
     <div className="home-view">
       <header className="home-header">
@@ -377,6 +388,7 @@ export function Home({
       )}
     </div>
     </PinsContext.Provider>
+    </CardFoldWorkspace.Provider>
     </HomeNavigation.Provider>
   );
 }

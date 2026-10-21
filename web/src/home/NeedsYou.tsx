@@ -1,6 +1,7 @@
 import { Bell, MessageCircleQuestionMark, ShieldCheck } from "lucide-react";
 import { absolute, relative } from "./format";
 import type { NeedsYouItem } from "./types";
+import { FoldButton, useCardFold } from "./card-fold";
 
 export const needsYouKey = (item: NeedsYouItem) =>
   item.kind === "approval"
@@ -21,13 +22,17 @@ export function NeedsYou({
   projectName: (id: string | null) => string;
   onJump: (item: NeedsYouItem) => void;
 }) {
+  // Collapsed, the count still shows (T-115); nothing is answered by it.
+  const [collapsed, toggleFold] = useCardFold("needs-you");
   return (
-    <section className="home-needs-you" aria-label="Needs you">
+    <section className={`home-needs-you${collapsed ? " is-collapsed" : ""}`} aria-label="Needs you">
       <h2>
+        <FoldButton collapsed={collapsed} onToggle={toggleFold} label="Needs you" controls="home-needs-you-body" />
         <Bell size={14} />
         Needs you
         <span className={`nav-count${items.length ? " attention" : ""}`}>{items.length}</span>
       </h2>
+      <div className="home-card-body" id="home-needs-you-body" hidden={collapsed}>
       {items.length ? (
         <ol className="home-needs-list">
           {items.map((item) => (
@@ -54,6 +59,7 @@ export function NeedsYou({
       ) : (
         <p className="home-needs-empty">Nothing needs you right now.</p>
       )}
+      </div>
     </section>
   );
 }

@@ -5,6 +5,7 @@ import type { Agent } from "../types";
 import { AskReply, repliedThenUpdated } from "./AskReply";
 import { changedBlocks, rememberSeenBlocks } from "./brief/block-changes";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
+import { FoldButton, useCardFold } from "./card-fold";
 import { absolute, deferChoices, duration, relative } from "./format";
 import { deferSection, type SeenMark } from "./home-api";
 import { SectionBody } from "./SectionBody";
@@ -27,12 +28,18 @@ function Time({ label, iso }: { label: string; iso?: string }) {
  * until the reader touches it, so shorter content never pulls up the blocks
  * below while they are being read.
  */
-function useReservedHeight(version: number) {
+function useReservedHeight(version: number, collapsed: boolean) {
   const ref = useRef<HTMLElement>(null);
   const last = useRef<{ version: number; height: number } | null>(null);
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;
+    // A collapsed card holds no room; expanded again, it starts afresh.
+    if (collapsed) {
+      element.style.minHeight = "";
+      last.current = null;
+      return;
+    }
     const previous = last.current;
     if (previous && previous.version !== version && previous.height > 0)
       element.style.minHeight = `${previous.height}px`;
@@ -88,7 +95,10 @@ export const SectionCard = memo(function SectionCard({
   onSeen: (marks: SeenMark[]) => Promise<void>;
   onChanged: () => void;
 }) {
-  const [ref, release] = useReservedHeight(section.version);
+  // Collapsing hides the body only: drafts, Defer and table state are kept,
+  // and the header still says what changed and offers Seen (T-115).
+  const [collapsed, toggleFold] = useCardFold(`section:${projectId}:${section.key}`);
+  const [ref, release] = useReservedHeight(section.version, collapsed);
   const [seeing, setSeeing] = useState(false);
   const [deferOpen, setDeferOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -140,11 +150,17 @@ export const SectionCard = memo(function SectionCard({
       data-section-key={section.key}
       data-section-version={section.version}
       tabIndex={-1}
-      className={`home-section kind-${section.kind}${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${stale ? " is-stale" : ""}${deferred ? " is-deferred" : ""}${replied ? " is-replied" : ""}`}
+      className={`home-section kind-${section.kind}${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${stale ? " is-stale" : ""}${deferred ? " is-deferred" : ""}${replied ? " is-replied" : ""}${collapsed ? " is-collapsed" : ""}`}
       onPointerDown={release}
       aria-labelledby={`${sectionDomId(projectId, section.key)}-title`}
     >
       <header className="home-section-head">
+        <FoldButton
+          collapsed={collapsed}
+          onToggle={toggleFold}
+          label={section.title}
+          controls={`${sectionDomId(projectId, section.key)}-body`}
+        />
         <span className={`home-kind kind-${section.kind}${replied ? " is-replied" : ""}`}>
           {replied ? "Replied" : kindLabel[section.kind]}
         </span>
@@ -176,6 +192,7 @@ export const SectionCard = memo(function SectionCard({
           </button>
         )}
       </header>
+      <div className="home-card-body" id={`${sectionDomId(projectId, section.key)}-body`} hidden={collapsed}>
       {(section.status || section.time) && (
         <div className="home-section-time">
           {section.status && (
@@ -259,6 +276,7 @@ export const SectionCard = memo(function SectionCard({
           <Check size={12} /> Resolved by {section.owner.name}
         </p>
       )}
+      </div>
       {error && (
         <p className="inline-error" role="alert">
           {error}

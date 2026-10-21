@@ -1,7 +1,8 @@
 import { ArrowUpRight, Clock3, Eye, NotebookText, Pin as PinIcon, PinOff, TriangleAlert } from "lucide-react";
 import { absolute, duration, relative } from "./format";
 import { SectionBody } from "./SectionBody";
-import type { Pin, PinSource } from "./widget-layout";
+import { pinWidgetId, type Pin, type PinSource } from "./widget-layout";
+import { FoldButton, useCardFold } from "./card-fold";
 
 /**
  * A Brief section the user pinned to the widget column: the same section
@@ -27,10 +28,16 @@ export function PinnedSection({
 }) {
   const title = source.state === "shown" ? source.section.title : pin.title;
   const projectName = source.state === "shown" ? source.projectName : pin.projectName;
+  // Collapsing hides its content only; a source that is gone or not current
+  // still says so (T-115).
+  const [folded, toggleFold] = useCardFold(`widget:${pinWidgetId(pin)}`);
+  const collapsed = folded && source.state === "shown";
+  const body = `${pinWidgetId(pin)}-body`;
   return (
-    <section className="home-pinned" data-pin-state={source.state} aria-label={`${title}, pinned from ${projectName}`}>
+    <section className={`home-pinned${collapsed ? " is-collapsed" : ""}`} data-pin-state={source.state} aria-label={`${title}, pinned from ${projectName}`}>
       <header className="home-pinned-head">
         <h2>
+          {source.state === "shown" && <FoldButton collapsed={collapsed} onToggle={toggleFold} label={title} controls={body} />}
           <NotebookText size={14} aria-hidden="true" />
           <span>{title}</span>
         </h2>
@@ -53,6 +60,7 @@ export function PinnedSection({
               <TriangleAlert size={12} aria-hidden="true" /> Not current: Home couldn't be read, so this is the last reading.
             </p>
           )}
+          <div className="home-card-body" id={body} hidden={collapsed}>
           {source.seen && (
             <p className="home-pinned-time" role="status">
               <Eye size={12} aria-hidden="true" /> Marked seen. This is the version last written; its next update will show here.
@@ -73,6 +81,7 @@ export function PinnedSection({
               <ArrowUpRight size={13} /> Open in {projectName}
             </button>
           </footer>
+          </div>
         </>
       ) : source.state === "reading" ? (
         <p className="home-pinned-note">Reading…</p>

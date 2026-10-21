@@ -7,6 +7,7 @@ import { readMachineLoad } from "./home-api";
 import { useHomeNavigation } from "./home-navigation";
 import { previewMachineLoad } from "./preview-home";
 import type { MachineLoad } from "./types";
+import { FoldButton, useCardFold } from "./card-fold";
 
 const POLL_MS = 2_000;
 
@@ -81,10 +82,12 @@ export function MachineWidget({
 }) {
   const visible = useDocumentVisible();
   const navigate = useHomeNavigation();
+  // Collapsed, it reads no load; the header keeps the last reading's time (T-115).
+  const [collapsed, toggleFold] = useCardFold("widget:machines");
   const [load, setLoad] = useState<MachineLoad | null>(readOnly ? previewMachineLoad : null);
   const [error, setError] = useState("");
   useEffect(() => {
-    if (readOnly || !visible) return;
+    if (readOnly || !visible || collapsed) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const sample = async () => {
@@ -104,16 +107,17 @@ export function MachineWidget({
       controller.abort();
       clearTimeout(timer);
     };
-  }, [readOnly, visible]);
+  }, [readOnly, visible, collapsed]);
   const cpu = load?.cpu;
   const memory = load?.memory;
   const atText = load ? `Core host · as of ${absolute(load.at)}` : readOnly ? "Core host" : "Reading…";
   const errorLine = error && `Machine load is unavailable: ${error}${load ? " · Showing the last reading." : ""}`;
   const jobs = load?.jobs;
   return (
-    <section className="home-machines" aria-label="Machines">
+    <section className={`home-machines${collapsed ? " is-collapsed" : ""}`} aria-label="Machines">
       <header>
         <h2>
+          <FoldButton collapsed={collapsed} onToggle={toggleFold} label="Machines" controls="home-machines-body" />
           <Monitor size={14} />
           Machines
         </h2>
@@ -136,6 +140,7 @@ export function MachineWidget({
           <span className="home-machines-at">{atText}</span>
         )}
       </header>
+      <div className="home-card-body" id="home-machines-body" hidden={collapsed}>
       <div className="home-machine" aria-busy={load ? undefined : true}>
         <div className="home-load">
           <span className="home-load-title">
@@ -275,6 +280,7 @@ export function MachineWidget({
             )}
           </div>
         </div>
+      </div>
       </div>
     </section>
   );

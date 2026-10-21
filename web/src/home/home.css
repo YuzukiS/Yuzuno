@@ -1167,3 +1167,46 @@ ul.home-widget {
     min-width: 0;
   }
 }
+
+/* Every Home card folds on its own (T-115): a small control in its header.
+   Collapsed, the header stays (title, kind, New/Updated, Seen, counts) and
+   the body is hidden but kept, with whatever was typed in it. */
+.home-fold {
+  flex: none;
+  align-self: center;
+  width: 22px;
+  height: 22px;
+  margin-left: -4px;
+}
+.home-card-body[hidden] {
+  display: none !important;
+}
+.home-card-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.home-card-head h4 {
+  margin-bottom: 0;
+}
+.home-card-head + .home-card-body {
+  margin-top: 5px;
+}
+.home-card-count {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--home-soft);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+}
+.home-section.is-collapsed .home-section-head,
+.home-pinned.is-collapsed .home-pinned-head {
+  margin-bottom: 0;
+}
+/* A finger's size on a phone (T-170). */
+.app.phone .home-fold {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  margin: -7px -4px -7px -10px;
+}
