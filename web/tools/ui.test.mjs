@@ -5076,7 +5076,16 @@ async function closeModal(page) {
 // Send, as /model opens settings: nothing is sent or created until the user
 // acts there, and the draft stays.
 test("a Codex Agent's /permissions, /fork, /new, /resume and /status open their part of Yuzuno and send nothing", async () => {
-  const page = await mount({ harness: "codex", agentFields: { cwd: "/work/mori" } });
+  // Fork opens with its read-only preview of what the fork would hold.
+  const preview = { sourceThreadId: "thread-a", throughTurnId: "t1", throughCompletedAt: 1791856000, includedTurns: 1, excludedTurns: 0,
+    name: "Mori", cwd: "/work/mori", model: "m", reasoningEffort: null, permissionPreset: "auto", projectId: null, forkedTo: null, warnings: [] };
+  const previewed = [];
+  const page = await mount({ harness: "codex", agentFields: { cwd: "/work/mori" }, beforeLoad(window) {
+    const fetch = window.fetch;
+    window.fetch = (url, init = {}) => url.endsWith("/codex/fork/preview")
+      ? (previewed.push(url), Promise.resolve({ ok: true, status: 200, json: async () => preview, text: async () => JSON.stringify(preview) }))
+      : fetch(url, init);
+  } });
   try {
     const dialog = () => page.document.querySelector('[role="dialog"]');
     const closeDialog = () => closeModal(page);
@@ -5087,7 +5096,7 @@ test("a Codex Agent's /permissions, /fork, /new, /resume and /status open their 
     await closeDialog();
 
     await sendDraft(page, "/fork");
-    await until(() => page.document.querySelector('[title="Continue in a Codex fork"]'), "Fork to open");
+    await until(() => /Continue in a Codex fork/.test(dialog()?.textContent || ""), "Fork to open");
     await closeDialog();
 
     await sendDraft(page, "/new");
@@ -5111,7 +5120,9 @@ test("a Codex Agent's /permissions, /fork, /new, /resume and /status open their 
     composer = await sendDraft(page, "/fork now");
     assert.match(page.document.body.textContent, /\/fork takes nothing after it here/);
     assert.equal(composerText(composer), "/fork now");
-    assert.deepEqual(posts(page), [], "nothing was sent, saved or created");
+    // Fork read its preview once; no /messages, no fork, no Agent created, no settings saved.
+    assert.deepEqual(previewed, ["/api/agents/a/codex/fork/preview"]);
+    assert.deepEqual(posts(page), []);
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
@@ -5119,7 +5130,13 @@ test("a Codex Agent's /permissions, /fork, /new, /resume and /status open their 
 });
 
 test("a Claude Agent's /new and /resume open New agent for Claude; its /status is Claude Code's own and goes as a message", async () => {
-  const page = await mount({ harness: "claude" });
+  // The Claude tab lists this machine's saved sessions as it opens: none here.
+  const page = await mount({ harness: "claude", beforeLoad(window) {
+    const fetch = window.fetch;
+    window.fetch = (url, init = {}) => /\/api\/claude\/sessions\?/.test(url)
+      ? Promise.resolve({ ok: true, status: 200, json: async () => ({ sessions: [], next: null }), text: async () => "{}" })
+      : fetch(url, init);
+  } });
   try {
     await sendDraft(page, "/new");
     await until(() => chipGroup(page, "Harness"), "New agent to open");
