@@ -2282,7 +2282,7 @@ test("another browser's place is offered in the open conversation, opened only b
   });
   try {
     const offer = () => page.document.querySelector(".reading-offer");
-    const bar = () => page.document.querySelector(".source-navigation")?.textContent || "";
+    const bar = () => page.document.querySelector(".source-navigation:not(.reading-offer)")?.textContent || "";
     const text = () => page.document.querySelector(".conversation-scroll").textContent;
     const writes = () => page.calls.filter((c) => c.init?.method === "POST" && /\/(review|messages|turns|respond)$/.test(c.url));
     const reopen = async () => {
