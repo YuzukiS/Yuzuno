@@ -2313,7 +2313,7 @@ fn task_status(status: &str) -> &str {
 }
 
 /// A sub-agent that can still report: not ended, not given up as unknown.
-fn subagent_running(sub: &Value) -> bool {
+pub(crate) fn subagent_running(sub: &Value) -> bool {
     sub.is_object() && !subagent_terminal(&sub["status"]) && sub["status"] != "unknown"
 }
 
