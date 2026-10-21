@@ -395,6 +395,30 @@ pub(super) async fn logs(data: &Path, job: &Value, offset: Option<u64>) -> Resul
         json!({"jobId":job["id"],"offset":start,"nextOffset":end,"oldestOffset":oldest,"totalBytes":total,"truncated":requested<oldest,"text":String::from_utf8_lossy(&bytes),"retainedBytesLimit":2097152}),
     )
 }
+/// How much output an attempt's log ring holds, from its two segment
+/// headers and sizes alone: none of the output is read.
+pub(super) async fn log_extent(data: &Path, job: &Value) -> Result<Value> {
+    let dir = folder(data, job)?;
+    let mut segments = Vec::new();
+    for index in 0..2 {
+        let mut file = match tokio::fs::File::open(dir.join(format!("log-{index}.bin"))).await {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+        let length = file.metadata().await?.len();
+        if length < 8 {
+            continue;
+        }
+        let mut header = [0u8; 8];
+        file.read_exact(&mut header).await?;
+        segments.push((u64::from_be_bytes(header), (length - 8).min(1024 * 1024)));
+    }
+    segments.sort_by_key(|s| s.0);
+    let oldest = segments.first().map_or(0, |s| s.0);
+    let total = segments.last().map_or(0, |s| s.0 + s.1);
+    Ok(json!({"segments":segments.len(),"oldestOffset":oldest,"totalBytes":total,"truncated":oldest>0}))
+}
 pub(super) async fn usage(data: &Path, job: &Value) -> Result<Value> {
     if job["reserved"] != true {
         return Ok(Value::Null);

@@ -9,6 +9,9 @@ mod list;
 #[cfg(test)]
 mod list_tests;
 mod pause;
+mod provenance;
+#[cfg(test)]
+mod provenance_tests;
 mod queue;
 mod remote;
 mod ssh_mux;
@@ -457,6 +460,7 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/jobs/gpus/{uuid}/settings", post(gpu_settings))
         .route("/api/jobs/runs", get(list_runs).post(submit_run))
         .route("/api/jobs/runs/{id}", get(run_report))
+        .route("/api/jobs/runs/{id}/provenance", get(run_provenance))
         .route("/api/jobs/runs/{id}/cancel", post(cancel_run))
         .route("/api/jobs/runs/{id}/retry", post(retry_run))
         .route("/api/jobs/runs/{id}/decide", post(decide_run))
@@ -468,6 +472,7 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/jobs/{id}/resume-checkpoint", post(checkpoint_resume))
         .route("/api/jobs/gpus/{uuid}/pause", post(pause_gpu))
         .route("/api/jobs/gpus/{uuid}/resume", post(resume_gpu))
+        .route("/api/jobs/{id}/provenance", get(job_provenance))
         .route("/api/jobs/{id}/logs", get(logs))
         .route("/api/jobs/{id}/outputs/{index}", get(output))
         .route("/api/jobs/{id}/artifacts/{index}", get(artifact))
@@ -601,6 +606,22 @@ async fn run_report(
 ) -> Result<Json<Value>, ApiError> {
     Ok(Json(
         call(ws, None, "job_run_get".into(), json!({"runId":id})).await?,
+    ))
+}
+async fn run_provenance(
+    AppState(ws): AppState<Arc<Workspace>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(
+        call(ws, None, "job_provenance".into(), json!({"runId":id})).await?,
+    ))
+}
+async fn job_provenance(
+    AppState(ws): AppState<Arc<Workspace>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(
+        call(ws, None, "job_provenance".into(), json!({"jobId":id})).await?,
     ))
 }
 async fn cancel_run(
@@ -950,6 +971,19 @@ pub async fn call(
                 return remote::logs(&ws, &job, q.offset).await;
             }
             host::logs(&ws.data_dir, &job, q.offset).await
+        }
+        "job_provenance" => {
+            let scope = serde_json::from_value::<provenance::Request>(input)?.scope()?;
+            let (run, jobs) = ws.stored(move |s| s.provenance_records(&scope)).await?;
+            let mut extents = Vec::with_capacity(jobs.len());
+            for job in &jobs {
+                extents.push(if job["executor"].is_null() {
+                    host::log_extent(&ws.data_dir, job).await.map_err(|e| e.to_string())
+                } else {
+                    Ok(Value::Null)
+                });
+            }
+            Ok(provenance::export(run.as_ref(), &jobs, &extents, provenance::Known::host(&ws.data_dir, std::env::var("HOME").ok())))
         }
         "job_live" => ws.stored(|s| s.live_job_counts()).await,
         "job_run_submit" => {
@@ -1363,6 +1397,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "stages":{"type":"array","minItems":1,"maxItems":16,"description":"In dependency order: a stage may need only earlier stages.","items":{"type":"object","properties":stage,"required":stage_required,"additionalProperties":false}}}),
             vec!["requestId","taskId","name","stages"]),
         make("job_run_get", "Read a run: each stage's attempts (job IDs, status, reasons, verified artifacts with SHA-256, identity), its upstream, retries and recorded cost across all attempts. Each attempt has resourceSummary (actual peak memory and CPU time / worker monotonic wall time versus declared resources); missing/invalid/remote values are null. Includes worker wrapper and pauses in wall time, excludes collector. Retries stay separate, reused producers do not execute in this run, and memory peaks are not additive. Unknown cost is reported apart, never as zero.", run_id.clone(), vec!["runId"]),
+        make("job_provenance", "Export where a result came from, as Core recorded it: one Job (jobId) or every attempt of a run (runId). Returns manifest (versioned JSON, schema yuzuno.provenance) and report (short Markdown from the same manifest). Each attempt keeps its own outcome, exit, target machine and executor, Git and frozen-input digests, identity, declared/held/measured resources, artifacts with SHA-256 and where they stay, and whether early output was overwritten; each item is verified, declared, notRecorded or unknown. Restates records only: reads no working file again and asks no machine, so it is not a claim that the result can be reproduced. Leaves out argv and env values, absolute paths, logs, chat and file contents; show the user the report before sharing it.", json!({"jobId":string,"runId":string}), vec![]),
         make("job_run_list", "List runs with their status, stages and recorded cost, newest first, 20 per page; follow nextBefore as before while hasMore. Unlike job_list it does not default to your own Agent: without filters it lists every Agent's runs, so pass agentId, taskId or experiment to narrow it.", json!({"agentId":string,"taskId":task_reference,"experiment":string,"before":{"type":"integer","description":"nextBefore from the previous page; keep the same filters."},"awaitingAnalysis":{"type":"boolean","description":"Only runs with a pending analysis gate, including when independent stages are still running."}}), vec![]),
         make("job_run_decide", "Record your analysis decision for one successful stage. Read job_run_get first and pass its exact gateId and attemptId. Continue releases only the frozen DAG, subject to update drain, budget, Git/input and artifact checks; it neither authorizes additional work nor accepts command changes. Cancel stops the run without changing successful Jobs. Only the owner Agent or user may decide. A stable requestId makes lost-reply retries idempotent; stale gates and cancelled runs cannot be reopened. For changed commands/inputs submit a new run with explicit reuse.", json!({"requestId":string,"runId":string,"stage":string,"gateId":string,"attemptId":string,"decision":{"type":"string","enum":["continue","cancel"]},"reason":{"type":"string","maxLength":4000}}), vec!["requestId","runId","stage","gateId","attemptId","decision"]),
         make("job_run_retry", "Start a new attempt of a stage whose latest attempt failed, was cancelled, rejected or interrupted: the same command and frozen inputs (a changed input rejects it), its own job, log and usage file; earlier attempts and their cost are kept. Stages waiting on it start after it succeeds. An unknown outcome must be cancelled first. Use a stable requestId.", json!({"requestId":string,"runId":string,"stage":string}), vec!["requestId","runId","stage"]),

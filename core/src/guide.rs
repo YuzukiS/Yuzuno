@@ -35,7 +35,7 @@ struct Topic {
 const TOPICS: [Topic; 9] = [
     Topic { name: "overview", covers: "What Core enforces and what this guide is for; the topics.", section: None, reference: None },
     Topic { name: "tasks", covers: "Taking a task: dispatchId, what is a task and what is execution.", section: Some("Taking a task"), reference: None },
-    Topic { name: "jobs", covers: "Direct command or Job: Jobs, GPUs, pauses, checkpoint stops, remote machines and runs of stages.", section: Some("Direct command or Job"), reference: Some("jobs.md") },
+    Topic { name: "jobs", covers: "Direct command or Job: Jobs, GPUs, pauses, checkpoint stops, remote machines, runs of stages and provenance exports.", section: Some("Direct command or Job"), reference: Some("jobs.md") },
     Topic { name: "async", covers: "Asynchronous operations: identifiers, mailbox notifications, retries with the same requestId.", section: Some("Asynchronous operations"), reference: None },
     Topic { name: "delivery", covers: "Delivering a code change: candidate, delivery flow, CI, independent review and the result.", section: Some("Delivering"), reference: Some("delivery.md") },
     Topic { name: "results", covers: "Showing a table, chart, form or task status proposal with result_publish.", section: Some("Showing a result"), reference: None },
@@ -72,7 +72,7 @@ pub fn set_release(release_id: &str, version: &str, git_sha: &str) {
     let _ = RELEASE.set(json!({"releaseId":release_id,"version":version,"gitSha":git_sha,"managed":true}));
 }
 
-fn release() -> Value {
+pub(crate) fn release() -> Value {
     RELEASE.get().cloned().unwrap_or_else(|| {
         json!({"releaseId":"development","version":env!("CARGO_PKG_VERSION"),"gitSha":null,"managed":false})
     })
