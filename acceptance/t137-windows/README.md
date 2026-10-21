@@ -84,6 +84,15 @@ The build needs `CARGO_HOME`, `RUSTUP_HOME` and `PATH` for the Rust toolchain, a
 - **Cleanup, whatever happened:** it removes exactly those, by name, and checks that nothing of the identity is left. The other Yuzuno uninstall entries, folders and keys must be as they were. It never removes `HKCU\Software\yuzuno` itself.
 - **Not removed:** the lab folder, and the shared caches the builds use (the Rust toolchain's registry cache and Tauri's NSIS cache). Delete the lab folder when the check is done.
 
+## Status (2026-10-21), on an ordinary account
+
+**Prepared, not run:** nothing has been installed. The run needs the user's approval: it installs and uninstalls the test identity on their Windows account.
+
+- **Old candidate:** `Yuzuno T137_0.2.0_x64-setup.exe`, 3,740,203 bytes, SHA-256 `4bb38a788f097e579020c3ec2f4a70388d755da05afecf3184472dd423fd2fa6`. Built by Windows Job 1423cf30 from `desktop/` of `faf3282` (tree `18989177`).
+- **New candidate:** `Yuzuno T137_0.2.1_x64-setup.exe`, 3,762,821 bytes, SHA-256 `1031611739f7056a68be68592a07b989b5a48c018d9782ea0fc95006e3e60753`. Built by Windows Job 895ece2a from `desktop/` of `3c13e27` (tree `0ff7fc20`, installer template `9e829b8a`).
+- **Both:** product name Yuzuno T137 with versions 0.2.0 and 0.2.1, Authenticode NotSigned, no updater signature, kept in the lab folder only.
+- **Account, read before anything:** the regular Yuzuno 0.2.0 and Yuzuno Lab 0.1.2 are installed per user. Nothing of `Yuzuno T137` exists. A `HKCU\Software\yuzuno\Yuzuno T148` key left by T-148's check is not this check's to remove.
+
 ## Status (2026-10-19)
 
 **Not run:** there was no isolated Windows environment and no newer package.
