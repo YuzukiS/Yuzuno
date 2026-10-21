@@ -146,6 +146,28 @@ class Host(unittest.TestCase):
         self.assertEqual(result['after']['roots'], {str(r): False for r in h.ROOTS})
         self.assertEqual([p for p in self.home.rglob('*') if p.is_file()], [])
 
+    def test_the_requests_the_lab_sends_at_the_end(self):
+        """snapshot, then cleanup, through action() as the lab sends them; and
+        the tunnel state requests, whose local names once hid state()."""
+        h = self.h
+        h.prepare()
+        self.assertEqual(h.action({'op': 'state_files'}), {'exists': False, 'files': None})
+        self.assertEqual(h.action({'op': 'stale', 'localPort': 5317}), {'state': ['5317.ssh', '5317.target']})
+        (h.lab / 'host.log').write_text('a log line')
+        self.this_run_launches_and_quits()
+        snapshot = h.action({'op': 'snapshot'})
+        self.assertEqual(h.problems(snapshot['state']), [f'{p} exists' for p in h.APP_DATA] + [f'{h.PREFS} exists'])
+        self.assertEqual(sorted(snapshot['created']), sorted(str(p) for p in h.APP_DATA))
+        self.assertIn('yuzuno-tunnel/5317.ssh', snapshot['labFiles'])
+        self.assertEqual(snapshot['logs'], {'host.log': 'a log line'})
+        self.assertTrue(h.lab.exists(), 'a snapshot removes nothing')
+        done = h.action({'op': 'cleanup'})
+        self.assertTrue(done['labRemoved'] and done['ownedProcessesStopped'])
+        self.assertEqual((done['kept'], done['failed']), ([], []))
+        self.assertEqual(h.problems(done['after']), [])
+        self.assertFalse(h.ROOTS[0].exists())
+        self.assertEqual([p for p in self.home.rglob('*') if p.is_file()], [])
+
     def test_lab_folders_that_existed_stay(self):
         h = self.h
         (h.ROOTS[1] / 'run-earlier').mkdir(parents=True)

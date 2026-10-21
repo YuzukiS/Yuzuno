@@ -480,14 +480,14 @@ def action(message):
     if op == 'stale':
         # What a tunnel that ended without stop leaves: a control socket path
         # that is no socket, and a record for another Core.
-        state = lab / 'yuzuno-tunnel'
-        state.mkdir(mode=0o700, exist_ok=True)
-        (state / f"{message['localPort']}.ssh").write_text('')
-        (state / f"{message['localPort']}.target").write_text('someone@elsewhere port 22 to Core port 1\n')
-        return {'state': sorted(os.listdir(state))}
+        state_dir = lab / 'yuzuno-tunnel'
+        state_dir.mkdir(mode=0o700, exist_ok=True)
+        (state_dir / f"{message['localPort']}.ssh").write_text('')
+        (state_dir / f"{message['localPort']}.target").write_text('someone@elsewhere port 22 to Core port 1\n')
+        return {'state': sorted(os.listdir(state_dir))}
     if op == 'state_files':
-        state = Path(message.get('stateDir') or lab / 'yuzuno-tunnel')
-        return {'exists': state.exists(), 'files': sorted(os.listdir(state)) if state.is_dir() else None}
+        state_dir = Path(message.get('stateDir') or lab / 'yuzuno-tunnel')
+        return {'exists': state_dir.exists(), 'files': sorted(os.listdir(state_dir)) if state_dir.is_dir() else None}
     if op == 'open_folder':
         path = lab / message['name']
         path.mkdir()
