@@ -575,20 +575,29 @@ impl AgentDetail {
         }
     }
 
+    /// The last agent message and the changed files, read from the Items in
+    /// place: copying every Item to read them cost a long history its whole
+    /// size on each snapshot (T-120). The files are added in Item order.
     pub fn refresh_snapshot_evidence(&mut self) {
-        let items: Vec<Value> = self.turns.iter().flat_map(|t|
-            t["items"].as_array().into_iter().flatten().cloned()).collect();
-        for item in items {
+        let mut last_message = None;
+        let mut changed: Vec<(String, Option<String>)> = Vec::new();
+        for item in self.turns.iter().flat_map(|t| t["items"].as_array().into_iter().flatten()) {
             if item["type"] == "agentMessage" {
-                self.agent.last_message = item["text"].as_str().map(str::to_owned);
+                last_message = Some(item);
             }
             if item["type"] == "fileChange" {
                 for change in item["changes"].as_array().into_iter().flatten() {
                     if let Some(path) = change["path"].as_str() {
-                        self.add_artifact(path, item["id"].as_str());
+                        changed.push((path.to_owned(), item["id"].as_str().map(str::to_owned)));
                     }
                 }
             }
+        }
+        if let Some(item) = last_message {
+            self.agent.last_message = item["text"].as_str().map(str::to_owned);
+        }
+        for (path, item) in changed {
+            self.add_artifact(&path, item.as_deref());
         }
     }
 
@@ -653,5 +662,68 @@ pub(crate) fn settle_status(agent: &mut Agent, pending: &[PendingRequest], runni
         agent.status = "waiting".into();
     } else if agent.status == "waiting" {
         agent.status = if running() { "working" } else { "idle" }.into();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `refresh_snapshot_evidence` as it was before T-120: a copy of every
+    /// Item, then the same reads.
+    fn copied_evidence(d: &mut AgentDetail) {
+        let items: Vec<Value> = d.turns.iter().flat_map(|t|
+            t["items"].as_array().into_iter().flatten().cloned()).collect();
+        for item in items {
+            if item["type"] == "agentMessage" {
+                d.agent.last_message = item["text"].as_str().map(str::to_owned);
+            }
+            if item["type"] == "fileChange" {
+                for change in item["changes"].as_array().into_iter().flatten() {
+                    if let Some(path) = change["path"].as_str() {
+                        d.add_artifact(path, item["id"].as_str());
+                    }
+                }
+            }
+        }
+    }
+
+    fn detail(turns: Value, last_message: Option<&str>, artifacts: Value) -> AgentDetail {
+        serde_json::from_value(json!({"agent":{"id":"a","name":"A","cwd":"/tmp","model":"m","color":"sage","status":"idle",
+            "createdAt":"","updatedAt":"","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0,
+            "lastMessage":last_message},"turns":turns,"pending":[],"artifacts":artifacts})).unwrap()
+    }
+
+    /// Reading the Items in place leaves what copying them left: the last
+    /// agent message (or none, when the last one has no text), and each
+    /// changed path once, in Item order, with its first Item and its kind.
+    #[test]
+    fn snapshot_evidence_read_in_place_matches_the_copied_reading() {
+        let change = |id: &str, paths: &[&str]| json!({"id":id,"type":"fileChange",
+            "changes":paths.iter().map(|p| json!({"path":p,"kind":"update"})).collect::<Vec<_>>()});
+        let message = |id: &str, text: Value| json!({"id":id,"type":"agentMessage","text":text});
+        let existing = json!([{"path":"/w/kept.rs","name":"kept.rs","kind":"text","sourceItemId":"old"}]);
+        let cases = [
+            ("empty", json!([]), None, json!([])),
+            ("no items", json!([{"id":"t1","status":"completed"},{"id":"t2","status":"completed","items":null}]), Some("before"), json!([])),
+            ("messages and files", json!([
+                {"id":"t1","status":"completed","items":[message("m1", json!("first")), change("f1", &["/w/a.rs", "/w/pic.PNG"])]},
+                {"id":"t2","status":"completed","items":[{"id":"u","type":"userMessage"}, change("f2", &["/w/a.rs", "/w/b.txt"]),
+                    {"id":"f3","type":"fileChange","changes":[{"kind":"add"}, {"path":"/w/c.jpeg"}]}, message("m2", json!("last"))]},
+            ]), Some("before"), existing.clone()),
+            ("last message without text", json!([
+                {"id":"t1","status":"completed","items":[message("m1", json!("said")), message("m2", Value::Null)]},
+            ]), Some("before"), json!([])),
+            ("files without IDs", json!([
+                {"id":"t1","status":"inProgress","items":[{"type":"fileChange","changes":[{"path":"/w/kept.rs"}, {"path":"/w/new.webp"}]}]},
+            ]), None, existing),
+        ];
+        for (case, turns, last, artifacts) in cases {
+            let mut copied = detail(turns.clone(), last, artifacts.clone());
+            copied_evidence(&mut copied);
+            let mut in_place = detail(turns, last, artifacts);
+            in_place.refresh_snapshot_evidence();
+            assert_eq!(serde_json::to_value(&in_place).unwrap(), serde_json::to_value(&copied).unwrap(), "{case}");
+        }
     }
 }
