@@ -51,6 +51,22 @@ The user can pause a running Job to free the machine, for example for a game. Ev
 - Its `timeoutSeconds` keeps counting while it is paused. A paused Job that reaches its timeout is stopped as failed with reason `timeout`, without running again.
 - Connections, leases or API sessions it held may have expired by the time it resumes. The command has to cope with that; Core never replays a call.
 
+## Stopping at a checkpoint
+
+A command that can save its whole state and exit at a safe point may declare it in `job_submit`'s `checkpoint`: the `signal` it saves on (`SIGTERM`, `SIGINT` or `SIGUSR1`), the `graceSeconds` it needs (10–900, shorter than `timeoutSeconds`) and the `stoppedExitCode` that means it stopped (1–125). Only a Job on this Core's host takes it: not with `machineId`, not in a run's stages. Without it the user has pause and cancel only.
+
+On a Core whose release includes T-109 (an older one refuses the field), the user can then stop it at a checkpoint. Unlike a pause, the attempt ends and frees its memory. The attempt's wrapper sends `signal` to the command itself, so make the command the Job's `argv`, not a shell that runs it. The command then does its part:
+
+1. Save everything it needs to continue into `$YUZUNO_CHECKPOINT_DIR`, a new folder for each attempt.
+2. Write `manifest.json` there last: `{"attempt": "$YUZUNO_JOB_ATTEMPT", "nonce": <the nonce in the JSON file at $YUZUNO_CHECKPOINT_REQUEST>, "files": [{"path": <relative>}]}`, at most 1000 files. It may add `progress`.
+3. Exit `stoppedExitCode`.
+
+The wrapper then checks the exit code, that the manifest names this attempt and this stop, and every listed file as a regular file in that folder, with its own SHA-256. Only then does `job_get` show `checkpointStop.state` `checkpointed`: the Job is `cancelled` and `result.checkpoint.ok` is true. Anything else is `notResumable`, with the reason. A command still running `graceSeconds` after the stop is cancelled; once it has exited, checking its files counts against `timeoutSeconds` instead. The reservation is released only once every process of the attempt has exited.
+
+- A system mail tells you when the user stops a Job at a checkpoint. Do not resubmit it; report it as stopped at a checkpoint, or as not resumable and why.
+- Only the user resumes it. That makes a new Job with the same submission, linked by `checkpointFrom` (and `resumeOf` in lists). Its command gets `$YUZUNO_RESUME_FROM`, the path of that manifest, and has to load from it. The wrapper checks the files again before the command starts; a changed checkpoint rejects the attempt instead of starting it from scratch. A Core from before checkpoints that picks up a queued resumed Job rejects it the same way, saying its guarded inputs changed; it never starts it without the checkpoint.
+- How much continues exactly is the command's: save the model, optimizer, scheduler, step counters and random or data positions it needs. acceptance/t109-checkpoint is a small Lightning example.
+
 ## On a remote Linux machine
 
 `job_submit` with `machineId` (a registered SSH machine from the Machines list) runs the command on that machine instead of this Core's host. Use it only when the user or the project asks for that machine.

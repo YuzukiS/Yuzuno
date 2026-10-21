@@ -10,7 +10,9 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Save,
   Square,
+  StepForward,
   X,
 } from "lucide-react";
 import { api, API_BASE, errorText, HttpError, post } from "./api";
@@ -94,6 +96,8 @@ type Job = {
     started?: { limits?: { held?: { unit?: string } | null } | null } | null;
     cost?: Cost | null;
     progress?: Progress | null;
+    /** What the wrapper checked after a stop at a checkpoint (T-109). */
+    checkpoint?: { ok: boolean; reason?: string | null; files?: { path: string; bytes: number }[] } | null;
   };
   /** One attempt of a run's stage (T-105). */
   run?: { id: string; stage: string; attempt: number } | null;
@@ -102,6 +106,20 @@ type Job = {
   reports?: { cost?: Cost | null; progress?: Progress | null } | null;
   /** The user's pause and what the host confirmed (T-107). */
   pause?: JobPause | null;
+  /** How its command stops at a checkpoint, if it declared one (T-109). */
+  checkpoint?: { signal?: string; graceSeconds: number; stoppedExitCode: number } | null;
+  /** The user's stop at a checkpoint and how it ended. */
+  checkpointStop?: CheckpointStop | null;
+  /** The job this one resumes from its checkpoint. */
+  resumeOf?: string | null;
+  checkpointFrom?: { jobId: string } | null;
+};
+type CheckpointStop = {
+  state: "requested" | "signalled" | "pending" | "failed" | "expired" | "checkpointed" | "notResumable";
+  reason?: string | null;
+  deadline?: string | null;
+  graceSeconds?: number;
+  resumedAs?: string | null;
 };
 type JobPause = {
   intent?: "pause" | "resume";
@@ -198,8 +216,18 @@ const pauseName: Record<JobPause["state"], string> = {
   failed: "Pause failed",
   unknown: "Pause unknown",
 };
+/** Core's reason as a sentence, so more can follow it. */
+const sentence = (text?: string | null) => (text && !/[.!?]$/.test(text) ? `${text}.` : text || "");
+/** A running job the user asked to stop at a checkpoint. */
+const stoppingAtCheckpoint = (job: Job) =>
+  job.status === "running" && ["requested", "signalled", "pending", "failed"].includes(job.checkpointStop?.state ?? "");
+/** A finished job its wrapper verified a checkpoint for. */
+const checkpointed = (job: Job) =>
+  !job.reserved && job.checkpointStop?.state === "checkpointed" && job.result?.checkpoint?.ok === true;
 /** Its status in words, and the mark drawn for it. */
 function stateOf(job: Job) {
+  if (stoppingAtCheckpoint(job)) return { name: "Stopping at checkpoint", mark: job.status };
+  if (checkpointed(job)) return { name: "Stopped at checkpoint", mark: job.status };
   const pause = job.status === "running" ? pauseOf(job) : null;
   if (!pause) return { name: statusName[job.status] || job.status, mark: job.status };
   const name =
@@ -650,6 +678,22 @@ export function Jobs({
       setBusy(false);
     }
   }
+  /** Stop at a checkpoint, or resume from one as a new job (T-109). */
+  async function checkpoint(job: Job, resume: boolean) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const value = await post<Job>(`/jobs/${job.id}/${resume ? "resume-checkpoint" : "checkpoint"}`);
+      await load();
+      window.dispatchEvent(new CustomEvent("yuzuno:jobs-refresh"));
+      if (resume && value?.id) setSelected(value.id);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
   async function pause(job: Job, resume: boolean) {
     if (busy) return;
     setBusy(true);
@@ -973,6 +1017,7 @@ export function Jobs({
                             revision={revision}
                             onCancel={() => void cancel(detail)}
                             onPause={(resume) => void pause(detail, resume)}
+                            onCheckpoint={(resume) => void checkpoint(detail, resume)}
                             onRerun={() => rerun(detail)}
                             onOpen={setSelected}
                           />
@@ -1124,6 +1169,7 @@ function JobDetail({
   revision,
   onCancel,
   onPause,
+  onCheckpoint,
   onRerun,
   onOpen,
 }: {
@@ -1135,6 +1181,8 @@ function JobDetail({
   onCancel: () => void;
   /** Pause, or with true resume, the running job. */
   onPause: (resume: boolean) => void;
+  /** Stop the running job at a checkpoint, or with true resume from it. */
+  onCheckpoint: (resume: boolean) => void;
   onRerun: () => void;
   onOpen: (jobId: string) => void;
 }) {
@@ -1144,6 +1192,8 @@ function JobDetail({
   // has not taken hold; pause again after a pause that failed.
   const resume = !!pause && !(pause.state === "failed" && pause.intent === "pause");
   const refused = resume ? null : pauseRefusal(job);
+  const stop = job.checkpointStop;
+  const stopping = stoppingAtCheckpoint(job);
   return (
     <>
       <JobDetailHeading
@@ -1154,7 +1204,7 @@ function JobDetail({
         title={job.name}
         role={active(job) ? "status" : undefined}
       >
-        {job.status === "running" && (
+        {job.status === "running" && !stopping && (
           <button
             type="button"
             className="secondary-button"
@@ -1172,6 +1222,35 @@ function JobDetail({
           >
             {resume ? <Play size={12} aria-hidden="true" /> : <Pause size={12} aria-hidden="true" />}
             {resume ? "Resume" : "Pause"}
+          </button>
+        )}
+        {job.status === "running" && job.checkpoint && (stop?.state === "failed" || !stopping) && (
+          <button
+            type="button"
+            className="secondary-button"
+            // A paused command cannot save; Core refuses it until resumed.
+            disabled={busy || !!pause}
+            onClick={() => onCheckpoint(false)}
+            title={
+              pause
+                ? "Resume it first: a paused command cannot save a checkpoint"
+                : `Ask the command to save a checkpoint and exit. Unlike Pause, this ends the attempt and frees its memory; you can resume it later as a new attempt. It has ${job.checkpoint.graceSeconds} s: if it is still running then, it is cancelled and cannot be resumed.`
+            }
+          >
+            <Save size={12} aria-hidden="true" />
+            Stop at checkpoint
+          </button>
+        )}
+        {checkpointed(job) && !stop?.resumedAs && (
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={busy}
+            onClick={() => onCheckpoint(true)}
+            title="Queue a new attempt of the same command that continues from this checkpoint, checked again before it starts"
+          >
+            <StepForward size={12} aria-hidden="true" />
+            Resume from checkpoint
           </button>
         )}
         {active(job) ? (
@@ -1200,7 +1279,22 @@ function JobDetail({
         )}
         <SendToAgentButton source={() => jobHandoff(job)} />
       </JobDetailHeading>
-      {pause ? (
+      {stop && (job.status === "running" || job.status === "cancelling" || !job.reserved) ? (
+        <p className="job-checkpoint-note">
+          {sentence(stop.reason)}
+          {stopping && stop.deadline && ` If it has not stopped by ${new Date(stop.deadline).toLocaleString()}, it is cancelled and cannot be resumed.`}
+          {stop.state === "checkpointed" && !!job.result?.checkpoint?.files?.length &&
+            ` ${job.result.checkpoint.files.length} checkpoint file${job.result.checkpoint.files.length === 1 ? "" : "s"} checked by SHA-256.`}
+          {stop.resumedAs && (
+            <>
+              {" "}
+              <button type="button" className="quiet-button" onClick={() => onOpen(stop.resumedAs!)}>
+                Resumed as a new job
+              </button>
+            </>
+          )}
+        </p>
+      ) : pause ? (
         <p className="job-pause-note">
           {pause.state === "paused"
             ? job.executor && job.executor.kind !== "local"
@@ -1259,6 +1353,29 @@ function JobDetail({
           </dd>
           <dt>Directory</dt>
           <dd>{job.cwd}</dd>
+          {job.checkpoint && (
+            <>
+              <dt>Checkpoint</dt>
+              <dd>
+                On stop: {job.checkpoint.signal || "SIGTERM"}, {job.checkpoint.graceSeconds} s to save, exits{" "}
+                {job.checkpoint.stoppedExitCode}
+              </dd>
+            </>
+          )}
+          {(job.resumeOf || job.checkpointFrom?.jobId) && (
+            <>
+              <dt>Resumes</dt>
+              <dd>
+                <button
+                  type="button"
+                  className="quiet-button"
+                  onClick={() => onOpen((job.resumeOf || job.checkpointFrom?.jobId)!)}
+                >
+                  The job it continues from
+                </button>
+              </dd>
+            </>
+          )}
           <ReportedLines
             cost={job.result?.cost ?? job.reports?.cost}
             progress={job.result?.progress ?? job.reports?.progress}

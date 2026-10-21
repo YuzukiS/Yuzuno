@@ -36,6 +36,16 @@ JSON_LIMIT = 16 * 1024 * 1024
 # What a command reports through its attempt's own files.
 USAGE_LIMIT = 1024 * 1024
 PROGRESS_LIMIT = 64 * 1024
+# Stop at a checkpoint (T-109): a standalone Job that declared `checkpoint`
+# writes it under <cwd>/.yuzuno-checkpoints/<attempt>/, created fresh for the
+# attempt, and lists it last in manifest.json.
+CHECKPOINTS = '.yuzuno-checkpoints'
+CHECKPOINT_SIGNALS = {'SIGTERM': signal.SIGTERM, 'SIGINT': signal.SIGINT, 'SIGUSR1': signal.SIGUSR1}
+MANIFEST_LIMIT = 1024 * 1024
+# Files one checkpoint may list: each is hashed, and listed in the Job's record.
+CHECKPOINT_FILES = 1000
+# Written when the command of an attempt with a checkpoint has exited.
+CHECKPOINT_EXIT = 'checkpoint-exit.json'
 
 def command(args, timeout=8, check=True):
     # All manager commands have small output; never capture the job's stdout.
@@ -111,6 +121,8 @@ def pids_evidence(spec, folder, state, previous=None):
 def terminal_reason(spec, folder, status, state, pids):
     changed = read(folder / 'input-changed.json')
     reason = (changed or {}).get('reason') or state.get('Result')
+    if status == 'cancelled' and (read(folder / 'checkpoint.json') or {}).get('ok') is True:
+        return "Stopped at the user's request at a verified checkpoint; only the user resumes it"
     if status == 'failed' and state.get('Result') == 'success' and spec.get('artifacts'):
         return artifacts_reason(spec, folder) or reason
     # A successful command may recover from a rejected clone. Cancellation,
@@ -229,8 +241,15 @@ def snapshot(spec):
         if len(value) > 2 * 1024 * 1024:
             raise RuntimeError('Guarded input grew beyond the size limit')
         hashes.append({'path': str(path), 'sha256': hashlib.sha256(value).hexdigest()})
-    return {'cwd': str(cwd), 'git': git, 'files': hashes,
-            'scope': 'Frozen argv/env/resources; optional Git HEAD and changed tracked files plus explicit small inputs. Untracked/ignored data, submodule contents and changes after launch are not frozen.'}
+    value = {'cwd': str(cwd), 'git': git, 'files': hashes,
+             'scope': 'Frozen argv/env/resources; optional Git HEAD and changed tracked files plus explicit small inputs. Untracked/ignored data, submodule contents and changes after launch are not frozen.'}
+    source = spec.get('checkpointFrom')
+    if source:
+        # A resumed attempt (T-109). A wrapper from before checkpoints computes
+        # no such entry, so it finds the snapshot changed and rejects the
+        # attempt before the command starts, instead of running it from scratch.
+        value['resumeFrom'] = {key: source.get(key) for key in ('jobId', 'attempt', 'manifestSha256')}
+    return value
 
 def check_artifact(cwd, artifact):
     """A declared artifact as it is now: its digest, or why it is not acceptable.
@@ -320,6 +339,8 @@ def guard_reason(spec, current):
     before = {f['path']: f['sha256'] for f in frozen.get('files', [])}
     after = {f['path']: f['sha256'] for f in current.get('files', [])}
     changed += [p for p in sorted(set(before) | set(after)) if before.get(p) != after.get(p)]
+    if frozen.get('resumeFrom') != current.get('resumeFrom'):
+        changed.append('the checkpoint it resumes from')
     if not changed:
         changed.append('the list of changed tracked files')
     shown = ', '.join(changed[:5]) + (f' and {len(changed) - 5} more' if len(changed) > 5 else '')
@@ -477,7 +498,153 @@ def attempt_env(spec, folder):
     if devices:
         env['CUDA_VISIBLE_DEVICES'] = ','.join(devices)
         env['YUZUNO_JOB_GPUS'] = ','.join(devices)
+    if spec.get('checkpoint'):
+        # Where this attempt saves, and the file its stop request appears in.
+        env['YUZUNO_CHECKPOINT_DIR'] = str(checkpoint_dir(spec))
+        env['YUZUNO_CHECKPOINT_REQUEST'] = str(folder / 'checkpoint-stop.json')
+    source = spec.get('checkpointFrom')
+    if source:
+        env['YUZUNO_RESUME_FROM'] = str(Path(source['dir']) / 'manifest.json')
     return env
+
+def checkpoint_dir(spec):
+    return Path(spec['cwd']) / CHECKPOINTS / spec['attempt']
+
+class Forwarder:
+    """The wrapper's side of a stop at a checkpoint. Core writes the request,
+    then signals this process (the unit's main one). Only the declared signal
+    goes, once, only to this wrapper's own child, and never once the child
+    has exited: `wait` marks it exited before reaping it, so its PID is still
+    that child's (a zombie) whenever a signal could be sent."""
+    def __init__(self, spec, folder):
+        self.folder = folder
+        self.signal = CHECKPOINT_SIGNALS[spec['checkpoint'].get('signal') or 'SIGTERM']
+        self.child = None
+        self.exited = False
+        self.sent = False
+
+    def __call__(self, *_):
+        if self.child is None or self.exited or self.sent or not (self.folder / 'checkpoint-stop.json').exists():
+            return
+        self.sent = True
+        outcome = {'signal': self.signal.name, 'pid': self.child.pid, 'at': time.time()}
+        try:
+            os.kill(self.child.pid, self.signal)
+        except ProcessLookupError:
+            outcome['problem'] = 'the command had already exited'
+        atomic(self.folder / 'checkpoint-forward.json', outcome)
+
+    def started(self, child):
+        # A request that came before the command started is sent now.
+        self.child = child
+        self()
+
+    def wait(self, child):
+        os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
+        self.exited = True
+        return child.wait()
+
+def checkpoint_files(base, manifest):
+    """The files a manifest lists, each a regular file inside `base` reached
+    without a link, with Core's own full digest; or why not."""
+    listed = manifest.get('files')
+    if not isinstance(listed, list) or not listed:
+        return None, 'the manifest lists no files'
+    if len(listed) > CHECKPOINT_FILES:
+        return None, f'the manifest lists more than {CHECKPOINT_FILES} files'
+    root = base.resolve(strict=True)
+    files = []
+    for entry in listed:
+        name = entry.get('path') if isinstance(entry, dict) else None
+        if (not isinstance(name, str) or not name or name.startswith('/') or '..' in Path(name).parts
+                or Path(name) == Path('manifest.json')):
+            return None, f'the manifest lists an invalid path: {str(name)[:200]}'
+        path = base / name
+        try:
+            before = path.lstat()
+            if not stat.S_ISREG(before.st_mode):
+                return None, f'{name} is not a regular file'
+            if path.resolve(strict=True) != root / name:
+                return None, f'{name} is reached through a link'
+            digest = hashlib.sha256()
+            with path.open('rb') as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                    digest.update(chunk)
+            after = path.lstat()
+        except FileNotFoundError:
+            return None, f'{name} is missing'
+        except OSError as error:
+            return None, f'{name} cannot be read: {error.strerror or error}'
+        if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
+            return None, f'{name} changed while it was being checked'
+        sha = digest.hexdigest()
+        if entry.get('sha256') not in (None, sha):
+            return None, f'{name} does not match the digest the manifest records'
+        files.append({'path': name, 'bytes': after.st_size, 'sha256': sha})
+    return files, None
+
+def verify_checkpoint(spec, folder, code):
+    """After the command exited: whether this attempt left a checkpoint made
+    for this stop request. None when no stop was requested."""
+    request = read(folder / 'checkpoint-stop.json')
+    if not request:
+        return None
+    declared = spec['checkpoint']
+    base = checkpoint_dir(spec)
+    outcome = {'ok': False, 'requestedAt': request.get('requestedAt'), 'nonce': request.get('nonce'),
+               'dir': str(base), 'exitCode': code, 'forward': read(folder / 'checkpoint-forward.json')}
+    def no(reason):
+        outcome['reason'] = reason
+        outcome['checkedAt'] = time.time()
+        return outcome
+    if code != declared['stoppedExitCode']:
+        return no(f'the command exited {code}, not the declared stopped code {declared["stoppedExitCode"]}')
+    manifest_path = base / 'manifest.json'
+    try:
+        info = manifest_path.lstat()
+        if not stat.S_ISREG(info.st_mode):
+            return no('manifest.json is not a regular file')
+        if info.st_size > MANIFEST_LIMIT:
+            return no('manifest.json is larger than 1 MiB')
+        raw = manifest_path.read_bytes()
+        manifest = json.loads(raw)
+    except FileNotFoundError:
+        return no('no manifest.json was written')
+    except (ValueError, UnicodeDecodeError, RecursionError, OSError) as error:
+        return no(f'manifest.json is not readable JSON: {str(error)[:200]}')
+    if not isinstance(manifest, dict):
+        return no('manifest.json is not a JSON object')
+    if manifest.get('attempt') != spec['attempt']:
+        return no('the manifest names another attempt')
+    if manifest.get('nonce') != request.get('nonce'):
+        return no('the manifest does not name this stop request')
+    files, problem = checkpoint_files(base, manifest)
+    if problem:
+        return no(problem)
+    outcome.update({'ok': True, 'reason': None, 'manifestSha256': hashlib.sha256(raw).hexdigest(),
+                    'files': files, 'progress': manifest.get('progress'), 'checkedAt': time.time()})
+    return outcome
+
+def checkpoint_source_problem(source):
+    """Before a resumed attempt starts: the checkpoint it resumes from is
+    still exactly what was verified when its attempt stopped."""
+    base = Path(source['dir'])
+    try:
+        raw = (base / 'manifest.json').read_bytes()
+    except OSError:
+        return f'the checkpoint it resumes from has no manifest at {base}'
+    if hashlib.sha256(raw).hexdigest() != source['manifestSha256']:
+        return 'the checkpoint manifest it resumes from has changed since it was verified'
+    try:
+        manifest = json.loads(raw)
+    except ValueError:
+        return 'the checkpoint manifest it resumes from is not JSON'
+    files, problem = checkpoint_files(base, manifest)
+    if problem:
+        return f'the checkpoint it resumes from: {problem}'
+    if [(f['path'], f['sha256']) for f in files] != [(f['path'], f['sha256']) for f in source['files']]:
+        return 'a checkpoint file it resumes from has changed since it was verified'
+    return None
 
 
 class _Memory(ctypes.Structure):
@@ -568,6 +735,11 @@ def worker(spec, folder):
     proof = {'jobId': spec['id'], 'attempt': spec['attempt'], 'bootId': boot_id(),
              'invocationId': os.environ.get('INVOCATION_ID'), 'controlGroup': relative,
              'pid': os.getpid(), 'limits': limits, 'pids': pids_snapshot(group), 'at': time.time()}
+    # Core signals this process only once started.json exists, so the
+    # handler is in place before the default action could end the wrapper.
+    forward = Forwarder(spec, folder) if spec.get('checkpoint') else None
+    if forward:
+        signal.signal(signal.SIGUSR1, forward)
     atomic(folder / 'started.json', proof)
     if read(folder / 'cancel.json'):
         return 125
@@ -579,6 +751,22 @@ def worker(spec, folder):
     if changed:
         atomic(folder / 'input-changed.json', {'reason': changed})
         return 78
+    source = spec.get('checkpointFrom')
+    changed = source and checkpoint_source_problem(source)
+    if changed:
+        atomic(folder / 'input-changed.json', {'reason': changed})
+        return 78
+    if forward:
+        base = checkpoint_dir(spec)
+        try:
+            base.parent.mkdir(exist_ok=True)
+            base.mkdir()
+        except FileExistsError:
+            atomic(folder / 'input-changed.json', {'reason': f'{base} already exists; each attempt saves into a new one'})
+            return 78
+        except OSError as error:
+            atomic(folder / 'input-changed.json', {'reason': f'{base} cannot be created for checkpoints: {error.strerror or error}'})
+            return 78
     # Clear ambient manager/Core credentials. The submission stores this exact
     # env; Core adds only this attempt's identity and report files.
     total = 0
@@ -586,6 +774,8 @@ def worker(spec, folder):
     try:
         child = subprocess.Popen(spec['argv'], cwd=spec['cwd'], env={**spec['env'], **attempt_env(spec, folder)},
                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if forward:
+            forward.started(child)
         while True:
             chunk = os.read(child.stdout.fileno(), 16384)
             if not chunk:
@@ -606,7 +796,7 @@ def worker(spec, folder):
                 part, chunk = chunk[:SEGMENT - at], chunk[SEGMENT - at:]
                 log.write(part)
                 total += len(part)
-        code = child.wait()
+        code = forward.wait(child) if forward else child.wait()
     finally:
         if log:
             os.fsync(log.fileno())
@@ -614,6 +804,21 @@ def worker(spec, folder):
         # This worker is still in the cgroup, so fast failures retain counters
         # even if systemd removes the empty group before the collector polls.
         atomic(folder / 'finished-pids.json', {**proof, 'pids': pids_snapshot(group)})
+    if forward:
+        # The command has ended: from here a stop's grace period no longer
+        # applies, and Core does not cancel the check below (checkpoint.rs).
+        try:
+            atomic(folder / CHECKPOINT_EXIT, {'attempt': spec['attempt'], 'exitCode': code, 'at': time.time()})
+        except OSError:
+            pass
+        # Inside this attempt's limits and timeout, before the reservation can
+        # be released; never fails the worker itself.
+        try:
+            checked = verify_checkpoint(spec, folder, code)
+        except Exception as error:
+            checked = {'ok': False, 'reason': f'the checkpoint could not be checked: {error}'[:300]}
+        if checked is not None:
+            atomic(folder / 'checkpoint.json', checked)
     if code == 0 and spec.get('artifacts'):
         # Inside this attempt's limits and timeout. Never fail the worker
         # itself here: a missing record is reported as an unverified artifact,
@@ -624,6 +829,8 @@ def worker(spec, folder):
         except Exception:
             pass
     if code < 0:
+        if forward:
+            signal.signal(signal.SIGUSR1, signal.SIG_DFL)
         os.kill(os.getpid(), -code)
     return code
 
@@ -636,6 +843,9 @@ def reports(spec, folder):
     try:
         value = {'artifacts': checked_artifacts(spec, folder), 'cost': usage_summary(folder),
                  'progress': progress(folder)}
+        if spec.get('checkpoint'):
+            # The worker's own check; a stop that never got one stays None.
+            value['checkpoint'] = read(folder / 'checkpoint.json')
         json.dumps(value, allow_nan=False)
         return value
     except Exception as error:
@@ -668,6 +878,9 @@ def classify(spec, folder, state):
         return None
     if read(folder / 'input-changed.json'):
         return 'rejected'
+    if (read(folder / 'checkpoint.json') or {}).get('ok') is True:
+        # Stopped at a verified checkpoint: an end the user asked for.
+        return 'cancelled'
     if state.get('Result') == 'success' and state.get('ExecMainCode') == '1' and state.get('ExecMainStatus') == '0':
         # A clean exit is not success until every declared artifact verified.
         return 'failed' if spec.get('artifacts') and artifacts_reason(spec, folder) else 'succeeded'
@@ -807,6 +1020,36 @@ def thaw_for_stop(spec, folder, proof, state):
     return {'wasFrozen': True, 'thawReturnCode': asked.returncode, 'freezer': wait_freezer(proof, False, 3)}
 
 @controlled
+def checkpoint_stop(spec, folder):
+    """The user's stop at a checkpoint. The request is written once (a repeat
+    keeps the first); then the wrapper, this unit's main process, is asked to
+    forward the declared signal to its command. A paused worker is thawed
+    first. Nothing is released here: the attempt ends when its processes do."""
+    if not spec.get('checkpoint'):
+        return {'delivered': False, 'reason': 'This Job declared no checkpoint; nothing was changed'}
+    finished = read(folder / 'result.json')
+    if finished and finished['status'] != 'unknown':
+        return {'delivered': False, 'reason': 'The job has already finished; nothing was changed'}
+    if read(folder / 'cancel.json'):
+        return {'delivered': False, 'reason': 'Cancellation was requested; nothing was changed'}
+    request = read(folder / 'checkpoint-stop.json')
+    if not request:
+        request = {'attempt': spec['attempt'], 'nonce': os.urandom(16).hex(), 'requestedAt': time.time()}
+        atomic(folder / 'checkpoint-stop.json', request)
+    state, proof = live_worker(spec, folder)
+    if state is None:
+        # Before the command starts, the wrapper reads the request itself.
+        return {'delivered': False, 'request': request, 'reason': proof}
+    if state.get('MainPID') != str(proof.get('pid')):
+        return {'delivered': False, 'request': request,
+                'reason': "The unit's main process is not this attempt's wrapper; no signal was sent"}
+    thawed = thaw_for_stop(spec, folder, proof, state)
+    asked = command(['systemctl', '--user', 'kill', '--kill-whom=main', '--signal=SIGUSR1', spec['unit']],
+                    timeout=15, check=False)
+    return {'delivered': asked.returncode == 0, 'request': request, 'thawed': thawed,
+            'reason': None if asked.returncode == 0 else 'systemd did not signal the wrapper: ' + (asked.stderr.strip()[:300] or 'unknown error')}
+
+@controlled
 def cancel(spec, folder):
     previous = read(folder / 'result.json')
     if previous and previous['status'] != 'unknown':
@@ -928,6 +1171,8 @@ def main():
         print(json.dumps(pause(spec, folder)))
     elif mode == 'resume':
         print(json.dumps(resume(spec, folder)))
+    elif mode == 'checkpoint':
+        print(json.dumps(checkpoint_stop(spec, folder)))
     elif mode == 'inspect':
         state = show(spec['unit'])
         proof = read(folder / 'started.json')

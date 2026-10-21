@@ -304,7 +304,7 @@ fn preconditions(legacy: &Path, base: &Path, install: Option<&Path>) -> Result<(
     // A managed update records the Workspace path for its whole operation. Its
     // helper runs for all of it, wherever the install is; the journal also
     // covers a helper that stopped half-way.
-    if let Some(pid) = running_update_helper() {
+    if let Some(pid) = running_update_helper()? {
         bail!("An update helper is running (process {pid}); move the Workspace once the update has ended. Nothing was moved");
     }
     for root in install.into_iter().map(Path::to_path_buf).chain([base.join(PRODUCT).join("managed-core")]) {
@@ -320,12 +320,35 @@ fn preconditions(legacy: &Path, base: &Path, install: Option<&Path>) -> Result<(
 
 /// A `yuzuno-update-helper` process of this account, if one runs.
 #[cfg(target_os = "linux")]
-fn running_update_helper() -> Option<u32> {
-    std::fs::read_dir("/proc").ok()?.flatten().find_map(|entry| {
-        let pid: u32 = entry.file_name().to_string_lossy().parse().ok()?;
-        let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
-        exe.file_name()?.to_string_lossy().starts_with("yuzuno-update-helper").then_some(pid)
-    })
+fn running_update_helper() -> Result<Option<u32>> {
+    update_helper_in(Path::new("/proc"))
+}
+
+/// The update helper among the processes `proc` lists. A list that cannot be
+/// read whole is an error, never "none runs": a helper may be in what was not
+/// read. A process skipped is one gone since it was listed or one without an
+/// executable (a kernel thread or a zombie), and one whose executable this
+/// account may not read: another account's, or one that made itself
+/// non-dumpable, as agents for keys do (the update helper does not).
+#[cfg(target_os = "linux")]
+fn update_helper_in(proc: &Path) -> Result<Option<u32>> {
+    let unknown = |error: std::io::Error| {
+        anyhow::anyhow!("Cannot tell whether an update helper is running: {} cannot be read ({error}). Nothing was moved",
+            proc.display())
+    };
+    for entry in std::fs::read_dir(proc).map_err(unknown)? {
+        let name = entry.map_err(unknown)?.file_name();
+        let Some(pid) = name.to_str().and_then(|name| name.parse::<u32>().ok()) else { continue };
+        match std::fs::read_link(proc.join(name).join("exe")) {
+            Ok(exe) if exe.file_name().is_some_and(|file| file.to_string_lossy().starts_with("yuzuno-update-helper")) => {
+                return Ok(Some(pid));
+            }
+            Ok(_) => {}
+            Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied) => {}
+            Err(error) => return Err(unknown(error)),
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -586,20 +609,65 @@ mod tests {
         let refused = move_legacy(tmp.path(), Some(install.path()), &mut never).unwrap_err().to_string();
         assert!(refused.contains("A managed update is under way (stopping"), "{refused}");
         assert_eq!(tree(tmp.path()), before);
-        // An update helper that runs, for an install anywhere.
-        let helper = install.path().join("yuzuno-update-helper");
-        std::fs::copy("/bin/sleep", &helper).unwrap();
-        let mut running = std::process::Command::new(&helper).arg("30").spawn().unwrap();
-        let refused = move_legacy(tmp.path(), None, &mut never).unwrap_err().to_string();
-        running.kill().unwrap();
-        running.wait().unwrap();
-        assert!(refused.contains(&format!("An update helper is running (process {})", running.id())), "{refused}");
+        // An update helper that runs, for an install anywhere; ended however
+        // the test ends.
+        struct Helper(std::process::Child);
+        impl Drop for Helper {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let path = install.path().join("yuzuno-update-helper");
+        std::fs::copy("/bin/sleep", &path).unwrap();
+        let started = std::time::Instant::now();
+        let mut helper = Helper(std::process::Command::new(&path).arg("30").spawn().unwrap());
+        let pid = helper.0.id();
+        // CI runs 39492395660 and 39513045319 moved here with the helper
+        // started. If it happens again, say what /proc shows of the helper
+        // (read before it is reaped), whether it still ran (a sleep that
+        // outlived its 30 seconds exits 0; one killed names the signal) and
+        // what the scan sees now.
+        let refused = match move_legacy(tmp.path(), None, &mut never) {
+            Err(error) => error.to_string(),
+            Ok(moved) => panic!("moved ({moved:?}) {:?} after update helper {pid} started: exe {:?}, stat {:?}, then it {:?}, scan now {:?}",
+                started.elapsed(), std::fs::read_link(format!("/proc/{pid}/exe")),
+                std::fs::read_to_string(format!("/proc/{pid}/stat")), helper.0.try_wait(), running_update_helper()),
+        };
+        assert!(refused.contains(&format!("An update helper is running (process {pid})")), "{refused}");
         assert_eq!(tree(tmp.path()), before);
+        drop(helper);
         // A Core that holds the Workspace: refused by its lock.
         let tmp = tempfile::tempdir().unwrap();
         legacy(tmp.path());
         let _held = crate::store::lock_workspace(&tmp.path().join(LEGACY).join(DATABASE)).unwrap();
         assert!(move_legacy(tmp.path(), None, &mut never).unwrap_err().to_string().contains("另一个 Core"));
         assert!(!tmp.path().join(PRODUCT).exists());
+    }
+
+    /// Whether an update helper runs is known only from a whole list of
+    /// processes: one that cannot be read refuses the move, as a helper would.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn processes_that_cannot_be_listed_are_not_taken_for_no_update_helper() {
+        let fake = tempfile::tempdir().unwrap();
+        let unreadable = fake.path().join("not-mounted");
+        let error = update_helper_in(&unreadable).unwrap_err().to_string();
+        assert!(error.contains("Cannot tell whether an update helper is running") && error.contains("Nothing was moved"), "{error}");
+        // Read whole: what is not a process, a process gone since it was
+        // listed, and others' programs are not it; a helper still is, its
+        // file deleted or not.
+        let proc = fake.path().join("proc");
+        for (name, exe) in [("self", Some("/usr/bin/bash")), ("1", Some("/usr/lib/systemd/systemd")), ("2", None),
+            ("40", Some("/usr/bin/sleep"))] {
+            std::fs::create_dir_all(proc.join(name)).unwrap();
+            if let Some(exe) = exe {
+                std::os::unix::fs::symlink(exe, proc.join(name).join("exe")).unwrap();
+            }
+        }
+        assert_eq!(update_helper_in(&proc).unwrap(), None);
+        std::fs::create_dir(proc.join("41")).unwrap();
+        std::os::unix::fs::symlink("/opt/yuzuno/yuzuno-update-helper (deleted)", proc.join("41/exe")).unwrap();
+        assert_eq!(update_helper_in(&proc).unwrap(), Some(41));
     }
 }

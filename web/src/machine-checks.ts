@@ -63,7 +63,16 @@ export const harnessName = (harness: string) =>
     ? "Claude Code"
     : harness === "codex"
       ? "Codex"
-      : harness;
+      : harness === "opencode"
+        ? "OpenCode"
+        : harness;
+
+/** The harness an Agent runs; Agents from before harnesses were named ran Codex. */
+export const agentHarnessName = (agent: { harness?: string }) => harnessName(agent.harness || "codex");
+
+/** The native session an Agent continues, once its harness has one. */
+export const nativeSession = (agent: { harness?: string; claudeSessionId?: string; opencodeSessionId?: string; threadId?: string }) =>
+  agent.harness === "claude" ? agent.claudeSessionId : agent.harness === "opencode" ? agent.opencodeSessionId : agent.threadId;
 
 export function harnessLabel(check: HarnessCheck) {
   const name = harnessName(check.harness);

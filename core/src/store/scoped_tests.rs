@@ -385,3 +385,108 @@ fn a_write_refused_by_its_commit_publishes_nothing() {
         assert_eq!(written, 1, "meta {meta}");
     }
 }
+
+fn pending_request(id: &str, rpc: u64) -> PendingRequest {
+    serde_json::from_value(json!({"id":id,"agentId":"a","method":"item/tool/requestUserInput",
+        "params":{"threadId":"thread","turnId":"t5","itemId":format!("q{rpc}"),"questions":[{"id":"q"}],
+                  "_rpcId":rpc,"_runtimeGeneration":1,"_responseSent":false},
+        "createdAt":"2026-10-20T00:00:00Z"})).unwrap()
+}
+
+/// A native request arriving and its answer (T-120) are metadata changes:
+/// written in place, they leave what comparing the whole record leaves.
+#[test]
+fn a_native_request_and_its_answer_are_written_without_copying_the_record() {
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    let before = in_place();
+    let (asked, copy) = (pending_request("p1", 7), pending_request("p1", 7));
+    generic.record_event("a", "request", &json!({"turnId":"t5"}), move |d| {
+        d.agent.status = "waiting".into();
+        d.pending.push(copy);
+    }).unwrap();
+    scoped.update_meta("a", "request", &json!({"turnId":"t5"}), move |m| {
+        m.agent.status = "waiting".into();
+        m.pending.push(asked);
+    }).unwrap();
+    assert_eq!(state(&generic), state(&scoped));
+    for store in [&generic, &scoped] {
+        store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+    }
+    generic.record_event("a", "request/replied", &json!({"requestId":"p1"}), |d| {
+        d.pending[0].params["_responseSent"] = true.into();
+    }).unwrap();
+    scoped.update_meta("a", "request/replied", &json!({"requestId":"p1"}), |m| {
+        m.pending[0].params["_responseSent"] = true.into();
+    }).unwrap();
+    assert_eq!(in_place(), before + 2, "the scoped store copied the record");
+    let written = state(&scoped);
+    assert_eq!(written, state(&generic));
+    assert_eq!(written["reloaded"]["pending"][0]["params"]["_responseSent"], true);
+    assert_eq!(written["reloaded"]["agent"]["pendingCount"], 1);
+    assert_eq!(written["reloaded"]["agent"]["status"], "waiting");
+}
+
+/// `pending` reads what `detail` has, held or not, without copying the
+/// record when it is held.
+#[test]
+fn pending_reads_the_requests_of_a_held_or_unheld_record() {
+    let ((_a, store), _) = pair();
+    store.update_meta("a", "request", &json!({}), |m| m.pending.push(pending_request("p1", 7))).unwrap();
+    assert!(store.held("a").is_some());
+    let held = store.pending("a").unwrap();
+    assert_eq!(held.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["p1"]);
+    {
+        let mut memory = store.memory.lock().unwrap();
+        memory.held.clear();
+        memory.briefs.clear();
+    }
+    let unheld = store.pending("a").unwrap();
+    assert_eq!(serde_json::to_value(&unheld).unwrap(), serde_json::to_value(&held).unwrap());
+    assert_eq!(serde_json::to_value(&unheld).unwrap(), serde_json::to_value(&store.detail("a").unwrap().pending).unwrap());
+    assert!(store.pending("missing").is_err());
+}
+
+/// A bounded synthetic measurement (T-120), run by hand: one native request
+/// answered on a held record of 50, 500 and 2000 Turns, the way `respond`
+/// did it (`detail` + `update`) and the way it does now (`pending` +
+/// `update_meta`). Prints the median of 15 runs each; asserts nothing about
+/// time. `cargo test --lib measure_native_answer_cost -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn measure_native_answer_cost() {
+    fn median(mut times: Vec<std::time::Duration>) -> std::time::Duration {
+        times.sort();
+        times[times.len() / 2]
+    }
+    for turns in [50usize, 500, 2000] {
+        let (_dir, store) = lab();
+        let mut d = record();
+        d.turns = (0..turns).map(|t| json!({"id":format!("t{t}"),"status":"completed","items":[
+            {"id":format!("u{t}"),"type":"userMessage","content":[{"type":"text","text":format!("message {t}")}]},
+            {"id":format!("c{t}"),"type":"commandExecution","status":"completed","aggregatedOutput":"out\n".repeat(500)},
+            {"id":format!("m{t}"),"type":"agentMessage","text":"answer ".repeat(50)},
+        ]})).collect();
+        store.insert(&d).unwrap();
+        store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+        let (mut before, mut after) = (vec![], vec![]);
+        for round in 0..15 {
+            let id = format!("p{round}");
+            store.update_meta("a", "request", &json!({}), |m| m.pending.push(pending_request(&id, round))).unwrap();
+            let start = std::time::Instant::now();
+            let detail = store.detail("a").unwrap();
+            assert!(detail.pending.iter().any(|p| p.id == id));
+            store.update("a", "request/replied", &json!({"requestId":id}), |d| {
+                d.pending.iter_mut().find(|p| p.id == id).unwrap().params["_responseSent"] = true.into();
+            }).unwrap();
+            before.push(start.elapsed());
+            let start = std::time::Instant::now();
+            assert!(store.pending("a").unwrap().iter().any(|p| p.id == id));
+            store.update_meta("a", "request/replied", &json!({"requestId":id}), |m| {
+                m.pending.iter_mut().find(|p| p.id == id).unwrap().params["_responseSent"] = true.into();
+            }).unwrap();
+            after.push(start.elapsed());
+            store.update_meta("a", "serverRequest/resolved", &json!({}), |m| m.pending.retain(|p| p.id != id)).unwrap();
+        }
+        println!("turns {turns:>5}: detail+update {:>9.3?}  pending+update_meta {:>9.3?}", median(before), median(after));
+    }
+}

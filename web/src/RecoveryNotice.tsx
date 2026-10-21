@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CircleAlert, LoaderCircle, RotateCw } from "lucide-react";
 import { errorText, post } from "./api";
+import { nativeSession } from "./machine-checks";
 import type { AgentDetail } from "./types";
 import "./recovery.css";
 
@@ -17,8 +18,7 @@ export function recoveryReason(detail: AgentDetail): "running" | "uncertain" | "
   if (agent.closedAt) return null;
   if (detail.collaboration?.ready === false) return "collaboration";
   if (agent.remote) return null;
-  const session = agent.harness === "claude" ? agent.claudeSessionId : agent.threadId;
-  if (!session) return null;
+  if (!nativeSession(agent)) return null;
   if (agent.harness !== "claude" && detail.codexHandoff?.writerConflictAt)
     return null;
   if (detail.messageReceipts?.some((r) => r.status === "sending" || r.status === "uncertain"))

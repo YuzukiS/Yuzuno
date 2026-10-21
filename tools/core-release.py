@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from release_common import command, digest, extract, inventory, read, verify_tree, write
+from release_common import claude_sdk_files, command, digest, extract, inventory, read, verify_tree, write
 
 TOOLS = Path(__file__).resolve().parent
 
@@ -53,15 +53,32 @@ def download(endpoint, target, *, accept=None):
         temporary.unlink(missing_ok=True)
 
 
-def ci_identity(run, artifact, config):
+INPUTS_WORKFLOW = '.github/workflows/release-inputs.yml'
+
+
+def ci_identity(run, artifact, config, inputs_run=None):
+    """`run` is the main CI run that tested the source. The artifact is its
+    own or, for a release that names an inputs run, that run's: the
+    release-inputs workflow, run on request on main for the same commit.
+    Returns the run that built the artifact."""
     require(run['status'] == 'completed' and run['conclusion'] == 'success', 'Fixed CI has not passed')
     require(run['head_sha'] == config['source'] and run['head_repository']['full_name'].lower() == config['repository'].lower(), 'CI source/repository mismatch')
     require(run['event'] == 'push' and run['head_branch'] == 'main' and
             run['path'] == '.github/workflows/ci.yml', 'Use the reviewed main CI workflow')
+    producer = run
+    if 'inputsRunId' in config:
+        require(inputs_run is not None and inputs_run['id'] == config['inputsRunId'], 'The fixed release inputs run was not read')
+        require(inputs_run['status'] == 'completed' and inputs_run['conclusion'] == 'success', 'Fixed release inputs run has not passed')
+        require(inputs_run['head_sha'] == config['source'] and
+                inputs_run['head_repository']['full_name'].lower() == config['repository'].lower(), 'Release inputs source/repository mismatch')
+        require(inputs_run['event'] == 'workflow_dispatch' and inputs_run['head_branch'] == 'main' and
+                inputs_run['path'] == INPUTS_WORKFLOW, 'Use the release-inputs workflow run on main')
+        producer = inputs_run
     require(not artifact['expired'], 'Artifact expired; explicitly choose a new CI artifact, never silently rebuild')
-    require(artifact['workflow_run']['id'] == run['id'] and artifact['workflow_run']['head_sha'] == config['source'], 'Artifact is from another run/source')
-    require(artifact['name'] == f"core-inputs-{config['source']}-{run['run_attempt']}", 'Artifact is from a different CI attempt')
+    require(artifact['workflow_run']['id'] == producer['id'] and artifact['workflow_run']['head_sha'] == config['source'], 'Artifact is from another run/source')
+    require(artifact['name'] == f"core-inputs-{config['source']}-{producer['run_attempt']}", 'Artifact is from a different CI attempt')
     require(re.fullmatch(r'sha256:[a-f0-9]{64}', artifact.get('digest', '')), 'Artifact SHA-256 digest is missing')
+    return producer
 
 
 def bundle_identity(path, config):
@@ -131,8 +148,9 @@ class Flow:
     def fetch(self):
         c = self.config
         run = gh_json(f"repos/{c['repository']}/actions/runs/{c['ciRunId']}")
+        inputs_run = gh_json(f"repos/{c['repository']}/actions/runs/{c['inputsRunId']}") if 'inputsRunId' in c else None
         artifact = gh_json(f"repos/{c['repository']}/actions/artifacts/{c['artifactId']}")
-        ci_identity(run, artifact, c)
+        producer = ci_identity(run, artifact, c, inputs_run)
         fetched = self.root / 'artifact'
         # A completed rename is adopted after a process/receipt interruption.
         if not fetched.exists():
@@ -149,10 +167,13 @@ class Flow:
                 (stage / 'product').rename(fetched)
         require('sha256:' + digest(fetched / 'artifact.zip') == artifact['digest'], 'Saved artifact digest mismatch')
         build = read(fetched / 'build.json')
-        require(build['source'] == c['source'] and str(build['runId']) == str(c['ciRunId']) and
-                str(build['runAttempt']) == str(run['run_attempt']) and
+        require(build['source'] == c['source'] and str(build['runId']) == str(producer['id']) and
+                str(build['runAttempt']) == str(producer['run_attempt']) and
                 build['repository'].lower() == c['repository'].lower(), 'Build metadata differs from CI')
         require(build['platform'] == 'linux-x86_64' and re.fullmatch('[a-f0-9]{40}', build['tree']), 'Unsupported artifact identity')
+        # Inputs built on request are public: they must not carry the Claude
+        # Agent SDK (docs/public-readiness.md).
+        require(inputs_run is None or not claude_sdk_files(build['files']), 'Release inputs carry the Claude Agent SDK')
         require(digest(fetched / 'inputs.tar.gz') == build['archiveSha256'], 'Build input archive changed')
         # The downloaded zip is the trust boundary, including recovered files.
         with zipfile.ZipFile(fetched / 'artifact.zip') as archive:
@@ -168,8 +189,9 @@ class Flow:
                 verify_tree(extracted, build['files'])
                 extracted.rename(inputs)
         verify_tree(inputs, build['files'])
-        write(self.root / 'ci.json', {'run': run, 'artifact': artifact})
+        write(self.root / 'ci.json', {'run': run, 'artifact': artifact, **({'inputsRun': inputs_run} if inputs_run else {})})
         return {'tree': build['tree'], 'ciUrl': run['html_url'], 'artifactDigest': artifact['digest'],
+                **({'inputsUrl': inputs_run['html_url']} if inputs_run else {}),
                 'outputs': self.outputs([fetched / n for n in ('build.json', 'inputs.tar.gz', 'artifact.zip')] + [self.root / 'ci.json'])}
 
     def package(self):
@@ -397,6 +419,8 @@ def initialize(args):
               'version': args.version, 'acceptedReview': args.review,
               'baseline': str(baseline), 'baselineManifestSha256': digest(baseline / 'manifest.json'),
               'publicKeySha256': hashlib.sha256(public).hexdigest(), 'notesSha256': hashlib.sha256(notes).hexdigest()}
+    if getattr(args, 'inputs_run', None) is not None:
+        config['inputsRunId'] = args.inputs_run
     root.mkdir(parents=True, mode=0o700)
     (root / 'notes.txt').write_bytes(notes)
     (root / 'publisher.pub').write_bytes(public)
@@ -413,6 +437,8 @@ def parser():
         init.add_argument('--' + name, required=True)
     for name in ('ci-run', 'artifact-id'):
         init.add_argument('--' + name, type=int, required=True)
+    init.add_argument('--inputs-run', type=int,
+                      help='The release-inputs workflow run that built the artifact; --ci-run is then the main CI run that tested the source')
     for name in ('baseline', 'public-key', 'notes'):
         init.add_argument('--' + name, type=Path, required=True)
     for name in ('resume', 'publish', 'verify-download', 'health', 'status'):

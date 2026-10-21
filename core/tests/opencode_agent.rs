@@ -1,8 +1,9 @@
 //! OpenCode Agents (T-110 S1b) through the Workspace, against the stand-in
 //! `opencode serve` (tests/fixtures/opencode_server.py, run by
 //! /usr/bin/python3): the record as the store keeps it and readers read it.
-//! No OpenCode, account, model or network service is used. Nothing creates an
-//! OpenCode Agent yet, so each test inserts one, as other tests do.
+//! No OpenCode, account, model or network service is used. This Core has not
+//! turned OpenCode on, so nothing creates an OpenCode Agent and each test
+//! inserts one, as other tests do (tests/opencode_entry.rs creates them).
 #![cfg(target_os = "linux")]
 
 use axum::{body::{to_bytes, Body}, http::Request};
@@ -352,7 +353,7 @@ async fn mcp_must_be_connected_before_a_message_goes_and_writes_name_the_session
 }
 
 #[tokio::test]
-async fn http_create_and_models_still_refuse_opencode() {
+async fn http_create_and_models_refuse_opencode_unless_core_turned_it_on() {
     let lab = lab(&[], false).await;
     let router = server::router_on_port(lab.ws.clone(), lab.dir.path().join("assets"), 4317);
     let request = |method: &str, uri: &str, body: Value| Request::builder().method(method).uri(uri)
@@ -367,6 +368,9 @@ async fn http_create_and_models_still_refuse_opencode() {
         let text = String::from_utf8(to_bytes(response.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
         assert!(!status.is_success() && text.contains("未知 Harness"), "{uri}: {status} {text}");
     }
+    let response = router.clone().oneshot(request("GET", "/api/workspace", Value::Null)).await.unwrap();
+    let workspace: Value = serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
+    assert_eq!(workspace["opencode"]["enabled"], false, "the UI offers none");
     assert_eq!(lab.ws.store.agents().unwrap().len(), 1);
     lab.ws.close_agent(ID).await.unwrap();
 }

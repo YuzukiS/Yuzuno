@@ -24,10 +24,11 @@ try {
     `import React from 'react';import {flushSync} from 'react-dom';import {createRoot} from 'react-dom/client';
 import {PastedTextComposer} from ${JSON.stringify(path.join(root, "src/PastedTextComposer.tsx"))};
 import {pastedText, textDraft} from ${JSON.stringify(path.join(root, "src/composer-draft.ts"))};
-window.pastedText = pastedText; window.textDraft = textDraft;
+import {nativeControl} from ${JSON.stringify(path.join(root, "src/slash-commands.ts"))};
+window.pastedText = pastedText; window.textDraft = textDraft; window.nativeControl = nativeControl;
 window.events = {changes: 0, submits: 0, last: null};
 const root = createRoot(document.getElementById('root'));
-let props = {agentId: 'a1', draft: textDraft(''), slash: true, readOnly: false};
+let props = {agentId: 'a1', draft: textDraft(''), slash: 'claude', readOnly: false};
 window.show = (next) => { props = {...props, ...next}; flushSync(() => root.render(<PastedTextComposer agentId={props.agentId} label="Message" placeholder="Write" draft={props.draft}
   readOnly={props.readOnly} slashCommands={props.slash}
   onChange={(d) => { window.events.changes++; window.events.last = d; props = {...props, draft: d}; }}
@@ -129,10 +130,11 @@ test("typing / lists this Agent's commands; arrows choose, Enter fills in the na
   const p = page({ a1: ready(catalog) });
   try {
     p.type("/");
-    await until(() => p.options().length === 5, "the Agent's commands");
+    await until(() => p.options().length === 6, "the Agent's commands");
     assert.deepEqual(p.calls, ["/api/agents/a1/claude/commands"]);
     assert.deepEqual(p.options().map((o) => [o.name, o.source]), [
       ["/compact", "Claude Code"], ["/context", "Claude Code"], ["/usage", "Claude Code"], ["/yuzuno", "Skill"], ["/expo:expo-router", "Command"],
+      ["/model", "Yuzuno control"],
     ]);
     assert.equal(p.view().contentDOM.getAttribute("aria-expanded"), "true");
     p.type("co");
@@ -246,13 +248,13 @@ test("what Claude Code lists now shows on each opening; failures say so and leav
   const p = page(answers);
   try {
     p.type("/");
-    await until(() => p.options().length === 1, "first list");
+    await until(() => p.options().length === 2, "first list");
     p.key("Escape");
     answers.a1 = ready([...catalog.slice(0, 1), command("archify", "skill")], { source: "folder", skillsKnown: false });
     p.backspace();
     p.type("/");
-    await until(() => p.options().length === 2, "the new list");
-    assert.deepEqual(p.options().map((o) => o.source), ["Claude Code", "Skill"]);
+    await until(() => p.options().length === 3, "the new list");
+    assert.deepEqual(p.options().map((o) => o.source), ["Claude Code", "Skill", "Yuzuno control"]);
     assert.match(p.notes().join(" "), /for this folder/);
     p.key("Escape");
     answers.a1 = { state: "unavailable", reason: "initializing" };
@@ -286,8 +288,8 @@ test("an answer for another Agent never shows in this one's list", async () => {
     await sleep(50);
     assert.equal(p.menu(), null, "a1's answer does not open a2's list");
     p.type("/");
-    await until(() => p.options().length === 1, "a2's own list");
-    assert.deepEqual(p.options().map((o) => o.name), ["/only-a2"]);
+    await until(() => p.options().length === 2, "a2's own list");
+    assert.deepEqual(p.options().map((o) => o.name), ["/only-a2", "/model"]);
     // Back to a1: its draft starts with "/", but nothing opens until typed.
     p.w.show({ agentId: "a1", draft: p.w.textDraft("/") });
     await sleep(30);
@@ -304,11 +306,62 @@ test("without the list (another Harness) or read-only, / is plain text", async (
     p.type("/");
     await sleep(30);
     assert.equal(p.menu(), null);
-    p.w.show({ slash: true, readOnly: true });
+    p.w.show({ slash: "claude", readOnly: true });
     p.type("c");
     await sleep(30);
     assert.equal(p.menu(), null);
     assert.deepEqual(p.calls, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a Codex Agent lists only the controls Yuzuno runs itself, read from nowhere", async () => {
+  const p = page({});
+  try {
+    p.w.show({ slash: "codex" });
+    p.type("/");
+    await until(() => p.options().length === 2, "Codex's controls");
+    assert.deepEqual(p.options().map((o) => [o.name, o.source]), [["/compact", "Yuzuno control"], ["/model", "Yuzuno control"]]);
+    assert.deepEqual(p.calls, [], "Codex lists no commands, so nothing is read");
+    assert.match(p.notes().join(" "), /Codex lists no commands here.*never as a prompt/);
+    assert.equal(p.w.document.querySelector(".slash-menu [role=listbox]").getAttribute("aria-label"), "Codex controls");
+    p.key("Enter");
+    assert.equal(p.text(), "/compact ");
+    assert.equal(p.w.events.submits, 0, "choosing only fills it in; Send runs it");
+  } finally {
+    p.close();
+  }
+});
+
+test("Claude Code's own /model becomes the settings control, listed once", async () => {
+  const p = page({ a1: ready([command("compact"), command("model"), command("context")]) });
+  try {
+    p.type("/");
+    await until(() => p.options().length === 3, "the list");
+    assert.deepEqual(p.options().map((o) => [o.name, o.source]), [["/compact", "Claude Code"], ["/context", "Claude Code"], ["/model", "Yuzuno control"]]);
+  } finally {
+    p.close();
+  }
+});
+
+test("only a draft that is exactly a control runs it: /model for Codex and Claude, /compact for Codex", async () => {
+  const p = page({});
+  try {
+    // Copied out of the page's realm so plain objects compare.
+    const c = (text, harness = "codex") => JSON.parse(JSON.stringify(p.w.nativeControl(text, harness)));
+    assert.deepEqual(c("/compact"), { command: "compact", args: "" });
+    assert.deepEqual(c("  /compact  "), { command: "compact", args: "" });
+    assert.deepEqual(c("/compact keep notes"), { command: "compact", args: "keep notes" });
+    assert.equal(c("/compact", "claude"), null, "Claude Code runs its own /compact as a message");
+    assert.deepEqual(c("/model"), { command: "model", args: "" });
+    assert.deepEqual(c("/model gpt-x", "claude"), { command: "model", args: "gpt-x" });
+    // OpenCode's model is its own configuration; its drafts are messages.
+    assert.equal(c("/model gpt-x", "opencode"), null);
+    assert.equal(c("/compact", "opencode"), null);
+    for (const text of ["/modelx", "/compacting", "see /model", "use /compact later", "```\n/compact\n```", "//compact", "/ compact"]) {
+      assert.equal(c(text), null, text);
+    }
   } finally {
     p.close();
   }

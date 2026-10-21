@@ -105,6 +105,7 @@ async function mount({
   modelsResponse,
   claudeRuntime,
   settingsResponse,
+  compactResponse,
 } = {}) {
   const calls = [];
   const eventUrls = [];
@@ -150,6 +151,7 @@ async function mount({
     calls.push({ url, init });
     if (url.endsWith("/messages") && messageResponse) return messageResponse(url, init);
     if (url.endsWith("/settings") && settingsResponse) return settingsResponse(url, init);
+    if (url.endsWith("/compact") && compactResponse) return compactResponse(url, init);
     if (url.endsWith("/models") && modelsResponse) return modelsResponse(url, init);
     if (url.includes("/api/artifact?") && artifactResponse)
       return artifactResponse(url, init);
@@ -3561,5 +3563,161 @@ test("the Send to Agent menu closes on Escape with nothing added, and a damaged 
     assert.equal(page.window.localStorage.getItem("yuzuno.composer.v1:b"), "{damaged");
     assert.ok(page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), "Mori stays open");
     assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
+  } finally { page.close(); }
+});
+
+// T-29: "/model" and a Codex "/compact" typed in the composer are Yuzuno
+// controls run on Send, never prompts; anything else is a message as before.
+async function sendDraft(page, text) {
+  const composer = page.document.querySelector('[data-composer-input][aria-label="Message Mori"]');
+  setValue(page.window, composer, text);
+  // A kept draft leaves Send enabled: let the App take the new text first.
+  await pause();
+  await until(() => page.document.querySelector('[aria-label="Send message"]')?.disabled === false, "Send to accept the draft");
+  page.document.querySelector('[aria-label="Send message"]').click();
+  await pause();
+  await pause();
+  return composer;
+}
+const posts = (page) => page.calls.filter((r) => r.init.method === "POST").map((r) => r.url);
+
+test("a Codex Agent's /compact asks Codex itself to compact and is never sent as a message", async () => {
+  const page = await mount({ harness: "codex" });
+  try {
+    const composer = await sendDraft(page, "/compact");
+    assert.deepEqual(posts(page), ["/api/agents/a/compact"]);
+    assert.equal(composerText(composer), "", "the handled command leaves the draft");
+    assert.match(page.document.body.textContent, /Codex accepted \/compact/);
+    // Instructions are not something Codex's compaction takes: nothing is sent, the draft stays.
+    await sendDraft(page, "/compact keep the API notes");
+    assert.deepEqual(posts(page), ["/api/agents/a/compact"]);
+    assert.equal(composerText(composer), "/compact keep the API notes");
+    assert.match(page.document.body.textContent, /takes no instructions/);
+    // A slash later in the text is a message as before.
+    await sendDraft(page, "please run /compact later");
+    assert.deepEqual(posts(page), ["/api/agents/a/compact", "/api/agents/a/messages"]);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("when Codex refuses /compact, the reason shows and the draft is kept", async () => {
+  const page = await mount({
+    harness: "codex",
+    compactResponse: async () => ({ ok: false, status: 409, text: async () => JSON.stringify({ error: "当前 Turn 尚未结束或正在等待回应；没有执行 /compact" }) }),
+  });
+  try {
+    const composer = await sendDraft(page, "/compact");
+    assert.deepEqual(posts(page), ["/api/agents/a/compact"]);
+    assert.equal(composerText(composer), "/compact");
+    assert.match(page.document.body.textContent, /没有执行 \/compact/);
+  } finally { page.close(); }
+});
+
+test("/model opens this Agent's settings with that model chosen, and sends nothing", async () => {
+  const page = await mount({
+    harness: "codex",
+    models: [
+      { id: "test-model", model: "test-model", displayName: "Test model", defaultReasoningEffort: "low", supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Fast" }] },
+      { id: "other-model", model: "other-model", displayName: "Other model", defaultReasoningEffort: "low", supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Fast" }] },
+    ],
+  });
+  try {
+    const composer = await sendDraft(page, "/model other-model");
+    await until(() => chipGroup(page, "Model"), "the settings dialog to open");
+    await until(() => chosen(page, "Model") === "other-model", "the named model to be chosen");
+    assert.deepEqual(posts(page), [], "nothing is sent or saved until the user saves");
+    assert.equal(composerText(composer), "/model other-model", "the draft stays");
+    assert.match(page.document.body.textContent, /applies from this Agent's next turn/);
+  } finally { page.close(); }
+});
+
+test("a Claude Agent's /compact is Claude Code's own command and goes as a message", async () => {
+  const page = await mount({ harness: "claude" });
+  try {
+    await sendDraft(page, "/compact");
+    assert.deepEqual(posts(page), ["/api/agents/a/messages"]);
+    const sent = JSON.parse(page.calls.find((r) => r.url.endsWith("/messages")).init.body);
+    assert.equal(sent.text, "/compact");
+  } finally { page.close(); }
+});
+
+// R1 P2: /model chooses a model exactly as its chip does; only Save keeps it.
+async function modelSwitch(mountOptions, target, how, read) {
+  const page = await mount(mountOptions);
+  try {
+    if (how === "chip") {
+      page.document.querySelector('[aria-label="Agent settings"]').click();
+      await until(() => chipGroup(page, "Model")?.querySelector(`input[value="${target}"]`), "the catalog");
+      await choose(page, "Model", target);
+    } else {
+      await sendDraft(page, `/model ${target}`);
+    }
+    await until(() => chipGroup(page, "Model") && chosen(page, "Model") === target, `${target} chosen via ${how}`);
+    const state = read(page);
+    const before = page.calls.filter((r) => r.init.method === "POST").length;
+    saveButton(page).click();
+    await pause(); await pause();
+    const posts = page.calls.filter((r) => r.init.method === "POST");
+    return { state, savedBefore: before, saved: JSON.parse(posts.at(-1).init.body) };
+  } finally { page.close(); }
+}
+
+test("Codex: /model resets effort and context overrides exactly as the model chip does", async () => {
+  const models = [
+    { id: "test-model", model: "test-model", displayName: "Test model", defaultReasoningEffort: "high",
+      supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Fast" }, { reasoningEffort: "high", description: "More" }] },
+    { id: "other-model", model: "other-model", displayName: "Other model", defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Balanced" }] },
+  ];
+  const options = () => ({ harness: "codex", models,
+    settings: { reasoningEffort: "high", approvalPolicy: "on-request", sandbox: "workspace-write", contextWindow: 872000, autoCompactTokenLimit: 600000 },
+    contextSettings: { supported: true, settingsSubmitted: true, canApply: true } });
+  const read = (page) => ({
+    effort: chosen(page, "Reasoning effort"),
+    window: page.document.querySelector('[aria-label="Context window tokens"]').value,
+    compact: page.document.querySelector('[aria-label="Auto-compaction threshold"]').value,
+    reset: /Context overrides reset to automatic/.test(page.document.querySelector('[role="dialog"]').textContent),
+  });
+  const chip = await modelSwitch(options(), "other-model", "chip", read);
+  const command = await modelSwitch(options(), "other-model", "command", read);
+  assert.deepEqual(command, chip);
+  assert.deepEqual(chip.state, { effort: "medium", window: "", compact: "", reset: true });
+  assert.equal(chip.savedBefore, 0, "nothing is saved before Save");
+  assert.equal(chip.saved.model, "other-model");
+  assert.equal(chip.saved.settings.reasoningEffort, "medium", "the new model's own default, not the old one's");
+  assert.equal(chip.saved.settings.contextWindow, null);
+  assert.equal(chip.saved.settings.autoCompactTokenLimit, null);
+});
+
+test("Claude: /model drops an effort the new model lacks exactly as the model chip does", async () => {
+  const options = () => ({ harness: "claude", agentFields: { model: "opus" }, models: claudeModels,
+    settings: { reasoningEffort: "max", approvalPolicy: "on-request", sandbox: "workspace-write", permissionMode: "default" } });
+  const read = (page) => ({
+    effort: chosen(page, "Reasoning effort"),
+    note: /Sonnet does not take reasoning effort max; it is back to Claude Code default\./.test(page.document.querySelector('[role="dialog"]').textContent),
+  });
+  const chip = await modelSwitch(options(), "sonnet", "chip", read);
+  const command = await modelSwitch(options(), "sonnet", "command", read);
+  assert.deepEqual(command, chip);
+  assert.deepEqual(chip.state, { effort: "", note: true });
+  assert.equal(chip.savedBefore, 0);
+  assert.equal(chip.saved.model, "sonnet");
+});
+
+test("an OpenCode Agent at work takes no message into its turn and shows OpenCode's own facts", async () => {
+  const page = await mount({ harness: "opencode", status: "working", agentFields: { opencodeSessionId: "ses_0123456789" } });
+  try {
+    setValue(page.window, page.document.querySelector("[data-composer-input]"), "One more thing");
+    await pause();
+    const send = page.document.querySelector('[aria-label="Send message"]');
+    assert.equal(send?.disabled, true, "OpenCode takes no message into a running turn");
+    assert.equal(send.title, "Wait for this turn to finish, or interrupt");
+    assert.equal(page.document.querySelector('[aria-label="Send while working"]'), null);
+    assert.equal(page.document.querySelector('[aria-label="Agent settings"]'), null, "its model and permissions are OpenCode's own");
+    const fact = (name) => [...page.document.querySelectorAll("dt")].find((dt) => dt.textContent === name)?.nextElementSibling?.textContent.trim();
+    assert.equal(fact("Harness"), "OpenCode");
+    assert.equal(fact("Session"), "ses_0123");
+    assert.equal(page.calls.some((call) => /codex\/usage/.test(call.url)), false);
+    assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

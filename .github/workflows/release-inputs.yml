@@ -1,0 +1,84 @@
+# Builds the production inputs a Core release is packaged from (T-159), only
+# when someone runs it, only for the current head of main, and only after the
+# CI workflow has passed on that commit's push to main. tools/core-release.py
+# then takes the artifact from this run (--inputs-run) and the tests from the
+# CI run (--ci-run); see docs/core-release.md.
+#
+# The artifact is public, so it must not carry the Claude Agent SDK
+# (docs/public-readiness.md): tools/release-inputs-check.py refuses it before
+# anything is uploaded.
+name: Release inputs
+
+on:
+  workflow_dispatch:
+
+# Read-only: actions: read only to look up the CI run of this commit.
+permissions:
+  contents: read
+  actions: read
+
+# One build per commit; a started build finishes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  # Must equal the pins in tools/build-release-inputs-ci.py, which checks.
+  RUST_TOOLCHAIN: 1.97.1
+  NODE_VERSION: 22.23.2
+
+jobs:
+  inputs:
+    name: Linux release inputs
+    runs-on: ubuntu-24.04
+    # The release build compiles one crate at a time (build-release-inputs-ci.py).
+    timeout-minutes: 150
+    steps:
+      # Before anything else, refuse any runner but a GitHub-hosted one.
+      - name: GitHub-hosted runner
+        working-directory: .
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ] || { echo "::error::not a GitHub-hosted runner"; exit 1; }
+
+      # Only main, and only a commit whose push CI has passed. The build is
+      # of github.sha: the head of main when the run was requested.
+      - name: Main, with passed CI
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ "$GITHUB_REF" = refs/heads/main ] || { echo "::error::release inputs are built from main only, not $GITHUB_REF"; exit 1; }
+          passed=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$GITHUB_SHA" -f event=push -f branch=main -f status=success --jq '.total_count')
+          [ "${passed:-0}" -ge 1 ] || { echo "::error::CI has not passed on the push of $GITHUB_SHA to main; wait for it, then run again"; exit 1; }
+          echo "CI passed on $GITHUB_SHA"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Runner details
+        run: .github/scripts/hosted-guard.sh
+
+      - name: Free disk space (only when short)
+        run: .github/scripts/free-disk.sh 40
+
+      - name: Disk space precheck
+        run: .github/scripts/disk-precheck.sh 20 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+
+      # Fresh toolchains and caches, from checksum-locked downloads.
+      - name: Build production inputs (glibc <= 2.35)
+        run: /usr/bin/python3 -I tools/build-release-inputs-ci.py --out target/core-inputs
+
+      - name: Check the inputs before upload
+        run: /usr/bin/python3 -I tools/release-inputs-check.py target/core-inputs
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: core-inputs-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            target/core-inputs/build.json
+            target/core-inputs/inputs.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

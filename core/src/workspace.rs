@@ -123,6 +123,7 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(data_dir: PathBuf, cwd: String, program: String) -> Result<Arc<Self>> {
         std::fs::create_dir_all(&data_dir)?;
+        crate::claude_sdk::set_cache(&data_dir);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1663,6 +1664,78 @@ impl Workspace {
         Ok(detail.agent)
     }
 
+    /// The user's explicit `/compact` for a Codex Agent: Codex's own context
+    /// compaction of this thread (`thread/compact/start`), never a prompt.
+    /// It runs only between turns, on the connection already serving this
+    /// thread: nothing is connected, resumed, retried or reconciled for it,
+    /// and an unconfirmed earlier send or turn refuses it.
+    ///
+    /// Codex's empty answer only accepts the request. The Agent stays
+    /// uncertain from before the request until Codex's own events for the
+    /// thread (its compaction turn) say otherwise, so neither a second
+    /// `/compact` nor a message can slip in; a lost answer leaves it
+    /// uncertain, to be checked, never sent again. Only a Codex without the
+    /// method (JSON-RPC -32601, refused before anything runs) provably ran
+    /// nothing; any other error says nothing about whether it had begun, so
+    /// the Agent stays uncertain too. A state Codex's own events already set
+    /// is never rolled back.
+    pub async fn codex_compact(self: &Arc<Self>, id: &str) -> Result<Value> {
+        let _permit = self.admission.enter_work()?;
+        let gate = self.gate(id).await;
+        let _held = gate.lock().await;
+        self.ensure_rewind_settled(id).await?;
+        let detail = self.send_view(id).await?;
+        ensure_agent_open(&detail.agent)?;
+        anyhow::ensure!(detail.agent.harness == "codex", "Claude 的 /compact 是原生命令：作为消息发送，由 Claude Code 自己执行");
+        let thread = detail.agent.thread_id.clone().context("会话 ID 尚未确认；没有执行 /compact")?;
+        if detail.agent.status == "uncertain"
+            || detail.message_receipts.iter().any(|r| matches!(r.status.as_str(), "sending" | "uncertain")) {
+            bail!("上一次发送、执行或 /compact 的结果尚未确认；请先重新连接核对，没有执行 /compact");
+        }
+        if turn_busy(&detail) || detail.turns.iter().any(|t| t["status"] == "inProgress") {
+            bail!("当前 Turn 尚未结束或正在等待回应；没有执行 /compact");
+        }
+        let connection = self.rpcs.lock().unwrap().get(id).cloned()
+            .filter(|c| !c.closing && detail.agent.connection_state == "connected")
+            .context("没有连接到这个原生会话；请先重新连接，没有执行 /compact")?;
+        anyhow::ensure!(connection.attachment.lock().await.is_none() && !self.codex_context.needs_resume(id, connection.generation),
+            "原生会话正在接续；完成后再执行 /compact");
+        anyhow::ensure!(same_generation(self.rpcs.lock().unwrap().get(id), connection.generation), "连接已变化；没有执行 /compact");
+        let before = detail.agent.status.clone();
+        self.record_meta(id, "compact/requested", json!({"threadId":thread,"generation":connection.generation}), |m| {
+            m.agent.status = "uncertain".into();
+        }).await?;
+        self.changed(id);
+        let result = connection.rpc.request("thread/compact/start", json!({"threadId":thread})).await;
+        let current = same_generation(self.rpcs.lock().unwrap().get(id), connection.generation);
+        match result {
+            Ok(_) if current => Ok(json!({"accepted":true,"threadId":thread})),
+            Ok(_) => bail!("Codex 接受了 /compact，但连接随后已变化；请重新连接核对结果，不要重复执行"),
+            Err(error) => match error.downcast_ref::<RpcError>() {
+                // An unknown method is refused before any handler runs:
+                // nothing ran, so the Agent is as it was, unless Codex's own
+                // events have said otherwise meanwhile.
+                Some(refused) if refused.code == -32601 => {
+                    let message = "这台机器上的 Codex 不提供原生压缩（thread/compact/start）；没有执行".to_owned();
+                    self.record_meta(id, "compact/rejected", json!({"message":message,"code":refused.code}), move |m| {
+                        if m.agent.status == "uncertain" { m.agent.status = before; }
+                    }).await?;
+                    self.changed(id);
+                    bail!(message)
+                }
+                // Any other error doesn't show whether Codex had begun: the
+                // Agent stays as its events leave it, uncertain until checked.
+                Some(refused) => {
+                    let message = format!("Codex 对 /compact 返回了错误：{}；是否已开始压缩无法确认，请重新连接核对，不要重复执行", refused.message);
+                    self.record_meta(id, "compact/failed", json!({"message":message,"code":refused.code}), |_| {}).await?;
+                    self.changed(id);
+                    bail!(message)
+                }
+                None => bail!("/compact 的结果无法确认：{error}；请重新连接核对，不要重复执行"),
+            },
+        }
+    }
+
     pub async fn interrupt(&self, id: &str) -> Result<()> {
         let _permit = self.admission.enter_completion()?;
         match self.detail(id).await?.agent.harness.as_str() {
@@ -1856,7 +1929,9 @@ impl Workspace {
                     params["_changes"] = changes;
                 }
             }
-            let replayed = self.store.detail(id).ok().and_then(|d| d.pending.into_iter().find(|old|
+            // Only the pending requests are read and written (T-120): not the
+            // whole record, which a long conversation makes large.
+            let replayed = self.store.pending(id).ok().and_then(|pending| pending.into_iter().find(|old|
                 old.method == method && old.params["turnId"] == p["turnId"]
                     && old.params["itemId"] == p["itemId"]
                     && (p["itemId"].is_string() || old.params["_rpcId"] == message["id"])));
@@ -1879,7 +1954,7 @@ impl Workspace {
                 stale: false,
             };
             let event_kind = if replayed.is_some() { "request/replayed" } else { "request" };
-            let _ = self.store.update(id, event_kind, p, |d| {
+            let _ = self.store.update_meta(id, event_kind, p, |d| {
                 // Native replay replaces only its matching historical request.
                 // Unreplayed stale approvals remain visible until the harness
                 // confirms completion/resolution; reconnect is not dismissal.
@@ -1964,14 +2039,15 @@ impl Workspace {
             let connection = self.rpcs.lock().unwrap().get(&a.id).cloned();
             let (agent, request_id, response) = (a.id.clone(), request_id.to_owned(), response.clone());
             let sent = self.stored_owned(owned, move |store| {
-                let detail = store.detail(&agent)?;
-                let Some(p) = detail.pending.iter().find(|p| p.id == request_id) else {
+                // The pending requests only, not the whole record (T-120).
+                let pending = store.pending(&agent)?;
+                let Some(p) = pending.iter().find(|p| p.id == request_id) else {
                     return Ok(None);
                 };
                 let connection = connection.context("会话已断开，请求未发送")?;
                 validate_request_connection(p, connection.generation)?;
                 validate_response(p, &response)?;
-                store.update(
+                store.update_meta(
                     &agent,
                     "request/replied",
                     &json!({"requestId":request_id}),
@@ -1985,7 +2061,7 @@ impl Workspace {
                     .rpc
                     .try_send(json!({"id":p.params["_rpcId"],"result":response}))
                 {
-                    let _ = store.update(
+                    let _ = store.update_meta(
                         &agent,
                         "request/notSent",
                         &json!({"requestId":request_id}),
@@ -2449,6 +2525,10 @@ mod concurrency_tests;
 #[cfg(all(test, unix))]
 #[path = "collaboration_admission_tests.rs"]
 mod collaboration_admission_tests;
+
+#[cfg(all(test, unix))]
+#[path = "native_compact_tests.rs"]
+mod native_compact_tests;
 
 #[cfg(all(test, unix))]
 #[path = "subagent_requests_tests.rs"]

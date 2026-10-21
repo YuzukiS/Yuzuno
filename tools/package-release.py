@@ -102,8 +102,11 @@ def assemble(args):
         if 'name="yuzuno-release"' in html or "</head>" not in html:
             raise ValueError("Expected a fresh Vite output with a closing head")
         html_path.write_text(html.replace("</head>", f'<meta name="yuzuno-release" content="{args.release_id}">\n</head>', 1))
-        # Includes the locked SDK and all transitive runtime dependencies. Node
-        # and the authenticated official CLI remain host prerequisites.
+        # All runtime dependencies but the Claude Agent SDK, which Core
+        # obtains on the user's machine (T-159): the runtime carries its
+        # manifest and, where installed Cores require its package.json, a
+        # placeholder. Node and the authenticated official CLI remain host
+        # prerequisites.
         copy_tree(args.claude, staging / "runtimes/claude")
         required = staging / "runtimes/claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json"
         if not required.is_file():

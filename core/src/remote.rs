@@ -541,19 +541,12 @@ pub fn claude_runtime_archive(root: &std::path::Path) -> Result<(String, Vec<u8>
     Ok((format!("{:x}", Sha256::digest(&bytes)), bytes))
 }
 
-/// The local Claude runtime directory: the bridge's own.
-pub fn claude_runtime_root() -> Result<std::path::PathBuf> {
-    let bridge = crate::runtime_paths::resolve(
-        std::env::var_os("YUZUNO_CLAUDE_BRIDGE"), "claude/bridge.mjs",
-    ).context("请设置 YUZUNO_CLAUDE_BRIDGE 或通过已安装的发布包启动 Core")?;
-    bridge.parent().map(|p| p.to_path_buf()).context("找不到本机 Claude Runtime 目录")
-}
-
-/// The local runtime's archive, built once per Core process: a release's
-/// runtime does not change while Core runs.
-pub fn claude_runtime_cached() -> Result<(String, Arc<Vec<u8>>)> {
+/// The archive of the local runtime at `root` (claude_sdk::runtime_root: the
+/// bridge's own, or its prepared copy), built once per Core process: a
+/// release's runtime does not change while Core runs.
+pub fn claude_runtime_cached(root: &std::path::Path) -> Result<(String, Arc<Vec<u8>>)> {
     static CACHE: std::sync::Mutex<Option<(std::path::PathBuf, String, Arc<Vec<u8>>)>> = std::sync::Mutex::new(None);
-    let root = claude_runtime_root()?;
+    let root = root.to_path_buf();
     let mut cache = CACHE.lock().unwrap();
     if let Some((cached, digest, archive)) = cache.as_ref().filter(|(cached, ..)| *cached == root) {
         let _ = cached;

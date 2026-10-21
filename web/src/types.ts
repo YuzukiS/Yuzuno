@@ -9,8 +9,9 @@ export interface WorkSummary {
 }
 export interface Agent {
   workSummary?: WorkSummary | null;
-  harness?: "codex" | "claude";
+  harness?: "codex" | "claude" | "opencode";
   claudeSessionId?: string;
+  opencodeSessionId?: string;
   id: string;
   name: string;
   goal: string;
@@ -76,6 +77,8 @@ export interface Workspace {
     error?: string;
   };
   defaultCwd: string;
+  /** Whether this Core creates OpenCode Agents (an experimental switch). */
+  opencode?: { enabled: boolean; version?: string };
 }
 export interface NativeItem {
   _yuzunoTextBlocks?: import("./message-content").TextBlock[];

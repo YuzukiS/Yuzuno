@@ -116,6 +116,7 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         .route("/api/agents/{id}/context/apply",post(apply_codex_context))
         .route("/api/agents/{id}/models",get(agent_models))
         .route("/api/agents/{id}/interrupt",post(interrupt))
+        .route("/api/agents/{id}/compact",post(compact))
         .route("/api/agents/{id}/tasks/{task_id}/stop",post(stop_task))
         .route("/api/agents/{id}/reconnect",post(reconnect))
         .route("/api/agents/{id}/review",post(review))
@@ -318,6 +319,7 @@ async fn workspace(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
     let (runtime, default_cwd) = (ws.runtime.lock().await.clone(), ws.default_cwd.clone());
     stored_json(&ws, move |store| Ok(
         json!({"agents":store.agents()?,"runtime":runtime,"defaultCwd":default_cwd,
+            "opencode":{"enabled":crate::opencode_agent::enabled(),"version":crate::opencode::VERSION},
             "workspace":{"id":store.workspace_id()?},"projects":store.projects()?,
             "projectUsage":store.project_usage()?}),
     )).await
@@ -358,6 +360,7 @@ async fn create(State(ws): State<Arc<Workspace>>, Json(p): Json<Create>) -> ApiR
     let agent = match p.harness.as_deref().unwrap_or("codex") {
         "codex" => ws.create_on(p.name, p.goal, p.cwd, p.model, p.machine_id, p.project_id).await?,
         "claude" => ws.claude_create_on(p.name, p.goal, p.cwd, p.model, p.machine_id, p.project_id).await?,
+        "opencode" if crate::opencode_agent::enabled() => ws.opencode_create_on(p.name, p.cwd, p.model, p.machine_id, p.project_id).await?,
         _ => return Err(anyhow::anyhow!("未知 Harness").into()),
     };
     // The Agent already exists; a failed default update must not hide it.
@@ -749,7 +752,11 @@ fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<Strin
     Option::<String>::deserialize(d).map(Some)
 }
 async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<SettingsInput>) -> ApiResult<Json<Value>> {
-    let agent = if ws.detail(&id).await?.agent.harness == "claude" {
+    let harness = ws.detail(&id).await?.agent.harness;
+    if harness == "opencode" {
+        return Err(anyhow::anyhow!("OpenCode Agent 的模型和权限来自 OpenCode 自己的配置，这里不能修改").into());
+    }
+    let agent = if harness == "claude" {
         if input.settings.is_some() { return Err(anyhow::anyhow!("Claude 模型设置不接受 Codex 权限或推理参数").into()); }
         let mut detail = ws.claude_update_settings(&id, input.model, input.effort).await?;
         if let Some(mode) = input.permission_mode {
@@ -764,9 +771,16 @@ async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json
     };
     Ok(Json(serde_json::to_value(agent)?))
 }
+/// The composer's `/compact` for a Codex Agent: Codex's own compaction.
+async fn compact(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    Ok(Json(ws.codex_compact(&id).await?))
+}
 async fn agent_models(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
-    Ok(Json(if ws.detail(&id).await?.agent.harness == "claude" {
+    let harness = ws.detail(&id).await?.agent.harness;
+    Ok(Json(if harness == "claude" {
         ws.claude_agent_catalog(&id).await?
+    } else if harness == "opencode" {
+        crate::opencode_agent::catalog()
     } else {
         ws.agent_catalog(&id).await?
     }))
@@ -804,6 +818,7 @@ struct ModelsQuery { harness: Option<String> }
 async fn models(State(ws): State<Arc<Workspace>>, Query(query): Query<ModelsQuery>) -> ApiResult<Json<Value>> {
     match query.harness.as_deref().unwrap_or("codex") {
         "claude" => return Ok(Json(ws.claude_catalog().await?)),
+        "opencode" if crate::opencode_agent::enabled() => return Ok(Json(crate::opencode_agent::catalog())),
         "codex" => {},
         _ => return Err(anyhow::anyhow!("未知 Harness").into()),
     }
