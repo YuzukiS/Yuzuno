@@ -2556,6 +2556,18 @@ fn project_agent_result(item: &mut Value, result: &Value, failed: bool, at: Date
                 sub["endedAt"] = at.to_rfc3339().into();
             }
         }
+        // The call returned, but without the result object (Claude's saved
+        // history keeps none) nothing says how its sub-agent ended: one
+        // launched in the background returns at once, and a foreground call
+        // returns when its sub-agent ended or when it was moved to the
+        // background. Unknown until something reports it; in the background
+        // only when the call's own input says so.
+        if !failed && !item["subAgent"].is_object() {
+            item["subAgent"] = json!({"status":"unknown"});
+            if item["input"]["run_in_background"] == true {
+                item["subAgent"]["background"] = true.into();
+            }
+        }
         return;
     }
     if !item["subAgent"].is_object() {
@@ -2896,8 +2908,12 @@ pub(crate) fn project_event_at(d: &mut AgentDetail, turn_id: Option<&str>, event
         }
         Some("user") => {
             let blocks = event["message"]["content"].as_array();
-            // The tool's own result object belongs to the frame's one result.
+            // The tool's own result object belongs to the frame's one result;
+            // a frame answering several calls is one no call can claim, so
+            // each goes without it.
             let single = blocks.is_some_and(|b| b.iter().filter(|b| b["type"] == "tool_result").count() == 1);
+            let unclaimed = Value::Null;
+            let result = if single { &event["tool_use_result"] } else { &unclaimed };
             for block in blocks.into_iter().flatten() {
                 if block["type"] != "tool_result" {
                     continue;
@@ -2921,9 +2937,7 @@ pub(crate) fn project_event_at(d: &mut AgentDetail, turn_id: Option<&str>, event
                 if let Some(parent) = event["parent_tool_use_id"].as_str() {
                     item["parentToolUseId"] = parent.into();
                 }
-                if single {
-                    project_agent_result(item, &event["tool_use_result"], block["is_error"] == true, at);
-                }
+                project_agent_result(item, result, block["is_error"] == true, at);
                 let ended = subagent_terminal(&item["subAgent"]["status"]);
                 let artifact = if block["is_error"] != true
                     && matches!(item["name"].as_str(), Some("Write" | "Edit" | "MultiEdit"))
@@ -3919,6 +3933,38 @@ mod tests {
             (json!("Agent"), json!("completed"), json!("running"), json!(true)));
         assert_eq!(agent["subAgent"]["description"], "Survey the notes");
         assert_eq!((turn_item(&d, "t", "bash-1")["status"].clone(), turn_item(&d, "t", "bash-1")["subAgent"].clone()), (json!("completed"), Value::Null));
+    }
+
+    /// T-26 (#66): one user frame can answer several calls. Its result object
+    /// is the frame's, so it belongs to none of them in particular; each
+    /// Agent call there goes without it, as one filled from saved history
+    /// does, and keeps what was already reported of its sub-agent.
+    #[test]
+    fn a_frame_answering_several_calls_gives_its_result_object_to_none_of_them() {
+        let mut d = detail();
+        let mut background = agent_call("agent-bg", "Survey the notes");
+        background["message"]["content"][0]["input"]["run_in_background"] = true.into();
+        let mut events = vec![background, agent_call("agent-fg", "Check the notes"), agent_call("agent-done", "Read a.txt"),
+            agent_call("agent-err", "Read z.txt"), bash_call("bash-1", "ls", false),
+            started("task-done", "agent-done", false, "Read a.txt"), started("task-err", "agent-err", false, "Read z.txt")];
+        events.extend(finished("task-done", "agent-done", "completed", "alpha"));
+        for event in &events {
+            project_event(&mut d, Some("t"), event);
+        }
+        let result = |id: &str, error: bool| json!({"type":"tool_result","tool_use_id":id,"content":format!("{id} returned"),"is_error":error});
+        project_event(&mut d, Some("t"), &json!({"type":"user","parent_tool_use_id":null,"message":{"content":[
+            result("agent-bg", false), result("agent-fg", false), result("agent-done", false), result("agent-err", true), result("bash-1", false)]},
+            "tool_use_result":{"status":"completed","agentType":"Explore","content":[{"type":"text","text":"whose report"}],"totalTokens":1}}));
+        let sub = |d: &AgentDetail, id: &str| turn_item(d, "t", id)["subAgent"].clone();
+        assert_eq!((sub(&d, "agent-bg"), sub(&d, "agent-fg")), (json!({"status":"unknown","background":true}), json!({"status":"unknown"})),
+            "the frame's result object is no one call's: their ends are unknown");
+        assert_eq!((sub(&d, "agent-done")["status"].clone(), sub(&d, "agent-done")["result"].clone()), (json!("completed"), json!("alpha")),
+            "what was reported stays");
+        assert_eq!(sub(&d, "agent-err")["status"], "failed", "a failed call ends its foreground sub-agent");
+        assert_eq!((turn_item(&d, "t", "bash-1")["status"].clone(), sub(&d, "bash-1")), (json!("completed"), Value::Null));
+        // A report of its end is what completes one.
+        project_event(&mut d, Some("t"), &task("task_notification", "task-fg", Some("agent-fg"), json!({"status":"completed","summary":"fine"})));
+        assert_eq!((sub(&d, "agent-fg")["status"].clone(), sub(&d, "agent-fg")["result"].clone()), (json!("completed"), json!("fine")));
     }
 
     /// A stop goes to Claude only for the task the user picked, only while

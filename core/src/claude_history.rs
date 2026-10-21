@@ -878,6 +878,72 @@ mod tests {
         assert!(plan(&d, &entries).steps.is_empty());
     }
 
+    /// An Agent call as Claude saves it; `background`: started with
+    /// run_in_background.
+    fn agent(uuid: &str, mid: &str, id: &str, background: bool) -> Value {
+        let mut input = json!({"description":format!("Survey {id}"),"prompt":"Do: survey","subagent_type":"general-purpose"});
+        if background { input["run_in_background"] = true.into(); }
+        json!({"type":"assistant","uuid":uuid,"session_id":SESSION,"parent_tool_use_id":null,"timestamp":"2026-10-17T00:30:02Z",
+            "message":{"id":mid,"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":id,"name":"Agent","input":input}]}})
+    }
+    fn item_in(d: &AgentDetail, turn_id: &str, id: &str) -> Value {
+        turn(d, turn_id)["items"].as_array().unwrap().iter().find(|i| i["id"] == id).unwrap().clone()
+    }
+    fn reported(d: &mut AgentDetail, call: &str, summary: &str) {
+        claude::project_event_at(d, None, &json!({"type":"system","subtype":"task_notification","task_id":format!("task-{call}"),
+            "tool_use_id":call,"status":"completed","summary":summary}), Utc::now());
+    }
+
+    /// T-26: Claude's saved history keeps an Agent call's input and its
+    /// result text, never the result object (`tool_use_result`) the live
+    /// stream carries; SDK 0.3.296's session reader leaves it out. The call
+    /// returned, but nothing says how its sub-agent ended: one launched in
+    /// the background returns at once, and a foreground call returns either
+    /// when its sub-agent ended or when it was moved to the background.
+    /// Unknown until something reports it; in the background only when its
+    /// own input says so.
+    #[test]
+    fn an_agent_filled_from_saved_history_without_its_result_is_unknown_never_completed() {
+        let chain = [prompt("p1", "Survey the notes"), agent("a1", "m1", "agent-bg", true), answers("r1", "agent-bg", "Async agent launched.", false, None),
+            agent("a2", "m2", "agent-fg", false), answers("r2", "agent-fg", "The notes are fine.", false, None),
+            said("a3", "m3", "One survey is running in the background.", "end_turn")];
+        let (entries, messages) = saved(&chain, &[]);
+        let mut d = detail(json!([]));
+        let import = plan_import(&d, &entries);
+        apply(&mut d, &import, &entries, &messages, Utc::now());
+        for (call, sub) in [("agent-bg", json!({"status":"unknown","background":true})), ("agent-fg", json!({"status":"unknown"}))] {
+            let item = item_in(&d, "native-p1", call);
+            assert_eq!((item["status"].clone(), item["subAgent"].clone()), (json!("completed"), sub), "{call}: the call returned, its sub-agent's end is unknown");
+        }
+        // A report of its end is what completes it.
+        for call in ["agent-bg", "agent-fg"] {
+            reported(&mut d, call, "Surveyed.");
+            let sub = &item_in(&d, "native-p1", call)["subAgent"];
+            assert_eq!((sub["status"].as_str(), sub["result"].as_str()), (Some("completed"), Some("Surveyed.")), "{call}");
+        }
+    }
+
+    /// What Core recorded of a sub-agent live (its end reported, or its run
+    /// in the background) stays when its call's result is filled in later
+    /// without the result object.
+    #[test]
+    fn a_saved_result_never_lowers_what_was_reported_of_a_sub_agent() {
+        let call = |id: &str, sub: Value| json!({"id":id,"type":"claudeToolUse","name":"Agent","status":"inProgress","nativeMessageId":format!("m-{id}"),
+            "input":{"description":format!("Survey {id}"),"prompt":"Do: survey"},"subAgent":sub});
+        let ended = json!({"status":"completed","taskId":"task-done","result":"Done.","endedAt":"2026-10-17T00:31:00Z"});
+        let running = json!({"status":"running","taskId":"task-run","background":true});
+        let mut d = detail(json!([{"id":"t1","status":"outcomeUnknown","_claudeAssistantSeen":{"a1":true,"a2":true},"items":[
+            {"id":"t1:input","type":"userMessage","content":[{"type":"text","text":"Survey"}],"nativeUuid":"t1"},
+            call("agent-done", ended.clone()), call("agent-run", running.clone())]}]));
+        let chain = [prompt("t1", "Survey"), agent("a1", "m-agent-done", "agent-done", false), agent("a2", "m-agent-run", "agent-run", false),
+            answers("r1", "agent-done", "Done.", false, None), answers("r2", "agent-run", "Running in the background.", false, None)];
+        backfill(&mut d, &chain, &[]);
+        for (id, sub) in [("agent-done", ended), ("agent-run", running)] {
+            let item = item_in(&d, "t1", id);
+            assert_eq!((item["status"].clone(), item["subAgent"].clone()), (json!("completed"), sub), "{id}");
+        }
+    }
+
     fn thinks(uuid: &str, mid: &str, text: &str) -> Value {
         json!({"type":"assistant","uuid":uuid,"session_id":SESSION,"parent_tool_use_id":null,"timestamp":"2026-10-17T00:30:01Z",
             "message":{"id":mid,"role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":text,"signature":"s"}]}})
