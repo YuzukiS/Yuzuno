@@ -267,3 +267,37 @@ about 611 MiB more than the second; what that is was not measured. The peak
 comes from the reconcile, so the smaller answer does not lower it. Each row is
 one process. The browser's cost of parsing the 66.6 MB answer was not measured.
 These are synthetic allocator measurements, not the daily Core's RSS.
+
+### Reopen and the open check
+
+Reopening read the whole record twice to see whether the Agent was closed,
+wrote the reopening with a compared update, and its route then answered with
+only the Agent of the whole record its reconnect read once more. A Claude
+reconnect read the whole record only to check that the Agent was open, and a
+reconnect that returns nothing read it again at the end to drop it. These
+checks now read the Agent as listed, with its project. The reopening is a
+write of the Agent fields only. The reopen route answers with that Agent, the
+same fields as before. Each reconnect looks up the harness the same way, no
+longer through the send view, which for a record that is not held assembles
+every Turn. `reopen_agent`, and every reconnect that returns the record, still
+returns it whole.
+
+T-140 Job `e29fb50c-a374-4759-a718-7ed87ad5a7b6`, 2026-10-21, release build,
+same tool on both sides, "before" the product code of `78de327`. Each measured
+request starts on a record an idle tick has released, and is the only one of
+its kind in the process: the reopen follows a close of the Agent.
+
+| Request | Before | After |
+| --- | ---: | ---: |
+| Reopen, 8 KiB per Item (63.5 MiB): allocated | 1,222 MiB | 881 MiB |
+| Reopen, 8 KiB per Item: peak above live | 274 MiB | 274 MiB |
+| Reopen, 8 KiB per Item: time | 587 ms | 553 ms |
+| Reopen, 1 KiB per Item (8.9 MiB): allocated | 251 MiB | 184 MiB |
+| `view=summary` reconnect, 8 KiB per Item: allocated | 811 MiB | 676 MiB |
+| `view=summary` reconnect, 1 KiB per Item: allocated | 161 MiB | 135 MiB |
+
+The reopen's answer is 505 bytes on both sides. Its peak comes from the
+reconnect that follows, which starts OpenCode's or Codex's process again and
+reads the native history, so the peak does not change. Each row is one process.
+A Claude reopen or reconnect is covered by tests here, not measured. These are
+synthetic allocator measurements, not the daily Core's RSS.
