@@ -122,6 +122,15 @@ try {
     assert.equal(await progress.locator(".home-fold").getAttribute("aria-expanded"), "false", "Seen did not unfold it");
     assert.deepEqual(report.writes.filter((w) => w.viewport === viewport.name).map((w) => w.path), ["/api/projects/p1/brief/seen"]);
     check(`${viewport.name}: Seen on a collapsed card marks it seen and leaves it collapsed; the fold alone writes nothing`);
+    // A jump from Needs you opens the collapsed card it goes to.
+    const ship = page.locator('[data-section-key="ship"]');
+    await ship.locator(".home-fold").click();
+    assert.equal(await ship.locator("textarea").isVisible(), false);
+    await page.locator(".home-needs-item").first().click();
+    await page.waitForTimeout(400);
+    assert.equal(await ship.locator(".home-fold").getAttribute("aria-expanded"), "true");
+    assert.ok(await ship.locator("textarea").isVisible(), "the Ask's reply is in view");
+    check(`${viewport.name}: a jump from Needs you opens the collapsed Ask it goes to`);
     await page.locator(".home-repos .home-fold").click();
     await page.locator(".home-machines .home-fold").click();
     await page.screenshot({ path: resolve(output, `${viewport.name}-collapsed.png`), fullPage: true });

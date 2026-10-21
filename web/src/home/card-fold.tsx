@@ -58,3 +58,20 @@ export function FoldButton({
     </button>
   );
 }
+
+/**
+ * Unfolds the collapsed cards that hold `target`, and its own, by their fold
+ * buttons, so a jump to it (Needs you, Open in…) shows it rather than a
+ * header; those cards stay expanded. Whether any was unfolded: the target is
+ * drawn on the next frame.
+ */
+export function unfoldAround(target: HTMLElement) {
+  const hidden: HTMLElement[] = [];
+  const own = target.querySelector<HTMLElement>(":scope > .home-card-body[hidden]");
+  if (own) hidden.push(own);
+  for (let body = target.closest<HTMLElement>(".home-card-body[hidden]"); body; body = body.parentElement?.closest<HTMLElement>(".home-card-body[hidden]") ?? null)
+    hidden.push(body);
+  const folds = [...document.querySelectorAll<HTMLButtonElement>(".home-fold")];
+  for (const body of hidden) folds.find((fold) => fold.getAttribute("aria-controls") === body.id)?.click();
+  return hidden.length > 0;
+}

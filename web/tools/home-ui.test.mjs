@@ -1009,6 +1009,34 @@ test("every Home card folds on its own and keeps its header; nothing is seen, an
   }
 });
 
+test("a jump from Needs you opens a collapsed card to show its approval or Ask (T-115)", async () => {
+  const p = await mount();
+  try {
+    await waitFor(() => p.panel("p-res").querySelector(".home-approvals"), "the approval is shown");
+    const approvals = p.panel("p-res").querySelector(".home-approvals");
+    const release = card(p, "p-app", "release");
+    fold(approvals).click();
+    fold(release).click();
+    await pause();
+    assert.equal(fold(approvals).getAttribute("aria-expanded"), "false");
+    assert.equal(fold(release).getAttribute("aria-expanded"), "false");
+    const needs = (pattern) => [...p.doc.querySelectorAll(".home-needs-item")].find((b) => pattern.test(b.textContent));
+    needs(/Run the test suite/).click();
+    await waitFor(() => p.doc.getElementById("home-request-r-1")?.hasAttribute("data-home-highlight"), "the approval is highlighted");
+    const request = p.doc.getElementById("home-request-r-1");
+    assert.equal(fold(approvals).getAttribute("aria-expanded"), "true", "its card opened");
+    assert.equal(request.closest(".home-card-body").hidden, false);
+    assert.equal(p.doc.activeElement, request);
+    needs(/Ship today\?/).click();
+    await waitFor(() => release.hasAttribute("data-home-highlight"), "the Ask is highlighted");
+    assert.equal(fold(release).getAttribute("aria-expanded"), "true", "the Ask's own card opened");
+    assert.ok(release.querySelector("textarea"), "its reply is in view");
+    assert.equal(p.posts(/\/brief\/(reply|seen)$|\/respond$/).length, 0, "jumping answers nothing");
+  } finally {
+    p.close();
+  }
+});
+
 test("a collapsed Ask keeps what was typed in it, and folding sends nothing (T-115)", async () => {
   const p = await mount();
   try {
