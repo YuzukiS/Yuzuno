@@ -886,8 +886,10 @@ export function App() {
         if (!target.isConnected) return;
         target.tabIndex = -1;
         target.scrollIntoView({ behavior: "instant", block: "start" });
-        // Where the user left it, not just its start.
-        if (catchupSource.restore !== undefined && scroll.current) scroll.current.scrollTop -= catchupSource.restore;
+        // Where the user left it, not just its start. Measured, since
+        // scrollIntoView keeps the pane's scroll padding above the target.
+        if (catchupSource.restore !== undefined && scroll.current)
+          scroll.current.scrollTop += target.getBoundingClientRect().top - scroll.current.getBoundingClientRect().top - catchupSource.restore;
         target.focus({ preventScroll: true });
         setSourceJump(false);
       };
