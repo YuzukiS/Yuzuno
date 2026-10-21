@@ -113,6 +113,10 @@ for line in sys.stdin:
         if (root / 'reject-interrupt').exists():
             emit({'id':req['id'],'error':{'code':-32600,'message':'interrupt rejected'}})
             continue
+        if (root / 'silent-interrupt').exists():
+            # Acknowledged, but its end is never reported.
+            emit({'id':req['id'],'result':{}})
+            continue
         emit({'id':req['id'],'result':{}})
         time.sleep(0.03)
         t = thread()
@@ -350,4 +354,28 @@ async fn reopen_over_http_answers_the_agent_as_the_whole_record_has_it() {
     assert!(again["closedAt"].is_null());
     assert_eq!(calls().len(), before, "an open Agent is not reconnected");
     ws.close_agent("a").await.unwrap();
+}
+
+/// An interrupt Codex acknowledges but whose end it never reports leaves the
+/// Agent open: close waits its 10 s for that end, says so and changes
+/// nothing; once Codex reports the end, a close goes through.
+#[tokio::test]
+async fn an_interrupt_never_confirmed_leaves_the_agent_open() {
+    let (dir, ws) = fixture().await;
+    ws.send("a", "A real native protocol fixture task".into()).await.unwrap();
+    std::fs::write(dir.path().join("silent-interrupt"), "yes").unwrap();
+    let before = ws.store.detail("a").unwrap();
+    let started = tokio::time::Instant::now();
+    let error = ws.close_agent("a").await.unwrap_err();
+    assert!(error.to_string().contains("中断尚未得到原生执行结果确认"), "{error}");
+    assert!(started.elapsed() >= std::time::Duration::from_secs(10), "it waited the whole 10 s");
+    let after = ws.store.detail("a").unwrap();
+    assert!(after.agent.closed_at.is_none(), "an unconfirmed interrupt does not close the Agent");
+    assert_eq!(after.turns.len(), before.turns.len());
+    assert_eq!(after.turns[0]["status"], "inProgress");
+
+    std::fs::remove_file(dir.path().join("silent-interrupt")).unwrap();
+    let closed = ws.close_agent("a").await.unwrap();
+    assert!(closed.agent.closed_at.is_some());
+    assert_eq!(closed.turns[0]["status"], "interrupted", "closed on Codex's own end of the Turn");
 }

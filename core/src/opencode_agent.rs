@@ -151,15 +151,22 @@ impl Workspace {
     }
 
     pub(crate) async fn opencode_reconnect_accepted(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit) -> Result<AgentDetail> {
+        self.opencode_reconnect_gated(id, permit, true).await?.context("record")
+    }
+
+    /// Reconnects an OpenCode Agent under its gate; with `read`, returns the
+    /// record as the reconnect left it, read under the same gate. Whether it
+    /// is open is checked on the Agent as listed, not its history (T-140).
+    pub(crate) async fn opencode_reconnect_gated(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit, read: bool) -> Result<Option<AgentDetail>> {
         permit.validate(&self.admission)?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        ensure_agent_open(&self.detail(id).await?.agent)?;
+        ensure_agent_open(&self.listed(id).await?)?;
         if let Err(error) = self.opencode_ensure(id).await {
             self.failed(id, &error).await;
             return Err(error);
         }
-        self.detail(id).await
+        if read { Ok(Some(self.detail(id).await?)) } else { Ok(None) }
     }
 
     /// Under the Agent gate: the live connection, or a new OpenCode process

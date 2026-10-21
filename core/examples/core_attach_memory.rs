@@ -186,8 +186,12 @@ mod supported {
     // Answers thread/resume with the history file it was given, written
     // through as text; records each call's method and reply size.
     const APP_SERVER: &str = r#"#!/usr/bin/python3
-import json, os, sys
+import json, os, sys, threading
 root = os.path.dirname(os.path.abspath(__file__))
+out_lock = threading.Lock()
+def send(text):
+    with out_lock:
+        sys.stdout.write(text + '\n'); sys.stdout.flush()
 def log(method, size):
     with open(os.path.join(root, 'calls.jsonl'), 'a') as f: f.write(json.dumps({'method':method,'replyBytes':size,'pid':os.getpid()}) + '\n')
 for line in sys.stdin:
@@ -198,14 +202,27 @@ for line in sys.stdin:
         thread = p.get('threadId', 'thread')
         with open(os.path.join(root, 'history.json')) as f: turns = f.read()
         out = '{"id":%s,"result":{"thread":{"id":%s,"status":{"type":"idle"},"turns":%s},"model":"m"}}\n' % (json.dumps(r['id']), json.dumps(thread), turns)
-        sys.stdout.write(out); sys.stdout.flush(); log(m, len(out)); continue
+        send(out.rstrip('\n')); log(m, len(out)); continue
+    if m == 'turn/start':
+        # A Turn that runs until it is interrupted.
+        turn = {'id':'live-turn','status':'inProgress','error':None,'items':[]}
+        out = json.dumps({'id':r['id'],'result':{'turn':turn}})
+        send(out); log(m, len(out)); continue
+    if m == 'turn/interrupt':
+        # Acknowledged at once; the Turn's end is reported a second later.
+        out = json.dumps({'id':r['id'],'result':{}})
+        send(out); log(m, len(out))
+        thread = p.get('threadId', 'thread')
+        end = json.dumps({'method':'turn/completed','params':{'threadId':thread,
+            'turn':{'id':'live-turn','status':'interrupted','error':None,'items':[]}}})
+        threading.Timer(1.0, send, [end]).start(); continue
     result = {}
     if m == 'model/list':
         result = {'data':[{'id':'m','model':'m','defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}],'nextCursor':None}
     elif m == 'config/read':
         result = {'config':{}}
     out = json.dumps({'id':r['id'],'result':result})
-    print(out, flush=True); log(m, len(out))
+    send(out); log(m, len(out))
 "#;
 
     async fn idle(ws: &Workspace) -> Result<()> {
@@ -408,6 +425,20 @@ for line in sys.stdin:
             anyhow::ensure!(d.turns.len() == TURNS && items == TURNS * ITEMS, "history changed");
             anyhow::ensure!(d.agent.connection_state == "connected", "not connected");
         }
+        // Last: a Turn runs, and the Agent is closed while it does. Close asks
+        // Codex to interrupt it and waits for the Turn's end, which the
+        // scripted app-server reports a second later; the record is held.
+        for id in &ids { ws.send(id, "synthetic turn".into()).await?; }
+        let mut ends = vec![];
+        samples.push(measured("close_while_turn_runs", &ws.store, async {
+            for id in &ids {
+                let closed = ws.close_agent(id).await?;
+                ends.push(json!({"closed":closed.agent.closed_at.is_some(),
+                    "turn":closed.turns.last().map(|t| t["status"].clone())}));
+            }
+            Ok(())
+        }).await?);
+        samples.last_mut().context("sample")?["closes"] = ends.into();
         let calls: Vec<Value> = std::fs::read_to_string(dir.path().join("calls.jsonl"))
             .unwrap_or_default()
             .lines()
