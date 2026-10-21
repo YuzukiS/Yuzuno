@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowUpRight, Bot, ChevronRight, ClipboardList, LoaderCircle, MessageSquare, ShieldCheck, SquareTerminal } from "lucide-react";
-import { api, errorText, respondToRequest } from "./api";
-import { AnswerAgain, useUnconfirmedAnswer } from "./unconfirmed-answer";
+import { api, errorText, NO_ANSWER_REPLY, respondToRequest } from "./api";
+import { AnswerAgain, DraftNotSaved, useUnconfirmedAnswer } from "./unconfirmed-answer";
+import { choiceAnswers, choiceEmpty, useRequestDraft } from "./request-draft";
 import { claudeCodeFacts } from "./claude-runtime";
 import { callToward, formatUsage, turnSubAgents, type ClaudeSubAgentEntry, type ClaudeSubAgentRecord } from "./claude-subagents";
 import { Prose } from "./components";
@@ -394,32 +395,37 @@ function ProposedAction({ name, input }: { name: string; input: Record<string, u
 
 /** `permissionMode` is the mode Claude reports for the session, not the
  *  user's choice; an ExitPlanMode card says it as reported. */
-export function ClaudePermission({ request, refresh, disabled, highlightSource, permissionMode }: {
-  request: PendingRequest; refresh: () => void; disabled: boolean; highlightSource?: boolean; permissionMode?: string | null;
+export function ClaudePermission({ request, refresh, disabled, highlightSource, permissionMode, draftScope = null }: {
+  request: PendingRequest; refresh: () => void; disabled: boolean; highlightSource?: boolean; permissionMode?: string | null; draftScope?: string | null;
 }) {
+  const input = request.params.input || {};
+  const questions: Question[] = request.params.toolName === "AskUserQuestion" && Array.isArray(input.questions) ? input.questions : [];
+  // An unsent answer to a question survives a refresh (T-170).
+  const draft = useRequestDraft(questions.length ? draftScope : null, request, saved => choiceAnswers(saved, questions.map(q => q.question)));
   const [sending, setSending] = useState(false);
   // Set before the first await, so a second click in the same moment finds
   // it; kept after a delivered answer until Core marks the request sent.
-  const answering = useRef(false);
+  const answering = useRef(draft.attempted);
   const [answered, setAnswered] = useState(false);
-  const [error, setError] = useState("");
-  const [answers, setAnswers] = useState<Record<string, string[]>>({});
-  const [free, setFree] = useState<Record<string, string>>({});
+  const [error, setError] = useState(draft.attempted ? NO_ANSWER_REPLY : "");
+  const [answers, setAnswers] = useState<Record<string, string[]>>(() => draft.initial?.answers ?? {});
+  const [free, setFree] = useState<Record<string, string>>(() => draft.initial?.free ?? {});
   const [reason, setReason] = useState("");
-  const input = request.params.input || {};
-  const questions: Question[] = request.params.toolName === "AskUserQuestion" && Array.isArray(input.questions) ? input.questions : [];
+  const kept = { answers, free };
+  useEffect(() => { draft.save(kept, choiceEmpty(kept)); }, [answers, free]);
   // Claude Code sends the plan it wants approved as input.plan.
   const plan = request.params.toolName === "ExitPlanMode" ? (typeof input.plan === "string" ? input.plan : "") : null;
   const { grants: grant, acceptEdits } = questions.length ? { grants: [], acceptEdits: false } : sessionGrant(request.params.sessionPermissions);
   const reasonText = reason.trim();
   const reasonTooLong = new TextEncoder().encode(reasonText).length > 2000;
-  const unconfirmedAnswer = useUnconfirmedAnswer(refresh, answering);
+  const unconfirmedAnswer = useUnconfirmedAnswer(refresh, answering, draft.attempted);
   const locked = disabled || !!request.stale || !!request.params._responseSent || sending || answered || unconfirmedAnswer.unconfirmed;
   const answer = (q: Question) => [...(answers[q.question] || []), ...(free[q.question]?.trim() ? [free[q.question].trim()] : [])].join(", ");
   async function respond(decision: "allow" | "deny", scope?: "session") {
     if (locked || answering.current) return;
     answering.current = true;
     setSending(true); setError("");
+    draft.attempt(true, kept, choiceEmpty(kept));
     try {
       await respondToRequest(request.id, {
         decision,
@@ -427,9 +433,13 @@ export function ClaudePermission({ request, refresh, disabled, highlightSource, 
         ...(decision === "deny" && reasonText && !questions.length ? { message: reasonText } : {}),
         ...(decision === "allow" && questions.length ? { updatedInput: { ...input, answers: Object.fromEntries(questions.map(q => [q.question, answer(q)])) } } : {}),
       });
+      draft.remove();
       setAnswered(true);
       refresh();
-    } catch (e) { if (!unconfirmedAnswer.noReply(e)) answering.current = false; setError(errorText(e)); } finally { setSending(false); }
+    } catch (e) {
+      if (!unconfirmedAnswer.noReply(e)) { answering.current = false; draft.attempt(false, kept, choiceEmpty(kept)); }
+      setError(errorText(e));
+    } finally { setSending(false); }
   }
   const sessionLabel = plan !== null ? acceptEdits ? "Approve and allow edits for this session" : "Approve for this session"
     : acceptEdits ? "Allow edits for this session" : "Allow for this session";
@@ -456,6 +466,7 @@ export function ClaudePermission({ request, refresh, disabled, highlightSource, 
             onChange={e => { setFree(old => ({ ...old, [q.question]: e.target.value })); if (!q.multiSelect) setAnswers(old => ({ ...old, [q.question]: [] })); }} />
         </fieldset>)}
       </fieldset>
+      {draft.notSaved && <DraftNotSaved />}
       <div className="claude-permission-actions">
         <button className="primary-button" disabled={locked || questions.some(q => !answer(q))}>{sending && <LoaderCircle size={14} className="spin" />}Send answer</button>
         <button type="button" className="secondary-button" disabled={locked} onClick={() => void respond("deny")}>Decline</button>

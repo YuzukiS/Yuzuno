@@ -161,6 +161,7 @@ import { useComposerDraft } from "./useComposerDraft";
 import { DraftRecovery } from "./DraftRecovery";
 import { PendingQuestions, type PendingQuestionsHandle } from "./PendingQuestions";
 import { QuestionIndex, questionKey } from "./pending-questions";
+import { pruneRequestDrafts } from "./request-draft";
 import type { QuestionSource } from "./types";
 import { Home, type HomeTarget } from "./home/Home";
 import { useOpenAsks } from "./home/open-asks";
@@ -567,6 +568,13 @@ export function App() {
     .find((turn) => turn.items.some(hasAgentContent))?.id;
   const timeMarks = conversationTimeMarks(currentDetail?.turns ?? []);
   const pending = currentDetail?.pending || [];
+  // Browser drafts of answers to native questions (T-170) last only while
+  // Core still lists their request for this Agent.
+  const requestDraftScope = previewMode || !workspaceId ? null : workspaceId;
+  useEffect(() => {
+    if (requestDraftScope !== null && detail && detail.agent.id === selected)
+      pruneRequestDrafts(requestDraftScope, detail.agent.id, detail.pending);
+  }, [requestDraftScope, detail?.agent.id, detail?.pending, selected]);
   const pendingToolIds = useMemo(() => new Set<string>(
     (currentDetail?.pending || []).flatMap((request) =>
       request.method === "item/fileChange/requestApproval" && typeof request.params.itemId === "string"
@@ -2192,6 +2200,7 @@ export function App() {
                       disabled={previewMode || closed}
                       onViewChanges={() => showProposedChanges(request)}
                       permissionMode={currentDetail?.claudeRuntime?.permissionMode}
+                      draftScope={requestDraftScope}
                       highlightSource={
                         catchupSource?.kind === "pending" &&
                         catchupSource.id === request.id

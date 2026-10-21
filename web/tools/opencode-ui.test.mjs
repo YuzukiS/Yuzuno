@@ -183,6 +183,52 @@ test("questions are answered with one list of labels per question, in order", as
   } finally { declined.close(); }
 });
 
+test("an unsent answer survives a reload, within bounds, and says so when it cannot be kept (T-170)", async () => {
+  const request = (id, native = "que_1") => ({ id, agentId: "oc", method: "opencode/question", createdAt: "now",
+    params: { id: native, sessionID: "ses_1", _runtimeGeneration: 1, _opencodeSession: "ses_1", questions: [
+      { question: "Which fruit?", header: "Fruit", options: [{ label: "Yuzu", description: "citrus" }, { label: "Peach", description: "" }] },
+    ] } });
+  const field = (page) => page.document.querySelector('input[aria-label="Your answer: Which fruit?"]');
+  const KEY = 'yuzuno.request-drafts.v1:["ws-1"]';
+  // Thirty older drafts of another Agent: the oldest goes first.
+  const older = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [JSON.stringify(["other", "opencode", "ses_0", `que_old_${i}`]), { answers: { answers: {}, free: { 0: "old" } }, at: i + 1 }]));
+  const page = mount();
+  try {
+    page.window.localStorage.setItem(KEY, JSON.stringify({ version: 1, entries: older }));
+    page.window.renderPending({ request: request("req-1"), refresh() {}, disabled: false, draftScope: "ws-1" }); await tick();
+    await value(page, field(page), "Kumquat");
+    const entries = JSON.parse(page.window.localStorage.getItem(KEY)).entries;
+    assert.equal(Object.keys(entries).length, 30);
+    assert.deepEqual(entries[JSON.stringify(["oc", "opencode", "ses_1", "que_1"])].answers, { answers: { 0: [] }, free: { 0: "Kumquat" } });
+    assert.equal(entries[JSON.stringify(["other", "opencode", "ses_0", "que_old_0"])], undefined, "the oldest went first");
+    assert.doesNotMatch(page.document.body.textContent, /kept in this window only/);
+    // Too large to keep: the card says so, and the last saved answer stays.
+    await value(page, field(page), "x".repeat(200_001));
+    assert.match(page.document.body.textContent, /This answer is kept in this window only; it could not be saved in this browser/);
+    assert.doesNotMatch(page.window.localStorage.getItem(KEY), /x{1000}/);
+  } finally { page.close(); }
+  // A reload of the same native request under a new id; another request starts empty.
+  for (const [id, native, restored] of [["req-2", "que_1", "Kumquat"], ["req-3", "que_2", ""]]) {
+    const again = mount();
+    try {
+      again.window.localStorage.setItem(KEY, JSON.stringify({ version: 1, entries: {
+        [JSON.stringify(["oc", "opencode", "ses_1", "que_1"])]: { answers: { answers: { 0: [] }, free: { 0: "Kumquat" } }, at: 1 } } }));
+      again.window.renderPending({ request: request(id, native), refresh() {}, disabled: false, draftScope: "ws-1" }); await tick();
+      assert.equal(field(again).value, restored);
+      assert.equal(again.calls.length, 0);
+    } finally { again.close(); }
+  }
+  // Saved data this version cannot read is left as it is.
+  const damaged = mount();
+  try {
+    damaged.window.localStorage.setItem(KEY, "{not json");
+    damaged.window.renderPending({ request: request("req-4"), refresh() {}, disabled: false, draftScope: "ws-1" }); await tick();
+    await value(damaged, field(damaged), "Kumquat");
+    assert.equal(damaged.window.localStorage.getItem(KEY), "{not json");
+    assert.match(damaged.document.body.textContent, /kept in this window only/);
+  } finally { damaged.close(); }
+});
+
 test("an OpenCode turn names OpenCode, shows its tool calls and offers no rewind", async () => {
   const turn = { id: "msg_1", status: "completed", items: [
     { id: "u1", type: "userMessage", content: [{ type: "text", text: "List the files" }] },

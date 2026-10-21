@@ -1275,6 +1275,203 @@ test("an answer with no reply in time stays unconfirmed: Core's record is read, 
   }
 });
 
+// Unsent answers to native questions (T-170) are kept in this browser, per
+// Workspace and native request, so a reload or a reopened page keeps them.
+const DRAFTS = 'yuzuno.request-drafts.v1:["ws-1"]';
+const nativeQuestion = (id, params = {}) => ({
+  id,
+  agentId: "a",
+  method: "item/tool/requestUserInput",
+  createdAt: "",
+  params: {
+    threadId: "thread-1",
+    turnId: "t1",
+    itemId: "ask-1",
+    questions: [
+      { id: "why", question: "Why this one?" },
+      { id: "token", question: "Paste the token", isSecret: true },
+    ],
+    ...params,
+  },
+});
+const answerField = (page, question) =>
+  page.document.querySelector(`.pending-card input[aria-label="Your answer: ${question}"]`);
+function typeAnswer(page, input, text) {
+  Object.getOwnPropertyDescriptor(page.window.HTMLInputElement.prototype, "value").set.call(input, text);
+  input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+}
+/** What the page left in localStorage, for the next page to start with. */
+const storageOf = (page) =>
+  Object.fromEntries(
+    Array.from({ length: page.window.localStorage.length }, (_, i) => page.window.localStorage.key(i))
+      .map((key) => [key, page.window.localStorage.getItem(key)]),
+  );
+const respondCalls = (page) => page.calls.filter((c) => c.url.includes("/respond")).length;
+
+test("an unsent answer to a native question survives a reload, into the same request only, and never a secret (T-170)", async () => {
+  const first = await mount({ workspaceIdentity: "ws-1", status: "waiting", pending: [nativeQuestion("r1")] });
+  let stored;
+  try {
+    typeAnswer(first, answerField(first, "Why this one?"), "Because it is smaller.");
+    typeAnswer(first, answerField(first, "Paste the token"), "s3cret-value");
+    setValue(first.window, first.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), "A message draft.");
+    await pause();
+    stored = storageOf(first);
+    assert.match(stored[DRAFTS], /Because it is smaller\./);
+    assert.doesNotMatch(JSON.stringify(stored), /s3cret-value/, "a secret answer is not kept");
+    assert.equal(savedDraftText(first.window.localStorage, "a"), "A message draft.");
+    assert.equal(respondCalls(first), 0);
+  } finally {
+    first.close();
+  }
+  // A reload after a reconnect: Core lists the same native request under a
+  // new id. The answer is filled in, the secret is not, and nothing is sent.
+  const reloaded = await mount({ workspaceIdentity: "ws-1", status: "waiting", pending: [nativeQuestion("r2")], stored });
+  try {
+    assert.equal(answerField(reloaded, "Why this one?").value, "Because it is smaller.");
+    assert.equal(answerField(reloaded, "Paste the token").value, "");
+    assert.equal(button(reloaded, "Send answer").disabled, true, "the secret is still to be typed");
+    assert.equal(savedDraftText(reloaded.window.localStorage, "a"), "A message draft.", "the message draft is its own");
+    // Another Agent and back: the card is mounted again from the saved draft.
+    [...reloaded.document.querySelectorAll(".agent-row")].find((el) => el.textContent.includes("Hana")).querySelector(".agent-select").click();
+    await pause();
+    await pause();
+    assert.equal(answerField(reloaded, "Why this one?"), null);
+    [...reloaded.document.querySelectorAll(".agent-row")].find((el) => el.textContent.includes("Mori")).querySelector(".agent-select").click();
+    await waitForPreviewState(() => answerField(reloaded, "Why this one?"), "Mori's question again");
+    assert.equal(answerField(reloaded, "Why this one?").value, "Because it is smaller.");
+    assert.equal(respondCalls(reloaded), 0, "restoring sends nothing");
+  } finally {
+    reloaded.close();
+  }
+  // Another question of the same Turn, another session and another Workspace start empty.
+  for (const [request, workspaceIdentity] of [
+    [nativeQuestion("r3", { itemId: "ask-2" }), "ws-1"],
+    [nativeQuestion("r4", { threadId: "thread-2" }), "ws-1"],
+    [nativeQuestion("r5"), "ws-2"],
+  ]) {
+    const other = await mount({ workspaceIdentity, status: "waiting", pending: [request], stored });
+    try {
+      assert.equal(answerField(other, "Why this one?").value, "", JSON.stringify(request.params));
+    } finally {
+      other.close();
+    }
+  }
+});
+
+test("a draft is not restored once Core's record shows the request answered or gone (T-170)", async () => {
+  const entry = (attempted) => JSON.stringify({ version: 1, entries: {
+    [JSON.stringify(["a", "codex", "thread-1", "t1", "ask-1"])]: { answers: { why: "An old answer." }, ...(attempted ? { attempted: true } : {}), at: 1 },
+  } });
+  for (const attempted of [false, true]) {
+    // Answered, from this browser or anywhere else: the card says only that it was sent.
+    const answered = await mount({ workspaceIdentity: "ws-1", status: "waiting",
+      pending: [nativeQuestion("r1", { _responseSent: true })], stored: { [DRAFTS]: entry(attempted) } });
+    try {
+      const card = answered.document.querySelector(".pending-card");
+      assert.match(card.textContent, /Response sent\. Waiting for the harness to confirm\./);
+      assert.doesNotMatch(card.textContent, /another device|No reply from Core/);
+      assert.equal(answerField(answered, "Why this one?").value, "");
+      assert.equal(button(answered, "Answer again"), undefined);
+      await pause();
+      assert.equal(answered.window.localStorage.getItem(DRAFTS), null, "the old input is dropped");
+    } finally {
+      answered.close();
+    }
+    // No longer pending (answered, cancelled or expired): dropped as well.
+    const gone = await mount({ workspaceIdentity: "ws-1", status: "idle", pending: [], stored: { [DRAFTS]: entry(attempted) } });
+    try {
+      await waitForPreviewState(() => gone.window.localStorage.getItem(DRAFTS) === null, "the draft of a request no longer pending to be dropped");
+    } finally {
+      gone.close();
+    }
+  }
+});
+
+test("an answer with no reply is still unconfirmed after a reload, until Core's record shows it (T-170)", async () => {
+  const question = nativeQuestion("r1", { questions: [{ id: "why", question: "Why this one?" }] });
+  const hung = [];
+  const first = await mount({ workspaceIdentity: "ws-1", status: "waiting", pending: [question],
+    beforeLoad: (window) => noReplyTo("/respond", hung)(window) });
+  let stored;
+  try {
+    typeAnswer(first, answerField(first, "Why this one?"), "Because.");
+    await pause();
+    button(first, "Send answer").click();
+    await waitForPreviewState(() => button(first, "Answer again"), "the answer to be unconfirmed");
+    assert.equal(hung.length, 1);
+    stored = storageOf(first);
+    assert.match(stored[DRAFTS], /"attempted":true/);
+  } finally {
+    first.close();
+  }
+  // Reloaded while Core's record still shows it unanswered: as before the reload.
+  const reloaded = await mount({ workspaceIdentity: "ws-1", status: "waiting", pending: [nativeQuestion("r2", question.params)], stored });
+  try {
+    const card = reloaded.document.querySelector(".pending-card");
+    assert.match(card.textContent, /No reply from Core within 60 seconds, so whether your answer arrived is not known\./);
+    assert.equal(answerField(reloaded, "Why this one?").value, "Because.");
+    assert.equal(button(reloaded, "Send answer").disabled, true, "closed until the person chooses");
+    assert.equal(respondCalls(reloaded), 0, "nothing is sent again by itself");
+    button(reloaded, "Answer again").click();
+    await pause();
+    assert.equal(button(reloaded, "Send answer").disabled, false);
+    assert.equal(respondCalls(reloaded), 0);
+  } finally {
+    reloaded.close();
+  }
+  // The late record shows it arrived: sent, and the old input is not restored.
+  const late = await mount({ workspaceIdentity: "ws-1", status: "waiting",
+    pending: [nativeQuestion("r3", { ...question.params, _responseSent: true })], stored });
+  try {
+    const card = late.document.querySelector(".pending-card");
+    assert.match(card.textContent, /Response sent\. Waiting for the harness to confirm\./);
+    assert.equal(button(late, "Answer again"), undefined);
+    assert.equal(answerField(late, "Why this one?").value, "");
+    await pause();
+    assert.equal(late.window.localStorage.getItem(DRAFTS), null);
+  } finally {
+    late.close();
+  }
+});
+
+test("an answer Core recorded leaves no draft behind, and a refused one keeps it (T-170)", async () => {
+  const question = nativeQuestion("r1", { questions: [{ id: "why", question: "Why this one?" }] });
+  const page = await mount({ workspaceIdentity: "ws-1", status: "waiting", pending: [question] });
+  try {
+    typeAnswer(page, answerField(page, "Why this one?"), "Because.");
+    await pause();
+    assert.match(page.window.localStorage.getItem(DRAFTS), /Because\./);
+    button(page, "Send answer").click();
+    await pause();
+    await pause();
+    assert.equal(respondCalls(page), 1);
+    assert.equal(page.window.localStorage.getItem(DRAFTS), null);
+  } finally {
+    page.close();
+  }
+  const refused = await mount({ workspaceIdentity: "ws-1", status: "waiting", pending: [question],
+    beforeLoad: (window) => {
+      const fetch = window.fetch;
+      window.fetch = async (url, init) =>
+        url.includes("/respond")
+          ? { ok: false, status: 409, text: async () => JSON.stringify({ error: "Session disconnected; the request was not sent" }) }
+          : fetch(url, init);
+    } });
+  try {
+    typeAnswer(refused, answerField(refused, "Why this one?"), "Because.");
+    await pause();
+    button(refused, "Send answer").click();
+    await pause();
+    await pause();
+    const saved = refused.window.localStorage.getItem(DRAFTS);
+    assert.match(saved, /Because\./);
+    assert.doesNotMatch(saved, /attempted/, "a refused answer was not sent");
+  } finally {
+    refused.close();
+  }
+});
+
 test("collaboration recovery holds composer and async answers, keeps drafts and native interrupt, and refreshes without a new record revision", async () => {
   const collaboration = { ready: false, error: "Workspace MCP check failed; reconnect to verify." };
   const backgroundShells = { state: "known", count: 1, checkedAt: Date.now() };
