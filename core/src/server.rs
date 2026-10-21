@@ -850,7 +850,7 @@ async fn close_agent(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -
     Ok(Json(serde_json::to_value(ws.close_agent(&id).await?.agent)?))
 }
 async fn reopen_agent(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
-    Ok(Json(serde_json::to_value(ws.reopen_agent(&id).await?.agent)?))
+    Ok(Json(serde_json::to_value(ws.reopen_agent_summary(&id).await?)?))
 }
 async fn delete_agent(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     ws.delete_agent(&id).await?;

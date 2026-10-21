@@ -726,4 +726,58 @@ mod tests {
             "closed"
         );
     }
+
+    /// T-140: a Claude reconnect checks that the Agent is open on its listed
+    /// Agent, not its history. A closed one is refused before a bridge
+    /// starts; a summary reconnect and reopen answer with the Agent as the
+    /// whole record has it, its project included.
+    #[tokio::test]
+    async fn a_claude_reconnect_checks_the_listed_agent_and_answers_with_it() {
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if let Some(value) = &self.0 {
+                    std::env::set_var("YUZUNO_CLAUDE_BRIDGE", value);
+                } else {
+                    std::env::remove_var("YUZUNO_CLAUDE_BRIDGE");
+                }
+            }
+        }
+        let _env = crate::claude::BRIDGE_ENV.lock().await;
+        let _restore = Restore(std::env::var_os("YUZUNO_CLAUDE_BRIDGE"));
+        std::env::set_var("YUZUNO_CLAUDE_BRIDGE", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/claude_mcp_bridge.mjs"));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        mode(path, json!({"servers":[{"name":"fresh", "status":"connected"}]}));
+        let ws = Workspace::new(path.join("data"), path.to_string_lossy().into(), "unused".into()).unwrap();
+        let created = ws.claude_create("Open check".into(), String::new(), path.to_string_lossy().into(), "fixture".into(), None)
+            .await.unwrap();
+        let id = created.id.as_str();
+        until(|| ws.store.agent(id).unwrap().connection_state == "connected").await;
+        let project = ws.store.create_project("P", Default::default()).unwrap();
+        ws.store.set_agent_project(id, Some(&project.id)).unwrap();
+        let same = |answered: &crate::model::Agent| {
+            let (answered, whole) = (serde_json::to_value(answered).unwrap(), serde_json::to_value(ws.store.detail(id).unwrap().agent).unwrap());
+            for key in ["id", "harness", "closedAt", "connectionState", "claudeSessionId", "projectId", "workSummary"] {
+                assert_eq!(answered[key], whole[key], "{key}");
+            }
+        };
+        let answered = ws.reconnect_summary(id).await.unwrap();
+        assert_eq!(answered.project_id.as_deref(), Some(project.id.as_str()));
+        same(&answered);
+
+        ws.close_agent(id).await.unwrap();
+        let refused = ws.reconnect(id).await.unwrap_err();
+        assert!(refused.to_string().contains("已关闭"), "{refused}");
+        let refused = ws.reconnect_summary(id).await.unwrap_err();
+        assert!(refused.to_string().contains("已关闭"), "{refused}");
+        assert_eq!(ws.store.agent(id).unwrap().connection_state, "disconnected", "no bridge was started");
+
+        let reopened = ws.reopen_agent_summary(id).await.unwrap();
+        assert!(reopened.closed_at.is_none());
+        assert_eq!(reopened.project_id.as_deref(), Some(project.id.as_str()));
+        until(|| ws.store.agent(id).unwrap().connection_state == "connected").await;
+        same(&ws.listed(id).await.unwrap());
+        ws.close_agent(id).await.unwrap();
+    }
 }

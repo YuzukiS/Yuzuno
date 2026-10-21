@@ -259,6 +259,18 @@ impl Workspace {
         self.stored(move |store| store.detail(&id)).await
     }
 
+    /// The Agent as listed, with its project as `detail` gives it: what a
+    /// check of its state, or an answer with the Agent only, needs, without
+    /// its history (T-140).
+    pub(crate) async fn listed(&self, id: &str) -> Result<crate::model::Agent> {
+        let id = id.to_owned();
+        self.stored(move |store| {
+            let mut agent = store.agent(&id)?;
+            agent.project_id = store.agent_project(&id)?;
+            Ok(agent)
+        }).await
+    }
+
     /// `Store::send_view` for an async caller: what a send checks, without
     /// copying a large record's Items.
     pub(crate) async fn send_view(&self, id: &str) -> Result<AgentDetail> {
@@ -933,7 +945,7 @@ impl Workspace {
 
     pub(crate) async fn reconnect_accepted(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit) -> Result<AgentDetail> {
         permit.validate(&self.admission)?;
-        match self.send_view(id).await?.agent.harness.as_str() {
+        match self.listed(id).await?.harness.as_str() {
             "claude" => return self.claude_reconnect_accepted(id, permit).await,
             "opencode" => return self.opencode_reconnect_accepted(id, permit).await,
             _ => {}
@@ -944,21 +956,20 @@ impl Workspace {
     /// `reconnect`, answered with the Agent as listed: for a caller that reads
     /// the conversation afterwards its own way (the UI's windowed detail). The
     /// same admission, gate and reconcile. A Codex reconnect then does not read
-    /// the record whole to return it; a Claude or OpenCode one still reads it
-    /// inside, and only its answer is smaller (T-140).
+    /// the record whole to return it, nor does a Claude one; an OpenCode one
+    /// still reads it inside, and only its answer is smaller (T-140).
     pub async fn reconnect_summary(self: &Arc<Self>, id: &str) -> Result<crate::model::Agent> {
         let permit = self.admission.enter_work()?;
         self.reconnect_settled(id, &permit).await?;
-        let id = id.to_owned();
-        self.stored(move |store| store.agent(&id)).await
+        self.listed(id).await
     }
 
     /// `reconnect_accepted` for a caller that does not use the record, which
     /// for a long history saves reading it whole (T-140).
     pub(crate) async fn reconnect_settled(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit) -> Result<()> {
         permit.validate(&self.admission)?;
-        match self.send_view(id).await?.agent.harness.as_str() {
-            "claude" => return self.claude_reconnect_accepted(id, permit).await.map(drop),
+        match self.listed(id).await?.harness.as_str() {
+            "claude" => return self.claude_reconnect_gated(id, permit, false).await.map(drop),
             "opencode" => return self.opencode_reconnect_accepted(id, permit).await.map(drop),
             _ => {}
         }
@@ -1098,17 +1109,37 @@ impl Workspace {
         {
             let gate = self.gate(id).await;
             let _held = gate.lock().await;
-            if self.detail(id).await?.agent.closed_at.is_none() { return self.detail(id).await; }
-            self.update_record(id, "agent/reopened", json!({}), |d| {
-                d.agent.closed_at = None;
-                d.agent.status = "offline".into();
-                d.agent.connection_state = "disconnected".into();
-            }).await?;
-            self.changed(id);
+            if !self.mark_reopened(id).await? { return self.detail(id).await; }
         }
         // Native resume preserves the existing identity and session. A failed
         // reconnection leaves an open, retryable Agent with the original history.
         self.reconnect_accepted(id, &_permit).await
+    }
+
+    /// `reopen_agent`, answered with the Agent as listed, which is all the
+    /// HTTP route returns: the same steps, without reading the history whole.
+    pub async fn reopen_agent_summary(self: &Arc<Self>, id: &str) -> Result<crate::model::Agent> {
+        let permit = self.admission.enter_work()?;
+        {
+            let gate = self.gate(id).await;
+            let _held = gate.lock().await;
+            if !self.mark_reopened(id).await? { return self.listed(id).await; }
+        }
+        self.reconnect_settled(id, &permit).await?;
+        self.listed(id).await
+    }
+
+    /// Called under the Agent gate: marks a closed Agent open again (its Agent
+    /// fields only); false if it was open. Neither reads its history (T-140).
+    async fn mark_reopened(&self, id: &str) -> Result<bool> {
+        if self.listed(id).await?.closed_at.is_none() { return Ok(false); }
+        self.record_meta(id, "agent/reopened", json!({}), |m| {
+            m.agent.closed_at = None;
+            m.agent.status = "offline".into();
+            m.agent.connection_state = "disconnected".into();
+        }).await?;
+        self.changed(id);
+        Ok(true)
     }
 
     pub async fn delete_agent(self: &Arc<Self>, id: &str) -> Result<()> {
