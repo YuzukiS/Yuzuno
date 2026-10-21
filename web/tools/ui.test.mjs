@@ -2252,7 +2252,7 @@ test("a conversation reopens where it was left, and one left at the latest stays
 // What Point & Fix needs from a browser, which jsdom lacks: decoding an
 // image (400×300 here), drawing it and object URLs. Uploads answer as Core's
 // content-addressed images do: the same bytes, the same ID.
-function pointFixBrowser(window, uploads, { failFirst = false } = {}) {
+function pointFixBrowser(window, uploads, { failFirst = false, failAnnotatedOnce = false } = {}) {
   const drawn = [];
   window.createImageBitmap = async () => ({ ...(window.pointFixSize || { width: 400, height: 300 }), close() {} });
   window.URL.createObjectURL = () => "blob:point-fix";
@@ -2278,11 +2278,19 @@ function pointFixBrowser(window, uploads, { failFirst = false } = {}) {
       body.agents = body.agents.map((agent) => (agent.id === "b" ? { ...agent, harness: "codex" } : agent));
       return { ...response, json: async () => body };
     }
+    // A saved image, read back by its ID.
+    const saved = /\/api\/agents\/[ab]\/images\/([0-9a-f]{64}\.png)$/.exec(url);
+    if (saved && !init.method) {
+      const content = [...ids].find(([, id]) => id === saved[1])?.[0];
+      return content === undefined ? { ok: false, status: 404, text: async () => "{}" }
+        : { ok: true, status: 200, blob: async () => new window.Blob([content], { type: "image/png" }) };
+    }
     const upload = /\/api\/agents\/([ab])\/images$/.exec(url);
     if (upload && init.method === "POST") {
       const content = await init.body.text();
       uploads.push({ agent: upload[1], type: init.body.type, content });
-      if (failFirst && uploads.length === 1)
+      if ((failFirst && uploads.length === 1) ||
+          (failAnnotatedOnce && content.startsWith("annotated") && uploads.filter((u) => u.content.startsWith("annotated")).length === 1))
         return { ok: false, status: 500, text: async () => JSON.stringify({ error: "Disk full" }) };
       if (!ids.has(content)) ids.set(content, `${String(ids.size + 1).repeat(64)}.png`);
       return { ok: true, status: 200, json: async () => ({ id: ids.get(content), width: 400, height: 300, bytes: content.length }) };
@@ -2290,6 +2298,16 @@ function pointFixBrowser(window, uploads, { failFirst = false } = {}) {
     return fetch(url, init);
   };
   return drawn;
+}
+function pasteImage(page, content, name) {
+  const field = page.document.querySelector("[data-composer-input]");
+  field.focus();
+  const file = new page.window.File([content], name, { type: "image/png" });
+  const event = new page.window.Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", {
+    value: { items: [{ kind: "file", type: "image/png", getAsFile: () => file }], files: [file], getData: () => "" },
+  });
+  field.dispatchEvent(event);
 }
 function typeText(page, field, value) {
   const prototype = field.tagName === "TEXTAREA" ? page.window.HTMLTextAreaElement.prototype : page.window.HTMLInputElement.prototype;
@@ -2420,6 +2438,83 @@ test("a screenshot you choose is marked up with the keyboard alone, into this Ag
     assert.match(big, /The annotated image is reduced to 7348×3266 px; the areas below are in the original’s 9000×4000 pixels\./);
     assert.equal(images(), 3);
     assert.equal(page.calls.filter((c) => c.init.method === "POST" && /\/(messages|turns)$/.test(c.url)).length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("an image pasted into the draft is marked up where it is: no file is chosen again, and its original is never added twice (T-167)", async () => {
+  const uploads = [], pickers = [];
+  const page = await mount({ beforeLoad: (window) => {
+    pointFixBrowser(window, uploads, { failAnnotatedOnce: true });
+    const click = window.HTMLInputElement.prototype.click;
+    window.HTMLInputElement.prototype.click = function () {
+      if (this.type === "file") pickers.push(this.getAttribute("aria-label"));
+      return click.call(this);
+    };
+  } });
+  try {
+    const dialog = () => page.document.querySelector(".point-fix-dialog");
+    const draftImages = () => [...page.document.querySelector(".composer-area").querySelectorAll(".input-image")];
+    const mori = page.document.querySelector('[data-composer-input][aria-label="Message Mori"]');
+    const sent = () => page.calls.filter((c) => c.init.method === "POST" && /\/(messages|turns)$/.test(c.url)).length;
+    const markUp = async (index, name) => {
+      page.document.querySelector(`.composer-area [aria-label="Mark up image ${index}"]`).click();
+      await until(() => dialog()?.querySelector(".point-fix-image svg"), `${name} opens for marking`);
+      assert.match(dialog().querySelector(".modal-heading").textContent, new RegExp(`Point & Fix · ${name.replace(".", "\\.")}`));
+    };
+    setValue(page.window, mori, "Look at these");
+    await pause();
+    pasteImage(page, "pasted-one", "one.png");
+    await until(() => draftImages().length === 1, "the first pasted image is in the draft");
+    pasteImage(page, "pasted-two", "two.png");
+    await until(() => draftImages().length === 2, "the second pasted image is in the draft");
+    const pasted = uploads.length;
+    // Cancel changes nothing.
+    await markUp(1, "one.png");
+    button(page, "Add area").click();
+    await pause();
+    button(page, "Cancel").click();
+    await until(() => !dialog(), "cancelled");
+    assert.equal(composerText(mori), "Look at these");
+    assert.equal(draftImages().length, 2);
+    assert.equal(uploads.length, pasted);
+    // The second of two: its original is already in this draft.
+    await markUp(2, "two.png");
+    assert.match(dialog().textContent, /The original is already in Mori’s draft; only the annotated copy is added\./);
+    button(page, "Add area").click();
+    await until(() => page.document.activeElement?.id?.startsWith("point-fix-note-"), "its note has the focus");
+    typeText(page, page.document.activeElement, "Crop this");
+    button(page, "Add to Mori’s draft").click();
+    await until(() => dialog()?.querySelector('[role="alert"]'), "a failed upload is shown");
+    assert.equal(composerText(mori), "Look at these", "a failure adds nothing");
+    assert.equal(draftImages().length, 2);
+    button(page, "Add to Mori’s draft").click();
+    await until(() => !dialog(), "added");
+    const text = composerText(mori);
+    assert.ok(text.startsWith("Look at these"), text);
+    assert.match(text, /“two\.png” \(400×300 px\): 1 marked area in the attached annotated image; the original is the other image you attached\.\nSource: the image two\.png you attached\n\n1\. Area at x 150, y 113, 100×75 px: Crop this/);
+    assert.equal(draftImages().length, 3, "both pasted images stay, and the annotated copy joins them");
+    assert.deepEqual(uploads.slice(pasted).map((u) => [u.agent, u.content.slice(0, 9)]), [["a", "annotated"], ["a", "annotated"]],
+      "the annotated copy, failed once and then saved; never the original again");
+    // Told to another Agent: the original goes along there; Mori's draft stays.
+    await markUp(1, "one.png");
+    button(page, "Add area").click();
+    await pause();
+    const select = dialog().querySelector(".point-fix-target select");
+    select.value = "b";
+    select.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+    await pause();
+    assert.doesNotMatch(dialog().textContent, /already in/);
+    button(page, "Add to Hana’s draft").click();
+    await until(() => !dialog() && page.document.querySelector('[data-composer-input][aria-label="Message Hana"]'), "Hana's draft opens");
+    assert.equal(draftImages().length, 2, "Hana gets the annotated copy and the original");
+    assert.deepEqual(uploads.slice(-2).map((u) => [u.agent, u.content.slice(0, 10)]), [["b", "annotated "], ["b", "pasted-one"]]);
+    button(page, "Mori").click();
+    await until(() => page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), "back to Mori");
+    assert.equal(draftImages().length, 3);
+    assert.ok(composerText(page.document.querySelector('[data-composer-input][aria-label="Message Mori"]')).startsWith("Look at these"));
+    assert.deepEqual(pickers, [], "no file picker was opened");
+    assert.equal(sent(), 0, "nothing was sent");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

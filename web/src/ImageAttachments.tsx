@@ -11,12 +11,15 @@ export function ImageAttachments({
   images,
   onRemove,
   onAnnotate,
+  annotateThumbnails = false,
   description = "Original image attached to this message",
 }: {
   images: readonly PreviewImage[];
   onRemove?: (id: string) => void;
   /** Point & Fix (T-167): mark areas on an opened image. */
   onAnnotate?: (image: PreviewImage) => void;
+  /** Offer Mark up on each thumbnail too, as for images in a draft. */
+  annotateThumbnails?: boolean;
   /** What the full preview shows, if not simply the original. */
   description?: string;
 }) {
@@ -46,6 +49,17 @@ export function ImageAttachments({
               <span>{image.name || `Image ${index + 1}`}</span>
             </span>
           </button>
+          {onAnnotate && annotateThumbnails && (
+            <button
+              type="button"
+              className="input-image-markup"
+              aria-label={`Mark up image ${index + 1}`}
+              title="Point & Fix · mark areas on this image"
+              onClick={() => onAnnotate(image)}
+            >
+              <SquareDashedMousePointer size={11} />
+            </button>
+          )}
           {onRemove && (
             <button
               type="button"
