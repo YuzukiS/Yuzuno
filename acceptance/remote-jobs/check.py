@@ -73,7 +73,7 @@ UsePAM no
 StrictModes no
 PidFile {folder / 'sshd.pid'}
 SetEnv {environment}
-LogLevel ERROR
+LogLevel INFO
 """)
     host_public = (folder / "host_key.pub").read_text().split()
     with (LAB / "ssh" / "known_hosts").open("a") as known:
@@ -134,10 +134,26 @@ def start_sshd(name, port):
 
 
 def stop_sshd(name):
+    """The machine gone: sshd and the connections it holds. Core keeps one
+    connection open to a machine (T-163), which stopping the listener alone
+    would leave working."""
     process = SSHD.pop(name, None)
     if process:
+        def parent(pid):
+            try:
+                stat = Path(f"/proc/{pid}/stat").read_text()
+            except OSError:
+                return None
+            return int(stat[stat.rindex(")") + 2:].split()[1])
+        connections = [int(entry.name) for entry in Path("/proc").iterdir()
+                       if entry.name.isdigit() and parent(entry.name) == process.pid]
         process.terminate()
         process.wait(timeout=10)
+        for pid in connections:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
 
 
 def start_core():
@@ -168,7 +184,12 @@ def main():
         start_sshd("other", ports["other"])
         start_core()
         mcp = MCP()
-        machine = request("/machines", {"name": "lab Linux", "target": target, "codex": "codex", "defaultCwd": str(work)})
+        spec = {"name": "lab Linux", "target": target, "codex": "codex", "defaultCwd": str(work)}
+        # An account without linger cannot hold strict limits (the default);
+        # T108_LIMIT_MODE=limited runs the lab there.
+        if os.environ.get("T108_LIMIT_MODE"):
+            spec["limitMode"] = os.environ["T108_LIMIT_MODE"]
+        machine = request("/machines", spec)
         probe = request(f"/machines/{machine['id']}/check", {})
         assert probe["reachable"] and probe["host"]["platform"] == "Linux", probe
         assert probe["host"]["home"] == REPORT["sshd"]["remoteHome"], probe["host"]
@@ -308,7 +329,7 @@ def main():
         paused = submit("paused", "sleep 20")
         status(paused["id"], "running")
         pause_error = refused(f"/jobs/{paused['id']}/pause", {})
-        assert "Pause is not available for jobs on lab Linux" in pause_error, pause_error
+        assert "Pause is not available for" in pause_error and "on lab Linux" in pause_error, pause_error
         request(f"/jobs/{paused['id']}/cancel", {})
         status(paused["id"], "cancelled", seconds=60)
         REPORT["unavailable"] = {"gpu": no_gpu, "pause": pause_error}

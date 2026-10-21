@@ -108,6 +108,8 @@ pub(super) struct Programs<'a> {
     pub ssh: &'a str,
     /// None when this Core has no Windows helper.
     pub windows: Option<&'a WindowsHelper>,
+    /// The connections SSH calls share (T-163); None: each its own.
+    pub mux: Option<&'a super::ssh_mux::Mux>,
 }
 
 /// The native Windows helper, and the SHA-256 its bytes must have each time
@@ -262,7 +264,7 @@ fn framed(code: i32, out: &[u8], stderr: &str, nonce: &str) -> std::result::Resu
 
 #[cfg(test)]
 pub(super) async fn invoke(program: &str, machine: &RemoteMachine, request: Value) -> Reply {
-    call(&Programs { ssh: program, windows: None }, &Machine::Ssh(machine.clone()), request).await
+    call(&Programs { ssh: program, windows: None, mux: None }, &Machine::Ssh(machine.clone()), request).await
 }
 
 /// One helper call on the machine, through its own transport.
@@ -279,10 +281,21 @@ pub(super) async fn call(programs: &Programs<'_>, machine: &Machine, mut request
         return Reply::Refused("the request could not be encoded".into());
     };
     // Only fixed helper code enters the command; everything variable
-    // travels as JSON on stdin.
+    // travels as JSON on stdin. A shared connection is held until the call
+    // ends, so it is not closed under it.
+    let mut lease = None;
     let mut command = match machine {
         Machine::Ssh(machine) => {
-            let mut command = crate::remote::ssh_with(programs.ssh);
+            if let Some(mux) = programs.mux {
+                if let Some(destination) = super::ssh_mux::destination(programs.ssh, &machine.target).await {
+                    lease = mux.client(programs.ssh, machine, &destination);
+                }
+            }
+            let control = match &lease {
+                Some(lease) => crate::remote::Control::Client(&lease.path),
+                None => crate::remote::Control::Off,
+            };
+            let mut command = crate::remote::ssh_with_control(programs.ssh, control);
             command
                 .args(["-o", "ClearAllForwardings=yes"])
                 .arg(&machine.target)
@@ -355,7 +368,9 @@ pub(super) async fn call(programs: &Programs<'_>, machine: &Machine, mut request
         let status = child.wait().await?;
         Ok::<_, anyhow::Error>((status.code(), out, err))
     };
-    match tokio::time::timeout(Duration::from_secs(30), run).await {
+    let finished = tokio::time::timeout(Duration::from_secs(30), run).await;
+    drop(lease);
+    match finished {
         Err(_) => Reply::NoAnswer("no answer within 30 seconds".into()),
         Ok(Err(error)) => Reply::NoAnswer(format!("{error:#}")),
         Ok(Ok((code, out, err))) => {
@@ -816,11 +831,19 @@ pub(super) fn start(ws: &Arc<Workspace>) {
     // Read once as Core starts, before it serves anything: a Core without
     // remote jobs to resume starts idle and reads nothing.
     let busy = ws.store.remote_jobs().map_or(true, |jobs| !jobs.is_empty());
-    tokio::spawn(run(weak, wake, busy, |ws| async move {
+    tokio::spawn(run(weak.clone(), wake, busy, |ws| async move {
         let helper = windows_helper();
-        let programs = Programs { ssh: SSH, windows: helper.as_ref() };
+        let programs = Programs { ssh: SSH, windows: helper.as_ref(), mux: Some(&ws.jobs.ssh_mux) };
         tick_with(&ws, &programs).await
     }));
+    // Ends the shared connections that are no longer used (ssh_mux).
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            let Some(ws) = weak.upgrade() else { break };
+            ws.jobs.ssh_mux.sweep();
+        }
+    });
 }
 
 /// The loop itself, over one pass (tick_with). A wake that arrives while a
@@ -866,7 +889,7 @@ fn due(ws: &Workspace, job: &Value) -> bool {
 #[cfg(test)]
 pub(super) async fn tick(ws: &Arc<Workspace>, program: &str) -> Result<bool> {
     let helper = WindowsHelper::trusting(program);
-    tick_with(ws, &Programs { ssh: program, windows: Some(&helper) }).await
+    tick_with(ws, &Programs { ssh: program, windows: Some(&helper), mux: None }).await
 }
 
 /// One pass over the remote jobs; false when there is none, so the loop
@@ -1048,7 +1071,7 @@ pub(super) fn pause_refusal(job: &Value) -> Option<String> {
 /// {state, reason, evidence}, as host::control answers for local jobs. A lost
 /// reply is unknown, settled later by what the machine reports (answered).
 pub(super) async fn control(ws: &Arc<Workspace>, job: &Value, mode: &str) -> Value {
-    control_with(ws, job, mode, &Programs { ssh: SSH, windows: None }).await
+    control_with(ws, job, mode, &Programs { ssh: SSH, windows: None, mux: Some(&ws.jobs.ssh_mux) }).await
 }
 
 pub(super) async fn control_with(ws: &Arc<Workspace>, job: &Value, mode: &str, programs: &Programs<'_>) -> Value {
@@ -1225,7 +1248,7 @@ async fn launch(ws: &Arc<Workspace>, job: Value, programs: &Programs<'_>) -> Res
 
 pub(super) async fn logs(ws: &Arc<Workspace>, job: &Value, offset: Option<u64>) -> Result<Value> {
     let helper = windows_helper();
-    logs_with(ws, job, offset, &Programs { ssh: SSH, windows: helper.as_ref() }).await
+    logs_with(ws, job, offset, &Programs { ssh: SSH, windows: helper.as_ref(), mux: Some(&ws.jobs.ssh_mux) }).await
 }
 
 pub(super) async fn logs_with(ws: &Arc<Workspace>, job: &Value, offset: Option<u64>, programs: &Programs<'_>) -> Result<Value> {

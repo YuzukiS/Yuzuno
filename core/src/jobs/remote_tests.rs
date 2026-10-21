@@ -209,7 +209,7 @@ fn job(lab: &Lab, job: &Value) -> Value {
 }
 
 async fn ssh_logs(lab: &Lab, job: &Value, program: &str) -> anyhow::Result<Value> {
-    remote::logs_with(&lab.ws, job, None, &remote::Programs { ssh: program, windows: None }).await
+    remote::logs_with(&lab.ws, job, None, &remote::Programs { ssh: program, windows: None, mux: None }).await
 }
 
 fn cancel(lab: &Lab, of: &Value) {
@@ -956,7 +956,7 @@ print(mark + json.dumps({"status": "inspected", "cwd": request["cwd"], "files": 
 async fn windows_inputs_are_frozen_by_its_own_helper_and_go_with_the_start() {
     let lab = lab();
     let helper = remote::WindowsHelper::trusting(&windows_helper(&lab, "windows-inspect", INSPECTING));
-    let programs = remote::Programs { ssh: &lab.ssh, windows: Some(&helper) };
+    let programs = remote::Programs { ssh: &lab.ssh, windows: Some(&helper), mux: None };
     let snapshot = remote::remote_snapshot(&lab.ws, &programs, "windows", r"C:\work", &["a.txt".into()]).await.unwrap();
     assert_eq!((snapshot["frozenOn"]["kind"].as_str(), snapshot["hostId"].as_str()), (Some("windows"), Some("w".repeat(64).as_str())));
     assert_eq!(snapshot["files"][0]["absolutePath"], r"C:\work\a.txt");
@@ -965,7 +965,7 @@ async fn windows_inputs_are_frozen_by_its_own_helper_and_go_with_the_start() {
     let error = remote::remote_snapshot(&lab.ws, &programs, "windows", r"C:\work", &["linux.txt".into()]).await.unwrap_err().to_string();
     assert!(error.ends_with("its reply does not name each input with its digest"), "{error}");
     // No helper in this Core: nothing is read anywhere, and nothing is submitted.
-    let none = remote::Programs { ssh: &lab.ssh, windows: None };
+    let none = remote::Programs { ssh: &lab.ssh, windows: None, mux: None };
     let error = remote::remote_snapshot(&lab.ws, &none, "windows", r"C:\work", &["a.txt".into()]).await.unwrap_err().to_string();
     assert!(error.starts_with("The inputs could not be read on Windows on this PC, so nothing was submitted"), "{error}");
     // The start carries the frozen inputs and the artifacts, so its digest is v3.
@@ -988,7 +988,7 @@ async fn windows_inputs_are_frozen_by_its_own_helper_and_go_with_the_start() {
 /// One pass with this Core's Windows helper, or none.
 async fn windows_tick(lab: &Lab, helper: Option<&remote::WindowsHelper>) {
     lab.ws.jobs.remote_seen.lock().unwrap().clear();
-    remote::tick_with(&lab.ws, &remote::Programs { ssh: &lab.ssh, windows: helper }).await.unwrap();
+    remote::tick_with(&lab.ws, &remote::Programs { ssh: &lab.ssh, windows: helper, mux: None }).await.unwrap();
 }
 
 #[tokio::test]
@@ -1313,7 +1313,7 @@ fn sha(text: &str) -> String {
 
 async fn frozen(lab: &Lab, program: &str, inputs: &[&str]) -> anyhow::Result<Value> {
     let inputs: Vec<String> = inputs.iter().map(|p| p.to_string()).collect();
-    remote::remote_snapshot(&lab.ws, &remote::Programs { ssh: program, windows: None }, "m1", &lab.work.to_string_lossy(), &inputs).await
+    remote::remote_snapshot(&lab.ws, &remote::Programs { ssh: program, windows: None, mux: None }, "m1", &lab.work.to_string_lossy(), &inputs).await
 }
 
 /// As job_submit: the job with what was frozen on the machine.
@@ -1884,7 +1884,7 @@ fn replying(lab: &Lab, name: &str, reply: &Value) -> String {
 }
 
 async fn ask_pause(lab: &Lab, job: &Value, program: &str) -> Value {
-    remote::control_with(&lab.ws, job, "pause", &remote::Programs { ssh: program, windows: None }).await
+    remote::control_with(&lab.ws, job, "pause", &remote::Programs { ssh: program, windows: None, mux: None }).await
 }
 
 /// The running attempt's status as a machine reports it in a scope of its own
@@ -1975,7 +1975,7 @@ async fn a_remote_pause_is_what_the_machine_answered_and_its_status_settles_one_
     // machine reports the scope thawed: then it is resumed.
     let (asked, act) = lab.ws.store.request_job_pause(id, true).unwrap();
     assert!(act);
-    let lost = remote::control_with(&lab.ws, &asked, "resume", &remote::Programs { ssh: &lab.down, windows: None }).await;
+    let lost = remote::control_with(&lab.ws, &asked, "resume", &remote::Programs { ssh: &lab.down, windows: None, mux: None }).await;
     let unsure = lab.ws.store.record_job_pause(id, &running["attempt"], true, &lost).unwrap();
     assert_eq!((unsure["pause"]["state"].as_str(), unsure["pause"]["intent"].as_str()), (Some("unknown"), Some("resume")));
     tick(&lab, &replying(&lab, "ssh-thawed", &status(thawed()))).await;
