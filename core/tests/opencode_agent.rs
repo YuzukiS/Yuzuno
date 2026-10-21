@@ -271,6 +271,52 @@ async fn abort_asks_and_only_the_end_it_reports_ends_the_turn() {
 }
 
 #[tokio::test]
+async fn an_abort_is_read_in_the_order_opencode_reports_it() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let aborted_answer = |d: &AgentDetail, id: &str| turn(d, id)["_opencodeAnswers"].as_object()
+        .is_some_and(|a| a.values().any(|x| x["error"]["name"] == "MessageAbortedError"));
+    // OpenCode 1.19.3: the session's abort and idle come before the aborted answer.
+    lab.control("mode", json!({"abortOrder":"native"})).await;
+    let first = lab.send("c1", "long").await.unwrap().turn_id.unwrap();
+    lab.ws.interrupt(ID).await.unwrap();
+    let d = lab.until("the reported abort", |d| turn(d, &first)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &first)["status"], "interrupted");
+    assert_eq!(turn(&d, &first)["error"]["native"]["name"], "MessageAbortedError");
+    assert_eq!(d.agent.error, None, "an interrupt is not an error of the Agent");
+    // The aborted answer arrives after; it changes nothing.
+    let d = lab.until("the late answer", |d| aborted_answer(d, &first)).await;
+    assert_eq!(turn(&d, &first)["status"], "interrupted");
+
+    // Idle with no reported abort, the aborted answer only after: still unknown.
+    lab.control("mode", json!({"abortOrder":"late"})).await;
+    let second = lab.send("c2", "long").await.unwrap().turn_id.unwrap();
+    lab.ws.interrupt(ID).await.unwrap();
+    let d = lab.until("the bare idle", |d| turn(d, &second)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &second)["status"], "outcomeUnknown");
+    let d = lab.until("the late answer", |d| aborted_answer(d, &second)).await;
+    assert_eq!(turn(&d, &second)["status"], "outcomeUnknown", "not decided again after the Turn ended");
+
+    // A run that completed before the interrupt reached it: completed, and nothing to abort.
+    lab.control("mode", json!({"abortOrder":"native"})).await;
+    let third = lab.send("c3", "quick").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    let d = lab.until("the answer", |d| turn(d, &third)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &third)["status"], "completed");
+    assert!(lab.ws.interrupt(ID).await.is_err(), "nothing runs");
+
+    // A session error that is not an abort, then idle without an answer: unknown, not interrupted.
+    let fourth = lab.send("c4", "fail").await.unwrap().turn_id.unwrap();
+    lab.control("error", json!({"sessionID":session})).await;
+    lab.until("the session error", |d| d.agent.error.is_some()).await;
+    lab.control("idle", json!({"sessionID":session})).await;
+    let d = lab.until("the bare idle", |d| turn(d, &fourth)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &fourth)["status"], "outcomeUnknown");
+    assert_eq!(lab.posts(&format!("/session/{session}/abort")).len(), 2);
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+#[tokio::test]
 async fn reopening_the_workspace_keeps_the_session_and_never_resends() {
     let lab = lab(&[], false).await;
     let session = lab.session();
