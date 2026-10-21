@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowUpRight, Bot, ChevronRight, ClipboardList, LoaderCircle, MessageSquare, ShieldCheck, SquareTerminal } from "lucide-react";
 import { api, errorText, respondToRequest } from "./api";
+import { AnswerAgain, useUnconfirmedAnswer } from "./unconfirmed-answer";
 import { claudeCodeFacts } from "./claude-runtime";
 import { callToward, formatUsage, turnSubAgents, type ClaudeSubAgentEntry, type ClaudeSubAgentRecord } from "./claude-subagents";
 import { Prose } from "./components";
@@ -412,7 +413,8 @@ export function ClaudePermission({ request, refresh, disabled, highlightSource, 
   const { grants: grant, acceptEdits } = questions.length ? { grants: [], acceptEdits: false } : sessionGrant(request.params.sessionPermissions);
   const reasonText = reason.trim();
   const reasonTooLong = new TextEncoder().encode(reasonText).length > 2000;
-  const locked = disabled || !!request.stale || !!request.params._responseSent || sending || answered;
+  const unconfirmedAnswer = useUnconfirmedAnswer(refresh, answering);
+  const locked = disabled || !!request.stale || !!request.params._responseSent || sending || answered || unconfirmedAnswer.unconfirmed;
   const answer = (q: Question) => [...(answers[q.question] || []), ...(free[q.question]?.trim() ? [free[q.question].trim()] : [])].join(", ");
   async function respond(decision: "allow" | "deny", scope?: "session") {
     if (locked || answering.current) return;
@@ -427,7 +429,7 @@ export function ClaudePermission({ request, refresh, disabled, highlightSource, 
       });
       setAnswered(true);
       refresh();
-    } catch (e) { answering.current = false; setError(errorText(e)); } finally { setSending(false); }
+    } catch (e) { if (!unconfirmedAnswer.noReply(e)) answering.current = false; setError(errorText(e)); } finally { setSending(false); }
   }
   const sessionLabel = plan !== null ? acceptEdits ? "Approve and allow edits for this session" : "Approve for this session"
     : acceptEdits ? "Allow edits for this session" : "Allow for this session";
@@ -491,6 +493,7 @@ export function ClaudePermission({ request, refresh, disabled, highlightSource, 
         ? <>“{sessionLabel}” also allows {grant.join(", ")} until this Claude session restarts. Nothing is written to your settings files.</>
         : "Applies only to this action. Your Claude permission rules stay in place."}</p>
     </>}
-    {error && <p role="alert" className="inline-error">{error}</p>}
+    {error && !(unconfirmedAnswer.unconfirmed && request.params._responseSent) && <p role="alert" className="inline-error">{error}</p>}
+    {unconfirmedAnswer.unconfirmed && !request.params._responseSent && <AnswerAgain onClick={() => { setError(""); unconfirmedAnswer.answerAgain(); }} />}
   </section>;
 }

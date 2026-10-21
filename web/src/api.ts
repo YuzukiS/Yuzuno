@@ -84,14 +84,15 @@ export async function postWithin<T>(path: string, body: unknown = {}): Promise<T
     clearTimeout(timer);
   }
 }
-/** An answer to a native approval or question. Core refuses a second answer
- * to the same request, so answering again after no reply is safe. */
+/** An answer to a native approval or question. Core keeps only the first
+ * answer it records for a request and refuses later ones; after no reply,
+ * see unconfirmed-answer.tsx. */
 export async function respondToRequest(requestId: string, response: unknown) {
   try {
     return await postWithin(`/requests/${encodeURIComponent(requestId)}/respond`, { response });
   } catch (error) {
     if (error instanceof NoReplyError)
-      throw new NoReplyError(`No reply from Core within ${DELIVERY_WAIT_MS / 1000} seconds. Your answer may have arrived; if you answer again, Core refuses a second answer.`);
+      throw new NoReplyError(`No reply from Core within ${DELIVERY_WAIT_MS / 1000} seconds, so whether your answer arrived is not known. Core keeps only the first answer it records for this request; this card shows it as sent once Core's record does.`);
     throw error;
   }
 }

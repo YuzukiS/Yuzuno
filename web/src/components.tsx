@@ -36,6 +36,7 @@ import type {
   MessageReceipt,
 } from "./types";
 import { api, artifactUrl, errorText, respondToRequest } from "./api";
+import { AnswerAgain, useUnconfirmedAnswer } from "./unconfirmed-answer";
 import { ClaudePermission, ClaudeSubAgentScope, ClaudeTool } from "./ClaudeControls";
 import { OpenCodeRequest, OpenCodeTool } from "./OpenCodeControls";
 import { agentHarnessName } from "./machine-checks";
@@ -982,10 +983,11 @@ function CodexPendingCard({
   // it; kept after a delivered answer until the harness resolves the request.
   const answering = useRef(false);
   const [answered, setAnswered] = useState(false);
+  const unconfirmedAnswer = useUnconfirmedAnswer(refresh, answering);
   // Core answers 200 only once it has recorded the reply as sent, so the
   // card says so at once instead of waiting for a refetch to bring it.
   const responseSent = !!request.params._responseSent || answered;
-  disabled = disabled || !!request.stale || responseSent;
+  disabled = disabled || !!request.stale || responseSent || unconfirmedAnswer.unconfirmed;
   const [error, setError] = useState("");
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const questions = request.params.questions as
@@ -1031,7 +1033,7 @@ function CodexPendingCard({
       setAnswered(true);
       refresh();
     } catch (e) {
-      answering.current = false;
+      if (!unconfirmedAnswer.noReply(e)) answering.current = false;
       setError(errorText(e));
     } finally {
       setSending(false);
@@ -1239,10 +1241,13 @@ function CodexPendingCard({
           <pre>{JSON.stringify(visibleParams, null, 2)}</pre>
         </>
       )}
-      {error && (
+      {error && !(unconfirmedAnswer.unconfirmed && responseSent) && (
         <p role="alert" className="inline-error">
           {error}
         </p>
+      )}
+      {unconfirmedAnswer.unconfirmed && !responseSent && (
+        <AnswerAgain onClick={() => { setError(""); unconfirmedAnswer.answerAgain(); }} />
       )}
     </section>
   );
