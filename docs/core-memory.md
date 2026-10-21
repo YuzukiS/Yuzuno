@@ -128,3 +128,70 @@ T-140 Job run `dd1342b8-e3fc-4dd0-99f1-b8d85cd4bed8`, source `90b7775`, 2026-10-
 These are allocator measurements of a synthetic workload with one Agent. Production
 RSS also depends on how many Agents send and end Turns at once. Rust counters
 exclude SQLite's C allocations.
+
+## Reconnect, restart and idle writes
+
+On core.13 (2026-10-21) the daily Core reached 5.08 GiB RSS, peak 5.46 GiB,
+within about six minutes of an update restart, and stayed there. Its first
+idle reclaim, 23 minutes after the start, reported 5.0 GiB of free arena space
+and RSS fell from 5.08 GiB to 127 MiB. So most of that high point was freed
+memory glibc kept; that observation does not account for every byte or rule
+out a leak. The paths below run at such a restart and each made several copies
+of a long record; how much each contributed to that high point was not measured.
+
+- An update restart marks every open Agent restarted. `Store::open` did it with
+  a compared update, loading each record with its payloads, copying it to compare
+  with, and keeping each held, so opening held up to `MAX_STREAMS` whole records.
+- The update then reconnects each restored session. A Codex reconnect, with the
+  update's own checks, read the whole record with `detail` up to ten times
+  where only the Agent, pending requests or Turn status are read, merged the resumed thread by cloning its Turns and
+  Items, and had commits return copies nobody used.
+- A metadata write (mail doorbell, connection state) to a record no longer held
+  loaded it and kept a second copy to compare with, although the change's
+  scope already names what it writes.
+
+Those reads now use `send_view` and `update_readiness`, the merge takes the
+snapshot's Turns by value, the commits use `record_event` or `update_meta`, a
+record just loaded is copied only to compare a change of unknown scope, and
+`Store::open` releases each record after marking it. A recovered completion
+still reads the whole record, but only when a finished Turn has no journaled
+completion. A committed change to a held record's Turns still copies it once.
+
+`core/examples/core_attach_memory.rs` measures these phases with synthetic
+Agents (100 Turns of 80 Items, each Item's output the same size, every Turn's
+completion journaled as a live Turn leaves it) and a scripted app-server that
+returns the same history on resume:
+
+```sh
+cargo build --locked --release -p yuzuno-workspace --example core_attach_memory
+target/release/examples/core_attach_memory target/attach-a4.json 8 4
+YUZUNO_ALLOC_SITES=1 target/release/examples/core_attach_memory target/attach-sites.json 8 1
+```
+
+The second argument is each Item's output in KiB, the third the number of
+Agents, which reconnect at once. `YUZUNO_ALLOC_SITES=1` adds byte-sampled
+allocation sites by source line for the reconnect phases.
+
+T-140 Job runs `04d0effa-3d70-49ec-8d28-dd3954cf9266` (released `827bd32` with
+the example), `600c6d9e-80be-41fd-bddf-5fb5ef0b3048` and
+`976a49fb-af13-4f13-8dae-d26cc7c99b12` (this change, source `2827706`),
+2026-10-21, 8 KiB per Item (63.5 MiB of history per Agent), release build:
+
+| Observation | 827bd32 | This change |
+| --- | ---: | ---: |
+| One Agent reconnecting after the open: allocated | 2,788 MiB | 1,558 MiB |
+| One Agent reconnecting after the open: peak above live | 412 MiB | 274 MiB |
+| One Agent reconnecting while connected: allocated | 1,494 MiB | 948 MiB |
+| Four Agents: opening, peak above live | 342 MiB | 68 MiB |
+| Four Agents: records held after opening | 4 | 0 |
+| Four Agents reconnecting at once: allocated | 11,151 MiB | 6,232 MiB |
+| Four Agents reconnecting at once: peak above live | 1,264 MiB | 754–950 MiB |
+| Four Agents reconnecting at once: process CPU | 11.1 s | 6.7–9.4 s |
+| Four Agents: doorbell to each idle record, allocated | 815 MiB | 541 MiB |
+| Four Agents: RSS after all phases and idle, no trim | 1,289 MiB | 782–1,013 MiB |
+
+The 827bd32 column is one run; this change's four-Agent rows are four runs,
+whose peaks vary with how the concurrent reconnects overlap. Every run kept
+every Turn and Item. These are synthetic allocator measurements; the daily Core's
+RSS also depends on its records' sizes and how many Agents are active at once,
+and is not measured here.

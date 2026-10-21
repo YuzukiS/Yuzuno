@@ -38,10 +38,14 @@ fn blocked_activity(agent: &Agent, activity: Activity) -> Option<String> {
     None
 }
 fn native_id(detail: &AgentDetail) -> Option<&str> {
-    match detail.agent.harness.as_str() {
-        "claude" => detail.agent.claude_session_id.as_deref(),
-        "opencode" => detail.agent.opencode_session_id.as_deref(),
-        _ => detail.agent.thread_id.as_deref(),
+    agent_native_id(&detail.agent)
+}
+
+fn agent_native_id(agent: &Agent) -> Option<&str> {
+    match agent.harness.as_str() {
+        "claude" => agent.claude_session_id.as_deref(),
+        "opencode" => agent.opencode_session_id.as_deref(),
+        _ => agent.thread_id.as_deref(),
     }
 }
 
@@ -146,7 +150,8 @@ impl Runtime for WorkspaceRuntime {
             let mut errors = vec![];
             for session in sessions {
                 let result = async {
-                let before = self.0.detail(&session.agent_id).await?;
+                // Identity and state only: a long history is not copied (T-140).
+                let before = self.0.send_view(&session.agent_id).await?;
                 ensure!(before.agent.closed_at.is_none() && before.agent.harness == session.harness && native_id(&before) == Some(&session.native_id), "Stored native session identity changed for {}", before.agent.name);
                 let connected = match before.agent.harness.as_str() {
                     "claude" => self.0.claudes.lock().unwrap().contains_key(&session.agent_id),
@@ -157,10 +162,12 @@ impl Runtime for WorkspaceRuntime {
                 // can survive until Core exits. Aborting in the same Core must
                 // inspect the live transport too before deciding to skip resume.
                 if !connected || before.agent.connection_state != "connected" { self.0.reconnect_for_update(&session.agent_id).await?; }
-                let after = self.0.detail(&session.agent_id).await?;
-                ensure!(after.agent.connection_state == "connected" && native_id(&after) == Some(&session.native_id), "Native session did not restore for {}", after.agent.name);
+                // The listed view update readiness checks, not the whole record.
+                let agent_id = session.agent_id.clone();
+                let (after, activity) = self.0.stored(move |store| store.update_readiness(&agent_id)).await?;
+                ensure!(after.connection_state == "connected" && agent_native_id(&after) == Some(&session.native_id), "Native session did not restore for {}", after.name);
                 self.0.require_collaboration(&session.agent_id).await?;
-                ensure!(blocked(&after).is_none(), "Restored session {} has active or uncertain native work; keep this Core running", after.agent.name);
+                ensure!(blocked_activity(&after, activity).is_none(), "Restored session {} has active or uncertain native work; keep this Core running", after.name);
                 Ok::<_, anyhow::Error>(())
                 }.await;
                 match result {
@@ -176,13 +183,13 @@ impl Runtime for WorkspaceRuntime {
 }
 
 impl Workspace {
-    async fn reconnect_for_update(self: &Arc<Self>, id: &str) -> Result<AgentDetail> {
+    async fn reconnect_for_update(self: &Arc<Self>, id: &str) -> Result<()> {
         ensure!(
             self.admission.snapshot().operation_id.is_some(),
             "Update restore requires closed new-work admission"
         );
         let permit = self.admission.enter_event();
-        self.reconnect_accepted(id, &permit).await
+        self.reconnect_settled(id, &permit).await
     }
 
     /// Includes all messages enqueued before each marker. After detach, the

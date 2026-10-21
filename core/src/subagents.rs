@@ -165,7 +165,8 @@ impl Workspace {
     /// cannot be read, or whose Turn still runs, keeps its request: stale,
     /// unanswerable, and visible until Codex resolves or asks again.
     pub(crate) async fn settle_child_requests(&self, id: &str, rpc: &Rpc, generation: u64) {
-        let Ok(detail) = self.detail(id).await else { return };
+        // Pending requests only: the send view has them without the Items.
+        let Ok(detail) = self.send_view(id).await else { return };
         let stale: Vec<(String, String, Value)> = detail
             .pending
             .iter()
