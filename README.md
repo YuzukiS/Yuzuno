@@ -55,9 +55,9 @@ Local CPU and RAM budgets are enforced through Linux cgroups. GPU admission rese
 
 ## Get started
 
-**This first public version is source only: there is no public release package yet.** Build and run Core from a checkout, as [below](#run-from-source), and use it in a browser.
+**Signed Core releases for Linux x86_64 are published on the [Releases page](https://github.com/YuzukiS/Yuzuno/releases),** starting with core.13 and core.14 on 2026-10-21. The [install guide](docs/independent-core.md) installs one without a source checkout; it also covers first startup and connecting from another computer. You can instead build and run Core from a checkout, as [below](#run-from-source), and use it in a browser.
 
-Signed Core bundles and the Windows desktop installer exist so far only in the private development repository. The [install guide](docs/independent-core.md) describes the signed-release path for when public releases start; it also covers first startup and connecting from another computer.
+The Windows desktop installer exists so far only in the private development repository; the desktop app can be [built from source](desktop/README.md).
 
 | Part | Current support |
 | --- | --- |
@@ -115,7 +115,7 @@ Stopping Core differs from closing the client: it ends local runtime connections
 
 ## Project status
 
-Yuzuno is an early alpha in active development, published as source only for now. This README describes the current source.
+Yuzuno is an early alpha in active development, published as source and as signed Linux Core releases. This README describes the current source, which can be ahead of the latest release.
 
 Commits, pull requests, CI runs and releases that the docs and acceptance records cite (for example `f5626f7`, `#164` or core.12) are from the former private development repository, `YuzukiS/Yuzuno-dev`. They are not part of this repository's history.
 

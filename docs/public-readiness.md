@@ -4,7 +4,7 @@
 
 All new development targets public `main`. Unfinished work moves as selected changes with its existing evidence, not by merging the private history or maintaining two active main branches. See [Contributing](../CONTRIBUTING.md#development-repository).
 
-The first public delivery is source only. The Apache License 2.0 includes the character images; third-party materials retain their own terms. There are no public installation packages yet. The notes below retain provenance and remaining package questions; they are not a claim that binary distribution has been completed.
+The first public delivery was source only. Since 2026-10-21 the public repository also publishes signed Linux x86_64 Core releases, prepared from public source as [the release guide](core-release.md) describes: core.13 (`core-20261021-827bd32`) and core.14 (`core-20261021-a31eb29`). Desktop installers and a Mac app are not published here. The Apache License 2.0 includes the character images; third-party materials retain their own terms. The notes below retain provenance and remaining package questions.
 
 ## Settings
 
@@ -111,7 +111,7 @@ None of this is a legal assessment.
 - `tools/core-release.py` takes an explicit repository in its release configuration. Any future public package must be prepared from public source, for this public repository, with its matching evidence and signature.
 - CI uses `github.repository`. New work starts in an independent public clone. Historical private checkouts keep their private remotes and are used only to read evidence or extract selected changes.
 
-The public repository currently has no release packages, so update checks find no new public package. The source publication changed no installed version and required no Core restart. Old private packages remain private; do not relabel them as public releases. Package preparation is a separate step described in [the release guide](core-release.md).
+Since 2026-10-21 the public repository has its own signed Core releases (core.13 first), so the update check of an installation configured for `YuzukiS/Yuzuno` finds them; installing one stays an explicit user action. The source publication itself changed no installed version and required no Core restart. Old private packages remain private; do not relabel them as public releases. Package preparation is a separate step described in [the release guide](core-release.md).
 
 ## Other open decisions
 

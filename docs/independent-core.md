@@ -2,7 +2,7 @@
 
 This guide installs a signed Yuzuno Core release on a Linux host and connects to it from a browser or the Windows desktop app, on the same computer or another one. It does not need a source checkout.
 
-**No public release exists yet.** The first public version is source only: to try Yuzuno now, [run it from source](../README.md#run-from-source). The release steps below are for when public releases start; the connection sections apply to a source build as well.
+**Releases are published on the [Releases page](https://github.com/YuzukiS/Yuzuno/releases) of `YuzukiS/Yuzuno`,** starting with core.13 and core.14 on 2026-10-21. Each has the three Linux x86_64 files used below. You can also [run from source](../README.md#run-from-source); the connection sections apply to a source build as well.
 
 ## What runs where
 
@@ -10,7 +10,7 @@ This guide installs a signed Yuzuno Core release on a Linux host and connects to
 |---|---|---|
 | **Core** | One Linux host (x86_64) | The Workspace database, Agent sessions, Jobs, release packages. It serves the web UI and API on a loopback port only. |
 | **Native runtimes** | The Core host | Claude Code and/or Codex, installed and signed in by you. Yuzuno uses their logins; it never copies or reads credentials. |
-| **Client** | Any computer with a browser, or the Windows desktop app. The Mac app is built from source only and has no release. | Nothing durable except the browser's own storage, which holds unsent drafts. A client never starts a Workspace. |
+| **Client** | Any computer with a browser, or the Windows desktop app (built from source; its installer is not public yet). The Mac app is built from source only and has no release. | Nothing durable except the browser's own storage, which holds unsent drafts. A client never starts a Workspace. |
 | **Agent machine** | The Core host, or an SSH machine for remote Agents | Separate from connecting a client to Core; see the README's SSH Agents. |
 
 Core has no user accounts. Anyone who can reach its port can use the Workspace, so the port stays on loopback. Other computers reach it only through an SSH tunnel, never through a public or LAN port. A phone can instead use [a second loopback port behind Tailscale Serve](#connect-from-a-phone-tailscale-serve), which lets in only one Tailscale login.
@@ -48,7 +48,7 @@ The Claude Code and Agent SDK versions checked with a release are listed in [the
   - **Jobs also need its `cpu`, `memory` and `pids` controllers.** `cat "/sys/fs/cgroup$(systemctl --user show --property=ControlGroup --value)/cgroup.controllers"` must list all three. Without them Core refuses every local Job ("User manager requires cgroup v2 cpu, memory and pids controllers"); Agents and the rest still work.
   - On an Ubuntu 22.04.5 host (systemd 249) the user manager had only `memory pids`. Delegating `cpu` to it is a system setting that an administrator makes; see [systemd's cgroup delegation](https://systemd.io/CGROUP_DELEGATION/). Yuzuno has not been checked on a host where that setting was changed.
 - **Claude Code** (`claude`) and/or **Codex** (`codex`), installed and signed in as the same user that runs Core.
-- **`gh`**, signed in (`gh auth login`), for the download, updates and GitHub features. Today `YuzukiS/Yuzuno` is the private repository, so the account must be able to read it. Once that name belongs to the public repository, a sign-in to any GitHub account should do, because `gh` needs a sign-in but not access; that has not been tried yet ([the switch](public-readiness.md#where-the-repository-is-named)).
+- **`gh`**, signed in (`gh auth login`), for the download, updates and GitHub features. `YuzukiS/Yuzuno` is public, so `gh` needs a sign-in to a GitHub account but no access to the repository. Installing with an account that has no access to it has not been tried yet ([where the repository is named](public-readiness.md#where-the-repository-is-named)).
 - **`minisign`**, to verify the download. Use your distribution's package if available, or the [official release](https://github.com/jedisct1/minisign/releases). The tested Ubuntu Base 22.04.5 apt indexes did not provide it; that lab used the upstream static Linux binary, as recorded in [the acceptance notes](../acceptance/t88/README.md#disposable-ubuntu-rootfs-rootfs-labpy).
 
 ## Install
@@ -58,12 +58,12 @@ The commands below install into `~/.local/share/yuzuno-core` and keep the Worksp
 1. **Download** the three files of a release (`core-…` on the Releases page):
 
    ```sh
-   TAG=core-20261017-f8b9266        # the release you chose
+   TAG=core-20261021-a31eb29        # the release you chose (core.14 here)
    mkdir -p ~/yuzuno-download && cd ~/yuzuno-download
    gh release download "$TAG" -R YuzukiS/Yuzuno -p 'yuzuno-core-linux-x86_64.*'
    ```
 
-   Today these are the private repository's releases. After the switch, `YuzukiS/Yuzuno` is the public repository, which has no release yet; the existing ones stay in `YuzukiS/Yuzuno-dev`.
+   These are the public repository's releases. core.12 and earlier stay releases of the private `YuzukiS/Yuzuno-dev` and are not available here.
 
 2. **Verify** the signed descriptor with the Yuzuno publisher key, then check the archive against it:
 
