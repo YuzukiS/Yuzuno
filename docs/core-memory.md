@@ -34,7 +34,8 @@ but does not eliminate that cost.
 Copy diagnostics includes it. It reads counters only: no record is cloned or
 scanned, nothing is written or trimmed, and it is not part of `/api/health`
 or any polling. It passes the same local and phone-entry checks as the rest of
-the API and waits, like other requests, while an update drains.
+the API. Like other requests that finish existing work, it is answered while
+an update drains and refused once the update has sealed admission.
 
 - `os`: `rssBytes`, `hwmBytes`, `anonBytes`, `fileBytes`, `shmemBytes`,
   `swapBytes` and `threads`, from the kernel's status of the process. Anonymous

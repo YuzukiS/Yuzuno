@@ -111,8 +111,24 @@ async fn with_update_admission_its_own_permit_is_counted_and_said_so() {
     // count exactly, without Core's services running).
     assert_eq!(report["admission"]["includesThisRequest"], true);
     assert!(report["admission"]["inFlight"].as_u64().unwrap() >= 1);
-    // While an update drains, it waits like any other request rather than slipping past.
+    // While an update drains it is still answered, as other requests that
+    // finish existing work are, and says so; once the update has sealed
+    // admission it is refused like them.
     controller.admission.begin_drain("drain-test").unwrap();
+    let (status, body) = get(&app, &[("host", "127.0.0.1:4398")]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let report: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(report["admission"]["updateOperation"], true);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            controller.admission.wait_quiescent().await;
+            if controller.admission.try_seal("drain-test").unwrap() {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("Core's own work in flight finishes");
     let (status, _) = get(&app, &[("host", "127.0.0.1:4398")]).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
