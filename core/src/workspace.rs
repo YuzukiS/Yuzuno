@@ -177,6 +177,11 @@ impl Workspace {
         }))
     }
 
+    /// Whether the ticker below, which also runs heap maintenance, has started.
+    pub(crate) fn stream_ticker_started(&self) -> bool {
+        self.stream_ticker.get().is_some()
+    }
+
     /// Streamed deltas are announced and written on this cadence instead of
     /// once per delta. Started with the first stream; holds only a Weak owner.
     pub(crate) fn start_stream_ticker(self: &Arc<Self>) {

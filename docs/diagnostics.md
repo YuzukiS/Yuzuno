@@ -27,6 +27,20 @@ recorded in the diagnostics too.
 - **Core:** Core's version, release and readiness, read from `/api/health`
   within 2 s. If Core can't be reached, the text says so with the time, and
   gives the last successful read with its time.
+- **Core memory:** Core's own counts, read from `/api/diagnostics/memory`
+  at the same time, within 2 s, only for this text and never stored:
+  - the process's resident size, peak, anonymous and file pages, swap and
+    threads, as the kernel counts them;
+  - glibc malloc's `arena`, `uordblks`, `fordblks` and `hblkhd`, as the
+    allocator counts them. Its free space need not be resident;
+  - how many records Core holds in memory, and requests in flight;
+  - the idle trim: whether its tick runs, what it waits for, by Core's own
+    names only, and its last check; or that a trim held it just then, when
+    neither could be read.
+
+  The parts are read one after another, not as one snapshot. A count Core
+  can't read on its platform is written `not available`, never 0. If Core
+  doesn't answer, or predates this, the line says `unknown` with the reason.
 - **Desktop app:** its version, from the update status the desktop app
   already reports; no new desktop command is needed. If it doesn't answer,
   the text says `unknown`.

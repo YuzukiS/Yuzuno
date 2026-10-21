@@ -25,13 +25,28 @@ async function waitFor(predicate, message, seconds = 6) {
 const base = { model: "m", color: "sage", status: "idle", createdAt: "", updatedAt: "", goal: "", pendingCount: 0, lastSeq: 1, reviewedSeq: 1, unreadCount: 0, cwd: "/w/app", projectId: "p-app" };
 const health = { product: "yuzuno", application: "yuzuno-next", version: "2026.10.18-core.11", releaseId: "core-20261018-6f29d20", apiReady: true, storageReady: true, schema: 2, workspaceId: "ws-private-id" };
 const updates = { managed: false, current: null, candidates: [], blockers: [], acceptingWork: true };
+const MiB = 1048576;
+// A synthetic GET /api/diagnostics/memory report (T-140), with a reason and a
+// field the page does not know, each carrying a sentinel that must not be copied.
+const memoryReport = {
+  format: 1, readAt: "2026-10-21T20:00:00+00:00", note: "MemoryNoteSentinel",
+  os: { available: true, counts: "kernel process status", rssBytes: 678 * MiB, hwmBytes: 903.5 * MiB, anonBytes: 671.5 * MiB, fileBytes: 6.5 * MiB, shmemBytes: 0, swapBytes: 0, threads: 45 },
+  allocator: { available: true, kind: "glibc malloc", arena: 1100 * MiB, uordblks: 126 * MiB, fordblks: 967 * MiB, hblkhd: 0, hblks: 0 },
+  store: { heldRecords: 2, maxHeldRecords: 8 },
+  admission: { inFlight: 1, includesThisRequest: true, updateOperation: false, sealed: false },
+  reclaim: {
+    available: true, maintenanceTickRunning: true, gateBusy: false,
+    gate: { waitingFor: ["heldRecords", "idleGrace", "ReasonSentinel /home/person/private"], lastCheck: { at: "2026-10-21T19:00:00+00:00", result: "trimmed", reclaim: { rssBeforeBytes: 625 * MiB, rssAfterBytes: 13.5 * MiB } } },
+  },
+  extra: { path: "/home/person/ExtraFieldSentinel" },
+};
 
 /**
  * The built app, with the page's script tag as Core serves it. `named: false`
  * serves an Agent without a name, which the rail can't draw: a real render
  * error that no part of the app handles.
  */
-async function mount({ named = true, storage = {}, clipboard = "ok", desktop = null } = {}) {
+async function mount({ named = true, storage = {}, clipboard = "ok", desktop = null, memory = memoryReport } = {}) {
   const calls = [];
   const copied = [];
   const dom = new JSDOM(`<!doctype html><html><body><div id="root"></div><script type="module" src="/${entry}"></script></body></html>`, {
@@ -81,6 +96,11 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
     if (url.endsWith("/api/health")) {
       if (!state.health) throw new TypeError("Failed to fetch");
       return respond(health);
+    }
+    if (url.endsWith("/api/diagnostics/memory")) {
+      if (memory === "unreachable") throw new TypeError("Failed to fetch");
+      if (memory === "older core") return respond({ error: "Not found" }, 404);
+      return respond(memory);
     }
     if (url.endsWith("/api/workspace"))
       return respond({
@@ -326,5 +346,72 @@ test("a record kept by an earlier version is shown by the same rules and stored 
     assert.equal(p.w.localStorage.getItem("yuzuno.composerDraft.v1:a"), draft, "the draft is kept as it was");
   } finally {
     p.close();
+  }
+});
+
+test("Copy diagnostics adds Core's memory counters, read only for the text: numbers and the reasons Core names, nothing else from the report", async () => {
+  const p = await mount();
+  try {
+    await waitFor(() => railShows(p, "Mori"), "the app is drawn");
+    assert.equal(p.calls.filter((c) => c.url.endsWith("/api/diagnostics/memory")).length, 0, "nothing reads it until the text is made");
+    p.doc.querySelector('[aria-label="Settings and updates"]').click();
+    await waitFor(() => p.doc.querySelector("#settings-diagnostics"), "Settings shows Diagnostics");
+    p.button("Copy diagnostics", p.doc.querySelector("#settings-diagnostics")).click();
+    await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
+    const text = p.copied[0];
+    assert.match(text, /^Core: 2026\.10\.18-core\.11 /m, "Core's health is still read");
+    assert.match(text, /^Core memory: read \S+, one part after another, not one snapshot$/m);
+    assert.match(text, /^ {2}Process: RSS 678\.0 MiB, peak 903\.5 MiB, anonymous 671\.5 MiB, file 6\.5 MiB, swap 0\.0 MiB, 45 threads$/m);
+    assert.match(text, /^ {2}glibc malloc, its own counts \(free space need not be resident\): arena 1100\.0 MiB, uordblks 126\.0 MiB, fordblks 967\.0 MiB, hblkhd 0\.0 MiB$/m);
+    assert.match(text, /^ {2}Held records: 2 of 8; requests in flight: 1 \(this one included\)$/m);
+    assert.match(text, /^ {2}Idle trim: maintenance tick running yes; waiting for heldRecords, idleGrace, 1 other; last check trimmed at 2026-10-21T19:00:00\+00:00, RSS 625\.0 MiB to 13\.5 MiB$/m);
+    for (const word of ["MemoryNoteSentinel", "ReasonSentinel", "ExtraFieldSentinel", "/home/person", "kernel process status"]) assert.ok(!text.includes(word), `${word} is not copied`);
+    assert.equal(p.calls.filter((c) => c.url.endsWith("/api/diagnostics/memory")).length, 1, "read once, for this text");
+    assert.ok(!(p.w.localStorage.getItem("yuzuno.diagnostics.v1") || "").includes("uordblks"), "the memory read is not stored");
+    assert.equal(p.calls.filter((c) => c.method && c.method !== "GET").length, 0, "copying sends nothing");
+  } finally {
+    p.close();
+  }
+});
+
+test("when Core's memory can't be read, the text says why and everything else is still there", async () => {
+  for (const [memory, reason] of [["unreachable", "not reachable"], ["older core", "http 404"], [{ format: 2 }, "not a memory report"]]) {
+    const p = await mount({ named: false, memory });
+    try {
+      await waitFor(() => recovery(p), "the recovery page shows");
+      p.button("Copy diagnostics", recovery(p)).click();
+      await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
+      const text = p.copied[0];
+      assert.match(text, new RegExp(`^Core memory: unknown \\(${reason}, \\S+\\)$`, "m"));
+      assert.match(text, /^Core: 2026\.10\.18-core\.11 /m);
+      assert.match(text, /^Recent errors on this device: 1 /m);
+      assert.match(text, /^This text stays on this device/m);
+    } finally {
+      p.close();
+    }
+  }
+  const q = await mount({ memory: { ...memoryReport, os: { available: false, reason: "Read only on Linux" }, allocator: { available: false, reason: "x" }, reclaim: { available: false, reason: "y", maintenanceTickRunning: false } } });
+  try {
+    await waitFor(() => railShows(q, "Mori"), "the app is drawn");
+    q.doc.querySelector('[aria-label="Settings and updates"]').click();
+    await waitFor(() => q.doc.querySelector("#settings-diagnostics"), "Settings shows Diagnostics");
+    q.button("Copy diagnostics", q.doc.querySelector("#settings-diagnostics")).click();
+    await waitFor(() => q.copied.length === 1, "the diagnostics are copied");
+    const text = q.copied[0];
+    assert.match(text, /^ {2}Process: not available on this Core$/m, "a platform without the counts says so, never 0");
+    assert.match(text, /^ {2}glibc malloc: not available on this Core$/m);
+    assert.match(text, /^ {2}Idle trim: not available on this Core$/m);
+  } finally {
+    q.close();
+  }
+  // A trim in progress holds the gate: Core says so, and that is not "not available".
+  const busy = await mount({ named: false, memory: { ...memoryReport, reclaim: { available: true, maintenanceTickRunning: true, gateBusy: true, gate: null } } });
+  try {
+    await waitFor(() => recovery(busy), "the recovery page shows");
+    busy.button("Copy diagnostics", recovery(busy)).click();
+    await waitFor(() => busy.copied.length === 1, "the diagnostics are copied");
+    assert.match(busy.copied[0], /^ {2}Idle trim: maintenance tick running yes; a trim held its gate as Core read it, so what it waits for was not read$/m);
+  } finally {
+    busy.close();
   }
 });

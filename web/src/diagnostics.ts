@@ -36,6 +36,23 @@ export type ErrorEntry = {
 /** A read of Core's health or the desktop's version, kept with its time. */
 export type CoreRead = { at: string; version: string; releaseId: string | null; apiReady: boolean | null; storageReady: boolean | null };
 export type DesktopRead = { at: string; version: string };
+/** Core's memory counters (T-140), read only when the text is made and never
+ * stored: numbers, and only the names of the reasons Core defines. */
+export type MemoryRead = {
+  at: string;
+  os: { rss: number | null; hwm: number | null; anon: number | null; file: number | null; swap: number | null; threads: number | null } | null;
+  allocator: { arena: number | null; uordblks: number | null; fordblks: number | null; hblkhd: number | null } | null;
+  held: number | null;
+  heldMax: number | null;
+  inFlight: number | null;
+  includesThisRequest: boolean | null;
+  tick: boolean | null;
+  /** A trim held the gate as Core read it, so `waiting` and `last` were not read. */
+  gateBusy: boolean;
+  waiting: string[] | null;
+  otherWaiting: number;
+  last: { result: string; at: string | null; rssBefore: number | null; rssAfter: number | null } | null;
+};
 type Stored = { errors: ErrorEntry[]; core?: CoreRead; desktop?: DesktopRead };
 
 export const pageLoadedAt = new Date().toISOString();
@@ -323,15 +340,61 @@ const why = (error: unknown) =>
 export type Facts = {
   at: string;
   core: { now: CoreRead | null; failed: string | null; last: CoreRead | null };
+  memory?: { now: MemoryRead | null; failed: string | null };
   desktop: { now: DesktopRead | null; failed: string | null; last: DesktopRead | null } | null;
 };
 
+const WAITING = ["heldRecords", "requestsInFlight", "updateOperation", "sealed", "idleGrace", "interval", "freeBelowThreshold", "rssGrowthBelowThreshold"];
+const CHECKS = ["freeBelowThreshold", "rssGrowthBelowThreshold", "trimmed"];
+const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null);
+const flag = (value: unknown) => (typeof value === "boolean" ? value : null);
+const time = (value: unknown) => (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? value : null);
+const part = (value: unknown) => (value && typeof value === "object" ? (value as Record<string, unknown>) : {});
+
+/** Core's memory report, reduced to numbers and the names Core defines. */
+export function memoryRead(report: unknown, at: string): MemoryRead | null {
+  const r = part(report);
+  if (r.format !== 1) return null;
+  const os = part(r.os), allocator = part(r.allocator), reclaim = part(r.reclaim), gate = part(reclaim.gate), last = part(gate.lastCheck);
+  const waiting = Array.isArray(gate.waitingFor) ? gate.waitingFor : null;
+  const result = typeof last.result === "string" && CHECKS.includes(last.result) ? last.result : null;
+  const reclaimed = part(last.reclaim);
+  return {
+    at,
+    os: os.available === true ? { rss: count(os.rssBytes), hwm: count(os.hwmBytes), anon: count(os.anonBytes), file: count(os.fileBytes), swap: count(os.swapBytes), threads: count(os.threads) } : null,
+    allocator: allocator.available === true ? { arena: count(allocator.arena), uordblks: count(allocator.uordblks), fordblks: count(allocator.fordblks), hblkhd: count(allocator.hblkhd) } : null,
+    held: count(part(r.store).heldRecords),
+    heldMax: count(part(r.store).maxHeldRecords),
+    inFlight: count(part(r.admission).inFlight),
+    includesThisRequest: flag(part(r.admission).includesThisRequest),
+    tick: flag(reclaim.maintenanceTickRunning),
+    gateBusy: reclaim.available === true && reclaim.gateBusy === true,
+    waiting: reclaim.available === true && waiting ? waiting.filter((w): w is string => typeof w === "string" && WAITING.includes(w)) : null,
+    otherWaiting: waiting ? waiting.filter((w) => typeof w !== "string" || !WAITING.includes(w)).length : 0,
+    last: result ? { result, at: time(last.at), rssBefore: count(reclaimed.rssBeforeBytes), rssAfter: count(reclaimed.rssAfterBytes) } : null,
+  };
+}
+
+/** Read within 2 s; a failure is said, and never stops the rest of the text. */
+async function readMemory(at: string): Promise<NonNullable<Facts["memory"]>> {
+  try {
+    const response = await within(fetch(`${API_BASE}/api/diagnostics/memory`, { headers: { "X-Yuzuno-Client": "desktop" }, cache: "no-store" }));
+    if (!response.ok) throw new Error(`http ${response.status}`);
+    const now = memoryRead(await within(response.json()), at);
+    return now ? { now, failed: null } : { now: null, failed: "not a memory report" };
+  } catch (error) {
+    return { now: null, failed: why(error) };
+  }
+}
+
 /** Core's health and the desktop app's version, read now, each within 2 s;
- * what was read last stays as evidence when a read fails. */
+ * what was read last stays as evidence when a read fails. Core's memory is
+ * read at the same time, and only for this text. */
 export async function gatherFacts(): Promise<Facts> {
   const record = load();
   const at = new Date().toISOString();
   const facts: Facts = { at, core: { now: null, failed: null, last: record.core ?? null }, desktop: null };
+  const memory = readMemory(at);
   try {
     const response = await within(fetch(`${API_BASE}/api/health`, { headers: { "X-Yuzuno-Client": "desktop" }, cache: "no-store" }));
     if (!response.ok) throw new Error(`http ${response.status}`);
@@ -366,6 +429,7 @@ export async function gatherFacts(): Promise<Facts> {
       facts.desktop.failed = error instanceof Error && error.message === "timeout" ? "no answer within 2 s" : "it did not say";
     }
   }
+  facts.memory = await memory;
   save();
   return facts;
 }
@@ -397,6 +461,30 @@ export function pageEnvironment(agent = navigator.userAgent) {
 }
 
 const yes = (value: boolean | null) => (value === null ? "unknown" : value ? "yes" : "no");
+const mib = (bytes: number | null) => (bytes === null ? "unknown" : `${(bytes / 1048576).toFixed(1)} MiB`);
+
+function memoryLines(memory: MemoryRead) {
+  const { os, allocator } = memory;
+  const lines = [`Core memory: read ${memory.at}, one part after another, not one snapshot`];
+  lines.push(os
+    ? `  Process: RSS ${mib(os.rss)}, peak ${mib(os.hwm)}, anonymous ${mib(os.anon)}, file ${mib(os.file)}, swap ${mib(os.swap)}, ${os.threads ?? "unknown"} threads`
+    : "  Process: not available on this Core");
+  lines.push(allocator
+    ? `  glibc malloc, its own counts (free space need not be resident): arena ${mib(allocator.arena)}, uordblks ${mib(allocator.uordblks)}, fordblks ${mib(allocator.fordblks)}, hblkhd ${mib(allocator.hblkhd)}`
+    : "  glibc malloc: not available on this Core");
+  lines.push(`  Held records: ${memory.held ?? "unknown"} of ${memory.heldMax ?? "unknown"}; requests in flight: ${memory.inFlight ?? "unknown"}${memory.includesThisRequest ? " (this one included)" : ""}`);
+  if (memory.gateBusy) lines.push(`  Idle trim: maintenance tick running ${yes(memory.tick)}; a trim held its gate as Core read it, so what it waits for was not read`);
+  else if (memory.waiting === null) lines.push("  Idle trim: not available on this Core");
+  else {
+    const reasons = [...memory.waiting, ...(memory.otherWaiting ? [`${memory.otherWaiting} other`] : [])];
+    const waiting = reasons.length ? reasons.join(", ") : "nothing";
+    const last = memory.last
+      ? `${memory.last.result}${memory.last.at ? ` at ${memory.last.at}` : ""}${memory.last.result === "trimmed" ? `, RSS ${mib(memory.last.rssBefore)} to ${mib(memory.last.rssAfter)}` : ""}`
+      : "none since Core started";
+    lines.push(`  Idle trim: maintenance tick running ${yes(memory.tick)}; waiting for ${waiting}; last check ${last}`);
+  }
+  return lines;
+}
 const coreLine = (read: CoreRead) =>
   `${read.version}${read.releaseId ? ` (release ${read.releaseId})` : ""}, API ready ${yes(read.apiReady)}, storage ready ${yes(read.storageReady)}`;
 
@@ -411,6 +499,8 @@ export function diagnosticsText(facts: Facts | null) {
       `Core: unknown now (${facts.core.failed}, ${facts.at})` +
         (facts.core.last ? `; last read ${facts.core.last.at}: ${coreLine(facts.core.last)}` : "; never read on this device"),
     );
+  if (facts?.memory?.now) lines.push(...memoryLines(facts.memory.now));
+  else lines.push(facts?.memory ? `Core memory: unknown (${facts.memory.failed}, ${facts.at})` : "Core memory: not read");
   if (!isTauri) lines.push("Desktop app: not a desktop window", "WebView: not a desktop window");
   else {
     const desktop = facts?.desktop;
