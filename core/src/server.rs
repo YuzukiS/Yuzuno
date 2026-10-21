@@ -719,8 +719,21 @@ async fn check_machine(State(ws): State<Arc<Workspace>>, Path(id): Path<String>)
 async fn apply_codex_context(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     Ok(Json(ws.apply_codex_context(&id).await?))
 }
-async fn reconnect(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
-    Ok(Json(serde_json::to_value(ws.reconnect(&id).await?)?))
+#[derive(Deserialize)]
+struct ReconnectQuery {
+    view: Option<String>,
+}
+
+/// The whole record, as before, unless `view=summary` asks for the Agent
+/// only: for a caller that reads the conversation afterwards its own way, as
+/// the UI does through the windowed detail. The view is checked before
+/// anything reconnects.
+async fn reconnect(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Query(query): Query<ReconnectQuery>) -> ApiResult<Json<Value>> {
+    match query.view.as_deref() {
+        None => Ok(Json(serde_json::to_value(ws.reconnect(&id).await?)?)),
+        Some("summary") => Ok(Json(json!({"agent": ws.reconnect_summary(&id).await?}))),
+        Some(other) => Err(anyhow::anyhow!("Unknown reconnect view {other:?}: use view=summary, or no view for the whole record").into()),
+    }
 }
 
 /// Large tool fields arrive as bounded previews; see client_view. A record

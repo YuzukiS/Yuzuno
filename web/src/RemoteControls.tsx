@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle, Monitor, RotateCw, Server, WifiOff } from "lucide-react";
-import { errorText, post } from "./api";
+import { errorText, reconnectAgent } from "./api";
 import type { Agent } from "./types";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import "./remote.css";
@@ -64,7 +64,7 @@ export function RemoteControls({
     setBusy(true);
     setError("");
     try {
-      await post(`/agents/${encodeURIComponent(agent.id)}/reconnect`);
+      await reconnectAgent(agent.id);
       if (request === requestId.current) onReconnected?.();
     } catch (e) {
       if (request === requestId.current) {

@@ -54,6 +54,7 @@ import {
   isTauri,
   openDesktopConnection,
   post,
+  reconnectAgent,
   shortcutModifier,
 } from "./api";
 import { nativeControl } from "./slash-commands";
@@ -2312,7 +2313,7 @@ export function App() {
               detail={detail?.agent.id === selected ? detail : null} shown={currentDetail} known={coreQuestions}
               outgoing={outgoing} pendingInputs={pendingInputs} disabled={closed || previewMode || isClaude}
               onSend={sendQuestionAnswer} onAdd={turnAnswer} onSource={showQuestionSource}
-              onCheck={() => post(`/agents/${encodeURIComponent(selected)}/reconnect`).then(refresh)} />
+              onCheck={() => reconnectAgent(selected).then(refresh)} />
             {closed ? (
               <>
                 <div className="closed-agent-note">
@@ -2355,7 +2356,7 @@ export function App() {
                     agents={workspace?.agents || []}
                     disabled={closed}
                     onReconnect={() =>
-                      post(`/agents/${encodeURIComponent(selected)}/reconnect`)
+                      reconnectAgent(selected)
                         .then(refresh)
                         .catch((e) => {
                           refresh();
@@ -2387,9 +2388,7 @@ export function App() {
                       className="inline-link"
                       disabled={sending}
                       onClick={() =>
-                        void post(
-                          `/agents/${encodeURIComponent(selected)}/reconnect`,
-                        )
+                        void reconnectAgent(selected)
                           .then(refresh)
                           .catch((e) => setActionError(errorText(e)))
                       }

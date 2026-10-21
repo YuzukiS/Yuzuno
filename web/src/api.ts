@@ -60,6 +60,13 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 export function post<T>(path: string, body: unknown = {}): Promise<T> {
   return api<T>(path, { method: "POST", body: JSON.stringify(body) });
 }
+/** Reconnects an Agent. Every caller reads the conversation afterwards
+ * through the windowed detail, so Core is asked for the Agent only
+ * (`view=summary`); an older Core sends the whole record, which is not read
+ * either. */
+export function reconnectAgent(id: string): Promise<unknown> {
+  return post<unknown>(`/agents/${encodeURIComponent(id)}/reconnect?view=summary`);
+}
 /** How long a message or an answer waits for Core's reply. A phone's request
  * can hang after sleep or a network change; past this it is unconfirmed, as
  * after any lost connection. Core may still have it: nothing is sent again by

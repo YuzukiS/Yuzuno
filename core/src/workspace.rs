@@ -941,6 +941,18 @@ impl Workspace {
         self.reconnect_codex(id, true).await?.context("record")
     }
 
+    /// `reconnect`, answered with the Agent as listed: for a caller that reads
+    /// the conversation afterwards its own way (the UI's windowed detail). The
+    /// same admission, gate and reconcile. A Codex reconnect then does not read
+    /// the record whole to return it; a Claude or OpenCode one still reads it
+    /// inside, and only its answer is smaller (T-140).
+    pub async fn reconnect_summary(self: &Arc<Self>, id: &str) -> Result<crate::model::Agent> {
+        let permit = self.admission.enter_work()?;
+        self.reconnect_settled(id, &permit).await?;
+        let id = id.to_owned();
+        self.stored(move |store| store.agent(&id)).await
+    }
+
     /// `reconnect_accepted` for a caller that does not use the record, which
     /// for a long history saves reading it whole (T-140).
     pub(crate) async fn reconnect_settled(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit) -> Result<()> {

@@ -433,7 +433,7 @@ test("reconnect preserves unknown execution state and never spawns or sends a ne
     const posts = page.calls.filter((call) => call.init.method === "POST");
     assert.deepEqual(
       posts.map((call) => call.url),
-      ["/api/agents/remote-a/reconnect"],
+      ["/api/agents/remote-a/reconnect?view=summary"],
     );
     assert.match(page.document.body.textContent, /Disconnected/);
     page.window.renderControls({
@@ -444,7 +444,7 @@ test("reconnect preserves unknown execution state and never spawns or sends a ne
     // Through the whole reconnect, still nothing but the reconnect request.
     assert.deepEqual(
       page.calls.filter((call) => call.init.method === "POST").map((call) => call.url),
-      ["/api/agents/remote-a/reconnect"],
+      ["/api/agents/remote-a/reconnect?view=summary"],
     );
     assert.deepEqual(page.errors, []);
   } finally {

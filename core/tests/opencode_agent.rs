@@ -512,3 +512,34 @@ async fn closing_or_stopping_core_ends_what_opencodes_tools_run_and_only_that_ag
     tokio::time::sleep(Duration::from_millis(800)).await;
     assert_eq!(kinds(OTHER), before);
 }
+
+/// `view=summary` for an OpenCode Agent: only the Agent, from the same
+/// connection and session; nothing is sent again and the history stays.
+#[tokio::test]
+async fn a_summary_reconnect_answers_with_the_agent_only() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let turn = lab.send("c1", "work").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("the answer", |d| turn_of(d, &turn) == "completed").await;
+    let pid = lab.seen()["pid"].as_u64().unwrap();
+    let router = server::router_on_port(lab.ws.clone(), lab.dir.path().join("assets"), 4317);
+    let request = Request::post(format!("/api/agents/{ID}/reconnect?view=summary")).header("host", "localhost:4317")
+        .header("x-yuzuno-client", "desktop").header("content-type", "application/json").body(Body::from("{}")).unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert!(response.status().is_success());
+    let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
+    assert_eq!(body.as_object().unwrap().keys().collect::<Vec<_>>(), ["agent"], "{body}");
+    assert_eq!(body["agent"]["connectionState"], "connected");
+    assert_eq!(body["agent"]["opencodeSessionId"], session.as_str());
+    assert_eq!(lab.seen()["pid"].as_u64().unwrap(), pid, "the same OpenCode");
+    assert_eq!(lab.prompts().len(), 1, "never sent again");
+    let d = lab.detail();
+    assert_eq!(turn(&d, &turn)["status"], "completed");
+    assert_eq!(items(turn(&d, &turn), "agentMessage").len(), 1);
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+fn turn_of(d: &AgentDetail, id: &str) -> String {
+    d.turns.iter().find(|t| t["id"] == id).and_then(|t| t["status"].as_str()).unwrap_or_default().to_owned()
+}
