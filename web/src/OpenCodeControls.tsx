@@ -1,6 +1,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { ChevronRight, LoaderCircle, MessageSquare, ShieldCheck, SquareTerminal } from "lucide-react";
 import { errorText, respondToRequest } from "./api";
+import { AnswerAgain, useUnconfirmedAnswer } from "./unconfirmed-answer";
 import type { NativeItem, PendingRequest } from "./types";
 import "./opencode.css";
 
@@ -50,7 +51,8 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource }:
   const [free, setFree] = useState<Record<number, string>>({});
   const question = request.method === "opencode/question";
   const questions: Question[] = question && Array.isArray(request.params.questions) ? request.params.questions : [];
-  const locked = disabled || !!request.stale || !!request.params._responseSent || sending || answered;
+  const unconfirmedAnswer = useUnconfirmedAnswer(refresh, answering);
+  const locked = disabled || !!request.stale || !!request.params._responseSent || sending || answered || unconfirmedAnswer.unconfirmed;
   const answer = (q: Question, index: number) =>
     [...(answers[index] || []), ...(q.custom !== false && free[index]?.trim() ? [free[index].trim()] : [])];
   async function respond(response: unknown) {
@@ -61,7 +63,7 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource }:
       await respondToRequest(request.id, response);
       setAnswered(true);
       refresh();
-    } catch (e) { answering.current = false; setError(errorText(e)); } finally { setSending(false); }
+    } catch (e) { if (!unconfirmedAnswer.noReply(e)) answering.current = false; setError(errorText(e)); } finally { setSending(false); }
   }
   const patterns = Array.isArray(request.params.patterns) ? request.params.patterns.map(String) : [];
   const metadata = request.params.metadata && Object.keys(request.params.metadata).length ? request.params.metadata : null;
@@ -101,6 +103,7 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource }:
       </div>
       <p className="field-hint">Applies only to this request; your OpenCode permission rules stay in place. OpenCode rejects this session’s other waiting requests along with this one.</p>
     </>}
-    {error && <p role="alert" className="inline-error">{error}</p>}
+    {error && !(unconfirmedAnswer.unconfirmed && request.params._responseSent) && <p role="alert" className="inline-error">{error}</p>}
+    {unconfirmedAnswer.unconfirmed && !request.params._responseSent && <AnswerAgain onClick={() => { setError(""); unconfirmedAnswer.answerAgain(); }} />}
   </section>;
 }

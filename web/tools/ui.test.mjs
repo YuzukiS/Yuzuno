@@ -1213,8 +1213,7 @@ test("a message with no reply in time is unconfirmed: the draft stays, nothing i
   }
 });
 
-test("an answer with no reply in time can be given again, which Core refuses if the first arrived (T-170)", async () => {
-  const hung = [];
+test("an answer with no reply in time stays unconfirmed: Core's record is read, and answering again is a choice (T-170)", async () => {
   const question = {
     id: "ask",
     agentId: "a",
@@ -1224,21 +1223,55 @@ test("an answer with no reply in time can be given again, which Core refuses if 
       questions: [{ id: "pick", question: "Which one?", options: [{ label: "A", description: "a" }, { label: "B", description: "b" }] }],
     },
   };
-  const page = await mount({ status: "waiting", pending: [question], beforeLoad: noReplyTo("/respond", hung) });
-  try {
-    const card = page.document.querySelector(".pending-card");
-    card.querySelector("label.answer-option input").click();
-    await pause();
-    button(page, "Send answer").click();
-    await waitForPreviewState(
-      () => /No reply from Core within 60 seconds\. Your answer may have arrived; if you answer again, Core refuses a second answer\./.test(card.textContent),
-      "the answer without a reply to say so",
-    );
-    assert.equal(hung.length, 1);
-    assert.equal(button(page, "Send answer").disabled, false, "the card can be answered again");
-    assert.doesNotMatch(card.textContent, /Response sent/);
-  } finally {
-    page.close();
+  // Core's record after the lost reply: still unanswered, or recorded as sent
+  // (the answer arrived; only its reply was lost).
+  for (const recorded of [false, true]) {
+    const hung = [];
+    const page = await mount({
+      status: "waiting",
+      pending: [question],
+      beforeLoad(window) {
+        noReplyTo("/respond", hung)(window);
+        const fetch = window.fetch;
+        window.fetch = async (url, init) => {
+          const response = await fetch(url, init);
+          if (!recorded || !hung.length || !/\/api\/agents\/a$/.test(url)) return response;
+          const body = await response.json();
+          body.pending = body.pending.map((p) => ({ ...p, params: { ...p.params, _responseSent: true } }));
+          return { ...response, json: async () => body, text: async () => JSON.stringify(body) };
+        };
+      },
+    });
+    try {
+      const card = page.document.querySelector(".pending-card");
+      card.querySelector("label.answer-option input").click();
+      await pause();
+      const reads = page.calls.filter((c) => /\/api\/agents\/a$/.test(c.url)).length;
+      button(page, "Send answer").click();
+      await waitForPreviewState(
+        () => page.calls.filter((c) => /\/api\/agents\/a$/.test(c.url)).length > reads,
+        "Core's record to be read again after no reply",
+      );
+      assert.equal(hung.length, 1);
+      if (!recorded) {
+        await waitForPreviewState(() => button(page, "Answer again"), "the choice to answer again");
+        assert.match(card.textContent, /No reply from Core within 60 seconds, so whether your answer arrived is not known\. Core keeps only the first answer it records for this request/);
+        assert.equal(button(page, "Send answer").disabled, true, "the card stays closed until the person chooses");
+        button(page, "Answer again").click();
+        await pause();
+        assert.equal(button(page, "Send answer").disabled, false);
+        assert.equal(button(page, "Answer again"), undefined);
+        assert.doesNotMatch(card.textContent, /No reply from Core/);
+      } else {
+        await waitForPreviewState(() => /Response sent\. Waiting for the harness to confirm\./.test(card.textContent), "the record to lock the card as sent");
+        assert.equal(button(page, "Answer again"), undefined, "nothing to answer again");
+        assert.doesNotMatch(card.textContent, /No reply from Core/);
+        assert.equal(button(page, "Send answer").disabled, true);
+      }
+      assert.equal(hung.length, 1, "nothing was sent again by itself");
+    } finally {
+      page.close();
+    }
   }
 });
 
