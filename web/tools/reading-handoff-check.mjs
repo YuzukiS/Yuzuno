@@ -194,7 +194,7 @@ try {
     const message = el.querySelector(`[data-turn-id="${CSS.escape(turn)}"] [data-item-id="${CSS.escape(item)}"]`);
     if (!message) return null;
     const box = message.getBoundingClientRect(), top = el.getBoundingClientRect().top;
-    return { into: top - box.top, height: box.height, pane: el.clientHeight, visible: Math.min(box.bottom, top + el.clientHeight) - Math.max(box.top, top),
+    return { into: top - box.top, screen: box.top, height: box.height, pane: el.clientHeight, visible: Math.min(box.bottom, top + el.clientHeight) - Math.max(box.top, top),
       atLatest: el.scrollHeight - el.clientHeight - el.scrollTop < 4 };
   }, [turn, item]);
   const scrollInto = async (page, message, progress) => {
@@ -292,8 +292,8 @@ try {
   const offered = await openAgent(phone.page, "Mori", { reopen: true });
   assert.equal(offered.handoff.version, 2);
   await offer(phone.page).waitFor();
-  // Reading elsewhere while it is offered: Not now leaves that place as it is
-  // (the pane grows by the bar; the message at its top stays).
+  // Reading elsewhere while it is offered: Not now leaves what is on screen
+  // where it is (the pane grows by the bar and shows a little more above).
   await scrollInto(phone.page, long[1], 0.3);
   const reading6 = await where(phone.page, long[1]);
   const dismissed = Date.now();
@@ -301,12 +301,12 @@ try {
   await phone.page.waitForTimeout(400);
   assert.equal(await offer(phone.page).count(), 0);
   const kept = await where(phone.page, long[1]);
-  assert.ok(Math.abs(kept.into - reading6.into) <= 1, `${kept.into} vs ${reading6.into}`);
+  assert.ok(Math.abs(kept.screen - reading6.screen) <= 1, `${kept.screen} vs ${reading6.screen}`);
   assert.deepEqual(changes(phone.sent, dismissed), []);
   const again = await openAgent(phone.page, "Mori", { reopen: true });
   assert.equal(again.handoff.version, 2);
   assert.equal(await offer(phone.page).count(), 0, "a handled version is not offered again");
-  check("Not now leaves the conversation where it is and that version is not offered again", { into: Math.round(kept.into) });
+  check("Not now leaves the conversation where it is and that version is not offered again", { screen: Math.round(kept.screen), into: [Math.round(reading6.into), Math.round(kept.into)] });
 
   // 7. The phone reads elsewhere and leaves; the desktop, back in Mori where it
   //    left it itself, is offered the phone's place and continues there.
