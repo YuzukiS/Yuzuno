@@ -8,7 +8,7 @@
 
 `task_dispatch` 自动附上任务目标、显式登记的验收/基线/worktree/资料引用/返回要求，以及已关联 Project 仓库和任务 GitHub 观察。`body` 是本次补充要求，省略或空字符串都保留自动材料。缺项显示“未指定”，不会从 Agent cwd、Project 默认目录或聊天推断；已保存 GitHub 观察标时间和过期状态，不代表当前批准或自动选中的工作基线。
 
-`task_create.materials` 与 `task_update.patch.materials` 显式登记资料，后者替换整个登记对象，`null` 清空。字段为 `acceptance`、`repositoryId`、`baseSha`、`headSha`、`baseline`、`worktree`、`references`、`returnRequirements`。有 base/head SHA 时必须指定关联仓库；SHA 为完整 40 或 64 位十六进制值。引用最多 20 条，每条有 `kind`（acceptance/decision/evidence）和 `label`，以及 http(s) `url` 或属于指定 `taskId` 的 `activitySeq`。链接和目录仅是资料，不扩大权限；生成材料不读取其文件或网络内容。
+`task_create.materials` 与 `task_update.patch.materials` 显式登记资料，后者替换整个登记对象，`null` 清空。字段为 `acceptance`、`repositoryId`、`baseSha`、`headSha`、`baseline`、`worktree`、`references`、`returnRequirements`。有 base/head SHA 时必须指定关联仓库；SHA 为完整 40 或 64 位十六进制值，或 4–39 位十六进制缩写。缩写由 Core 在写入前到该 `repositoryId`（`task_dispatch` 未给时用已登记资料的仓库）对应的 GitHub 仓库解析，只接受恰好一个且以该缩写开头的提交，保存并比较完整 SHA；歧义、找不到、非提交对象或没有已保存仓库时拒绝，不猜、不截断、不补零，分支名、标签等表达式也不解析。引用最多 20 条，每条有 `kind`（acceptance/decision/evidence）和 `label`，以及 http(s) `url` 或属于指定 `taskId` 的 `activitySeq`。链接和目录仅是资料，不扩大权限；除解析缩写 SHA 的一次 GitHub 查询外，生成材料不读取其文件或网络内容。
 
 派工的 `materials` 对登记字段做仅本次覆盖，字段 `null` 取消该项，整体 `null` 清空本次材料。它不修改长期登记，也不能改写 Core 绑定的执行者和原派工结果接收者。
 

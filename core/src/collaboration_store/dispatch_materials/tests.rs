@@ -467,8 +467,9 @@ fn gui_and_legacy_dispatches_remain_usable_without_fabricated_recipients() {
     );
 }
 
-/// T-131: materials keep full SHAs of either length, and refuse an
-/// abbreviated one with how to get the full SHA; nothing guesses a repository.
+/// T-131: materials keep full SHAs of either length. The store itself takes
+/// full SHAs only: an abbreviation is resolved before it, in the materials'
+/// repository (commit_sha::resolve_materials, T-164), and nothing guesses one.
 #[test]
 fn materials_take_full_shas_of_either_length_and_say_how_to_get_one() {
     let (_dir, store) = fixture();
@@ -487,5 +488,5 @@ fn materials_take_full_shas_of_either_length_and_say_how_to_get_one() {
     }
     let schema = schema();
     assert!(schema["properties"]["baseSha"]["description"].as_str().unwrap().contains("64 in a SHA-256 repository"));
-    assert_eq!(schema["properties"]["headSha"]["pattern"], "^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$");
+    assert_eq!(schema["properties"]["headSha"]["pattern"], "^([0-9a-fA-F]{4,40}|[0-9a-fA-F]{64})$");
 }

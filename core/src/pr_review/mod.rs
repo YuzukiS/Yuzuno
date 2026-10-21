@@ -206,12 +206,23 @@ pub async fn call(
     Ok(json!({"id":id,"reviewId":id,"status":run["status"],"cancellationRequested":requested}))
 }
 
-async fn launch(ws: Arc<Workspace>, actor: Option<String>, input: Start) -> Result<Value> {
+async fn launch(ws: Arc<Workspace>, actor: Option<String>, mut input: Start) -> Result<Value> {
     ensure!(
         !input.request_id.trim().is_empty() && input.request_id.len() <= 128,
         "requestId must contain 1–128 bytes"
     );
     let admission = ws.admission.enter_work()?;
+    // An abbreviated base or head becomes the full SHA in the link's
+    // repository first, so a retry finds the round it started (T-164).
+    let link = input.link_id.clone();
+    let mut repo = None;
+    for (key, value) in [("baseSha", &mut input.base_sha), ("headSha", &mut input.head_sha)] {
+        let Some(short) = value.clone().filter(|v| crate::commit_sha::abbreviated(v)) else { continue };
+        if repo.is_none() {
+            repo = Some(link_repository(&ws, &link, key, &short).await?);
+        }
+        *value = Some(crate::commit_sha::resolve(&ws, repo.as_deref().unwrap(), key, &short).await?);
+    }
     let lookup = input.clone();
     let lookup_actor = actor.clone();
     if let Some(run) = ws
@@ -222,7 +233,7 @@ async fn launch(ws: Arc<Workspace>, actor: Option<String>, input: Start) -> Resu
     }
     // A SHA that cannot be the PR's is refused before a round exists: it
     // could only fail against GitHub's PR after the round was counted.
-    fixed_sha_problem(input.base_sha.as_deref(), input.head_sha.as_deref())
+    fixed_sha_problem(input.base_sha.as_deref(), input.head_sha.as_deref(), true)
         .map_or(Ok(()), |problem| Err(anyhow::anyhow!("{problem} No review was started.")))?;
     let slot = ws
         .pr_reviews
@@ -260,7 +271,7 @@ async fn launch_continuation(ws: Arc<Workspace>, actor: Option<String>, input: c
     {
         return Ok(run);
     }
-    fixed_sha_problem(Some(&input.base_sha), Some(&input.head_sha))
+    fixed_sha_problem(Some(&input.base_sha), Some(&input.head_sha), false)
         .map_or(Ok(()), |problem| Err(anyhow::anyhow!("{problem} No continuation was started.")))?;
     let slot = ws
         .pr_reviews
@@ -555,13 +566,30 @@ fn announce(ws: &Workspace) {
     ws.collaboration_wakeup.notify_one();
 }
 
+/// The repository a linkId (`{repositoryId}:{kind}:{number}`) names, where
+/// review_start resolves an abbreviated SHA.
+async fn link_repository(ws: &Arc<Workspace>, link: &str, key: &str, short: &str) -> Result<String> {
+    let id = link.split(':').next().and_then(|id| id.parse::<i64>().ok());
+    let name = match id {
+        Some(id) => ws.stored(move |s| s.github_repository_name(id)).await?,
+        None => None,
+    };
+    name.with_context(|| format!("invalid_input: {key} {short} is abbreviated, and linkId {link:?} names no saved \
+        repository to resolve it in; give the full SHA. No review was started. {}", crate::commit_sha::HOW))
+}
+
 /// The PR's base and head as GitHub shows them: 40 lowercase hexadecimal
-/// characters (source.rs compares them exactly).
-fn fixed_sha_problem(base: Option<&str>, head: Option<&str>) -> Option<String> {
+/// characters (source.rs compares them exactly). `resolved`: an abbreviation
+/// would have been resolved, so the rejection names both forms.
+fn fixed_sha_problem(base: Option<&str>, head: Option<&str>, resolved: bool) -> Option<String> {
     [("baseSha", base), ("headSha", head)].into_iter().find_map(|(key, sha)| {
         let sha = sha?;
         if !crate::commit_sha::Form::GitHub.accepts(sha) {
-            Some(crate::commit_sha::problem(key, sha, crate::commit_sha::Form::GitHub))
+            Some(if resolved {
+                crate::commit_sha::problem_resolved(key, sha, crate::commit_sha::Form::GitHub)
+            } else {
+                crate::commit_sha::problem(key, sha, crate::commit_sha::Form::GitHub)
+            })
         } else if sha.bytes().any(|b| b.is_ascii_uppercase()) {
             Some(format!("{key} must be lowercase, as GitHub and git rev-parse show it."))
         } else {
@@ -577,12 +605,18 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         schema["pattern"] = json!("^[0-9a-f]{40}$");
         schema
     };
+    // review_start also takes an abbreviation, resolved in the link's repository (T-164).
+    let resolved = |purpose: &str| {
+        let mut schema = crate::commit_sha::schema_resolved(crate::commit_sha::Form::GitHub, false, purpose, "of the linked PR's repository");
+        schema["pattern"] = json!("^[0-9a-f]{4,40}$");
+        schema
+    };
     let task = json!({"type":"string","description":crate::collaboration_store::TASK_ID});
     let definition = |name: &str, description: &str, properties: Value, required: &[&str]| json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}});
     vec![
       definition("review_start","Explicitly request an independent read-only review with the Workspace review Harness/model settings of a task-linked PR. Returns reviewId immediately; Core continues after your turn ends and sends a normal system mailbox notification to you at completion/failure/cancellation. Finish your turn after acceptance; do not poll or sleep waiting for the review. Reuse requestId only for an identical retry, including after a lost reply. A new requestId is a new paid review round. Review findings, CI and task completion are separate; this does not merge, run source code or change task status.",json!({"requestId":text,"taskId":task,"linkId":text,
-        "baseSha":fixed("Optional: the PR's own base as github_links shows it (snapshot.baseSha), in lowercase; not the current tip of the target branch, which may have moved on. A malformed one is refused before any round starts; one that is no longer the PR's ends its round before a reviewer runs."),
-        "headSha":fixed("Optional: the PR head as github_links shows it, in lowercase. A malformed one is refused before any round starts; one that is no longer the PR's ends its round before a reviewer runs."),
+        "baseSha":resolved("Optional: the PR's own base as github_links shows it (snapshot.baseSha), in lowercase; not the current tip of the target branch, which may have moved on. A malformed one is refused before any round starts; one that is no longer the PR's ends its round before a reviewer runs."),
+        "headSha":resolved("Optional: the PR head as github_links shows it, in lowercase. A malformed one is refused before any round starts; one that is no longer the PR's ends its round before a reviewer runs."),
         "acknowledgeUnreviewable":{"type":"boolean","description":"Optional. When the latest completed round of this exact base and head found changed paths no round can cover (unsupported, too large, or excluded by the base's .yuzuno/review-scope.json), a new round is refused before it is created. true reviews the other paths anyway. It only acknowledges that those paths stay unreviewed: not an approval, not a lifted round limit, and the result is judged the same way."},
         "previousReviewId":{"type":"string","description":"Optional: a completed full round of this PR at another head, to review this head incrementally. It is a new round with its own normal budget and cost, and it counts toward the PR's two started rounds shared with continuations. Only that round's proofs of changed paths identical on both sides under the same merge base carry over; every other changed path is read again. Each of its findings stays, and keeps blocking if P0-P2, unless this round marks it fixed with fix paths that changed since that head and that it read completely itself. Refused before any model starts for a round that isn't completed with a confirmed native completion and a ledger, is a continuation or incremental round, used another reviewer or policy, or reviewed this same head (use review_continue)."}}), &["requestId","taskId","linkId"]),
       definition("review_continue","Explicitly request a bounded continuation of one completed review round of the same fixed snapshot, for the changed paths it left unread (not_read or read_failed in its scope). It is a new isolated reviewer run with its own record, round number and cost, not a resumed session, and it never refills a budget: it gets only what the parent round left of its 160 calls, 1.5 MB and 900 000 ms. A PR gets at most two started review rounds when one is a continuation, counted across tasks; rounds that can't be shown to have started nothing count. Core admits it from the parent's stored record before it exists and refuses, without starting any model, a parent that isn't completed with a confirmed native completion, predates usage ledgers, is itself a continuation or already has one, stopped at a terminal limit, has nothing left to read, or whose snapshot, policy or reviewer settings changed. Before the reviewer starts Core re-fetches the snapshot and checks it is the parent's, that every response the parent delivered still matches its recorded hash, and that the unread paths can be delivered within the remaining budget. Under an authorized delivery of this candidate it must be one of the delivery's attempts (delivery_continue first). The parent's report, findings and receipts stay unchanged; the continuation's coverage, scope and conclusion are over both rounds, each covered path naming the review that read it, and a blocking finding from either round blocks. Returns reviewId at once and notifies you at the end; do not poll. Reuse requestId only for an identical retry.",json!({"requestId":text,"taskId":task,"reviewId":{"type":"string","description":"The completed round to continue."},

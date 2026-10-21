@@ -769,7 +769,7 @@ async fn a_malformed_fixed_sha_starts_no_round() {
         json!({"baseSha":"a".repeat(40),"headSha":"b".repeat(40)})).unwrap();
     let start = |base: &str, head: &str| json!({"requestId":"r1","taskId":task,"linkId":"7:pull:1","baseSha":base,"headSha":head});
     for (base, head, says) in [
-        ("aaaaaaa".to_owned(), "b".repeat(40), "baseSha must be a full commit SHA, 40 hexadecimal characters"),
+        ("aaa".to_owned(), "b".repeat(40), "baseSha must be a full commit SHA, 40 hexadecimal characters"),
         ("a".repeat(40), "b".repeat(64), "headSha must be a full commit SHA, 40 hexadecimal characters"),
         ("a".repeat(40), "main".to_owned(), "not all hexadecimal"),
         ("A".repeat(40), "b".repeat(40), "baseSha must be lowercase"),
@@ -785,7 +785,7 @@ async fn a_malformed_fixed_sha_starts_no_round() {
     // the round follow as before (store tests above).
     for (base, head) in [(None, None), (Some("a".repeat(40)), Some("b".repeat(40)))] {
         let input: Start = serde_json::from_value(json!({"requestId":"r","taskId":task,"linkId":"7:pull:1","baseSha":base,"headSha":head})).unwrap();
-        assert_eq!(fixed_sha_problem(input.base_sha.as_deref(), input.head_sha.as_deref()), None);
+        assert_eq!(fixed_sha_problem(input.base_sha.as_deref(), input.head_sha.as_deref(), true), None);
     }
 }
 

@@ -122,6 +122,17 @@ pub(crate) fn task_summaries(
 }
 
 impl Store {
+    /// A saved repository's full name, or None (T-164: where an abbreviated
+    /// SHA in task materials is resolved).
+    pub(crate) fn github_repository_name(&self, id: i64) -> Result<Option<String>> {
+        let db = self.db.read()?;
+        let raw: Option<String> = db
+            .query_row("SELECT data FROM github_repositories WHERE id=?1", [id], |r| r.get(0))
+            .optional()?;
+        Ok(raw
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .and_then(|data| data["fullName"].as_str().map(str::to_owned)))
+    }
     pub(crate) fn github_list(&self, project: Option<&str>, task: Option<&str>) -> Result<Value> {
         let db = self.db.read()?;
         let mut repos = Vec::new();
