@@ -197,6 +197,13 @@ pub fn start_result(profile: &StartProfile, output: &str) -> Result<Started, Str
         .find_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok().filter(|v| v["state"].is_string()));
     let Some(result) = result else {
         let said = output.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("no output");
+        // WSL's own log lines begin with a syslog level, such as "<3>".
+        let said = said
+            .strip_prefix('<')
+            .and_then(|rest| rest.split_once('>'))
+            .filter(|(level, _)| !level.is_empty() && level.chars().all(|c| c.is_ascii_digit()))
+            .map_or(said, |(_, rest)| rest.trim());
+        let said = said.trim_end_matches('.');
         return Err(format!(
             "WSL could not run Yuzuno's start in {}: {}. Start Core in WSL yourself, or check that the distribution and installation still exist.",
             profile.wsl_distro,
@@ -530,7 +537,9 @@ mod tests {
         assert_eq!(exited, "Core stopped while starting. Error: Cannot bind Core's loopback port");
         // WSL itself could not run it: its own words, shortened.
         let missing = said("There is no distribution with the supplied name.\r\nError code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND\r\n");
-        assert!(missing.contains("Ubuntu-24.04") && missing.contains("There is no distribution"), "{missing}");
+        assert!(missing.contains("Ubuntu-24.04: There is no distribution with the supplied name. Start"), "{missing}");
+        let gone = said("<3>WSL (812 - Relay) ERROR: CreateProcessCommon:818: execvpe(/home/ada/core/updates/start) failed: No such file or directory\n");
+        assert!(gone.contains("Ubuntu-24.04: WSL (812 - Relay) ERROR: CreateProcessCommon:818: execvpe(/home/ada/core/updates/start) failed: No such file or directory. Start"), "{gone}");
         assert!(said("").contains("no output"));
         assert!(said(&"x".repeat(1000)).len() < 600);
     }

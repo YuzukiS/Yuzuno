@@ -80,6 +80,7 @@ After a restart of Windows, Core in WSL is not running until something starts it
   - Add a service, a scheduled task or an administrator right, or install or change a WSL distribution.
 - **One start at a time.** Clicking again while it starts does nothing. Starts of the same installation from two windows wait for each other (`updates/start.lock`); the second finds Core running.
 - **When it cannot start, it says why:** WSL missing, the distribution or the installation gone (WSL's own message), no start recorded yet, the port taken, or Core stopping while it started (the last line of its output).
+- **What has been checked** ([acceptance/t171](../acceptance/t171/README.md)): with a real window, `wsl.exe` and a lab installation in a running WSL distribution. Core started this way outlives `wsl.exe`, the window's close button, and a window killed while it starts. Not checked: a distribution that is not running yet, and a real reboot.
 
 ## macOS desktop, Core on another computer
 
