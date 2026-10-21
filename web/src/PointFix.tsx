@@ -89,9 +89,11 @@ const BOX = [["x", "Left"], ["y", "Top"], ["width", "Width"], ["height", "Height
  * and add the annotated image (and the original) with that text to an
  * Agent's draft. Nothing is sent: the user edits and sends the draft.
  */
-export function PointFix({ source, agents, room, onAdd, onClose }: {
+export function PointFix({ source, agents, room, draftPosition, onAdd, onClose }: {
   source: PointFixSource | null;
   agents: readonly Agent[];
+  /** Where in that Agent's draft the image with this ID is now (from 1), or 0. */
+  draftPosition: (agentId: string, imageId: string) => number;
   /** Why that Agent's draft cannot take these images (none: any images), or null. */
   room: (agentId: string, images: { bytes: number }[]) => string | null;
   /** Adds to that Agent's draft: why it could not, or null once added. */
@@ -178,6 +180,9 @@ export function PointFix({ source, agents, room, onAdd, onClose }: {
   const owner = agents.find((a) => a.id === source?.ownerId);
   const originalFits = !!loaded && IMAGE_TYPES.includes(loaded.blob.type) &&
     loaded.blob.size <= MAX_IMAGE_BYTES && outputScale(loaded.size) === 1;
+  // An image from the draft it goes back to is there already: only the
+  // annotated copy is added. Another Agent's draft gets the original too.
+  const inTargetDraft = !!source?.inDraft && source.inDraft.agentId === target && draftPosition(target, source.inDraft.id) > 0;
 
   async function add() {
     if (!source || !loaded || busy) return;
@@ -193,13 +198,16 @@ export function PointFix({ source, agents, room, onAdd, onClose }: {
       const blocked = room(target, []);
       if (blocked) throw new Error(blocked);
       const marked = await annotate(loaded, regions);
-      const withOriginal = original && originalFits;
+      // Named by its place in the draft: pasted images often share a name.
+      const position = source.inDraft && source.inDraft.agentId === target ? draftPosition(target, source.inDraft.id) : 0;
+      const withOriginal = !position && original && originalFits;
       // Saved as that Agent's images, which are content-addressed: trying
       // again after a failure adds the same images, never a second copy.
       const images = [await upload(target, marked.blob, `Annotated ${source.name}`)];
       if (withOriginal) images.push(await upload(target, loaded.blob, source.name));
       const text = feedbackText({
-        name: source.name, provenance: source.provenance, regions, size: loaded.size, original: withOriginal, annotated: marked.size,
+        name: source.name, provenance: source.provenance, regions, size: loaded.size,
+        original: position ? { position } : withOriginal, annotated: marked.size,
       });
       const refused = onAdd(target, images, text);
       if (refused) throw new Error(refused);
@@ -362,11 +370,15 @@ export function PointFix({ source, agents, room, onAdd, onClose }: {
             {(agent ? imageRefusal(agent) : owner && imageRefusal(owner)) && (
               <p className="field-hint" role="status">{agent ? imageRefusal(agent) : imageRefusal(owner)} Choose an Agent that can.</p>
             )}
-            <label className="point-fix-original">
-              <input type="checkbox" checked={original} disabled={busy} onChange={(event) => setOriginal(event.target.checked)} />
-              Attach the original image too
-            </label>
-            {original && !originalFits && (
+            {inTargetDraft ? (
+              <p className="field-hint point-fix-original" role="status">The original is already in {agent?.name}’s draft; only the annotated copy is added.</p>
+            ) : (
+              <label className="point-fix-original">
+                <input type="checkbox" checked={original} disabled={busy} onChange={(event) => setOriginal(event.target.checked)} />
+                Attach the original image too
+              </label>
+            )}
+            {!inTargetDraft && original && !originalFits && (
               <p className="field-hint">The original is beyond what Core takes (PNG, JPEG or WebP; 10 MiB; 8192 px; 24 MP), so only the annotated image is attached.</p>
             )}
             {problem && <p role="alert" className="inline-error">{problem}</p>}

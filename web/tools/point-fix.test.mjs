@@ -47,6 +47,14 @@ test("the draft text names the source apart from the notes, each area numbered a
   ].join("\n"));
 });
 
+test("an original already in the draft is named by its place there, as pasted images often share a name", () => {
+  const text = feedbackText({
+    name: "image.png", provenance: "the image image.png you attached", original: { position: 3 },
+    size: { width: 400, height: 300 }, regions: [{ id: 1, x: 1, y: 2, width: 30, height: 40, note: "Here" }],
+  });
+  assert.match(text, /^Point & Fix feedback on “image.png” \(400×300 px\): 1 marked area in the attached annotated image; the original is attached image 3 \(“image.png”\)\.\n/);
+});
+
 test("an annotated image reduced to fit says so, and which pixels the areas are in", () => {
   const text = feedbackText({
     name: "big.png", provenance: "an image you chose (big.png)", original: false,

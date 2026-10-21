@@ -1,4 +1,4 @@
-import { ImageAttachments } from "./ImageAttachments";
+import { ImageAttachments, inputImageUrl } from "./ImageAttachments";
 import { useImageUploads } from "./useImageUploads";
 import { PointFix, imageRefusal } from "./PointFix";
 import { PointFixOpen, type PointFixSource } from "./point-fix";
@@ -1493,6 +1493,22 @@ export function App() {
       return [];
     }
   }
+  /** Point & Fix (T-167) on an image already in the draft: read from Core
+   * where it was saved, never chosen again from the user's files. */
+  function markUpDraftImage(image: { id: string; agentId: string; name?: string }) {
+    const name = image.name || "Pasted image";
+    openPointFix({
+      name,
+      ownerId: image.agentId,
+      provenance: `the image ${name} you attached`,
+      inDraft: { agentId: image.agentId, id: image.id },
+      load: async (signal) => {
+        const response = await fetch(inputImageUrl(image.agentId, image.id), { signal });
+        if (!response.ok) throw new Error(`the saved image is unavailable (HTTP ${response.status})`);
+        return response.blob();
+      },
+    });
+  }
   const openPointFix = useCallback((source: PointFixSource) => {
     setArtifact(null);
     setPointFix(source);
@@ -2454,7 +2470,8 @@ export function App() {
                     onImages={files => void imageUploads.add(files)}
                     onSubmit={() => void send()}
                   />
-                  <ImageAttachments images={draft.images || []} description={agent?.harness === "claude" ? CLAUDE_IMAGE_NOTE : undefined} onRemove={previewMode || draftBlocked ? undefined : id => setDraft(selected, current => ({ ...current, images: current.images?.filter(image => image.id !== id) }))} />
+                  <ImageAttachments images={draft.images || []} description={agent?.harness === "claude" ? CLAUDE_IMAGE_NOTE : undefined} onRemove={previewMode || draftBlocked ? undefined : id => setDraft(selected, current => ({ ...current, images: current.images?.filter(image => image.id !== id) }))}
+                    annotateThumbnails onAnnotate={previewMode || draftBlocked ? undefined : image => markUpDraftImage(image)} />
                   {imageUploads.error && <p className="inline-error" role="alert">{imageUploads.error}</p>}
                   {draftError && <p className="inline-error" role="alert">{draftError}</p>}
                   {draftBlocked && !previewMode && <DraftRecovery key={selected} onDiscard={() => discardSavedDraft(selected)} />}
@@ -2932,6 +2949,7 @@ export function App() {
         source={pointFix}
         agents={workspace?.agents || []}
         room={pointFixRoom}
+        draftPosition={(agentId, imageId) => getDraftImages(agentId).findIndex(image => image.id === imageId) + 1}
         onAdd={addPointFix}
         onClose={() => setPointFix(null)}
       />
