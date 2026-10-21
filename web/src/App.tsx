@@ -1,5 +1,8 @@
 import { ImageAttachments } from "./ImageAttachments";
 import { useImageUploads } from "./useImageUploads";
+import { PointFix, imageRefusal } from "./PointFix";
+import { PointFixOpen, type PointFixSource } from "./point-fix";
+import { appendImage, MAX_IMAGES, MAX_IMAGE_TOTAL, type DraftImage } from "./image-input";
 import {
   memo,
   useCallback,
@@ -27,6 +30,7 @@ import {
   House,
   Link2,
   ImagePlus,
+  SquareDashedMousePointer,
   Leaf,
   LoaderCircle,
   MessageSquare,
@@ -43,6 +47,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  artifactUrl,
   errorText,
   isNative,
   isTauri,
@@ -262,6 +267,8 @@ export function App() {
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [artifact, setArtifact] = useState<ArtifactPreview | null>(null);
+  // An image being marked for Point & Fix (T-167).
+  const [pointFix, setPointFix] = useState<PointFixSource | null>(null);
   const { draft, getDraft, setDraft, clearIfUnchanged, preserveDrafts, removeDraft, copyDraft, discardSavedDraft, draftError, draftBlocked } = useComposerDraft(selected);
   const [interrupting, setInterrupting] = useState(false);
   const [actionError, setActionError] = useState("");
@@ -570,6 +577,7 @@ export function App() {
   const imageSupported = (agent?.harness === "codex" || agent?.harness === "claude");
   const imageUploads = useImageUploads(selected, imageSupported && !previewMode && !draftBlocked, getDraft, setDraft);
   const imagePicker = useRef<HTMLInputElement>(null);
+  const pointFixPicker = useRef<HTMLInputElement>(null);
   const closed = !!agent?.closedAt;
   const busy =
     !closed && (agent?.status === "working" || agent?.status === "waiting");
@@ -1392,6 +1400,63 @@ export function App() {
     setNotice(`Added ${handoffLabel(source)} to ${target.name}’s draft. Edit it, then send.`);
     return true;
   }
+  /** Why that Agent's draft cannot take Point & Fix images of these sizes. */
+  function pointFixRoom(targetId: string, images: { bytes: number }[]) {
+    const target = workspace?.agents.find(a => a.id === targetId);
+    const refusal = previewMode ? "Drafts cannot be changed in this preview." : imageRefusal(target);
+    if (refusal || !target) return refusal || "That Agent is no longer in this Workspace.";
+    if (targetId === selected && draftBlocked) return "Recover or reset this Agent’s saved draft first; nothing was added.";
+    let current: readonly DraftImage[];
+    try {
+      current = getDraft(targetId).images || [];
+    } catch {
+      return `${target.name}’s saved draft needs recovering first; nothing was added. Open ${target.name} to recover it.`;
+    }
+    if (current.length + images.length > MAX_IMAGES)
+      return `${target.name}’s draft already has ${current.length} images, and a message takes at most ${MAX_IMAGES}.`;
+    if (current.reduce((n, i) => n + i.bytes, 0) + images.reduce((n, i) => n + i.bytes, 0) > MAX_IMAGE_TOTAL)
+      return `${target.name}’s draft cannot take these images: a message takes at most 40 MiB of images.`;
+    return null;
+  }
+  /**
+   * Point & Fix (T-167) ends here, like Send to Agent: the annotated image,
+   * the original and the notes are added to that Agent's draft, after what is
+   * there, and it opens. The user edits and sends it; nothing is sent here.
+   */
+  function addPointFix(targetId: string, images: DraftImage[], text: string) {
+    const full = pointFixRoom(targetId, images.filter(image => !getDraftImages(targetId).some(saved => saved.id === image.id)));
+    if (full) return full;
+    const target = workspace!.agents.find(a => a.id === targetId)!;
+    try {
+      // Checked first, so the text never goes in without its images.
+      images.reduce(appendImage, getDraft(targetId));
+      // The open composer saves its text with the images it last drew, so
+      // the text goes in first and the images after it.
+      if (targetId === selected && composer.current) composer.current.append(text);
+      else {
+        setDraft(targetId, current => appendDraft(current, text));
+        if (!draftText(getDraft(targetId)).endsWith(text)) throw new Error("not added");
+      }
+      setDraft(targetId, current => images.reduce(appendImage, current));
+    } catch {
+      return `${target.name}’s saved draft needs recovering first; nothing was added. Open ${target.name} to recover it.`;
+    }
+    selectAgent(targetId);
+    requestAnimationFrame(() => composer.current?.focus());
+    setNotice(`Added the annotated image and notes to ${target.name}’s draft. Edit it, then send.`);
+    return null;
+  }
+  function getDraftImages(targetId: string) {
+    try {
+      return getDraft(targetId).images || [];
+    } catch {
+      return [];
+    }
+  }
+  const openPointFix = useCallback((source: PointFixSource) => {
+    setArtifact(null);
+    setPointFix(source);
+  }, []);
   const handoffRef = useRef({ agents: () => [] as Agent[], send: handoffToAgent });
   handoffRef.current = { agents: () => workspace?.agents || [], send: handoffToAgent };
   const handoffApi = useMemo<HandoffApi>(() => ({
@@ -1487,6 +1552,7 @@ export function App() {
 
   return (
     <HandoffContext.Provider value={handoffApi}>
+    <PointFixOpen.Provider value={previewMode ? null : openPointFix}>
     <MessageLinks.Provider value={messageLinks}>
     <div
       className={`app ${isNative ? "native" : "web"} ${railOpen ? "" : "rail-hidden"} ${inspector && agent && !homeOpen ? "with-inspector" : ""}`}
@@ -2347,6 +2413,21 @@ export function App() {
                       >
                         {imageUploads.busy ? <LoaderCircle size={15} className="spin" /> : <ImagePlus size={15} />}
                       </button>
+                      <input ref={pointFixPicker} type="file" accept="image/png,image/jpeg,image/webp" hidden aria-label="Choose an image to mark" onChange={event => {
+                        const file = event.target.files?.[0];
+                        event.target.value = "";
+                        if (file) openPointFix({ name: file.name || "Screenshot", ownerId: selected, provenance: `an image you chose (${file.name || "pasted"})`, load: async () => file });
+                      }} />
+                      <button
+                        type="button"
+                        className="composer-tool"
+                        aria-label="Mark up an image"
+                        title="Point & Fix · mark areas on a screenshot or image and add your notes to a draft"
+                        disabled={previewMode}
+                        onClick={() => pointFixPicker.current?.click()}
+                      >
+                        <SquareDashedMousePointer size={15} />
+                      </button>
                       {!previewMode && <ResultRequest key={selected} onDraft={appendToDraft} />}
                     </div>
                     <span className="composer-hint" data-notice={composerNotice ? "" : undefined}>
@@ -2768,6 +2849,26 @@ export function App() {
         onClose={() => setArtifact(null)}
         onCloseAutoFocus={restoreFilePosition}
         preview={previewMode}
+        onAnnotate={previewMode || artifact?.kind !== "image" ? undefined : () => {
+          const shown = artifact, owner = agent;
+          openPointFix({
+            name: shown.name,
+            ownerId: owner?.id || null,
+            provenance: `the file ${shown.path} in ${owner?.name || "this Agent"}’s conversation`,
+            load: async (signal) => {
+              const response = await fetch(artifactUrl(selected, shown.path), { signal });
+              if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
+              return response.blob();
+            },
+          });
+        }}
+      />
+      <PointFix
+        source={pointFix}
+        agents={workspace?.agents || []}
+        room={pointFixRoom}
+        onAdd={addPointFix}
+        onClose={() => setPointFix(null)}
       />
       {notice && (
         <div className="toast" role="status">
@@ -2778,6 +2879,7 @@ export function App() {
       <HandoffDropStrip />
     </div>
     </MessageLinks.Provider>
+    </PointFixOpen.Provider>
     </HandoffContext.Provider>
   );
 }

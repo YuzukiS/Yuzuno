@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { X } from "lucide-react";
+import { SquareDashedMousePointer, X } from "lucide-react";
 import { Modal } from "./components";
 import { API_BASE } from "./api";
 import "./image-input.css";
@@ -10,10 +10,13 @@ type PreviewImage = { id: string; agentId: string; name?: string };
 export function ImageAttachments({
   images,
   onRemove,
+  onAnnotate,
   description = "Original image attached to this message",
 }: {
   images: readonly PreviewImage[];
   onRemove?: (id: string) => void;
+  /** Point & Fix (T-167): mark areas on an opened image. */
+  onAnnotate?: (image: PreviewImage) => void;
   /** What the full preview shows, if not simply the original. */
   description?: string;
 }) {
@@ -79,6 +82,16 @@ export function ImageAttachments({
                 This saved image is unavailable. The original file may have been
                 removed from this Core.
               </p>
+            )}
+            {onAnnotate && !failed && (
+              <button type="button" className="secondary-button input-image-annotate" onClick={() => {
+                const image = opened;
+                setOpened(null);
+                onAnnotate(image);
+              }}>
+                <SquareDashedMousePointer size={14} />
+                Mark up
+              </button>
             )}
           </div>
         )}

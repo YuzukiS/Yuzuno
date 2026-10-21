@@ -1787,7 +1787,7 @@ test("turn dock offers keyboard navigation and exact jumps without interrupting 
     const row = page.document.querySelector('.composer-bottom');
     assert.deepEqual(
       [...row.querySelectorAll(".composer-tools > button")].map((b) => b.getAttribute("aria-label")),
-      ["Add images", "Ask for an interactive result"],
+      ["Add images", "Mark up an image", "Ask for an interactive result"],
     );
     assert.equal(row.querySelector(".composer-keys")?.textContent.replace(/\s+/g, " ").trim(), "↵ Send ⇧ ↵ New line");
     assert.doesNotMatch(page.document.querySelector('.composer-area').textContent, /Pastes of 12|Room for your next idea|work is underway|Interactive result/);
@@ -2048,6 +2048,181 @@ test("a conversation reopens where it was left, and one left at the latest stays
     await until(() => /Where you left off is no longer in this conversation/.test(page.document.querySelector(".toast")?.textContent || ""), "a lost position is explained");
     await until(() => /Answer 5/.test(text()) && !page.document.querySelector(".source-navigation"), "the latest messages are shown");
     assert.equal(requests.filter((r) => r.startsWith("turnId=t9")).length, 1, requests.join(" | "));
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+// What Point & Fix needs from a browser, which jsdom lacks: decoding an
+// image (400×300 here), drawing it and object URLs. Uploads answer as Core's
+// content-addressed images do: the same bytes, the same ID.
+function pointFixBrowser(window, uploads, { failFirst = false } = {}) {
+  const drawn = [];
+  window.createImageBitmap = async () => ({ ...(window.pointFixSize || { width: 400, height: 300 }), close() {} });
+  window.URL.createObjectURL = () => "blob:point-fix";
+  window.URL.revokeObjectURL = (url) => drawn.push(["revoked", url]);
+  // Each canvas draws its own picture: the same areas, the same bytes.
+  window.HTMLCanvasElement.prototype.getContext = function () {
+    const canvas = this;
+    canvas.areas = [];
+    return { drawImage() {}, beginPath() {}, arc() {}, fill() {}, fillText: (text) => drawn.push(["number", text]),
+      strokeRect: (...box) => { canvas.areas.push(box); drawn.push(["area", canvas.width, canvas.height, ...box]); } };
+  };
+  window.HTMLCanvasElement.prototype.toBlob = function (done, type) {
+    done(new window.Blob([`annotated ${this.width}x${this.height} ${JSON.stringify(this.areas)}`], { type }));
+  };
+  const ids = new Map();
+  const fetch = window.fetch;
+  window.fetch = async (url, init = {}) => {
+    if (url.includes("/api/artifact?"))
+      return { ok: true, status: 200, blob: async () => new window.Blob(["png-bytes"], { type: "image/png" }) };
+    // Hana is a Codex Agent, as her own detail says.
+    if (url.endsWith("/api/workspace")) {
+      const response = await fetch(url, init), body = await response.json();
+      body.agents = body.agents.map((agent) => (agent.id === "b" ? { ...agent, harness: "codex" } : agent));
+      return { ...response, json: async () => body };
+    }
+    const upload = /\/api\/agents\/([ab])\/images$/.exec(url);
+    if (upload && init.method === "POST") {
+      const content = await init.body.text();
+      uploads.push({ agent: upload[1], type: init.body.type, content });
+      if (failFirst && uploads.length === 1)
+        return { ok: false, status: 500, text: async () => JSON.stringify({ error: "Disk full" }) };
+      if (!ids.has(content)) ids.set(content, `${String(ids.size + 1).repeat(64)}.png`);
+      return { ok: true, status: 200, json: async () => ({ id: ids.get(content), width: 400, height: 300, bytes: content.length }) };
+    }
+    return fetch(url, init);
+  };
+  return drawn;
+}
+function typeText(page, field, value) {
+  const prototype = field.tagName === "TEXTAREA" ? page.window.HTMLTextAreaElement.prototype : page.window.HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, "value").set.call(field, value);
+  field.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+}
+
+test("Point & Fix marks areas on an image and adds it, the original and the notes to the chosen Agent's draft, sending nothing (T-167)", async () => {
+  const uploads = [];
+  let drawn;
+  const page = await mount({
+    harness: "opencode",
+    artifacts: [{ path: "/workspace/shot.png", name: "shot.png", kind: "image", sourceItemId: "r1" }],
+    beforeLoad: (window) => { drawn = pointFixBrowser(window, uploads, { failFirst: true }); },
+  });
+  try {
+    const dialog = () => page.document.querySelector(".point-fix-dialog");
+    const field = (label) => dialog().querySelector(`[aria-label="${label}"]`);
+    const hana = () => page.document.querySelector('[data-composer-input][aria-label="Message Hana"]');
+    button(page, "Hana").click();
+    await until(hana, "Hana opens");
+    setValue(page.window, hana(), "Hana’s own draft");
+    await pause();
+    button(page, "Mori").click();
+    await until(() => page.document.querySelector('[data-composer-input][aria-label="Message Mori"]') &&
+      page.document.querySelector(".artifacts-panel .artifact-row"), "Mori's artifacts");
+    page.document.querySelector(".artifacts-panel .artifact-row").click();
+    await until(() => button(page, "Mark up"), "an image artifact can be marked up");
+    button(page, "Mark up").click();
+    await until(() => dialog()?.querySelector(".point-fix-image svg"), "the image opens for marking");
+    // Mori owns the image but cannot take one: said, and nothing can be added.
+    assert.match(dialog().textContent, /Mori cannot receive images; Codex and Claude Agents can/);
+    assert.equal(button(page, "Add to Mori’s draft").disabled, true);
+    // Two areas without a pointer: Add area, its fields and its note.
+    button(page, "Add area").click();
+    await pause();
+    for (const [label, value] of [["left", "10"], ["top", "20"], ["width", "50"], ["height", "40"]])
+      typeText(page, field(`Area 1 ${label} (px)`), value);
+    typeText(page, field("Area 1 comment"), "Too tight");
+    button(page, "Add area").click();
+    await pause();
+    typeText(page, field("Area 2 comment"), "Wrong colour");
+    // One drawn at half size lands on the original's pixels, and zoom keeps it.
+    const svg = dialog().querySelector(".point-fix-image svg");
+    let box = { left: 0, top: 0, width: 200, height: 150 };
+    svg.getBoundingClientRect = () => ({ ...box, right: box.left + box.width, bottom: box.top + box.height, x: box.left, y: box.top });
+    const pointer = async (type, x, y) => {
+      svg.dispatchEvent(new page.window.PointerEvent(type, { bubbles: true, clientX: x, clientY: y, pointerId: 1 }));
+      await pause();
+    };
+    await pointer("pointerdown", 20, 20); await pointer("pointermove", 60, 50); await pointer("pointerup", 60, 50);
+    assert.deepEqual(["left", "top", "width", "height"].map((k) => field(`Area 3 ${k} (px)`).value), ["40", "40", "80", "60"]);
+    box = { left: 0, top: 0, width: 800, height: 600 };
+    const third = svg.querySelectorAll("rect[data-region]")[2];
+    assert.deepEqual(["x", "y", "width", "height"].map((k) => third.getAttribute(k)), ["40", "40", "80", "60"]);
+    assert.equal(dialog().querySelectorAll(".point-fix-badge")[2].style.left, "10%");
+    // A note typed after the last area was drawn survives Undo.
+    typeText(page, field("Area 1 comment"), "Too tight, by 4 px");
+    button(page, "Undo").click();
+    await pause();
+    assert.equal(field("Area 3 comment"), null, "Undo takes the last area back");
+    assert.equal(field("Area 1 comment").value, "Too tight, by 4 px");
+    // Another Agent: checked again, and enabled.
+    const select = dialog().querySelector(".point-fix-target select");
+    select.value = "b";
+    select.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+    await pause();
+    assert.doesNotMatch(dialog().textContent, /cannot receive images/);
+    // A failed upload keeps everything; trying again adds it.
+    button(page, "Add to Hana’s draft").click();
+    await until(() => dialog()?.querySelector('[role="alert"]'), "the failure is shown");
+    assert.match(dialog().querySelector('[role="alert"]').textContent, /Disk full/);
+    assert.equal(field("Area 2 comment").value, "Wrong colour");
+    button(page, "Add to Hana’s draft").click();
+    await until(() => !dialog() && hana(), "the draft opens");
+    // The failed upload, then the same annotated image and the original.
+    const marked = "annotated 400x300 [[10,20,50,40],[150,113,100,75]]";
+    assert.deepEqual(uploads.map((u) => [u.agent, u.type, u.content]), [
+      ["b", "image/png", marked], ["b", "image/png", marked], ["b", "image/png", "png-bytes"],
+    ]);
+    assert.deepEqual(drawn.filter((d) => d[0] === "area").slice(-2), [["area", 400, 300, 10, 20, 50, 40], ["area", 400, 300, 150, 113, 100, 75]]);
+    assert.ok(drawn.some((d) => d[0] === "revoked" && d[1] === "blob:point-fix"), "what Point & Fix made is released");
+    const text = composerText(hana());
+    assert.ok(text.startsWith("Hana’s own draft"), text);
+    assert.match(text, /Point & Fix feedback on “shot.png” \(400×300 px\): 2 marked areas in the attached annotated image, with the original image attached\./);
+    assert.match(text, /Source: the file \/workspace\/shot.png in Mori’s conversation/);
+    assert.match(text, /1\. Area at x 10, y 20, 50×40 px: Too tight, by 4 px\n2\. Area at x 150, y 113, 100×75 px: Wrong colour/);
+    assert.equal(page.document.querySelector(".composer-area").querySelectorAll(".input-image").length, 2);
+    assert.equal(page.calls.filter((c) => c.init.method === "POST" && /\/(messages|turns)$/.test(c.url)).length, 0, "nothing is sent");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a screenshot you choose is marked up with the keyboard alone, into this Agent's draft, without doubling images (T-167)", async () => {
+  const uploads = [];
+  const page = await mount({ beforeLoad: (window) => { pointFixBrowser(window, uploads); } });
+  try {
+    const dialog = () => page.document.querySelector(".point-fix-dialog");
+    const composer = page.document.querySelector('[data-composer-input][aria-label="Message Mori"]');
+    setValue(page.window, composer, "Before the feedback");
+    await pause();
+    const choose = async () => {
+      const input = page.document.querySelector('input[aria-label="Choose an image to mark"]');
+      Object.defineProperty(input, "files", { configurable: true, value: [new page.window.File(["png-bytes"], "screen.png", { type: "image/png" })] });
+      input.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+      await until(() => dialog()?.querySelector(".point-fix-image svg"), "the chosen image opens");
+      button(page, "Add area").click();
+      await until(() => page.document.activeElement?.id?.startsWith("point-fix-note-"), "its note has the focus");
+      typeText(page, page.document.activeElement, "Align the buttons");
+      button(page, "Add to Mori’s draft").click();
+      await until(() => !dialog(), "added");
+    };
+    await choose();
+    const text = composerText(composer);
+    assert.ok(text.startsWith("Before the feedback"), text);
+    assert.match(text, /Source: an image you chose \(screen.png\)\n\n1\. Area at x 150, y 113, 100×75 px: Align the buttons/);
+    const images = () => page.document.querySelector(".composer-area").querySelectorAll(".input-image").length;
+    assert.equal(images(), 2);
+    // The same again: the same images, not a second copy of each.
+    await choose();
+    assert.equal(images(), 2);
+    // An image larger than Core takes: the annotated copy is reduced, the
+    // text says so, and the original is not attached.
+    page.window.pointFixSize = { width: 9000, height: 4000 };
+    await choose();
+    const big = composerText(composer).split("Point & Fix feedback").at(-1);
+    assert.match(big, /^ on “screen.png” \(9000×4000 px\): 1 marked area in the attached annotated image\.\n/);
+    assert.match(big, /The annotated image is reduced to 7348×3266 px; the areas below are in the original’s 9000×4000 pixels\./);
+    assert.equal(images(), 3);
+    assert.equal(page.calls.filter((c) => c.init.method === "POST" && /\/(messages|turns)$/.test(c.url)).length, 0);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
