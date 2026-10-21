@@ -152,6 +152,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/agents/{id}/review",post(review))
         .route("/api/requests/{id}/respond",post(respond))
         .route("/api/models",get(models))
+        .route("/api/diagnostics/memory",get(memory_diagnostics))
         .route("/api/events",get(events))
         .route("/api/collaboration/{operation}",post(collaboration))
         .route("/api/artifact",get(artifact))
@@ -173,6 +174,19 @@ async fn update_admission(State(admission): State<Arc<crate::updates::admission:
         Err(error) => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":error.to_string()}))).into_response(),
     };
     next.run(request).await
+}
+
+/// This process's memory and its heap maintenance, read only when asked
+/// (T-140): counters, never record contents, and not part of /api/health.
+async fn memory_diagnostics(State(ws): State<Arc<Workspace>>, updates: Option<Extension<Arc<crate::updates::controller::Controller>>>) -> ApiResult<Json<Value>> {
+    // With an update controller, `update_admission` holds this request's permit.
+    let own_permit = updates.is_some();
+    // Off the async workers: allocator counts lock its arenas briefly. Not
+    // `stored`, whose own permit would be counted as another request.
+    let report = tokio::task::spawn_blocking(move || {
+        crate::heap::diagnostics(&ws.store, &ws.admission, own_permit, ws.stream_ticker_started())
+    }).await?;
+    Ok(Json(report))
 }
 
 /// What /api/health says this is: `product` names it.

@@ -28,6 +28,35 @@ the allocator's locks. Reading cold histories after reclamation must fault pages
 back in; the grace period avoids doing this during brief typing/thinking pauses
 but does not eliminate that cost.
 
+## Reading it on a running Core
+
+`GET /api/diagnostics/memory` reports this process's memory when asked, and
+Copy diagnostics includes it. It reads counters only: no record is cloned or
+scanned, nothing is written or trimmed, and it is not part of `/api/health`
+or any polling. It passes the same local and phone-entry checks as the rest of
+the API and waits, like other requests, while an update drains.
+
+- `os`: `rssBytes`, `hwmBytes`, `anonBytes`, `fileBytes`, `shmemBytes`,
+  `swapBytes` and `threads`, from the kernel's status of the process. Anonymous
+  pages include thread stacks and other anonymous mappings, not only malloc's
+  heap.
+- `allocator`: glibc's `mallinfo2` over all arenas, with its own field names
+  (`arena`, `uordblks`, `fordblks`, `hblkhd`, `hblks`). `fordblks` counts free
+  space whether or not it is resident; after a trim it stays while the pages
+  are gone. No difference of these counts is given as an amount that could be
+  returned.
+- `store.heldRecords`: parsed records held now, at most `maxHeldRecords`.
+- `admission.inFlight`: permits held now; `includesThisRequest` says whether
+  one is this request's own.
+- `reclaim`: the policy's thresholds, whether the maintenance tick runs, what
+  holds a trim back now (`waitingFor`) and the last check that passed the time
+  gate. Reading it consumes no check. While a trim holds the gate, `gateBusy`
+  is true and the gate is not read.
+
+Each part is read in turn, so they are not one snapshot. On a platform where a
+part can't be read it says `available: false` with a reason; no count is 0
+because it is unknown.
+
 ## Reproduce the isolated comparison
 
 Use a managed Job with 2 CPU cores, 6 GiB RAM and no swap. Build the release
