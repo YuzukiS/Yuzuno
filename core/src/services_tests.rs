@@ -70,10 +70,12 @@ struct Lab {
     _dir: tempfile::TempDir,
     ws: Arc<Workspace>,
     project: String,
+    /// Last, so it is released after the Workspace (`ports`).
+    _ports: std::fs::File,
 }
 
 fn lab() -> Lab {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
     for (id, target) in [("m1", "fixture"), ("down", "unreachable"), ("busy", "busy"), ("short", "short"), ("chatty", "chatty")] {
@@ -83,15 +85,29 @@ fn lab() -> Lab {
         }).unwrap();
     }
     let project = ws.store.create_project("Lab", Default::default()).unwrap().id;
-    // A range of its own per lab: tests run side by side.
-    static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(21000);
-    let first = NEXT.fetch_add(8, std::sync::atomic::Ordering::Relaxed);
+    let (ports, first) = ports(std::fs::metadata(dir.path()).unwrap().uid());
     ws.services.use_ports(first..=first + 7);
     let ssh = dir.path().join("ssh");
     std::fs::write(&ssh, SSH).unwrap();
     std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
     ws.services.use_ssh(&ssh.to_string_lossy());
-    Lab { _dir: dir, ws, project }
+    Lab { _dir: dir, ws, project, _ports: ports }
+}
+
+/// A block of 8 service ports for one lab alone, and the lock that holds it.
+/// Tests run side by side, in this process and in others (CI runs the lib's
+/// tests in parallel processes): a lab locks its block's file for as long as
+/// it lives, so a port it closed is never another lab's.
+fn ports(uid: u32) -> (std::fs::File, u16) {
+    let locks = std::path::PathBuf::from(format!("/tmp/yuzuno-service-test-ports-{uid}"));
+    std::fs::create_dir_all(&locks).unwrap();
+    for first in (21000..25000).step_by(8) {
+        let file = std::fs::File::create(locks.join(first.to_string())).unwrap();
+        if file.try_lock().is_ok() {
+            return (file, first);
+        }
+    }
+    panic!("every block of service test ports is held");
 }
 
 /// An HTTP service on this host's loopback answering every request with 200,
@@ -136,6 +152,19 @@ async fn open(lab: &Lab, id: &str) -> Value {
 
 async fn answers(port: u16) -> bool {
     matches!(probe(port, "/").await, Probe::Http(200))
+}
+
+/// Whether nothing listens on `port` (one of this lab's) within 5 seconds:
+/// a closed way's listener ends in its own task, just after the close.
+async fn unheard(port: u16) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    true
 }
 
 /// The page's check before it opens a service: the reserved request on the
@@ -332,7 +361,7 @@ async fn only_the_page_that_opened_a_service_can_prove_its_port_reaches_this_cor
 fn a_core_that_stops_leaves_no_listener_and_no_ssh() {
     // Core's own runtime ends (Core exits, or is stopped) with a service open
     // and a client stream on it: the listener closes and SSH is gone.
-    let (dir, local) = std::thread::spawn(|| {
+    let (dir, _ports, local) = std::thread::spawn(|| {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         let found = runtime.block_on(async {
             let lab = lab();
@@ -345,8 +374,9 @@ fn a_core_that_stops_leaves_no_listener_and_no_ssh() {
             let mut held = TcpStream::connect(("127.0.0.1", local)).await.unwrap();
             held.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
             std::mem::forget(held);
-            let Lab { _dir, .. } = lab;
-            (_dir, local)
+            // Its block of ports stays held until the end of this test.
+            let Lab { _dir, _ports, .. } = lab;
+            (_dir, _ports, local)
         });
         runtime.shutdown_timeout(Duration::from_secs(1));
         found
@@ -425,8 +455,7 @@ async fn an_ssh_service_is_forwarded_checked_and_closed_without_touching_the_ser
     let other_local = open(&lab, &other_id).await["localPort"].as_u64().unwrap() as u16;
     let closed = lab.ws.close_service(&id).await.unwrap()["connection"].clone();
     assert_eq!(closed["state"], "closed", "{closed}");
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(TcpStream::connect(("127.0.0.1", local)).await.is_err(), "the forward ended");
+    assert!(unheard(local).await, "the forward ended");
     assert!(answers(port).await, "the service itself is untouched");
     assert!(answers(other_local).await, "the other forward is untouched");
     lab.ws.close_service(&other_id).await.unwrap();
@@ -519,8 +548,7 @@ async fn deleting_a_project_ends_what_is_open_for_its_services_and_only_then() {
     // Once it is deleted, its service's listener and SSH end with it.
     lab.ws.store.set_agent_project("a", None).unwrap();
     lab.ws.delete_project(&lab.project).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(TcpStream::connect(("127.0.0.1", local)).await.is_err(), "nothing listens for it");
+    assert!(unheard(local).await, "nothing listens for it");
     assert!(lab.ws.services.open.lock().unwrap().is_empty() && lab.ws.services.assigned.lock().unwrap().is_empty());
     assert!(answers(port).await, "the service itself keeps running");
     running.abort();
