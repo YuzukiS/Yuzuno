@@ -60,6 +60,41 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 export function post<T>(path: string, body: unknown = {}): Promise<T> {
   return api<T>(path, { method: "POST", body: JSON.stringify(body) });
 }
+/** How long a message or an answer waits for Core's reply. A phone's request
+ * can hang after sleep or a network change; past this it is unconfirmed, as
+ * after any lost connection. Core may still have it: nothing is sent again by
+ * itself (T-170). */
+export const DELIVERY_WAIT_MS = 60_000;
+export class NoReplyError extends Error {
+  constructor(message = `No reply from Core within ${DELIVERY_WAIT_MS / 1000} seconds. It may have arrived; nothing is sent again by itself.`) {
+    super(message);
+    this.name = "NoReplyError";
+  }
+}
+/** post, but a request with no reply within DELIVERY_WAIT_MS is given up as a NoReplyError. */
+export async function postWithin<T>(path: string, body: unknown = {}): Promise<T> {
+  const giveUp = new AbortController();
+  const timer = setTimeout(() => giveUp.abort(), DELIVERY_WAIT_MS);
+  try {
+    return await api<T>(path, { method: "POST", body: JSON.stringify(body), signal: giveUp.signal });
+  } catch (error) {
+    if (giveUp.signal.aborted) throw new NoReplyError();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+/** An answer to a native approval or question. Core refuses a second answer
+ * to the same request, so answering again after no reply is safe. */
+export async function respondToRequest(requestId: string, response: unknown) {
+  try {
+    return await postWithin(`/requests/${encodeURIComponent(requestId)}/respond`, { response });
+  } catch (error) {
+    if (error instanceof NoReplyError)
+      throw new NoReplyError(`No reply from Core within ${DELIVERY_WAIT_MS / 1000} seconds. Your answer may have arrived; if you answer again, Core refuses a second answer.`);
+    throw error;
+  }
+}
 export function patch<T>(path: string, body: unknown): Promise<T> {
   return api<T>(path, { method: "PATCH", body: JSON.stringify(body) });
 }

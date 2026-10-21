@@ -132,9 +132,17 @@ export function useWorkspaceEvents(
       // After sleep a dead stream can look open; heartbeats tell.
       else if (Date.now() - lastHeard > 20_000) connect("focus");
     };
+    // A phone's page comes back by becoming visible, from the back-forward
+    // cache or with its network, often without a focus event (T-170).
+    const visible = () => {
+      if (document.visibilityState === "visible") focus();
+    };
     connect("first");
     const interval = setInterval(poll, POLL_MS);
     window.addEventListener("focus", focus);
+    window.addEventListener("pageshow", focus);
+    window.addEventListener("online", focus);
+    document.addEventListener("visibilitychange", visible);
     return () => {
       disposed = true;
       if (source) {
@@ -146,6 +154,9 @@ export function useWorkspaceEvents(
       clearTimeout(reopen);
       clearInterval(interval);
       window.removeEventListener("focus", focus);
+      window.removeEventListener("pageshow", focus);
+      window.removeEventListener("online", focus);
+      document.removeEventListener("visibilitychange", visible);
     };
   }, [enabled]);
   return connection;

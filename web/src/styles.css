@@ -3126,3 +3126,15 @@ p {
     animation: none;
   }
 }
+
+/* Touch screens (T-170). iOS zooms into a field whose text is under 16px when
+   it is focused; at 16px it stays put. The composer is included because a
+   smaller text size can be chosen in Appearance. */
+@media (hover: none) and (pointer: coarse) {
+  input,
+  select,
+  textarea,
+  .pasted-text-composer .cm-content {
+    font-size: max(16px, 1em);
+  }
+}

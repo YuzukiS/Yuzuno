@@ -1,5 +1,6 @@
 import { textLabel } from "./message-content";
 import { clipboardImages } from "./image-input";
+import { touchKeyboard } from "./touch-input";
 import {
   forwardRef,
   useEffect,
@@ -253,7 +254,10 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
                   event.target === v.contentDOM
                 ) {
                   event.preventDefault();
-                  callbacks.current.onSubmit();
+                  // Ctrl/Cmd+Enter still sends from a keyboard attached to one.
+                  if (touchKeyboard() && !event.ctrlKey && !event.metaKey)
+                    insertNewline(v);
+                  else callbacks.current.onSubmit();
                   return true;
                 }
                 return false;

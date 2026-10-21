@@ -51,6 +51,7 @@ import {
   shortcutModifier,
 } from "./api";
 import { nativeControl } from "./slash-commands";
+import { touchKeyboard } from "./touch-input";
 import {
   ArtifactModal,
   Avatar,
@@ -2356,8 +2357,17 @@ export function App() {
                         </>
                       ) : (
                         <span className="composer-keys">
-                          <kbd>↵</kbd> Send{" "}
-                          <kbd>⇧ ↵</kbd> New line
+                          {touchKeyboard() ? (
+                            <>
+                              <kbd>↵</kbd> New line{" "}
+                              <kbd>{shortcutModifier} ↵</kbd> Send
+                            </>
+                          ) : (
+                            <>
+                              <kbd>↵</kbd> Send{" "}
+                              <kbd>⇧ ↵</kbd> New line
+                            </>
+                          )}
                         </span>
                       )}
                     </span>

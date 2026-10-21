@@ -1,6 +1,6 @@
 import { sameMessageImages } from "./image-input";
 import { useEffect, useRef, useState } from "react";
-import { HttpError, post } from "./api";
+import { HttpError, postWithin } from "./api";
 import type {
   AgentDetail,
   MessageInput,
@@ -125,7 +125,7 @@ export function useConversationSend(
     showReceipt({ input, status: "sending", turnId: null, error: null });
     let received = false;
     try {
-      const receipt = await post<MessageReceipt>(
+      const receipt = await postWithin<MessageReceipt>(
         `/agents/${encodeURIComponent(agentId)}/messages`,
         input,
       );

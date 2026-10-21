@@ -1,6 +1,6 @@
 import { useRef, useState, type ReactNode } from "react";
 import { ChevronRight, LoaderCircle, MessageSquare, ShieldCheck, SquareTerminal } from "lucide-react";
-import { errorText, post } from "./api";
+import { errorText, respondToRequest } from "./api";
 import type { NativeItem, PendingRequest } from "./types";
 import "./opencode.css";
 
@@ -58,7 +58,7 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource }:
     answering.current = true;
     setSending(true); setError("");
     try {
-      await post(`/requests/${encodeURIComponent(request.id)}/respond`, { response });
+      await respondToRequest(request.id, response);
       setAnswered(true);
       refresh();
     } catch (e) { answering.current = false; setError(errorText(e)); } finally { setSending(false); }
