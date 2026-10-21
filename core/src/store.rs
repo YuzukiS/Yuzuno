@@ -813,8 +813,6 @@ fn damage_note(db: &Connection, damage: &Damaged, shown: Option<&Recovery>) -> S
         原有的记录行另存在 agent_salvage 中）{backup}。")
 }
 
-/// Whether the journal has rows after `seq` that loading this record would
-/// replay (see `restore`).
 /// What a Core that stopped leaves an Agent's record saying (`Store::open`):
 /// disconnected and offline, its requests and context usage stale, a message
 /// it was sending of unknown outcome, and an error when its newest Turn was
@@ -835,6 +833,8 @@ fn mark_restarted(d: &mut AgentDetail, newest_in_progress: bool) {
     }
 }
 
+/// Whether the journal has rows after `seq` that loading this record would
+/// replay (see `restore`).
 fn replays(db: &Connection, id: &str, seq: i64) -> Result<bool> {
     let mut query = db.prepare_cached("SELECT kind,data FROM journal WHERE agent_id=?1 AND seq>?2")?;
     let rows = query.query_map(params![id, seq], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
