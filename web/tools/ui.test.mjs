@@ -1133,7 +1133,7 @@ test("working messages carry the active turn and retries retain the same identit
     const messages = () => page.calls.filter((r) => r.url.endsWith("/messages"));
     await waitForPreviewState(
       () => messages().length === 2 && composerText(composer) === ""
-        && /Received by Codex · syncing conversation/.test(page.document.querySelector(".outgoing-message")?.textContent || ""),
+        && /Received by Codex · added when its Turn continues/.test(page.document.querySelector(".outgoing-message")?.textContent || ""),
       "the retry to be accepted",
     );
     const requests = messages();
@@ -1853,13 +1853,63 @@ test("Codex sends echo immediately, keep drafts during submission and replace th
     complete({ ok: true, status: 200, json: async () => ({ input, status: "accepted", turnId: "live", error: null }) });
     await pause(); await pause();
     assert.equal(composerText(composer), "");
-    assert.match(page.document.querySelector(".outgoing-message").textContent, /Received by Codex · syncing conversation/);
+    // A steer: Codex adds it when it next continues the Turn (T-120).
+    assert.match(page.document.querySelector(".outgoing-message").textContent, /Received by Codex · added when its Turn continues/);
     extraTurns[0].items.push({ id: "native-user", clientId: input.clientMessageId, type: "userMessage", content: [{ type: "text", text: input.text }] });
     page.window.dispatchEvent(new page.window.Event("focus"));
     await pause(); await pause();
     assert.ok(page.document.querySelector(".outgoing-message") === null, ".outgoing-message is absent");
     assert.match(page.document.querySelector('[data-item-id="native-user"]').textContent, /Show my message immediately/);
     assert.equal(page.calls.filter((r) => r.init.method === "POST").length, 1);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a steer whose Turn ended unseen says so, stays until hidden, and still clears if its message arrives late (T-120)", async () => {
+  // Codex 0.162.1 answers turn/steer at once and adds the message only when it
+  // next continues the Turn; an ended Turn without it is unconfirmed, not lost.
+  const extraTurns = [{ id: "live", status: "inProgress", items: [] }];
+  const reply = (url, init) => {
+    const receipt = { input: JSON.parse(init.body), status: "accepted", turnId: "live", error: null };
+    return { ok: true, status: 200, json: async () => receipt, text: async () => JSON.stringify(receipt) };
+  };
+  const page = await mount({ status: "working", turnStatus: "completed", extraTurns, messageResponse: reply });
+  try {
+    const previews = () => [...page.document.querySelectorAll(".outgoing-message")];
+    const noteOf = (text) => previews().find((p) => p.textContent.includes(text))?.querySelector("[role=status]")?.textContent;
+    const composer = page.document.querySelector('[data-composer-input][aria-label="Message Mori"]');
+    for (const text of ["Also check the tests.", "And the docs."]) {
+      setValue(page.window, composer, text);
+      await pause();
+      page.document.querySelector('[aria-label="Send while working"]').click();
+      await until(() => noteOf(text) === "Received by Codex · added when its Turn continues", `the waiting steer "${text}"`);
+    }
+    const sent = page.calls.filter((r) => r.url.endsWith("/messages")).map((r) => JSON.parse(r.init.body));
+    assert.deepEqual(sent.map((input) => input.expectedTurnId), ["live", "live"]);
+    assert.equal(page.document.querySelector(".outgoing-message .outgoing-hide"), null, "a waiting steer is not offered for hiding");
+    // Another Agent never shows them; back here they are still waiting.
+    button(page, "Hana").click();
+    await until(() => page.document.querySelector('[data-composer-input][aria-label="Message Hana"]'), "Hana's conversation");
+    assert.equal(page.document.querySelector(".outgoing-message"), null);
+    button(page, "Mori").click();
+    await until(() => previews().length === 2, "both steers shown again");
+    // The Turn ends with neither seen: unconfirmed, not syncing, not cleared.
+    extraTurns[0].status = "interrupted";
+    const ended = "Received by Codex · Turn ended; message not yet confirmed in conversation";
+    page.window.dispatchEvent(new page.window.Event("focus"));
+    await until(() => noteOf("Also check") === ended && noteOf("And the docs") === ended, "the unconfirmed steers");
+    page.window.dispatchEvent(new page.window.Event("focus"));
+    await pause(); await pause();
+    assert.equal(previews().length, 2);
+    // Hidden by hand only.
+    previews().find((p) => p.textContent.includes("Also check")).querySelector(".outgoing-hide").click();
+    await until(() => previews().length === 1, "the hidden preview");
+    // A message that does reach the conversation later still clears by its id.
+    extraTurns[0].items.push({ id: "late-user", clientId: sent[1].clientMessageId, type: "userMessage", content: [{ type: "text", text: sent[1].text }] });
+    page.window.dispatchEvent(new page.window.Event("focus"));
+    await until(() => previews().length === 0, "the late message replacing its preview");
+    assert.match(page.document.querySelector('[data-item-id="late-user"]').textContent, /And the docs/);
+    assert.equal(page.calls.filter((r) => r.url.endsWith("/messages")).length, 2, "nothing was sent again");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

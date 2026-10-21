@@ -2,6 +2,7 @@ import { useState } from "react";
 import { MessageContent } from "./MessageContent";
 import { ImageAttachments } from "./ImageAttachments";
 import { agentHarnessName } from "./machine-checks";
+import { deliveryNote, steered } from "./delivery-note";
 import { memo } from "react";
 import type { AgentDetail } from "./types";
 import type { OutgoingMessage } from "./useConversationSend";
@@ -51,7 +52,8 @@ export const OutgoingMessages = memo(function OutgoingMessages({
   for (const id of detail?.conversation?.nativeClientIds || []) nativeIds.add(id);
   // The harness whose own evidence each state reports; unnamed until this
   // Agent's detail is shown.
-  const harness = detail?.agent.id === agentId ? agentHarnessName(detail.agent) : null;
+  const shown = detail?.agent.id === agentId ? detail : null;
+  const harness = shown ? agentHarnessName(shown.agent) : null;
   const pending = new Map((detail?.messageReceipts || [])
     .filter(r => !r.binding && (r.status === "sending" || r.status === "uncertain" || r.status === "queued" || (r.status === "accepted" && r.input.textBlocks !== undefined)))
     .map(receipt => [receipt.input.clientMessageId, { agentId, receipt }]));
@@ -68,17 +70,8 @@ export const OutgoingMessages = memo(function OutgoingMessages({
         (r) => r.input.clientMessageId === local.input.clientMessageId,
       );
       const receipt = saved && saved.status !== "sending" ? saved : local;
-      // Accepted is the harness's own word, not Core's: Codex answered
-      // turn/start or turn/steer, Claude named it in a turn, OpenCode stored
-      // it. Only the conversation's copy of it is still on its way.
-      const status = {
-        sending: "Sending…",
-        queued: `Sent · waiting for ${harness ?? "the harness"} to confirm`,
-        accepted: harness ? `Received by ${harness} · syncing conversation` : "Sent · syncing conversation",
-        rejected: "Not sent · draft kept",
-        uncertain: "Delivery unconfirmed · draft kept",
-        unknown: `Not confirmed by ${harness ?? "the harness"} · not sent again`,
-      }[receipt.status];
+      const steer = steered(receipt, shown);
+      const status = deliveryNote(receipt.status, harness, steer);
       return (
         <div
           className="user-message outgoing-message"
@@ -88,7 +81,7 @@ export const OutgoingMessages = memo(function OutgoingMessages({
           <div className="message-label">
             <span className="you-avatar">Y</span>You{" "}
             <small role="status">{status}</small>
-            {(receipt.status === "uncertain" || receipt.status === "unknown" || receipt.status === "rejected") && (
+            {(receipt.status === "uncertain" || receipt.status === "unknown" || receipt.status === "rejected" || steer === "endedUnconfirmed") && (
               <button
                 type="button"
                 className="inline-link outgoing-hide"
