@@ -56,6 +56,7 @@ pub mod server;
 pub mod store;
 pub mod subagents;
 pub mod task_proposals;
+pub mod task_workspaces;
 pub mod updates;
 pub mod workspace;
 

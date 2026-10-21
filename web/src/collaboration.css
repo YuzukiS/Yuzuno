@@ -1174,3 +1174,55 @@
   color: var(--text-quiet, #7e8c71);
   font-size: calc(10px + var(--font-adjust, 3px));
 }
+
+/* A task's workspaces (T-169): each folder, its Git state and users, and a
+   cleanup preview to choose from. */
+.task-workspace {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.task-workspace p {
+  margin: 0;
+  font-size: 0.84rem;
+  overflow-wrap: anywhere;
+}
+.task-workspace-actions,
+.task-workspace-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 6px;
+}
+.task-workspace-form input {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.task-workspace-create {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+.task-workspace-create label {
+  display: grid;
+  gap: 3px;
+  font-size: 0.84rem;
+}
+.task-workspace-cleanup,
+.task-workspace-preview {
+  display: grid;
+  gap: 6px;
+}
+.task-workspace-preview ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.84rem;
+}
+.task-workspace-kept {
+  color: var(--muted);
+}
+.task-workspace-suggestion {
+  font-size: 0.84rem;
+}
