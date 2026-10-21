@@ -26,7 +26,7 @@ python3 desktop/tests/start-lab.py --run <run> --target <cargo target>/debug   #
    - The page is busy while it starts, then opens the same Workspace.
    - The new Core is the installed release, with exactly the recorded options, in a session of its own, with the recorded environment value.
    - The start stays, with a hidden `wsl.exe`, so WSL keeps the distribution running.
-4. **After `wsl.exe` exits.** 20 s later Core still runs and answers.
+4. **Later.** 20 s later Core still runs and answers.
 5. **The window's close button** (WM_CLOSE). It leaves Core, every process of its session, and the start with its `wsl.exe` running.
 6. **A Core that answers.** It is opened, not started again.
 7. **Two starts at once from the window.** One Core; the other start is told *Core is already being started.*
