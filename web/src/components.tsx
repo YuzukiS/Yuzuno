@@ -37,8 +37,9 @@ import type {
   PendingRequest,
   MessageReceipt,
 } from "./types";
-import { api, artifactUrl, errorText, respondToRequest } from "./api";
-import { AnswerAgain, useUnconfirmedAnswer } from "./unconfirmed-answer";
+import { api, artifactUrl, errorText, NO_ANSWER_REPLY, respondToRequest } from "./api";
+import { AnswerAgain, DraftNotSaved, useUnconfirmedAnswer } from "./unconfirmed-answer";
+import { useRequestDraft } from "./request-draft";
 import { ClaudePermission, ClaudeSubAgentScope, ClaudeTool } from "./ClaudeControls";
 import { OpenCodeRequest, OpenCodeTool } from "./OpenCodeControls";
 import { agentHarnessName } from "./machine-checks";
@@ -973,8 +974,24 @@ export function Turn({
   );
 }
 
-/** `permissionMode` is the mode the live Claude session reports. */
-export function PendingCard(props: { request: PendingRequest; refresh: () => void; disabled: boolean; highlightSource?: boolean; onViewChanges: () => void; permissionMode?: string | null }) {
+type CodexQuestion = {
+  id: string;
+  header?: string;
+  question: string;
+  options?: { label: string; description: string }[];
+  isSecret?: boolean;
+};
+/** A saved Codex answer for these questions; a secret one is never read. */
+function codexAnswers(saved: unknown, questions: CodexQuestion[]) {
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) return null;
+  const value = saved as Record<string, unknown>;
+  return Object.fromEntries(questions.flatMap((q) =>
+    !q.isSecret && typeof value[q.id] === "string" ? [[q.id, value[q.id] as string]] : []));
+}
+
+/** `permissionMode` is the mode the live Claude session reports. `draftScope`
+ * is the Workspace whose browser drafts a question card keeps, or null. */
+export function PendingCard(props: { request: PendingRequest; refresh: () => void; disabled: boolean; highlightSource?: boolean; onViewChanges: () => void; permissionMode?: string | null; draftScope?: string | null }) {
   if (props.request.method === "claude/canUseTool") return <ClaudePermission {...props} />;
   if (props.request.method.startsWith("opencode/")) return <OpenCodeRequest {...props} />;
   return <CodexPendingCard {...props} />;
@@ -986,34 +1003,33 @@ function CodexPendingCard({
   disabled,
   highlightSource,
   onViewChanges,
+  draftScope = null,
 }: {
   request: PendingRequest;
   refresh: () => void;
   disabled: boolean;
   highlightSource?: boolean;
   onViewChanges: () => void;
+  draftScope?: string | null;
 }) {
+  const questions = request.params.questions as CodexQuestion[] | undefined;
+  // An unsent answer survives a refresh; a secret one is not kept (T-170).
+  const draft = useRequestDraft(questions ? draftScope : null, request, (saved) => codexAnswers(saved, questions || []));
   const [sending, setSending] = useState(false);
   // Set before the first await, so a second click in the same moment finds
   // it; kept after a delivered answer until the harness resolves the request.
-  const answering = useRef(false);
+  const answering = useRef(draft.attempted);
   const [answered, setAnswered] = useState(false);
-  const unconfirmedAnswer = useUnconfirmedAnswer(refresh, answering);
+  const unconfirmedAnswer = useUnconfirmedAnswer(refresh, answering, draft.attempted);
   // Core answers 200 only once it has recorded the reply as sent, so the
   // card says so at once instead of waiting for a refetch to bring it.
   const responseSent = !!request.params._responseSent || answered;
   disabled = disabled || !!request.stale || responseSent || unconfirmedAnswer.unconfirmed;
-  const [error, setError] = useState("");
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const questions = request.params.questions as
-    | {
-        id: string;
-        header?: string;
-        question: string;
-        options?: { label: string; description: string }[];
-        isSecret?: boolean;
-      }[]
-    | undefined;
+  const [error, setError] = useState(draft.attempted ? NO_ANSWER_REPLY : "");
+  const [answers, setAnswers] = useState<Record<string, string>>(() => draft.initial ?? {});
+  const kept = codexAnswers(answers, questions || [])!;
+  const keptEmpty = !Object.values(kept).some(Boolean);
+  useEffect(() => { draft.save(kept, keptEmpty); }, [answers]);
   const approval = [
     "item/commandExecution/requestApproval",
     "item/fileChange/requestApproval",
@@ -1043,12 +1059,17 @@ function CodexPendingCard({
     answering.current = true;
     setSending(true);
     setError("");
+    draft.attempt(true, kept, keptEmpty);
     try {
       await respondToRequest(request.id, response);
+      draft.remove();
       setAnswered(true);
       refresh();
     } catch (e) {
-      if (!unconfirmedAnswer.noReply(e)) answering.current = false;
+      if (!unconfirmedAnswer.noReply(e)) {
+        answering.current = false;
+        draft.attempt(false, kept, keptEmpty);
+      }
       setError(errorText(e));
     } finally {
       setSending(false);
@@ -1141,6 +1162,7 @@ function CodexPendingCard({
               />
             </fieldset>
           ))}
+          {draft.notSaved && <DraftNotSaved />}
           <button
             className="primary-button"
             disabled={

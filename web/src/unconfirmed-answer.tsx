@@ -6,8 +6,9 @@ import { NoReplyError } from "./api";
  * read again: a record that shows the answer sent locks the card as sent, as
  * any answer Core confirmed does. Answering again is the person's choice;
  * Core keeps only the first answer it records for a request. */
-export function useUnconfirmedAnswer(refresh: () => void, answering: MutableRefObject<boolean>) {
-  const [unconfirmed, setUnconfirmed] = useState(false);
+export function useUnconfirmedAnswer(refresh: () => void, answering: MutableRefObject<boolean>, initial = false) {
+  // `initial`: such an answer from before a refresh (request-draft.ts).
+  const [unconfirmed, setUnconfirmed] = useState(initial);
   return {
     unconfirmed,
     /** Whether it took the error; then the card stays closed. */
@@ -22,6 +23,11 @@ export function useUnconfirmedAnswer(refresh: () => void, answering: MutableRefO
       setUnconfirmed(false);
     },
   };
+}
+
+/** A question card's draft that this browser could not save. */
+export function DraftNotSaved() {
+  return <p className="field-hint">This answer is kept in this window only; it could not be saved in this browser. Copy it before reloading.</p>;
 }
 
 export function AnswerAgain({ onClick }: { onClick: () => void }) {

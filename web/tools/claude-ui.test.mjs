@@ -118,6 +118,37 @@ test('question answers preserve native input and use question strings as keys', 
   assert.deepEqual(p.calls[0].body,{response:{decision:'allow',updatedInput:{...input,answers:{'Which fruit?':'Yuzu, Peach'}}}});
   p.close();
 });
+// T-170: an unsent answer is kept in this browser, for this native request only.
+test('an unsent answer to a Claude question survives a reload, into the same request only', async () => {
+  const input={questions:[{question:'Which fruit?',options:[{label:'Yuzu'},{label:'Peach'}],multiSelect:true},{question:'Why?'}]};
+  const ask=(id,requestId='native-1',agentId='agent')=>({...request,id,agentId,params:{toolName:'AskUserQuestion',requestId,turnId:'t1',input}});
+  const why=(page)=>page.document.querySelector('input[aria-label="Your answer: Why?"]');
+  const reload=(from)=>{const next=mount(); for(let i=0;i<from.window.localStorage.length;i++){const key=from.window.localStorage.key(i); next.window.localStorage.setItem(key,from.window.localStorage.getItem(key));} return next;};
+  const first=mount();
+  first.window.renderPermission({request:ask('p1'),refresh(){},disabled:false,draftScope:'ws-1'}); await tick();
+  first.document.querySelector('input[type=checkbox]').click(); await tick();
+  await value(first,why(first),'Sweet enough');
+  for(const [id,requestId,agentId,restored] of [['p2','native-1','agent',true],['p3','native-2','agent',false],['p4','native-1','other',false]]){
+    const page=reload(first);
+    page.window.renderPermission({request:ask(id,requestId,agentId),refresh(){},disabled:false,draftScope:'ws-1'}); await tick();
+    const boxes=[...page.document.querySelectorAll('input[type=checkbox]')];
+    assert.deepEqual([boxes[0].checked,boxes[1].checked,why(page).value],restored?[true,false,'Sweet enough']:[false,false,''],`${requestId} ${agentId}`);
+    assert.equal(page.calls.length,0,'restoring sends nothing');
+    page.close();
+  }
+  // Sent and recorded: nothing is left to restore.
+  first.window.renderPermission({request:ask('p1'),refresh(){},disabled:false,draftScope:'ws-1'}); await tick();
+  button(first,'Send answer').click(); await tick();
+  assert.equal(first.calls.length,1);
+  assert.equal(first.window.localStorage.length,0);
+  first.close();
+  // Without a Workspace to keep it in (a preview), nothing is kept.
+  const preview=mount();
+  preview.window.renderPermission({request:ask('p5'),refresh(){},disabled:false}); await tick();
+  await value(preview,why(preview),'Not kept');
+  assert.equal(preview.window.localStorage.length,0);
+  preview.close();
+});
 test('session approval shows exactly the bridge offer, never raw suggestions', async () => {
   const p=mount();
   // Raw suggestions alone (e.g. from an older bridge) offer nothing.

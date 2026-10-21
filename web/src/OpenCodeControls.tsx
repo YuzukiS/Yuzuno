@@ -1,7 +1,8 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, LoaderCircle, MessageSquare, ShieldCheck, SquareTerminal } from "lucide-react";
-import { errorText, respondToRequest } from "./api";
-import { AnswerAgain, useUnconfirmedAnswer } from "./unconfirmed-answer";
+import { errorText, NO_ANSWER_REPLY, respondToRequest } from "./api";
+import { AnswerAgain, DraftNotSaved, useUnconfirmedAnswer } from "./unconfirmed-answer";
+import { choiceAnswers, choiceEmpty, useRequestDraft } from "./request-draft";
 import type { NativeItem, PendingRequest } from "./types";
 import "./opencode.css";
 
@@ -38,20 +39,24 @@ export function OpenCodeTool({ item, unconfirmed, notice, opened, onOpenChange }
 
 /** Answers go only to the OpenCode process and session that asked (Core
  * checks). Allow once or reject: no lasting rule is offered or written. */
-export function OpenCodeRequest({ request, refresh, disabled, highlightSource }: {
-  request: PendingRequest; refresh: () => void; disabled: boolean; highlightSource?: boolean;
+export function OpenCodeRequest({ request, refresh, disabled, highlightSource, draftScope = null }: {
+  request: PendingRequest; refresh: () => void; disabled: boolean; highlightSource?: boolean; draftScope?: string | null;
 }) {
+  const question = request.method === "opencode/question";
+  const questions: Question[] = question && Array.isArray(request.params.questions) ? request.params.questions : [];
+  // An unsent answer to a question survives a refresh (T-170).
+  const draft = useRequestDraft(questions.length ? draftScope : null, request, saved => choiceAnswers(saved, questions.map((_, index) => String(index))));
   const [sending, setSending] = useState(false);
   // Set before the first await, so a second click in the same moment finds
   // it; kept after a delivered answer until Core marks the request sent.
-  const answering = useRef(false);
+  const answering = useRef(draft.attempted);
   const [answered, setAnswered] = useState(false);
-  const [error, setError] = useState("");
-  const [answers, setAnswers] = useState<Record<number, string[]>>({});
-  const [free, setFree] = useState<Record<number, string>>({});
-  const question = request.method === "opencode/question";
-  const questions: Question[] = question && Array.isArray(request.params.questions) ? request.params.questions : [];
-  const unconfirmedAnswer = useUnconfirmedAnswer(refresh, answering);
+  const [error, setError] = useState(draft.attempted ? NO_ANSWER_REPLY : "");
+  const [answers, setAnswers] = useState<Record<number, string[]>>(() => draft.initial?.answers ?? {});
+  const [free, setFree] = useState<Record<number, string>>(() => draft.initial?.free ?? {});
+  const kept = { answers, free };
+  useEffect(() => { draft.save(kept, choiceEmpty(kept)); }, [answers, free]);
+  const unconfirmedAnswer = useUnconfirmedAnswer(refresh, answering, draft.attempted);
   const locked = disabled || !!request.stale || !!request.params._responseSent || sending || answered || unconfirmedAnswer.unconfirmed;
   const answer = (q: Question, index: number) =>
     [...(answers[index] || []), ...(q.custom !== false && free[index]?.trim() ? [free[index].trim()] : [])];
@@ -59,11 +64,16 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource }:
     if (locked || answering.current) return;
     answering.current = true;
     setSending(true); setError("");
+    draft.attempt(true, kept, choiceEmpty(kept));
     try {
       await respondToRequest(request.id, response);
+      draft.remove();
       setAnswered(true);
       refresh();
-    } catch (e) { if (!unconfirmedAnswer.noReply(e)) answering.current = false; setError(errorText(e)); } finally { setSending(false); }
+    } catch (e) {
+      if (!unconfirmedAnswer.noReply(e)) { answering.current = false; draft.attempt(false, kept, choiceEmpty(kept)); }
+      setError(errorText(e));
+    } finally { setSending(false); }
   }
   const patterns = Array.isArray(request.params.patterns) ? request.params.patterns.map(String) : [];
   const metadata = request.params.metadata && Object.keys(request.params.metadata).length ? request.params.metadata : null;
@@ -89,6 +99,7 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource }:
             onChange={e => { setFree(old => ({ ...old, [index]: e.target.value })); if (!q.multiple) setAnswers(old => ({ ...old, [index]: [] })); }} />}
         </fieldset>)}
       </fieldset>
+      {draft.notSaved && <DraftNotSaved />}
       <div className="opencode-actions">
         <button className="primary-button" disabled={locked || !questions.length || questions.some((q, index) => !answer(q, index).length)}>{sending && <LoaderCircle size={14} className="spin" />}Send answer</button>
         <button type="button" className="secondary-button" disabled={locked} onClick={() => void respond({ decision: "reject" })}>Decline</button>
