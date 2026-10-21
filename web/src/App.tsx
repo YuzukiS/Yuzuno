@@ -2949,7 +2949,7 @@ export function App() {
         source={pointFix}
         agents={workspace?.agents || []}
         room={pointFixRoom}
-        draftHas={(agentId, imageId) => getDraftImages(agentId).some(image => image.id === imageId)}
+        draftPosition={(agentId, imageId) => getDraftImages(agentId).findIndex(image => image.id === imageId) + 1}
         onAdd={addPointFix}
         onClose={() => setPointFix(null)}
       />

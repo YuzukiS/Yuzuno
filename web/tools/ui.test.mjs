@@ -2492,7 +2492,7 @@ test("an image pasted into the draft is marked up where it is: no file is chosen
     await until(() => !dialog(), "added");
     const text = composerText(mori);
     assert.ok(text.startsWith("Look at these"), text);
-    assert.match(text, /“two\.png” \(400×300 px\): 1 marked area in the attached annotated image; the original is the other image you attached\.\nSource: the image two\.png you attached\n\n1\. Area at x 150, y 113, 100×75 px: Crop this/);
+    assert.match(text, /“two\.png” \(400×300 px\): 1 marked area in the attached annotated image; the original is attached image 2 \(“two\.png”\)\.\nSource: the image two\.png you attached\n\n1\. Area at x 150, y 113, 100×75 px: Crop this/);
     assert.equal(draftImages().length, 3, "both pasted images stay, and the annotated copy joins them");
     assert.deepEqual(uploads.slice(pasted).map((u) => [u.agent, u.content.slice(0, 9)]), [["a", "annotated"], ["a", "annotated"]],
       "the annotated copy, failed once and then saved; never the original again");

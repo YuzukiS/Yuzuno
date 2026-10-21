@@ -83,15 +83,15 @@ export function feedbackText({ name, provenance, regions, size, original, annota
   provenance: string;
   regions: readonly Region[];
   size: Size;
-  /** Attached with it, already in the same draft, or neither. */
-  original: boolean | "in draft";
+  /** Attached with it, already in the same draft at that place (from 1), or neither. */
+  original: boolean | { position: number };
   /** The annotated image's own size, when it had to be reduced. */
   annotated?: Size;
 }) {
   const areas = `${regions.length} marked area${regions.length === 1 ? "" : "s"}`;
   const reduced = annotated.width !== size.width || annotated.height !== size.height;
   return [
-    `Point & Fix feedback on “${name}” (${size.width}×${size.height} px): ${areas} in the attached annotated image${original === "in draft" ? "; the original is the other image you attached" : original ? ", with the original image attached" : ""}.`,
+    `Point & Fix feedback on “${name}” (${size.width}×${size.height} px): ${areas} in the attached annotated image${typeof original === "object" ? `; the original is attached image ${original.position} (“${name}”)` : original ? ", with the original image attached" : ""}.`,
     `Source: ${provenance}`,
     ...(reduced
       ? [`The annotated image is reduced to ${annotated.width}×${annotated.height} px; the areas below are in the original’s ${size.width}×${size.height} pixels.`]
