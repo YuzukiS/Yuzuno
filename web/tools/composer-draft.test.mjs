@@ -4,6 +4,7 @@ import { EditorState } from "@codemirror/state";
 import { history, undo, redo, isolateHistory } from "@codemirror/commands";
 import {
   DraftStorage,
+  copiedDraft,
   draftText,
   emptyDraft,
   hasDraftContent,
@@ -437,4 +438,14 @@ test("chosen Codex skills survive refresh as this Agent's own; another Agent's o
   assert.equal(JSON.parse(disk.getItem("yuzuno.composer.v1:a")).skills, undefined);
   disk.setItem("yuzuno.composer.v1:a", JSON.stringify({ version: 1, nextNumber: 1, parts: [], skills: [{ agentId: "a", name: "deploy" }] }));
   assert.throws(() => new DraftStorage(disk).load("a"), /Invalid saved skill references/);
+});
+
+test("a draft copied to a fork keeps its text and images, never the skills chosen for the original Agent", () => {
+  const image = { id: `${"a".repeat(64)}.png`, agentId: "a", name: "shot.png", width: 1, height: 1, bytes: 1 };
+  const draft = { ...textDraft("$deploy now"), images: [image], skills: [{ agentId: "a", name: "deploy", path: "/w/SKILL.md", scope: "repo" }] };
+  const copied = copiedDraft(draft);
+  assert.equal(draftText(copied), "$deploy now", "the text stays; it chooses nothing in the fork");
+  assert.deepEqual(copied.images, [image]);
+  assert.equal("skills" in copied, false);
+  assert.equal(draft.skills.length, 1, "the original draft is not changed");
 });

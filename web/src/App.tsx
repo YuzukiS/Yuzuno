@@ -1435,7 +1435,7 @@ export function App() {
         return;
       }
       if (sentDraft.images?.some(image => image.agentId !== target)) throw new Error("These images belong to the original Agent. Attach them again in this Agent; your draft is kept.");
-      if (sentDraft.skills?.some(skill => skill.agentId !== target)) throw new Error("These skills were listed for another Agent. Choose them again for this Agent; your draft is kept.");
+      if (sentDraft.skills?.some(skill => skill.agentId !== target)) throw new Error("Some skills here were listed for another Agent. Remove them and choose this Agent's own; your draft is kept.");
       await submitMessage(text, null, sentDraft.images?.map(image => image.id), undefined, draftTextBlocks(sentDraft),
         sentDraft.skills?.map(({ name, path }) => ({ name, path })));
       clearIfUnchanged(target, sentDraft);
@@ -2564,7 +2564,8 @@ export function App() {
                   />
                   <ImageAttachments images={draft.images || []} description={agent?.harness === "claude" ? CLAUDE_IMAGE_NOTE : undefined} onRemove={previewMode || draftBlocked ? undefined : id => setDraft(selected, current => ({ ...current, images: current.images?.filter(image => image.id !== id) }))}
                     annotateThumbnails onAnnotate={previewMode || draftBlocked ? undefined : image => markUpDraftImage(image)} />
-                  <SkillChips skills={(draft.skills || []).filter(skill => skill.agentId === selected)}
+                  {/* Every chosen skill shows, so one that is not this Agent's can be removed. */}
+                  <SkillChips skills={draft.skills || []}
                     onRemove={previewMode || draftBlocked ? undefined : skill => setDraft(selected, current => ({ ...current,
                       skills: current.skills?.filter(s => !(s.name === skill.name && s.path === skill.path)) }))} />
                   {imageUploads.error && <p className="inline-error" role="alert">{imageUploads.error}</p>}

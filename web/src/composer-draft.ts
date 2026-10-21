@@ -39,6 +39,12 @@ export const textDraft = (text: string): ComposerDraft => ({
   ...emptyDraft(),
   parts: text ? [{ kind: "text", text }] : [],
 });
+/** A draft copied to another Agent (a fork): its text and images, never
+ * the skills chosen here, which this Agent's own Codex listed. */
+export function copiedDraft(draft: ComposerDraft): ComposerDraft {
+  const { skills: _chosen, ...copied } = draft;
+  return copied;
+}
 export const draftText = (draft: ComposerDraft) =>
   draft.parts.map((p) => p.text).join("");
 export const hasDraftContent = (draft: ComposerDraft) =>
