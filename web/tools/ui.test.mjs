@@ -1502,7 +1502,7 @@ test("collaboration recovery holds composer and async answers, keeps drafts and 
     await pause();
     button(page, "Reconnect and check").click();
     await pause();
-    assert.equal(page.calls.filter(c => c.url.endsWith("/reconnect")).length, 1);
+    assert.equal(page.calls.filter(c => c.url.endsWith("/reconnect?view=summary")).length, 1);
     assert.ok(page.document.querySelector(".recovery-notice"), "A reconnect ACK alone cannot unlock input");
     collaboration.ready = true;
     backgroundShells.count = 2;
@@ -4105,6 +4105,41 @@ test("lost answer delivery remains unconfirmed after refresh without resending a
     for (let i = 0; i < 40 && page.document.querySelector(".question-dock-open"); i++) await pause();
     assert.equal(!!page.document.querySelector(".question-dock-open"), false);
     assert.equal(page.calls.filter(c => c.init.method === "POST" && /messages|turns/.test(c.url)).length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a reconnect asks Core for the Agent only and the conversation stays as the windowed detail shows it", async () => {
+  // As an older Core does, the reconnect answers with a whole record that
+  // differs from what is shown: none of it is read, and the detail read
+  // after it (the windowed one) is what the page shows.
+  const page = await mount({
+    collaboration: { ready: false, error: "Workspace MCP check failed; reconnect to verify." },
+    agentFields: { connectionState: "connected", threadId: "thread" },
+    extraTurns: [{ id: "finished", status: "completed", items: [
+      { id: "final", type: "agentMessage", phase: "final_answer", text: "Finished response." },
+    ] }],
+    beforeLoad(window) {
+      const fetch = window.fetch;
+      window.fetch = async (url, init) => {
+        if (!url.includes("/reconnect")) return fetch(url, init);
+        await fetch(url, init);
+        const old = { agent: { id: "a", name: "From the answer", harness: "codex", status: "idle" }, turns: [], pending: [], artifacts: [] };
+        return { ok: true, status: 200, json: async () => old, text: async () => JSON.stringify(old) };
+      };
+    },
+  });
+  try {
+    const conversation = () => page.document.querySelector(".conversation")?.textContent || page.document.body.textContent;
+    assert.match(conversation(), /Finished response\./);
+    button(page, "Reconnect and check").click();
+    const posted = () => page.calls.findIndex(c => c.init?.method === "POST" && c.url.includes("/reconnect"));
+    await until(() => posted() >= 0 && page.calls.slice(posted() + 1).some(c => /\/api\/agents\/a$/.test(c.url)), "a detail read after the reconnect");
+    await pause();
+    assert.deepEqual(page.calls.filter(c => c.url.includes("/reconnect")).map(c => c.url.replace(/^.*\/api/, "/api")), ["/api/agents/a/reconnect?view=summary"]);
+    assert.match(conversation(), /Finished response\./, "the conversation is still there");
+    assert.match(conversation(), /A real-looking test reply\./);
+    assert.doesNotMatch(page.document.body.textContent, /From the answer/);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

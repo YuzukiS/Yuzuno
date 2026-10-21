@@ -15,7 +15,12 @@ mod supported {
     // (at once), their records go idle, a
     // doorbell metadata write and a native turn/completed reach each idle
     // record, a second turn/completed reaches it held, and a second
-    // reconnect finds it connected.
+    // reconnect finds it connected. Then, for the reconnect the UI asks for
+    // (POST /api/agents/{id}/reconnect), its parts once each on an idle
+    // record: the record read it returns, the handler turning that record
+    // into a JSON tree and bytes, and the whole request through the router:
+    // as the UI sent it before (no view) and as it sends it now
+    // (view=summary, which a Core from before it ignores).
     use anyhow::{Context, Result};
     use serde_json::{json, Value};
     use std::{
@@ -315,6 +320,65 @@ for line in sys.stdin:
         }).await?);
         SITES_ON.store(false, Relaxed);
         if sampling { allocation_sites.push(sites("reconnect_while_connected")); }
+        idle(&ws).await?;
+        samples.push(measured("detail_read_after_reconnect", &ws.store, async {
+            for id in &ids {
+                let (store, id) = (ws.store.clone(), id.clone());
+                tokio::task::spawn_blocking(move || store.detail(&id).map(drop)).await??;
+            }
+            Ok(())
+        }).await?);
+        idle(&ws).await?;
+        let read: Vec<AgentDetail> = ids.iter().map(|id| ws.store.detail(id)).collect::<Result<_>>()?;
+        let mut body_bytes = 0;
+        samples.push(measured("http_body_from_detail", &ws.store, async {
+            // As the handler does: the record as a JSON tree, then as bytes.
+            for d in &read { body_bytes += serde_json::to_vec(&serde_json::to_value(d)?)?.len(); }
+            Ok(())
+        }).await?);
+        samples.last_mut().context("sample")?["bodyBytes"] = body_bytes.into();
+        drop(read);
+        idle(&ws).await?;
+        let router = yuzuno_workspace::server::router_on_port(ws.clone(), dir.path().join("assets"), 4317);
+        let reconnect = |id: &str, query: &str| -> Result<axum::http::Request<axum::body::Body>> {
+            Ok(axum::http::Request::post(format!("/api/agents/{id}/reconnect{query}"))
+                .header("host", "localhost:4317").header("x-yuzuno-client", "desktop")
+                .header("content-type", "application/json").body(axum::body::Body::from("{}"))?)
+        };
+        let mut http = vec![];
+        SITES_ON.store(sampling, Relaxed);
+        samples.push(measured("reconnect_http_while_connected", &ws.store, async {
+            use tower::ServiceExt;
+            for id in &ids {
+                let response = router.clone().oneshot(reconnect(id, "")?).await?;
+                let status = response.status().as_u16();
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+                http.push(json!({"status":status,"bodyBytes":body.len()}));
+            }
+            Ok(())
+        }).await?);
+        SITES_ON.store(false, Relaxed);
+        samples.last_mut().context("sample")?["responses"] = http.into();
+        if sampling { allocation_sites.push(sites("reconnect_http_while_connected")); }
+        idle(&ws).await?;
+        let mut answers = vec![];
+        samples.push(measured("reconnect_http_summary_while_connected", &ws.store, async {
+            use tower::ServiceExt;
+            for id in &ids {
+                let response = router.clone().oneshot(reconnect(id, "?view=summary")?).await?;
+                let status = response.status().as_u16();
+                answers.push((status, axum::body::to_bytes(response.into_body(), usize::MAX).await?));
+            }
+            Ok(())
+        }).await?);
+        // Read after the measured phase, so its parsing is not counted.
+        let summary: Vec<Value> = answers.drain(..).map(|(status, body)| {
+            let keys: Vec<String> = serde_json::from_slice::<Value>(&body).ok().and_then(|v| v.as_object()
+                .map(|o| o.keys().cloned().collect())).unwrap_or_default();
+            json!({"status":status,"bodyBytes":body.len(),"keys":keys})
+        }).collect();
+        samples.last_mut().context("sample")?["responses"] = summary.into();
+        drop(router);
         idle(&ws).await?;
         let mut tail = vec![sample("after_idle", &ws.store)];
         trim_fixture_only();

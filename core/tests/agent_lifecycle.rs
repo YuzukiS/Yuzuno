@@ -230,3 +230,66 @@ async fn closed_history_survives_restart_and_stays_out_of_catchup() {
     assert_eq!(restored.agent.thread_id.as_deref(), Some("native-thread"));
     assert!(store.catchup().unwrap()["items"].as_array().unwrap().is_empty());
 }
+
+/// POST /api/agents/{id}/reconnect: without a view, the whole record as it
+/// always was; `view=summary`, only the Agent, from the same reconcile; any
+/// other view is refused before anything reconnects.
+#[tokio::test]
+async fn reconnect_over_http_answers_the_whole_record_or_only_the_agent() {
+    use axum::{body::{to_bytes, Body}, http::Request};
+    use tower::ServiceExt;
+    let (dir, ws) = fixture().await;
+    ws.send("a", "A real native protocol fixture task".into()).await.unwrap();
+    let router = yuzuno_workspace::server::router_on_port(ws.clone(), dir.path().join("assets"), 4317);
+    let post = |uri: &str| {
+        let request = Request::post(uri).header("host", "localhost:4317").header("x-yuzuno-client", "desktop")
+            .header("content-type", "application/json").body(Body::from("{}")).unwrap();
+        let router = router.clone();
+        async move {
+            let response = router.oneshot(request).await.unwrap();
+            let status = response.status().as_u16();
+            let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+            (status, body)
+        }
+    };
+    let calls = || std::fs::read_to_string(dir.path().join("calls.jsonl")).unwrap().lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>();
+    let methods = |calls: &[Value]| calls.iter().map(|c| c["method"].as_str().unwrap_or_default().to_owned()).collect::<Vec<_>>();
+
+    let (before, seq) = (calls().len(), ws.store.detail("a").unwrap().agent.last_seq);
+    let (status, refused) = post("/api/agents/a/reconnect?view=window").await;
+    assert_eq!(status, 400);
+    assert!(refused["error"].as_str().unwrap().contains("view=summary"), "{refused}");
+    assert_eq!(calls().len(), before, "nothing was asked of the native session");
+    assert_eq!(ws.store.detail("a").unwrap().agent.last_seq, seq, "nothing was recorded");
+
+    // The first reconnect after a send may ask the native session more; the
+    // two compared below run in the same state.
+    let (status, _) = post("/api/agents/a/reconnect").await;
+    assert_eq!(status, 200);
+    let before_whole = calls().len();
+    let (status, whole) = post("/api/agents/a/reconnect").await;
+    assert_eq!(status, 200);
+    assert_eq!(whole["agent"]["id"], "a");
+    assert_eq!(whole["turns"].as_array().unwrap().len(), 1, "the whole record, as before");
+    assert!(!whole["turns"][0]["items"].as_array().unwrap().is_empty());
+    let after_whole = calls().len();
+
+    let (status, summary) = post("/api/agents/a/reconnect?view=summary").await;
+    assert_eq!(status, 200);
+    assert_eq!(summary.as_object().unwrap().keys().collect::<Vec<_>>(), ["agent"], "{summary}");
+    assert_eq!(summary["agent"]["id"], "a");
+    assert_eq!(summary["agent"]["connectionState"], "connected");
+    assert_eq!(summary["agent"]["threadId"], "native-thread", "the same session");
+    let all = calls();
+    assert!(methods(&all[before_whole..after_whole]).iter().any(|m| m == "thread/read"));
+    assert_eq!(methods(&all[after_whole..]), methods(&all[before_whole..after_whole]), "the same native requests as without a view");
+    let calls = calls();
+    assert_eq!(calls.iter().filter(|c| c["method"] == "turn/start").count(), 1, "nothing was sent again");
+    assert_eq!(calls.iter().filter(|c| c["method"] == "thread/start").count(), 0);
+    let ids = |turns: &[Value]| turns.iter().map(|t| (t["id"].clone(),
+        t["items"].as_array().unwrap().iter().map(|i| i["id"].clone()).collect::<Vec<_>>())).collect::<Vec<_>>();
+    let d = ws.store.detail("a").unwrap();
+    assert_eq!(ids(&d.turns), ids(whole["turns"].as_array().unwrap()), "the history is unchanged");
+    ws.close_agent("a").await.unwrap();
+}

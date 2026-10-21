@@ -117,7 +117,7 @@ test("one click sends one reconnect, shows it working, and lets Core decide", as
   button(page).click();
   await waitFor(() => button(page).textContent.trim() === "Reconnecting…" && button(page).disabled);
   assert.equal(page.calls.length, 1);
-  assert.equal(page.calls[0].url, "/api/agents/agent-a/reconnect");
+  assert.equal(page.calls[0].url, "/api/agents/agent-a/reconnect?view=summary");
   assert.equal(page.calls[0].method, "POST");
   assert.equal(button(page).textContent.trim(), "Reconnecting…");
   assert.equal(button(page).disabled, true);
@@ -146,9 +146,29 @@ test("collaboration recovery remains available for a connected working remote wi
   await tick();
   await tick();
   assert.equal(refreshed, 1);
-  assert.deepEqual(page.calls, [{ url: "/api/agents/agent-a/reconnect", method: "POST" }]);
+  assert.deepEqual(page.calls, [{ url: "/api/agents/agent-a/reconnect?view=summary", method: "POST" }]);
   assert.equal(page.window.recoveryReason(d), "collaboration");
   assert.equal(d.agent.status, "working");
+  page.close();
+});
+
+test("an older Core's whole record in the reconnect answer is not read", async () => {
+  // A Core from before view=summary sends the whole record back; the notice
+  // reads none of it, and the refreshed detail decides as before.
+  const old = detail({ status: "idle", connectionState: "connected", error: null, name: "From the answer" },
+    { turns: [{ id: "turn-other", status: "completed", items: [] }] });
+  const page = mount(() => ({ body: old }));
+  let recovered = 0;
+  const shown = detail();
+  page.window.renderNotice({ detail: shown, disabled: false, hasDraft: true, onRecovered: () => recovered++ });
+  await tick();
+  button(page).click();
+  await tick();
+  await tick();
+  assert.equal(recovered, 1);
+  assert.deepEqual(page.calls, [{ url: "/api/agents/agent-a/reconnect?view=summary", method: "POST" }]);
+  assert.match(text(page), /still running when this agent’s connection ended/, "still what the shown detail says");
+  assert.equal(shown.turns[0].id, "turn-1");
   page.close();
 });
 
@@ -212,7 +232,7 @@ test("a native timeout refreshes to unconfirmed and leaves the same-session chec
   button(page).click();
   await tick(); await tick();
   assert.equal(page.calls.length, 2);
-  assert.ok(page.calls.every(c => c.url === "/api/agents/agent-a/reconnect"));
+  assert.ok(page.calls.every(c => c.url === "/api/agents/agent-a/reconnect?view=summary"));
   assert.equal(page.document.querySelector('textarea').value, "Keep this draft 文本");
   page.close();
 });

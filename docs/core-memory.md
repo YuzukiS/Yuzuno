@@ -232,3 +232,38 @@ whose peaks vary with how the concurrent reconnects overlap. Every run kept
 every Turn and Item. These are synthetic allocator measurements; the daily Core's
 RSS also depends on its records' sizes and how many Agents are active at once,
 and is not measured here.
+
+### The UI's reconnect
+
+`POST /api/agents/{id}/reconnect` answers with the whole record. Every UI
+caller (Check delivery, a pending question's Check, the Codex writer notice,
+the recovery notice and the remote controls) drops that answer and reads the
+windowed detail again. These callers now send `view=summary`. Core then
+reconnects through the same admission, gate and reconcile and answers with
+the Agent only. A Codex reconnect also no longer reads the record whole to
+return it; a Claude or OpenCode one still reads it inside, so only its answer
+gets smaller. Without a view the answer is the whole record, as before. A
+Core from before `view=summary` ignores the view, and the UI does not read
+its answer.
+
+`core_attach_memory` sends the request through the router twice, once without
+a view and once with `view=summary`, on one synthetic Codex Agent. Runs: T-140
+Job `56adf74f-1ea9-4db1-a539-c0c1e65efb9d`, 2026-10-21, release build. Both
+builds have the same tool; "before" is the product code of `f214648`. The
+compared request is the second one in each process:
+
+| `view=summary` reconnect | Before | After |
+| --- | ---: | ---: |
+| 8 KiB per Item (63.5 MiB of history): allocated | 1,017 MiB | 811 MiB |
+| 8 KiB per Item: peak above live | 206 MiB | 205 MiB |
+| 8 KiB per Item: time | 435 ms | 320 ms |
+| 8 KiB per Item: answer | 66.6 MB | 515 B |
+| 1 KiB per Item (8.9 MiB): allocated | 205 MiB | 161 MiB |
+| 1 KiB per Item: time | 111 ms | 97 ms |
+
+The request without a view is the same in both builds: 1,628 MiB allocated for
+8 KiB per Item. The first request through the router in each process allocates
+about 611 MiB more than the second; what that is was not measured. The peak
+comes from the reconcile, so the smaller answer does not lower it. Each row is
+one process. The browser's cost of parsing the 66.6 MB answer was not measured.
+These are synthetic allocator measurements, not the daily Core's RSS.

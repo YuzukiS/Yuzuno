@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { CircleAlert, LoaderCircle, RotateCw } from "lucide-react";
-import { errorText, post } from "./api";
+import { errorText, reconnectAgent } from "./api";
 import { nativeSession } from "./machine-checks";
 import type { AgentDetail } from "./types";
 import "./recovery.css";
@@ -63,7 +63,7 @@ export function RecoveryNotice({
     setBusy(true);
     setError("");
     try {
-      await post(`/agents/${encodeURIComponent(target)}/reconnect`);
+      await reconnectAgent(target);
       if (current.current === target) onRecovered();
     } catch (e) {
       if (current.current === target) {
