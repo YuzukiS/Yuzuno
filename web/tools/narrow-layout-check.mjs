@@ -197,6 +197,13 @@ try {
     assert.ok(await page.locator(".project-switcher").isVisible(), "the project switcher is in the list");
     assert.deepEqual(await smallTouch(page), [], "list targets are at least 44 × 44");
     for (const y of [0.3, 0.5, 0.7]) assert.equal(await topAt(page, viewport.width - 30, Math.round(viewport.height * y)), "rail", "nothing of the conversation shows over the list");
+    // Grouped by project as in a wide window: readable headings, every row shown.
+    const groups = await page.evaluate(() => ({
+      heads: [...document.querySelectorAll(".agent-list .project-group-head")].map((h) => Math.round(h.getBoundingClientRect().height)),
+      rows: [...document.querySelectorAll(".agent-list .agent-row")].filter((r) => r.getBoundingClientRect().height >= 44).length,
+      overflow: document.querySelector(".agent-list").scrollWidth > document.querySelector(".agent-list").clientWidth + 1,
+    }));
+    assert.ok(groups.heads.length === 2 && groups.heads.every((h) => h > 1) && groups.rows === 3 && !groups.overflow, JSON.stringify(groups));
     check(`${viewport.name}: the list is one screen with search, projects and every entry`, { rail });
 
     // An Agent opens its conversation at full width, with the way back.
