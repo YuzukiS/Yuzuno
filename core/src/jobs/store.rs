@@ -197,7 +197,8 @@ fn previous(
 ) -> Result<Option<Value>> {
     collaboration::actor_context(store, db, actor)?;
     let task = collaboration::task_key(db, &input.task_id)?.0;
-    let mut expected = serde_json::to_value(input)?;
+    // As sent: a retry names its Job whatever an alias resolved to.
+    let mut expected = input.as_requested()?;
     expected["taskId"] = json!(task);
     let row: Option<(String,String)> = db.query_row("SELECT input_json,response_json FROM collaboration_requests WHERE actor=?1 AND operation='job_submit' AND request_id=?2",params![actor_key(actor),input.request_id],|r| Ok((r.get(0)?,r.get(1)?))).optional()?;
     let Some((old, response)) = row else {
@@ -380,6 +381,15 @@ pub(super) fn new_job(
     value["requestedBy"] = json!(author);
     value["source"] = source;
     value["machine"] = machine;
+    // Where it runs: the machine as the submission named it (null: none, so
+    // this host) and as Core resolved it then, kept for the Job (T-162).
+    let (kind, machine_id) = match input.machine_id.as_deref() {
+        None => ("local", super::CORE_HOST),
+        Some(super::remote::WINDOWS) => ("windows", super::remote::WINDOWS),
+        Some(id) => ("ssh", id),
+    };
+    value["target"] = json!({"requested": input.named_machine(), "kind": kind, "machineId": machine_id,
+        "machineName": value["machine"]["name"]});
     value["capabilities"] = capability.clone();
     value["bootId"] = capability["bootId"].clone();
     value["snapshot"] = snapshot;
@@ -431,6 +441,40 @@ impl Store {
     ) -> Result<Option<Value>> {
         previous(self, &*self.db.read()?, actor, input)
     }
+    /// `machineId` `local` or `agent` resolved to the machine it names now.
+    /// `local` is this host. `agent` is the machine the authenticated Agent
+    /// runs on, read from that Agent's own record and never from the
+    /// request: its registered SSH machine, or this host for an Agent here.
+    /// The Job keeps what this returns; its retry is matched as it was sent.
+    pub(super) fn resolve_machine(&self, actor: Option<&str>, mut input: Submit) -> Result<Submit> {
+        let named = input.machine_id.clone().unwrap_or_default();
+        let resolved = match named.as_str() {
+            super::CORE_HOST => None,
+            super::AGENT_MACHINE => {
+                let actor = actor.context(
+                    "machineId agent is the machine of the Agent that submits, and this submission has none; name the machine, or local for this Core's host",
+                )?;
+                let db = self.db.read()?;
+                let agent = self.brief_in(&db, actor)?.context("agent_not_found: calling Agent does not exist")?.agent;
+                match agent.remote {
+                    None => None,
+                    Some(remote) => {
+                        let registered: Option<String> = db
+                            .query_row("SELECT data FROM machines WHERE id=?1", [&remote.machine.id], |r| r.get(0))
+                            .optional()?;
+                        ensure!(registered.is_some(),
+                            "machineId agent is the machine this Agent runs on, {}, which is no longer registered in Machines; nothing was submitted",
+                            remote.machine.name);
+                        Some(remote.machine.id)
+                    }
+                }
+            }
+            _ => return Ok(input),
+        };
+        input.machine_id = resolved;
+        input.requested_machine = Some(named);
+        Ok(input)
+    }
     pub(super) fn create_job(
         &self,
         actor: Option<&str>,
@@ -470,7 +514,7 @@ impl Store {
             }
         }
         let task = collaboration::task_key(&tx, &input.task_id)?.0;
-        let mut payload = serde_json::to_value(&input)?;
+        let mut payload = input.as_requested()?;
         payload["taskId"] = json!(task);
         let identity = super::runs::job_identity(&input, &snapshot);
         let mut value = new_job(self, &tx, actor, &input, snapshot, machine, capability)?;

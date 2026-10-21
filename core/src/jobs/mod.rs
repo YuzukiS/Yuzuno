@@ -143,9 +143,15 @@ pub(crate) struct Submit {
     /// Local NVIDIA GPUs the command needs, admitted with its CPU and RAM.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     gpu: Option<gpu::GpuRequest>,
-    /// A registered SSH machine (Linux) to run on instead of this host.
+    /// A registered SSH machine (Linux) to run on instead of this host, or
+    /// `local` (this host) or `agent` (the submitting Agent's machine), which
+    /// Core resolves at submit (T-162).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     machine_id: Option<String>,
+    /// `machine_id` as the submission named it, once Core resolved an alias:
+    /// what a retry is matched against and what the Job's target shows.
+    #[serde(skip)]
+    requested_machine: Option<String>,
     /// How the command saves and exits when the user stops it at a
     /// checkpoint (T-109). This host's standalone Jobs only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -227,7 +233,30 @@ fn default_timeout() -> u64 {
 fn yes() -> bool {
     true
 }
+/// `machineId` naming this Core's host, the id its Machines list gives it.
+pub(super) const CORE_HOST: &str = "local";
+/// `machineId` naming the machine the submitting Agent runs on: resolved by
+/// Core from that Agent's own record at submit, never from the request.
+pub(super) const AGENT_MACHINE: &str = "agent";
+
 impl Submit {
+    /// The submission as it was sent: what its idempotency record keeps and
+    /// a retry is compared with, whatever an alias resolved to.
+    pub(super) fn as_requested(&self) -> Result<Value> {
+        let mut value = serde_json::to_value(self)?;
+        if let Some(named) = &self.requested_machine {
+            value["machineId"] = json!(named);
+        }
+        Ok(value)
+    }
+    /// The machine as the submission named it, if it named one.
+    pub(super) fn named_machine(&self) -> Option<&str> {
+        self.requested_machine.as_deref().or(self.machine_id.as_deref())
+    }
+    /// An alias Core still has to resolve (see `Store::resolve_machine`).
+    fn alias(&self) -> bool {
+        matches!(self.machine_id.as_deref(), Some(CORE_HOST | AGENT_MACHINE))
+    }
     /// Linux defaults for a command on this host or a Linux machine; a
     /// Windows command keeps its own environment.
     fn default_env(&mut self) {
@@ -243,8 +272,9 @@ impl Submit {
             "requestId must contain 1–128 bytes"
         );
         if let Some(checkpoint) = &self.checkpoint {
+            // An alias is checked again once resolved (job_submit).
             ensure!(
-                self.machine_id.is_none(),
+                self.machine_id.is_none() || self.alias(),
                 "Stop at a checkpoint is available for Jobs on this Core's host only; omit checkpoint with machineId"
             );
             ensure!(
@@ -260,7 +290,7 @@ impl Submit {
                 "checkpoint.stoppedExitCode must be 1–125, never 0: a stop must not look like a finished run"
             );
         }
-        if let Some(machine) = &self.machine_id {
+        if let Some(machine) = self.machine_id.as_ref().filter(|_| !self.alias()) {
             // What Core can enforce or see on this host does not exist there.
             ensure!(!machine.trim().is_empty() && machine.len() <= 128, "machineId must contain 1–128 bytes");
             ensure!(self.gpu.is_none(), "GPU admission is not available on a remote machine in this version; omit gpu");
@@ -794,7 +824,6 @@ pub async fn call(
             let mut input: Submit = serde_json::from_value(input)?;
             input.validate()?;
             input.default_env();
-            let windows = input.machine_id.as_deref() == Some(remote::WINDOWS);
             let prior = input.clone();
             let author = actor.clone();
             if let Some(job) = ws
@@ -803,6 +832,15 @@ pub async fn call(
             {
                 return Ok(job);
             }
+            // A retry above named its Job however its alias resolves now. A
+            // new one runs where the alias resolves now, from the submitting
+            // Agent's record, and keeps that machine (T-162).
+            if input.alias() {
+                let author = actor.clone();
+                input = ws.stored(move |s| s.resolve_machine(author.as_deref(), input)).await?;
+                input.validate()?;
+            }
+            let windows = input.machine_id.as_deref() == Some(remote::WINDOWS);
             if input.machine_id.is_some() {
                 if windows {
                     // Windows on this PC holds this host's budget: make sure
@@ -1243,7 +1281,9 @@ const REMOTE_ARTIFACTS: &str = "With machineId they are checked on that machine 
 /// and checks its files is the guide's jobs topic (references/jobs.md).
 const MACHINE: &str = "Run on a registered machine from the Machines list instead of this Core's host: an SSH machine \
     (Linux), or \"windows\", Windows on the PC this Core's WSL runs on (cwd a Windows drive path such as C:\\work). Without machineId \
-    the job runs on this Core's host, never on the machine your Agent itself runs on. cwd and every path are on that machine; pass the \
+    the job runs on this Core's host, never on the machine your Agent itself runs on. \"agent\" is the machine your Agent runs on (its \
+    registered SSH machine, or this host for an Agent here), resolved by Core from your Agent at submit and kept by the job; \"local\" \
+    is this Core's host. The receipt's target names the machine. cwd and every path are on that machine; pass the \
     environment the command needs in env. That machine's own admission (its maxJobs and budget) decides when it starts, and its limit \
     mode whether the declared CPU, RAM and swap are held there or only recorded. Not available with machineId: gpu, exclusive, outputs \
     (declare artifacts), runs of stages, and guardGit (set it to false); pause only where the job's capabilities.pause allows it, never \
