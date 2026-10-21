@@ -196,6 +196,31 @@ The memory in use after each call is the same either way: these are copies
 that are freed again, which the allocator may keep. As above, these are
 allocator measurements of one synthetic Agent, not the daily Core's RSS.
 
+## Opening the Workspace
+
+When Core starts, every Agent that is not closed is marked as left by a Core
+that stopped: offline and disconnected, its requests and context usage stale,
+a message it was sending of unknown outcome, and an error when its newest Turn
+was still running. No Turn changes.
+
+That change is written as the metadata alone, without reading the record,
+when it is provably all a whole-record commit would write:
+
+- the record is stored as rows and its rows fit together;
+- the journal has nothing to replay into it;
+- no message is still being sent;
+- binding and restoring its message receipts against its user messages (the
+  only Items `message_content::bind` reads, picked by SQLite) would change
+  nothing.
+
+Otherwise the whole record is read, changed and committed as before. Either
+way the journal row, `last_seq`, the unread count and the metadata are written
+in one transaction, and the listed view is rebuilt from the rows when next read.
+
+Before this, the whole-record commit read and parsed every open Agent's record,
+payloads included, and dropped it again, so each start left about the largest
+record's worth of freed memory in the allocator.
+
 ## Reconnect, restart and idle writes
 
 On core.13 (2026-10-21) the daily Core reached 5.08 GiB RSS, peak 5.46 GiB,
