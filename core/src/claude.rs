@@ -3933,6 +3933,38 @@ mod tests {
         assert_eq!((turn_item(&d, "t", "bash-1")["status"].clone(), turn_item(&d, "t", "bash-1")["subAgent"].clone()), (json!("completed"), Value::Null));
     }
 
+    /// T-26 (#66): one user frame can answer several calls. Its result object
+    /// is the frame's, so it belongs to none of them in particular; each
+    /// Agent call there goes without it, as one filled from saved history
+    /// does, and keeps what was already reported of its sub-agent.
+    #[test]
+    fn a_frame_answering_several_calls_gives_its_result_object_to_none_of_them() {
+        let mut d = detail();
+        let mut background = agent_call("agent-bg", "Survey the notes");
+        background["message"]["content"][0]["input"]["run_in_background"] = true.into();
+        let mut events = vec![background, agent_call("agent-fg", "Check the notes"), agent_call("agent-done", "Read a.txt"),
+            agent_call("agent-err", "Read z.txt"), bash_call("bash-1", "ls", false),
+            started("task-done", "agent-done", false, "Read a.txt"), started("task-err", "agent-err", false, "Read z.txt")];
+        events.extend(finished("task-done", "agent-done", "completed", "alpha"));
+        for event in &events {
+            project_event(&mut d, Some("t"), event);
+        }
+        let result = |id: &str, error: bool| json!({"type":"tool_result","tool_use_id":id,"content":format!("{id} returned"),"is_error":error});
+        project_event(&mut d, Some("t"), &json!({"type":"user","parent_tool_use_id":null,"message":{"content":[
+            result("agent-bg", false), result("agent-fg", false), result("agent-done", false), result("agent-err", true), result("bash-1", false)]},
+            "tool_use_result":{"status":"completed","agentType":"Explore","content":[{"type":"text","text":"whose report"}],"totalTokens":1}}));
+        let sub = |d: &AgentDetail, id: &str| turn_item(d, "t", id)["subAgent"].clone();
+        assert_eq!((sub(&d, "agent-bg"), sub(&d, "agent-fg")), (json!({"status":"unknown","background":true}), json!({"status":"unknown"})),
+            "the frame's result object is no one call's: their ends are unknown");
+        assert_eq!((sub(&d, "agent-done")["status"].clone(), sub(&d, "agent-done")["result"].clone()), (json!("completed"), json!("alpha")),
+            "what was reported stays");
+        assert_eq!(sub(&d, "agent-err")["status"], "failed", "a failed call ends its foreground sub-agent");
+        assert_eq!((turn_item(&d, "t", "bash-1")["status"].clone(), sub(&d, "bash-1")), (json!("completed"), Value::Null));
+        // A report of its end is what completes one.
+        project_event(&mut d, Some("t"), &task("task_notification", "task-fg", Some("agent-fg"), json!({"status":"completed","summary":"fine"})));
+        assert_eq!((sub(&d, "agent-fg")["status"].clone(), sub(&d, "agent-fg")["result"].clone()), (json!("completed"), json!("fine")));
+    }
+
     /// A stop goes to Claude only for the task the user picked, only while
     /// the latest snapshot of this connection lists it as running, and once
     /// until that task ends or the wait runs out; a refused or failed stop
