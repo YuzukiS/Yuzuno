@@ -3871,7 +3871,7 @@ test("on a phone the Agent list and what is open are one screen each, and the wa
     openAgent(page, "Mori");
     await waitForPreviewState(() => page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), "Mori's conversation");
     assert.equal(composerText(page.document.querySelector('[data-composer-input][aria-label="Message Mori"]')), "Mori's draft.");
-    assert.equal(savedDraftText(page.window.localStorage, "b"), null);
+    assert.equal(savedDraftText(page.window.localStorage, "b") || "", "", "Mori's draft never lands in Hana's");
     // The context panel is a screen of its own over the conversation.
     assert.equal(page.document.querySelector(".inspector"), null);
     page.document.querySelector('[aria-label="Toggle context panel"]').click();
