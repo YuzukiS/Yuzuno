@@ -301,3 +301,37 @@ reconnect that follows, which starts the scripted Codex app-server again and
 reads its history, so the peak does not change. Each row is one process.
 A Claude reopen or reconnect is covered by tests here, not measured. These are
 synthetic allocator measurements, not the daily Core's RSS.
+
+### Close while a Turn runs
+
+Closing an Agent whose Turn is running asks the native side to interrupt it
+and waits for the Turn's end. Codex is checked every 25 ms for up to 10 s,
+Claude every 50 ms. Each check read the whole record, as did the checks
+before it: whether the Agent was closed and which Turn was running. They read
+only the Agent and each Turn's status and id, so they now read the send view;
+the remote runtime close stops comes from the listed Agent. The checks, their
+deadlines, the refusal when an interrupt is not confirmed and the whole record
+close returns are unchanged. An OpenCode reconnect now checks openness on the
+listed Agent and reads the record at the end only for a caller that uses it,
+as a Claude one does.
+
+T-140 Jobs `c2579f0c-0aa5-480b-91c8-e10817146285` (release build) and
+`62bd2ea4-4a69-4cbd-a135-2d1a52e177c0` (measured alone), 2026-10-21. Same
+tool on both sides, "before" the product code of `bd53845`. The scripted
+Codex app-server reports the interrupted Turn's end a second after the
+interrupt. The record is held throughout, since its Turn is running:
+
+| Close while a Turn runs | Before | After |
+| --- | ---: | ---: |
+| 8 KiB per Item (63.5 MiB): allocated | 2,531 MiB | 209 MiB |
+| 8 KiB per Item: peak above live | 205 MiB | 137 MiB |
+| 8 KiB per Item: process CPU | 0.44 s | 0.11 s |
+| 1 KiB per Item (8.9 MiB): allocated | 549 MiB | 72 MiB |
+| 1 KiB per Item: peak above live | 41 MiB | 28 MiB |
+
+Both sides took about 1.1 s, most of it the scripted second; both made the
+same native requests and closed on Codex's interrupted end of the Turn. How
+much a close allocates before grew with how long the interrupt took to
+confirm. Each row is one process; a Claude close is covered by tests, not
+measured. These are synthetic allocator measurements, not the daily Core's
+RSS.
