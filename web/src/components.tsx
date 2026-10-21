@@ -960,8 +960,15 @@ function CodexPendingCard({
   highlightSource?: boolean;
   onViewChanges: () => void;
 }) {
-  disabled = disabled || !!request.stale || !!request.params._responseSent;
   const [sending, setSending] = useState(false);
+  // Set before the first await, so a second click in the same moment finds
+  // it; kept after a delivered answer until the harness resolves the request.
+  const answering = useRef(false);
+  const [answered, setAnswered] = useState(false);
+  // Core answers 200 only once it has recorded the reply as sent, so the
+  // card says so at once instead of waiting for a refetch to bring it.
+  const responseSent = !!request.params._responseSent || answered;
+  disabled = disabled || !!request.stale || responseSent;
   const [error, setError] = useState("");
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const questions = request.params.questions as
@@ -998,14 +1005,18 @@ function CodexPendingCard({
       }
     | undefined;
   const respond = async (response: unknown) => {
+    if (disabled || answering.current) return;
+    answering.current = true;
     setSending(true);
     setError("");
     try {
       await post(`/requests/${encodeURIComponent(request.id)}/respond`, {
         response,
       });
+      setAnswered(true);
       refresh();
     } catch (e) {
+      answering.current = false;
       setError(errorText(e));
     } finally {
       setSending(false);
@@ -1040,7 +1051,7 @@ function CodexPendingCard({
           current state before responding.
         </p>
       )}
-      {request.params._responseSent && (
+      {responseSent && (
         <p className="field-hint">
           Response sent. Waiting for the harness to confirm.
         </p>

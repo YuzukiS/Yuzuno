@@ -2283,6 +2283,62 @@ test("session approval is offered only when native supports it and leaves Pendin
     page.close();
   }
 });
+test("a delivered answer stays locked and says so before a refetch marks it sent (T-120)", async () => {
+  const question = {
+    id: "ask",
+    agentId: "a",
+    method: "item/tool/requestUserInput",
+    createdAt: "",
+    params: {
+      questions: [{ id: "pick", question: "Which one?", options: [{ label: "A", description: "a" }, { label: "B", description: "b" }] }],
+    },
+  };
+  // Core's later detail reads still list the request without _responseSent,
+  // as one taken before the reply was recorded does.
+  const page = await mount({ status: "waiting", pending: [question] });
+  try {
+    const card = page.document.querySelector(".pending-card");
+    card.querySelector("label.answer-option input").click();
+    await pause();
+    button(page, "Send answer").click();
+    await pause();
+    await pause();
+    assert.equal(page.calls.filter((c) => c.url.includes("/respond")).length, 1);
+    assert.equal(page.document.querySelectorAll(".pending-card").length, 1);
+    assert.equal(button(page, "Send answer").disabled, true);
+    assert.match(card.textContent, /Response sent\. Waiting for the harness to confirm\./);
+    page.document.querySelector(".pending-card form").requestSubmit();
+    await pause();
+    assert.equal(page.calls.filter((c) => c.url.includes("/respond")).length, 1);
+  } finally {
+    page.close();
+  }
+  // A reply Core refused was not sent: the card can be answered again.
+  const refused = await mount({
+    status: "waiting",
+    pending: [question],
+    beforeLoad: (window) => {
+      const fetch = window.fetch;
+      window.fetch = async (url, init) =>
+        url.includes("/respond")
+          ? { ok: false, status: 409, text: async () => JSON.stringify({ error: "Session disconnected; the request was not sent" }) }
+          : fetch(url, init);
+    },
+  });
+  try {
+    refused.document.querySelector(".pending-card label.answer-option input").click();
+    await pause();
+    button(refused, "Send answer").click();
+    await pause();
+    await pause();
+    const card = refused.document.querySelector(".pending-card");
+    assert.match(card.textContent, /the request was not sent/);
+    assert.doesNotMatch(card.textContent, /Response sent/);
+    assert.equal(button(refused, "Send answer").disabled, false);
+  } finally {
+    refused.close();
+  }
+});
 test("Escape interrupts the current turn but not while the creation dialog is open", async () => {
   const page = await mount({ status: "working" });
   try {
