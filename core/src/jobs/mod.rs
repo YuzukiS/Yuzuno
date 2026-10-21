@@ -11,6 +11,10 @@ mod list_tests;
 mod pause;
 mod queue;
 mod remote;
+mod ssh_mux;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "ssh_mux_tests.rs"]
+mod ssh_mux_tests;
 pub(crate) use remote::WINDOWS_LEGACY_ROOT;
 mod resource_summary;
 #[cfg(test)]
@@ -59,6 +63,8 @@ pub(crate) struct State {
     remote_gate: Mutex<()>,
     remote_wake: Arc<Notify>,
     remote_seen: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    /// The SSH connections remote Job calls share (T-163).
+    ssh_mux: ssh_mux::Mux,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -852,7 +858,7 @@ pub async fn call(
                 // this host is read for them (on Windows, nothing through /mnt).
                 let machine_id = input.machine_id.clone().unwrap_or_default();
                 let helper = if windows { remote::windows_helper() } else { None };
-                let programs = remote::Programs { ssh: remote::SSH, windows: helper.as_ref() };
+                let programs = remote::Programs { ssh: remote::SSH, windows: helper.as_ref(), mux: Some(&ws.jobs.ssh_mux) };
                 let snapshot = remote::remote_snapshot(&ws, &programs, &machine_id, &input.cwd, &input.inputs).await?;
                 let author = actor.clone();
                 let capabilities = if windows { remote::windows_capabilities() } else { remote::capabilities() };

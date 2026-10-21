@@ -4,7 +4,7 @@ use crate::rpc::Rpc;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{process::Stdio, sync::Arc};
+use std::{path::Path, process::Stdio, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -309,7 +309,34 @@ pub(crate) fn ssh() -> Command {
 /// The same OpenSSH invocation through another program with ssh's argument
 /// conventions; tests use a stand-in that runs the remote command locally.
 pub(crate) fn ssh_with(program: &str) -> Command {
+    ssh_with_control(program, Control::Off)
+}
+
+/// Whether an invocation shares a connection, always through a socket Core
+/// names: never the user's ControlMaster or ControlPersist (OpenSSH keeps
+/// the first value given for an option, so these come before any config).
+pub(crate) enum Control<'a> {
+    /// Its own connection, as every call had before T-163.
+    Off,
+    /// The master of the connection at this socket; it stays in the
+    /// foreground, a child of whoever started it.
+    Master(&'a Path),
+    /// A session through the master at this socket. Where none answers
+    /// there, OpenSSH connects directly instead.
+    Client(&'a Path),
+}
+
+/// `ssh_with`, sharing a connection as `control` says.
+pub(crate) fn ssh_with_control(program: &str, control: Control<'_>) -> Command {
+    let (master, path, persist) = match control {
+        Control::Off => ("ControlMaster=no".to_owned(), "ControlPath=none".to_owned(), None),
+        Control::Master(path) => ("ControlMaster=yes".to_owned(), format!("ControlPath={}", path.display()), Some("ControlPersist=no")),
+        Control::Client(path) => ("ControlMaster=no".to_owned(), format!("ControlPath={}", path.display()), None),
+    };
     let mut command = Command::new(program);
+    if let Some(persist) = persist {
+        command.args(["-o", persist]);
+    }
     command
         .args([
             "-T",
@@ -324,9 +351,9 @@ pub(crate) fn ssh_with(program: &str) -> Command {
             "-o",
             "UpdateHostKeys=no",
             "-o",
-            "ControlMaster=no",
+            master.as_str(),
             "-o",
-            "ControlPath=none",
+            path.as_str(),
             "-o",
             "ServerAliveInterval=10",
             "-o",
