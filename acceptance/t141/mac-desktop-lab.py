@@ -4,7 +4,8 @@ this Linux/WSL host through an SSH tunnel over a private network.
 
     python3 acceptance/t141/mac-desktop-lab.py --lab <new folder> --report <file>
         --core-release <signed release folder> --mac you@mac --linux-host <private IPv4>
-        --dmg <disk image path on the Mac> --expect-executable-sha256 <hex> [ports]
+        (--dmg <disk image path on the Mac> | --dmg-local <disk image here>)
+        --expect-executable-sha256 <hex> [ports]
 
 Everything here is disposable and owned by this run:
 - **A lab Core**: the release's own binary and UI with a new data folder, on
@@ -29,9 +30,16 @@ Everything here is disposable and owned by this run:
   answers any request but GET/HEAD/OPTIONS with 403 itself, so that Core
   receives no write from this run.
 - **On the Mac**: acceptance/t141/mac-desktop-host.py in a fresh folder under
-  ~/yuzuno-t141-lab/net/. It copies the app out of --dmg into that folder,
-  starts and quits it with open(1) and a signal, and removes at the end any of
-  the app's own data folders this run created.
+  ~/yuzuno-t141-lab/net/. It copies the app out of the disk image into that
+  folder (--dmg-local is first copied there over SSH, so it has no quarantine
+  attribute), and starts and quits it with open(1) and a signal.
+  - Before the run, a read-only `--inspect` from a connection of its own is
+    kept here. The run stops before writing anything on the Mac if it finds a
+    Yuzuno app installed or running, the app's data folders or defaults file,
+    or anything answering on the Mac's 127.0.0.1:4317.
+  - At the end the Mac side's state is kept here first; then only what this
+    run made and nothing else changed is removed (see mac-desktop-host.py), and
+    a second `--inspect` is compared with the first.
 
 What it checks without a person at the Mac: the key's restrictions, the
 installed bytes, that the app connects to the Core it is given and keeps it
@@ -39,6 +47,12 @@ for the next launch, that it comes back after the tunnel drops, and that it
 only reads the daily Core. What the window shows (identity, lists, a sent
 message, drafts) needs a person or GUI access and is not checked here.
 Writes report.json; exits 1 if a check fails.
+
+Two commands run only mac-desktop-host.py on the Mac, for a check a person
+does there (acceptance/t165): `inspect --mac <mac>` prints the state the run
+must not find or leave (it writes nothing there), and `remove-new --mac <mac>
+--before <inspect record>` removes the app data and defaults file that record
+shows absent, only while no Yuzuno app runs.
 """
 import argparse
 import hashlib
@@ -249,6 +263,20 @@ class Lab:
         self.procs[name] = subprocess.Popen([str(a) for a in argv], stdin=subprocess.DEVNULL, stdout=log,
                                             stderr=subprocess.STDOUT, **kw)
         return self.procs[name]
+
+    def save(self):
+        """The report as it is now; written before anything on the Mac is removed."""
+        path = Path(self.args.report)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.report, indent=1))
+
+    def inspect(self):
+        """mac-desktop-host.py --inspect over a connection of its own: what a run
+        must not find or leave on the Mac. It writes nothing there."""
+        done = on_mac(self.args.mac, '--inspect')
+        if done.returncode != 0:
+            raise RuntimeError('Mac --inspect: ' + done.stderr[-500:])
+        return json.loads(done.stdout)
 
     def call(self, op, **data):
         self.remote.stdin.write(json.dumps({'op': op, **data}) + '\n')
@@ -544,6 +572,11 @@ class Lab:
 
     def run(self):
         a = self.args
+        before = self.report['macBefore'] = self.inspect()
+        self.save()
+        if not self.check('before the run the Mac has no Yuzuno app, process, data folder or defaults file, and '
+                          'nothing answers on its 127.0.0.1:4317', not before['problems'], before['problems']):
+            raise RuntimeError('refused before writing anything on the Mac: ' + '; '.join(before['problems']))
         self.start_core()
         self.relay = Relay(a.relay_port, a.core_port)
         self.daily = Relay(a.daily_relay_port, a.daily_port, read_only=True)
@@ -582,10 +615,19 @@ class Lab:
         self.check('scripts/mac-tunnel.sh start reaches the lab Workspace',
                    tunnel['exitCode'] == 0 and tunnel['health']['workspaceId'] == self.workspace
                    and len(self.call('forwards', localPort=a.mac_port)['pids']) == 1, tunnel)
-        installed = self.call('install', dmg=a.dmg)
+        dmg, local = a.dmg, None
+        if a.dmg_local:
+            dmg = self.mac_lab + '/candidate.dmg'
+            local = hashlib.sha256(Path(a.dmg_local).read_bytes()).hexdigest()
+            copied = subprocess.run(['scp', '-q', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', a.dmg_local,
+                                     f'{a.mac}:{dmg}'], capture_output=True, text=True, timeout=300)
+            self.check("the disk image is copied into this run's folder on the Mac", copied.returncode == 0,
+                       {'from': a.dmg_local, 'sha256': local, 'stderr': copied.stderr[-300:]})
+        installed = self.call('install', dmg=dmg)
         self.check('the app copied out of the disk image is the built executable',
                    installed['executableSha256'] == a.expect_executable_sha256 and installed['copy'] == 0
-                   and installed['detach'] == 0 and installed['verify']['exitCode'] == 0, installed)
+                   and installed['detach'] == 0 and installed['verify']['exitCode'] == 0
+                   and local in (None, installed['dmgSha256']), installed)
         app = self.app = installed['app']
         core_url = f'http://127.0.0.1:{a.mac_port}'
 
@@ -662,15 +704,24 @@ class Lab:
                        'acceptedFromCommand': log.count('found at /usr/bin/echo')}})
 
     def cleanup(self):
-        if self.remote and self.remote.poll() is None:
+        started = getattr(self, 'mac_lab', None)
+        if self.remote and started and self.remote.poll() is None:
             try:
+                # Kept here before anything on the Mac is removed.
+                snapshot = self.report['macBeforeRemoval'] = self.call('snapshot')
+                (self.lab / 'mac-logs.json').write_text(json.dumps(snapshot['logs'], indent=1))
+                self.save()
                 done = self.call('cleanup', app=self.app)
-                self.check('the Mac run folder and any app data it created are removed',
-                           done['labRemoved'] and done['ownedProcessesStopped'],
-                           {'removedAppData': done['removedAppData']})
-                (self.lab / 'mac-logs.json').write_text(json.dumps(done['logs'], indent=1))
+                self.check("only what this run made is removed from the Mac (its folder, and the app data and "
+                           "defaults file its own app created), and nothing is kept or failed",
+                           done['labRemoved'] and done['ownedProcessesStopped'] and not done['kept']
+                           and not done['failed'], {k: done[k] for k in ('removed', 'kept', 'failed')})
             except Exception as error:
                 self.check('Mac cleanup', False, str(error))
+        elif self.remote and started:
+            # It ended early and applied the same rules itself, unheard.
+            self.check('the Mac side was still there for cleanup', False, {'exitCode': self.remote.poll()})
+        if self.remote and self.remote.poll() is None:
             self.remote.stdin.close()
             self.remote.wait(timeout=30)
         for name, proc in self.procs.items():
@@ -682,16 +733,55 @@ class Lab:
         for relay in (getattr(self, 'relay', None), getattr(self, 'daily', None)):
             if relay:
                 self.report.setdefault('relays', {})[str(relay.port)] = relay.requests
+        before = self.report.get('macBefore')
+        if before and not before['problems']:
+            try:
+                after = self.report['macAfter'] = self.inspect()
+                same = {k: before[k] == after[k] for k in ('apps', 'running', 'appData', 'prefs', 'roots',
+                                                           'defaultCoreAnswers')}
+                # The defaults file is only seen absent now; the preferences
+                # service may still hold its values, and is not asked.
+                self.check('after the run the Mac is as before it: no Yuzuno app, process, data folder or defaults '
+                           'file, and the lab folders as they were', all(same.values()), same)
+            except Exception as error:
+                self.check('the Mac after the run', False, str(error))
+
+
+def on_mac(mac, *args, stdin=None):
+    """mac-desktop-host.py with these arguments, over SSH."""
+    source = (HERE / 'mac-desktop-host.py').read_text()
+    return subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', mac,
+                           ' '.join(['python3', '-c', shlex.quote(source), *map(shlex.quote, args)])],
+                          input=stdin, capture_output=True, text=True, timeout=120)
+
+
+def host_command(command, argv):
+    q = argparse.ArgumentParser(prog='mac-desktop-lab.py ' + command)
+    q.add_argument('--mac', required=True)
+    if command == 'remove-new':
+        q.add_argument('--before', required=True, help='the inspect record from before the person opened the copy')
+    a = q.parse_args(argv)
+    if command == 'inspect':
+        done = on_mac(a.mac, '--inspect')
+    else:
+        done = on_mac(a.mac, '--remove-new', '-', stdin=Path(a.before).read_text())
+    sys.stdout.write(done.stdout)
+    sys.stderr.write(done.stderr)
+    sys.exit(done.returncode)
 
 
 def main():
+    if sys.argv[1:2] in (['inspect'], ['remove-new']):
+        host_command(sys.argv[1], sys.argv[2:])
     p = argparse.ArgumentParser()
     p.add_argument('--lab', required=True)
     p.add_argument('--report', required=True)
     p.add_argument('--core-release', required=True)
     p.add_argument('--mac', required=True)
     p.add_argument('--linux-host', required=True)
-    p.add_argument('--dmg', required=True)
+    dmg = p.add_mutually_exclusive_group(required=True)
+    dmg.add_argument('--dmg', help='the disk image, as a path on the Mac')
+    dmg.add_argument('--dmg-local', help="a disk image on this host, copied over SSH into the run's folder on the Mac")
     p.add_argument('--expect-executable-sha256', required=True)
     p.add_argument('--sshd', default='/usr/bin/sshd')
     p.add_argument('--tunnel-script', help='another mac-tunnel.sh to check (default: this checkout\'s)')
@@ -710,8 +800,7 @@ def main():
         lab.cleanup()
         lab.report['finishedAt'] = time.time()
         lab.report['passed'] = all(c['ok'] for c in lab.report['checks'])
-        Path(lab.args.report).parent.mkdir(parents=True, exist_ok=True)
-        Path(lab.args.report).write_text(json.dumps(lab.report, indent=1))
+        lab.save()
         print('passed', lab.report['passed'])
     sys.exit(0 if lab.report['passed'] else 1)
 

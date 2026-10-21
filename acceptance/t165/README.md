@@ -1,61 +1,97 @@
 # T-165: a CI-built Mac app on a real Mac (prepared, not run)
 
-Checks a candidate from [`desktop-macos.yml`](../../.github/workflows/desktop-macos.yml) on an Apple silicon Mac, and puts both machines back as they were. **Nothing here has been run.** It runs only after the user decides it, for one named candidate; this file grants nothing.
+Checks a candidate from [`desktop-macos.yml`](../../.github/workflows/desktop-macos.yml) on an Apple silicon Mac. **Nothing here has been run.** Each part runs only after the user decides it, for one named candidate; this file grants nothing.
 
-Not changed by any step: the daily Core, its data and settings; SSH, Tailnet or firewall settings on either machine (the lab's own SSH server is an ordinary process with its own files); `/Applications` and `~/Applications`. No Release is published.
+No step changes:
+- the daily Core, its data or settings;
+- SSH, Tailnet or firewall settings on either machine (the lab's SSH server is an ordinary process with its own files);
+- `/Applications` or `~/Applications`;
+- Gatekeeper: no **Open Anyway**, no removed quarantine attribute, no `spctl` change.
 
-## Before
+No Release is published.
 
-1. **The candidate.** One run of `desktop-macos.yml` on main: its run ID, commit and artifact `yuzuno-macos-arm64-<commit>-<attempt>`. Check it as [the desktop README](../../desktop/README.md#macos-desktop-core-on-another-computer) describes: `shasum -a 256 -c SHA256SUMS`, the same sums as the run's summary, `build.json`'s `sourceCommit`.
-2. **The user decides** which parts run, each its own decision:
-   - **A, the lab** (no person at the Mac): needs SSH from the Core host to the Mac, already set up. If it is not, setting it up is a separate decision, not part of this.
-   - **B, the first open** of a browser download (a person at the Mac).
-3. **Record on the Mac**, into a new folder `~/yuzuno-t165-lab/before/`:
-   - which of these exist: `/Applications/Yuzuno.app`, `~/Applications/Yuzuno.app`, `~/Library/Application Support/dev.yuzuno.workspace`, `~/Library/WebKit/dev.yuzuno.workspace`, `~/Library/Caches/dev.yuzuno.workspace`;
-   - `ls -la ~/.ssh` and the SHA-256 of each file in it;
-   - `spctl --status`.
-4. **Record on the Core host:** the SHA-256 of each file under `/etc/ssh`, and the listening ports (`ss -ltn`).
+## Both parts need
 
-## A: the lab
+- **The candidate:** one run of `desktop-macos.yml` on main, with its run ID, commit and artifact. Check it as [the desktop README](../../desktop/README.md#macos-desktop-core-on-another-computer) describes.
+- **SSH from the Core host to the Mac, already set up.** Both parts keep their records on the Core host through it. Setting it up is not part of this.
+- **A clean Mac.** The record below must show no problems. Otherwise nothing runs, and the existing app or data is the user's to deal with. A copy of the app shares its data folders and defaults file with any other, because they are keyed by the bundle identifier.
 
-Reuses the T-141 harness ([acceptance/t141](../t141/README.md)). It starts its own lab Core, lab SSH server and relays on the Core host, and its own folder on the Mac, and removes them at the end.
+**The before record, on the Core host.** It writes nothing on the Mac:
 
-1. Copy the candidate's disk image to a new folder `~/yuzuno-t165-lab/dmg/` on the Mac.
-2. Run the harness with `--daily-port` set to the lab Core's own port (`--core-port`, 4751 by default). Its read-only relay then fronts the lab Core, so the daily Core is never contacted:
+```sh
+python3 acceptance/t141/mac-desktop-lab.py inspect --mac <mac> > target/t165/before.json
+```
+
+Its `problems` must be empty. It is not empty if any of these hold:
+- a Yuzuno app is in `/Applications` or `~/Applications`, or is running;
+- any of the app's data folders exists: `~/Library/{Application Support,WebKit,Caches,HTTPStorages}/dev.yuzuno.workspace` or `~/Library/Saved Application State/dev.yuzuno.workspace.savedState`;
+- its defaults file exists: `~/Library/Preferences/dev.yuzuno.workspace.plist`;
+- anything answers on the Mac's `127.0.0.1:4317`, where an app with no saved Core goes.
+
+## A: the lab, no person at the Mac
+
+The T-141 harness ([acceptance/t141](../t141/README.md)) runs against a lab Core of its own:
 
 ```sh
 python3 acceptance/t141/mac-desktop-lab.py --lab target/t165/lab --report target/t165/report.json \
   --core-release <a Core release folder> --mac <mac> --linux-host <this host's private address> \
-  --dmg '~/yuzuno-t165-lab/dmg/Yuzuno_<version>_aarch64.dmg' \
-  --expect-executable-sha256 <build.json app.executableSha256> --daily-port 4751
+  --dmg-local <the candidate's .dmg> --expect-executable-sha256 <build.json app.executableSha256> \
+  --daily-port 4751
 ```
 
-3. Keep `report.json` and its SHA-256. A failed check is reported as failed; it is not rerun until it passes.
+- **What it does on the Mac:**
+  - it inspects the Mac again over its own connection and refuses the same problems before writing anything there;
+  - it copies the disk image over SSH into its own run folder under `~/yuzuno-t141-lab/net/`;
+  - it opens the app copied out of that image, checks it, and quits it.
+- **The daily Core:** `--daily-port 4751` points the read-only relay at the lab Core, so the daily Core is never contacted.
+- **The order at the end:**
+  1. The Mac side's state is kept in the report on the Core host.
+  2. Only what this run made and nothing else changed is removed: its run folder, and the data folders and defaults file its own app created. A folder or file that changed, or that another Yuzuno app could have written, is kept and named with the reason, as is a removal that fails.
+  3. A second inspect is compared with the first. A failed check is reported as failed and not rerun until it passes.
+- **What it checks:** the installed bytes against `build.json`; that the app opens the Core it is given, saves it, and reopens it without arguments; that after the tunnel stops and starts the open window reaches Core again; the tunnel script; and the SSH key restrictions. It does not look at the window.
+- **What it does not show:** a copy that arrives over SSH has no quarantine attribute, as a browser download would. So A does not show what a download does, and does not promise that macOS runs no check of its own.
 
-It checks the installed bytes against `build.json`. It also checks that the app opens the Core it is given and saves it, that it reopens the saved Core without arguments, and that after the tunnel is stopped and started the open window reaches Core again. Finally it checks the tunnel script and the SSH key restrictions. It does not look at the window.
+## B-minimal: the first open of a download, a person at the Mac
 
-## B: the first open of a download
+It only observes the first block.
 
-1. On the Mac, in Safari, sign in to GitHub and download the artifact from the run's page. Unzip it, open the disk image, and copy `Yuzuno.app` to a new folder `~/yuzuno-t165-lab/app/`, not to `/Applications`.
-2. Run `xattr -p com.apple.quarantine ~/yuzuno-t165-lab/app/Yuzuno.app` and record the output.
-3. Run `syspolicy_check distribution ~/yuzuno-t165-lab/app/Yuzuno.app` and record the output. On the CI runner it also reported an "Internal Xprotect Error", which T-141's build on a Mac did not; this shows whether a Mac reports that error for the candidate.
-4. Open the app, then record what macOS shows, with a screenshot.
-5. If it refuses: in System Settings, Privacy & Security, choose **Open Anyway** and confirm. Record each dialog.
-6. The app should show its connection page. With no Core to reach, it says Core is not reachable; that is the expected result here, since A covers connecting. Quit it.
+1. Take the before record (above).
+2. In Safari, signed in to GitHub, download the artifact. Unzip it, open the disk image, and copy `Yuzuno.app` to a new folder `~/yuzuno-t165-lab/app/`, not to `/Applications`.
+3. In Terminal, record the output of each:
+   - `xattr -p com.apple.quarantine ~/yuzuno-t165-lab/app/Yuzuno.app`;
+   - `spctl --assess -vv ~/yuzuno-t165-lab/app/Yuzuno.app`;
+   - `syspolicy_check distribution ~/yuzuno-t165-lab/app/Yuzuno.app`. On the CI runner this also reported an "Internal Xprotect Error", which T-141's build on a Mac did not; this shows whether a Mac reports it for the candidate.
+4. Double-click the app once. Take a screenshot of what macOS shows, then choose **Done**.
+5. Eject the disk image. Delete `~/yuzuno-t165-lab` and the downloaded zip.
+6. Take the after record (`inspect`, as before) and compare it with the before record on the Core host.
+
+**If the app opens instead of being blocked:** quit it, and stop there. Because nothing answered on `127.0.0.1:4317`, it reached no Core. Then, on the Core host:
+
+```sh
+python3 acceptance/t141/mac-desktop-lab.py remove-new --mac <mac> --before target/t165/before.json
+```
+
+This removes the data folders and defaults file the before record shows absent, and only while no Yuzuno app runs. Without a record taken while the app ran, it cannot tell whether something else wrote to them. Then take the after record.
 
 The result says what macOS showed on that macOS version. It does not say that Gatekeeper is solved: the app is still ad hoc and not notarized.
 
-## Rollback
+## Open Anyway: not in this plan
 
-On the Mac:
-1. Quit the app.
-2. Delete `~/yuzuno-t165-lab/` and the downloaded artifact.
-3. Delete each of the app's data folders listed in Before that did not exist before.
-4. Compare with `before/`: the same files exist, `~/.ssh` has the same hashes, `spctl --status` is the same.
+Choosing **Open Anyway** records an approval in macOS's own policy that this plan has no supported way to remove. It needs its own explicit decision as an exception. Then the app runs and writes data, with the same before record and removal as above. The same applies to removing the quarantine attribute or changing Gatekeeper.
 
-On the Core host:
-1. Check that no lab process or listener is left (`ss -ltn` as before).
-2. Check that `/etc/ssh` has the same hashes as before.
-3. Delete `target/t165/lab` once its report is kept.
+## What may remain, for the user to decide whether to accept
 
-Report any difference that remains as it is, never as "no trace". For example, Finder's `.DS_Store` files remained after T-141, and Open Anyway's approval may also leave a record in macOS's own policy database. This checklist does not remove such records.
+**After A:**
+- macOS's LaunchServices entry for the lab copy;
+- system and sshd log lines, and ctimes;
+- a changed modification time of the shared `$TMPDIR`. T-141 could not set it back, because utime is not permitted there.
+
+**After B-minimal:**
+- Safari's download history, and macOS's record of the download;
+- `.DS_Store` files in folders Finder showed;
+- a LaunchServices entry;
+- possibly a note of the blocked open under Privacy & Security, for a time not known.
+
+**After either:** if the app ran, the preferences service may still hold the defaults it wrote in memory. The defaults file is only seen absent at the second look, not proven absent later.
+
+Any difference between the records is reported as it is, never as "no trace".
