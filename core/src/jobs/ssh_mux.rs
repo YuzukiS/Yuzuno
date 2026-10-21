@@ -27,10 +27,11 @@
 //!   SSH configuration pointed elsewhere is another connection. A name whose
 //!   address changes in DNS is followed once its master retires (`age`);
 //! - one that cannot be made is not tried again for `retry`;
-//! - a master carries one call at a time. sshd allows `MaxSessions`
-//!   sessions per connection (10 by default, as few as 1 where hardened)
-//!   and refuses the rest, and OpenSSH does not then connect directly: a
-//!   call that finds its master busy connects itself, as before.
+//! - a master carries one call at a time, so it never asks for more
+//!   sessions than any sshd allows (`MaxSessions`: 10 by default, as few as
+//!   1 where hardened). A call that finds its master busy connects itself,
+//!   as before. (OpenSSH 10.6 also connects directly after a refused
+//!   session, its input intact; this does not depend on that.)
 //!
 //! The master authenticates and checks the host key as any call did (the
 //! same options); calls through it reuse that authenticated connection. A

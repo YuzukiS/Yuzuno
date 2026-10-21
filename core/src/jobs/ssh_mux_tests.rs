@@ -85,8 +85,17 @@ impl Sshd {
 
     /// Connections sshd has accepted so far.
     fn connections(&self) -> usize {
+        self.logged("Accepted publickey")
+    }
+
+    /// Sessions sshd has refused so far (beyond MaxSessions).
+    fn refusals(&self) -> usize {
+        self.logged("no more sessions")
+    }
+
+    fn logged(&self, text: &str) -> usize {
         std::fs::read_to_string(self.dir.path().join("sshd.log")).unwrap_or_default()
-            .lines().filter(|line| line.contains("Accepted publickey")).count()
+            .lines().filter(|line| line.contains(text)).count()
     }
 }
 
@@ -195,15 +204,15 @@ async fn a_busy_master_is_never_asked_for_a_second_session() {
     let base = short_base();
     let box_a = machine("m1", "box-a");
     let to = destination(&sshd.wrapper, "box-a").await.unwrap();
-    // A master asked for a second session has it refused here, and the
-    // call has no answer: OpenSSH does not then connect directly.
+    // A master asked for a second session has it refused here (OpenSSH
+    // 10.6 then connects the call directly; this test does not rely on it).
     let crowded = mux(base.path()).with_sessions(2);
     assert!(answered(&hello(&sshd, Some(&crowded), &box_a).await));
     assert!(settled(&crowded, &box_a).await);
     let lease = crowded.client(&sshd.wrapper, &box_a, &to).unwrap();
     let mut long = occupy(&sshd, &lease, &base.path().join("crowded")).await;
-    let refused = hello(&sshd, Some(&crowded), &box_a).await;
-    assert!(!answered(&refused), "this sshd refuses a second session");
+    hello(&sshd, Some(&crowded), &box_a).await;
+    assert_eq!(sshd.refusals(), 1, "this sshd refuses a second session");
     long.wait().await.unwrap();
     drop(lease);
     // A master carries one call at a time: a call that finds it busy
@@ -217,11 +226,13 @@ async fn a_busy_master_is_never_asked_for_a_second_session() {
     let call = hello(&sshd, Some(&shared), &box_a).await;
     assert!(answered(&call), "{}", kind(&call));
     assert_eq!(sshd.connections(), before + 1, "it connected itself");
+    assert_eq!(sshd.refusals(), 1, "and never asked the master for a second session");
     long.wait().await.unwrap();
     drop(lease);
     // Calls at once all answer; free again, the master carries the next.
     let calls = futures_util::future::join_all((0..4).map(|_| hello(&sshd, Some(&shared), &box_a))).await;
     assert!(calls.iter().all(answered));
+    assert_eq!(sshd.refusals(), 1);
     let before = sshd.connections();
     assert!(answered(&hello(&sshd, Some(&shared), &box_a).await));
     assert_eq!(sshd.connections(), before, "the master carried it");
