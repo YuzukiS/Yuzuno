@@ -896,7 +896,8 @@ mod tests {
             said("a3", "m3", "One survey is running in the background.", "end_turn")];
         let (entries, messages) = saved(&chain, &[]);
         let mut d = detail(json!([]));
-        apply(&mut d, &plan_import(&d, &entries), &entries, &messages, Utc::now());
+        let import = plan_import(&d, &entries);
+        apply(&mut d, &import, &entries, &messages, Utc::now());
         let t = turn(&d, "native-p1");
         let item = |id: &str| t["items"].as_array().unwrap().iter().find(|i| i["id"] == id).unwrap().clone();
         let background = item("agent-bg");
