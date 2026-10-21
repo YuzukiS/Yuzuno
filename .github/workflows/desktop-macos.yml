@@ -2,7 +2,7 @@
 # standard GitHub-hosted Apple silicon runner, and runs the desktop tests:
 # - A pull request that changes desktop/, the script or this workflow builds
 #   and tests it. Nothing is uploaded; the checksums and build.json are in
-#   the run's summary.
+#   the run's log and summary.
 # - Run on request (workflow_dispatch) for the current head of main, after
 #   the CI workflow has passed on that commit's push to main, it is a
 #   candidate: the disk image, the app as a ZIP, build.json and SHA256SUMS,
@@ -98,7 +98,7 @@ jobs:
         run: |
           cd "$RUNNER_TEMP/out"
           shasum -a 256 *.dmg Yuzuno.app.zip build.json > SHA256SUMS
-          cat SHA256SUMS
+          cat SHA256SUMS build.json
           {
             echo "### macOS app"
             echo
