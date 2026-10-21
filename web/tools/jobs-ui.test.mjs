@@ -484,7 +484,7 @@ test('machine budget takes the whole host, keeps the default apart, includes col
     const form=p.doc.querySelector('.job-budget-settings');
     // T-160: this host's totals are for reference; no share of them is a ceiling.
     assert.match(form.textContent,/this host has 32 CPU · 40107 MiB RAM · 16384 MiB swap; the budget may use all of it\. Conservative default: 4 CPU/);
-    assert.match(form.textContent,/RAM free at that moment, keeping 2048 MiB for Core and the desktop\. CPU is a shared quota, not reserved cores/);
+    assert.match(form.textContent,/has the RAM it needs free at that moment, keeping 2048 MiB for Core and the desktop\. CPU is a shared quota, not reserved cores/);
     assert.doesNotMatch(form.textContent,/ceiling/i);
     assert.match(form.textContent,/4.2 CPU and 8320 MiB/);
     assert.match(form.textContent,/Running jobs keep their original limits/);

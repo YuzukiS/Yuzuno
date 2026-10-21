@@ -229,7 +229,8 @@ export function BudgetSettings({
           </p>
         )}
         <p className="job-footnote">
-          A job starts only when the host also has its RAM free at that moment
+          A job starts only when the host also has the RAM it needs free at
+          that moment
           {host?.hostHeadroomMiB != null && (
             <>, keeping {host.hostHeadroomMiB} MiB for Core and the desktop</>
           )}
