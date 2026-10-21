@@ -20,16 +20,17 @@ const detail = (status, { harness, where = "turns" } = {}) => {
   };
 };
 
-test("a Codex steer waits while its Turn runs and is reported dropped once that Turn ends without it (T-120)", () => {
+test("a Codex steer waits while its Turn runs and is reported unconfirmed once that Turn has ended (T-120)", () => {
   assert.equal(steered(receipt(), detail("inProgress")), "waiting");
-  for (const status of ["completed", "interrupted", "failed"]) assert.equal(steered(receipt(), detail(status)), "dropped", status);
+  for (const status of ["completed", "interrupted", "failed"]) assert.equal(steered(receipt(), detail(status)), "endedUnconfirmed", status);
   assert.equal(deliveryNote("accepted", "Codex", "waiting"), "Received by Codex · added when its Turn continues");
-  assert.equal(deliveryNote("accepted", "Codex", "dropped"), "Received by Codex · not added before its Turn ended");
+  assert.equal(deliveryNote("accepted", "Codex", "endedUnconfirmed"),
+    "Received by Codex · Turn ended; message not yet confirmed in conversation");
 });
 
 test("a steered Turn outside the shown window is found in the conversation index", () => {
   assert.equal(steered(receipt(), detail("inProgress", { where: "index" })), "waiting");
-  assert.equal(steered(receipt(), detail("interrupted", { where: "index" })), "dropped");
+  assert.equal(steered(receipt(), detail("interrupted", { where: "index" })), "endedUnconfirmed");
 });
 
 test("only an accepted Codex steer to a known Turn is a steer", () => {

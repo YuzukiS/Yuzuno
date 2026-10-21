@@ -1865,9 +1865,9 @@ test("Codex sends echo immediately, keep drafts during submission and replace th
   } finally { page.close(); }
 });
 
-test("a steer Codex accepted but never added says so once its Turn ends, and stays until hidden (T-120)", async () => {
-  // Codex 0.162.1 answers turn/steer at once, adds the message only when it
-  // next continues the Turn, and drops it if the Turn is interrupted first.
+test("a steer whose Turn ended unseen says so, stays until hidden, and still clears if its message arrives late (T-120)", async () => {
+  // Codex 0.162.1 answers turn/steer at once and adds the message only when it
+  // next continues the Turn; an ended Turn without it is unconfirmed, not lost.
   const extraTurns = [{ id: "live", status: "inProgress", items: [] }];
   const reply = (url, init) => {
     const receipt = { input: JSON.parse(init.body), status: "accepted", turnId: "live", error: null };
@@ -1875,31 +1875,41 @@ test("a steer Codex accepted but never added says so once its Turn ends, and sta
   };
   const page = await mount({ status: "working", turnStatus: "completed", extraTurns, messageResponse: reply });
   try {
-    const note = () => page.document.querySelector(".outgoing-message [role=status]")?.textContent;
-    const hide = () => page.document.querySelector(".outgoing-message .outgoing-hide");
-    setValue(page.window, page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), "Also check the tests.");
-    await pause();
-    page.document.querySelector('[aria-label="Send while working"]').click();
-    await until(() => note() === "Received by Codex · added when its Turn continues", "the waiting steer");
-    assert.equal(JSON.parse(page.calls.find((r) => r.url.endsWith("/messages")).init.body).expectedTurnId, "live");
-    assert.equal(hide(), null, "a waiting steer is not offered for hiding");
-    // Another Agent never shows it; back here it is still waiting.
+    const previews = () => [...page.document.querySelectorAll(".outgoing-message")];
+    const noteOf = (text) => previews().find((p) => p.textContent.includes(text))?.querySelector("[role=status]")?.textContent;
+    const composer = page.document.querySelector('[data-composer-input][aria-label="Message Mori"]');
+    for (const text of ["Also check the tests.", "And the docs."]) {
+      setValue(page.window, composer, text);
+      await pause();
+      page.document.querySelector('[aria-label="Send while working"]').click();
+      await until(() => noteOf(text) === "Received by Codex · added when its Turn continues", `the waiting steer "${text}"`);
+    }
+    const sent = page.calls.filter((r) => r.url.endsWith("/messages")).map((r) => JSON.parse(r.init.body));
+    assert.deepEqual(sent.map((input) => input.expectedTurnId), ["live", "live"]);
+    assert.equal(page.document.querySelector(".outgoing-message .outgoing-hide"), null, "a waiting steer is not offered for hiding");
+    // Another Agent never shows them; back here they are still waiting.
     button(page, "Hana").click();
     await until(() => page.document.querySelector('[data-composer-input][aria-label="Message Hana"]'), "Hana's conversation");
     assert.equal(page.document.querySelector(".outgoing-message"), null);
     button(page, "Mori").click();
-    await until(() => note() === "Received by Codex · added when its Turn continues", "the steer shown again");
-    // The Turn ends without it: said so, not shown as syncing or cleared.
+    await until(() => previews().length === 2, "both steers shown again");
+    // The Turn ends with neither seen: unconfirmed, not syncing, not cleared.
     extraTurns[0].status = "interrupted";
+    const ended = "Received by Codex · Turn ended; message not yet confirmed in conversation";
     page.window.dispatchEvent(new page.window.Event("focus"));
-    await until(() => note() === "Received by Codex · not added before its Turn ended", "the dropped steer");
+    await until(() => noteOf("Also check") === ended && noteOf("And the docs") === ended, "the unconfirmed steers");
     page.window.dispatchEvent(new page.window.Event("focus"));
     await pause(); await pause();
-    assert.equal(note(), "Received by Codex · not added before its Turn ended");
-    assert.match(page.document.querySelector(".outgoing-message").textContent, /Also check the tests/);
-    hide().click();
-    await until(() => page.document.querySelector(".outgoing-message") === null, "the hidden preview");
-    assert.equal(page.calls.filter((r) => r.url.endsWith("/messages")).length, 1, "nothing was sent again");
+    assert.equal(previews().length, 2);
+    // Hidden by hand only.
+    previews().find((p) => p.textContent.includes("Also check")).querySelector(".outgoing-hide").click();
+    await until(() => previews().length === 1, "the hidden preview");
+    // A message that does reach the conversation later still clears by its id.
+    extraTurns[0].items.push({ id: "late-user", clientId: sent[1].clientMessageId, type: "userMessage", content: [{ type: "text", text: sent[1].text }] });
+    page.window.dispatchEvent(new page.window.Event("focus"));
+    await until(() => previews().length === 0, "the late message replacing its preview");
+    assert.match(page.document.querySelector('[data-item-id="late-user"]').textContent, /And the docs/);
+    assert.equal(page.calls.filter((r) => r.url.endsWith("/messages")).length, 2, "nothing was sent again");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

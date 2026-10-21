@@ -81,7 +81,7 @@ export const OutgoingMessages = memo(function OutgoingMessages({
           <div className="message-label">
             <span className="you-avatar">Y</span>You{" "}
             <small role="status">{status}</small>
-            {(receipt.status === "uncertain" || receipt.status === "unknown" || receipt.status === "rejected" || steer === "dropped") && (
+            {(receipt.status === "uncertain" || receipt.status === "unknown" || receipt.status === "rejected" || steer === "endedUnconfirmed") && (
               <button
                 type="button"
                 className="inline-link outgoing-hide"

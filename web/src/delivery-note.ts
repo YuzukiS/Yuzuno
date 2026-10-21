@@ -2,11 +2,13 @@ import type { AgentDetail, MessageReceipt } from "./types";
 
 /** Where a message Codex accepted into a running Turn (turn/steer) stands:
  * Codex answers the steer at once but adds the message to the conversation
- * only when it next continues that Turn, and never if the Turn ends first
- * (Codex 0.162.1 reports neither). "waiting" while that Turn runs, "dropped"
- * once it has ended; null for any other message or a Turn not known here.
- * A preview is shown only while its message is not in the conversation. */
-export function steered(receipt: MessageReceipt, detail: AgentDetail | null): "waiting" | "dropped" | null {
+ * only when it next continues that Turn, and may never add it if the Turn
+ * ends first (Codex 0.162.1 reports neither). "waiting" while that Turn
+ * runs; "endedUnconfirmed" once it has ended and the message has not been
+ * seen in the conversation, which is not proof it never will be; null for
+ * any other message or a Turn not known here. A preview is shown only while
+ * its message is not in the conversation. */
+export function steered(receipt: MessageReceipt, detail: AgentDetail | null): "waiting" | "endedUnconfirmed" | null {
   if (!detail || receipt.status !== "accepted" || !receipt.input.expectedTurnId) return null;
   if ((detail.agent.harness || "codex") !== "codex") return null;
   const id = receipt.turnId || receipt.input.expectedTurnId;
@@ -15,7 +17,7 @@ export function steered(receipt: MessageReceipt, detail: AgentDetail | null): "w
     detail.turns.find((turn) => turn.id === id)?.status ??
     detail.conversation?.index.find((turn) => turn.id === id)?.status;
   if (status === "inProgress") return "waiting";
-  return status === "completed" || status === "interrupted" || status === "failed" ? "dropped" : null;
+  return status === "completed" || status === "interrupted" || status === "failed" ? "endedUnconfirmed" : null;
 }
 
 /** The note on a message's delivery preview. Accepted is the harness's own
@@ -25,11 +27,11 @@ export function steered(receipt: MessageReceipt, detail: AgentDetail | null): "w
 export function deliveryNote(
   status: MessageReceipt["status"],
   harness: string | null,
-  steer: "waiting" | "dropped" | null = null,
+  steer: "waiting" | "endedUnconfirmed" | null = null,
 ) {
   const name = harness ?? "the harness";
   if (steer === "waiting") return `Received by ${name} · added when its Turn continues`;
-  if (steer === "dropped") return `Received by ${name} · not added before its Turn ended`;
+  if (steer === "endedUnconfirmed") return `Received by ${name} · Turn ended; message not yet confirmed in conversation`;
   return {
     sending: "Sending…",
     queued: `Sent · waiting for ${name} to confirm`,
