@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { sourceTarget } from "../../intelligent-ui/contract.ts";
+import { parseMessageLink, useMessageLinks } from "../../deep-link";
 
 /**
  * GitHub-flavoured Markdown written by an Agent, sanitized the way the
@@ -20,6 +21,7 @@ export function BriefMarkdown({ text }: { text: string }) {
     }),
     [text],
   );
+  const links = useMessageLinks();
   return (
     <div
       className="prose brief-markdown"
@@ -27,6 +29,13 @@ export function BriefMarkdown({ text }: { text: string }) {
       onClick={(event) => {
         const link = (event.target as HTMLElement).closest("a");
         if (!link) return;
+        // A link to a message opens that conversation (T-166).
+        const message = links && parseMessageLink(link.getAttribute("href") || "");
+        if (message) {
+          event.preventDefault();
+          links.open(message);
+          return;
+        }
         // Web links open outside Home; anything else (a relative or file
         // path) has nowhere to go from here and stays inert.
         const target = sourceTarget(link.getAttribute("href") || "");

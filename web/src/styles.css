@@ -622,6 +622,12 @@ p {
 .agent-search input:focus {
   box-shadow: none;
 }
+/* A message link pasted into the Agent search (T-166). */
+.open-message-link {
+  width: 100%;
+  justify-content: flex-start;
+  margin: -4px 0 10px;
+}
 .main-panel {
   --composer-gutter: 32px;
   min-width: 0;

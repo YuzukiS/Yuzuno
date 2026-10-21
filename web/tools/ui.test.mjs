@@ -101,6 +101,7 @@ async function mount({
   beforeLoad,
   liveJobs,
   liveCI,
+  workspaceIdentity,
   models,
   modelsResponse,
   claudeRuntime,
@@ -159,7 +160,7 @@ async function mount({
     if (url.includes("/history?") && historyPage) body = historyPage;
     else if (url.endsWith("/api/workspace"))
       body = {
-        ...(liveCI ? { workspace: { id: "ci-fixture" } } : {}),
+        ...(liveCI || workspaceIdentity ? { workspace: { id: workspaceIdentity || "ci-fixture" } } : {}),
         agents: agents.map((a) =>
           a.id === "a"
             ? {
@@ -1785,6 +1786,158 @@ test("earlier saved messages load in front of what is being read, within three w
     assert.match(alert.textContent, /could not be read/);
     assert.match(text(), /Answer 4[\s\S]*Answer 5/);
     assert.equal(button(page, "Load earlier messages").disabled, false);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+// Five Turns of a question and an answer for Mori, read in windows of three
+// Items as Core pages them (T-77), with Core's 404 for a Turn or Item it does
+// not have. Each window read is recorded.
+function windowedMori(requests, { replyText = {} } = {}) {
+  const turns = [1, 2, 3, 4, 5].map((n) => ({ id: `t${n}`, status: "completed", items: [
+    { id: `t${n}-u`, type: "userMessage", content: [{ type: "text", text: `Question ${n}` }] },
+    { id: `t${n}-r`, type: "agentMessage", phase: "final_answer", text: replyText[n] || `Answer ${n}` },
+  ] }));
+  const all = turns.flatMap((turn) => turn.items.map((item) => JSON.stringify([turn.id, item.id])));
+  const windowFrom = (from) => {
+    const shown = all.slice(Math.max(0, from), Math.max(0, from) + 3);
+    const start = all.indexOf(shown[0]), end = start + shown.length - 1;
+    return {
+      turns: turns.map((turn) => ({ ...turn, items: turn.items.filter((item) => shown.includes(JSON.stringify([turn.id, item.id]))) }))
+        .filter((turn) => turn.items.length),
+      conversation: { index: turns.map((turn, i) => ({ ...turn, number: i + 1, itemCount: 2 })), questions: [], nativeClientIds: [],
+        start: shown[0], end: shown.at(-1), hasBefore: start > 0, hasAfter: end < all.length - 1, totalItems: all.length },
+    };
+  };
+  return (window) => {
+    const fetch = window.fetch;
+    window.fetch = async (url, init) => {
+      const [path, search = ""] = url.split("?");
+      if (!/\/api\/agents\/a$/.test(path)) return fetch(url, init);
+      requests.push(search);
+      const query = new URLSearchParams(search);
+      const turn = query.has("turnId") && turns.find((t) => t.id === query.get("turnId"));
+      if (query.has("turnId") && (!turn || (query.has("itemId") && !turn.items.some((i) => i.id === query.get("itemId")))))
+        return { ok: false, status: 404, text: async () => JSON.stringify({ error: "This Agent has no Turn with that ID", code: turn ? "item_not_found" : "turn_not_found" }) };
+      const response = await fetch(path, init);
+      const from = query.has("before") ? all.indexOf(query.get("before")) - 2
+        : query.has("after") ? all.indexOf(query.get("after"))
+        : turn ? all.indexOf(JSON.stringify([turn.id, query.get("itemId") || turn.items[0].id]))
+        : all.length - 3;
+      const body = { ...(await response.json()), ...windowFrom(from) };
+      return { ...response, json: async () => body };
+    };
+  };
+}
+function typeInto(page, input, value) {
+  Object.getOwnPropertyDescriptor(page.window.HTMLInputElement.prototype, "value").set.call(input, value);
+  input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+}
+
+test("a message link opens its message, loading its window, and says plainly when it cannot (T-166)", async () => {
+  const requests = [];
+  const page = await mount({ workspaceIdentity: "ws-1", agentFields: { threadId: "thread-1" }, beforeLoad: windowedMori(requests) });
+  try {
+    const text = () => page.document.querySelector(".conversation-scroll").textContent;
+    const bar = () => page.document.querySelector(".source-navigation")?.textContent || "";
+    const toast = () => page.document.querySelector(".toast")?.textContent || "";
+    const reply = page.document.querySelector('[data-item-id="t5-r"]');
+    [...reply.querySelectorAll("button")].find((b) => b.textContent.includes("Copy link")).click();
+    await until(() => page.copied.length, "the link is copied");
+    assert.equal(page.copied[0], "http://127.0.0.1:4317/#/message?w=ws-1&a=a&t=t5&i=t5-r&s=thread-1");
+    // An earlier message: its window is read and the message has the focus.
+    page.window.location.hash = "#/message?w=ws-1&a=a&t=t2&i=t2-r&s=thread-1";
+    await until(() => /Answer 2/.test(text()) && page.document.activeElement?.dataset.itemId === "t2-r", "the linked message is shown");
+    assert.ok(requests.includes("turnId=t2&itemId=t2-r"), requests.join(" | "));
+    assert.match(bar(), /Back to latest.*Linked message/);
+    assert.ok(page.document.querySelector('[data-item-id="t2-r"]').classList.contains("source-highlight"));
+    assert.equal(page.window.location.hash, "", "a reload does not open the link again");
+    // A message Core no longer has is asked for once, then explained.
+    page.window.location.hash = "#/message?w=ws-1&a=a&t=t9&i=t9-r&s=thread-1";
+    await until(() => /no longer in Mori’s conversation, for example after Rewind/.test(bar()), "a message that is gone is explained");
+    await pause(); await pause();
+    assert.equal(requests.filter((r) => r.startsWith("turnId=t9")).length, 1, requests.join(" | "));
+    assert.match(text(), /Answer 5/, "the latest messages are shown instead");
+    page.window.location.hash = "#/message?w=ws-1&a=a&t=t8&s=thread-0";
+    await until(() => /earlier native session of Mori/.test(bar()), "another native session is named");
+    // Another Workspace, or an Agent no longer here: nothing is opened.
+    const read = requests.length;
+    page.window.location.hash = "#/message?w=ws-2&a=a&t=t1";
+    await until(() => /another Workspace/.test(toast()), "another Workspace is refused");
+    page.window.location.hash = "#/message?w=ws-1&a=gone&t=t1";
+    await until(() => /no longer in this Workspace/.test(toast()), "a removed Agent is explained");
+    assert.equal(requests.length, read);
+    assert.equal(page.calls.filter((c) => c.init.method === "POST").length, 0, "opening a link changes nothing");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a message link in a reply or pasted into agent search opens here, not as a web page (T-166)", async () => {
+  const requests = [];
+  const href = "http://127.0.0.1:4317/#/message?w=ws-1&a=a&t=t1&i=t1-r";
+  const page = await mount({ workspaceIdentity: "ws-1", beforeLoad: windowedMori(requests, { replyText: { 5: `See [the first answer](${href}).` } }) });
+  try {
+    const text = () => page.document.querySelector(".conversation-scroll").textContent;
+    const anchor = page.document.querySelector('[data-item-id="t5-r"] a');
+    anchor.click();
+    await until(() => /Answer 1/.test(text()), "the linked message opens in the conversation");
+    assert.ok(requests.includes("turnId=t1&itemId=t1-r"), requests.join(" | "));
+    assert.notEqual(anchor.target, "_blank");
+    page.document.querySelector('button[aria-label="Search agents"]').click();
+    await pause();
+    typeInto(page, page.document.querySelector('input[aria-label="Search agents"]'), " http://localhost:9/#/message?w=ws-1&a=a&t=t3&i=t3-u ");
+    await pause();
+    assert.equal(page.document.querySelector(".rail-empty"), null, "a link is not an Agent search");
+    button(page, "Open linked message").click();
+    await until(() => /Question 3/.test(text()) && page.document.activeElement?.dataset.itemId === "t3-u", "the pasted link opens");
+    assert.ok(requests.includes("turnId=t3&itemId=t3-u"), requests.join(" | "));
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("a conversation reopens where it was left, and one left at the latest stays there (T-166)", async () => {
+  const requests = [];
+  const saved = (position) => JSON.stringify({ a: { savedAt: 1, ...position } });
+  const page = await mount({
+    workspaceIdentity: "ws-1", agentFields: { threadId: "thread-1" }, beforeLoad: windowedMori(requests),
+    stored: { "yuzuno.selected": JSON.stringify("a"), "yuzuno.reading.ws-1": saved({ mode: "anchor", turnId: "t2", itemId: "t2-u", offset: -10 }) },
+  });
+  try {
+    const text = () => page.document.querySelector(".conversation-scroll").textContent;
+    const pane = () => page.document.querySelector(".conversation-scroll");
+    const stored = () => JSON.parse(page.window.localStorage.getItem("yuzuno.reading.ws-1")).a;
+    await until(() => /Question 2/.test(text()), "the reload opens where Mori was left");
+    assert.ok(requests.includes("turnId=t2&itemId=t2-u"), requests.join(" | "));
+    assert.match(page.document.querySelector(".source-navigation").textContent, /Where you left off/);
+    assert.equal(page.document.querySelector(".source-highlight"), null, "a reading position is not highlighted");
+    // Back at the latest when leaving: reopening stays at the latest.
+    button(page, "Back to latest").click();
+    await until(() => /Answer 5/.test(text()) && !page.document.querySelector(".source-navigation"), "the latest messages");
+    pane().dispatchEvent(new page.window.Event("scroll"));
+    button(page, "Hana").click();
+    await until(() => stored().mode === "latest", "leaving at the latest is kept");
+    button(page, "Mori").click();
+    await until(() => /Answer 5/.test(text()), "Mori opens at the latest");
+    assert.equal(page.document.querySelector(".source-navigation"), null);
+    // Reading higher up when leaving: that message and its offset are kept.
+    Object.defineProperty(pane(), "scrollHeight", { configurable: true, value: 2000 });
+    const rect = page.window.HTMLElement.prototype.getBoundingClientRect;
+    page.window.HTMLElement.prototype.getBoundingClientRect = function () {
+      const top = this.dataset?.itemId === "t4-r" ? -15 : this.dataset?.itemId ? 100 : 0;
+      return { top, bottom: top + 55, height: this.dataset?.itemId ? 55 : 0, left: 0, right: 0, width: 0, x: 0, y: top };
+    };
+    pane().dispatchEvent(new page.window.Event("scroll"));
+    await pause();
+    page.window.HTMLElement.prototype.getBoundingClientRect = rect;
+    button(page, "Hana").click();
+    await until(() => stored().mode === "anchor", "the reading position is kept");
+    assert.deepEqual({ ...stored(), savedAt: 0 }, { mode: "anchor", turnId: "t4", itemId: "t4-r", offset: -15, threadId: "thread-1", savedAt: 0 });
+    // A position whose message is gone opens the latest and says so.
+    page.window.localStorage.setItem("yuzuno.reading.ws-1", saved({ mode: "anchor", turnId: "t9", itemId: "t9-u", offset: 0 }));
+    button(page, "Mori").click();
+    await until(() => /Where you left off is no longer in this conversation/.test(page.document.querySelector(".toast")?.textContent || ""), "a lost position is explained");
+    await until(() => /Answer 5/.test(text()) && !page.document.querySelector(".source-navigation"), "the latest messages are shown");
+    assert.equal(requests.filter((r) => r.startsWith("turnId=t9")).length, 1, requests.join(" | "));
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

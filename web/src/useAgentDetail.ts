@@ -10,6 +10,10 @@ export function useAgentDetail(agentId: string | null) {
   const windowQuery = useRef<Record<string, string>>({});
   const windowGeneration = useRef(0);
   const [windowLoading, setWindowLoading] = useState(false);
+  // The window query whose Turn or Item Core no longer has (rewind, another
+  // native session): reading it again would only fall back to the tail again.
+  const missingQuery = useRef<string | null>(null);
+  const [missing, setMissing] = useState<string | null>(null);
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [sync] = useState(
@@ -28,6 +32,8 @@ export function useAgentDetail(agentId: string | null) {
               !(error instanceof HttpError) || error.status !== 404 ||
               !["turn_not_found", "item_not_found"].includes(error.code || "")) throw error;
             windowQuery.current = {};
+            missingQuery.current = JSON.stringify(query);
+            setMissing(missingQuery.current);
             return readSnapshot<AgentDetail>(path, signal, headers);
           }
         },
@@ -39,11 +45,18 @@ export function useAgentDetail(agentId: string | null) {
     windowQuery.current = {};
     windowGeneration.current++;
     setWindowLoading(false);
+    missingQuery.current = null;
+    setMissing(null);
     sync.select(agentId);
   }, [sync, agentId]);
   useEffect(() => () => sync.dispose(), [sync]);
   const navigate = useCallback(async (query: Record<string, string> = {}, retry = false) => {
-    if (!retry && JSON.stringify(query) === JSON.stringify(windowQuery.current)) return;
+    const key = JSON.stringify(query);
+    if (!retry && (key === JSON.stringify(windowQuery.current) || key === missingQuery.current)) return;
+    if (missingQuery.current) {
+      missingQuery.current = null;
+      setMissing(null);
+    }
     windowQuery.current = query;
     const generation = ++windowGeneration.current;
     setWindowLoading(true);
@@ -61,5 +74,5 @@ export function useAgentDetail(agentId: string | null) {
     if (sync.running) void navigate(query);
     else windowQuery.current = query;
   }, [sync, navigate]);
-  return { detail, error, clearError: () => setError(null), sync, navigate, pinWindow, windowLoading };
+  return { detail, error, clearError: () => setError(null), sync, navigate, pinWindow, windowLoading, missing };
 }

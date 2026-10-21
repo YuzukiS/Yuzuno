@@ -2,6 +2,7 @@ import { MessageContent } from "./MessageContent";
 import { RewindButton } from "./Rewind";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
 import { HANDOFF_TYPE, type HandoffSource, type MessageAuthor } from "./handoff";
+import { parseMessageLink, useMessageLinks } from "./deep-link";
 import { MailboxNotice } from "./MailboxNotice";
 import { userRequestText, userText } from "./message-content";
 import { ImageAttachments } from "./ImageAttachments";
@@ -247,6 +248,11 @@ export function CopyButton({
     </button>
   );
 }
+/** Copies the link to one message (T-166), where links are offered. */
+function CopyLinkButton({ agent, turnId, itemId }: { agent: Agent; turnId: string; itemId: string }) {
+  const href = useMessageLinks()?.href(agent, turnId, itemId);
+  return href ? <CopyButton text={href} label="Copy link" /> : null;
+}
 export function Prose({
   text,
   onFile,
@@ -274,6 +280,7 @@ export function Prose({
   // Words streaming onto the end of a reply fade in rather than pop.
   const root = useRef<HTMLDivElement>(null);
   useStreamReveal(root, text);
+  const links = useMessageLinks();
   return (
     <div
       ref={root}
@@ -283,6 +290,13 @@ export function Prose({
         const link = (e.target as HTMLElement).closest("a");
         if (!link) return;
         const href = link.getAttribute("href") || "";
+        // A link to a message opens it here, never as a web page (T-166).
+        const message = links && parseMessageLink(href);
+        if (message) {
+          e.preventDefault();
+          links.open(message);
+          return;
+        }
         if (/^(https?:|mailto:)/i.test(href)) {
           link.target = "_blank";
           link.rel = "noreferrer";
@@ -732,6 +746,7 @@ export function Turn({
               <ClaudeCheckpointButton agent={agent} nativeUuid={item.nativeUuid} turnRunning={running} />
             )}
             <SendToAgentButton source={() => messageHandoff(agent, turn, item)} />
+            <CopyLinkButton agent={agent} turnId={turn.id} itemId={item.id} />
           </div>
           <div className="user-text"><MessageContent text={userText(item)} blocks={item._yuzunoTextBlocks} /></div>
           <ImageAttachments images={messageImages(item.content)} />
@@ -880,6 +895,7 @@ export function Turn({
                   <div className="reply-actions">
                     <CopyButton text={item.text || ""} label="Copy reply" />
                     <SendToAgentButton source={() => messageHandoff(agent, turn, item)} />
+                    <CopyLinkButton agent={agent} turnId={turn.id} itemId={item.id} />
                     <TurnFooter parts={footer} />
                     <RewindButton agent={agent} turn={turn} onDraft={onRewindDraft} />
                   </div>
@@ -887,6 +903,7 @@ export function Turn({
                   <>
                     <CopyButton text={item.text || ""} label="Copy reply" />
                     <SendToAgentButton source={() => messageHandoff(agent, turn, item)} />
+                    <CopyLinkButton agent={agent} turnId={turn.id} itemId={item.id} />
                   </>
                 ))}
               </div>
