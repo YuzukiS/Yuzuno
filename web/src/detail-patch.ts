@@ -118,6 +118,10 @@ export function patchDetail(
   // independent of that body and must still reach the inspector.
   const outsideWindow = () => !detail.conversation?.hasAfter ? null
     : event.type === "agent.item" && event.artifacts ? { ...detail, artifacts: event.artifacts } : detail;
+  // A running sub-agent's call listed from outside the window: placed here
+  // it would be out of order, and its listing must not go stale.
+  if (event.type === "agent.item" && detail.conversation?.runningSubAgents?.some((entry) =>
+    entry.turnId === event.turnId && entry.item.id === event.item.id)) return null;
   const index = detail.turns.findIndex((turn) => turn.id === event.turnId);
   if (index < 0) return outsideWindow();
   const turn = detail.turns[index];

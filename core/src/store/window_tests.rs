@@ -99,6 +99,31 @@ fn windows_keep_full_metadata_while_body_reads_are_bounded_in_rows_and_held() {
     assert_eq!(held.stats.body_json_bytes, 0);
 }
 
+/// T-26: the stored index lists a running sub-agent whose call is outside the
+/// window, as the full record does; an entry an older Core cached without the
+/// call's facts is rebuilt.
+#[test]
+fn window_rows_list_running_subagents_outside_the_window() {
+    let (_dir, store) = lab();
+    let mut d = history();
+    d.turns[1]["items"].as_array_mut().unwrap().insert(2, json!({"id":"agent-bg","type":"claudeToolUse","name":"Agent",
+        "status":"completed","input":{"description":"Survey","prompt":"Do: survey","run_in_background":true},
+        "subAgent":{"status":"running","background":true,"description":"Survey","prompt":"Do: survey","taskId":"task-bg"}}));
+    store.insert(&d).unwrap();
+    let listed = json!([{"turnId":"t","position":[1,2],"item":{"id":"agent-bg","type":"historyPreview","status":"completed","name":"Agent",
+        "_yuzunoWindowPreview":{"type":"claudeToolUse"},"subAgent":{"status":"running","background":true,"description":"Survey","taskId":"task-bg"}}}]);
+    let page = assert_equivalent(&store, &Query::default());
+    assert_eq!(page.stats.source, "rows");
+    assert_eq!(page.conversation["runningSubAgents"], listed);
+    store.db.write().unwrap().execute(
+        "UPDATE agent_window_items SET data='{\"version\":1,\"item\":{\"id\":\"agent-bg\",\"type\":\"claudeToolUse\"}}' WHERE agent_id='a' AND item_id='agent-bg'",
+        [],
+    ).unwrap();
+    let rebuilt = assert_equivalent(&store, &Query::default());
+    assert_eq!(rebuilt.stats.index_build_items, 1);
+    assert_eq!(rebuilt.conversation["runningSubAgents"], listed);
+}
+
 #[test]
 fn window_rows_rebuild_only_changed_entries_and_keep_duplicate_ids_and_pending_payloads() {
     let (_dir, store) = lab();

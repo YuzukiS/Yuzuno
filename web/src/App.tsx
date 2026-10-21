@@ -2303,7 +2303,8 @@ export function App() {
               {/* Jobs and CI on the left edge; the turn dock is on the right. */}
               <ConversationJobs key={`job-cards-${selected}`} agentId={agent.id} revision={String(jobsRevision)} disabled={previewMode}>
                 {/* Sub-agents of the loaded Turns, under the jobs and runs. */}
-                <ConversationSubAgentDock agent={agent} turns={currentDetail?.turns || EMPTY_TURNS} onNavigate={navigateToTurn} />
+                <ConversationSubAgentDock agent={agent} turns={currentDetail?.turns || EMPTY_TURNS}
+                  running={currentDetail?.conversation?.runningSubAgents} onNavigate={navigateToTurn} />
                 {/* Claude's shells, monitors and workflows running in the background. */}
                 <ConversationBackgroundTaskDock agent={agent} turns={currentDetail?.turns || EMPTY_TURNS} onNavigate={navigateToTurn} />
               </ConversationJobs>

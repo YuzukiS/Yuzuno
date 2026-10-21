@@ -42,6 +42,10 @@ pub struct ReadStats {
     pub index_build_items: usize,
 }
 
+/// The shape of a cached entry (`conversation_window::item_index`). An entry
+/// of another version is rebuilt when read: 2 keeps a sub-agent call's status.
+const INDEX_VERSION: u8 = 2;
+
 #[derive(Serialize, Deserialize)]
 struct Entry {
     version: u8,
@@ -125,7 +129,7 @@ pub(crate) fn index(db: &Connection, id: &str) -> Result<Index> {
             let entry = cached
                 .as_deref()
                 .and_then(|raw| serde_json::from_str::<Entry>(raw).ok())
-                .filter(|entry| entry.version == 1 && entry.item.is_object());
+                .filter(|entry| entry.version == INDEX_VERSION && entry.item.is_object());
             let item = if let Some(entry) = entry {
                 entry.item
             } else {
@@ -149,7 +153,7 @@ pub(crate) fn index(db: &Connection, id: &str) -> Result<Index> {
                 let value = decode(db, id, &raw, false, None)?;
                 let item = conversation_window::item_index(&value);
                 let data = serde_json::to_string(&Entry {
-                    version: 1,
+                    version: INDEX_VERSION,
                     item: item.clone(),
                 })?;
                 fills.push(Fill { row: raw, data });

@@ -23,8 +23,8 @@ import {createRoot} from 'react-dom/client';
 import {ConversationSubAgentDock} from ${JSON.stringify(path.join(root, "src/ClaudeSubAgentDock.tsx"))};
 const root=createRoot(document.getElementById('root'));
 window.navigated=[];
-window.renderDock=(turns,agent)=>flushSync(()=>root.render(<nav className="work-dock">
-  <ConversationSubAgentDock agent={agent} turns={turns} onNavigate={(id)=>window.navigated.push(id)}/></nav>));`);
+window.renderDock=(turns,agent,running)=>flushSync(()=>root.render(<nav className="work-dock">
+  <ConversationSubAgentDock agent={agent} turns={turns} running={running} onNavigate={(id)=>window.navigated.push(id)}/></nav>));`);
   const result = await build({
     root, configFile: false, logLevel: "silent", plugins: [react()],
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
@@ -258,5 +258,49 @@ test("without Claude connected a running sub-agent is unconfirmed; a Codex Agent
   page.window.renderDock(turns(), agent("codex"));
   assert.deepEqual(page.nodes(), []);
   assert.ok(page.document.querySelector(".work-dock-group") === null);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a sub-agent still running whose call is outside the loaded window stays on the dock, in its place", async (t) => {
+  // T-26: a background sub-agent outlives the Items after its call, and the
+  // window holds the newest only. Core lists those still running
+  // (conversation.runningSubAgents) as core/src/conversation_window.rs
+  // previews their calls: the sub-agent's facts, not its goal or result.
+  const facts = (description, id) => ({ taskId: `task-${id}`, type: "general-purpose", status: "running", background: true, description });
+  const listed = (turnId, position, id, description) => ({ turnId, position, item: { id, type: "historyPreview", status: "completed",
+    name: "Agent", _yuzunoWindowPreview: { type: "claudeToolUse" }, subAgent: facts(description, id) } });
+  const original = agentCall("agent-bg", "Survey the notes", { ...facts("Survey the notes", "agent-bg"), prompt: "Do: Survey the notes" });
+  const page = mount((url) => (url.includes("/items/agent-bg/original") ? original : null));
+  t.after(page.close);
+  // The newest Items of t5: a foreground sub-agent that ended, after agent-bg.
+  const loaded = [{ id: "t5", status: "inProgress", _yuzunoSlice: { start: 50, total: 60, index: 4 }, items: [
+    agentCall("agent-new", "Check the build", { taskId: "task-new", type: "general-purpose", status: "completed", result: "green" }),
+    call("new-read", "agent-new"),
+  ] }];
+  page.window.renderDock(loaded, agent());
+  assert.deepEqual(page.nodes().map((n) => n.querySelector(".work-dock-label strong").textContent), ["Check the build"],
+    "without Core's list, only the loaded Items' sub-agents");
+  const running = [listed("t5", [4, 3], "agent-bg", "Survey the notes"), listed("t7", [6, 2], "agent-deploy", "Watch the deploy"),
+    // Loaded as well (an earlier page joined): once.
+    listed("t5", [4, 50], "agent-new", "Check the build")];
+  page.window.renderDock(loaded, agent(), running);
+  assert.deepEqual(page.nodes().map((n) => [n.querySelector(".work-dock-label strong").textContent,
+    n.querySelector(".work-dock-label small").textContent, n.className.match(/state-(\w+)/)[1]]), [
+    ["Watch the deploy", "Background", "running"],
+    ["Survey the notes", "Background", "running"],
+    ["Check the build", "Completed", "succeeded"],
+  ]);
+  page.node("Survey the notes").click();
+  await tick();
+  assert.match(page.card().textContent, /Status\s*Running in the background/);
+  assert.match(page.card().textContent, /GOAL\s*Survey the notes\s*In the saved original of this call\./);
+  assert.deepEqual(page.requests, [], "nothing is read until asked");
+  page.button(page.card(), "Read the full call").click();
+  await tick();
+  assert.deepEqual(page.requests, ["/api/agents/a/items/agent-bg/original?turnId=t5"]);
+  assert.match(page.card().textContent, /GOAL\s*Survey the notes\s*Do: Survey the notes/);
+  page.button(page.card(), "Go to its Turn").click();
+  await tick();
+  assert.deepEqual([...page.window.navigated], ["t5"]);
   assert.deepEqual(page.errors, []);
 });

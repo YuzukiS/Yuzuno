@@ -54,6 +54,23 @@ test("saved body windows keep middle reading separate from live arrivals and bou
   assert.equal(patchDetail(base,delta(11,"m","text","x".repeat(200))),null,"huge item returns to explicit original preview");
 });
 
+test("a running sub-agent Core listed from outside the window is read again when it changes, never placed among the loaded Items", () => {
+  // T-26: its call is earlier than the loaded slice, or in a Turn not loaded.
+  // Appended at the end it would be out of place; while reading history,
+  // left alone it would go stale.
+  const running = [{turnId:"t1", position:[1,0], item:{id:"agent-bg",type:"historyPreview",status:"completed",name:"Agent",
+    subAgent:{status:"running",background:true}}}];
+  const ended = item(11,{id:"agent-bg",type:"claudeToolUse",name:"Agent",status:"completed",subAgent:{status:"completed",background:true}});
+  for (const hasAfter of [false, true]) {
+    const base = detail();
+    base.conversation = {index:[], hasAfter, hasBefore:true, start:'["t0","old"]', end:'["t1","c"]', totalItems:1000, runningSubAgents:running};
+    assert.equal(patchDetail(base, ended), null, `read again (hasAfter ${hasAfter})`);
+  }
+  const base = detail();
+  base.conversation = {index:[], hasAfter:false, hasBefore:true, start:'["t0","old"]', end:'["t1","c"]', totalItems:1000, runningSubAgents:running};
+  assert.equal(text(patchDetail(base,item(11,{id:"new",type:"agentMessage",text:"new"})),"new").text,"new", "a new Item is placed as before");
+});
+
 test("changing body window cancels an older read without clearing the reading view", async () => {
   const requests = [], shown = [];
   const sync = new DetailSync({fetch:(_id,signal)=>new Promise(resolve=>requests.push({resolve,signal})),publish:d=>shown.push(d),error:()=>{}});

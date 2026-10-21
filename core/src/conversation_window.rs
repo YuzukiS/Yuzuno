@@ -8,6 +8,9 @@ use serde_json::{json, Value};
 pub const MAX_ITEMS: usize = 96;
 pub const MAX_BODY_BYTES: usize = 256 * 1024;
 pub const MAX_ITEM_BYTES: usize = 32 * 1024;
+/// At most this many running sub-agents outside the window are listed, the
+/// newest; the dock shows fewer.
+const MAX_RUNNING_SUBAGENTS: usize = 32;
 
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,12 +70,23 @@ fn excerpt(item: &Value, limit: usize) -> String {
 pub fn bounded_item(item: &Value) -> Value {
     let bytes = serde_json::to_vec(item).map_or(0, |v| v.len());
     if bytes <= MAX_ITEM_BYTES { return item.clone(); }
-    let preview = excerpt(item, 4096);
-    let mut out = json!({"id":item["id"],"type":"historyPreview","status":item["status"],
-        "text":preview,"_yuzunoWindowPreview":{"type":item["type"],"bytes":bytes}});
-    // A Claude sub-agent's call and its own calls stay where they belong,
-    // and so does a background task's call; a goal and result are read with
-    // the original.
+    let mut out = preview(item);
+    out["text"] = excerpt(item, 4096).into();
+    out["_yuzunoWindowPreview"]["bytes"] = bytes.into();
+    out
+}
+
+/// An Item whose body is not sent: what it is, and the facts that place it.
+fn preview(item: &Value) -> Value {
+    let mut out = json!({"id":item["id"],"type":"historyPreview","status":item["status"],"_yuzunoWindowPreview":{"type":item["type"]}});
+    keep_task_facts(item, &mut out);
+    out
+}
+
+/// A Claude sub-agent's call and its own calls stay where they belong, and
+/// so does a background task's call; a goal and result are read with the
+/// original.
+fn keep_task_facts(item: &Value, out: &mut Value) {
     if let Some(parent) = item.get("parentToolUseId") {
         out["parentToolUseId"] = parent.clone();
     }
@@ -83,7 +97,6 @@ pub fn bounded_item(item: &Value) -> Value {
                 .map(|(key, value)| (key.clone(), value.clone())).collect::<serde_json::Map<_, _>>().into();
         }
     }
-    out
 }
 
 pub(crate) fn turn_shell(turn: &Value) -> Value {
@@ -109,6 +122,9 @@ pub(crate) fn item_index(item: &Value) -> Value {
         if item["delivery"] == "async" && item["questions"].as_array().is_some_and(|q| !q.is_empty()) {
             for key in ["delivery", "status", "questions"] { out[key] = item[key].clone(); }
         }
+    } else if let Some(status) = item["subAgent"].get("status") {
+        // A sub-agent's call: listed while it runs, wherever the window is.
+        out["subAgent"] = json!({"status":status});
     }
     out
 }
@@ -206,7 +222,18 @@ pub(crate) fn project_from(
     chosen.sort_unstable_by_key(|(at, _)| *at);
     let start = chosen.first().map(|(at, _)| *at);
     let end = chosen.last().map(|(at, _)| *at);
-    let metadata = json!({"index":index,"questions":questions,"nativeClientIds":native_client_ids,"start":start.map(cursor),"end":end.map(cursor),
+    // A Claude sub-agent still running is attention state too: one in the
+    // background outlives the Items after its call, and the window holds
+    // the newest only. Its call's preview, from its body as sent, in order.
+    let shown: std::collections::HashSet<usize> = chosen.iter().map(|(at, _)| *at).collect();
+    let mut running = Vec::new();
+    for (at, &(t, i)) in positions.iter().enumerate().rev() {
+        let Some(i) = i.filter(|&i| !shown.contains(&at) && crate::claude::subagent_running(&turns[t]["items"][i]["subAgent"])) else { continue };
+        if running.len() == MAX_RUNNING_SUBAGENTS { break; }
+        running.push(json!({"turnId":turns[t]["id"],"position":[t, i],"item":preview(&read(t, i)?)}));
+    }
+    running.reverse();
+    let metadata = json!({"index":index,"questions":questions,"runningSubAgents":running,"nativeClientIds":native_client_ids,"start":start.map(cursor),"end":end.map(cursor),
         "hasBefore":start.is_some_and(|i| i > 0),"hasAfter":end.is_some_and(|i| i + 1 < positions.len()),
         "totalItems":turns.iter().map(|t| t["items"].as_array().map_or(0, Vec::len)).sum::<usize>()});
     let mut selected: Vec<Value> = Vec::new();
@@ -372,5 +399,33 @@ mod tests {
         assert!(metadata["questions"][0]["items"][0].get("text").is_none());
         assert_eq!(metadata["nativeClientIds"],json!(["confirmed"]));
         assert_eq!(metadata["index"][0]["items"][0]["_yuzunoSource"],"peer");
+    }
+    /// T-26: a background sub-agent outlives the Items after its call, and a
+    /// window holds the newest only. One still running stays listed, as its
+    /// call's preview, wherever the window is; one that ended or whose end
+    /// is unknown is history like any other Item.
+    #[test]
+    fn running_subagents_outside_the_window_stay_listed() {
+        let mut saved = giant(200);
+        let call = |id: &str, status: &str| json!({"id":id,"type":"claudeToolUse","name":"Agent","status":"completed",
+            "input":{"description":id,"prompt":"Do: the goal","run_in_background":true},"output":[{"type":"text","text":"Async agent launched"}],
+            "subAgent":{"status":status,"background":true,"description":id,"prompt":"Do: the goal","progress":"p","result":"r","taskId":format!("task-{id}")}});
+        let items = saved.turns[0]["items"].as_array_mut().unwrap();
+        items[1] = call("early", "running");
+        items[2] = call("done", "completed");
+        items[3] = call("lost", "unknown");
+        items[150] = call("later", "running");
+        let listed = |id: &str, at: usize| json!({"turnId":"giant","position":[0,at],"item":{"id":id,"type":"historyPreview","status":"completed",
+            "name":"Agent","_yuzunoWindowPreview":{"type":"claudeToolUse"},"subAgent":{"status":"running","background":true,"description":id,"taskId":format!("task-{id}")}}});
+        let mut latest = saved.clone();
+        let metadata = project(&mut latest, &Query::default()).unwrap();
+        let loaded = |d: &AgentDetail, id: &str| d.turns[0]["items"].as_array().unwrap().iter().any(|i| i["id"] == id);
+        assert!(!loaded(&latest, "early") && loaded(&latest, "later"));
+        assert_eq!(metadata["runningSubAgents"], json!([listed("early", 1)]));
+        // Reading from the first: the later one is outside it now.
+        let mut first = saved.clone();
+        let metadata = project(&mut first, &Query {turn_id:Some("giant".into()),item_id:Some("early".into()),..Default::default()}).unwrap();
+        assert!(loaded(&first, "early") && !loaded(&first, "later"));
+        assert_eq!(metadata["runningSubAgents"], json!([listed("later", 150)]));
     }
 }

@@ -213,10 +213,19 @@ export interface ArtifactPreview extends Artifact {
 export type BackgroundShells =
   | { state: "known"; count: number; checkedAt: number }
   | { state: "unknown"; lastCount: number; checkedAt: number };
+export interface RunningSubAgent {
+  turnId: string;
+  position: [turn: number, item: number];
+  item: NativeItem;
+}
 export interface AgentDetail {
   conversation?: {
     index: (NativeTurn & { number: number; itemCount: number })[];
     questions: NativeTurn[];
+    /** Claude sub-agents still running whose calls are outside this window
+     * (core/src/conversation_window.rs): each call's preview, at its Turn's
+     * and its own position in the record. */
+    runningSubAgents?: RunningSubAgent[];
     nativeClientIds: string[];
     start: string | null;
     end: string | null;
