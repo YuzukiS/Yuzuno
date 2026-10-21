@@ -7,6 +7,9 @@ use std::path::Path;
 
 const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const SHA_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const SHA_D: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+const SHA_E: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const CLEAN: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 fn known() -> Known {
@@ -33,7 +36,7 @@ fn local_job() -> Value {
                 {"path":"/home/someone/work/exp/../../outside.txt","sha256":SHA_B},
                 {"path":"/home/someone/work/exp/absent.txt","sha256":null}],
             "scope":"Frozen argv/env/resources"},
-        "identity":{"version":1,"sha256":SHA_A,"specSha256":SHA_B,"parts":{"command":SHA_A,"code":SHA_B},"codeKnown":true},
+        "identity":{"version":1,"sha256":SHA_C,"specSha256":SHA_D,"parts":{"command":SHA_E,"code":CLEAN},"codeKnown":true},
         "artifacts":[{"path":"out.json","format":"json"}],
         "status":"succeeded","reason":"Exit 0; wrote /home/someone/work/exp/out.json.",
         "createdAt":"2026-10-21T01:00:00Z","startedAt":"2026-10-21T01:00:05Z","finishedAt":"2026-10-21T01:10:00Z",
@@ -90,11 +93,14 @@ fn a_completed_job_exports_its_recorded_evidence_and_nothing_outside_the_list() 
     assert_eq!(a["cost"]["state"], "declared");
     assert_eq!(a["logs"]["truncated"], true);
     assert_eq!(a["reason"], "Exit 0; wrote <cwd>/out.json.");
-    assert_absent(&m, &report, &["SECRET", "/home/someone", "/etc/private", "outside.txt", "controlGroup"]);
+    // Digests over the command or withheld paths leave only as labels.
+    assert_eq!(a["identity"], json!({"command":"C1","code":"S1","attempt":"I1","codeKnown":true,"version":1}));
+    assert_absent(&m, &report, &["SECRET", "/home/someone", "/etc/private", "outside.txt", "controlGroup", SHA_C, SHA_D, SHA_E]);
     for line in ["# Provenance of job train model", "- Ran on this Core's host lab-host (machine local-abc)",
         "exit code 0 (verified, by systemd)", "- Inputs: 5 files frozen by SHA-256; 2 paths withheld",
         "  - Git root/lib/util.py: `bbbb", "  - absent.txt: missing at submission",
-        "- Command: not exported (3 arguments, 2 environment variables)",
+        "- Command: not exported (3 arguments, 2 environment variables); command C1, code S1, identity I1",
+        "Labels such as C1, S1 and I1 stand for",
         "  - out.json: 12 bytes, SHA-256 `aaaa", "the first 1.0 MiB were overwritten"] {
         assert!(report.contains(line), "{line} missing from:\n{report}");
     }
@@ -231,6 +237,9 @@ fn a_failed_attempt_and_its_retry_export_separately_and_neither_is_overwritten()
     assert_eq!(new["run"]["attempt"], 2);
     assert_eq!(new["artifacts"]["files"][0]["sha256"], SHA_B);
     assert_eq!(new["code"]["git"]["trackedChanges"], "present: their files are among the inputs");
+    // A retry repeats its command: the same label, never the digest.
+    assert_eq!((old["identity"]["command"].as_str(), new["identity"]["command"].as_str()), (Some("C1"), Some("C1")));
+    assert!(!m.to_string().contains(jobs[0]["identity"]["parts"]["command"].as_str().unwrap()));
     assert!(report.contains("## Stage train attempt 1: failed"), "{report}");
     assert!(report.contains("## Stage train attempt 2: succeeded"), "{report}");
     assert!(report.contains("- Stage train: succeeded, 2 attempts"), "{report}");

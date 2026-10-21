@@ -22,8 +22,9 @@ pub(super) const VERSION: u64 = 1;
 const LOG_LIMIT: u64 = 2 * 1024 * 1024;
 const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const BASIS: &str = "Restates what Core recorded while each attempt ran. Nothing was read or hashed again for this export: files may have changed since, so it does not show that the result can be reproduced.";
+const LABELS: &str = "Labels such as C1, S1 and I1 stand for Core's digests of the command, of the frozen code and of an attempt's whole identity: equal labels mean equal digests, within this export only. The digests are not exported: one of a command could confirm a guessed secret in it.";
 const OMITTED: [&str; 6] = [
-    "command arguments and environment values (only their number and the recorded command digest)",
+    "command arguments and environment values (only their number), and Core's digests of the command, code and identity (only labels)",
     "absolute paths: the working directory, the Git root and inputs outside them",
     "output and logs",
     "chat and Agent sessions",
@@ -141,6 +142,20 @@ fn below(path: &str, base: &str) -> Option<String> {
     let rest = path.strip_prefix(base).filter(|_| !base.is_empty())?;
     let rest = rest.strip_prefix(['/', '\\'])?;
     relative(rest)
+}
+
+/// Export-local names for digests: an unsalted digest of a command (argv,
+/// cwd, env) lets anyone who can guess the rest of it confirm a guessed
+/// secret, and one of the code covers withheld paths, so only equality leaves.
+#[derive(Default)]
+struct Labels(std::collections::HashMap<String, String>);
+
+impl Labels {
+    fn of(&mut self, kind: &str, digest: &Value) -> Value {
+        let Some(digest) = digest.as_str() else { return Value::Null };
+        let next = self.0.keys().filter(|k| k.starts_with(&format!("{kind}:"))).count() + 1;
+        json!(self.0.entry(format!("{kind}:{digest}")).or_insert_with(|| format!("{kind}{next}")))
+    }
 }
 
 fn non_null(pairs: &[(&str, &Value)]) -> Value {
@@ -330,7 +345,7 @@ fn logs(job: &Value, extent: &Result<Value, String>) -> Value {
     }
 }
 
-fn attempt(job: &Value, extent: &Result<Value, String>, known: &mut Known) -> Value {
+fn attempt(job: &Value, extent: &Result<Value, String>, known: &mut Known, labels: &mut Labels) -> Value {
     known.add(&job["cwd"], "<cwd>");
     known.add(&job["snapshot"]["cwd"], "<cwd>");
     known.add(&job["snapshot"]["git"]["root"], "<git root>");
@@ -354,7 +369,8 @@ fn attempt(job: &Value, extent: &Result<Value, String>, known: &mut Known) -> Va
             "timeoutSeconds": job["timeoutSeconds"], "guardGit": job["guardGit"]},
         "identity": if job["identity"].is_object() {
             let i = &job["identity"];
-            json!({"sha256": i["sha256"], "specSha256": i["specSha256"], "parts": i["parts"], "codeKnown": i["codeKnown"], "version": i["version"]})
+            json!({"command": labels.of("C", &i["parts"]["command"]), "code": labels.of("S", &i["parts"]["code"]),
+                "attempt": labels.of("I", &i["sha256"]), "codeKnown": i["codeKnown"], "version": i["version"]})
         } else { json!({"state": "notRecorded"}) },
         "code": code(job),
         "inputs": inputs,
@@ -366,13 +382,13 @@ fn attempt(job: &Value, extent: &Result<Value, String>, known: &mut Known) -> Va
     })
 }
 
-fn run(run: &Value) -> Value {
+fn run(run: &Value, labels: &mut Labels) -> Value {
     let stages: Vec<Value> = run["stages"].as_array().into_iter().flatten().map(|s| {
         let reused = &s["reusedFrom"];
         let attempts: Vec<Value> = s["attempts"].as_array().into_iter().flatten().map(|a| a["id"].clone()).collect();
         json!({"key": s["key"], "name": s["name"], "needs": s["needs"], "status": s["status"], "retry": s["retry"],
             "reusedFrom": if reused.is_object() { json!({"jobId": reused["jobId"], "attempt": reused["attempt"],
-                "runId": reused["runId"], "identity": reused["identity"], "verifiedAt": reused["verifiedAt"],
+                "runId": reused["runId"], "identity": labels.of("I", &reused["identity"]), "verifiedAt": reused["verifiedAt"],
                 "note": "An earlier attempt's verified result, not run again here"}) } else { Value::Null },
             "attempts": attempts})
     }).collect();
@@ -388,7 +404,8 @@ fn run(run: &Value) -> Value {
 /// The manifest and its report. extents holds, per Job, what its log ring
 /// headers say (local attempts only).
 pub(super) fn export(run_view: Option<&Value>, jobs: &[Value], extents: &[Result<Value, String>], mut known: Known) -> Value {
-    let attempts: Vec<Value> = jobs.iter().zip(extents).map(|(job, extent)| attempt(job, extent, &mut known)).collect();
+    let mut labels = Labels::default();
+    let attempts: Vec<Value> = jobs.iter().zip(extents).map(|(job, extent)| attempt(job, extent, &mut known, &mut labels)).collect();
     known.0.sort_by_key(|(path, _)| std::cmp::Reverse(path.len()));
     let (kind, id, task) = match run_view {
         Some(r) => ("run", r["id"].clone(), r["taskRef"].clone()),
@@ -398,12 +415,13 @@ pub(super) fn export(run_view: Option<&Value>, jobs: &[Value], extents: &[Result
         "schema": SCHEMA, "version": VERSION, "exportedAt": now(), "exportedBy": crate::guide::release(),
         "basis": BASIS,
         "scope": {"kind": kind, "id": id, "taskRef": task, "attempts": attempts.len()},
-        "run": run_view.map(run),
+        "run": run_view.map(|r| run(r, &mut labels)),
         "attempts": attempts,
         "states": {"verified": "Checked by Core or the machine's helper when it was recorded",
             "declared": "Stated by the submission or reported by the command itself; not checked",
             "notRecorded": "Not recorded for this attempt, executor or version",
             "unknown": "Core could not establish it"},
+        "labels": LABELS,
         "omitted": OMITTED,
     });
     known.scrub_all(&mut manifest);
@@ -471,6 +489,7 @@ fn report(m: &Value) -> String {
         md(&m["exportedAt"]), md(&m["exportedBy"]["version"]), SCHEMA, VERSION);
     let _ = writeln!(out, "{BASIS}\n");
     let _ = writeln!(out, "Not included: {}.\n", OMITTED.join("; "));
+    let _ = writeln!(out, "{LABELS}\n");
     if let Some(run) = m["run"].as_object() {
         let _ = writeln!(out, "## Run\n\nStatus {}. Recorded cost {} USD known{}.\n", md(&run["status"]),
             md(&run["cost"]["knownUsd"]),
@@ -532,8 +551,9 @@ fn report(m: &Value) -> String {
                 if u["reused"] == true { ", reused" } else { "" }, list.join(", "));
         }
         let c = &a["command"];
-        let _ = writeln!(out, "- Command: not exported ({} arguments, {} environment variables); command digest {}; identity {}",
-            md(&c["argv"]["count"]), md(&c["env"]["count"]), hex(&a["identity"]["parts"]["command"]), hex(&a["identity"]["sha256"]));
+        let i = &a["identity"];
+        let _ = writeln!(out, "- Command: not exported ({} arguments, {} environment variables); command {}, code {}, identity {}",
+            md(&c["argv"]["count"]), md(&c["env"]["count"]), md(&i["command"]), md(&i["code"]), md(&i["attempt"]));
         let r = &a["resources"];
         let actual = &r["measured"]["actual"];
         let _ = writeln!(out, "- Resources: declared {} mCPU, {} MiB memory, {} MiB swap; held {}; measured {}{}",
