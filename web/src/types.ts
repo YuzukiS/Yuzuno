@@ -213,11 +213,14 @@ export interface ArtifactPreview extends Artifact {
 export type BackgroundShells =
   | { state: "known"; count: number; checkedAt: number }
   | { state: "unknown"; lastCount: number; checkedAt: number };
-export interface RunningSubAgent {
+/** A call Core lists from outside the window while its task runs: its
+ * preview, at its Turn's and its own position in the record. */
+export interface RunningCall {
   turnId: string;
   position: [turn: number, item: number];
   item: NativeItem;
 }
+export type RunningSubAgent = RunningCall;
 export interface AgentDetail {
   conversation?: {
     index: (NativeTurn & { number: number; itemCount: number })[];
@@ -226,6 +229,9 @@ export interface AgentDetail {
      * (core/src/conversation_window.rs): each call's preview, at its Turn's
      * and its own position in the record. */
     runningSubAgents?: RunningSubAgent[];
+    /** Claude's background tasks (shells, monitors) still running, starting
+     * or paused whose calls are outside this window, likewise. */
+    runningBackgroundTasks?: RunningCall[];
     nativeClientIds: string[];
     start: string | null;
     end: string | null;

@@ -8,9 +8,10 @@ use serde_json::{json, Value};
 pub const MAX_ITEMS: usize = 96;
 pub const MAX_BODY_BYTES: usize = 256 * 1024;
 pub const MAX_ITEM_BYTES: usize = 32 * 1024;
-/// At most this many running sub-agents outside the window are listed, the
-/// newest; the dock shows fewer.
-const MAX_RUNNING_SUBAGENTS: usize = 32;
+/// At most this many running sub-agents, and apart this many running
+/// background tasks, outside the window are listed, the newest of each; the
+/// docks show fewer.
+const MAX_RUNNING: usize = 32;
 
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -122,9 +123,12 @@ pub(crate) fn item_index(item: &Value) -> Value {
         if item["delivery"] == "async" && item["questions"].as_array().is_some_and(|q| !q.is_empty()) {
             for key in ["delivery", "status", "questions"] { out[key] = item[key].clone(); }
         }
-    } else if let Some(status) = item["subAgent"].get("status") {
-        // A sub-agent's call: listed while it runs, wherever the window is.
-        out["subAgent"] = json!({"status":status});
+    } else {
+        // A sub-agent's or a background task's call: listed while it runs,
+        // wherever the window is.
+        for record in crate::claude::TASK_RECORDS {
+            if let Some(status) = item[record].get("status") { out[record] = json!({"status":status}); }
+        }
     }
     out
 }
@@ -222,18 +226,31 @@ pub(crate) fn project_from(
     chosen.sort_unstable_by_key(|(at, _)| *at);
     let start = chosen.first().map(|(at, _)| *at);
     let end = chosen.last().map(|(at, _)| *at);
-    // A Claude sub-agent still running is attention state too: one in the
-    // background outlives the Items after its call, and the window holds
-    // the newest only. Its call's preview, from its body as sent, in order.
+    // A Claude sub-agent or background task (a shell, a monitor) still
+    // running is attention state too: either outlives the Items after its
+    // call, and the window holds the newest only. Each call's preview, from
+    // its body as sent, in order; one pass lists both, apart.
     let shown: std::collections::HashSet<usize> = chosen.iter().map(|(at, _)| *at).collect();
-    let mut running = Vec::new();
+    let (mut sub_agents, mut background) = (Vec::new(), Vec::new());
     for (at, &(t, i)) in positions.iter().enumerate().rev() {
-        let Some(i) = i.filter(|&i| !shown.contains(&at) && crate::claude::subagent_running(&turns[t]["items"][i]["subAgent"])) else { continue };
-        if running.len() == MAX_RUNNING_SUBAGENTS { break; }
-        running.push(json!({"turnId":turns[t]["id"],"position":[t, i],"item":preview(&read(t, i)?)}));
+        if sub_agents.len() == MAX_RUNNING && background.len() == MAX_RUNNING { break; }
+        let Some(i) = i.filter(|_| !shown.contains(&at)) else { continue };
+        let item = &turns[t]["items"][i];
+        let list = if crate::claude::subagent_running(&item["subAgent"]) {
+            &mut sub_agents
+        } else if crate::claude::subagent_running(&item["backgroundTask"]) {
+            &mut background
+        } else {
+            continue;
+        };
+        if list.len() < MAX_RUNNING {
+            list.push(json!({"turnId":turns[t]["id"],"position":[t, i],"item":preview(&read(t, i)?)}));
+        }
     }
-    running.reverse();
-    let metadata = json!({"index":index,"questions":questions,"runningSubAgents":running,"nativeClientIds":native_client_ids,"start":start.map(cursor),"end":end.map(cursor),
+    sub_agents.reverse();
+    background.reverse();
+    let metadata = json!({"index":index,"questions":questions,"runningSubAgents":sub_agents,"runningBackgroundTasks":background,
+        "nativeClientIds":native_client_ids,"start":start.map(cursor),"end":end.map(cursor),
         "hasBefore":start.is_some_and(|i| i > 0),"hasAfter":end.is_some_and(|i| i + 1 < positions.len()),
         "totalItems":turns.iter().map(|t| t["items"].as_array().map_or(0, Vec::len)).sum::<usize>()});
     let mut selected: Vec<Value> = Vec::new();

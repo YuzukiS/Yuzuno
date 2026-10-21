@@ -2306,7 +2306,8 @@ export function App() {
                 <ConversationSubAgentDock agent={agent} turns={currentDetail?.turns || EMPTY_TURNS}
                   running={currentDetail?.conversation?.runningSubAgents} onNavigate={navigateToTurn} />
                 {/* Claude's shells, monitors and workflows running in the background. */}
-                <ConversationBackgroundTaskDock agent={agent} turns={currentDetail?.turns || EMPTY_TURNS} onNavigate={navigateToTurn} />
+                <ConversationBackgroundTaskDock agent={agent} turns={currentDetail?.turns || EMPTY_TURNS}
+                  running={currentDetail?.conversation?.runningBackgroundTasks} onNavigate={navigateToTurn} />
               </ConversationJobs>
               <TurnNavigator
                 key={selected}
