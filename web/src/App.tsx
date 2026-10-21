@@ -2094,7 +2094,8 @@ export function App() {
                 onReconnected={refresh}
               />
             )}
-            {readingOffer?.agentId === selected && !catchupSource && (
+            {/* Over this browser's own place too, not over a link or a source being read. */}
+            {readingOffer?.agentId === selected && (!catchupSource || (catchupSource.restore !== undefined && catchupSource.progress === undefined)) && (
               <div className="source-navigation reading-offer" role="status">
                 <span>
                   Continue where you were reading{" "}

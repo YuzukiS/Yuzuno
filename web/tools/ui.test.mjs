@@ -2331,8 +2331,21 @@ test("another browser's place is offered in the open conversation, opened only b
     state.release();
     await pause(); await pause();
     assert.equal(offer(), null, "Mori's late answer is not shown in Hana's conversation");
+    // Back where this browser itself left Mori, the other place is still offered.
+    state.handoff = { ...state.handoff, version: 7 };
+    page.window.localStorage.setItem("yuzuno.reading.ws-1", JSON.stringify({ a: { mode: "anchor", turnId: "t3", itemId: "t3-u", offset: -10, savedAt: 1 } }));
+    button(page, "Mori").click();
+    await until(() => /Where you left off/.test(bar()) && offer(), "its own place reopens, with the other offered");
+    assert.ok(requests.includes("turnId=t3&itemId=t3-u"), requests.join(" | "));
+    assert.match(offer().textContent, /in the desktop app/);
+    offer().querySelector(".quiet-button").click();
+    await pause();
+    assert.match(bar(), /Where you left off/, "Not now leaves this browser's own place open");
+    button(page, "Hana").click();
+    await until(() => page.document.querySelector('[aria-label="Message Hana"]'), "Hana is open");
+    page.window.localStorage.removeItem("yuzuno.reading.ws-1");
     // A place from an earlier native session that is gone says so, not the general notice.
-    state.handoff = { ...state.handoff, turnId: "t9", itemId: "t9-r", threadId: "thread-0", version: 7 };
+    state.handoff = { ...state.handoff, turnId: "t9", itemId: "t9-r", threadId: "thread-0", version: 8 };
     button(page, "Mori").click();
     await until(() => offer(), "the old session's place is offered");
     offer().querySelector(".secondary-button").click();
