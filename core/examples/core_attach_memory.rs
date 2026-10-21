@@ -20,7 +20,8 @@ mod supported {
     // record: the record read it returns, the handler turning that record
     // into a JSON tree and bytes, and the whole request through the router:
     // as the UI sent it before (no view) and as it sends it now
-    // (view=summary, which a Core from before it ignores).
+    // (view=summary, which a Core from before it ignores). Last, each Agent
+    // is closed, its record goes idle, and it is reopened through the router.
     use anyhow::{Context, Result};
     use serde_json::{json, Value};
     use std::{
@@ -378,6 +379,24 @@ for line in sys.stdin:
             json!({"status":status,"bodyBytes":body.len(),"keys":keys})
         }).collect();
         samples.last_mut().context("sample")?["responses"] = summary.into();
+        idle(&ws).await?;
+        for id in &ids { ws.close_agent(id).await?; }
+        idle(&ws).await?;
+        let mut reopened = vec![];
+        samples.push(measured("reopen_http_after_close", &ws.store, async {
+            use tower::ServiceExt;
+            for id in &ids {
+                let request = axum::http::Request::post(format!("/api/agents/{id}/reopen"))
+                    .header("host", "localhost:4317").header("x-yuzuno-client", "desktop")
+                    .header("content-type", "application/json").body(axum::body::Body::from("{}"))?;
+                let response = router.clone().oneshot(request).await?;
+                let status = response.status().as_u16();
+                reopened.push((status, axum::body::to_bytes(response.into_body(), usize::MAX).await?));
+            }
+            Ok(())
+        }).await?);
+        let reopened: Vec<Value> = reopened.drain(..).map(|(status, body)| json!({"status":status,"bodyBytes":body.len()})).collect();
+        samples.last_mut().context("sample")?["responses"] = reopened.into();
         drop(router);
         idle(&ws).await?;
         let mut tail = vec![sample("after_idle", &ws.store)];
