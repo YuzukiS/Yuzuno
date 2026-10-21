@@ -637,6 +637,38 @@ async fn home_orders_projects_and_needs_you_by_priority_then_wait() {
     assert_eq!(agent_edits_brief(&ws.store, "e").unwrap(), None);
 }
 
+/// Home lists an Agent's waiting requests as its record has them, held or
+/// not, without reading the whole record (T-120): it is rebuilt on every
+/// change while one waits.
+#[tokio::test]
+async fn home_lists_waiting_requests_without_reading_whole_records() {
+    let (_dir, ws, project) = lab();
+    ws.store.update("b", "test/pending", &json!({}), |d| {
+        d.pending.push(serde_json::from_value(json!({"id":"req-1","agentId":"b","method":"item/commandExecution/requestApproval",
+            "params":{"command":"rm -rf build","turnId":"t1"},"createdAt":"2026-01-01T00:00:00Z"})).unwrap());
+    }).unwrap();
+    let listed = |ws: &Workspace| {
+        let reads = crate::store::DETAIL_READS.with(|n| n.get());
+        let view = home::build(&ws.store).unwrap();
+        assert_eq!(crate::store::DETAIL_READS.with(|n| n.get()), reads, "Home read a whole record");
+        assert_eq!(view["projects"][0]["project"]["id"], project);
+        assert_eq!(view["needsYou"][0]["requestId"], "req-1");
+        let mut requests = view["projects"][0]["pending"].clone();
+        for request in requests.as_array_mut().unwrap() {
+            assert_eq!(request.as_object_mut().unwrap().remove("agentName"), Some(json!("Agent b")));
+        }
+        requests
+    };
+    // Held, as a record is after every commit.
+    let held = listed(&ws);
+    assert_eq!(held, serde_json::to_value(ws.store.detail("b").unwrap().pending).unwrap());
+    // Released, as a record idle since it was written is.
+    assert!(ws.store.release_for_test("b"), "the record was held");
+    assert_eq!(listed(&ws), held);
+    assert!(!ws.store.release_for_test("b"), "listing held it again");
+    assert_eq!(held[0]["params"]["command"], "rm -rf build");
+}
+
 #[tokio::test]
 async fn live_references_show_core_state_or_not_found() {
     let (_dir, ws, project) = lab();

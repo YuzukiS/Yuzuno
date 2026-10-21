@@ -564,6 +564,12 @@ thread_local! {
     pub(super) static META_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many whole records `Store::detail` read on this thread.
+    pub(crate) static DETAIL_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// Signals when `commit` has planned (serialized) the write of the watched
 /// Agent's record, before it takes the writer. A test holds the writer then.
 #[cfg(test)]
@@ -1252,6 +1258,8 @@ impl Store {
     }
 
     pub fn detail(&self, id: &str) -> Result<AgentDetail> {
+        #[cfg(test)]
+        DETAIL_READS.with(|n| n.set(n.get() + 1));
         self.detail_racing(id, || {})
     }
 
@@ -1939,6 +1947,17 @@ impl Store {
             }
         });
         Ok(())
+    }
+
+    /// `release` for a test outside this module, under the record lock;
+    /// whether the record was held.
+    #[cfg(test)]
+    pub(crate) fn release_for_test(&self, id: &str) -> bool {
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        let held = self.held(id).is_some();
+        self.release(id);
+        held
     }
 
     /// Drops a written held record, keeping its brief current. The caller
