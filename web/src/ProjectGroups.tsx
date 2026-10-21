@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Bell, ChevronDown, Folder, Minus, Plus } from "lucide-react";
 import type { ProjectGroupStyle } from "./appearance";
 import { groupSummary, type ProjectGroup } from "./project-groups";
@@ -35,18 +35,6 @@ function useFolded(workspaceId: string) {
   return [folded, fold] as const;
 }
 
-// The narrowest windows show the rail as avatars only: no headings to fold
-// with, so every group stays open there.
-const NARROW = "(max-width: 520px)";
-const canWatch = () => typeof matchMedia === "function";
-const watchNarrow = (listener: () => void) => {
-  if (!canWatch()) return () => {};
-  const query = matchMedia(NARROW);
-  query.addEventListener("change", listener);
-  return () => query.removeEventListener("change", listener);
-};
-const useNarrow = () => useSyncExternalStore(watchNarrow, () => canWatch() && matchMedia(NARROW).matches);
-
 // The Agent the grouped list last showed as chosen, per workspace, kept
 // while the list is not grouped (one project's list, No grouping, a single
 // group): an Agent chosen meanwhile still opens its group when the groups
@@ -78,7 +66,6 @@ export function GroupedAgents({
   onCreate: (projectId: string | null) => void;
 }) {
   const [folded, fold] = useFolded(workspaceId);
-  const narrow = useNarrow();
   // Only choosing another Agent opens its group, once the Agent is listed
   // (another in the same project too): folding the chosen Agent's own group
   // by hand stays folded through refreshes, re-renders and reloads. Nothing
@@ -101,7 +88,7 @@ export function GroupedAgents({
   return (
     <>
       {groups.map((group) => {
-        const isFolded = folded.has(group.key) && !searching && !narrow;
+        const isFolded = folded.has(group.key) && !searching;
         return (
           <GroupSection
             key={group.key}

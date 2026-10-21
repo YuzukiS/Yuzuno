@@ -2807,10 +2807,6 @@ p {
   }
 }
 @media (max-width: 520px) {
-  .app,
-  .app.with-inspector {
-    grid-template-columns: 68px minmax(0, 1fr);
-  }
   .toolbar-brand {
     min-width: 0;
     margin-right: 12px;
@@ -2831,70 +2827,6 @@ p {
   }
   .workspace-name {
     font-size: calc(9px + var(--font-adjust, 3px));
-  }
-  .toolbar-actions > .icon-button {
-    display: none;
-  }
-  .rail-top {
-    padding: 14px 8px 0;
-  }
-  .rail-heading,
-  .rail-heading[data-stacked] {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    margin: 2px 0 8px;
-  }
-  .rail-heading > .agent-scope {
-    order: 1;
-  }
-  .rail-heading > span,
-  .rail-heading .icon-button:first-child {
-    display: none;
-  }
-  .agent-list {
-    padding: 0 7px;
-  }
-  .agent-row {
-    padding: 10px 8px;
-  }
-  .agent-row-top {
-    justify-content: center;
-  }
-  .agent-row-top .avatar {
-    width: 28px;
-    height: 28px;
-  }
-  .agent-identity,
-  .agent-row p,
-  .agent-row-bottom {
-    display: none;
-  }
-  .add-agent {
-    width: calc(100% - 10px);
-    margin: 2px 5px 9px;
-    padding: 13px 0;
-    justify-content: center;
-    font-size: 0;
-    gap: 0;
-  }
-  .add-agent > span,
-  .rail-bottom,
-  .agent-search {
-    display: none;
-  }
-  .agent-search {
-    position: absolute;
-    left: 73px;
-    top: 90px;
-    z-index: 10;
-    width: 220px;
-  }
-  .rail-empty {
-    font-size: calc(8px + var(--font-adjust, 3px));
-    padding: 5px;
-    text-align: center;
   }
   .conversation-title p {
     max-width: 180px;
@@ -3136,5 +3068,100 @@ p {
   textarea,
   .pasted-text-composer .cm-content {
     font-size: max(16px, 1em);
+  }
+}
+
+/* Phones (T-170, phone-layout.ts): one screen at a time. The Agent list is
+   the whole rail at full width; what is open (a conversation or Home) fills
+   the same place, and the context panel too when it is opened. The list and
+   the panel cover the open view rather than replacing it, so it keeps its
+   place, drafts and any annotation underneath. */
+.app.phone,
+.app.phone.rail-hidden {
+  grid-template-columns: minmax(0, 1fr);
+  /* A phone held sideways is shorter than the desktop minimum. */
+  min-height: 0;
+}
+.app.phone > .rail,
+.app.phone > .main-panel,
+.app.phone > .inspector {
+  grid-column: 1;
+  grid-row: -3 / -2;
+}
+.app.phone:not(.phone-list) > .rail {
+  display: none;
+}
+/* Covered, the open view keeps its layout and scroll position but shows
+   nothing, not even its turn dock or other positioned parts. */
+.app.phone.phone-list > .main-panel,
+.app.phone.phone-inspector > .main-panel {
+  visibility: hidden;
+}
+.app.phone > .rail {
+  z-index: 3;
+  border-right: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.app.phone > .rail > .panel-resize-handle,
+.app.phone > .inspector > .panel-resize-handle {
+  display: none;
+}
+.app.phone > .inspector {
+  display: flex;
+  z-index: 2;
+  border-left: 0;
+  overscroll-behavior: contain;
+}
+.app.phone .toolbar-middle > .icon-button,
+.app.phone .workspace-name,
+.app.phone .toolbar-context,
+.app.phone .early-label {
+  display: none;
+}
+.app.phone .toolbar-brand {
+  min-width: 0;
+}
+.phone-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  padding: 0 10px 0 4px;
+  margin-left: -6px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  font-size: calc(13px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+/* Targets a finger can hit: 44 × 44 CSS px for the ways in and out. */
+.app.phone .toolbar .icon-button,
+.app.phone .toolbar-nav .catchup-nav,
+.app.phone .rail-actions .icon-button,
+.app.phone .send-button {
+  min-width: 44px;
+  min-height: 44px;
+}
+.app.phone .agent-select {
+  min-height: 44px;
+}
+/* A phone held sideways: room for the conversation above the composer.
+   The status bar, the composer's project and model line and the turn dock
+   (which would sit over Send) wait for a taller screen. */
+@media (max-height: 500px) {
+  .app.phone {
+    grid-template-rows: 57px minmax(0, 1fr) 0;
+  }
+  .app.phone:has(.preview-strip) {
+    grid-template-rows: 28px 57px minmax(0, 1fr) 0;
+  }
+  .app.phone .statusbar,
+  .app.phone .composer-footnote,
+  .app.phone .turn-dock {
+    display: none;
   }
 }
