@@ -68,7 +68,9 @@ const node = (type, props, children) => (children ? { type, props, children } : 
 const spec = (top, elements) => ({ root: "body", elements: { body: node("BriefBody", {}, top), ...elements } });
 const snapshot = (name, extra = {}) => ({ name, kind: "image", mime: "image/png", size: images[name]?.length ?? 1000, snapshot: true, mayChange: false, takenAt: taken, ...extra });
 const owner = (id) => ({ agentId: id, name: agents.find((a) => a.id === id).name, state: "active" });
-const section = (key, kind, title, version, by, body, attachments, extra = {}) => ({ key, kind, title, version, owner: owner(by),
+let nextId = 11;
+// Pins name a section by its numeric id, as Core gives each one.
+const section = (key, kind, title, version, by, body, attachments, extra = {}) => ({ id: nextId++, key, kind, title, version, owner: owner(by),
   updatedAt: ago(5), updatedTurnId: "t1", body, attachments, refs: {}, seen: null, history: false, ...extra });
 const sections = [
   section("shots", "report", "Screens", 3, "b", spec(["text", "files"], {
