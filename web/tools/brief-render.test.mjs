@@ -409,7 +409,7 @@ test("Mark up on a Brief image tells Point & Fix the image shown and its card, k
   const opened = [];
   window.pointFixOpen = (source) => opened.push(source);
   const put = {
-    op: "put", key: "shots", kind: "status", title: "Screens",
+    op: "put", key: "shots", kind: "report", title: "Screens",
     attachments: [{ name: "shot.png", path: "/runs/shot.png" }],
     body: { root: "body", elements: {
       body: { type: "BriefBody", props: {}, children: ["files"] },

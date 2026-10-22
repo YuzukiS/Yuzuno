@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { SquareDashedMousePointer, X } from "lucide-react";
 import { Modal } from "./components";
 import { API_BASE } from "./api";
@@ -117,6 +117,13 @@ export function ImagePreview({
   useEffect(() => {
     if (open) setFailed("");
   }, [open, src]);
+  // The preview has no trigger of its own, so closing it puts focus back on
+  // what opened it: the thumbnail or Open (T-177). Taken before the dialog
+  // moves focus into itself.
+  const opener = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (open) opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }, [open]);
   return (
     <Modal
       open={open}
@@ -126,6 +133,13 @@ export function ImagePreview({
       title={name}
       description={description}
       wide
+      onCloseAutoFocus={(event) => {
+        const back = opener.current;
+        if (back?.isConnected) {
+          event.preventDefault();
+          back.focus();
+        }
+      }}
     >
       {open && (
         <div className="input-image-dialog">
