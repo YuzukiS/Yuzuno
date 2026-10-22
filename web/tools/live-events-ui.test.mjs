@@ -1,6 +1,7 @@
 // perf-sse: the GUI follows Core's event stream. Streamed changes patch the
 // shown conversation in place; another Agent's events never read the shown
 // Agent's detail again; only a change notice or a reset does.
+import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";

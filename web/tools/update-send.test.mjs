@@ -1,4 +1,5 @@
 // Source-level hook checks: no Vite bundle, browser process or live Core.
+import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";

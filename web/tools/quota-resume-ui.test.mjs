@@ -2,6 +2,7 @@
 // agent, in JSDOM over a scripted API. The notice says what happens and
 // when, and offers continue now / don't continue; the setting is this
 // agent's choice or the workspace default. Nothing else is called.
+import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";

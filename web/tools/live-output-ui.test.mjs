@@ -2,6 +2,7 @@
 // tail preview Core sent (detail-patch.ts), and an expanded row's full value
 // (item-payload.ts) grows from that preview by exactly what was appended:
 // nothing twice, nothing lost, no refetch while the preview covers it.
+import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";

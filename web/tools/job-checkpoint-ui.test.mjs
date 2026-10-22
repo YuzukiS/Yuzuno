@@ -3,6 +3,7 @@
 // says what was sent and when it is cancelled if it has not stopped; a job
 // stopped at a verified checkpoint offers to resume it as a new job, once;
 // one without a verified checkpoint says why and offers nothing.
+import './jsdom-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';

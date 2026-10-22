@@ -2,6 +2,7 @@
 // a scope of its own there (as Core decides, remote.rs pause_refusal); one
 // without, and one on Windows, say why and send nothing. A paused remote job
 // says where it is paused and what stays.
+import './jsdom-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
