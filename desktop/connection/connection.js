@@ -4,11 +4,27 @@ const button = document.querySelector('#connect-button');
 const message = document.querySelector('#connection-message');
 const startRow = document.querySelector('#start-row');
 const startButton = document.querySelector('#start-button');
+const startHint = document.querySelector('#start-hint');
 const invoke = window.__TAURI__?.core?.invoke;
 
-// The saved Core this app may start in WSL ({ coreUrl, distro }), offered
-// once connecting to that same address has failed.
+// The saved Core this app may start in WSL ({ coreUrl, distro, confirmed }),
+// offered once connecting to that same address has failed. Not confirmed
+// yet: only the Core said where it is installed, and an address on this
+// computer may be a tunnel to another one; the user's start decides.
 let startable = null;
+
+function offerFrom(info) {
+  startable = info.startDistro
+    ? { coreUrl: info.coreUrl, distro: info.startDistro, confirmed: Boolean(info.startConfirmed) }
+    : null;
+  if (!startable) return;
+  startButton.textContent = startable.confirmed
+    ? `Start in this computer's WSL (${startable.distro})`
+    : "Start in this computer's WSL";
+  startHint.textContent = startable.confirmed
+    ? 'Starts this Workspace\'s Core, as this app has started it here before.'
+    : `This Workspace says its Core is in WSL (${startable.distro}). Start it here only if it is installed in this computer's WSL; a Core on another computer starts there.`;
+}
 let unreachable = false;
 
 function show(text, error = false) {
@@ -55,13 +71,20 @@ async function connect() {
 async function start() {
   if (startButton.disabled || !startable) return;
   busy(true);
-  show(`Starting Core in WSL (${startable.distro})… This can take a minute.`);
+  show(`Starting Core in this computer's WSL (${startable.distro})… This can take a minute.`);
   try {
     const target = await invoke('start_core', { url: address.value });
     show('Core is running. Opening your workspace…');
     window.location.replace(target);
   } catch (error) {
     show(String(error), true);
+    // What the attempt changed: an unconfirmed start that this computer's
+    // WSL refused is no longer offered.
+    try {
+      offerFrom(await invoke('connection_info'));
+    } catch {
+      // Keep the page as it is.
+    }
   } finally {
     busy(false);
     showStart();
@@ -89,10 +112,7 @@ async function init() {
   try {
     const info = await invoke('connection_info');
     address.value = info.coreUrl;
-    if (info.startDistro) {
-      startable = { coreUrl: info.coreUrl, distro: info.startDistro };
-      startButton.textContent = `Start Core in WSL (${info.startDistro})`;
-    }
+    offerFrom(info);
     if (info.error) show(info.error, true);
     else if (info.autoConnect) await connect();
     else show('Choose a workspace, then connect.');
