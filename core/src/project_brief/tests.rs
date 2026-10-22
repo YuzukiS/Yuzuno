@@ -1,5 +1,5 @@
 use super::{
-    attachments, home, sections,
+    attachments, home, presentation, sections,
     update::{self, Checker},
     *,
 };
@@ -740,7 +740,7 @@ async fn a_reply_quotes_its_section_joins_the_running_turn_and_marks_the_ask_onl
     // A reply that is not sent leaves the ask open.
     close(&ws, "c", true);
     let reply = |choice: Option<&str>| home::ReplyInput { key: Some("decide".into()), agent_id: "c".into(),
-        text: "Go".into(), client_message_id: "m1".into(), choice: choice.map(str::to_owned) };
+        text: "Go".into(), client_message_id: "m1".into(), choice: choice.map(str::to_owned), version: None, title: None };
     assert!(home::reply(&ws, project.clone(), reply(Some("left"))).await.is_err());
     assert_eq!(section(&brief(&ws, "a"), "decide")["ask"]["state"], "open");
     let unknown = home::reply(&ws, project.clone(), reply(Some("up"))).await.unwrap_err();
@@ -748,6 +748,67 @@ async fn a_reply_quotes_its_section_joins_the_running_turn_and_marks_the_ask_onl
     let sent = |status: &str| home::delivered(&serde_json::from_value(json!({"input":{"clientMessageId":"m","text":"t"},
         "status":status,"turnId":null,"error":null})).unwrap());
     assert!(sent("accepted") && sent("queued") && !sent("rejected") && !sent("uncertain") && !sent("sending"));
+}
+
+// T-174: a reply to a report or status card names exactly the version on
+// screen. Another version or a removed card sends nothing and says so; a
+// retry of a message already sent returns its receipt, card changed or not.
+#[tokio::test]
+async fn a_card_reply_names_the_version_on_screen_and_never_another() {
+    let (_dir, ws, project) = lab();
+    accept(&ws, "a", input("c1", 0, vec![put("news", "report"), put("now", "status"), put("decide", "ask")])).await;
+    let reply = |key: &str, version: i64, title: &str, text: &str, id: &str| home::ReplyInput {
+        key: Some(key.into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(),
+        choice: None, version: Some(version), title: Some(title.into()) };
+    let refused = |error: anyhow::Error, code: &str| {
+        assert!(error.to_string().starts_with(code), "{error}");
+        assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
+    };
+    // Core's own Workspace, whatever a client might say.
+    let workspace = ws.store.workspace_id().unwrap();
+    assert!(!workspace.is_empty());
+    let message = home::compose_card(&workspace, "Code", &project, "news", 1, "About news", " Looks good \n");
+    assert_eq!(message, format!("Reply from the user on Home, to version 1 of the Project Brief section `news` (\"About news\") \
+        of Code (Workspace {workspace}, Project {project}):\n\nLooks good"));
+    // A message already sent under this id: its retry returns it, though the card changed since.
+    let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
+        input: crate::model::MessageInput { client_message_id: "r1".into(), text: message.clone(), text_blocks: None, images: vec![],
+            expected_turn_id: Some("t1".into()), question: None, clarification: None } };
+    let kept = sent.clone();
+    ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(kept)).unwrap();
+    accept(&ws, "a", input("c2", 1, vec![put("news", "report")])).await;
+    assert_eq!(section(&brief(&ws, "a"), "news")["version"], 2);
+    let again = home::reply(&ws, project.clone(), reply("news", 1, "About news", "Looks good", "r1")).await.unwrap();
+    assert_eq!((again.status.as_str(), again.input.text.as_str()), ("accepted", message.as_str()));
+    let other = home::reply(&ws, project.clone(), reply("news", 1, "About news", "Something else", "r1")).await.unwrap_err();
+    assert!(other.to_string().contains("already used for another message"), "{other}");
+    // A new message to version 1, now gone: kept by the client, sent nowhere.
+    refused(home::reply(&ws, project.clone(), reply("news", 1, "About news", "Looks good", "r2")).await.unwrap_err(), "section_changed");
+    // Not another card's version, title or kind, and never an ask.
+    refused(home::reply(&ws, project.clone(), reply("now", 2, "About now", "Hi", "r3")).await.unwrap_err(), "section_changed");
+    refused(home::reply(&ws, project.clone(), reply("now", 1, "About news", "Hi", "r3")).await.unwrap_err(), "section_changed");
+    refused(home::reply(&ws, project.clone(), reply("decide", 1, "About decide", "Hi", "r3")).await.unwrap_err(), "section_changed");
+    // A removed card: its version is still in history, and still not replied to.
+    accept(&ws, "a", input("c3", 2, vec![op("remove", "now")])).await;
+    refused(home::reply(&ws, project.clone(), reply("now", 1, "About now", "Hi", "r4")).await.unwrap_err(), "section_removed");
+    // A report the user marked seen is still the version they saw.
+    sections::mark_seen(&ws.store, &project, &[("news".into(), 2)]).unwrap();
+    let seen = home::reply(&ws, project.clone(), reply("news", 2, "About news", "Thanks", "r5")).await;
+    assert!(seen.as_ref().is_ok() || !seen.as_ref().unwrap_err().to_string().starts_with("section_"), "{seen:?}");
+    // Malformed: a title without a version, a choice, no text.
+    let mut bare = reply("news", 2, "About news", "Hi", "r6");
+    bare.version = None;
+    assert!(home::reply(&ws, project.clone(), bare).await.is_err());
+    let mut picked = reply("news", 2, "About news", "Hi", "r6");
+    picked.choice = Some("left".into());
+    assert!(home::reply(&ws, project.clone(), picked).await.is_err());
+    assert!(home::reply(&ws, project.clone(), reply("news", 2, "About news", "  ", "r6")).await.is_err());
+    // Nothing on Home changed: no ask replied, the seen mark as it was.
+    let after = brief(&ws, "a");
+    assert_eq!(section(&after, "decide")["ask"]["state"], "open");
+    let seen_marks = sections::seen(&ws.store.db.read().unwrap(), &project).unwrap();
+    assert_eq!(seen_marks.get("news").map(|(version, _)| *version), Some(2));
+    assert_eq!(seen_marks.len(), 1);
 }
 
 #[test]
@@ -1494,4 +1555,78 @@ async fn a_failed_home_hint_lookup_never_fails_a_task_result() {
     assert!(mail.contains("submitted a result") && !mail.contains(outcome_hint()), "{mail}");
     let inbox = call("a", "peer_read", json!({})).unwrap();
     assert!(inbox["messages"].as_array().unwrap().iter().any(|m| m["metadata"]["kind"] == "task_result"));
+}
+
+/// T-175: the user's Home presentation preference is kept in the Workspace's
+/// database (another connection to the file reads it), and each editor
+/// gets it, labelled as the user's, wherever the Home hint goes: brief_get,
+/// its own task result and the mail that result sends. Ask-only members get
+/// neither. The default removes it, and with it every homePreference.
+#[tokio::test]
+async fn the_users_presentation_preference_reaches_editors_until_the_default_removes_it() {
+    use presentation::{Presentation, Style};
+    use tower::ServiceExt;
+    let (dir, ws, project) = lab();
+    let app = router().with_state(ws.clone());
+    let send = |method: &str, body: Option<Value>| {
+        let request = axum::http::Request::builder().method(method).uri("/api/home/presentation")
+            .header("content-type", "application/json")
+            .body(body.map_or_else(axum::body::Body::empty, |b| axum::body::Body::from(b.to_string()))).unwrap();
+        let app = app.clone();
+        async move {
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))
+        }
+    };
+    // Nothing set: the old answers, nothing new.
+    let (status, unset) = send("GET", None).await;
+    assert_eq!((status.as_u16(), unset["style"].clone(), unset["agentText"].clone(), unset["scope"].clone()),
+        (200, json!("default"), Value::Null, json!("workspace")));
+    assert!(brief(&ws, "a")["you"].get("homePreference").is_none());
+
+    let (status, saved) = send("PUT", Some(json!({"style":"visual","note":"  Charts   before\n prose. "}))).await;
+    assert_eq!((status.as_u16(), saved["note"].clone()), (200, json!("Charts before prose.")));
+    let text = saved["agentText"].as_str().unwrap().to_owned();
+    assert!(text.starts_with("The user's Home presentation preference, which the user set for this Workspace: lead with a visual summary"), "{text}");
+    assert!(text.contains("In the user's words: \"Charts before prose.\"") && text.contains("exact figures, stated limits and risks, accessibility and the user's current instructions come first") && text.ends_with("changes no permission or Ask."), "{text}");
+    assert!(saved["updatedAt"].is_string());
+    for bad in [json!({"style":"bold"}), json!({"style":"visual","tone":"x"}), json!({"note":"x".repeat(301)})] {
+        assert!(!send("PUT", Some(bad.clone())).await.0.is_success(), "{bad}");
+    }
+    assert_eq!(send("GET", None).await.1, saved, "a refused change leaves the saved one");
+
+    let you = brief(&ws, "a")["you"].clone();
+    assert_eq!((you["homeHint"].clone(), you["homePreference"].clone()), (json!(outcome_hint()), json!(text)));
+    let call = |actor: &str, op: &str, input: Value| ws.store.collaboration_call(Some(actor), op, input).unwrap();
+    let task = call("a", "task_create", json!({"requestId":"c","title":"Measure","projectId":project}))["task"].clone();
+    let sent = call("a", "task_dispatch", json!({"requestId":"d","taskId":task["id"],"expectedVersion":task["version"],"toAgentId":"b"}));
+    let submitted = call("b", "task_submit_result", json!({"requestId":"s","taskId":task["id"],
+        "expectedVersion":sent["task"]["version"],"dispatchId":sent["message"]["dispatchId"],"summary":"Found it."}));
+    assert_eq!(submitted["homePreference"], json!(text));
+    let mail = submitted["message"]["body"].as_str().unwrap();
+    assert!(mail.ends_with(&format!("{}\n{text}", outcome_hint())), "{mail}");
+
+    // Kept in the Workspace's database, which Core reads each time: another
+    // connection to the file, as after a restart, reads the same.
+    let file = rusqlite::Connection::open(dir.path().join("data").join("workspace.sqlite")).unwrap();
+    assert_eq!(presentation::view(&file).unwrap(), saved);
+    drop(file);
+
+    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    assert!(brief(&ws, "b")["you"].get("homePreference").is_none(), "Ask-only: no advice");
+    assert_eq!(brief(&ws, "a")["you"]["homePreference"], json!(text));
+
+    // The user's words alone, without the visual sentence.
+    let note_only = presentation::save(&ws.store, Presentation { style: Style::Default, note: "Short answers.".into() }).unwrap();
+    let words = note_only["agentText"].as_str().unwrap();
+    assert!(!words.contains("visual summary") && words.contains("\"Short answers.\""), "{words}");
+
+    let (status, cleared) = send("PUT", Some(json!({"style":"default","note":""}))).await;
+    assert_eq!((status.as_u16(), cleared["agentText"].clone(), cleared["updatedAt"].clone()), (200, Value::Null, Value::Null));
+    assert!(brief(&ws, "a")["you"].get("homePreference").is_none());
+    let count: i64 = ws.store.db.read().unwrap()
+        .query_row("SELECT COUNT(*) FROM workspace_meta WHERE key='home.presentation'", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 0, "the default is no row at all");
 }

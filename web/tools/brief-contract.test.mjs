@@ -165,7 +165,7 @@ test("every per-block limit is rejected with a reason to act on", () => {
   const block = first(section("Markdown", { text: `Intro\n\n${fence(3)}\n\n${fence(340)}` }));
   assert.equal(block.code, "block_too_long");
   assert.equal(block.path, "body.elements.it.props.text");
-  assert.equal(block.reason, 'Markdown "it" code block 2 has 340 lines; the limit is 200. Keep a short excerpt and move the full log or code into an attachment. (brief_guide attachments)');
+  assert.equal(block.reason, 'Markdown "it" code block 2 has 340 lines; the limit is 200. Keep a short excerpt here and leave the full log or code on its Task. (brief_guide content)');
   assert.equal(first(section("Markdown", { text: `\`\`\`\n${"x\n".repeat(201)}` })).code, "block_too_long", "an unclosed fence runs to the end");
   assert.deepEqual(fencedBlockLines("a\n````md\n```\ninner\n```\n````\n~~~\n1\r\n2\n~~~"), [3, 2]);
   assert.deepEqual(fencedBlockLines("``` not a `fence`\nplain"), []);
@@ -188,15 +188,15 @@ test("every per-block limit is rejected with a reason to act on", () => {
     assert.match(found.reason, /the limit is 30\./);
   }
   assert.match(first(section("Metrics", { items: items(13, (i) => ({ label: "m", value: i })) })).reason, /has 13 items; the limit is 12\. .*Table/);
-  // Table: 200 rows, 12 columns; the remedy is an attachment.
+  // Table: 200 rows, 12 columns; the full table stays on its Task (T-172).
   const table = (rows, columns) => section("Table", {
     id: "t", columns: items(columns, (i) => ({ key: `c${i}`, label: "C" })),
     rows: items(rows, (i) => ({ id: `r${i}`, cells: Object.fromEntries(items(columns, (c) => [`c${c}`, 1])) })),
   });
   const rows = first(table(201, 1));
   assert.equal(rows.path, "body.elements.it.props.rows");
-  assert.match(rows.reason, /has 201 items; the limit is 200\. .*CSV file/);
-  assert.equal(rows.guide, "brief_guide attachments");
+  assert.match(rows.reason, /has 201 items; the limit is 200\. .*leave the full table on its Task/);
+  assert.equal(rows.guide, "brief_guide content");
   assert.match(first(table(1, 13)).reason, /has 13 items; the limit is 12/);
   // Charts: 500 inline points in total, 12 series.
   const chart = (props) => section("LineChart", { id: "c", title: "C", x: { label: "x" }, y: { label: "y" }, ...props }, props.data ? csv : {});

@@ -9,6 +9,7 @@ import {
   GitPullRequest,
   Github,
   HardDrive,
+  House,
   LoaderCircle,
   Palette,
   RefreshCw,
@@ -21,6 +22,7 @@ import { Modal } from "./components";
 import { DesktopUpdate } from "./DesktopUpdate";
 import { DiagnosticsCopy } from "./RecoveryPage";
 import { ReviewSettings } from "./ReviewSettings";
+import { HomePresentationSettings } from "./HomePresentationSettings";
 import { api, errorText, HttpError } from "./api";
 import {
   loadedRelease,
@@ -977,16 +979,18 @@ export function WorkspaceUpdates({
           {tab === "updates" && <DiagnosticsCopy />}
           {tab === "appearance" && <AppearanceSection />}
           {tab === "review" && <ReviewSettings active={open} />}
+          {tab === "home" && <HomePresentationSettings active={open} />}
         </div>
       </div>
     </Modal>
   );
 }
 
-type SettingsTab = "updates" | "appearance" | "review";
+type SettingsTab = "updates" | "appearance" | "home" | "review";
 const settingsTabs: { id: SettingsTab; label: string; Icon: typeof RefreshCw }[] = [
   { id: "updates", label: "Updates", Icon: RefreshCw },
   { id: "appearance", label: "Appearance", Icon: Palette },
+  { id: "home", label: "Home", Icon: House },
   { id: "review", label: "Code review", Icon: GitPullRequest },
 ];
 // Shared by every mount, so React's double effects and quick reopenings

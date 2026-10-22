@@ -552,26 +552,28 @@ test("the contract's examples render without a failed part", async (t) => {
   const page = mount((url) =>
     url.endsWith("/chart/training/loss?version=3")
       ? { body: { series: [{ name: "Train", points: [[1, 3], [2, 2]] }, { name: "Validation", points: [[1, 3.2], [2, 2.4]] }], downsampled: false, sourcePoints: 4 } }
-      : url.endsWith("/test.log?version=3")
-        ? { text: "ok 1\nok 2\n" }
+      : url.endsWith("/chart/batch-size/loss?version=3")
+        ? { body: { series: [{ name: "Validation loss", points: [["baseline", 0.42], ["larger batch", 0.4]] }], downsampled: false, sourcePoints: 2 } }
         : { status: 404, body: { error: "not found" } },
   );
   t.after(page.close);
   const { document, window } = page;
   const examples = JSON.parse(JSON.stringify(window.examples));
   const expected = {
-    image: ["layout.png", "Updated layout"],
+    image: ["layout.png", "Screenshot of the updated layout"],
     status: ["Validation loss", "−0.025", "+35 samples/s", "18k of 40k", "Loss"],
-    report: ["213 of 214", "FAIL brief limits", "A stale version is accepted after a restart.", "test.log", "Full test log"],
+    result: ["213 of 214", "not in a release yet", "FAIL brief limits", "A stale version is accepted after a restart."],
+    compare: ["6% lower validation loss", "One seed each", "Validation loss, lower is better"],
     overview: ["Where we are", "one decision", "Run 12, larger batch", "Validation loss falls 6% once warm-up ends.", "Choose the run 13 split"],
-    ask: ["The larger split costs about 6% of training data."],
+    decision: ["The larger split costs about 6% of training data."],
   };
   const reads = {
     image: [attachment("layout.png", "image", "image/png")],
     status: [attachment("loss.csv", "data", "text/csv", { caption: "Loss per step" })],
-    report: [attachment("test.log", "text", "text/plain")],
+    result: [],
+    compare: [attachment("runs.csv", "data", "text/csv", { caption: "Validation loss of each run" })],
     overview: [],
-    ask: [],
+    decision: [],
   };
   assert.deepEqual(Object.keys(expected).sort(), Object.keys(examples).sort(), "every example is checked");
   for (const [name, put] of Object.entries(examples)) {

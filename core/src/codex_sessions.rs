@@ -593,16 +593,17 @@ impl Workspace {
         let fork_id = row.fork_agent_id.clone().context("fork 记录缺少新 Agent")?;
         // Attach without a prompt so the user can continue at once. A failed
         // attach leaves the registered fork Offline; nothing is retried here.
+        // The outcome needs the Agent only, read as listed (T-140).
         let connected = if created {
-            match self.reconnect_accepted(&fork_id, &_admission).await {
-                Ok(detail) => detail.agent.connection_state == "connected",
+            match self.reconnect_settled(&fork_id, &_admission).await {
+                Ok(()) => self.listed(&fork_id).await?.connection_state == "connected",
                 Err(error) => { warnings.push(format!("fork 已登记，但连接失败：{error}")); false }
             }
         } else {
-            self.detail(&fork_id).await?.agent.connection_state == "connected"
+            self.listed(&fork_id).await?.connection_state == "connected"
         };
         Ok(ForkOutcome {
-            state: "completed".into(), request_id: row.request_id, agent: Some(self.detail(&fork_id).await?.agent),
+            state: "completed".into(), request_id: row.request_id, agent: Some(self.listed(&fork_id).await?),
             connected, message: None, warnings,
         })
     }

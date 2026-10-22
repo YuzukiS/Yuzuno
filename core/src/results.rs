@@ -708,7 +708,7 @@ impl Workspace {
         // Advice only: the result is already published, so a failed lookup
         // leaves the hint out rather than reporting an error.
         match ws.stored(move |store| crate::project_brief::own_home_hint(store, &*store.db.read()?, &actor)).await {
-            Ok(Some(hint)) => published["homeHint"] = hint.into(),
+            Ok(Some(advice)) => advice.apply(&mut published),
             Ok(None) => {}
             Err(error) => eprintln!("Home hint for a published result: {error:#}"),
         }
