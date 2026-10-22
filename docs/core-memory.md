@@ -333,6 +333,46 @@ reads the whole record 4 times for two refused reconnects and twice for an
 unanswered one, now none. These are synthetic allocator measurements, not the
 daily Core's RSS.
 
+### A native request's reply
+
+A native request kept its reply when it arrived and returned a copy, so that
+waiting for it again would not send the request again. Only an attach waits
+again: a reconnect that finds its attach kept (after a timeout, a refused
+write or an interrupted request) finishes it from that reply. Every other
+request waited once and dropped the reply straight after, so the copy was
+made only to be freed; for a reconcile's `thread/read` it is the whole
+history. Those requests now take the reply instead. An attach still copies
+its reply: the copy is consumed by the record's commit, and the kept reply is
+what a later reconnect finishes from if that commit fails or the request is
+cancelled.
+
+T-140 Job `7329a312-5e9a-4a8c-821b-eeab09b3fc2c`, 2026-10-22: a lab build of
+`core_reconnect_cycles` on `06c1ae1` with counting points inside the
+reconnect, before and after this change; one synthetic Agent with 8 KiB per
+Item (63.5 MiB of history); four runs in the order before, after, after,
+before, each in a process of its own. Both runs of a side gave the same Rust
+counts:
+
+| One reconnect after the open | Before | After |
+| --- | ---: | ---: |
+| Allocated | 943.6 MiB | 875.2 MiB |
+| Rust peak | 273.9 MiB | 273.9 MiB |
+| The reconcile's read, from its reply parsed to the caller having it: allocated | 68.4 MiB | 0 |
+| The same span: Rust peak | 205.5 MiB | 137.1 MiB |
+| VmRSS at the end of the reconnect | 368.7–369.4 MiB | 298.9–299.8 MiB |
+| RssAnon once the record is released (5 s later) | 283.1 MiB | 283.0–283.5 MiB |
+
+The reconnect's peak is reached at its attach's commit, which this does not
+change; by the source, the record held since the first write of the
+reconnect, the attach's reply, its copy and the commit's copy of the held
+record are all in use there. The reconcile still peaks at 205.5 MiB, in its
+own commit. The RSS rows are this process at the end of a phase only, not its
+highest point; why the end of the reconnect differs was not measured. The
+Job is marked failed: its comparison step stopped on a check that saw
+1,056 B allocated, by any thread, before the first run began; the four runs
+completed and are compared here from their reports. These are synthetic
+measurements, not the daily Core's.
+
 ### The UI's reconnect
 
 `POST /api/agents/{id}/reconnect` answers with the whole record. Every UI
