@@ -1,5 +1,5 @@
 use super::{
-    attachments, home, sections,
+    attachments, home, presentation, sections,
     update::{self, Checker},
     *,
 };
@@ -1494,4 +1494,78 @@ async fn a_failed_home_hint_lookup_never_fails_a_task_result() {
     assert!(mail.contains("submitted a result") && !mail.contains(outcome_hint()), "{mail}");
     let inbox = call("a", "peer_read", json!({})).unwrap();
     assert!(inbox["messages"].as_array().unwrap().iter().any(|m| m["metadata"]["kind"] == "task_result"));
+}
+
+/// T-175: the user's Home presentation preference is kept in the Workspace's
+/// database (another connection to the file reads it), and each editor
+/// gets it, labelled as the user's, wherever the Home hint goes: brief_get,
+/// its own task result and the mail that result sends. Ask-only members get
+/// neither. The default removes it, and with it every homePreference.
+#[tokio::test]
+async fn the_users_presentation_preference_reaches_editors_until_the_default_removes_it() {
+    use presentation::{Presentation, Style};
+    use tower::ServiceExt;
+    let (dir, ws, project) = lab();
+    let app = router().with_state(ws.clone());
+    let send = |method: &str, body: Option<Value>| {
+        let request = axum::http::Request::builder().method(method).uri("/api/home/presentation")
+            .header("content-type", "application/json")
+            .body(body.map_or_else(axum::body::Body::empty, |b| axum::body::Body::from(b.to_string()))).unwrap();
+        let app = app.clone();
+        async move {
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))
+        }
+    };
+    // Nothing set: the old answers, nothing new.
+    let (status, unset) = send("GET", None).await;
+    assert_eq!((status.as_u16(), unset["style"].clone(), unset["agentText"].clone(), unset["scope"].clone()),
+        (200, json!("default"), Value::Null, json!("workspace")));
+    assert!(brief(&ws, "a")["you"].get("homePreference").is_none());
+
+    let (status, saved) = send("PUT", Some(json!({"style":"visual","note":"  Charts   before\n prose. "}))).await;
+    assert_eq!((status.as_u16(), saved["note"].clone()), (200, json!("Charts before prose.")));
+    let text = saved["agentText"].as_str().unwrap().to_owned();
+    assert!(text.starts_with("The user's Home presentation preference, which the user set for this Workspace: lead with a visual summary"), "{text}");
+    assert!(text.contains("In the user's words: \"Charts before prose.\"") && text.contains("exact figures, stated limits and risks, accessibility and the user's current instructions come first") && text.ends_with("changes no permission or Ask."), "{text}");
+    assert!(saved["updatedAt"].is_string());
+    for bad in [json!({"style":"bold"}), json!({"style":"visual","tone":"x"}), json!({"note":"x".repeat(301)})] {
+        assert!(!send("PUT", Some(bad.clone())).await.0.is_success(), "{bad}");
+    }
+    assert_eq!(send("GET", None).await.1, saved, "a refused change leaves the saved one");
+
+    let you = brief(&ws, "a")["you"].clone();
+    assert_eq!((you["homeHint"].clone(), you["homePreference"].clone()), (json!(outcome_hint()), json!(text)));
+    let call = |actor: &str, op: &str, input: Value| ws.store.collaboration_call(Some(actor), op, input).unwrap();
+    let task = call("a", "task_create", json!({"requestId":"c","title":"Measure","projectId":project}))["task"].clone();
+    let sent = call("a", "task_dispatch", json!({"requestId":"d","taskId":task["id"],"expectedVersion":task["version"],"toAgentId":"b"}));
+    let submitted = call("b", "task_submit_result", json!({"requestId":"s","taskId":task["id"],
+        "expectedVersion":sent["task"]["version"],"dispatchId":sent["message"]["dispatchId"],"summary":"Found it."}));
+    assert_eq!(submitted["homePreference"], json!(text));
+    let mail = submitted["message"]["body"].as_str().unwrap();
+    assert!(mail.ends_with(&format!("{}\n{text}", outcome_hint())), "{mail}");
+
+    // Kept in the Workspace's database, which Core reads each time: another
+    // connection to the file, as after a restart, reads the same.
+    let file = rusqlite::Connection::open(dir.path().join("data").join("workspace.sqlite")).unwrap();
+    assert_eq!(presentation::view(&file).unwrap(), saved);
+    drop(file);
+
+    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    assert!(brief(&ws, "b")["you"].get("homePreference").is_none(), "Ask-only: no advice");
+    assert_eq!(brief(&ws, "a")["you"]["homePreference"], json!(text));
+
+    // The user's words alone, without the visual sentence.
+    let note_only = presentation::save(&ws.store, Presentation { style: Style::Default, note: "Short answers.".into() }).unwrap();
+    let words = note_only["agentText"].as_str().unwrap();
+    assert!(!words.contains("visual summary") && words.contains("\"Short answers.\""), "{words}");
+
+    let (status, cleared) = send("PUT", Some(json!({"style":"default","note":""}))).await;
+    assert_eq!((status.as_u16(), cleared["agentText"].clone(), cleared["updatedAt"].clone()), (200, Value::Null, Value::Null));
+    assert!(brief(&ws, "a")["you"].get("homePreference").is_none());
+    let count: i64 = ws.store.db.read().unwrap()
+        .query_row("SELECT COUNT(*) FROM workspace_meta WHERE key='home.presentation'", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 0, "the default is no row at all");
 }

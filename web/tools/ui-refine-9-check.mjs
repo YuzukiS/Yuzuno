@@ -579,7 +579,7 @@ try {
       await page.getByRole("button", { name: "Settings and updates", exact: true }).click();
       const settings = page.locator(".modal.settings-modal");
       await settings.waitFor();
-      assert.deepEqual(await settings.locator(".settings-nav [role=tab]").allInnerTexts(), ["Updates", "Appearance", "Code review"]);
+      assert.deepEqual(await settings.locator(".settings-nav [role=tab]").allInnerTexts(), ["Updates", "Appearance", "Home", "Code review"]);
       const desktop = settings.locator('#settings-panel-updates [aria-label="Desktop app"]');
       await desktop.waitFor();
       assert.match(await desktop.textContent(), /updated separately/);
