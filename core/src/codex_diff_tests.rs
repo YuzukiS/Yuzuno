@@ -402,7 +402,7 @@ async fn empty_failed_and_timed_out_lists_are_told_apart() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_cancel_that_comes_first_and_a_request_that_goes_away_both_stop_their_read() {
+async fn a_cancel_that_comes_before_its_read_keeps_the_read_from_starting() {
     let lab = Lab::new("hang").await;
     let generation = lab.connect().await;
     // Close just as the read was sent: its cancel comes first, and the read never starts.
@@ -410,16 +410,9 @@ async fn a_cancel_that_comes_first_and_a_request_that_goes_away_both_stop_their_
     let report = lab.read_at("early", generation, "/w/app").await;
     assert_eq!((report["state"].as_str(), report["reason"].as_str(), report["commands"].as_u64()), (Some("cancelled"), Some("cancelled"), Some(0)), "{report}");
     assert!(lab.sent().is_empty(), "nothing ran for it");
-    // A request that goes away (the dialog aborted it) ends its read and stops its command.
-    let base = lab.base.clone();
-    let request = tokio::spawn(async move {
-        reqwest::Client::new().post(format!("{base}/agents/a/codex/diff")).header("X-Yuzuno-Client", "desktop")
-            .json(&json!({"token":"dropped","generation":generation,"cwd":"/w/app"})).send().await
-    });
-    lab.until("the tracked diff hangs", |sent| sent.len() >= 3).await;
-    request.abort();
-    lab.until("its command stopped", |sent| sent.iter()
-        .any(|r| r["method"] == "command/exec/terminate" && r["params"]["processId"] == "yuzuno-diff-dropped-3")).await;
+    // Used once: the token is not kept for later, and another read's cancel is its own.
     lab.write("flags", "");
-    assert_eq!(lab.read("after").await["state"], "read", "the next read is not kept busy");
+    assert_eq!(lab.read_at("early", generation, "/w/app").await["state"], "read");
+    assert_eq!(lab.cancel("other").await, json!({"cancelled":false}));
+    assert_eq!(lab.read_at("next", generation, "/w/app").await["state"], "read", "a cancel of another token stops nothing");
 }

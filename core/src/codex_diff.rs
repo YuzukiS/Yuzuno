@@ -687,7 +687,9 @@ impl Reader<'_> {
 }
 
 /// Removes the Agent's running read when it ends, however it ends; a read
-/// whose request went away is cancelled, so its command does not run on.
+/// dropped before its end (its handler cancelled) is cancelled, so its
+/// command does not run on. A client that goes away without its cancel is
+/// not relied on to drop it: such a read ends at its budget.
 struct Registered<'a> {
     ws: &'a Workspace,
     id: String,

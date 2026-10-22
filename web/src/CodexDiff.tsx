@@ -80,9 +80,9 @@ export function CodexDiffDialog({ agent, open, onOpenChange }: {
   const path = `/agents/${encodeURIComponent(agent.id)}/codex/diff`;
 
   /**
-   * Lets the current read go. Its requests are aborted, so a read Core is
-   * running ends with its request; the cancel names its token, and Core keeps
-   * a cancel that arrives before the read, so that read never starts.
+   * Lets the current read go: its requests are dropped here, and its cancel
+   * names its token. Core keeps a cancel that arrives before the read, so
+   * that read never starts.
    */
   function stop() {
     const token = current.current;
