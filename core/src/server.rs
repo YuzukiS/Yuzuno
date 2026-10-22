@@ -994,7 +994,10 @@ mod models_tests {
             "cwd":"/tmp","model":"","color":"sage","harness":"opencode","status":"idle","createdAt":"","updatedAt":"",
             "unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
         ws.store.insert(&detail).unwrap();
-        let Json(catalog) = agent_models(State(ws.clone()), Path("models-route".into())).await.unwrap();
+        let catalog = match agent_models(State(ws.clone()), Path("models-route".into())).await {
+            Ok(Json(catalog)) => catalog,
+            Err(error) => panic!("refused: {}", error.0),
+        };
         assert_eq!(catalog, crate::opencode_agent::catalog());
         let missing = agent_models(State(ws.clone()), Path("models-missing".into())).await.err().unwrap();
         assert!(missing.0.to_string().contains("Agent 不存在"), "{}", missing.0);
