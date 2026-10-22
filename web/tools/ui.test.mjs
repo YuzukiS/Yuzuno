@@ -5298,8 +5298,9 @@ test("selecting another Agent drops a pending /review dialog, which does not reo
 // T-29: a Codex Agent's /goal is Codex's own goal of this conversation
 // (thread/goal/*): read when the dialog opens, changed only by the user
 // there. Never a message, a shared task or a turn Yuzuno starts.
+// Stateful, as Core is: a read returns the goal as the last change left it.
 function goalStub(initial, answers = []) {
-  const goal = initial && { objective: initial.objective, status: initial.status, tokenBudget: null, tokensUsed: 1200, timeUsedSeconds: 75 };
+  let goal = initial && { objective: initial.objective, status: initial.status, tokenBudget: null, tokensUsed: 1200, timeUsedSeconds: 75 };
   const reads = [], changes = [];
   return { reads, changes, beforeLoad(window) {
     const fetch = window.fetch;
@@ -5314,6 +5315,7 @@ function goalStub(initial, answers = []) {
         if (answer === "lost") return Promise.reject(new window.TypeError("Failed to fetch"));
         [status, body] = answer ?? [200, { goal: change.action === "clear" ? null
           : { ...(goal || {}), objective: change.objective ?? goal.objective, status: change.action === "pause" ? "paused" : "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0 } }];
+        if (!answer) goal = body.goal;
       } else {
         reads.push(url);
         body = { state: "ready", reason: "read", goal };
@@ -5376,7 +5378,9 @@ test("an unfinished Codex goal is paused, cleared or replaced only by its own bu
     await until(() => /goals feature is disabled/.test(goalDialog(page).querySelector('[role="alert"]')?.textContent || ""), "Codex's refusal");
     assert.deepEqual(stub.changes, [{ action: "pause" }, { action: "pause" }], "one request per click");
     assert.equal(composerText(composer), "/goal Write the docs", "the draft stays");
-    await until(() => goalButton(page, "Replace and start"), "the goal read again");
+    // The refusal's read again has been asked for and has answered (the
+    // buttons are hidden while it is on its way), before anything is clicked.
+    await until(() => stub.reads.length === readsBefore + 2 && goalButton(page, "Replace and start"), "the goal read again after the refusal");
     goalButton(page, "Replace and start").click();
     await until(() => /Write the docs/.test(goalDialog(page).querySelector('[aria-label="Current goal"]')?.textContent || ""), "the new goal shown");
     assert.deepEqual(stub.changes[2], { action: "set", objective: "Write the docs", replace: true });
