@@ -962,6 +962,8 @@ impl Workspace {
 
     /// Called under the Agent gate. Only stage an advisory notification in an
     /// existing query; the SDK hook receipt, not this enqueue, records delivery.
+    /// The Agent and its Turns' states are checked on the send view, as a
+    /// Codex steer checks them, without copying the Items (T-140).
     pub(crate) async fn claude_notify_mailbox_locked(
         self: &Arc<Self>,
         id: &str,
@@ -970,7 +972,7 @@ impl Workspace {
         client_id: &str,
     ) -> Result<Value> {
         let detail = self
-            .detail(id)
+            .send_view(id)
             .await
             .map_err(|error| Rejected(error.to_string()))?;
         ensure_agent_open(&detail.agent).map_err(|error| Rejected(error.to_string()))?;
@@ -3214,6 +3216,28 @@ mod tests {
         assert!(error.downcast_ref::<Rejected>().is_some());
         assert!(ws.claudes.lock().unwrap().is_empty());
         assert_eq!(ws.store.detail("a").unwrap().turns.len(), 1);
+    }
+
+    /// T-140: a mailbox notice checks the Agent and its Turns on the send
+    /// view, held or read from its rows: a stale Turn and a missing runtime
+    /// are refused as before, and no whole record is read.
+    #[tokio::test]
+    async fn a_mailbox_notice_checks_the_send_view_not_the_whole_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(temp.path().into(), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
+        let mut d = detail();
+        d.agent.id = "mailbox-notice-reads".into();
+        let id = d.agent.id.clone();
+        ws.store.insert(&d).unwrap();
+        ws.store.update(&id, "test/held", &json!({}), |_| {}).unwrap();
+        for held in [true, false] {
+            let stale = ws.claude_notify_mailbox_locked(&id, "mailbox notice", "old-turn", "mail1").await.unwrap_err();
+            assert!(stale.to_string().contains("stale turn"), "{stale}");
+            let unstarted = ws.claude_notify_mailbox_locked(&id, "mailbox notice", "t", "mail2").await.unwrap_err();
+            assert!(unstarted.downcast_ref::<Rejected>().is_some_and(|e| e.0.contains("no active runtime")), "{unstarted}");
+            assert_eq!(ws.store.release_for_test(&id), held);
+        }
+        assert_eq!(crate::store::detail_reads_of(&id), 0, "a whole record was read");
     }
 
     #[tokio::test]
