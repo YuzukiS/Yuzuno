@@ -190,3 +190,70 @@ window.setEnabled=enabled=>root.render(React.createElement(Probe,{enabled}));`);
     assert.equal(w.document.querySelector("p").textContent, "open");
   } finally { w.close(); }
 });
+const banner = (p) => p.d.querySelector(".core-connection-banner");
+test("the browser's offline report shows beside the evidence and turns nothing off while Core still answers; online reconnects once (T-170)", async () => {
+  const p = await mount();
+  try {
+    const reads = p.f.calls.filter(c => c.path === "/api/workspace").length;
+    const streams = p.f.streams.length;
+    const sendable = p.d.querySelector(".send-button")?.disabled;
+    assert.equal(sendable, false, "the fixture's draft can be sent before the report");
+    p.f.network(false);
+    await until(() => banner(p)?.textContent.includes("Browser reports offline"));
+    assert.equal(banner(p).getAttribute("role"), "status", "a report, not an alert");
+    await until(() => p.f.calls.filter(c => c.path === "/api/workspace").length > reads);
+    core(p, "Core connected"); retained(p);
+    assert.match(banner(p).textContent, /Nothing is turned off/);
+    assert.equal(p.d.querySelector(".send-button")?.disabled, sendable, "the report does not disable sending");
+    assert.equal(p.f.streams.filter(s => !s.closed).length, 1, "the working stream is kept");
+    assert.equal(p.f.streams.length, streams);
+    p.f.network(true);
+    await until(() => banner(p) === null);
+    await until(() => p.f.streams.length === streams + 1);
+    assert.equal(p.f.streams.filter(s => !s.closed).length, 1, "one stream, the new one");
+    core(p, "Core connected"); retained(p);
+  } finally { p.close(); }
+});
+test("after an offline report, a read with no answer reads Core unreachable though the stream looks open; the banner keeps the browser's text out (T-170)", async () => {
+  const p = await mount();
+  try {
+    p.f.network(false);
+    p.f.scenario("fetch-down");
+    await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core unreachable");
+    core(p, "Core unreachable"); retained(p);
+    assert.equal(banner(p).getAttribute("role"), "alert");
+    assert.match(banner(p).textContent, /No answer from Core over the network\./);
+    assert.match(banner(p).textContent, /Browser reports offline\./);
+    assert.doesNotMatch(banner(p).textContent, /Load failed/);
+    // Without the report, an open stream still vouches for Core: an update failure.
+    p.f.network(true);
+    await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core update failed");
+    core(p, "Core update failed"); retained(p);
+    assert.match(banner(p).textContent, /No answer from Core over the network\./);
+    assert.doesNotMatch(banner(p).textContent, /Load failed|Browser reports offline/);
+    p.f.scenario("ok");
+    await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core connected");
+    retained(p);
+  } finally { p.close(); }
+});
+test("an offline report does not hide HTTP, JSON or deadline failures as unreachable (T-170)", async () => {
+  const p = await mount();
+  try {
+    p.f.network(false);
+    p.f.scenario("http500");
+    await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core update failed");
+    assert.match(banner(p).textContent, /HTTP 500/);
+    assert.doesNotMatch(banner(p).textContent, /No answer from Core/);
+    p.f.mode = "invalid-json"; p.f.refresh();
+    await until(() => !banner(p)?.textContent.includes("HTTP 500"));
+    core(p, "Core update failed");
+    assert.match(banner(p).textContent, /Could not refresh/);
+    assert.doesNotMatch(banner(p).textContent, /No answer from Core/);
+    p.f.mode = "hang"; p.f.refresh();
+    await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core request timed out");
+    core(p, "Core request timed out");
+    p.f.mode = "ok"; p.f.release(); p.f.network(true); p.f.refresh();
+    await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core connected");
+    retained(p);
+  } finally { p.close(); }
+});
