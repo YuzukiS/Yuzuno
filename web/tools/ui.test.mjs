@@ -5423,22 +5423,20 @@ test("a replacement whose old goal was cleared but whose new one was not set sho
   } finally { page.close(); }
 });
 
-// R1 P3 (PR #75): a /review or /goal dialog belongs to the Agent it was asked
-// from; selecting another Agent meanwhile drops it.
-test("selecting another Agent drops a pending /review or /goal dialog, which does not reopen on return", async () => {
-  for (const command of ["/review", "/goal"]) {
-    const page = await mount({ harness: "codex" });
-    try {
-      await sendDraft(page, command);
-      await until(() => page.document.querySelector('[role="dialog"]'), `${command}'s dialog`);
-      page.document.querySelector('[aria-label="Open Hana"]').click();
-      await until(() => !page.document.querySelector('[role="dialog"]'), `${command}'s dialog to go with its Agent`);
-      page.document.querySelector('[aria-label="Open Mori"]').click();
-      await pause();
-      await pause();
-      // A boolean, not the node: a failing strict assertion would inspect a
-      // live DOM node, and with it React's whole fiber graph.
-      assert.ok(!page.document.querySelector('[role="dialog"]'), `${command} does not reopen`);
-    } finally { page.close(); }
-  }
+// R1 P3 (PR #75), for /goal as for /review: its dialog belongs to the Agent
+// it was asked from; selecting another Agent meanwhile drops it.
+test("selecting another Agent drops a pending /goal dialog, which does not reopen on return", async () => {
+  const page = await mount({ harness: "codex" });
+  try {
+    await sendDraft(page, "/goal");
+    await until(() => page.document.querySelector('[role="dialog"]'), "the /goal dialog");
+    page.document.querySelector('[aria-label="Open Hana"]').click();
+    await until(() => !page.document.querySelector('[role="dialog"]'), "the dialog to go with its Agent");
+    page.document.querySelector('[aria-label="Open Mori"]').click();
+    await pause();
+    await pause();
+    // A boolean, not the node: a failing strict assertion would inspect a
+    // live DOM node, and with it React's whole fiber graph.
+    assert.ok(!page.document.querySelector('[role="dialog"]'), "the /goal dialog does not reopen");
+  } finally { page.close(); }
 });
