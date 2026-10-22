@@ -41,6 +41,13 @@ export function installConnectionFixture(options = {}) {
       this.refresh();
     },
     release() { for (const item of this.held.splice(0)) item.resolve(item.body); },
+    // The browser's own report (navigator.onLine and its event), apart from
+    // whether Core answers; set only when a test asks (T-170).
+    network(online) {
+      if (!this.browserNetwork) Object.defineProperty(window.navigator, "onLine", { configurable: true, get: () => this.browserNetwork.online });
+      this.browserNetwork = { online };
+      window.dispatchEvent(new Event(online ? "online" : "offline"));
+    },
   };
   window.EventSource = class {
     constructor(url) {
@@ -60,6 +67,9 @@ export function installConnectionFixture(options = {}) {
     }
     const snapshot = path === "/api/workspace" || /^\/api\/agents\/[ab]$/.test(path);
     if (snapshot && state.mode === "offline") throw new TypeError("Simulated network disconnected");
+    // Reads get no answer while the event stream stays open (WebKit's offline
+    // emulation did this), with WebKit's own text.
+    if (snapshot && state.mode === "fetch-down") throw new TypeError("Load failed");
     if (snapshot && state.mode === "invalid-json") return {
       ok: true, status: 200, json: async () => JSON.parse("malformed snapshot"),
     };

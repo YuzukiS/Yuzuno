@@ -286,3 +286,55 @@ test("a reconnect that never opens is replaced by a new connection resuming from
     p.close();
   }
 });
+
+test("an offline report reads now and keeps the stream; online after it reconnects once from the last id, a plain online does not; nothing is written (T-170)", async () => {
+  const p = await mount();
+  const snapshots = () => p.count("/api/workspace") + p.count("/api/agents/a");
+  const fire = (name) => p.w.dispatchEvent(new p.w.Event(name));
+  try {
+    const opened = p.core.calls.length;
+    p.stream().readyState = 1;
+    p.stream().onopen?.({});
+    p.send({ type: "resumed", from: "e-1" }, "e-7");
+    await until(() => p.core.calls.slice(opened).some((c) => c.path === "/api/reviews"), "the status bar's read after the stream opened");
+    const streams = p.core.streams.length;
+    const first = p.stream();
+
+    // The browser says it is offline: the snapshot is read now; the open
+    // stream is neither closed nor replaced.
+    const before = snapshots();
+    fire("offline");
+    await until(() => snapshots() > before, "the offline report reads at once");
+    assert.equal(p.core.streams.length, streams, "no new stream on an offline report");
+    assert.equal(first.readyState, 1, "the open stream is kept");
+
+    // Back online after it: one new stream, from the last id seen; the old one is closed.
+    fire("online");
+    await until(() => p.core.streams.length === streams + 1, "one reconnect on online");
+    assert.equal(first.readyState, 2, "the old stream is closed");
+    assert.match(p.stream().url, /lastEventId=e-7/, "it resumes from the last id");
+    p.stream().readyState = 1;
+    p.stream().onopen?.({});
+    p.send({ type: "resumed", from: "e-7" });
+    await pause(200);
+
+    // Online without an offline report before it: as focus, no reconnect.
+    fire("online");
+    await pause(200);
+    assert.equal(p.core.streams.length, streams + 1, "a plain online keeps the stream");
+
+    // Several offline reports, then online: still one reconnect.
+    fire("offline");
+    fire("offline");
+    fire("online");
+    await until(() => p.core.streams.length === streams + 2, "one reconnect after repeated reports");
+    fire("online");
+    await pause(200);
+    assert.equal(p.core.streams.length, streams + 2, "and only one");
+
+    assert.deepEqual(p.core.calls.filter((c) => c.method !== "GET"), [], "nothing is written or sent again");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});

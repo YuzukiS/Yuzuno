@@ -29,15 +29,33 @@ export class HttpError extends Error {
   }
 }
 
+/** No answer from Core reached the page: the request may not have arrived,
+ * or its answer was lost. Only fetch's own rejection is this (the browser's
+ * "Load failed" or "Failed to fetch", kept as `cause` for diagnostics); HTTP,
+ * JSON, abort and deadline failures keep their own types (T-170). */
+export class NetworkError extends TypeError {
+  constructor(cause: unknown) {
+    super("No answer from Core over the network.", { cause });
+    this.name = "NetworkError";
+  }
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}/api${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Yuzuno-Client": "desktop",
-      ...init?.headers,
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Yuzuno-Client": "desktop",
+        ...init?.headers,
+      },
+    });
+  } catch (error) {
+    // An abort is a DOMException, not a TypeError, and stays one.
+    if (error instanceof TypeError) throw new NetworkError(error);
+    throw error;
+  }
   if (!response.ok) {
     const body = await response.text();
     let message = body;

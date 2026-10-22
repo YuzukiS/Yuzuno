@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { API_BASE } from "./api";
+import { watchBrowserNetwork } from "./browser-offline";
 import { parseWorkspaceEvent, type WorkspaceEvent } from "./workspace-events.ts";
 
 export type EventConnection = "connecting" | "open" | "reconnecting";
@@ -45,6 +46,10 @@ export function useWorkspaceEvents(
     let open = false;
     let lastId = "";
     let lastHeard = Date.now();
+    // After the browser reports going offline (T-170): an open stream is not
+    // trusted until it is heard from again, and the next `online` reconnects.
+    let doubted = false;
+    let wentOffline = false;
     let starting: ReturnType<typeof setTimeout> | undefined;
     let silence: ReturnType<typeof setTimeout> | undefined;
     let reopen: ReturnType<typeof setTimeout> | undefined;
@@ -57,10 +62,11 @@ export function useWorkspaceEvents(
     };
     const heard = () => {
       lastHeard = Date.now();
+      doubted = false;
       clearTimeout(silence);
       silence = setTimeout(() => connect("silent"), SILENCE_MS);
     };
-    const connect = (why: "first" | "silent" | "closed" | "focus") => {
+    const connect = (why: "first" | "silent" | "closed" | "focus" | "online") => {
       clearTimeout(starting);
       clearTimeout(silence);
       clearTimeout(reopen);
@@ -70,6 +76,7 @@ export function useWorkspaceEvents(
         source.close();
       }
       open = false;
+      doubted = false;
       // A new connection resumes from the last id it saw, like a browser
       // reconnect does with Last-Event-ID.
       const events = new EventSource(
@@ -124,7 +131,7 @@ export function useWorkspaceEvents(
       };
     };
     const poll = () => {
-      if (!open && document.visibilityState === "visible")
+      if ((!open || doubted) && document.visibilityState === "visible")
         emit({ type: "reset", reason: "poll" });
     };
     const focus = () => {
@@ -137,11 +144,28 @@ export function useWorkspaceEvents(
     const visible = () => {
       if (document.visibilityState === "visible") focus();
     };
+    // The browser says it went offline. It may be wrong (a Core on this
+    // computer or the LAN can still answer), so nothing is closed, stopped or
+    // sent: the snapshot is read now, and polled while an open stream stays
+    // unheard, so a real failure shows instead of a stale "open" (T-170).
+    const offline = () => {
+      wentOffline = true;
+      if (open) doubted = true;
+      if (document.visibilityState === "visible") emit({ type: "reset", reason: "offline" });
+    };
+    // Back online after that report: one new connection now, from the last
+    // id seen (connect closes the old one and clears its timers; the reset
+    // and resumed rules of a reopened stream apply). Otherwise, as on focus.
+    const online = () => {
+      if (!wentOffline) return focus();
+      wentOffline = false;
+      connect("online");
+    };
     connect("first");
     const interval = setInterval(poll, POLL_MS);
     window.addEventListener("focus", focus);
     window.addEventListener("pageshow", focus);
-    window.addEventListener("online", focus);
+    const unwatch = watchBrowserNetwork({ offline, online });
     document.addEventListener("visibilitychange", visible);
     return () => {
       disposed = true;
@@ -155,7 +179,7 @@ export function useWorkspaceEvents(
       clearInterval(interval);
       window.removeEventListener("focus", focus);
       window.removeEventListener("pageshow", focus);
-      window.removeEventListener("online", focus);
+      unwatch();
       document.removeEventListener("visibilitychange", visible);
     };
   }, [enabled]);

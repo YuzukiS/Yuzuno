@@ -19,7 +19,7 @@ async function until(check) {
   for (let i = 0; i < 100; i++) { if (check()) return; await pause(15); }
   assert.ok(check(), "condition should settle");
 }
-async function mount() {
+async function mount({ deadlineMs = 180, before, settle = true } = {}) {
   const errors = [], vc = new VirtualConsole();
   vc.on("jsdomError", e => errors.push(e.message));
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
@@ -30,10 +30,11 @@ async function mount() {
   w.HTMLElement.prototype.scrollIntoView = function() {};
   w.HTMLElement.prototype.scrollTo = function() {};
   w.localStorage.setItem("yuzuno.drafts", JSON.stringify({ a: "保留我的草稿", b: "Keep Claude draft" }));
-  w.eval(`(${installConnectionFixture.toString()})({deadlineMs: 180})`);
+  w.eval(`(${installConnectionFixture.toString()})({deadlineMs: ${deadlineMs}})`);
+  before?.(w.connectionFixture);
   w.eval(bundle);
   const d = w.document, f = w.connectionFixture;
-  await until(() => d.querySelector(".prose")?.textContent.includes("initial fixture reply"));
+  if (settle) await until(() => d.querySelector(".prose")?.textContent.includes("initial fixture reply"));
   return { w, d, f, errors, close: () => w.close() };
 }
 function core(p, label) {
@@ -189,4 +190,86 @@ window.setEnabled=enabled=>root.render(React.createElement(Probe,{enabled}));`);
     oldError({}); await pause(30);
     assert.equal(w.document.querySelector("p").textContent, "open");
   } finally { w.close(); }
+});
+const banner = (p) => p.d.querySelector(".core-connection-banner");
+test("the browser's offline report shows beside the evidence and turns nothing off while Core still answers; online reconnects once (T-170)", async () => {
+  const p = await mount();
+  try {
+    const reads = p.f.calls.filter(c => c.path === "/api/workspace").length;
+    const streams = p.f.streams.length;
+    const sendable = p.d.querySelector(".send-button")?.disabled;
+    assert.equal(sendable, false, "the fixture's draft can be sent before the report");
+    p.f.network(false);
+    await until(() => banner(p)?.textContent.includes("Browser reports offline"));
+    assert.equal(banner(p).getAttribute("role"), "status", "a report, not an alert");
+    await until(() => p.f.calls.filter(c => c.path === "/api/workspace").length > reads);
+    core(p, "Core connected"); retained(p);
+    assert.match(banner(p).textContent, /Nothing is turned off/);
+    assert.equal(p.d.querySelector(".send-button")?.disabled, sendable, "the report does not disable sending");
+    assert.equal(p.f.streams.filter(s => !s.closed).length, 1, "the working stream is kept");
+    assert.equal(p.f.streams.length, streams);
+    p.f.network(true);
+    await until(() => banner(p) === null);
+    await until(() => p.f.streams.length === streams + 1);
+    assert.equal(p.f.streams.filter(s => !s.closed).length, 1, "one stream, the new one");
+    core(p, "Core connected"); retained(p);
+  } finally { p.close(); }
+});
+test("after an offline report, a read with no answer reads Core unreachable though the stream looks open; the banner keeps the browser's text out (T-170)", async () => {
+  const p = await mount();
+  try {
+    p.f.network(false);
+    p.f.scenario("fetch-down");
+    await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core unreachable");
+    core(p, "Core unreachable"); retained(p);
+    assert.equal(banner(p).getAttribute("role"), "alert");
+    assert.match(banner(p).textContent, /No answer from Core over the network\./);
+    assert.match(banner(p).textContent, /Browser reports offline\./);
+    assert.doesNotMatch(banner(p).textContent, /Load failed/);
+    // Without the report, an open stream still vouches for Core: an update failure.
+    p.f.network(true);
+    await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core update failed");
+    core(p, "Core update failed"); retained(p);
+    assert.match(banner(p).textContent, /No answer from Core over the network\./);
+    assert.doesNotMatch(banner(p).textContent, /Load failed|Browser reports offline/);
+    p.f.scenario("ok");
+    await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core connected");
+    retained(p);
+  } finally { p.close(); }
+});
+test("an offline report does not hide HTTP, JSON or deadline failures as unreachable (T-170)", async () => {
+  const p = await mount();
+  try {
+    p.f.network(false);
+    p.f.scenario("http500");
+    await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core update failed");
+    assert.match(banner(p).textContent, /HTTP 500/);
+    assert.doesNotMatch(banner(p).textContent, /No answer from Core/);
+    p.f.mode = "invalid-json"; p.f.refresh();
+    await until(() => !banner(p)?.textContent.includes("HTTP 500"));
+    core(p, "Core update failed");
+    assert.match(banner(p).textContent, /Could not refresh/);
+    assert.doesNotMatch(banner(p).textContent, /No answer from Core/);
+    p.f.mode = "hang"; p.f.refresh();
+    await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core request timed out");
+    core(p, "Core request timed out");
+    p.f.mode = "ok"; p.f.release(); p.f.network(true); p.f.refresh();
+    await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core connected");
+    retained(p);
+  } finally { p.close(); }
+});
+test("a page opened while the browser reports offline does not claim a read worked before one has (T-170)", async () => {
+  // The first workspace read is held (no deadline in reach) while the browser says offline.
+  const p = await mount({ deadlineMs: 10_000, settle: false, before: (f) => { f.mode = "hang"; f.network(false); } });
+  try {
+    await until(() => banner(p)?.textContent.includes("Browser reports offline"));
+    assert.match(banner(p).textContent, /No workspace has loaded yet/);
+    assert.doesNotMatch(banner(p).textContent, /last read from Core worked/);
+    p.f.mode = "ok"; p.f.release();
+    await until(() => banner(p)?.textContent.includes("The last read from Core worked"));
+    p.f.network(true);
+    await until(() => banner(p) === null);
+    assert.equal(p.f.calls.filter(c => c.method !== "GET").length, 0);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
 });

@@ -143,6 +143,7 @@ import { ResultRequest } from "./intelligent-ui/ResultRequest";
 import { pruneResultViewCache } from "./intelligent-ui/view-storage";
 import { useSnapshot } from "./useSnapshot";
 import { POLL_MS, SAFETY_NET_MS, useWorkspaceEvents } from "./useWorkspaceEvents";
+import { useBrowserOffline } from "./browser-offline";
 import type { WorkspaceEvent } from "./workspace-events.ts";
 import { useAgentDetail } from "./useAgentDetail";
 import { useRefreshTrigger } from "./refresh-trigger";
@@ -513,7 +514,8 @@ export function App() {
     );
     return () => clearInterval(timer);
   }, [workspaceFailure, eventConnection, workspaceRefresh]);
-  const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode);
+  const browserOffline = useBrowserOffline();
+  const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode, browserOffline);
   const agent = workspace?.agents.find((a) => a.id === selected);
   const inspectorShown = (phone ? phoneInspector : inspector) && !!agent && !homeOpen;
   const projects = workspace?.projects || [];
@@ -2023,12 +2025,19 @@ export function App() {
       <ClarificationHost.Provider value={{ detail: currentDetail, outgoing, pendingInputs, readOnly: previewMode, submit: submitMessage, refresh }}>
       {/* On a phone the list or the context panel covers it, still mounted. */}
       <main className="main-panel" inert={listShown || (phone && inspectorShown) ? true : undefined}>
-        {workspaceError && (
-          <div className="connection-banner core-connection-banner" role="alert">
+        {(workspaceError || core.browser) && (
+          <div className="connection-banner core-connection-banner" role={workspaceError ? "alert" : "status"}>
             <WifiOff size={15} />
             <div>
-              <strong>{core.label}</strong>
-              <span>{core.detail}</span>
+              <strong>{workspaceError ? core.label : core.browser}</strong>
+              <span>
+                {workspaceError
+                  ? core.detail
+                  : workspace
+                    ? "The last read from Core worked. Nothing is turned off: Yuzuno keeps checking, and drafts are kept."
+                    : "No workspace has loaded yet. Nothing is turned off: Yuzuno keeps trying, and drafts are kept."}
+              </span>
+              {workspaceError && core.browser && <span>{core.browser}.</span>}
               <span>{core.stream}</span>
             </div>
             <button className="quiet-button" onClick={refresh}>
@@ -2037,7 +2046,7 @@ export function App() {
             </button>
           </div>
         )}
-        {!previewMode && !workspaceError && eventConnection === "reconnecting" && (
+        {!previewMode && !workspaceError && !core.browser && eventConnection === "reconnecting" && (
           <div className="connection-banner core-connection-banner event-connection-banner" role="status">
             <RefreshCw size={15} />
             <div>
