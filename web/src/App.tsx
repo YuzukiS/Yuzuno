@@ -3039,7 +3039,8 @@ export function App() {
           key={`plan-${agent.id}-${planRequest?.nonce ?? 0}`}
           agent={agent}
           open={planRequest?.agentId === agent.id}
-          turnRunning={busy || !!currentDetail?.pending.length}
+          // Working, or waiting on a request that blocks the turn, as Core checks.
+          turnRunning={busy}
           onOpenChange={(open) => { if (!open) setPlanRequest(null); }}
           onChanged={(notice) => {
             // `/plan` is done once Codex has accepted a switch; the dialog
