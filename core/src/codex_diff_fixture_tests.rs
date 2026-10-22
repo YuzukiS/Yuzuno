@@ -308,25 +308,30 @@ async fn real_git_runs_none_of_the_repositorys_programs_and_the_folder_is_left_a
         assert!(ran.contains(armed), "{armed} did not run in the control, so its absence later would prove nothing: {ran:?}");
     }
 
-    let inherited = json!({"GIT_EXTERNAL_DIFF":root.bin("envdiff"),"GIT_CONFIG_PARAMETERS":format!("'diff.external'='{}'", root.bin("envparams")),
-        "GIT_CONFIG_COUNT":"1","GIT_CONFIG_KEY_0":"diff.external","GIT_CONFIG_VALUE_0":root.bin("envcount"),"GIT_TRACE":"1"});
-    let lab = Lab::new(&root, "lab", &work, &root.default_path(), inherited).await;
-    // Control 2, through the same connection and sandbox: what Codex's
-    // environment passes on reaches Git, and a program that runs there is
-    // seen in the output.
+    // Codex's own environment, as the proxy starts it, with Git
+    // configuration injected the ways an inherited environment can.
+    let inherited = json!({"GIT_EXTERNAL_DIFF":root.bin("envdiff"),"GIT_CONFIG_PARAMETERS":format!("'filter.evil.clean'='{}'", root.bin("envparams")),
+        "GIT_CONFIG_COUNT":"1","GIT_CONFIG_KEY_0":"core.fsmonitor","GIT_CONFIG_VALUE_0":root.bin("envcount"),"GIT_TRACE":"1"});
+    let lab = Lab::new(&root, "lab", &work, &root.default_path(), inherited.clone()).await;
+    // Control 2, through the same connection and read-only sandbox: what
+    // Codex's environment passes on reaches Git, and the fsmonitor hook and
+    // filters run there and are seen in the output.
     let inside = lab.raw(&["git", "diff"], &work, json!({})).await;
-    println!("control in the sandbox: {inside}");
-    for marker in ["MARKER-fsmonitor-RAN", "MARKER-filter-clean-RAN", "MARKER-filter-process-RAN"] {
-        assert!(inside["stderr"].as_str().unwrap().contains(marker), "{marker}: {inside}");
-    }
-    let inside = lab.raw(&[&["git"][..], &past_process, &["diff"]].concat(), &work, json!({})).await;
     println!("control in the sandbox, inherited environment: {inside}");
-    assert!(inside["stdout"].as_str().unwrap().contains("MARKER-envdiff-RAN"), "{inside}");
-    assert!(inside["stdout"].as_str().unwrap().contains("MARKER-diffcmd-RAN"), "{inside}");
-    let inside = lab.raw(&[&["git"][..], &past_process, &["diff", "--no-ext-diff"]].concat(), &work,
-        json!({"GIT_EXTERNAL_DIFF":null,"GIT_CONFIG_PARAMETERS":null,"GIT_CONFIG_COUNT":null})).await;
-    println!("control in the sandbox, no external diff: {inside}");
-    assert!(inside["stdout"].as_str().unwrap().contains("MARKER-textconv-RAN"), "{inside}");
+    for said in ["trace: built-in: git diff", "MARKER-envcount-RAN", "MARKER-envparams-RAN", "MARKER-filter-process-RAN"] {
+        assert!(inside["stderr"].as_str().unwrap().contains(said), "{said}: {inside}");
+    }
+    let without = json!({"GIT_EXTERNAL_DIFF":null,"GIT_CONFIG_PARAMETERS":null,"GIT_CONFIG_COUNT":null,"GIT_TRACE":null});
+    let inside = lab.raw(&["git", "diff"], &work, without.clone()).await;
+    println!("control in the sandbox, the repository's configuration: {inside}");
+    for said in ["MARKER-fsmonitor-RAN", "MARKER-filter-clean-RAN", "MARKER-filter-process-RAN"] {
+        assert!(inside["stderr"].as_str().unwrap().contains(said), "{said}: {inside}");
+    }
+    // External diff and textconv: recorded, not required; Git writes a
+    // temporary file for them first, which a read-only sandbox may refuse.
+    for args in [&[&["git"][..], &past_process, &["diff"]].concat(), &[&["git"][..], &past_process, &["diff", "--no-ext-diff"]].concat()] {
+        println!("control in the sandbox, {args:?}: {}", lab.raw(args, &work, without.clone()).await);
+    }
 
     let marks = root.marks();
     let before = manifest(&work);
@@ -369,6 +374,32 @@ async fn real_git_runs_none_of_the_repositorys_programs_and_the_folder_is_left_a
     assert_eq!(requests.iter().filter(|r| r["method"] == "command/exec/terminate").count(), 1, "only the capped file was stopped");
     assert!(report["bytes"].as_u64().unwrap() <= Limits::default().total as u64);
     assert_eq!((again["state"].as_str(), &again["tracked"], &again["staged"]), (Some("read"), &report["tracked"], &report["staged"]), "the same again");
+
+    // The read's own commands again, outside any sandbox, in Codex's
+    // environment with each request's variables: its settings alone run none
+    // of the programs and write nothing.
+    let mut replayed = 0;
+    for request in lab.of("t1").iter().filter(|r| r["method"] == "command/exec") {
+        let p = &request["params"];
+        let argv: Vec<&str> = p["command"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+        let mut command = Command::new(argv[0]);
+        command.args(&argv[1..]).current_dir(p["cwd"].as_str().unwrap()).env_clear()
+            .env("HOME", root.path().join("home")).env("CODEX_HOME", root.path().join("home/.codex")).env("LANG", "C.UTF-8").env("PATH", root.default_path());
+        for (key, value) in inherited.as_object().unwrap().iter().chain(p["env"].as_object().unwrap()) {
+            match value.as_str() {
+                Some(value) => command.env(key, value),
+                None => command.env_remove(key),
+            };
+        }
+        let out = command.output().unwrap();
+        let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(!said.contains("MARKER-"), "{argv:?} ran a program outside the sandbox: {said}");
+        replayed += 1;
+    }
+    println!("replayed outside the sandbox: {replayed} commands");
+    assert_eq!(replayed as u64, report["commands"].as_u64().unwrap());
+    assert_eq!(root.marks(), marks, "no program ran");
+    assert_eq!(manifest(&work), before, "nothing was written");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
