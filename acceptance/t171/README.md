@@ -12,6 +12,8 @@ $env:TAURI_CONFIG = '{"identifier":"dev.yuzuno.workspace.t171lab","productName":
 python3 desktop/tests/start-lab.py --run <run> --target <cargo target>/debug   # WSL_DISTRO_NAME, HOME, USER set
 ```
 
+`--desktop-build release` runs the release build instead (`desktop.ps1 -Release -BuildOnly`, same identity): the one that ships, with no console window. The report records which build ran and its SHA-256.
+
 **What is its own.**
 - **The Core.** A fixture release of this tree's Core: the debug `yuzuno-workspace` and `yuzuno-update-helper`, with fixture UI. It is packaged with `tools/package-release.py` and registered into a new managed folder under `/var/tmp/t171-<run>`. It runs on port 4491 with its own Workspace and working folders and a fake Codex, and `YUZUNO_SERVICE_PORTS=4492-4493` so it opens none of the daily Core's ports.
 - **The desktop.** The lab build's identifier is its own, so its saved Core (`core.json`) and WebView data are too. `start-lab.ps1` runs and stops only that build.
