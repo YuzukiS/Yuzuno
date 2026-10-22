@@ -334,10 +334,11 @@ test("a Codex Agent lists Yuzuno's controls and the skills its Codex lists; choo
   try {
     p.w.show({ slash: "codex" });
     p.type("/");
-    await until(() => p.options().length === 12, "controls and skills");
+    await until(() => p.options().length === 13, "controls and skills");
     assert.deepEqual(p.calls, ["/api/agents/a1/codex/skills"], "read from this Agent's own Codex");
     assert.deepEqual(p.options().map((o) => [o.name, o.source, o.hint]), [
-      ["/compact", "Yuzuno control", ""], ["/review", "Yuzuno control", "[instructions]"], ["/model", "Yuzuno control", "<model>"],
+      ["/compact", "Yuzuno control", ""], ["/review", "Yuzuno control", "[instructions]"], ["/goal", "Yuzuno control", "[objective]"],
+      ["/model", "Yuzuno control", "<model>"],
       ["/permissions", "Yuzuno control", ""], ["/fork", "Yuzuno control", ""], ["/new", "Yuzuno control", ""], ["/resume", "Yuzuno control", ""], ["/status", "Yuzuno control", ""],
       ["/usage", "Yuzuno control", ""],
       ["$deploy", "Codex skill", "repo · skills/deploy"], ["$deploy", "Codex skill", "user · skills/deploy"], ["$review", "Codex skill", "repo · skills/review"],
@@ -403,8 +404,8 @@ test("when a Codex Agent's skills cannot be listed, its controls stay and the li
     try {
       p.w.show({ slash: "codex" });
       p.type("/");
-      await until(() => p.options().length === 9 && why.test(p.notes().join(" ")), `controls and ${why}`);
-      assert.deepEqual(p.options().map((o) => o.name), ["/compact", "/review", "/model", "/permissions", "/fork", "/new", "/resume", "/status", "/usage"]);
+      await until(() => p.options().length === 10 && why.test(p.notes().join(" ")), `controls and ${why}`);
+      assert.deepEqual(p.options().map((o) => o.name), ["/compact", "/review", "/goal", "/model", "/permissions", "/fork", "/new", "/resume", "/status", "/usage"]);
     } finally {
       p.close();
     }
@@ -445,6 +446,10 @@ test("only a draft that is exactly a control for its harness runs it", async () 
     assert.deepEqual(c("/review  the error paths\n in parse.rs "), { command: "review", args: "the error paths\n in parse.rs" });
     assert.equal(c("/review", "claude"), null, "Claude Code runs its own /review as a message");
     assert.equal(c("/review", "opencode"), null);
+    // /goal is Codex's own goal of this conversation.
+    assert.deepEqual(c("/goal Ship the parser"), { command: "goal", args: "Ship the parser" });
+    assert.equal(c("/goal", "claude"), null);
+    assert.equal(c("/goals"), null);
     assert.deepEqual(c("/model"), { command: "model", args: "" });
     assert.deepEqual(c("/model gpt-x", "claude"), { command: "model", args: "gpt-x" });
     // OpenCode's model is its own configuration; its drafts are messages.

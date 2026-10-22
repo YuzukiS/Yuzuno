@@ -102,6 +102,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::claude_mcp::router())
         .merge(crate::claude_commands::router())
         .merge(crate::codex_skills::router())
+        .merge(crate::codex_goal::router())
         .merge(crate::claude_sessions::router())
         .merge(crate::reading_handoff::router())
         .merge(crate::claude_checkpoints::router())

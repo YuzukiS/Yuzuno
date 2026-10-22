@@ -5293,3 +5293,97 @@ test("selecting another Agent drops a pending /review dialog, which does not reo
     assert.ok(!page.document.querySelector('[role="dialog"]'), "the /review dialog does not reopen");
   } finally { page.close(); }
 });
+
+// T-29: a Codex Agent's /goal is Codex's own goal of this conversation
+// (thread/goal/*): read when the dialog opens, changed only by the user
+// there. Never a message, a shared task or a turn Yuzuno starts.
+function goalStub(initial, answers = []) {
+  const goal = initial && { objective: initial.objective, status: initial.status, tokenBudget: null, tokensUsed: 1200, timeUsedSeconds: 75 };
+  const reads = [], changes = [];
+  return { reads, changes, beforeLoad(window) {
+    const fetch = window.fetch;
+    window.fetch = (url, init = {}) => {
+      if (!url.endsWith("/codex/goal")) return fetch(url, init);
+      let status = 200, body;
+      if (init.method === "POST") {
+        const change = JSON.parse(init.body);
+        changes.push(change);
+        const answer = answers.shift();
+        // A request whose answer never comes back.
+        if (answer === "lost") return Promise.reject(new window.TypeError("Failed to fetch"));
+        [status, body] = answer ?? [200, { goal: change.action === "clear" ? null
+          : { ...(goal || {}), objective: change.objective ?? goal.objective, status: change.action === "pause" ? "paused" : "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0 } }];
+      } else {
+        reads.push(url);
+        body = { state: "ready", reason: "read", goal };
+      }
+      return Promise.resolve({ ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body) });
+    };
+  } };
+}
+const goalDialog = (page) => page.document.querySelector('[role="dialog"]');
+const goalButton = (page, name) => [...goalDialog(page).querySelectorAll("button")].find((b) => b.textContent.trim() === name);
+
+test("a Codex Agent's /goal shows Codex's goal, and only the user's own Set and start changes it", async () => {
+  const stub = goalStub(null);
+  const page = await mount({ harness: "codex", beforeLoad: stub.beforeLoad });
+  try {
+    let composer = await sendDraft(page, "/goal");
+    await until(() => /No goal is set/.test(goalDialog(page)?.textContent || ""), "the goal to be read");
+    assert.equal(stub.reads.length, 1);
+    // Looking changes nothing: closing keeps the draft and sends nothing.
+    await closeModal(page);
+    assert.deepEqual(stub.changes, []);
+    assert.equal(composerText(composer), "/goal");
+
+    // Words after /goal are the objective, set only on Set goal.
+    composer = await sendDraft(page, "/goal  Ship the parser ");
+    await until(() => goalButton(page, "Set and start"), "the goal dialog");
+    assert.equal(goalDialog(page).querySelector("textarea").value, "Ship the parser");
+    assert.deepEqual(stub.changes, [], "nothing set before the user confirms");
+    goalButton(page, "Set and start").click();
+    await until(() => stub.changes.length === 1 && /Active/.test(goalDialog(page).textContent), "Codex's goal shown");
+    assert.deepEqual(stub.changes, [{ action: "set", objective: "Ship the parser", replace: false }]);
+    assert.match(page.document.body.textContent, /Codex set its goal and works toward it on its own/);
+    await until(() => composerText(composer) === "", "the handled command to leave the draft");
+    // /goal pause is the CLI's own word, not an objective.
+    await closeModal(page);
+    await sendDraft(page, "/goal pause");
+    await until(() => goalDialog(page)?.querySelector("textarea"), "the goal dialog");
+    assert.equal(goalDialog(page).querySelector("textarea").value, "");
+    assert.deepEqual(posts(page).filter((u) => !u.endsWith("/codex/goal")), [], "no /messages, no /turns, no task");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("an unfinished Codex goal is paused, cleared or replaced only by its own buttons; a refusal keeps the draft", async () => {
+  const stub = goalStub({ objective: "Ship the parser", status: "active" }, ["lost", [400, { error: "Codex 对暂停目标返回了错误：goals feature is disabled；请重新打开 /goal 查看目标的实际状态" }]]);
+  const page = await mount({ harness: "codex", beforeLoad: stub.beforeLoad });
+  try {
+    const composer = await sendDraft(page, "/goal Write the docs");
+    await until(() => /Ship the parser/.test(goalDialog(page)?.textContent || ""), "the current goal");
+    assert.match(goalDialog(page).textContent, /Active/);
+    assert.match(goalDialog(page).textContent, /1,200 tokens/);
+    assert.ok(goalButton(page, "Replace and start"), "an unfinished goal is replaced, not silently overwritten");
+    assert.match(goalDialog(page).textContent, /Pause and Clear only stop new work toward it; a running turn continues/, "what Pause and Clear do, and do not");
+    // The first answer is lost: it says the outcome is unknown, and nothing is sent again by itself.
+    goalButton(page, "Pause").click();
+    await until(() => /No answer came back.*Refresh/.test(goalDialog(page).querySelector('[role="alert"]')?.textContent || ""), "the unknown outcome");
+    goalButton(page, "Pause").click();
+    await until(() => /goals feature is disabled/.test(goalDialog(page).querySelector('[role="alert"]')?.textContent || ""), "Codex's refusal");
+    assert.deepEqual(stub.changes, [{ action: "pause" }, { action: "pause" }], "one request per click");
+    assert.equal(composerText(composer), "/goal Write the docs", "the draft stays");
+    goalButton(page, "Replace and start").click();
+    await until(() => /Write the docs/.test(goalDialog(page).querySelector('[aria-label="Current goal"]')?.textContent || ""), "the new goal shown");
+    assert.deepEqual(stub.changes[2], { action: "set", objective: "Write the docs", replace: true });
+    goalButton(page, "Clear").click();
+    await until(() => /No goal is set/.test(goalDialog(page).textContent), "cleared");
+    assert.deepEqual(stub.changes[3], { action: "clear" });
+    assert.match(page.document.body.textContent, /A turn already running continues/);
+  } finally { page.close(); }
+  const claude = await mount({ harness: "claude" });
+  try {
+    await sendDraft(claude, "/goal Ship it");
+    assert.deepEqual(posts(claude), ["/api/agents/a/messages"], "Claude's /goal is whatever Claude Code makes of it");
+  } finally { claude.close(); }
+});
