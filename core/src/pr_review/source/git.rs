@@ -344,6 +344,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn names_renamed_while_the_store_is_walked_never_fail_the_walk() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let pack = dir.path().join("objects/pack");
+        fs::create_dir_all(&pack).unwrap();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        // Like a fetched pack: write tmp_pack_<n>, then rename it over one of
+        // 50 final names. Only temporary names vanish, at the rate of a loop.
+        let churn = std::thread::spawn({
+            let (pack, stop) = (pack.clone(), stop.clone());
+            move || {
+                let mut renames = 0u64;
+                while !stop.load(Ordering::Relaxed) {
+                    let tmp = pack.join(format!("tmp_pack_{renames}"));
+                    fs::write(&tmp, b"pack").unwrap();
+                    let name = format!("pack-{}.pack", renames % 50);
+                    fs::rename(&tmp, pack.join(name)).unwrap();
+                    renames += 1;
+                }
+                renames
+            }
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let mut walk = Ok(0);
+        while walk.is_ok() && std::time::Instant::now() < deadline {
+            walk = disk_usage(dir.path());
+        }
+        stop.store(true, Ordering::Relaxed);
+        let renames = churn.join().unwrap();
+        walk.unwrap();
+        assert!(renames >= 50, "the names churned while the store was walked");
+        assert_eq!(disk_usage(dir.path()).unwrap(), 50 * 4);
+    }
+
     #[tokio::test]
     async fn lazy_blob_fetches_run_while_the_store_is_measured() {
         let (dir, store, blobs) = partial_store(120);
