@@ -931,20 +931,6 @@ pub(crate) fn lock_workspace(path: &Path) -> Result<File> {
     Ok(lock)
 }
 
-/// Applies what was journaled after the record was last written: deferred
-/// events whose record write had not happened yet (Core was killed, or the
-/// write failed) and read marks. Every other event is written together with
-/// its record, so nothing else can be missing. Each event is applied as of
-/// its journal time, exactly as it was live. Ephemeral kinds are journaled
-/// only when they changed what Core acts on, and then with their record;
-/// rows of them that earlier builds journaled are replayed too, so their
-/// text survives an upgrade after a crash. Evidence is never applied.
-/// Returns what replaying changed: the record's rows lack it.
-///
-/// An event whose replay panics (a bug in applying it) is skipped: replay
-/// starts over from the record as loaded without it, and the Agent shows an
-/// error naming it. The record stays readable and writable; it is not
-/// `Damaged`, whose rows do not assemble.
 /// Whether `restore` applies a journal row to the record's Turns or Items: a
 /// replayed row other than a read mark.
 fn applied(kind: &str, data: &Value) -> bool {
@@ -964,6 +950,20 @@ fn applies(db: &Connection, id: &str, seq: i64) -> Result<bool> {
     Ok(false)
 }
 
+/// Applies what was journaled after the record was last written: deferred
+/// events whose record write had not happened yet (Core was killed, or the
+/// write failed) and read marks. Every other event is written together with
+/// its record, so nothing else can be missing. Each event is applied as of
+/// its journal time, exactly as it was live. Ephemeral kinds are journaled
+/// only when they changed what Core acts on, and then with their record;
+/// rows of them that earlier builds journaled are replayed too, so their
+/// text survives an upgrade after a crash. Evidence is never applied.
+/// Returns what replaying changed: the record's rows lack it.
+///
+/// An event whose replay panics (a bug in applying it) is skipped: replay
+/// starts over from the record as loaded without it, and the Agent shows an
+/// error naming it. The record stays readable and writable; it is not
+/// `Damaged`, whose rows do not assemble.
 fn restore(db: &Connection, id: &str, detail: &mut AgentDetail) -> Result<Dirty> {
     let rows: Vec<(i64, String, Value, String)> = {
         let mut query = db.prepare_cached("SELECT seq,kind,data,at FROM journal WHERE agent_id=?1 AND seq>?2 ORDER BY seq")?;
