@@ -18,6 +18,7 @@ import { GitHubLinks, GitHubSummary } from "../GitHubLinks";
 import { openJobs } from "../Jobs";
 import type { Agent, PendingRequest } from "../types";
 import { ProjectReply } from "./AskReply";
+import { KeptCardReplies } from "./CardReply";
 import { changedSinceSeen, groupSections, projectDomId, requestDomId } from "./brief-layout";
 import { FoldButton, useCardFold } from "./card-fold";
 import { absolute, plural, relative } from "./format";
@@ -389,6 +390,13 @@ export function HomePanel({
             <button type="button" className="quiet-button home-more" onClick={toggleMore}>
               {uncapped ? "Show less" : "Show more"}
             </button>
+          )}
+          {!readOnly && (
+            <KeptCardReplies
+              projectId={id}
+              workspaceId={workspaceId}
+              shownKeys={[...sections, ...(panel.brief.teamSections ?? [])].filter((s) => s.kind !== "ask").map((s) => s.key)}
+            />
           )}
           <footer className="home-panel-foot">
             {changed > 0 && !readOnly && (

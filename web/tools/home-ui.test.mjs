@@ -116,7 +116,7 @@ const machineLoad = () => ({
   jobs: [{ id: "job-1", name: "cargo test", agentId: "a", agentName: "Mori", projectId: "p-app", cpuPct: null, memMiB: 512 }],
 });
 
-async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [] } = {}) {
+async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [] } = {}) {
   // holdWorkspace: /api/workspace answers only on releaseWorkspace(), so Home opens first.
   let releaseWorkspace = () => {};
   const workspaceRead = holdWorkspace ? new Promise((resolve) => (releaseWorkspace = resolve)) : null;
@@ -171,6 +171,9 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
         state.failReplies--;
         return respond({ error: "connection lost" }, 503);
       }
+      // [status, body] for this request, or null for the usual receipt.
+      const answer = replyAnswer?.(request.body);
+      if (answer) return respond(answer[1], answer[0]);
       return respond({ input: { ...request.body, expectedTurnId: null, question: null }, status: replyStatus, turnId: "t10", error: null });
     }
     if (/\/api\/requests\/[^/]+\/respond$/.test(url)) return respond({ ok: true });
@@ -1222,6 +1225,155 @@ test("until the workspace is read, the widget layout is neither shown as arrange
     card(p, "p-app", "notes").querySelector(".home-pin").click();
     await waitFor(() => JSON.parse(p.w.localStorage.getItem("yuzuno.homeWidgets.ws-home")).pins.length === 2, "the pin is saved");
     assert.deepEqual(keys(), ["yuzuno.homeWidgets.ws-home"], "nothing was saved under no workspace");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+// T-174: a report or status card takes a reply to its author, bound to the
+// version on screen when the user began it. Booleans and text only in these
+// assertions: a failing strict assertion on a node inspects React's fibers.
+const replyBox = (root) => root.querySelector(".home-card-reply");
+const keys = (body) => Object.keys(body).sort();
+const changedAnswer = (title) => [400, { error: `section_changed: version 2 of “${title}” is no longer on Home; it changed after you began this reply. Nothing was sent, and your reply is kept.`, code: "message_not_submitted" }];
+
+test("a report card takes a reply to its author with the version on screen; a newer version never changes it (T-174)", async () => {
+  let refuse = true;
+  const p = await mount({ replyAnswer: (body) => (body.version === 2 && refuse ? changedAnswer("Notes") : null) });
+  try {
+    assert.ok(!p.button("Reply", card(p, "p-app", "release")), "an ask has its own reply controls, no card reply");
+    assert.ok(!!p.button("Reply", card(p, "p-app", "notes/review")), "a sub card takes a reply to its own author");
+    const notes = card(p, "p-app", "notes");
+    p.button("Reply", notes).click();
+    await waitFor(() => !!replyBox(notes), "the reply opens under the card");
+    assert.match(replyBox(notes).textContent, /Reply to “Notes” · version 2/);
+    assert.equal(replyBox(notes).querySelector("select").value, "a", "to its author");
+    assert.equal(p.posts(/\/brief\/reply$/).length, 0, "opening sends nothing");
+    await type(p, replyBox(notes).querySelector("textarea"), "Please add the numbers");
+    // The author writes version 3 meanwhile: the reply still names version 2.
+    const app = p.state.home.projects[0];
+    Object.assign(app.brief.sections[1], { version: 3, title: "Notes, revised" });
+    p.event({ type: "workspace.changed", scope: "brief" });
+    await waitFor(() => card(p, "p-app", "notes").dataset.sectionVersion === "3", "Home read version 3");
+    const box = replyBox(card(p, "p-app", "notes"));
+    assert.match(box.textContent, /Reply to “Notes” · version 2/);
+    assert.match(box.textContent, /changed this card after you began \(now version 3\)/);
+    assert.equal(box.querySelector("textarea").value, "Please add the numbers");
+    p.button("Send", box).click();
+    await waitFor(() => !!box.querySelector('[role="alert"]'), "Core's refusal is shown");
+    const [first] = p.posts(/\/brief\/reply$/);
+    assert.deepEqual(keys(first.body), ["agentId", "clientMessageId", "key", "text", "title", "version"]);
+    assert.deepEqual([first.body.key, first.body.version, first.body.title, first.body.agentId, first.body.text],
+      ["notes", 2, "Notes", "a", "Please add the numbers"]);
+    assert.match(first.body.clientMessageId, uuid);
+    assert.match(box.querySelector('[role="alert"]').textContent, /^version 2 of “Notes” is no longer on Home/);
+    assert.equal(box.querySelector("textarea").value, "Please add the numbers", "the draft stays");
+    assert.equal(p.w.localStorage.getItem("yuzuno.home-outbox.v1"), null, "nothing was submitted: no retry record");
+    // Only the user moves it to the new version, and it is a new message.
+    refuse = false;
+    p.button("Refer it to version 3", box).click();
+    await pause();
+    assert.match(box.textContent, /Reply to “Notes, revised” · version 3/);
+    p.button("Send", box).click();
+    await waitFor(() => /Sent to Mori, referring to version 3/.test(box.textContent), "sent");
+    const second = p.posts(/\/brief\/reply$/)[1].body;
+    assert.deepEqual([second.version, second.title], [3, "Notes, revised"]);
+    assert.notEqual(second.clientMessageId, first.body.clientMessageId);
+    assert.equal(box.querySelector("textarea").value, "");
+    assert.equal(p.w.localStorage.getItem("yuzuno.home-card-drafts.v1"), null, "a sent reply leaves no draft");
+    assert.equal(p.posts(/\/brief\/(seen|defer)$/).length, 0, "a card reply marks nothing seen and defers nothing");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a card reply keeps its id and version through a lost answer and a reload; an older Core says why, sending nothing else (T-174)", async () => {
+  const p = await mount({ failReplies: 1 });
+  let stored;
+  try {
+    const review = card(p, "p-app", "notes/review");
+    p.button("Reply", review).click();
+    await waitFor(() => !!replyBox(review), "the reply opens");
+    assert.equal(replyBox(review).querySelector("select").value, "b", "a sub card's own author");
+    const area = replyBox(review).querySelector("textarea");
+    await type(p, area, "Which branch?");
+    // Composing with an IME: Enter only ends the composition.
+    area.dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, isComposing: true, bubbles: true }));
+    await pause();
+    assert.equal(p.posts(/\/brief\/reply$/).length, 0, "nothing sent while composing");
+    area.dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
+    await waitFor(() => !!replyBox(review).querySelector('[role="alert"]'), "the lost answer is shown");
+    assert.equal(p.posts(/\/brief\/reply$/).length, 1);
+    stored = storageOf(p);
+  } finally {
+    p.close();
+  }
+  const again = await mount({ storage: stored });
+  try {
+    const review = card(again, "p-app", "notes/review");
+    await waitFor(() => !!replyBox(review), "the unconfirmed reply opens again after a reload");
+    const box = replyBox(review);
+    assert.equal(box.querySelector("textarea").value, "Which branch?");
+    assert.match(box.textContent, /earlier reply here was not confirmed/);
+    again.button("Send", box).click();
+    again.button("Send", box).click();
+    await waitFor(() => /Sent to Hana, referring to version 1/.test(box.textContent), "sent");
+    await pause();
+    const posts = again.posts(/\/brief\/reply$/);
+    assert.equal(posts.length, 1, "a second click while sending sends nothing more");
+    const before = JSON.parse(stored["yuzuno.home-outbox.v1"]);
+    const kept = Object.values(before)[0];
+    assert.deepEqual([posts[0].body.clientMessageId, posts[0].body.version, posts[0].body.key], [kept.clientMessageId, 1, "notes/review"]);
+  } finally {
+    again.close();
+  }
+  const older = await mount({ replyAnswer: () => [422, "Failed to deserialize the JSON body into the target type: unknown field `version`, expected one of `key`, `agentId`, `text`, `clientMessageId`, `choice` at line 1 column 90"] });
+  try {
+    const metrics = card(older, "p-res", "metrics");
+    older.button("Reply", metrics).click();
+    await waitFor(() => !!replyBox(metrics), "a status card takes a reply too");
+    await type(older, replyBox(metrics).querySelector("textarea"), "Is this still running?");
+    older.button("Send", replyBox(metrics)).click();
+    await waitFor(() => !!replyBox(metrics).querySelector('[role="alert"]'), "the older Core's refusal is shown");
+    assert.match(replyBox(metrics).querySelector('[role="alert"]').textContent, /can't bind a reply to a card version yet, so nothing was sent/);
+    assert.equal(older.posts(/\/brief\/reply$/).length, 1, "never sent again without its reference");
+    assert.equal(replyBox(metrics).querySelector("textarea").value, "Is this still running?");
+    assert.equal(older.w.localStorage.getItem("yuzuno.home-outbox.v1"), null);
+  } finally {
+    older.close();
+  }
+});
+
+test("an author who left waits for an explicit recipient; a card that leaves Home keeps the draft, sent nowhere (T-174)", async () => {
+  const home = homeFixture();
+  home.projects[0].brief.sections[1].owner = { agentId: "gone", name: "Kai", state: "closed" };
+  const p = await mount({ home });
+  try {
+    const notes = card(p, "p-app", "notes");
+    p.button("Reply", notes).click();
+    await waitFor(() => !!replyBox(notes), "the reply opens");
+    const box = replyBox(notes);
+    assert.equal(box.querySelector("select").value, "", "no recipient chosen for the user");
+    assert.match(box.textContent, /Kai is closed; choose who should get this reply/);
+    await type(p, box.querySelector("textarea"), "Who owns this now?");
+    assert.equal(p.button("Send", box).disabled, true, "nothing to send to yet");
+    await choose(p, box.querySelector("select"), "b");
+    assert.equal(p.button("Send", box).disabled, false);
+    // The card leaves Home before anything is sent.
+    home.projects[0].brief.sections.splice(1, 1);
+    p.event({ type: "workspace.changed", scope: "brief" });
+    await waitFor(() => !card(p, "p-app", "notes"), "the card is gone");
+    const kept = p.panel("p-app").querySelector(".home-kept-reply");
+    assert.ok(!!kept, "the draft is kept and explained");
+    assert.match(kept.textContent, /Your reply to “Notes” \(version 2\) was not sent: that card is no longer on Home/);
+    assert.match(kept.textContent, /Who owns this now\?/);
+    assert.equal(p.posts(/\/brief\/reply$/).length, 0, "not sent to another card or Agent");
+    p.button("Discard", kept).click();
+    await pause();
+    assert.ok(!p.panel("p-app").querySelector(".home-kept-reply"));
+    assert.equal(p.w.localStorage.getItem("yuzuno.home-card-drafts.v1"), null);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

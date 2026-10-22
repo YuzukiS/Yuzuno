@@ -251,6 +251,12 @@ pub(super) struct ReplyInput {
     pub client_message_id: String,
     #[serde(default)]
     pub choice: Option<String>,
+    /// A reply to a report or status card: the version of `key` on screen
+    /// when the user began it, and its title there (see card_reply).
+    #[serde(default)]
+    pub version: Option<i64>,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 /// The option of an ask's reply with this id: (id, label).
@@ -303,6 +309,18 @@ pub(super) fn compose(project: &str, section: Option<&sections::Row>, choice: Op
     message.trim_end().to_owned()
 }
 
+/// The message a reply to a card sends (T-174): which version of which
+/// section of which Project it answers, as the user saw it, then their words.
+/// Nothing in it depends on the section as it is now, so a retry composes the
+/// same message after the card has changed.
+pub(super) fn compose_card(project: &str, project_id: &str, key: &str, version: i64, title: &str, text: &str) -> String {
+    format!(
+        "Reply from the user on Home, to version {version} of the Project Brief section `{key}` (\"{title}\") \
+         of {project} (Project {project_id}):\n\n{}",
+        text.trim()
+    )
+}
+
 /// The Turn a reply joins, as the composer chooses it (App.tsx): Codex
 /// steers its running Turn; Claude takes a follow-up only to a running Turn
 /// of yours, never to one of its own.
@@ -333,6 +351,10 @@ pub(super) fn delivered(receipt: &MessageReceipt) -> bool {
 /// sent as the composer sends it. Returns its receipt.
 pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInput) -> Result<MessageReceipt> {
     ensure!(input.text.len() <= MAX_REPLY, "A reply is at most {MAX_REPLY} bytes");
+    if let Some(version) = input.version {
+        return card_reply(ws, project, input, version).await;
+    }
+    ensure!(input.title.is_none(), "A title goes with the version of the card it was shown in");
     let (id, key) = (project.clone(), input.key.clone());
     let (name, section) = ws.stored(move |store| {
         let db = store.db.read()?;
@@ -380,4 +402,52 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
         }
     }
     Ok(receipt)
+}
+
+/// A reply to a report or status card (T-174): bound to exactly the version
+/// the user saw, never to a newer one or to another card, and it changes no
+/// ask, task or Seen mark. A retry of a message already sent returns its
+/// receipt even if the card has changed since; otherwise a version Home no
+/// longer has, or a removed card, sends nothing and says so.
+async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, version: i64) -> Result<MessageReceipt> {
+    let key = input.key.clone().context("A reply to a card names its section")?;
+    let title = input.title.clone().context("A reply to a card says the title it showed")?;
+    ensure!(input.choice.is_none(), "A choice answers an ask, not a card");
+    ensure!(!input.text.trim().is_empty(), "Write a reply");
+    let (id, wanted) = (project.clone(), key.clone());
+    let (name, shown) = ws.stored(move |store| {
+        let db = store.db.read()?;
+        let labels = crate::projects::project_labels(&db)?;
+        let (name, _) = labels.get(&id).context("project_not_found: no Project has this ID")?;
+        Ok((name.clone(), sections::find(&db, &id, &wanted, Some(version))?))
+    }).await?;
+    let text = compose_card(&name, &project, &key, version, &title, &input.text);
+    let detail = ws.detail(&input.agent_id).await?;
+    if let Some(previous) = detail.message_receipts.iter().find(|r| r.input.client_message_id == input.client_message_id) {
+        ensure!(previous.input.text == text, "This clientMessageId was already used for another message");
+        return ws.send_message(&input.agent_id, previous.input.clone()).await;
+    }
+    let refused = |message: String| anyhow::Error::new(crate::collaboration_credentials::MessageNotSubmitted(anyhow::anyhow!(message)));
+    let Some(row) = shown else {
+        return Err(refused(format!(
+            "section_changed: version {version} of “{title}” is no longer on Home; it changed after you began this reply. \
+             Nothing was sent, and your reply is kept."
+        )));
+    };
+    if row.history_reason.as_deref() == Some("removed") {
+        return Err(refused(format!("section_removed: its author removed “{title}”. Nothing was sent, and your reply is kept.")));
+    }
+    if row.kind == "ask" || row.data["title"].as_str() != Some(title.as_str()) {
+        return Err(refused(format!("section_changed: version {version} of `{key}` is not the card “{title}”. Nothing was sent.")));
+    }
+    let message = MessageInput {
+        client_message_id: input.client_message_id,
+        text,
+        text_blocks: None,
+        images: vec![],
+        expected_turn_id: follow_up_turn(&detail)?,
+        question: None,
+        clarification: None,
+    };
+    ws.send_message(&input.agent_id, message).await
 }

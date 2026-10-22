@@ -740,7 +740,7 @@ async fn a_reply_quotes_its_section_joins_the_running_turn_and_marks_the_ask_onl
     // A reply that is not sent leaves the ask open.
     close(&ws, "c", true);
     let reply = |choice: Option<&str>| home::ReplyInput { key: Some("decide".into()), agent_id: "c".into(),
-        text: "Go".into(), client_message_id: "m1".into(), choice: choice.map(str::to_owned) };
+        text: "Go".into(), client_message_id: "m1".into(), choice: choice.map(str::to_owned), version: None, title: None };
     assert!(home::reply(&ws, project.clone(), reply(Some("left"))).await.is_err());
     assert_eq!(section(&brief(&ws, "a"), "decide")["ask"]["state"], "open");
     let unknown = home::reply(&ws, project.clone(), reply(Some("up"))).await.unwrap_err();
@@ -748,6 +748,64 @@ async fn a_reply_quotes_its_section_joins_the_running_turn_and_marks_the_ask_onl
     let sent = |status: &str| home::delivered(&serde_json::from_value(json!({"input":{"clientMessageId":"m","text":"t"},
         "status":status,"turnId":null,"error":null})).unwrap());
     assert!(sent("accepted") && sent("queued") && !sent("rejected") && !sent("uncertain") && !sent("sending"));
+}
+
+// T-174: a reply to a report or status card names exactly the version on
+// screen. Another version or a removed card sends nothing and says so; a
+// retry of a message already sent returns its receipt, card changed or not.
+#[tokio::test]
+async fn a_card_reply_names_the_version_on_screen_and_never_another() {
+    let (_dir, ws, project) = lab();
+    accept(&ws, "a", input("c1", 0, vec![put("news", "report"), put("now", "status"), put("decide", "ask")])).await;
+    let reply = |key: &str, version: i64, title: &str, text: &str, id: &str| home::ReplyInput {
+        key: Some(key.into()), agent_id: "b".into(), text: text.into(), client_message_id: id.into(),
+        choice: None, version: Some(version), title: Some(title.into()) };
+    let refused = |error: anyhow::Error, code: &str| {
+        assert!(error.to_string().starts_with(code), "{error}");
+        assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
+    };
+    let message = home::compose_card("Code", &project, "news", 1, "About news", " Looks good \n");
+    assert_eq!(message, format!("Reply from the user on Home, to version 1 of the Project Brief section `news` (\"About news\") \
+        of Code (Project {project}):\n\nLooks good"));
+    // A message already sent under this id: its retry returns it, though the card changed since.
+    let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
+        input: crate::model::MessageInput { client_message_id: "r1".into(), text: message.clone(), text_blocks: None, images: vec![],
+            expected_turn_id: Some("t1".into()), question: None, clarification: None } };
+    let kept = sent.clone();
+    ws.store.update_meta("b", "message/requested", &json!({}), move |m| m.message_receipts.push(kept)).unwrap();
+    accept(&ws, "a", input("c2", 1, vec![put("news", "report")])).await;
+    assert_eq!(section(&brief(&ws, "a"), "news")["version"], 2);
+    let again = home::reply(&ws, project.clone(), reply("news", 1, "About news", "Looks good", "r1")).await.unwrap();
+    assert_eq!((again.status.as_str(), again.input.text.as_str()), ("accepted", message.as_str()));
+    let other = home::reply(&ws, project.clone(), reply("news", 1, "About news", "Something else", "r1")).await.unwrap_err();
+    assert!(other.to_string().contains("already used for another message"), "{other}");
+    // A new message to version 1, now gone: kept by the client, sent nowhere.
+    refused(home::reply(&ws, project.clone(), reply("news", 1, "About news", "Looks good", "r2")).await.unwrap_err(), "section_changed");
+    // Not another card's version, title or kind, and never an ask.
+    refused(home::reply(&ws, project.clone(), reply("now", 2, "About now", "Hi", "r3")).await.unwrap_err(), "section_changed");
+    refused(home::reply(&ws, project.clone(), reply("now", 1, "About news", "Hi", "r3")).await.unwrap_err(), "section_changed");
+    refused(home::reply(&ws, project.clone(), reply("decide", 1, "About decide", "Hi", "r3")).await.unwrap_err(), "section_changed");
+    // A removed card: its version is still in history, and still not replied to.
+    accept(&ws, "a", input("c3", 2, vec![op("remove", "now")])).await;
+    refused(home::reply(&ws, project.clone(), reply("now", 1, "About now", "Hi", "r4")).await.unwrap_err(), "section_removed");
+    // A report the user marked seen is still the version they saw.
+    sections::mark_seen(&ws.store, &project, &[("news".into(), 2)]).unwrap();
+    let seen = home::reply(&ws, project.clone(), reply("news", 2, "About news", "Thanks", "r5")).await;
+    assert!(seen.as_ref().is_ok() || !seen.as_ref().unwrap_err().to_string().starts_with("section_"), "{seen:?}");
+    // Malformed: a title without a version, a choice, no text.
+    let mut bare = reply("news", 2, "About news", "Hi", "r6");
+    bare.version = None;
+    assert!(home::reply(&ws, project.clone(), bare).await.is_err());
+    let mut picked = reply("news", 2, "About news", "Hi", "r6");
+    picked.choice = Some("left".into());
+    assert!(home::reply(&ws, project.clone(), picked).await.is_err());
+    assert!(home::reply(&ws, project.clone(), reply("news", 2, "About news", "  ", "r6")).await.is_err());
+    // Nothing on Home changed: no ask replied, the seen mark as it was.
+    let after = brief(&ws, "a");
+    assert_eq!(section(&after, "decide")["ask"]["state"], "open");
+    let seen_marks = sections::seen(&ws.store.db.read().unwrap(), &project).unwrap();
+    assert_eq!(seen_marks.get("news").map(|(version, _)| *version), Some(2));
+    assert_eq!(seen_marks.len(), 1);
 }
 
 #[test]
