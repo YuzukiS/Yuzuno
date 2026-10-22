@@ -194,8 +194,13 @@ export function CardReply({
         version: reply.version,
         title: reply.title,
       });
-      // The next reply here begins afresh, at the version then on screen.
-      update(slot, { busy: false, sent: { status: receipt.status, to: name, version: reply.version }, draft: null });
+      // The next reply here begins afresh, at the version now on screen; the
+      // box stays where it is.
+      update(slot, {
+        busy: false,
+        sent: { status: receipt.status, to: name, version: reply.version },
+        draft: { ...reply, text: "", version: section.version, title: section.title, at: new Date().toISOString() },
+      });
     } catch (e) {
       // Refused before it was read, so never submitted: no retry record.
       if (olderCore(e)) dropPendingReply(slot);
