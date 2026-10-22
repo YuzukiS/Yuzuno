@@ -54,7 +54,7 @@ function useReply({ projectId, workspaceId, onSent }: ReplyContext, key?: string
   return { send, busy, error, receipt, kept };
 }
 
-function TargetPicker({
+export function TargetPicker({
   agents,
   value,
   onChange,

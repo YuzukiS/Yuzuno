@@ -916,6 +916,50 @@ ul.home-widget {
   flex-direction: column;
   gap: 8px;
 }
+/* A reply to a report or status card (T-174), under its card, also when the
+   card is collapsed. */
+.home-card-reply {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+.home-card-reply-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  color: var(--home-ink-2);
+}
+.home-card-reply-head > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.home-card-reply-head strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+.home-kept-replies {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.home-kept-reply blockquote {
+  margin: 4px 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--home-ink-2);
+}
+.home-kept-reply-actions {
+  display: flex;
+  gap: 6px;
+}
 .home-reply-target {
   display: flex;
   align-items: center;

@@ -1,9 +1,10 @@
 import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CalendarClock, Check, Clock3, Eye, LoaderCircle, Pin, PinOff } from "lucide-react";
+import { CalendarClock, Check, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
 import { errorText } from "../api";
 import type { Agent } from "../types";
 import { AskReply, repliedThenUpdated } from "./AskReply";
 import { changedBlocks, rememberSeenBlocks } from "./brief/block-changes";
+import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
 import { FoldButton, useCardFold } from "./card-fold";
 import { absolute, deferChoices, duration, relative } from "./format";
@@ -103,6 +104,10 @@ export const SectionCard = memo(function SectionCard({
   const [deferOpen, setDeferOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // A report or status card on Home takes a reply to its author (T-174); a
+  // draft or unconfirmed reply opens it again after a reload.
+  const replyable = !readOnly && section.kind !== "ask" && !section.history;
+  const [replying, setReplying] = useState(() => hasCardReply(cardReplySlot(workspaceId, projectId, section.key)));
   const changed = changedSinceSeen(section);
   // Which blocks changed is marked on them; the card itself only says that it did.
   const blocks = useMemo(() => changedBlocks(workspaceId, projectId, section), [workspaceId, projectId, section]);
@@ -178,6 +183,19 @@ export const SectionCard = memo(function SectionCard({
           </span>
           <span title={absolute(section.updatedAt)}>{relative(section.updatedAt)}</span>
         </span>
+        {replyable && (
+          <button
+            type="button"
+            className="quiet-button home-reply-open"
+            aria-expanded={replying}
+            aria-label={`Reply to “${section.title}”`}
+            title={`Reply to ${section.owner.name}`}
+            onClick={() => setReplying((open) => !open)}
+          >
+            <MessageSquareReply size={13} />
+            Reply
+          </button>
+        )}
         {!readOnly && <PinButton section={section} projectId={projectId} />}
         {changed && !readOnly && (
           <button
@@ -277,6 +295,9 @@ export const SectionCard = memo(function SectionCard({
         </p>
       )}
       </div>
+      {replyable && replying && (
+        <CardReply section={section} projectId={projectId} workspaceId={workspaceId} agents={agents} onClose={() => setReplying(false)} />
+      )}
       {error && (
         <p className="inline-error" role="alert">
           {error}
