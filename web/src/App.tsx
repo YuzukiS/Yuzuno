@@ -103,6 +103,7 @@ import { observedEffort } from "./claude-effort";
 import { CodexWriterNotice, ForkCodexDialog } from "./ForkCodexSession";
 import { CodexReviewDialog, startCodexReview } from "./CodexReview";
 import { CodexGoalDialog } from "./CodexGoal";
+import { CodexPlanChip, CodexPlanDialog } from "./CodexPlan";
 import { RecoveryNotice, recoveryReason } from "./RecoveryNotice";
 import { AutoContinueSetting, QuotaResumeNotice } from "./QuotaResume";
 import { ClaudeRuntimeFacts } from "./ClaudeControls";
@@ -285,12 +286,15 @@ export function App() {
   const [reviewRequest, setReviewRequest] = useState<{ agentId: string; draft: ComposerDraft; nonce: number } | null>(null);
   // `/goal`: the Codex goal dialog, with the objective typed after it.
   const [goalRequest, setGoalRequest] = useState<{ agentId: string; draft: ComposerDraft; nonce: number; objective: string } | null>(null);
+  // `/plan`, or the composer's Plan mode sign (no draft): the Codex mode dialog.
+  const [planRequest, setPlanRequest] = useState<{ agentId: string; draft: ComposerDraft | null; nonce: number } | null>(null);
   // Each is for the Agent it was asked from: selecting another Agent drops it,
   // so it neither keeps read tracking off elsewhere nor reopens on return.
   useEffect(() => {
     setChangesRequest((request) => request && request.agentId !== selected ? null : request);
     setReviewRequest((request) => request && request.agentId !== selected ? null : request);
     setGoalRequest((request) => request && request.agentId !== selected ? null : request);
+    setPlanRequest((request) => request && request.agentId !== selected ? null : request);
   }, [selected]);
   const [turnDockEngaged, setTurnDockEngaged] = useState(false);
   const [inspector, setInspector] = useState(true);
@@ -752,7 +756,8 @@ export function App() {
       !changesRequest &&
       !forkOpen &&
       !reviewRequest &&
-      !goalRequest,
+      !goalRequest &&
+      !planRequest,
     scrollRef: scroll,
     endRef: readEnd,
     onRead: reviewDisplayed,
@@ -1484,6 +1489,12 @@ export function App() {
         throw new Error(`/${control.command} takes nothing after it here. Send /${control.command} alone; your draft is kept.`);
       if (control?.command === "permissions") {
         setModelRequest({ model: "", nonce: Date.now(), kind: "permissions" });
+        return;
+      }
+      // `/plan` shows this Agent's Codex mode; a switch there is the user's
+      // click. The draft stays until Codex has accepted one.
+      if (control?.command === "plan") {
+        setPlanRequest({ agentId: target, draft: sentDraft, nonce: Date.now() });
         return;
       }
       if (control?.command === "fork") {
@@ -2709,6 +2720,10 @@ export function App() {
                         <SquareDashedMousePointer size={15} />
                       </button>
                       {!previewMode && <ResultRequest key={selected} onDraft={appendToDraft} />}
+                      {!previewMode && !isClaude && !isOpenCode && (
+                        <CodexPlanChip state={currentDetail?.codexPlan}
+                          onOpen={() => setPlanRequest({ agentId: selected, draft: null, nonce: Date.now() })} />
+                      )}
                     </div>
                     <span className="composer-hint" data-notice={composerNotice ? "" : undefined}>
                       {composerNotice ? (
@@ -3036,6 +3051,23 @@ export function App() {
           onChanged={(notice) => {
             // The command is done once Codex has changed its goal.
             if (goalRequest) clearIfUnchanged(goalRequest.agentId, goalRequest.draft);
+            setNotice(notice);
+            refresh();
+          }}
+        />
+      )}
+      {agent && !isClaude && !isOpenCode && (
+        <CodexPlanDialog
+          key={`plan-${agent.id}-${planRequest?.nonce ?? 0}`}
+          agent={agent}
+          open={planRequest?.agentId === agent.id}
+          // Working, or waiting on a request that blocks the turn, as Core checks.
+          turnRunning={busy}
+          onOpenChange={(open) => { if (!open) setPlanRequest(null); }}
+          onChanged={(notice) => {
+            // `/plan` is done once Codex has accepted a switch; the dialog
+            // stays open on what Codex reports.
+            if (planRequest?.draft) clearIfUnchanged(planRequest.agentId, planRequest.draft);
             setNotice(notice);
             refresh();
           }}

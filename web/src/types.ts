@@ -216,6 +216,14 @@ export interface ArtifactPreview extends Artifact {
 export type BackgroundShells =
   | { state: "known"; count: number; checkedAt: number }
   | { state: "unknown"; lastCount: number; checkedAt: number };
+/** A Codex conversation's mode as its live connection's Codex reported it
+ * (core/src/codex_plan.rs): from its resume answer or its settings report.
+ * `switch` is the user's switch that Codex has not reported yet. */
+export interface CodexPlanState {
+  generation: number;
+  reported: { mode: string; source: "resume" | "settings"; observedAt: string } | null;
+  switch: { to: "plan" | "default"; state: "sending" | "accepted" | "unknown"; requestedAt: string } | null;
+}
 /** A call Core lists from outside the window while its task runs: its
  * preview, at its Turn's and its own position in the record. */
 export interface RunningCall {
@@ -249,6 +257,7 @@ export interface AgentDetail {
   artifacts: Artifact[];
   contextUsage?: ContextUsage | null;
   backgroundShells?: BackgroundShells;
+  codexPlan?: CodexPlanState;
   messageReceipts?: MessageReceipt[];
   claudeRuntime?: ClaudeRuntime | null;
   codexHandoff?: CodexHandoff | null;

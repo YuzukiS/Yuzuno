@@ -87,6 +87,7 @@ async function mount({
   contextSettings,
   collaboration,
   backgroundShells,
+  codexPlan,
   agentFields,
   settings,
   permissions = permissionCatalog,
@@ -198,6 +199,7 @@ async function mount({
         contextUsage: agent.id === "a" ? contextUsage : null,
         collaboration: agent.id === "a" ? collaboration : null,
         backgroundShells: agent.id === "a" ? backgroundShells : null,
+        ...(agent.id === "a" && codexPlan ? { codexPlan } : {}),
         claudeRuntime: agent.id === "a" ? claudeRuntime : null,
         messageReceipts: receipts.filter((r) => r.agentId === agent.id),
         history,
@@ -5523,6 +5525,154 @@ test("a Codex Agent's /mcp shows its servers' startup reports in the context pan
     await until(() => reads.length === before + 1, "read again from Core");
     assert.ok(reads.every((method) => method === "GET"));
     assert.deepEqual(posts(page), [], "nothing sent, started or saved");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+// T-29: a Codex Agent's /plan is Codex's own collaboration mode of this
+// conversation (Plan or Default): read when the dialog opens, switched only
+// by the user's click there. Never a message or a turn; the model, effort,
+// permissions, folder and draft are not touched.
+// Stateful, as Core is: a read returns the mode as the last switch left it.
+function planStub(reported, answers = [], read = {}) {
+  let view = { state: "ready", reason: "listed", generation: 4, modes: ["plan", "default"], switch: null,
+    reported: reported && { mode: reported, source: "resume", observedAt: "2026-10-22T00:00:00Z" }, ...read };
+  const reads = [], changes = [];
+  return { reads, changes, beforeLoad(window) {
+    const fetch = window.fetch;
+    window.fetch = (url, init = {}) => {
+      if (!url.endsWith("/codex/plan")) return fetch(url, init);
+      let status = 200, body;
+      if (init.method === "POST") {
+        const change = JSON.parse(init.body);
+        changes.push(change);
+        const answer = answers.shift();
+        if (answer === "lost") return Promise.reject(new window.TypeError("Failed to fetch"));
+        if (answer === "accepted") view = { ...view, reason: "switched", switch: { to: change.mode, state: "accepted", requestedAt: "2026-10-22T00:00:02Z" } };
+        else if (answer) [status, body] = answer;
+        else view = { ...view, reason: "switched", switch: null, reported: { mode: change.mode, source: "settings", observedAt: "2026-10-22T00:00:03Z" } };
+        body ??= view;
+      } else {
+        reads.push(url);
+        body = view;
+      }
+      return Promise.resolve({ ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body) });
+    };
+  } };
+}
+const planDialog = (page) => page.document.querySelector('[role="dialog"]');
+const planButton = (page, name) => [...(planDialog(page)?.querySelectorAll("button") ?? [])].find((b) => b.textContent.trim() === name);
+
+test("a Codex Agent's /plan shows Codex's mode, and only the user's own click switches it", async () => {
+  const stub = planStub("default");
+  const page = await mount({ harness: "codex", beforeLoad: stub.beforeLoad });
+  try {
+    let composer = await sendDraft(page, "/plan");
+    await until(() => /Codex reports Default mode, when it resumed this conversation/.test(planDialog(page)?.textContent || ""), "the mode to be read");
+    assert.equal(stub.reads.length, 1);
+    assert.match(planDialog(page).textContent, /Switching sends nothing to the model; your next message starts the planning/);
+    assert.match(planDialog(page).textContent, /model, effort, permissions,\s*folder and your draft stay as they are/);
+    assert.ok(!planButton(page, "Leave Plan mode"), "nothing to leave");
+    // Looking changes nothing: closing keeps the draft and sends nothing.
+    await closeModal(page);
+    assert.deepEqual(stub.changes, []);
+    assert.equal(composerText(composer), "/plan");
+    composer = await sendDraft(page, "/plan");
+    await until(() => planButton(page, "Switch to Plan mode"), "the switch");
+    planButton(page, "Switch to Plan mode").click();
+    await until(() => /Codex reports Plan mode/.test(planDialog(page).textContent), "Codex's report of Plan mode");
+    assert.deepEqual(stub.changes, [{ mode: "plan", generation: 4 }], "the mode, on the connection the user saw; nothing else");
+    assert.match(page.document.body.textContent, /Codex switched to Plan mode\. Your next message starts the planning/);
+    await until(() => composerText(composer) === "", "the handled command to leave the draft");
+    // Words after /plan are not a message to send in Plan mode here: nothing opens or is sent.
+    await closeModal(page);
+    await sendDraft(page, "/plan Write the parser");
+    assert.match(page.document.body.textContent, /\/plan takes nothing after it here/);
+    assert.equal(composerText(composer), "/plan Write the parser", "the draft stays");
+    assert.ok(!planDialog(page));
+    assert.deepEqual(posts(page), [], "no /messages, /turns, settings or task");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+  const claude = await mount({ harness: "claude" });
+  try {
+    await sendDraft(claude, "/plan");
+    assert.deepEqual(posts(claude), ["/api/agents/a/messages"], "a Claude Agent's /plan stays Claude Code's own");
+  } finally { claude.close(); }
+});
+
+test("Codex's Plan mode shows in the composer, and leaving it only switches back without touching the draft", async () => {
+  const codexPlan = { generation: 4, reported: { mode: "plan", source: "settings", observedAt: "2026-10-22T00:00:00Z" }, switch: null };
+  const stub = planStub("plan", ["lost", [400, { error: "Codex 拒绝了切换到Default 模式：invalid thread settings override；模式没有改变" }], "accepted"]);
+  const page = await mount({ harness: "codex", codexPlan, beforeLoad: stub.beforeLoad });
+  try {
+    const composer = page.document.querySelector('[data-composer-input][aria-label="Message Mori"]');
+    setComposerText(composer, "keep this draft");
+    await pause();
+    const sign = await until(() => [...page.document.querySelectorAll(".composer-mode")].find((b) => b.textContent.trim() === "Plan mode"), "the Plan mode sign");
+    assert.match(sign.title, /Codex reports Plan mode/);
+    sign.click();
+    await until(() => planButton(page, "Leave Plan mode"), "the /plan dialog");
+    assert.ok(!planButton(page, "Switch to Plan mode"), "already in Plan mode, as Codex reports");
+    // The first answer is lost: unknown, read again, never sent again by itself.
+    const readsBefore = stub.reads.length;
+    planButton(page, "Leave Plan mode").click();
+    await until(() => /No answer came back.*as Codex now reports it/.test(planDialog(page).querySelector('[role="alert"]')?.textContent || ""), "the unknown outcome");
+    await until(() => stub.reads.length === readsBefore + 1 && planButton(page, "Leave Plan mode"), "the mode read again");
+    planButton(page, "Leave Plan mode").click();
+    await until(() => /invalid thread settings override/.test(planDialog(page).querySelector('[role="alert"]')?.textContent || ""), "Codex's refusal, as Core says it");
+    await until(() => stub.reads.length === readsBefore + 2 && planButton(page, "Leave Plan mode"), "the mode read again after the refusal");
+    planButton(page, "Leave Plan mode").click();
+    await until(() => /Codex accepted the switch to Default mode and has not reported its mode since/.test(planDialog(page).textContent), "accepted, not yet reported");
+    assert.match(page.document.body.textContent, /Codex accepted Default mode\. The plan stays in this conversation; nothing was sent to carry it out/);
+    assert.deepEqual(stub.changes, [{ mode: "default", generation: 4 }, { mode: "default", generation: 4 }, { mode: "default", generation: 4 }], "one request per click");
+    assert.equal(composerText(composer), "keep this draft", "the sign's dialog never touches the draft");
+    assert.deepEqual(posts(page), [], "no /messages, /turns or implement prompt");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("/plan says why it cannot switch: not connected, an older Codex, or a turn still running", async () => {
+  for (const [read, why] of [[{ state: "unavailable", reason: "not_connected", generation: null, modes: [] }, /Connect this Agent to see its Codex mode/],
+                             [{ state: "unsupported", reason: "old_protocol", generation: 4, modes: [] }, /has no collaboration modes, so no Plan mode/]]) {
+    const stub = planStub(null, [], read);
+    const page = await mount({ harness: "codex", beforeLoad: stub.beforeLoad });
+    try {
+      await sendDraft(page, "/plan");
+      await until(() => why.test(planDialog(page)?.textContent || ""), `${why}`);
+      assert.ok(!planButton(page, "Switch to Plan mode") && !planButton(page, "Switch to Default mode"));
+    } finally { page.close(); }
+  }
+  // Codex has not reported the mode on this connection: both are offered, between turns only.
+  const stub = planStub(null);
+  const page = await mount({ harness: "codex", status: "working", beforeLoad: stub.beforeLoad });
+  try {
+    // While Codex works, Send adds to its turn; /plan is still a control.
+    setValue(page.window, page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), "/plan");
+    await pause();
+    (await until(() => page.document.querySelector('[aria-label="Send while working"]:not(:disabled)'), "Send to accept the draft")).click();
+    await until(() => planButton(page, "Switch to Plan mode"), "the dialog");
+    assert.match(planDialog(page).textContent, /Codex has not reported this conversation's mode on this connection yet/);
+    assert.match(planDialog(page).textContent, /Switch once this turn has ended/);
+    assert.ok(planButton(page, "Switch to Plan mode").disabled && planButton(page, "Switch to Default mode").disabled);
+    assert.ok(!page.document.querySelector(".composer-mode"), "no sign without Codex's report");
+    assert.deepEqual(stub.changes, []);
+    assert.deepEqual(posts(page), [], "not sent into the running turn");
+  } finally { page.close(); }
+});
+
+test("Codex's proposed plan shows as sanitized Markdown, open, and acts on nothing", async () => {
+  const planTurn = { id: "t2", status: "completed", items: [
+    { id: "u2", type: "userMessage", content: [{ type: "text", text: "Plan the parser" }] },
+    { id: "p1", type: "plan", text: "# Parser plan\n\n- read the grammar\n- write the tests <img src=x onerror=alert(1)>" },
+  ] };
+  const page = await mount({ harness: "codex", extraTurns: [planTurn] });
+  try {
+    const plan = await until(() => page.document.querySelector("details.codex-plan"), "the plan");
+    assert.ok(plan.open, "open: it is what Plan mode is for");
+    assert.match(plan.querySelector("summary").textContent, /Proposed plan · Parser plan/);
+    assert.deepEqual([...plan.querySelectorAll(".prose li")].map((li) => li.textContent.trim()), ["read the grammar", "write the tests"]);
+    assert.equal(plan.querySelectorAll("[onerror], script").length, 0, "sanitized as Claude's plans are");
+    assert.deepEqual(posts(page), []);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

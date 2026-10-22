@@ -68,7 +68,8 @@ const mcpControl = control("mcp", "Shows this Agent's MCP servers as they report
 /**
  * What a Codex Agent offers: Codex's app-server lists no commands, so only
  * the controls Yuzuno runs through Codex itself (`thread/compact/start`,
- * `review/start`, `thread/goal/*`) or through this Agent's settings.
+ * `review/start`, `thread/goal/*`, its collaboration modes) or through this
+ * Agent's settings.
  */
 export const codexControls: CommandList = {
   state: "ready",
@@ -79,6 +80,7 @@ export const codexControls: CommandList = {
     control("compact", "Compacts this conversation now with Codex's own compaction, not a prompt"),
     control("review", "Asks Codex for its own code review: of your changes, against a branch, of a commit, or by your instructions", "[instructions]"),
     control("goal", "Shows Codex's own goal for this conversation, to set, pause, resume or clear it", "[objective]"),
+    control("plan", "Shows Codex's own mode for this conversation, to switch to Plan mode or back; nothing is sent to the model"),
     modelControl, permissionsControl, forkControl, newControl, resumeControl, statusControl, usageControl, mcpControl,
     // Yuzuno's own record of a turn's file edits, not a Codex request.
     control("changes", "Yuzuno's record of the file edits Codex made in a turn, by file; not a Git diff of the folder"),
@@ -127,12 +129,14 @@ export function withModelControl(list: CommandList): CommandList {
 }
 
 /** Which harnesses each of Yuzuno's controls is for. Claude Code runs its
- * own `/compact`, `/review`, `/status`, `/usage` and `/mcp`; a goal and a fork are a Codex session's. An
+ * own `/compact`, `/review`, `/status`, `/usage` and `/mcp`; a goal, a mode (`/plan`) and a fork are a
+ * Codex session's, and a Claude Agent's `/plan` stays Claude Code's own. An
  * OpenCode Agent's model and settings are OpenCode's own: no control. */
 const controlHarnesses = {
   compact: ["codex"],
   review: ["codex"],
   goal: ["codex"],
+  plan: ["codex"],
   model: ["codex", "claude"],
   permissions: ["codex", "claude"],
   fork: ["codex"],

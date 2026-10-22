@@ -104,6 +104,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::codex_skills::router())
         .merge(crate::codex_goal::router())
         .merge(crate::codex_mcp::router())
+        .merge(crate::codex_plan::router())
         .merge(crate::claude_sessions::router())
         .merge(crate::reading_handoff::router())
         .merge(crate::claude_checkpoints::router())
@@ -798,12 +799,15 @@ async fn detail(
         detail: crate::model::AgentDetail,
         #[serde(rename = "backgroundShells", skip_serializing_if = "Option::is_none")]
         background_shells: Option<Value>,
+        #[serde(rename = "codexPlan", skip_serializing_if = "Option::is_none")]
+        codex_plan: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         collaboration: Option<crate::collaboration_credentials::CollaborationStatus>,
         #[serde(skip_serializing_if = "Option::is_none")]
         conversation: Option<Value>,
     }
     let background_shells = crate::background_shells::shells(&ws, &id);
+    let codex_plan = crate::codex_plan::shown(&ws, &id);
     let collaboration = ws.collaboration_status(&id).await;
     let found = ws.stored(move |store| {
         let (mut detail, conversation) = if query.view.is_some() {
@@ -813,7 +817,7 @@ async fn detail(
             }
         } else { (store.client_detail(&id)?, None) };
         crate::results::attach(&*store.db.read()?, &mut detail)?;
-        Ok(Ok(serde_json::to_vec(&Detail { detail, background_shells, collaboration, conversation })?))
+        Ok(Ok(serde_json::to_vec(&Detail { detail, background_shells, codex_plan, collaboration, conversation })?))
     }).await?;
     Ok(match found {
         Ok(bytes) => ([(header::CONTENT_TYPE, "application/json"), (header::VARY, "X-Yuzuno-Conversation")], bytes).into_response(),

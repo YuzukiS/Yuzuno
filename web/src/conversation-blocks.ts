@@ -96,6 +96,7 @@ const activityNames: Record<string, string> = {
   reasoning: "Reasoning",
   contextCompaction: "Compaction",
   enteredReviewMode: "Review",
+  plan: "Proposed plan",
 };
 
 /** Count native calls, not output chunks or files touched by a single edit. */
