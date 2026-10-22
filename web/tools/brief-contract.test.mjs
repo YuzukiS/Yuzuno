@@ -165,7 +165,7 @@ test("every per-block limit is rejected with a reason to act on", () => {
   const block = first(section("Markdown", { text: `Intro\n\n${fence(3)}\n\n${fence(340)}` }));
   assert.equal(block.code, "block_too_long");
   assert.equal(block.path, "body.elements.it.props.text");
-  assert.equal(block.reason, 'Markdown "it" code block 2 has 340 lines; the limit is 200. Keep a short excerpt and move the full log or code into an attachment. (brief_guide attachments)');
+  assert.equal(block.reason, 'Markdown "it" code block 2 has 340 lines; the limit is 200. Keep a short excerpt here and leave the full log or code on its Task. (brief_guide content)');
   assert.equal(first(section("Markdown", { text: `\`\`\`\n${"x\n".repeat(201)}` })).code, "block_too_long", "an unclosed fence runs to the end");
   assert.deepEqual(fencedBlockLines("a\n````md\n```\ninner\n```\n````\n~~~\n1\r\n2\n~~~"), [3, 2]);
   assert.deepEqual(fencedBlockLines("``` not a `fence`\nplain"), []);

@@ -644,7 +644,7 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
       case "Markdown": {
         fencedBlockLines((node.props as Props<"Markdown">).text).forEach((lines, index) => {
           if (lines > L.codeBlockLines)
-            add(problem("block_too_long", `${at}.text`, `Markdown "${key}" code block ${index + 1} has ${lines} lines; the limit is ${L.codeBlockLines}. Keep a short excerpt and move the full log or code into an attachment.`, "attachments"));
+            add(problem("block_too_long", `${at}.text`, `Markdown "${key}" code block ${index + 1} has ${lines} lines; the limit is ${L.codeBlockLines}. Keep a short excerpt here and leave the full log or code on its Task.`, "content"));
         });
         break;
       }
