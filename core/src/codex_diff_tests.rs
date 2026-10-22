@@ -286,6 +286,20 @@ async fn a_read_is_cancelled_only_by_its_own_token_and_one_runs_at_a_time() {
     assert_eq!(sent.iter().filter(|r| r["method"] == "command/exec").count(), 3, "nothing after the cancel");
     lab.write("flags", "");
     assert_eq!(lab.read("t3").await["state"], "read", "the next read runs");
+    // Cancelled among the untracked files: what was read stays, and it says cancelled.
+    lab.write("flags", "hang-untracked");
+    lab.write("tracked", "+t\n");
+    lab.write("untracked", "a\0b\0");
+    let ws = lab.ws.clone();
+    let read = tokio::spawn(async move { ws.codex_diff("a", "t4".into()).await.unwrap() });
+    lab.until("the first untracked file hangs", |sent| sent.iter().any(|r| r["params"]["processId"] == "yuzuno-diff-t4-6")).await;
+    assert_eq!(lab.cancel("t4").await, json!({"cancelled":true}));
+    let report = serde_json::to_value(read.await.unwrap()).unwrap();
+    assert_eq!((report["state"].as_str(), report["stopped"].as_str(), report["complete"].as_bool()), (Some("cancelled"), Some("cancelled"), Some(false)), "{report}");
+    assert_eq!(report["tracked"]["text"], "+t\n");
+    assert_eq!(report["untracked"]["files"], json!([{"path":"a","diff":null,"notRead":"stopped"},{"path":"b","diff":null,"notRead":"stopped"}]));
+    assert_eq!(lab.sent().iter().filter(|r| r["params"]["processId"].as_str().is_some_and(|p| p.starts_with("yuzuno-diff-t4-"))).count(), 7,
+        "six commands and one terminate; b never ran");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

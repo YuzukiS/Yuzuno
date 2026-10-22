@@ -108,7 +108,8 @@ struct Stream {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     stdout_cap: usize,
-    /// Codex reported the stdout cap reached: there was more.
+    /// More than `stdout_cap` bytes came, or Codex reported its cap
+    /// (`stdout_cap` + 1) reached: there was more.
     stdout_full: bool,
     notify: Arc<Notify>,
 }
@@ -154,8 +155,10 @@ impl State {
         match p["stream"].as_str() {
             Some("stdout") => {
                 let room = stream.stdout_cap.saturating_sub(stream.stdout.len());
+                // Counted here too: whether Codex flags an output of exactly its cap is not relied on.
+                let over = bytes.len() > room;
                 stream.stdout.extend_from_slice(&bytes[..bytes.len().min(room)]);
-                if full {
+                if (full || over) && !stream.stdout_full {
                     stream.stdout_full = true;
                     stream.notify.notify_one();
                 }
@@ -608,6 +611,9 @@ impl Reader<'_> {
             }
         }
         report.untracked = Some(untracked);
+        if let Some(Stop::Cancelled) = stopped {
+            report.state = "cancelled";
+        }
         report
     }
 
@@ -757,8 +763,16 @@ mod tests {
         state.deliver("b", 3, &delta("stdout", "zz", false));
         state.deliver("a", 3, &delta("stdout", "cde", true));
         state.deliver("a", 3, &delta("stderr", "warning", false));
-        let streams = state.streams.lock().unwrap();
+        let mut streams = state.streams.lock().unwrap();
         let stream = &streams[&("a".to_owned(), 3, "p".to_owned())];
         assert_eq!((stream.stdout.as_slice(), stream.stdout_full, stream.stderr.as_slice()), (&b"abcd"[..], true, &b"warning"[..]));
+        // One byte over the limit is more, flagged or not; exactly the limit is whole.
+        for (text, full) in [("abcd", false), ("abcde", true)] {
+            streams.insert(("a".into(), 3, "q".into()), Stream { stdout_cap: 4, ..Default::default() });
+            drop(streams);
+            state.deliver("a", 3, &json!({"processId":"q","stream":"stdout","deltaBase64":base64::engine::general_purpose::STANDARD.encode(text),"capReached":false}));
+            streams = state.streams.lock().unwrap();
+            assert_eq!(streams[&("a".to_owned(), 3, "q".to_owned())].stdout_full, full, "{text}");
+        }
     }
 }

@@ -2828,6 +2828,10 @@ mod codex_plan_tests;
 mod codex_diff_tests;
 
 #[cfg(all(test, unix))]
+#[path = "codex_diff_fixture_tests.rs"]
+mod codex_diff_fixture_tests;
+
+#[cfg(all(test, unix))]
 #[path = "subagent_requests_tests.rs"]
 mod subagent_requests_tests;
 
