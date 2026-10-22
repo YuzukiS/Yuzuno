@@ -187,7 +187,7 @@ pub struct Rows {
     pub meta: String,
     pub turns: Vec<TurnRow>,
     pub items: Vec<ItemRow>,
-    /// Empty when read without payloads.
+    /// Empty when read: `read` parses payloads as it reads them (`Fields`).
     pub payloads: Vec<PayloadRow>,
 }
 
@@ -219,6 +219,39 @@ pub struct PayloadRow {
     pub item: String,
     pub field: String,
     pub data: String,
+}
+
+/// A payload's value as read: parsed from the row's text where SQLite holds
+/// it, without first copying it into a String (T-140), or what its text gave
+/// instead, which `fill` reports where it reaches it, as it always has.
+pub type Parsed = std::result::Result<Value, serde_json::Error>;
+
+/// Payloads by (Turn row key, Item row key): each field and its value.
+pub type Fields = HashMap<(String, String), Vec<(String, Parsed)>>;
+
+/// A `data` column read as `Parsed`. A value that is not text, or not
+/// UTF-8, is the same database error it is when read as a String (both go
+/// through `ValueRef::as_str`); only text that is not JSON is left to `fill`.
+struct Json(Parsed);
+
+impl rusqlite::types::FromSql for Json {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        Ok(Json(serde_json::from_str(value.as_str()?)))
+    }
+}
+
+/// Payload rows (turn_id, item_id, field, data) by Turn and Item, parsed.
+fn parsed_payloads(rows: impl Iterator<Item = rusqlite::Result<(String, String, String, Json)>>) -> rusqlite::Result<Fields> {
+    let mut fields = Fields::new();
+    for row in rows {
+        let (turn, item, field, Json(value)) = row?;
+        fields.entry((turn, item)).or_default().push((field, value));
+    }
+    Ok(fields)
+}
+
+fn parsed_payload_from_row(r: &rusqlite::Row) -> rusqlite::Result<(String, String, String, Json)> {
+    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
 }
 
 /// Row keys for a list of IDs: the ID itself when it is a string, unique in
@@ -433,16 +466,22 @@ pub fn split(detail: &AgentDetail) -> Result<Rows> {
 /// Rows that do not fit together (missing, extra or out of order) are an
 /// error rather than a record silently missing part of its history.
 pub fn assemble(rows: Rows, payloads: bool) -> Result<AgentDetail> {
+    // Without payloads, payload rows (if any) are left alone.
+    let mut fields = Fields::new();
+    for payload in rows.payloads.iter().filter(|_| payloads) {
+        fields.entry((payload.turn.clone(), payload.item.clone())).or_default()
+            .push((payload.field.clone(), serde_json::from_str(&payload.data)));
+    }
+    assemble_parsed(Rows { payloads: Vec::new(), ..rows }, fields, payloads)
+}
+
+/// `assemble`, with the payloads already parsed (as `read` gives them).
+fn assemble_parsed(rows: Rows, mut fields: Fields, payloads: bool) -> Result<AgentDetail> {
     let mut detail = from_meta(&rows.meta)?;
     let id = detail.agent.id.clone();
     let mut items: HashMap<String, Vec<ItemRow>> = HashMap::new();
     for item in rows.items {
         items.entry(item.turn.clone()).or_default().push(item);
-    }
-    // Without payloads, payload rows (if any were read) are left alone.
-    let mut fields: HashMap<(String, String), Vec<PayloadRow>> = HashMap::new();
-    for payload in rows.payloads.into_iter().filter(|_| payloads) {
-        fields.entry((payload.turn.clone(), payload.item.clone())).or_default().push(payload);
     }
     let mut turns = rows.turns;
     turns.sort_by_key(|t| t.ord);
@@ -458,7 +497,7 @@ pub fn assemble(rows: Rows, payloads: bool) -> Result<AgentDetail> {
 
 /// One Turn from its row, its Item rows and (taken from `fields`) payloads.
 fn assemble_turn(agent: &str, row: TurnRow, mut items: Vec<ItemRow>,
-    fields: &mut HashMap<(String, String), Vec<PayloadRow>>, payloads: bool) -> Result<Value> {
+    fields: &mut Fields, payloads: bool) -> Result<Value> {
     let mut turn: Value = serde_json::from_str(&row.data).context("Workspace 记录无法读取")?;
     let Some(count) = row.items else {
         ensure!(items.is_empty(), "Agent {agent}: Item rows for Turn {} stored whole", row.key);
@@ -473,7 +512,7 @@ fn assemble_turn(agent: &str, row: TurnRow, mut items: Vec<ItemRow>,
         if item.payloads > 0 {
             let filled = if payloads {
                 let found = fields.remove(&(row.key.clone(), item.key.clone())).unwrap_or_default();
-                fill(&mut value, found.into_iter().map(|p| (p.field, p.data)).collect(), item.payloads)
+                fill(&mut value, found, item.payloads)
             } else {
                 preview_fields(&mut value, item.previews.as_deref(), item.payloads)
             };
@@ -488,7 +527,7 @@ fn assemble_turn(agent: &str, row: TurnRow, mut items: Vec<ItemRow>,
 }
 
 /// Puts an Item's payloads in their places and drops the annotation.
-fn fill(item: &mut Value, payloads: Vec<(String, String)>, expected: usize) -> Result<()> {
+fn fill(item: &mut Value, payloads: Vec<(String, Parsed)>, expected: usize) -> Result<()> {
     ensure!(payloads.len() == expected, "{} of its {expected} payload rows", payloads.len());
     let members = item.as_object_mut().context("Item with payloads is not an object")?;
     let Some(Value::Object(mut notes)) = members.remove(TRUNCATED) else {
@@ -496,7 +535,7 @@ fn fill(item: &mut Value, payloads: Vec<(String, String)>, expected: usize) -> R
     };
     for (field, data) in payloads {
         ensure!(notes.remove(&field).is_some(), "payload {field} is not noted");
-        let value = serde_json::from_str(&data).context("Workspace 记录无法读取")?;
+        let value = data.context("Workspace 记录无法读取")?;
         ensure!(members.insert(field.clone(), value) == Some(Value::Null), "payload {field} has no place");
     }
     ensure!(notes.is_empty(), "noted payloads are missing");
@@ -525,7 +564,8 @@ fn preview_fields(item: &mut Value, previews: Option<&str>, expected: usize) -> 
 pub enum Stored {
     /// The whole record, as JSON (layout 0).
     Whole(String),
-    Rows(Rows),
+    /// The rows, and with payloads, those parsed as they were read.
+    Rows(Rows, Fields),
 }
 
 /// Reads inside one read transaction when the caller has none, so several
@@ -560,23 +600,18 @@ pub fn read(db: &Connection, id: &str, payloads: bool) -> Result<Option<Stored>>
     } else {
         "SELECT turn_id, item_id, ord, payloads, data, previews FROM agent_items WHERE agent_id=?1"
     })?.query_map([id], item_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let payloads = if payloads {
-        db.prepare_cached("SELECT turn_id, item_id, field, data FROM agent_payloads WHERE agent_id=?1")?
-            .query_map([id], payload_from_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?
+    let fields = if payloads {
+        parsed_payloads(db.prepare_cached("SELECT turn_id, item_id, field, data FROM agent_payloads WHERE agent_id=?1")?
+            .query_map([id], parsed_payload_from_row)?)?
     } else {
-        Vec::new()
+        Fields::new()
     };
-    Ok(Some(Stored::Rows(Rows { meta, turns, items, payloads })))
+    Ok(Some(Stored::Rows(Rows { meta, turns, items, payloads: Vec::new() }, fields)))
 }
 
 fn item_from_row(r: &rusqlite::Row) -> rusqlite::Result<ItemRow> {
     Ok(ItemRow { turn: r.get(0)?, key: r.get(1)?, ord: count(r.get(2)?)?, payloads: count(r.get(3)?)?, data: r.get(4)?,
         previews: r.get(5)? })
-}
-
-fn payload_from_row(r: &rusqlite::Row) -> rusqlite::Result<PayloadRow> {
-    Ok(PayloadRow { turn: r.get(0)?, item: r.get(1)?, field: r.get(2)?, data: r.get(3)? })
 }
 
 /// An Agent's record, in either layout. Without payloads, large fields are
@@ -593,7 +628,7 @@ pub fn load(db: &Connection, id: &str, payloads: bool) -> Result<Option<AgentDet
 pub fn assemble_stored(id: &str, stored: Stored, payloads: bool) -> Result<AgentDetail> {
     match stored {
         Stored::Whole(text) => serde_json::from_str(&text).map_err(|e| damaged(id, e.into())),
-        Stored::Rows(rows) => assemble(rows, payloads).map_err(|e| damaged(id, e)),
+        Stored::Rows(rows, fields) => assemble_parsed(rows, fields, payloads).map_err(|e| damaged(id, e)),
     }
 }
 
@@ -849,15 +884,12 @@ pub fn load_turn(db: &Connection, agent: &str, turn_id: &str, payloads: bool) ->
     } else {
         "SELECT turn_id, item_id, ord, payloads, data, previews FROM agent_items WHERE agent_id=?1 AND turn_id=?2"
     })?.query_map(params![agent, key], item_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut fields: HashMap<(String, String), Vec<PayloadRow>> = HashMap::new();
-    if payloads {
-        let rows = db.prepare_cached("SELECT turn_id, item_id, field, data FROM agent_payloads WHERE agent_id=?1 AND turn_id=?2")?
-            .query_map(params![agent, key], payload_from_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for payload in rows {
-            fields.entry((payload.turn.clone(), payload.item.clone())).or_default().push(payload);
-        }
-    }
+    let mut fields = if payloads {
+        parsed_payloads(db.prepare_cached("SELECT turn_id, item_id, field, data FROM agent_payloads WHERE agent_id=?1 AND turn_id=?2")?
+            .query_map(params![agent, key], parsed_payload_from_row)?)?
+    } else {
+        Fields::new()
+    };
     let turn = assemble_turn(agent, row, items, &mut fields, payloads).map_err(|e| damaged(agent, e))?;
     if !fields.is_empty() {
         return Err(damaged(agent, anyhow::anyhow!("payload rows without an Item row")));
@@ -989,7 +1021,7 @@ fn load_one(db: &Connection, agent: &str, turn: &str, item: &str, payloads: bool
     })?.query_row(params![agent, turn, item], item_from_row)?;
     let found = if payloads && row.payloads > 0 {
         db.prepare_cached("SELECT field, data FROM agent_payloads WHERE agent_id=?1 AND turn_id=?2 AND item_id=?3")?
-            .query_map(params![agent, turn, item], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .query_map(params![agent, turn, item], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Json>(1)?.0)))?
             .collect::<rusqlite::Result<Vec<_>>>()?
     } else {
         Vec::new()
@@ -2225,5 +2257,71 @@ mod tests {
         let mut kinds: Vec<_> = kinds.into_iter().collect();
         kinds.sort_by(|a, b| b.1.cmp(&a.1));
         println!("kinds: {kinds:?}");
+    }
+
+    fn rows_db() -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE agents(id TEXT PRIMARY KEY, data TEXT NOT NULL);").unwrap();
+        migrate(&db).unwrap();
+        db
+    }
+
+    /// One field over TRIM_ABOVE (a payload) and one exactly at it (kept in
+    /// its Item row, as client_view::trim decides), stored as rows.
+    fn payload_record(db: &Connection) -> AgentDetail {
+        let limit = crate::client_view::TRIM_ABOVE;
+        let detail: AgentDetail = serde_json::from_value(json!({"agent":{"id":"a","name":"a","cwd":"/w","model":"m","color":"sage",
+            "threadId":"thread","status":"idle","createdAt":"","updatedAt":"","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},
+            "turns":[{"id":"t1","status":"completed","items":[
+                {"id":"big","type":"commandExecution","command":"c","aggregatedOutput":"x".repeat(limit + 200),"exitCode":0},
+                {"id":"at","type":"commandExecution","command":"c","aggregatedOutput":"y".repeat(limit),"exitCode":0},
+                {"id":"say","type":"agentMessage","text":"done"}]}],
+            "pending":[],"artifacts":[]})).unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        insert(&tx, "a", &split(&detail).unwrap()).unwrap();
+        tx.commit().unwrap();
+        detail
+    }
+
+    /// Read with payloads, each payload is parsed as it is read (T-140) and
+    /// the record assembles to exactly what was written, as do its Turn and
+    /// Item read alone; read without, the previews are what they were.
+    #[test]
+    fn payloads_are_parsed_as_they_are_read_and_assemble_to_the_record() {
+        let db = rows_db();
+        let detail = payload_record(&db);
+        let Some(Stored::Rows(rows, fields)) = read(&db, "a", true).unwrap() else { panic!("stored as rows") };
+        assert!(rows.payloads.is_empty());
+        assert_eq!(fields.values().map(Vec::len).sum::<usize>(), 1, "only the field over TRIM_ABOVE is a payload");
+        let value = |d: &AgentDetail| serde_json::to_value(d).unwrap();
+        assert_eq!(value(&assemble_stored("a", Stored::Rows(rows, fields), true).unwrap()), value(&detail));
+        assert_eq!(value(&load(&db, "a", true).unwrap().unwrap()), value(&detail));
+        assert_eq!(value(&load(&db, "a", false).unwrap().unwrap()), value(&assemble(split(&detail).unwrap(), false).unwrap()));
+        assert_eq!(load_turn(&db, "a", "t1", true).unwrap().unwrap(), detail.turns[0]);
+        assert_eq!(load_item(&db, "a", Some("t1"), "big", true).unwrap().unwrap()["items"][0], detail.turns[0]["items"][0]);
+    }
+
+    /// A payload whose text is not JSON makes the record Damaged, with the
+    /// same cause as before; one that is not text at all is a read error, as
+    /// reading it as a String was.
+    #[test]
+    fn a_payload_that_is_not_json_is_damaged_and_one_that_is_not_text_is_a_read_error() {
+        let db = rows_db();
+        payload_record(&db);
+        db.execute("UPDATE agent_payloads SET data='not json'", []).unwrap();
+        let stored = read(&db, "a", true).unwrap().unwrap();
+        let error = assemble_stored("a", stored, true).unwrap_err();
+        let parse = serde_json::from_str::<Value>("not json").unwrap_err();
+        assert_eq!(error.downcast_ref::<Damaged>().unwrap().cause,
+            format!("Agent a: Item big of Turn t1: Workspace 记录无法读取: {parse}"));
+        for error in [load(&db, "a", true).unwrap_err(), load_turn(&db, "a", "t1", true).unwrap_err(),
+            load_item(&db, "a", Some("t1"), "big", true).unwrap_err()] {
+            assert!(error.downcast_ref::<Damaged>().is_some(), "{error:#}");
+        }
+        db.execute("UPDATE agent_payloads SET data=x'ff'", []).unwrap();
+        for error in [read(&db, "a", true).map(drop).unwrap_err(), load_turn(&db, "a", "t1", true).map(drop).unwrap_err(),
+            load_item(&db, "a", Some("t1"), "big", true).map(drop).unwrap_err()] {
+            assert!(error.downcast_ref::<Damaged>().is_none() && error.downcast_ref::<rusqlite::Error>().is_some(), "{error:#}");
+        }
     }
 }
