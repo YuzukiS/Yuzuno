@@ -1221,7 +1221,8 @@ impl Workspace {
     }
 
     pub async fn send(self: &Arc<Self>, id: &str, text: String) -> Result<Value> {
-        match self.detail(id).await?.agent.harness.as_str() {
+        // The harness is the Agent's: its listed view, not its history (T-140).
+        match self.listed(id).await?.harness.as_str() {
             "claude" => return self.claude_send(id, text).await,
             "opencode" => return self.opencode_send(id, text).await,
             _ => {}
@@ -3046,6 +3047,31 @@ mod tests {
         assert!(d.pending[0].stale);
         apply_snapshot(&mut d, &json!({"status":{"type":"idle"},"turns":[{"id":"turn","status":"interrupted","items":[]}]}), &changes(false, &[]));
         assert!(d.pending.is_empty());
+    }
+
+    /// T-140: a send finds the Agent's harness on its listed view: each
+    /// harness's send refuses an empty message as before, and choosing it
+    /// reads no whole record.
+    #[tokio::test]
+    async fn a_send_chooses_its_harness_without_reading_the_whole_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(temp.path().into(), "/tmp".into(), "unused".into()).unwrap();
+        for harness in ["codex", "claude", "opencode"] {
+            let id = format!("send-harness-{harness}");
+            let detail: AgentDetail = serde_json::from_value(json!({
+                "agent":{"id":id,"name":"A","goal":"test","cwd":"/tmp","model":"","color":"sage","harness":harness,
+                    "status":"idle","createdAt":"","updatedAt":"","unreadCount":0,
+                    "pendingCount":0,"lastSeq":0,"reviewedSeq":0},
+                "turns":[{"id":"t","status":"completed","items":[{"id":"m","type":"agentMessage","text":"done"}]}],
+                "pending":[],"artifacts":[]
+            })).unwrap();
+            workspace.store.insert(&detail).unwrap();
+            let refused = workspace.send(&id, " ".into()).await.unwrap_err();
+            assert!(refused.to_string().contains("消息不能为空"), "{harness}: {refused}");
+            assert_eq!(crate::store::detail_reads_of(&id), 0, "{harness}: a whole record was read");
+        }
+        let refused = workspace.send("missing", "hello".into()).await.unwrap_err();
+        assert!(refused.to_string().contains("Agent 不存在"), "{refused}");
     }
 
     #[tokio::test]
