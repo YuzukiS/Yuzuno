@@ -85,19 +85,30 @@ fn summary(samples: &[Sample]) -> Value {
     json!({"runs":samples.len(),"medianMs":times[times.len()/2],"minMs":times[0],"maxMs":times[times.len()-1],
         "maxRustPeakAddedBytes":samples.iter().map(|s|s.rust_peak_added_bytes).max(),"samples":samples})
 }
-fn json_bytes(stored: &Stored) -> usize {
-    match stored {
+/// The stored JSON text a read of the rows went through, in bytes. Payloads
+/// are parsed where they are read and their text is not kept, so for a read
+/// with payloads their bytes are counted in the database, inside the read's
+/// own transaction (the same snapshot), as the bytes SQLite holds.
+fn json_bytes(db: &rusqlite::Connection, id: &str, stored: &Stored) -> Result<usize> {
+    Ok(match stored {
         Stored::Whole(s) => s.len(),
-        Stored::Rows(r) => {
+        Stored::Rows(r, fields) => {
+            let payloads: i64 = if fields.is_empty() {
+                0
+            } else {
+                ensure!(!db.is_autocommit(), "payload bytes are counted in the read's own snapshot");
+                db.query_row("SELECT COALESCE(SUM(LENGTH(CAST(data AS BLOB))),0) FROM agent_payloads WHERE agent_id=?1",
+                    [id], |r| r.get(0))?
+            };
             r.meta.len()
                 + r.turns.iter().map(|t| t.data.len()).sum::<usize>()
                 + r.items
                     .iter()
                     .map(|i| i.data.len() + i.previews.as_ref().map_or(0, String::len))
                     .sum::<usize>()
-                + r.payloads.iter().map(|p| p.data.len()).sum::<usize>()
+                + usize::try_from(payloads)?
         }
-    }
+    })
 }
 #[derive(Serialize)]
 struct View<'a> {
@@ -266,7 +277,7 @@ async fn main() -> Result<()> {
                 for _ in 0..RUNS {
                     let (rows, sample) =
                         measure(|| Ok(record_rows::read(&db, &id, false)?.context("rows")?))?;
-                    read_bytes = json_bytes(&rows);
+                    read_bytes = json_bytes(&db, &id, &rows)?;
                     sql_samples.push(sample);
                     let (_, sample) = measure(|| record_rows::assemble_stored(&id, rows, false))?;
                     decode_samples.push(sample);

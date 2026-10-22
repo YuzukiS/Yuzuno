@@ -669,3 +669,34 @@ the same on both sides. The previews are still read and checked, so the bytes
 read stay the same. The peak follows the largest Turn, so a record with one
 very large Turn still reads that Turn whole. These are synthetic allocator
 measurements, not the daily Core's RSS.
+
+### A whole read's payloads
+
+A record read with its payloads (`detail`, a Turn or an Item read whole)
+copied every payload row's JSON text into a String and parsed it later, when
+its Item was filled: a copy of all its large fields, made only to be freed.
+Each payload is now parsed where SQLite gives its text. A value that is not
+text is the same read error as before, and text that is not JSON makes the
+record damaged with the same cause, where the Item is filled. Fields up to
+`client_view::TRIM_ABOVE` stay in their Item rows, which are read as before,
+and so are the conversation window's reads.
+
+T-140 Job `9fbff673-26af-4e9b-8146-3ba60abf681e`, 2026-10-22, release builds of
+`core_cold_read` (on lab branches, not merged), "before" the product code of
+`c08ba95`. Each of two seeded synthetic records was copied for each process,
+in the order before, after, after, before; each process read it whole three
+times. Both runs of a side gave the same Rust counts, and every read the same
+Turns:
+
+| One whole read, first in its process | Before | After |
+| --- | ---: | ---: |
+| 100 Turns of 40 Items, each output 16 KiB (4,000 payload rows, 62.5 MiB of their text): allocated | 138.9 MiB | 75.3 MiB |
+| The same: Rust peak | 66.9 MiB | 66.1 MiB |
+| The same: held once read | 65.5 MiB | 65.5 MiB |
+| 100 Turns of 80 Items, each output 8 KiB (no payload rows): allocated | 135.2 MiB | 135.2 MiB |
+
+RSS after the load was within 1 MiB on both sides (79.2 and 78.1–78.2 MiB from
+11.1–11.3 MiB), and the load took 54–59 ms before and 51–55 ms after (later
+reads 34–39 and 28–31 ms); these are single small samples. Where a record's
+large fields are in its Item rows, as in the second record, nothing changes.
+These are synthetic allocator measurements, not the daily Core's RSS.

@@ -124,12 +124,30 @@ fn split_and_assemble_give_back_exactly_the_record() {
     insert(&mut db, &detail);
     assert_same(&stored(&db, "a"), &detail);
     assert_eq!(rows::layout(&db, "a").unwrap(), Some(Layout::Rows));
-    let Some(rows::Stored::Rows(read)) = rows::read(&db, "a", false).unwrap() else { panic!("not rows") };
+    let Some(rows::Stored::Rows(read, fields)) = rows::read(&db, "a", false).unwrap() else { panic!("not rows") };
+    assert!(fields.is_empty());
     assert_eq!(sorted(read), sorted(rows::Rows { payloads: Vec::new(), ..split.clone() }), "without payloads, with previews");
-    let Some(rows::Stored::Rows(read)) = rows::read(&db, "a", true).unwrap() else { panic!("not rows") };
+    let Some(rows::Stored::Rows(read, fields)) = rows::read(&db, "a", true).unwrap() else { panic!("not rows") };
     let mut without_previews = split;
     without_previews.items.iter_mut().for_each(|i| i.previews = None);
-    assert_eq!(sorted(read), sorted(without_previews), "with payloads, without previews");
+    // Payloads come parsed where they were read: each is its row's text parsed.
+    let key = |p: &(String, String, String, Value)| (p.0.clone(), p.1.clone(), p.2.clone());
+    let mut from_read: Vec<(String, String, String, Value)> = fields.into_iter()
+        .flat_map(|((turn, item_key), list)| list.into_iter().map(move |(field, value)| (turn.clone(), item_key.clone(), field, value.unwrap())))
+        .collect();
+    from_read.sort_by_key(key);
+    let mut expected: Vec<(String, String, String, Value)> = without_previews.payloads.iter()
+        .map(|p| (p.turn.clone(), p.item.clone(), p.field.clone(), serde_json::from_str(&p.data).unwrap())).collect();
+    expected.sort_by_key(key);
+    assert!(!expected.is_empty());
+    assert_eq!(from_read, expected, "with payloads, each parsed from its row");
+    // Their text is not kept, so their bytes are counted where they are
+    // stored: as bytes, not characters (the unicode payload has both).
+    let total = |sql: &str| -> usize { db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap() as usize };
+    let bytes = total("SELECT SUM(LENGTH(CAST(data AS BLOB))) FROM agent_payloads WHERE agent_id='a'");
+    assert_eq!(bytes, without_previews.payloads.iter().map(|p| p.data.len()).sum::<usize>());
+    assert!(total("SELECT SUM(LENGTH(data)) FROM agent_payloads WHERE agent_id='a'") < bytes);
+    assert_eq!(sorted(read), sorted(rows::Rows { payloads: Vec::new(), ..without_previews }), "with payloads, without previews");
 }
 
 /// Rows in key order: the database returns them in index order.

@@ -286,6 +286,9 @@ fn decode(
             if let Some(stats) = stats.as_mut() {
                 stats.body_json_bytes += fields.iter().map(|(_, data)| data.len()).sum::<usize>();
             }
+            // A window reads one Item's payloads at a time; parsed here as
+            // `fill` used to parse them.
+            let fields = fields.into_iter().map(|(field, data)| (field, serde_json::from_str(&data))).collect();
             super::fill(&mut value, fields, row.payloads)?;
         } else {
             preview_fields(&mut value, row.previews.as_deref(), row.payloads)?;
