@@ -390,3 +390,36 @@ much a close allocates before grew with how long the interrupt took to
 confirm. Each row is one process; a Claude close is covered by tests, not
 measured. These are synthetic allocator measurements, not the daily Core's
 RSS.
+
+### A send's harness and a Claude mailbox notice
+
+Every message sent from the UI read the whole record only to choose its
+harness's send, which then reads the send view itself. A mailbox notice into
+a running Claude Turn read the whole record to check that the Agent is open
+and connected and that the Turn is still in progress. The delivery around it,
+and a Codex steer, check the same on the send view. The send now chooses the
+harness from the listed Agent, and the notice checks the send view. Their
+refusals and what they send are unchanged: a stale or ended Turn, a lost
+connection, a closed Agent and a missing runtime are refused before anything
+is sent, and a notice whose runtime is replaced before its acknowledgement is
+unknown and not sent again.
+
+T-140 Job `412fc7b9-4ce4-44e0-8351-96973b648602`, 2026-10-22, release build of
+`core/examples/core_read_cost.rs` (kept on a lab branch, not merged), one read
+per process of a synthetic 192 MiB record of 23,308 Items whose newest Turn
+runs. "Held" is the record kept in memory after a write, as a streaming
+Agent's is; "not held" is read from its rows:
+
+| Read | Rust peak above live | Time |
+| --- | ---: | ---: |
+| Whole record (`detail`, both before), not held | 215 MiB | 196 ms |
+| Whole record, held (a copy) | 209 MiB | 34 ms |
+| Send view (the notice now), held | 0.2 MiB | 1.8 ms |
+| Send view, not held | 138 MiB | 133 ms |
+| Listed Agent (the send now), held or not | 1 KiB | under 0.01 ms |
+
+The listed Agent was already cached in these processes. One that is not reads
+the metadata, the Turn rows and the newest Turn. A send view that is not held
+still assembles every Turn's Items from their rows, without payloads, before
+dropping them. These are synthetic allocator measurements, not the daily
+Core's RSS.
