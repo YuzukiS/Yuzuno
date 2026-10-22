@@ -59,11 +59,12 @@ export function CodexGoalDialog({ agent, open, initialObjective, onOpenChange, o
   const [objective, setObjective] = useState(initialObjective);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Read on opening, on Refresh, and after a change that failed: what Codex
+  // has then is shown, never the goal as it was before the attempt.
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
     setView(null);
-    setError("");
     api<GoalView>(`/agents/${encodeURIComponent(agent.id)}/codex/goal`, { signal: controller.signal })
       .then(setView, (e) => { if (!controller.signal.aborted) setView({ state: "failed", reason: errorText(e), goal: null }); });
     return () => controller.abort();
@@ -83,9 +84,12 @@ export function CodexGoalDialog({ agent, open, initialObjective, onOpenChange, o
       if (body.action === "set") setObjective("");
       onChanged(done);
     } catch (e) {
-      // Core's answer says what happened; no answer leaves it unknown.
+      // Core's answer says what happened (a replacement whose new goal was
+      // not set says the old one was cleared); no answer leaves it unknown.
+      // Either way the goal is read again from Codex, and nothing is retried.
       setError(e instanceof HttpError ? errorText(e)
-        : `No answer came back (${errorText(e)}). Codex may have changed its goal: Refresh to see it before trying again.`);
+        : `No answer came back (${errorText(e)}). Codex may have changed its goal: shown below as Codex now has it.`);
+      setReading((n) => n + 1);
     } finally {
       setBusy(false);
     }
