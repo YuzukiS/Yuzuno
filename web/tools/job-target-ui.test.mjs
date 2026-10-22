@@ -1,6 +1,7 @@
 // T-162: a Job's detail says where it runs: the Core host, or the machine
 // the submitting Agent runs on when the submission named machineId agent and
 // Core resolved it, kept as the Job's target. Older Jobs have no target.
+import './jsdom-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';

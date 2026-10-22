@@ -33,7 +33,7 @@ Start with the checks for the part you changed:
 | Changed | Check |
 | --- | --- |
 | A Core module | `cargo test --locked --lib jobs::`, with that module's path in place of `jobs::`; or `cargo test --locked --test <name>` for one file in `core/tests/` |
-| The UI | `npm --prefix web run typecheck`, then `bash .github/scripts/web-tests.sh tools/<name>.test.mjs`, with paths relative to `web/`. Some tests load the built UI, so run `npm --prefix web run build` first. |
+| The UI | `npm --prefix web run typecheck`, then `bash .github/scripts/web-tests.sh tools/<name>.test.mjs`, with paths relative to `web/`. Some tests load the built UI, so run `npm --prefix web run build` first. Tests that load jsdom refuse to start unless their memory is bounded: run them on Linux under a cgroup limit of at most 4096 MiB with no swap (inside Yuzuno, a managed Job), or let GitHub CI run them. |
 | The Claude bridge | `npm --prefix runtimes/claude test` |
 | `scripts/` | `python3 -m unittest discover --start-directory scripts --pattern 'test_*.py'` |
 

@@ -1,5 +1,6 @@
 // Reconnect-and-check for an offline Agent whose last result is unconfirmed,
 // against fixture HTTP only; no Core, no runtime.
+import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";

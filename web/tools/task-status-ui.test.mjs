@@ -1,6 +1,7 @@
 // T-39: the card for a task status change an Agent proposed. It shows the
 // task as Core read it and the proposal; the user may change the status and
 // reason, then confirm or decline; it shows Core's outcome.
+import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";

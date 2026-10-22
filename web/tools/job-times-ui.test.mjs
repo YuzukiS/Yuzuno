@@ -2,6 +2,7 @@
 // each row says quietly when it was queued and, once it has, when it
 // finished. The conversation's dock gives each job its latest moment:
 // finished, else started, else queued.
+import './jsdom-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
