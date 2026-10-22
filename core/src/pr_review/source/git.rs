@@ -375,7 +375,7 @@ mod tests {
         stop.store(true, Ordering::Relaxed);
         let renames = churn.join().unwrap();
         walk.unwrap();
-        assert!(renames >= 50, "the names churned while the store was walked");
+        assert!(renames >= 50, "names churned during the walk");
         assert_eq!(disk_usage(dir.path()).unwrap(), 50 * 4);
     }
 
