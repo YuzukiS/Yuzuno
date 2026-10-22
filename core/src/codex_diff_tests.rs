@@ -66,7 +66,7 @@ for line in sys.stdin:
   if 'stagedtimeout' in flags: code,so=124,''
   if 'stagedone' in flags: code=1
  elif args[:2]==['diff','--no-index']:
-  name=args[-1]; so=json.loads(file('untracked_content','{}')).get(name,'+'+name+'\n'); code=1
+  name=args[-1]; so=json.loads(file('untracked_content','{}')).get(name,'diff --git a/'+name+' b/'+name+'\n+'+name+'\n'); code=1
   if 'hang-untracked' in flags: held[pid]=i; continue
  elif args[:1]==['diff']:
   so=file('tracked')
@@ -76,6 +76,7 @@ for line in sys.stdin:
   so=file('untracked')
   if 'listone' in flags: code,se=1,'error: listing\n'
  if args[:2]==['diff','--no-index'] and 'untrackedfail' in flags: code,so,se=128,'','error: Could not access\n'
+ if args[:2]==['diff','--no-index'] and 'linkdir' in flags: code,so,se=1,'',"error: Could not access 'a/null'\n"
  data=so.encode()
  if cap is not None and len(data)>=cap:
   out({'method':'command/exec/outputDelta','params':{'processId':pid,'stream':'stdout','deltaBase64':base64.b64encode(data[:cap]).decode(),'capReached':True}})
@@ -182,8 +183,8 @@ async fn a_read_runs_only_the_fixed_commands_read_only_in_the_agents_folder_and_
     assert_eq!(report["staged"], json!({"entries":[{"status":"M","path":"x.rs","from":null},{"status":"R100","path":"new.rs","from":"old.rs"}],"complete":true,"error":null}));
     let files = report["untracked"]["files"].as_array().unwrap();
     assert_eq!(files.iter().map(|f| (f["path"].as_str().unwrap(), f["diff"]["text"].as_str(), f["notRead"].as_str())).collect::<Vec<_>>(), [
-        ("u.txt", Some("+u.txt\n"), None), ("-dash.txt", Some("+-dash.txt\n"), None), ("sub/", None, Some("nested_repository")),
-        ("new\nline.txt", Some("+new\nline.txt\n"), None)]);
+        ("u.txt", Some("diff --git a/u.txt b/u.txt\n+u.txt\n"), None), ("-dash.txt", Some("diff --git a/-dash.txt b/-dash.txt\n+-dash.txt\n"), None),
+        ("sub/", None, Some("nested_repository")), ("new\nline.txt", Some("diff --git a/new\nline.txt b/new\nline.txt\n+new\nline.txt\n"), None)]);
     assert_eq!(report["untracked"]["listedAll"], true);
     assert_eq!(report["complete"], false, "a nested repository is listed, not read");
     let flags = ["--no-textconv", "--no-ext-diff", "--submodule=short", "--ignore-submodules=dirty", "--no-color"];
@@ -251,20 +252,20 @@ async fn each_reason_it_cannot_read_is_said_and_ends_the_read() {
 async fn limits_are_exact_and_a_process_past_its_cap_is_stopped() {
     let lab = Lab::new("").await;
     lab.connect().await;
-    *lab.ws.codex_diff.limits.lock().unwrap() = Limits { tracked: 10, untracked_each: 6, untracked_files: 2, names: 3, list: 1000, total: 100_000, budget: Duration::from_secs(30) };
+    *lab.ws.codex_diff.limits.lock().unwrap() = Limits { tracked: 10, untracked_each: 16, untracked_files: 2, names: 3, list: 1000, total: 100_000, budget: Duration::from_secs(30) };
     // Ten bytes is the limit: whole. "あ" is 3 bytes: 9 + 3 = 12 is over, cut inside the character.
     lab.write("tracked", "0123456789");
     let report = lab.read("t1").await;
     assert_eq!(report["tracked"], json!({"text":"0123456789","complete":true,"notUtf8":false}));
     lab.write("tracked", "012345678あ");
     lab.write("untracked", "a\0b\0c\0d\0e\0");
-    lab.write("untracked_content", r#"{"a":"+abc\n","b":"+longer than six\n"}"#);
+    lab.write("untracked_content", r#"{"a":"diff --git a\n+a\n","b":"diff --git b\n+longer than sixteen\n"}"#);
     let before = lab.sent().len();
     let report = lab.read("t2").await;
     assert_eq!(report["tracked"], json!({"text":"012345678","complete":false,"notUtf8":false}), "the cut character is left out");
     let files = report["untracked"]["files"].as_array().unwrap();
     assert_eq!(files.iter().map(|f| (f["path"].as_str().unwrap(), f["diff"]["text"].as_str(), f["diff"]["complete"].as_bool(), f["notRead"].as_str())).collect::<Vec<_>>(),
-        [("a", Some("+abc\n"), Some(true), None), ("b", Some("+longe"), Some(false), None), ("c", None, None, Some("limit"))]);
+        [("a", Some("diff --git a\n+a\n"), Some(true), None), ("b", Some("diff --git b\n+lo"), Some(false), None), ("c", None, None, Some("limit"))]);
     assert_eq!(report["untracked"]["listedAll"], false, "three names of five");
     assert_eq!(report["complete"], false);
     let sent = &lab.sent()[before..];
@@ -389,6 +390,11 @@ async fn empty_failed_and_timed_out_lists_are_told_apart() {
     lab.write("flags", "untrackedfail");
     let report = lab.read("t-file").await;
     assert_eq!(report["untracked"]["files"][0], json!({"path":"a","diff":null,"notRead":"exit 128: error: Could not access"}));
+    // Exit 1 is also diff --no-index's error exit: with nothing read and Git's words, it is not an empty file.
+    lab.write("flags", "linkdir");
+    let report = lab.read("t-link").await;
+    assert_eq!(report["untracked"]["files"][0], json!({"path":"a","diff":null,"notRead":"exit 1: error: Could not access 'a/null'"}));
+    assert_eq!(report["complete"], false);
     lab.write("flags", "trackedone");
     let report = lab.read("t-tracked").await;
     assert_eq!((report["state"].as_str(), report["reason"].as_str(), report["detail"].as_str()), (Some("failed"), Some("git"), Some("error: something")), "{report}");

@@ -430,10 +430,13 @@ fn read_ok(out: &Out) -> bool {
     out.exit == 0 || (out.stdout_full && out.exit == 137)
 }
 
-/// `diff --no-index` exits 1 when the files differ, as an untracked file
-/// always does against /dev/null; no other command's exit 1 is a read.
+/// `diff --no-index` against /dev/null: the file as an addition, exit 1,
+/// nothing on stderr. Exit 1 is also its error exit (Git 2.56 says "Could not
+/// access 'link/null'" for a link to a folder, which it follows as a folder),
+/// so exit 1 alone is not a read; nor is any other command's exit 1.
 fn diff_ok(out: &Out) -> bool {
-    out.exit == 1 || read_ok(out)
+    let added = out.exit == 1 && out.stderr.is_empty() && out.stdout.starts_with(b"diff --git ");
+    added || (out.stdout_full && matches!(out.exit, 1 | 137))
 }
 
 /// Why a list could not be read: Git's words, or Codex's timeout.

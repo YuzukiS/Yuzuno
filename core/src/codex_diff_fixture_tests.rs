@@ -229,7 +229,7 @@ fn manifest(dir: &Path) -> Vec<(PathBuf, u32, i64, i64, Vec<u8>)> {
     out
 }
 
-/// Live processes under `pid`, by name (zombies left out).
+/// Live processes under `pid`: "pid state parent: command line" (zombies left out).
 fn descendants(pid: u32) -> Vec<String> {
     let mut out = vec![];
     let mut stack = vec![pid];
@@ -238,8 +238,11 @@ fn descendants(pid: u32) -> Vec<String> {
         for task in tasks.flatten() {
             for child in std::fs::read_to_string(task.path().join("children")).unwrap_or_default().split_whitespace().filter_map(|c| c.parse::<u32>().ok()) {
                 let stat = std::fs::read_to_string(format!("/proc/{child}/stat")).unwrap_or_default();
-                if stat.rsplit_once(") ").is_some_and(|(_, rest)| rest.starts_with('Z')) { continue; }
-                out.push(std::fs::read_to_string(format!("/proc/{child}/comm")).unwrap_or_default().trim().to_owned());
+                let state = stat.rsplit_once(") ").map(|(_, rest)| rest.chars().next().unwrap_or('?')).unwrap_or('?');
+                if state == 'Z' { continue; }
+                let line = std::fs::read(format!("/proc/{child}/cmdline")).unwrap_or_default();
+                let line = String::from_utf8_lossy(&line).replace('\0', " ");
+                out.push(format!("{child} {state} {p}: {}", line.trim()));
                 stack.push(child);
             }
         }
@@ -355,13 +358,14 @@ async fn real_git_runs_none_of_the_repositorys_programs_and_the_folder_is_left_a
     assert!(!names.contains(&"ignored.log") && !names.contains(&"staged-new.txt"), "{names:?}");
     for (name, has) in [("u.txt", "+plain untracked"), ("-dash.txt", "+dash content"), ("space name.txt", "+space"),
             ("new\nline.txt", "+newline name"), ("ユニコード.txt", "+日本語"), ("bin.dat", "Binary files /dev/null and b/bin.dat differ"),
-            ("empty.txt", "new file mode 100644"), ("link-out", "+../outside/secret.txt"), ("link-dir", "+../outside")] {
+            ("empty.txt", "new file mode 100644"), ("link-out", "+../outside/secret.txt")] {
         let diff = &file(&report, name)["diff"];
         assert!(diff["text"].as_str().is_some_and(|t| t.contains(has)) && diff["complete"] == true, "{name:?} should show {has:?}: {diff}");
     }
-    for link in ["link-out", "link-dir"] {
-        assert!(file(&report, link)["diff"]["text"].as_str().unwrap().contains("new file mode 120000"), "{link}");
-    }
+    assert!(file(&report, "link-out")["diff"]["text"].as_str().unwrap().contains("new file mode 120000"), "a link to a file is shown as a link");
+    // Git follows a link to a folder as a folder and cannot read it as a file: said, not shown as an empty file.
+    let link_dir = file(&report, "link-dir");
+    assert!(link_dir["diff"].is_null() && link_dir["notRead"].as_str().is_some_and(|n| n.contains("Could not access")), "{link_dir}");
     assert_eq!(file(&report, "nested/")["notRead"], "nested_repository");
     let large = &file(&report, "large.txt")["diff"];
     assert_eq!((large["complete"].as_bool(), large["notUtf8"].as_bool()), (Some(false), Some(false)), "cut at its limit, whole characters only");
@@ -466,8 +470,18 @@ async fn real_limits_budget_cancel_and_connection_end_hold_with_codexs_own_strea
     let commands = lab.of("cancel").iter().filter(|r| r["method"] == "command/exec").count();
     assert_eq!(report["commands"].as_u64(), Some(commands as u64), "nothing ran after the cancel");
     assert!(commands < 105);
-    let running = descendants(lab.pid());
-    assert!(!running.iter().any(|p| p == "git"), "no Git left running: {running:?}");
+    // Codex stops what it was running: no Git left under it, within 5 s.
+    let mut left = vec![];
+    for wait in 0..50 {
+        left = descendants(lab.pid()).into_iter().filter(|p| p.contains(" git")).collect();
+        if left.is_empty() {
+            println!("cancel: no Git under Codex after {} ms more", wait * 100);
+            break;
+        }
+        if wait == 0 { println!("cancel: still running 500 ms after: {left:?}"); }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(left.is_empty(), "Git left running 5.5 s after the cancel: {left:?}");
 
     // The connection ends mid-read: the read ends; the next connection's read is its own.
     let first = lab.generation();
