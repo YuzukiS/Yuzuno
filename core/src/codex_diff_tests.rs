@@ -9,7 +9,7 @@
 //! request with its own process ID. No Git, account, model or real session
 //! is used.
 use super::*;
-use crate::codex_diff::{Limits, SMALL};
+use crate::codex_diff::{Limits, Request, SMALL};
 use std::{os::unix::fs::PermissionsExt, time::Duration};
 
 struct Lab {
@@ -60,14 +60,22 @@ for line in sys.stdin:
   if 'missing' in flags: code,so,se=101,'',"\nthread 'main' panicked at linux-sandbox/src/linux_run_main.rs:1602:5:\nFailed to execvp git: No such file or directory (os error 2)\n"
  elif args[:1]==['config']:
   so=file('filters'); code=0 if so else 1
- elif args[:2]==['diff','--cached']: so=file('staged')
+ elif args[:2]==['diff','--cached']:
+  so=file('staged')
+  if 'stagedfail' in flags: code,so,se=128,'','fatal: bad index file\n'
+  if 'stagedtimeout' in flags: code,so=124,''
+  if 'stagedone' in flags: code=1
  elif args[:2]==['diff','--no-index']:
   name=args[-1]; so=json.loads(file('untracked_content','{}')).get(name,'+'+name+'\n'); code=1
   if 'hang-untracked' in flags: held[pid]=i; continue
  elif args[:1]==['diff']:
   so=file('tracked')
   if 'hang' in flags: held[pid]=i; continue
- elif args[:1]==['ls-files']: so=file('untracked')
+  if 'trackedone' in flags: code,se=1,'error: something\n'
+ elif args[:1]==['ls-files']:
+  so=file('untracked')
+  if 'listone' in flags: code,se=1,'error: listing\n'
+ if args[:2]==['diff','--no-index'] and 'untrackedfail' in flags: code,so,se=128,'','error: Could not access\n'
  data=so.encode()
  if cap is not None and len(data)>=cap:
   out({'method':'command/exec/outputDelta','params':{'processId':pid,'stream':'stdout','deltaBase64':base64.b64encode(data[:cap]).decode(),'capReached':True}})
@@ -106,9 +114,23 @@ impl Lab {
         self.ws.rpcs.lock().unwrap()["a"].generation
     }
 
+    /// What the dialog shows before it reads.
+    async fn target(&self) -> Value {
+        let response = reqwest::Client::new().get(format!("{}/agents/a/codex/diff", self.base))
+            .header("X-Yuzuno-Client", "desktop").send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        response.json().await.unwrap()
+    }
+
+    /// A read of the target as shown now.
     async fn read(&self, token: &str) -> Value {
+        let target = self.target().await;
+        self.read_at(token, target["generation"].as_u64().unwrap_or(0), target["cwd"].as_str().unwrap()).await
+    }
+
+    async fn read_at(&self, token: &str, generation: u64, cwd: &str) -> Value {
         let response = reqwest::Client::new().post(format!("{}/agents/a/codex/diff", self.base))
-            .header("X-Yuzuno-Client", "desktop").json(&json!({"token":token})).send().await.unwrap();
+            .header("X-Yuzuno-Client", "desktop").json(&json!({"token":token,"generation":generation,"cwd":cwd})).send().await.unwrap();
         assert_eq!(response.status().as_u16(), 200);
         response.json().await.unwrap()
     }
@@ -137,6 +159,10 @@ impl Lab {
     }
 }
 
+fn request(token: &str, generation: u64) -> Request {
+    Request { token: token.into(), generation, cwd: "/w/app".into() }
+}
+
 fn strs(v: &Value) -> Vec<&str> {
     v.as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect()
 }
@@ -153,7 +179,7 @@ async fn a_read_runs_only_the_fixed_commands_read_only_in_the_agents_folder_and_
     let report = lab.read("t1").await;
     assert_eq!((report["state"].as_str(), report["generation"].as_u64(), report["cwd"].as_str()), (Some("read"), Some(generation), Some("/w/app")));
     assert_eq!(report["tracked"], json!({"text":"diff --git a/a.rs b/a.rs\n@@ -1 +1 @@\n-a\n+b\n","complete":true,"notUtf8":false}));
-    assert_eq!(report["staged"], json!({"entries":[{"status":"M","path":"x.rs","from":null},{"status":"R100","path":"new.rs","from":"old.rs"}],"complete":true}));
+    assert_eq!(report["staged"], json!({"entries":[{"status":"M","path":"x.rs","from":null},{"status":"R100","path":"new.rs","from":"old.rs"}],"complete":true,"error":null}));
     let files = report["untracked"]["files"].as_array().unwrap();
     assert_eq!(files.iter().map(|f| (f["path"].as_str().unwrap(), f["diff"]["text"].as_str(), f["notRead"].as_str())).collect::<Vec<_>>(), [
         ("u.txt", Some("+u.txt\n"), None), ("-dash.txt", Some("+-dash.txt\n"), None), ("sub/", None, Some("nested_repository")),
@@ -216,8 +242,8 @@ async fn each_reason_it_cannot_read_is_said_and_ends_the_read() {
     assert!(lab.read("t-d").await["detail"].as_str().unwrap().contains("dubious ownership"), "Git's own words");
     for token in ["", "has space", &"x".repeat(65)] {
         let response = reqwest::Client::new().post(format!("{}/agents/a/codex/diff", lab.base))
-            .header("X-Yuzuno-Client", "desktop").json(&json!({"token":token})).send().await.unwrap();
-        assert!(response.status().is_client_error(), "{token:?}");
+            .header("X-Yuzuno-Client", "desktop").json(&json!({"token":token,"generation":lab.target().await["generation"],"cwd":"/w/app"})).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 400, "{token:?}");
     }
 }
 
@@ -271,9 +297,9 @@ async fn one_budget_for_the_whole_read_and_what_was_read_stays() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_read_is_cancelled_only_by_its_own_token_and_one_runs_at_a_time() {
     let lab = Lab::new("hang").await;
-    lab.connect().await;
+    let generation = lab.connect().await;
     let ws = lab.ws.clone();
-    let read = tokio::spawn(async move { ws.codex_diff("a", "t1".into()).await.unwrap() });
+    let read = tokio::spawn(async move { ws.codex_diff("a", request("t1", generation)).await.unwrap() });
     lab.until("the tracked diff hangs", |sent| sent.len() >= 3).await;
     assert_eq!(lab.read("t2").await["state"], "busy", "one read per Agent");
     assert_eq!(lab.cancel("other").await, json!({"cancelled":false}));
@@ -291,7 +317,7 @@ async fn a_read_is_cancelled_only_by_its_own_token_and_one_runs_at_a_time() {
     lab.write("tracked", "+t\n");
     lab.write("untracked", "a\0b\0");
     let ws = lab.ws.clone();
-    let read = tokio::spawn(async move { ws.codex_diff("a", "t4".into()).await.unwrap() });
+    let read = tokio::spawn(async move { ws.codex_diff("a", request("t4", generation)).await.unwrap() });
     lab.until("the first untracked file hangs", |sent| sent.iter().any(|r| r["params"]["processId"] == "yuzuno-diff-t4-6")).await;
     assert_eq!(lab.cancel("t4").await, json!({"cancelled":true}));
     let report = serde_json::to_value(read.await.unwrap()).unwrap();
@@ -307,7 +333,7 @@ async fn a_read_ends_with_its_connection_and_never_acts_on_the_next() {
     let lab = Lab::new("hang").await;
     let first = lab.connect().await;
     let ws = lab.ws.clone();
-    let read = tokio::spawn(async move { ws.codex_diff("a", "t1".into()).await.unwrap() });
+    let read = tokio::spawn(async move { ws.codex_diff("a", request("t1", first)).await.unwrap() });
     lab.until("the tracked diff hangs", |sent| sent.len() >= 3).await;
     let old_pid = lab.sent()[2]["pid"].clone();
     lab.ws.remove_connection("a", first).await;
@@ -321,4 +347,49 @@ async fn a_read_ends_with_its_connection_and_never_acts_on_the_next() {
     lab.ws.codex_diff.deliver("a", first, &json!({"processId":"yuzuno-diff-t1-3","stream":"stdout","deltaBase64":"eA==","capReached":false}));
     let report = lab.read("t2").await;
     assert_eq!((report["state"].as_str(), report["generation"].as_u64()), (Some("read"), Some(second)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_is_bound_to_the_target_the_dialog_showed() {
+    let lab = Lab::new("").await;
+    assert_eq!(lab.target().await, json!({"state":"unavailable","reason":"not_connected","generation":null,"cwd":"/w/app"}));
+    assert!(lab.sent().is_empty() && lab.ws.rpcs.lock().unwrap().is_empty(), "showing the target connects nothing");
+    let generation = lab.connect().await;
+    assert_eq!(lab.target().await, json!({"state":"ready","reason":"ready","generation":generation,"cwd":"/w/app"}));
+    for (token, at, cwd) in [("t1", generation + 1, "/w/app"), ("t2", generation, "/w/other")] {
+        let report = lab.read_at(token, at, cwd).await;
+        assert_eq!((report["state"].as_str(), report["reason"].as_str(), report["generation"].as_u64(), report["cwd"].as_str()),
+            (Some("unavailable"), Some("target_changed"), Some(generation), Some("/w/app")), "{report}");
+    }
+    assert!(lab.sent().is_empty(), "nothing read for a target the dialog did not show");
+    assert_eq!(lab.read_at("t3", generation, "/w/app").await["state"], "read");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_failed_and_timed_out_lists_are_told_apart() {
+    let lab = Lab::new("").await;
+    lab.connect().await;
+    let report = lab.read("empty").await;
+    assert_eq!((&report["tracked"], &report["staged"], &report["untracked"], report["complete"].as_bool()),
+        (&json!({"text":"","complete":true,"notUtf8":false}), &json!({"entries":[],"complete":true,"error":null}),
+         &json!({"files":[],"listedAll":true,"error":null}), Some(true)), "nothing changed, every part read whole");
+    lab.write("untracked", "a\0b\0");
+    for (flags, staged) in [("stagedfail", json!({"entries":[],"complete":false,"error":"exit 128: fatal: bad index file"})),
+            ("stagedone", json!({"entries":[],"complete":false,"error":"exit 1"})),
+            ("stagedtimeout", json!({"entries":[],"complete":false,"error":"timeout"}))] {
+        lab.write("flags", flags);
+        let report = lab.read(&format!("t-{flags}")).await;
+        assert_eq!((&report["staged"], report["state"].as_str(), report["complete"].as_bool()), (&staged, Some("read"), Some(false)), "{flags}: {report}");
+        assert_eq!(report["untracked"]["files"].as_array().unwrap().len(), 2, "{flags}: the rest is still read");
+    }
+    lab.write("flags", "listone");
+    let report = lab.read("t-list").await;
+    assert_eq!((&report["untracked"], report["complete"].as_bool()), (&json!({"files":[],"listedAll":false,"error":"exit 1: error: listing"}), Some(false)),
+        "exit 1 is a read only for diff --no-index: {report}");
+    lab.write("flags", "untrackedfail");
+    let report = lab.read("t-file").await;
+    assert_eq!(report["untracked"]["files"][0], json!({"path":"a","diff":null,"notRead":"exit 128: error: Could not access"}));
+    lab.write("flags", "trackedone");
+    let report = lab.read("t-tracked").await;
+    assert_eq!((report["state"].as_str(), report["reason"].as_str(), report["detail"].as_str()), (Some("failed"), Some("git"), Some("error: something")), "{report}");
 }

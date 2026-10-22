@@ -22,12 +22,12 @@ use crate::{
     rpc::{Rpc, RpcError},
     server::ApiError,
     updates::events::EventBarrier,
-    workspace::Workspace,
+    workspace::{Connection, Workspace},
 };
 use anyhow::Result;
 use axum::{
     extract::{Path, Query, State as ApiState},
-    routing::post,
+    routing::get,
     Json, Router,
 };
 use base64::Engine as _;
@@ -226,6 +226,8 @@ pub struct StagedEntry {
 pub struct Staged {
     entries: Vec<StagedEntry>,
     complete: bool,
+    /// Git could not list them: its words, or timeout. Not an empty list.
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -245,6 +247,8 @@ pub struct Untracked {
     files: Vec<UntrackedFile>,
     /// Every untracked name was listed (none left out by the list's limits).
     listed_all: bool,
+    /// Git could not list them: its words, or timeout. Not an empty list.
+    error: Option<String>,
 }
 
 /// The `/diff` read: what Git said in the Agent's folder, within the limits.
@@ -420,10 +424,25 @@ impl Reader<'_> {
     }
 }
 
-/// Exit 0, or 1 for a diff that found differences; a capped process that
-/// Yuzuno terminated counts as read (its output is marked incomplete).
+/// Exit 0; a capped process that Yuzuno terminated counts as read (its
+/// output is marked incomplete).
 fn read_ok(out: &Out) -> bool {
-    matches!(out.exit, 0 | 1) || (out.stdout_full && out.exit == 137)
+    out.exit == 0 || (out.stdout_full && out.exit == 137)
+}
+
+/// `diff --no-index` exits 1 when the files differ, as an untracked file
+/// always does against /dev/null; no other command's exit 1 is a read.
+fn diff_ok(out: &Out) -> bool {
+    out.exit == 1 || read_ok(out)
+}
+
+/// Why a list could not be read: Git's words, or Codex's timeout.
+fn failure(out: &Out) -> String {
+    match (out.exit, short(&out.stderr)) {
+        (124, _) => "timeout".into(),
+        (exit, words) if words.is_empty() => format!("exit {exit}"),
+        (exit, words) => format!("exit {exit}: {words}"),
+    }
 }
 
 fn short(text: &str) -> String {
@@ -511,6 +530,7 @@ impl Reader<'_> {
             Ok(out) => out,
             Err(stop) => return not_read(stop),
         };
+        // `--get-regexp` exits 1 when no key matches: no driver is configured.
         if !matches!(out.exit, 0 | 1) || out.stdout_full {
             // Every driver must be disabled before any diff runs.
             return Report { detail: Some(short(&out.stderr)), ..Report::not("failed", "filter_config") };
@@ -542,12 +562,11 @@ impl Reader<'_> {
                 let (entries, all) = staged_entries(&names(&out.stdout), self.limits.names);
                 let complete = all && !out.stdout_full;
                 report.complete &= complete;
-                report.staged = Some(Staged { entries, complete });
+                report.staged = Some(Staged { entries, complete, error: None });
             }
             Ok(out) => {
                 report.complete = false;
-                report.detail = Some(short(&out.stderr));
-                report.staged = Some(Staged::default());
+                report.staged = Some(Staged { error: Some(failure(&out)), ..Default::default() });
             }
             Err(stop) => return self.ended(report, stop),
         }
@@ -556,7 +575,7 @@ impl Reader<'_> {
             Ok(out) if read_ok(&out) => out,
             Ok(out) => {
                 report.complete = false;
-                report.detail = Some(short(&out.stderr));
+                report.untracked = Some(Untracked { error: Some(failure(&out)), ..Default::default() });
                 return report;
             }
             Err(stop) => return self.ended(report, stop),
@@ -568,7 +587,7 @@ impl Reader<'_> {
             listed_all = false;
         }
         report.complete &= listed_all;
-        let mut untracked = Untracked { files: vec![], listed_all };
+        let mut untracked = Untracked { files: vec![], listed_all, error: None };
         let mut read = 0;
         let mut stopped: Option<Stop> = None;
         for path in listed {
@@ -590,7 +609,7 @@ impl Reader<'_> {
             }
             let args: Vec<&str> = ["diff", "--no-index"].into_iter().chain(DIFF_FLAGS).chain(["--", "/dev/null", path.as_str()]).collect();
             match self.git(&args, self.limits.untracked_each).await {
-                Ok(out) if read_ok(&out) => {
+                Ok(out) if diff_ok(&out) => {
                     read += 1;
                     let (text, not_utf8) = text(out.stdout, out.stdout_full);
                     report.complete &= !out.stdout_full;
@@ -599,8 +618,7 @@ impl Reader<'_> {
                 Ok(out) => {
                     read += 1;
                     report.complete = false;
-                    let why = if out.exit == 124 { "timeout".to_owned() } else { short(&out.stderr) };
-                    untracked.files.push(UntrackedFile { path, diff: None, not_read: Some(why) });
+                    untracked.files.push(UntrackedFile { path, diff: None, not_read: Some(failure(&out)) });
                 }
                 Err(stop) => {
                     report.complete = false;
@@ -646,33 +664,66 @@ impl Drop for Registered<'_> {
     }
 }
 
+/// A read of the target the dialog showed: the Agent's folder on connection
+/// `generation`. A newer connection or another folder is not read.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
-    token: String,
+    pub(crate) token: String,
+    pub(crate) generation: u64,
+    pub(crate) cwd: String,
+}
+
+/// What a read would read now: the Agent's folder on its current connection.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Target {
+    /// ready or unavailable.
+    state: &'static str,
+    reason: &'static str,
+    generation: Option<u64>,
+    cwd: String,
 }
 
 impl Workspace {
-    /// This Codex Agent's working-folder diff, read on its current
-    /// connection in its folder. Nothing is connected or resumed for it; one
-    /// read at a time per Agent.
-    pub async fn codex_diff(self: &Arc<Self>, id: &str, token: String) -> Result<Report> {
-        anyhow::ensure!(!token.is_empty() && token.len() <= MAX_TOKEN
-            && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'), "无效的读取标识");
-        let started = Instant::now();
-        // The Agent as listed, never its history (T-140).
+    /// The Agent (as listed, never its history: T-140) and its current
+    /// connection, or why there is none to read on. Nothing is connected.
+    async fn codex_diff_on(&self, id: &str) -> Result<std::result::Result<(crate::model::Agent, Connection), &'static str>> {
         let agent = self.listed(id).await?;
         if agent.harness != "codex" {
-            return Ok(Report::not("unavailable", "harness"));
+            return Ok(Err("harness"));
         }
         if agent.closed_at.is_some() {
-            return Ok(Report::not("unavailable", "closed"));
+            return Ok(Err("closed"));
         }
         let connection = self.rpcs.lock().unwrap().get(id).cloned()
             .filter(|c| !c.closing && agent.connection_state == "connected");
-        let Some(connection) = connection else {
-            return Ok(Report::not("unavailable", "not_connected"));
+        Ok(connection.map(|c| (agent, c)).ok_or("not_connected"))
+    }
+
+    /// What `/diff` would read now, for the dialog to show before it reads.
+    pub async fn codex_diff_target(&self, id: &str) -> Result<Target> {
+        Ok(match self.codex_diff_on(id).await? {
+            Ok((agent, connection)) => Target { state: "ready", reason: "ready", generation: Some(connection.generation), cwd: agent.cwd },
+            Err(reason) => Target { state: "unavailable", reason, generation: None, cwd: self.listed(id).await?.cwd },
+        })
+    }
+
+    /// This Codex Agent's working-folder diff, read on the connection and in
+    /// the folder the dialog showed. Nothing is connected or resumed for it;
+    /// one read at a time per Agent.
+    pub async fn codex_diff(self: &Arc<Self>, id: &str, request: Request) -> Result<Report> {
+        let Request { token, generation, cwd } = request;
+        anyhow::ensure!(!token.is_empty() && token.len() <= MAX_TOKEN
+            && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'), "无效的读取标识");
+        let started = Instant::now();
+        let (agent, connection) = match self.codex_diff_on(id).await? {
+            Ok(on) => on,
+            Err(reason) => return Ok(Report::not("unavailable", reason)),
         };
+        if connection.generation != generation || agent.cwd != cwd {
+            return Ok(Report { generation: Some(connection.generation), cwd: Some(agent.cwd), ..Report::not("unavailable", "target_changed") });
+        }
         let running = Arc::new(Running { token, rpc: connection.rpc.clone(),
             cancelled: AtomicBool::new(false), current: Mutex::new(None), wake: Notify::new() });
         {
@@ -705,8 +756,12 @@ impl Workspace {
     }
 }
 
+async fn target_route(ApiState(ws): ApiState<Arc<Workspace>>, Path(id): Path<String>) -> Result<Json<Target>, ApiError> {
+    Ok(Json(ws.codex_diff_target(&id).await?))
+}
+
 async fn read_route(ApiState(ws): ApiState<Arc<Workspace>>, Path(id): Path<String>, Json(request): Json<Request>) -> Result<Json<Report>, ApiError> {
-    Ok(Json(ws.codex_diff(&id, request.token).await?))
+    Ok(Json(ws.codex_diff(&id, request).await?))
 }
 
 #[derive(Deserialize)]
@@ -719,7 +774,7 @@ async fn cancel_route(ApiState(ws): ApiState<Arc<Workspace>>, Path(id): Path<Str
 }
 
 pub fn router() -> Router<Arc<Workspace>> {
-    Router::new().route("/api/agents/{id}/codex/diff", post(read_route).delete(cancel_route))
+    Router::new().route("/api/agents/{id}/codex/diff", get(target_route).post(read_route).delete(cancel_route))
 }
 
 #[cfg(test)]

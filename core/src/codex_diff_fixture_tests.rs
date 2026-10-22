@@ -11,7 +11,7 @@
 //! is used: a proxy answers the thread calls itself and passes only
 //! `initialize` and `command/exec` (with its terminate) to Codex.
 use super::*;
-use crate::codex_diff::Limits;
+use crate::codex_diff::{Limits, Request};
 use std::{
     os::unix::{ffi::OsStringExt, fs::{MetadataExt, PermissionsExt}},
     path::{Path, PathBuf},
@@ -161,9 +161,12 @@ impl Lab {
         self.ws.rpcs.lock().unwrap()["a"].generation
     }
 
+    /// A read of the target as the dialog shows it now.
     async fn read(&self, token: &str) -> Value {
-        let response = reqwest::Client::new().post(format!("{}/agents/a/codex/diff", self.base))
-            .header("X-Yuzuno-Client", "desktop").json(&json!({"token":token})).send().await.unwrap();
+        let target: Value = reqwest::Client::new().get(format!("{}/agents/a/codex/diff", self.base))
+            .header("X-Yuzuno-Client", "desktop").send().await.unwrap().json().await.unwrap();
+        let response = reqwest::Client::new().post(format!("{}/agents/a/codex/diff", self.base)).header("X-Yuzuno-Client", "desktop")
+            .json(&json!({"token":token,"generation":target["generation"],"cwd":target["cwd"]})).send().await.unwrap();
         assert_eq!(response.status().as_u16(), 200);
         response.json().await.unwrap()
     }
@@ -290,13 +293,18 @@ async fn real_git_runs_none_of_the_repositorys_programs_and_the_folder_is_left_a
     std::fs::write(nested.join("inner.txt"), "inner\n").unwrap();
 
     // Control 1, outside any sandbox and without the read's settings: the
-    // same Git runs every one of these programs.
-    for args in [&["diff"][..], &["-c", "filter.evilp.required=false", "diff"], &["-c", "filter.evilp.required=false", "diff", "--no-ext-diff"]] {
-        root.git(&work, args);
+    // same Git runs every one of these programs. A process filter that
+    // breaks its protocol stops Git whatever `required` says, so the later
+    // controls set it aside to reach the rest; `git diff` writes no index and
+    // runs no hook, `git status` does.
+    let past_process = ["-c", "filter.evilp.process=", "-c", "filter.evilp.required=false"];
+    for args in [vec!["diff"], [&past_process[..], &["diff"]].concat(), [&past_process[..], &["diff", "--no-ext-diff"]].concat(),
+            [&past_process[..], &["status", "--short"]].concat()] {
+        root.git(&work, &args);
     }
     let ran: std::collections::BTreeSet<String> = root.marks().lines().map(str::to_owned).collect();
     println!("control outside the sandbox ran: {ran:?}");
-    for armed in ["extdiff", "diffcmd", "textconv", "filter-clean", "filter-process", "fsmonitor"] {
+    for armed in ["extdiff", "diffcmd", "textconv", "filter-clean", "filter-smudge", "filter-process", "fsmonitor", "hook"] {
         assert!(ran.contains(armed), "{armed} did not run in the control, so its absence later would prove nothing: {ran:?}");
     }
 
@@ -307,10 +315,15 @@ async fn real_git_runs_none_of_the_repositorys_programs_and_the_folder_is_left_a
     // environment passes on reaches Git, and a program that runs there is
     // seen in the output.
     let inside = lab.raw(&["git", "diff"], &work, json!({})).await;
+    println!("control in the sandbox: {inside}");
+    for marker in ["MARKER-fsmonitor-RAN", "MARKER-filter-clean-RAN", "MARKER-filter-process-RAN"] {
+        assert!(inside["stderr"].as_str().unwrap().contains(marker), "{marker}: {inside}");
+    }
+    let inside = lab.raw(&[&["git"][..], &past_process, &["diff"]].concat(), &work, json!({})).await;
     println!("control in the sandbox, inherited environment: {inside}");
     assert!(inside["stdout"].as_str().unwrap().contains("MARKER-envdiff-RAN"), "{inside}");
     assert!(inside["stdout"].as_str().unwrap().contains("MARKER-diffcmd-RAN"), "{inside}");
-    let inside = lab.raw(&["git", "-c", "filter.evilp.required=false", "diff", "--no-ext-diff"], &work,
+    let inside = lab.raw(&[&["git"][..], &past_process, &["diff", "--no-ext-diff"]].concat(), &work,
         json!({"GIT_EXTERNAL_DIFF":null,"GIT_CONFIG_PARAMETERS":null,"GIT_CONFIG_COUNT":null})).await;
     println!("control in the sandbox, no external diff: {inside}");
     assert!(inside["stdout"].as_str().unwrap().contains("MARKER-textconv-RAN"), "{inside}");
@@ -331,7 +344,7 @@ async fn real_git_runs_none_of_the_repositorys_programs_and_the_folder_is_left_a
         assert!(tracked.contains(line), "{line:?} in the tracked diff, as Git read the files: {tracked}");
     }
     assert_eq!(report["tracked"]["complete"], true);
-    assert_eq!(report["staged"], json!({"entries":[{"status":"R100","path":"new.rs","from":"old.rs"},{"status":"A","path":"staged-new.txt","from":null}],"complete":true}));
+    assert_eq!(report["staged"], json!({"entries":[{"status":"R100","path":"new.rs","from":"old.rs"},{"status":"A","path":"staged-new.txt","from":null}],"complete":true,"error":null}));
     let names: Vec<&str> = report["untracked"]["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap()).collect();
     println!("untracked as listed: {names:?}");
     assert!(!names.contains(&"ignored.log") && !names.contains(&"staged-new.txt"), "{names:?}");
@@ -412,7 +425,8 @@ async fn real_limits_budget_cancel_and_connection_end_hold_with_codexs_own_strea
 
     // Cancelled by its token: no command after it, none left running.
     let ws = lab.ws.clone();
-    let read = tokio::spawn(async move { ws.codex_diff("a", "cancel".into()).await.unwrap() });
+    let request = Request { token: "cancel".into(), generation: lab.generation(), cwd: work.display().to_string() };
+    let read = tokio::spawn(async move { ws.codex_diff("a", request).await.unwrap() });
     lab.until("twenty commands", |lab| lab.of("cancel").len() >= 20).await;
     assert_eq!(lab.cancel("cancel").await, json!({"cancelled":true}));
     let report = serde_json::to_value(read.await.unwrap()).unwrap();
@@ -427,7 +441,8 @@ async fn real_limits_budget_cancel_and_connection_end_hold_with_codexs_own_strea
     // The connection ends mid-read: the read ends; the next connection's read is its own.
     let first = lab.generation();
     let ws = lab.ws.clone();
-    let read = tokio::spawn(async move { ws.codex_diff("a", "gone".into()).await.unwrap() });
+    let request = Request { token: "gone".into(), generation: first, cwd: work.display().to_string() };
+    let read = tokio::spawn(async move { ws.codex_diff("a", request).await.unwrap() });
     lab.until("twenty commands", |lab| lab.of("gone").len() >= 20).await;
     let old = lab.pid();
     lab.ws.remove_connection("a", first).await;
