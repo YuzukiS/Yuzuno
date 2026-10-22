@@ -88,7 +88,9 @@ pub(crate) struct PendingReply {
 }
 
 impl PendingReply {
-    pub(crate) async fn wait(&mut self, limit: Duration) -> Result<Value> {
+    /// Receives the reply once and keeps it; a timeout leaves it to wait for
+    /// again.
+    async fn receive(&mut self, limit: Duration) -> Result<()> {
         if self.result.is_none() {
             self.result = Some(match timeout(limit, &mut self.rx).await {
                 Ok(Ok(result)) => result,
@@ -96,6 +98,14 @@ impl PendingReply {
                 Err(_) => return Err(OutcomeUnknown("Codex 请求超时；操作结果尚未确认，请勿重复发送原任务".into()).into()),
             });
         }
+        Ok(())
+    }
+
+    /// The reply, kept for waiting again: an attach that is checked again
+    /// after a failed or interrupted write finishes from it, so each wait
+    /// gets a copy.
+    pub(crate) async fn wait(&mut self, limit: Duration) -> Result<Value> {
+        self.receive(limit).await?;
         match self.result.as_ref().unwrap() {
             Ok(value) => Ok(value.clone()),
             Err(error) => Err(if let Some(error) = error.downcast_ref::<RpcError>() {
@@ -106,6 +116,13 @@ impl PendingReply {
                 anyhow!(error.to_string())
             }),
         }
+    }
+
+    /// The reply, handed over whole to a caller that will not wait for it
+    /// again; a resumed or read Thread's history is not copied (T-140).
+    pub(crate) async fn into_result(mut self, limit: Duration) -> Result<Value> {
+        self.receive(limit).await?;
+        self.result.take().unwrap()
     }
 }
 
@@ -317,9 +334,10 @@ impl Rpc {
 
     /// For operations whose native work scales with history, such as a fork.
     pub async fn request_within(&self, method: &str, params: Value, limit: Duration) -> Result<Value> {
-        let mut reply = self.begin_request(method, params).await?;
-        let result = reply.wait(limit).await;
-        self.pending.lock().await.remove(&reply.id);
+        let reply = self.begin_request(method, params).await?;
+        let id = reply.id;
+        let result = reply.into_result(limit).await;
+        self.pending.lock().await.remove(&id);
         result
     }
 
@@ -448,6 +466,41 @@ mod transport_tests {
     }
 
     #[tokio::test]
+    async fn request_within_drops_a_reply_after_its_timeout_and_answers_the_next_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut calls = Vec::new();
+            while let Some(Ok(message)) = socket.next().await {
+                if let Message::Text(text) = message {
+                    let value: Value = serde_json::from_str(&text).unwrap();
+                    calls.push(value["method"].as_str().unwrap().to_owned());
+                    if value["method"] == "slow" {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                    }
+                    socket.send(Message::Text(json!({"id":value["id"],"result":{"method":value["method"]}}).to_string().into())).await.unwrap();
+                    if value["method"] == "fast" { break; }
+                }
+            }
+            calls
+        });
+        let (socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let tunnel = Command::new("sleep").arg("60").kill_on_drop(true).spawn().unwrap();
+        let (events, _rx) = mpsc::channel(10);
+        let rpc = Rpc::websocket(socket, tunnel, events);
+        let error = rpc.request_within("slow", json!({}), Duration::from_millis(50)).await.unwrap_err();
+        assert!(error.downcast_ref::<OutcomeUnknown>().is_some());
+        assert!(rpc.pending.lock().await.is_empty(), "the timed-out request is no longer waited for");
+        // Its reply arrives late, finds no receiver and is dropped.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(rpc.request("fast", json!({})).await.unwrap(), json!({"method":"fast"}));
+        assert!(rpc.pending.lock().await.is_empty());
+        assert_eq!(server.await.unwrap(), ["slow", "fast"], "nothing is sent again");
+    }
+
+    #[tokio::test]
     async fn close_drops_ssh_transport_and_not_the_remote_listener() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -481,5 +534,60 @@ mod transport_tests {
             .await
             .unwrap();
         server.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+
+    fn pending() -> (Reply, PendingReply) {
+        let (tx, rx) = oneshot::channel();
+        (tx, PendingReply { id: 1, rx, result: None })
+    }
+
+    #[tokio::test]
+    async fn a_reply_handed_over_is_the_reply_received() {
+        let (tx, reply) = pending();
+        let history = json!({"thread":{"id":"t","turns":[{"id":"turn-1","items":[{"id":"item-1","text":"x"}]}]}});
+        tx.send(Ok(history.clone())).unwrap();
+        assert_eq!(reply.into_result(Duration::from_secs(1)).await.unwrap(), history);
+    }
+
+    #[tokio::test]
+    async fn a_reply_handed_over_keeps_its_error() {
+        let (tx, reply) = pending();
+        drop(tx);
+        let error = reply.into_result(Duration::from_secs(1)).await.unwrap_err();
+        assert!(error.downcast_ref::<OutcomeUnknown>().is_some(), "{error:#}");
+
+        let (_tx, reply) = pending();
+        let error = reply.into_result(Duration::from_millis(10)).await.unwrap_err();
+        assert!(error.downcast_ref::<OutcomeUnknown>().is_some(), "{error:#}");
+
+        let (tx, reply) = pending();
+        tx.send(Err(RpcError { code: -32600, message: "denied".into(), data: Some(json!({"reason":"r"})) }.into())).unwrap();
+        let error = reply.into_result(Duration::from_secs(1)).await.unwrap_err();
+        let native = error.downcast_ref::<RpcError>().unwrap();
+        assert_eq!((native.code, native.message.as_str(), &native.data), (-32600, "denied", &Some(json!({"reason":"r"}))));
+
+        let (tx, reply) = pending();
+        tx.send(Err(anyhow!("Codex 返回了无法识别的错误对象"))).unwrap();
+        let error = reply.into_result(Duration::from_secs(1)).await.unwrap_err();
+        assert_eq!(error.to_string(), "Codex 返回了无法识别的错误对象");
+    }
+
+    /// An attach keeps its reply: waited for again after a timeout it gets the
+    /// late reply, and again after that the same one, with nothing sent again.
+    #[tokio::test]
+    async fn an_attach_reply_is_kept_for_waiting_again() {
+        let (tx, mut reply) = pending();
+        let error = reply.wait(Duration::from_millis(10)).await.unwrap_err();
+        assert!(error.downcast_ref::<OutcomeUnknown>().is_some(), "{error:#}");
+        let resumed = json!({"thread":{"id":"t","turns":[]},"model":"m"});
+        tx.send(Ok(resumed.clone())).unwrap();
+        assert_eq!(reply.wait(Duration::from_secs(1)).await.unwrap(), resumed);
+        assert_eq!(reply.wait(Duration::from_secs(1)).await.unwrap(), resumed);
+        assert_eq!(reply.result.as_ref().unwrap().as_ref().unwrap(), &resumed);
     }
 }

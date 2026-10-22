@@ -214,6 +214,14 @@ async fn reconnect_late_native_rejection_and_wrong_session_never_become_success(
         assert_eq!(after.agent.thread_id.as_deref(), Some("thread-a"));
         assert_eq!(after.turns[0]["status"], "inProgress");
         assert!(lab.ws.collaboration_status("a").await.is_none());
+        if mode == "wrong" {
+            // The attach is kept with its reply: checked again, it answers
+            // the same from that reply and sends nothing again.
+            let (status, again) = lab.post("/agents/a/reconnect", &json!({})).await;
+            assert_eq!((status, &again["error"]), (400, &error["error"]));
+            let methods = std::fs::read_to_string(lab.dir.path().join("methods")).unwrap();
+            assert_eq!(methods.lines().filter(|m| *m == "thread/resume").count(), 1);
+        }
         assert_eq!(lab.submissions(), 0);
     }
 }
