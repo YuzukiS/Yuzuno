@@ -321,7 +321,7 @@ export const BRIEF_ADVICE_CODES = {
   long_markdown: `A Markdown block over ${L.advice.markdownChars} characters, or a section whose Markdown is over ${L.advice.sectionMarkdownChars} characters in all.`,
   summary_may_be_missing: "A Table or chart and no non-empty Markdown, Findings or Metrics block.",
   duplicate_ref: "One LiveRefs or Sources block that names the same target twice.",
-  many_refs: `Over ${L.advice.refs} different LiveRefs and Sources targets in one section.`,
+  many_refs: `Over ${L.advice.refs} LiveRefs and Sources entries in one section, each target counted once per block.`,
 } as const;
 
 export const BRIEF_GUIDE_PARTS = ["sections", "ask", "content", "charts", "attachments", "limits", "errors", "examples"] as const;

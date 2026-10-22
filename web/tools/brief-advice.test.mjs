@@ -87,12 +87,16 @@ test("a target twice is advised only within one block", () => {
   assert.deepEqual(codes(advise({ note: markdown("See below."), sources })), ["duplicate_ref"]);
 });
 
-test("many references are counted by different targets, so a duplicate is said once", () => {
+test("reference entries count each target once per block, so a duplicate is said once", () => {
   assert.deepEqual(advise({ note: markdown("See below."), a: refs(...tasks(1, 8)), b: refs(...tasks(9, A.refs - 8)) }), []);
   const many = advise({ note: markdown("See below."), a: refs(...tasks(1, 8)), b: refs(...tasks(9, A.refs - 7)) });
   assert.deepEqual(many.map((one) => [one.code, one.path]), [["many_refs", "body.elements.a.props.items"]]);
   assert.ok(many[0].reason.includes(String(A.refs + 1)));
-  // Thirteen items, twelve targets: the duplicate only.
+  assert.match(many[0].reason, /reference entries, each target counted once per block/);
+  // The same targets in two blocks count in each, and are no duplicate.
+  const near = advise({ note: markdown("See below."), a: refs(...tasks(1, 8)), b: refs(...tasks(1, A.refs - 7)) });
+  assert.deepEqual(codes(near), ["many_refs"]);
+  // Thirteen items in one block, twelve targets: the duplicate only.
   assert.deepEqual(codes(advise({ note: markdown("See below."), a: refs(...tasks(1, A.refs), "T-1") })), ["duplicate_ref"]);
 });
 

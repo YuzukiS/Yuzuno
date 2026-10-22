@@ -71,7 +71,9 @@ export function adviseBriefSection(section: BriefSection): BriefAdvice[] {
       `This section shows ${data[1].type} "${data[0]}" with no Markdown, Findings or Metrics block. If its title and captions do not yet say what the data shows and any important limit, a short conclusion would; if they do, it is fine as it is.`));
 
   // References: a target twice in one block; over the threshold in all,
-  // counting each block's different targets so that duplicates do not count twice.
+  // each target counted once per block, so that a duplicate in one block is
+  // not counted again. The same target in two blocks counts in each: citing
+  // it beside two conclusions is not a duplicate.
   let refs = 0;
   let most: [string, number] | undefined;
   for (const [key, block] of blocks) {
@@ -91,6 +93,6 @@ export function adviseBriefSection(section: BriefSection): BriefAdvice[] {
   }
   if (refs > A.refs && most)
     advice.push(hint("many_refs", at(most[0], ".props.items"),
-      `The section has ${refs} different references (advice starts above ${A.refs}), the most in "${most[0]}". Those that support its conclusion are easier to find when the rest stay on its Task.`));
+      `The section has ${refs} reference entries, each target counted once per block (advice starts above ${A.refs}), the most in "${most[0]}". Those that support its conclusion are easier to find when the rest stay on its Task.`));
   return advice;
 }
