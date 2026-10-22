@@ -1595,19 +1595,24 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        let agent = self.detail(id).await?.agent;
+        // The Agent as listed, not its history (T-140); read again once
+        // connected, for the settings the connection may have changed.
+        let agent = self.listed(id).await?;
         ensure_agent_open(&agent)?;
         anyhow::ensure!(agent.harness == "codex", "此模型目录仅适用于 Codex；Claude 模型在创建时选择");
         let connection = self.settings_connection(id).await?;
         let models = model_catalog(&connection).await?;
-        let agent = self.detail(id).await?.agent;
+        let agent = self.listed(id).await?;
         let permissions = permission_catalog(&connection, &agent).await;
         let context = self.context_catalog(id, &connection).await;
         Ok(json!({"models":models,"permissions":permissions,"context":context}))
     }
 
+    /// What the context settings show: from the send view, which has the
+    /// Agent, its pending requests, receipts, context usage and each Turn's
+    /// status (all `codex_context::idle` reads), without the Items (T-140).
     async fn context_catalog(&self, id: &str, connection: &Connection) -> Value {
-        let Ok(detail) = self.detail(id).await else { return json!({"supported":false}); };
+        let Ok(detail) = self.send_view(id).await else { return json!({"supported":false}); };
         let response = connection.rpc.request("config/read", json!({"cwd":detail.agent.cwd,"includeLayers":false})).await;
         let config = response.as_ref().ok().map(|r| &r["config"]).unwrap_or(&Value::Null);
         let confirmed = self.codex_context.submitted(id, connection.generation, &detail.agent.settings);

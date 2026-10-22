@@ -391,6 +391,26 @@ confirm. Each row is one process; a Claude close is covered by tests, not
 measured. These are synthetic allocator measurements, not the daily Core's
 RSS.
 
+### The model and permission catalog
+
+The Agent settings panel asks for `/api/agents/{id}/models` when it opens, and
+again after a save or a reload; nothing polls it. Each request read the whole
+record: twice for a Claude Agent (the route's harness lookup and the catalog's
+open check) and four times, one after another, for a Codex Agent (the route,
+the catalog's check, its read of the settings once connected, and the context
+settings). The route and both catalogs now read the Agent as listed, and the
+Codex catalog still reads it again once connected, for the settings the
+connection may change. The context settings are read from the send view,
+which has every field they use: the Agent, its pending requests, receipts,
+context usage and each Turn's status. The admission, gate, connection,
+permission and config requests, the rewind check and the answer are as before.
+
+Tests count whole reads per Agent: none for the route, the Claude catalog (a
+scripted bridge) or the Codex catalog (a scripted app-server), held or not.
+The Claude catalog still refuses a closed Agent and one of another harness,
+and the route a missing one, as before. This is a cost per opening of the
+panel, not one Core pays while streaming; it was not measured separately.
+
 ### A send's harness and a Claude mailbox notice
 
 Every message sent from the UI read the whole record only to choose its

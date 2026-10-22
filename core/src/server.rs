@@ -980,8 +980,31 @@ struct ReviewInput { target: crate::model::ReviewTarget }
 async fn codex_review(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<ReviewInput>) -> ApiResult<Json<Value>> {
     Ok(Json(ws.codex_review(&id, input.target).await?))
 }
+#[cfg(test)]
+mod models_tests {
+    use super::*;
+    /// T-140: `/models` picks the harness's catalog from the listed Agent,
+    /// and an Agent that does not exist is refused as before, without
+    /// reading a whole record.
+    #[tokio::test]
+    async fn the_models_route_picks_the_catalog_from_the_listed_agent() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(temp.path().into(), "/tmp".into(), "unused".into()).unwrap();
+        let detail: crate::model::AgentDetail = serde_json::from_value(json!({"agent":{"id":"models-route","name":"A",
+            "cwd":"/tmp","model":"","color":"sage","harness":"opencode","status":"idle","createdAt":"","updatedAt":"",
+            "unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
+        ws.store.insert(&detail).unwrap();
+        let Json(catalog) = agent_models(State(ws.clone()), Path("models-route".into())).await.unwrap();
+        assert_eq!(catalog, crate::opencode_agent::catalog());
+        let missing = agent_models(State(ws.clone()), Path("models-missing".into())).await.err().unwrap();
+        assert!(missing.0.to_string().contains("Agent 不存在"), "{}", missing.0);
+        assert_eq!(crate::store::detail_reads_of("models-route"), 0, "a whole record was read");
+        assert_eq!(crate::store::detail_reads_of("models-missing"), 0, "a whole record was read");
+    }
+}
 async fn agent_models(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
-    let harness = ws.detail(&id).await?.agent.harness;
+    // The harness is the Agent's: its listed view, not its history (T-140).
+    let harness = ws.listed(&id).await?.harness;
     Ok(Json(if harness == "claude" {
         ws.claude_agent_catalog(&id).await?
     } else if harness == "opencode" {
