@@ -8,8 +8,8 @@ mod update;
 
 use connection::{
     desktop_url, hand_outside, is_connection_page, is_loopback, launch_url, open_failure_notice,
-    parse_core_url, permits_appearance, permits_navigation, startup_url, Outside, StartProfile,
-    Started,
+    parse_core_url, permits_appearance, permits_navigation, startup_url, Attempt, Outside, Settle,
+    StartOutcome, StartProfile,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -140,6 +140,8 @@ struct ConnectionInfo {
     auto_connect: bool,
     /// The WSL distribution the shown Core can be started in, if any.
     start_distro: Option<String>,
+    /// This computer's start entry has accepted that installation before.
+    start_confirmed: bool,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -207,16 +209,16 @@ fn connection_info(
         .map(Url::as_str)
         .unwrap_or(connection::DEFAULT_CORE_URL)
         .to_owned();
-    let start_distro = state
+    let shown = state
         .start
         .lock()
         .map_err(|_| "Connection state unavailable.")?
-        .as_ref()
-        .filter(|start| start.core.as_str() == core_url)
-        .map(|start| start.wsl_distro.clone());
+        .clone()
+        .filter(|start| start.core.as_str() == core_url);
     Ok(ConnectionInfo {
         core_url,
-        start_distro,
+        start_distro: shown.as_ref().map(|start| start.wsl_distro.clone()),
+        start_confirmed: shown.is_some_and(|start| start.confirmed),
         error: startup
             .as_ref()
             .err()
@@ -355,11 +357,14 @@ async fn open_core(
         .start
         .lock()
         .map_err(|_| "Connection state unavailable.")?;
-    // What this Core offers now; an older Core that cannot say keeps what
-    // was saved for the same Core and Workspace.
+    // What this Core offers now, still confirmed only if it is the very
+    // same target; an older Core that cannot say keeps what was saved for
+    // the same Core and Workspace. Opening a Core never confirms anything.
+    let previous = start.take();
     let kept = match offered {
-        Some(offered) => StartProfile::offered(&core, &workspace, &offered),
-        None => start.take().filter(|saved| saved.core == core && saved.workspace_id == workspace),
+        Some(offered) => StartProfile::offered(&core, &workspace, &offered)
+            .map(|offered| connection::merge_offered(previous.as_ref(), offered)),
+        None => previous.filter(|saved| saved.core == core && saved.workspace_id == workspace),
     };
     *start = kept;
     save_core(window.app_handle(), &core, start.as_ref());
@@ -377,7 +382,7 @@ const START_WAIT: Duration = Duration::from_secs(180);
 /// is left running, hidden, and outlives this window. Waiting ends after
 /// [`START_WAIT`]; nothing is stopped then.
 #[cfg(windows)]
-fn wsl_start(profile: &StartProfile) -> Result<Started, String> {
+fn wsl_start(profile: &StartProfile) -> StartOutcome {
     use std::{
         io::{BufRead, BufReader, Read},
         os::windows::process::CommandExt,
@@ -392,9 +397,9 @@ fn wsl_start(profile: &StartProfile) -> Result<Started, String> {
         .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
         .join(r"System32\wsl.exe");
     if !wsl.is_file() {
-        return Err("WSL is not installed on this computer, so Core cannot be started from here.".into());
+        return StartOutcome::Failed("WSL is not installed on this computer, so Core cannot be started from here.".into());
     }
-    let mut child = Command::new(&wsl)
+    let child = Command::new(&wsl)
         .args(profile.wsl_arguments())
         // wsl.exe's own messages in UTF-8 rather than UTF-16.
         .env("WSL_UTF8", "1")
@@ -402,8 +407,11 @@ fn wsl_start(profile: &StartProfile) -> Result<Started, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|error| format!("Could not run WSL: {error}"))?;
+        .spawn();
+    let mut child = match child {
+        Ok(child) => child,
+        Err(error) => return StartOutcome::Failed(format!("Could not run WSL: {error}")),
+    };
     fn read_all(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
@@ -440,7 +448,7 @@ fn wsl_start(profile: &StartProfile) -> Result<Started, String> {
             Err(RecvTimeoutError::Timeout) => {}
         }
         if Instant::now() >= deadline {
-            return Ok(Started::Slow);
+            return StartOutcome::Unanswered;
         }
     }
     // Its output has closed; give it and its error stream a moment to end,
@@ -457,16 +465,37 @@ fn wsl_start(profile: &StartProfile) -> Result<Started, String> {
 }
 
 #[cfg(windows)]
-async fn run_start(profile: &StartProfile) -> Result<Started, String> {
+async fn run_start(profile: &StartProfile) -> StartOutcome {
     let profile = profile.clone();
     tauri::async_runtime::spawn_blocking(move || wsl_start(&profile))
         .await
-        .map_err(|error| error.to_string())?
+        .unwrap_or_else(|error| StartOutcome::Failed(error.to_string()))
 }
 
 #[cfg(not(windows))]
-async fn run_start(_: &StartProfile) -> Result<Started, String> {
-    Err("Starting Core is available in the Windows app with WSL only.".into())
+async fn run_start(_: &StartProfile) -> StartOutcome {
+    StartOutcome::Failed("Starting Core is available in the Windows app with WSL only.".into())
+}
+
+/// Keeps what a start attempt showed about the saved profile
+/// ([`connection::settle`]): confirmed once this computer's start entry has
+/// accepted the installation; an unconfirmed one forgotten once the entry
+/// says it is not installed here.
+fn settle_start(window: &WebviewWindow, state: &ConnectionState, profile: &StartProfile, attempt: &Attempt) -> Result<(), String> {
+    let settled = connection::settle(profile, attempt);
+    if settled == Settle::Keep {
+        return Ok(());
+    }
+    let mut start = state.start.lock().map_err(|_| "Connection state unavailable.")?;
+    // Only the profile this attempt was for; another may have been saved since.
+    if start.as_ref().is_some_and(|saved| saved.same_target(profile)) {
+        *start = match settled {
+            Settle::Confirm => Some(StartProfile { confirmed: true, ..profile.clone() }),
+            _ => None,
+        };
+        save_core(window.app_handle(), &profile.core, start.as_ref());
+    }
+    Ok(())
 }
 
 /// Starts the saved Core in its WSL distribution when it does not answer,
@@ -501,15 +530,32 @@ async fn start_core(
     }
     let _done = Done(&state.starting);
     match core_health(&state.client, &core).await {
+        // Answering over HTTP says nothing about where it runs: opened,
+        // never counted as this computer's (settle keeps the profile).
         Some(Ok(workspace)) if workspace == profile.workspace_id => {
+            settle_start(&window, &state, &profile, &Attempt::Answering)?;
             return open_core(&window, &state, &updates, core, Some(&profile.workspace_id)).await;
         }
         Some(Ok(_)) => return Err("Another Workspace's Core answers at this address. Nothing was started.".into()),
         Some(Err(error)) => return Err(format!("{error} Nothing was started.")),
         None => {}
     }
-    if run_start(&profile).await? == Started::Slow {
-        return Err("Core was started but has not answered yet. Try Connect in a moment; nothing was stopped.".into());
+    let outcome = run_start(&profile).await;
+    let attempt = Attempt::Ran(outcome);
+    settle_start(&window, &state, &profile, &attempt)?;
+    let Attempt::Ran(outcome) = attempt else { unreachable!() };
+    match outcome {
+        StartOutcome::Started | StartOutcome::Running => {}
+        StartOutcome::Starting => {
+            return Err("Core was started but has not answered yet. Try Connect in a moment; nothing was stopped.".into())
+        }
+        StartOutcome::Unanswered => {
+            return Err("WSL gave no answer within 3 minutes. Core may still be starting: try Connect in a moment. Nothing was stopped, and nothing is tried again by itself.".into())
+        }
+        StartOutcome::NotHere(_) if !profile.confirmed => {
+            return Err("Not started: this computer's WSL has no matching installation for this Workspace. If this address leads to another computer, such as an SSH tunnel, start Core there.".into())
+        }
+        StartOutcome::NotHere(message) | StartOutcome::Failed(message) => return Err(message),
     }
     // WSL's forwarding to Windows can lag the Core's own answer slightly.
     let mut tries = 0;

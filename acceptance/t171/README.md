@@ -24,17 +24,18 @@ python3 desktop/tests/start-lab.py --run <run> --target <cargo target>/debug   #
 
 1. **The record.** The Core, started as the documented command does, writes `updates/launch.json` and points `updates/start` at its own helper. `/api/desktop/start-profile` names the distribution, user, folder, port and Workspace.
 2. **The saved profile.** The window connects with `--core-url` and saves those, with the Workspace, in its own `core.json`.
-3. **The start.** Core is stopped. The page offers **Start Core in WSL (<distribution>)** after connecting fails, and the click starts it through the real `wsl.exe`.
+3. **The start.** Core is stopped. The page offers **Start in this computer's WSL**, not yet confirmed, after connecting fails, and the click starts it through the real `wsl.exe`. Afterwards the saved profile is confirmed.
    - The page is busy while it starts, then opens the same Workspace.
    - The new Core is the installed release, with exactly the recorded options, in a session of its own, with the recorded environment value.
    - The start stays, with a hidden `wsl.exe`, so WSL keeps the distribution running.
 4. **Later.** 20 s later Core still runs and answers.
-5. **The window's close button** (WM_CLOSE). It leaves Core, every process of its session, and the start with its `wsl.exe` running.
+5. **The window's close button** (WM_CLOSE). It leaves Core, every process of its session, and the start with its `wsl.exe` running. Reopened (the app, not Windows), the window connects again and the profile is still confirmed.
 6. **A Core that answers.** It is opened, not started again.
 7. **Two starts at once from the window.** One Core; the other start is told *Core is already being started.*
 8. **The window killed while its start runs.** The `wsl.exe` running it and the helper go on, Core starts, and 20 s later it still runs.
 9. **A port held by another program.** Nothing is started, and the page says why.
-10. **Gone from WSL.** A distribution, then an installation, that is not there: the page shows WSL's own message.
+10. **Gone from WSL.** A distribution, then an installation, that is not there: the page shows WSL's own message, and the unconfirmed profile is kept as it was.
+    - **A Core that is not this computer's** (from `confirm`): a stand-in Core on a loopback port of its own says it is installed where this computer's installation recorded another port, as a tunnel to another computer could. It is offered unconfirmed; this computer's start entry refuses it; it is no longer offered, and nothing starts.
 11. **Once no Core is left,** the start that stayed ends within its two-minute grace, and its `wsl.exe` with it.
 
 ## Results (2026-10-21 UTC)

@@ -71,6 +71,18 @@ try {
     result.error = await status.textContent();
     result.url = page.url();
     await shot(`refused-${Date.now()}`);
+  } else if (step === 'not-here') {
+    // Connecting fails; the start is offered unconfirmed; this computer
+    // refuses it, and it is offered no more.
+    await offerStart();
+    result.startHint = await page.locator('#start-hint').textContent();
+    await page.locator('#start-button').click();
+    await page.waitForFunction(() => document.querySelector('#connection-message').dataset.error === 'true'
+      && !document.querySelector('#start-button').disabled, null, { timeout: 240_000 });
+    await page.waitForTimeout(500);
+    result.error = await status.textContent();
+    result.startShownAfter = await page.locator('#start-row').isVisible();
+    await shot('5-not-here');
   } else if (step === 'port-taken') {
     await offerStart();
     await page.locator('#start-button').click();

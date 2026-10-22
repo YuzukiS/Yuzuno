@@ -48,6 +48,28 @@ def load(name, path):
     return module
 
 
+# A Core stand-in for 9b: it answers health and a start profile it is
+# given, and a page; nothing else.
+STAND_IN = r"""
+import http.server, json, sys
+port, profile = int(sys.argv[1]), json.loads(sys.argv[2])
+class Answer(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/api/health":
+            body = {"product": "yuzuno", "workspaceId": profile["workspaceId"]}
+        elif self.path == "/api/desktop/start-profile":
+            body = profile
+        else:
+            page = b"<html><body>stand-in</body></html>"
+            self.send_response(200); self.send_header("Content-Type", "text/html"); self.end_headers(); self.wfile.write(page)
+            return
+        payload = json.dumps(body).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(payload)
+    def log_message(self, *args): pass
+http.server.HTTPServer(("127.0.0.1", port), Answer).serve_forever()
+"""
+
+
 def health(port):
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=3) as response:
@@ -204,8 +226,8 @@ def main():
             raise RuntimeError(f"start-lab.ps1 {action}: {done.stderr.decode('utf-8', 'replace')[-1500:]}")
         return json.loads(done.stdout.decode("utf-8", "replace"))
 
-    def window(name):
-        done = subprocess.run([str(NODE), str(HERE / "start-lab.mjs"), name, f"http://127.0.0.1:{args.cdp_port}", url, str(shots)],
+    def window(name, core=None):
+        done = subprocess.run([str(NODE), str(HERE / "start-lab.mjs"), name, f"http://127.0.0.1:{args.cdp_port}", core or url, str(shots)],
                               capture_output=True, text=True, timeout=400, cwd=ROOT)
         lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
         if not lines:
@@ -292,14 +314,16 @@ def main():
         until(lambda: devtools(args.cdp_port), 60, "the lab window's DevTools")
         connected = window("connected")
         saved = json.loads(saved_path.read_text())
+        # Saved, but not confirmed: only the Core has said where it is.
         assert saved == {"coreUrl": url + "/", "start": {"wslDistro": profile["wslDistro"], "user": profile["user"],
-                                                          "installDir": str(managed), "workspaceId": workspace}}, saved
+                                                          "installDir": str(managed), "workspaceId": workspace,
+                                                          "confirmed": False}}, saved
         step("connected-and-saved", url=connected["url"], saved=saved)
 
         # 3. Core stops; the page offers the start, which starts it through wsl.exe.
         stop(first.pid, managed)
         started = window("start")
-        assert started["startShown"] and started["startLabel"] == f"Start Core in WSL ({profile['wslDistro']})", started
+        assert started["startShown"] and started["startLabel"] == "Start in this computer's WSL", started
         assert started["disabledDuringStart"], started
         second = until(lambda: listener(args.port), 10, "the started Core's listener")
         lab_cores.append(second)
@@ -312,8 +336,10 @@ def main():
         # WSL keeps the distribution running.
         keeping = observe()
         assert keeping["wsl"] and len(keeping["helpers"]) == 1, keeping
+        # This computer's start entry accepted the installation: confirmed.
+        assert json.loads(saved_path.read_text())["start"]["confirmed"] is True
         step("started-from-the-window", seconds=started["seconds"], offered=started["connectError"],
-             during=started["duringStart"], core=facts, keeping=keeping)
+             during=started["duringStart"], core=facts, keeping=keeping, confirmed=True)
 
         # 4. It outlives wsl.exe, which has exited by now (the start waited for it).
         time.sleep(20)
@@ -337,6 +363,9 @@ def main():
         desktop = windows("Launch", CoreUrl=url, CdpPort=args.cdp_port)["pid"]
         until(lambda: devtools(args.cdp_port), 60, "the lab window's DevTools")
         window("connected")
+        # Reopened (an app restart, not a Windows one) and connected again to
+        # the same Core: still confirmed.
+        assert json.loads(saved_path.read_text())["start"]["confirmed"] is True
 
         # 5. A Core that answers is opened, never started again.
         running = window("running")
@@ -415,7 +444,43 @@ def main():
             refused = window("refused")
             assert refused["startShown"] and refused["error"].startswith("WSL could not run Yuzuno's start"), refused
             assert listener(args.port) is None and not observe()["cores"]
+            # WSL's own failure is not "not installed here": kept as it was.
+            assert json.loads(saved_path.read_text())["start"] == changed["start"]
             step(name, label=refused["startLabel"], error=refused["error"])
+
+        # 9b. A Core reached at a loopback address that is not this computer's,
+        #     as through an SSH tunnel: a stand-in on a port of its own, saying
+        #     it is installed where this computer's installation recorded
+        #     another port. Offered unconfirmed; refused by this computer's
+        #     start entry; then offered no more. Nothing starts.
+        windows("Kill", DesktopProcessId=desktop)
+        desktop = None
+        until(lambda: not devtools(args.cdp_port), 60, "the closed window's DevTools to go")
+        remote_port = args.port + 3
+        remote_url = f"http://127.0.0.1:{remote_port}"
+        remote_workspace = "a0a0a0a0-1111-4222-8333-944444444444"
+        stand_in = subprocess.Popen([sys.executable, "-c", STAND_IN, str(remote_port), json.dumps({
+            "available": True, "wslDistro": profile["wslDistro"], "user": profile["user"],
+            "installDir": str(managed), "port": remote_port, "workspaceId": remote_workspace})],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            until(lambda: (health(remote_port) or {}).get("workspaceId") == remote_workspace, 20, "the stand-in")
+            desktop = windows("Launch", CoreUrl=remote_url, CdpPort=args.cdp_port)["pid"]
+            until(lambda: devtools(args.cdp_port), 60, "the lab window's DevTools")
+            window("connected", remote_url)
+            remembered = json.loads(saved_path.read_text())
+            assert remembered["coreUrl"] == remote_url + "/" and remembered["start"]["confirmed"] is False, remembered
+        finally:
+            stand_in.terminate()
+            stand_in.wait(10)
+        before_starts = starts()
+        not_here = window("not-here", remote_url)
+        assert not_here["startLabel"] == "Start in this computer's WSL", not_here
+        assert "no matching installation" in not_here["error"] and not not_here["startShownAfter"], not_here
+        forgotten = json.loads(saved_path.read_text())
+        assert forgotten == {"coreUrl": remote_url + "/"}, forgotten
+        assert starts() == before_starts and not observe()["cores"]
+        step("remote-stand-in-not-here", label=not_here["startLabel"], hint=not_here["startHint"], error=not_here["error"])
         # 10. With no Core left, the start that kept WSL running ends within
         #     its grace (two minutes), and its wsl.exe with it.
         ended = time.monotonic()

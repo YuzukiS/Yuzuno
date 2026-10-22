@@ -59,6 +59,7 @@ pub fn saved_record(core: &Url, start: Option<&StartProfile>) -> String {
             "user": start.user,
             "installDir": start.install_dir,
             "workspaceId": start.workspace_id,
+            "confirmed": start.confirmed,
         });
     }
     record.to_string()
@@ -76,24 +77,34 @@ pub fn saved_core(bytes: &[u8]) -> Option<Url> {
     parse_core_url(saved_json(bytes)?["coreUrl"].as_str()?).ok()
 }
 
-/// The saved Core's start profile, checked again as when it was saved.
+/// The saved Core's start profile, checked again as when it was saved. A
+/// record without `confirmed` (from before it) is not confirmed.
 pub fn saved_start(bytes: &[u8]) -> Option<StartProfile> {
     let record = saved_json(bytes)?;
     let core = parse_core_url(record["coreUrl"].as_str()?).ok()?;
     let start = &record["start"];
-    StartProfile::new(
+    let profile = StartProfile::new(
         &core,
         start["wslDistro"].as_str()?,
         start["user"].as_str()?,
         start["installDir"].as_str()?,
         start["workspaceId"].as_str()?,
-    )
+    )?;
+    Some(StartProfile { confirmed: start["confirmed"] == true, ..profile })
 }
 
-/// Where a Core on this computer's WSL is installed, as that Core said when
-/// the user connected to it (`/api/desktop/start-profile`), so the connection
-/// page can start it again (T-171). Only a loopback Core has one; each part
-/// is checked, since it becomes part of one fixed `wsl.exe` command.
+/// Where a Core says it is installed in WSL (`/api/desktop/start-profile`),
+/// as it said when the user connected to it, so the connection page can
+/// start it again (T-171). Only a loopback Core has one; each part is
+/// checked, since it becomes part of one fixed `wsl.exe` command.
+///
+/// A loopback address does not show that the Core is on this computer: an
+/// SSH tunnel's local port may lead to another computer's Core, which says
+/// where it is installed there. So a profile starts out not `confirmed`,
+/// and only a start that this computer's own start entry accepted for this
+/// installation confirms it ([`settle`]). A confirmation is kept until the
+/// Core says something else: it is not tied to a boot, so it holds after
+/// Windows or WSL restarts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartProfile {
     /// The Core's origin; its port is the one the Core starts on.
@@ -102,6 +113,8 @@ pub struct StartProfile {
     pub user: String,
     pub install_dir: String,
     pub workspace_id: String,
+    /// This computer's start entry has accepted this installation.
+    pub confirmed: bool,
 }
 
 impl StartProfile {
@@ -131,7 +144,17 @@ impl StartProfile {
             user: user.into(),
             install_dir: install_dir.into(),
             workspace_id: workspace_id.into(),
+            confirmed: false,
         })
+    }
+
+    /// The same Core, installation and Workspace, confirmed or not.
+    pub fn same_target(&self, other: &Self) -> bool {
+        self.core == other.core
+            && self.wsl_distro == other.wsl_distro
+            && self.user == other.user
+            && self.install_dir == other.install_dir
+            && self.workspace_id == other.workspace_id
     }
 
     /// From a Core's start-profile answer, for the Core at `core` whose
@@ -177,13 +200,72 @@ impl StartProfile {
     }
 }
 
-/// What a start in WSL came to.
+/// What a Core offers now, given what was saved: a confirmation stays only
+/// for the very same target; anything new or changed starts unconfirmed.
+pub fn merge_offered(previous: Option<&StartProfile>, offered: StartProfile) -> StartProfile {
+    let confirmed = previous.is_some_and(|previous| previous.confirmed && previous.same_target(&offered));
+    StartProfile { confirmed, ..offered }
+}
+
+/// What a start in WSL came to, as the start entry said it, or that it said
+/// nothing in time.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Started {
-    /// Started, or it was already running: connect.
-    Ready,
-    /// Started but not answering yet; nothing was stopped.
-    Slow,
+#[cfg_attr(not(windows), allow(dead_code))]
+pub enum StartOutcome {
+    /// The entry accepted this computer's installation (its folder, the
+    /// recorded Workspace and port), started its Core, and the Core answered.
+    Started,
+    /// Accepted and started as above; the Core has not answered yet.
+    Starting,
+    /// The entry accepted the installation, then found the Workspace's Core
+    /// already answering on its port and started nothing. What answers
+    /// there may not be this installation's Core.
+    Running,
+    /// The entry refused: this computer's WSL has no installation there, it
+    /// recorded no start, or it recorded another Workspace or port.
+    NotHere(String),
+    /// Anything else, with what was said: WSL could not run the entry, a
+    /// permission, the port, Core exiting, …
+    Failed(String),
+    /// No result came within the wait. Nothing is known; nothing was stopped.
+    Unanswered,
+}
+
+impl StartOutcome {
+    /// The entry checked this installation and started its Core.
+    pub fn confirms(&self) -> bool {
+        matches!(self, Self::Started | Self::Starting)
+    }
+}
+
+/// A start the page asked for: Core already answered (nothing ran in WSL),
+/// or the start entry ran.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Attempt {
+    Answering,
+    Ran(StartOutcome),
+}
+
+/// What becomes of the saved profile after an attempt.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Settle {
+    Keep,
+    Confirm,
+    /// Not confirmed and refused as not installed here: offered no more
+    /// until the Core says again where it is.
+    Forget,
+}
+
+/// Only the entry's own acceptance of this installation confirms a
+/// profile, and only its definite refusal forgets an unconfirmed one. A Core
+/// that answered over HTTP, the entry finding one already answering, no
+/// result, and every other failure change nothing.
+pub fn settle(profile: &StartProfile, attempt: &Attempt) -> Settle {
+    match attempt {
+        Attempt::Ran(outcome) if outcome.confirms() && !profile.confirmed => Settle::Confirm,
+        Attempt::Ran(StartOutcome::NotHere(_)) if !profile.confirmed => Settle::Forget,
+        _ => Settle::Keep,
+    }
 }
 
 /// The start entry's one-line JSON result (`yuzuno-update-helper start`),
@@ -194,9 +276,10 @@ pub fn start_result_line(line: &str) -> Option<serde_json::Value> {
 }
 
 /// Reads the start entry's result, or says why WSL did not run it.
-/// `output` is what `wsl.exe` printed.
+/// `output` is what `wsl.exe` printed. Only the entry's typed result counts;
+/// WSL's own words are shown, never read for a cause.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub fn start_result(profile: &StartProfile, output: &str) -> Result<Started, String> {
+pub fn start_result(profile: &StartProfile, output: &str) -> StartOutcome {
     let result = output.lines().rev().find_map(start_result_line);
     let Some(result) = result else {
         let said = output.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("no output");
@@ -207,25 +290,26 @@ pub fn start_result(profile: &StartProfile, output: &str) -> Result<Started, Str
             .filter(|(level, _)| !level.is_empty() && level.chars().all(|c| c.is_ascii_digit()))
             .map_or(said, |(_, rest)| rest.trim());
         let said = said.trim_end_matches('.');
-        return Err(format!(
+        return StartOutcome::Failed(format!(
             "WSL could not run Yuzuno's start in {}: {}. Start Core in WSL yourself, or check that the distribution and installation still exist.",
             profile.wsl_distro,
             shortened(said, 240)
         ));
     };
     let message = shortened(result["message"].as_str().unwrap_or(""), 300);
+    let code = result["code"].as_str().unwrap_or("");
     match result["state"].as_str().unwrap_or("") {
-        "started" | "running" => Ok(Started::Ready),
-        "starting" => Ok(Started::Slow),
-        "refused" if result["code"] == "noRecord" => Err(format!(
-            "{message} Then this button can start it."
-        )),
-        "failed" if result["code"] == "exited" => {
+        "started" => StartOutcome::Started,
+        "starting" => StartOutcome::Starting,
+        "running" => StartOutcome::Running,
+        "refused" if code == "noRecord" => StartOutcome::NotHere(format!("{message} Then this button can start it.")),
+        "refused" if matches!(code, "notInstalled" | "otherWorkspace" | "otherPort") => StartOutcome::NotHere(message),
+        "failed" if code == "exited" => {
             let log = result["log"].as_str().unwrap_or("").trim();
             let last = log.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("");
-            Err(format!("Core stopped while starting. {}", shortened(last, 300)).trim_end().to_owned())
+            StartOutcome::Failed(format!("Core stopped while starting. {}", shortened(last, 300)).trim_end().to_owned())
         }
-        _ => Err(if message.is_empty() { "Core could not be started.".into() } else { message }),
+        _ => StartOutcome::Failed(if message.is_empty() { "Core could not be started.".into() } else { message }),
     }
 }
 
@@ -528,28 +612,109 @@ mod tests {
     #[test]
     fn the_start_result_is_read_from_its_json_line() {
         let p = profile();
-        assert_eq!(start_result(&p, r#"{"state":"started","pid":12,"releaseId":"r"}"#), Ok(Started::Ready));
-        assert_eq!(start_result(&p, "noise\n{\"state\":\"running\"}\n"), Ok(Started::Ready));
-        assert_eq!(start_result(&p, r#"{"state":"starting","pid":12}"#), Ok(Started::Slow));
+        use StartOutcome::*;
+        assert_eq!(start_result(&p, r#"{"state":"started","pid":12,"releaseId":"r"}"#), Started);
+        assert_eq!(start_result(&p, "noise\n{\"state\":\"running\"}\n"), Running);
+        assert_eq!(start_result(&p, r#"{"state":"starting","pid":12}"#), Starting);
         // The line is recognized as it arrives, before wsl.exe ends.
         assert!(start_result_line("{\"state\":\"started\",\"pid\":12}\r").is_some());
         for line in ["", "Starting…", "{\"pid\":12}", "[1,2]", "{\"state\":3}"] {
             assert!(start_result_line(line).is_none(), "{line}");
         }
-        let said = |output: &str| start_result(&p, output).unwrap_err();
-        assert!(said(r#"{"state":"refused","code":"portInUse","message":"Port 4317 is used by something other than Yuzuno Core."}"#)
-            .starts_with("Port 4317 is used"));
-        assert!(said(r#"{"state":"refused","code":"noRecord","message":"This installation has not recorded how its Core starts. Start Core in WSL once with this version."}"#)
-            .ends_with("Then this button can start it."));
-        let exited = said(r#"{"state":"failed","code":"exited","message":"Core exited before it answered (exit status: 1).","log":"loading\nError: Cannot bind Core's loopback port\n"}"#);
+        // Not installed here, by the entry's own codes only.
+        for (code, message) in [
+            ("notInstalled", "No Yuzuno installation is at /home/ada/core."),
+            ("otherWorkspace", "This installation's Core last opened another Workspace."),
+            ("otherPort", "This installation's Core last ran on port 4318, not 4317."),
+        ] {
+            let line = serde_json::json!({"state":"refused","code":code,"message":message}).to_string();
+            assert_eq!(start_result(&p, &line), NotHere(message.into()), "{code}");
+        }
+        let no_record = start_result(&p, r#"{"state":"refused","code":"noRecord","message":"This installation has not recorded how its Core starts. Start Core in WSL once with this version."}"#);
+        assert!(matches!(&no_record, NotHere(message) if message.ends_with("Then this button can start it.")), "{no_record:?}");
+        // Everything else is a failure with its words, never "not installed".
+        let failed = |output: &str| match start_result(&p, output) {
+            Failed(message) => message,
+            other => panic!("{output}: {other:?}"),
+        };
+        for (code, state) in [("portInUse", "refused"), ("unsafeInstall", "refused"), ("busy", "refused"),
+                              ("updating", "refused"), ("missingRelease", "failed"), ("spawn", "failed")] {
+            let line = serde_json::json!({"state":state,"code":code,"message":"said"}).to_string();
+            assert_eq!(failed(&line), "said", "{code}");
+        }
+        let exited = failed(r#"{"state":"failed","code":"exited","message":"Core exited before it answered (exit status: 1).","log":"loading\nError: Cannot bind Core's loopback port\n"}"#);
         assert_eq!(exited, "Core stopped while starting. Error: Cannot bind Core's loopback port");
-        // WSL itself could not run it: its own words, shortened.
-        let missing = said("There is no distribution with the supplied name.\r\nError code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND\r\n");
+        // WSL itself could not run it: its own words, shortened, and not
+        // taken as "not installed", whatever they say.
+        let missing = failed("There is no distribution with the supplied name.\r\nError code: Wsl/Service/WSL_E_DISTRO_NOT_FOUND\r\n");
         assert!(missing.contains("Ubuntu-24.04: There is no distribution with the supplied name. Start"), "{missing}");
-        let gone = said("<3>WSL (812 - Relay) ERROR: CreateProcessCommon:818: execvpe(/home/ada/core/updates/start) failed: No such file or directory\n");
+        let gone = failed("<3>WSL (812 - Relay) ERROR: CreateProcessCommon:818: execvpe(/home/ada/core/updates/start) failed: No such file or directory\n");
         assert!(gone.contains("Ubuntu-24.04: WSL (812 - Relay) ERROR: CreateProcessCommon:818: execvpe(/home/ada/core/updates/start) failed: No such file or directory. Start"), "{gone}");
-        assert!(said("").contains("no output"));
-        assert!(said(&"x".repeat(1000)).len() < 600);
+        assert!(failed("").contains("no output"));
+        assert!(failed(&"x".repeat(1000)).len() < 600);
+    }
+
+    #[test]
+    fn only_the_start_entry_accepting_this_installation_confirms_a_profile() {
+        use StartOutcome::*;
+        let unconfirmed = profile();
+        let confirmed = StartProfile { confirmed: true, ..profile() };
+        assert!(!unconfirmed.confirmed, "a new profile is not confirmed");
+        // The entry checked this installation and started its Core.
+        for outcome in [Started, Starting] {
+            assert_eq!(settle(&unconfirmed, &Attempt::Ran(outcome)), Settle::Confirm);
+        }
+        // Core answered over HTTP before anything ran in WSL, or the entry
+        // found one already answering: no evidence about where it runs.
+        assert_eq!(settle(&unconfirmed, &Attempt::Answering), Settle::Keep);
+        assert_eq!(settle(&unconfirmed, &Attempt::Ran(Running)), Settle::Keep);
+        // No result, and failures that are not "not installed here", keep
+        // the profile as it was, confirmed or not.
+        for outcome in [Unanswered, Failed("WSL could not run Yuzuno's start in Ubuntu-24.04: Access is denied".into())] {
+            assert_eq!(settle(&unconfirmed, &Attempt::Ran(outcome)), Settle::Keep);
+        }
+        // Refused as not installed here: an unconfirmed profile goes, a
+        // confirmed one stays (it was this computer's; the error is shown).
+        let not_here = || Attempt::Ran(NotHere("This installation's Core last opened another Workspace.".into()));
+        assert_eq!(settle(&unconfirmed, &not_here()), Settle::Forget);
+        assert_eq!(settle(&confirmed, &not_here()), Settle::Keep);
+        // A confirmed profile is never confirmed again or forgotten by these.
+        for outcome in [Started, Starting, Running, Unanswered] {
+            assert_eq!(settle(&confirmed, &Attempt::Ran(outcome)), Settle::Keep);
+        }
+    }
+
+    #[test]
+    fn a_confirmation_stays_only_with_the_same_target_and_outlasts_a_restart() {
+        let confirmed = StartProfile { confirmed: true, ..profile() };
+        // The same Core offers the same again: still confirmed.
+        assert!(merge_offered(Some(&confirmed), profile()).confirmed);
+        // Anything that changed makes it a new, unconfirmed profile.
+        let changed = [
+            StartProfile { wsl_distro: "Debian".into(), ..profile() },
+            StartProfile { user: "grace".into(), ..profile() },
+            StartProfile { install_dir: "/home/ada/other-core".into(), ..profile() },
+            StartProfile { workspace_id: "5a0d3b2c-1e4f-4a6b-8c9d-0e1f2a3b4c5d".into(), ..profile() },
+            StartProfile { core: parse_core_url("http://localhost:4317").unwrap(), ..profile() },
+        ];
+        for offered in changed {
+            assert!(!merge_offered(Some(&confirmed), offered.clone()).confirmed, "{offered:?}");
+        }
+        assert!(!merge_offered(None, profile()).confirmed);
+        assert!(!merge_offered(Some(&profile()), profile()).confirmed);
+        // Saved and read back, as after the app, Windows or WSL restarts:
+        // the confirmation is kept, with nothing tied to a boot.
+        let core = parse_core_url("http://127.0.0.1:4317").unwrap();
+        let saved = saved_record(&core, Some(&confirmed));
+        assert_eq!(saved_start(saved.as_bytes()), Some(confirmed.clone()));
+        assert_eq!(saved_start(saved_record(&core, Some(&profile())).as_bytes()), Some(profile()));
+        // A record from before confirmation (no field), or anything but
+        // true, is not confirmed: it is confirmed again by a start.
+        let mut old: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        old["start"].as_object_mut().unwrap().remove("confirmed");
+        assert_eq!(saved_start(old.to_string().as_bytes()), Some(profile()));
+        old["start"]["confirmed"] = "true".into();
+        assert_eq!(saved_start(old.to_string().as_bytes()), Some(profile()));
     }
 
     #[test]
