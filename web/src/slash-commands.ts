@@ -84,6 +84,8 @@ export const codexControls: CommandList = {
     modelControl, permissionsControl, forkControl, newControl, resumeControl, statusControl, usageControl, mcpControl,
     // Yuzuno's own record of a turn's file edits, not a Codex request.
     control("changes", "Yuzuno's record of the file edits Codex made in a turn, by file; not a Git diff of the folder"),
+    // Git's diff of the folder, read through Codex's own command runner; nothing is sent to the model.
+    control("diff", "Reads Git's diff of this Agent's folder where its Codex runs: unstaged changes, untracked files and staged names; read-only"),
   ],
   get total() { return this.commands.length; },
   truncated: false,
@@ -146,6 +148,7 @@ const controlHarnesses = {
   usage: ["codex"],
   mcp: ["codex"],
   changes: ["codex"],
+  diff: ["codex"],
 } as const;
 export type NativeControl = keyof typeof controlHarnesses;
 

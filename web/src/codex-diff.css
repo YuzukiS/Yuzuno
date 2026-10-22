@@ -1,0 +1,38 @@
+/* /diff (T-29): Git's diff of a Codex Agent's folder. Laid out as /changes
+   (codex-changes.css); these are its own parts. */
+.diff-target {
+  display: grid;
+  gap: 4px;
+}
+.diff-target strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.diff-heading {
+  margin: 0 0 4px;
+  font-size: inherit;
+}
+.diff-files,
+.diff-names {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+.diff-status {
+  color: var(--muted);
+}
+.diff-stopped,
+.diff-clean {
+  margin: 0;
+}
+.diff-detail {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--cream);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}

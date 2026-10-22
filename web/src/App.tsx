@@ -110,6 +110,7 @@ import { ClaudeRuntimeFacts } from "./ClaudeControls";
 import { ClaudeMcpStatus } from "./ClaudeMcpStatus";
 import { CodexMcpStatus } from "./CodexMcpStatus";
 import { CodexChangesDialog } from "./CodexChanges";
+import { CodexDiffDialog } from "./CodexDiff";
 import { latestTurnWithEdits } from "./changes";
 import { CodexPlanUsage } from "./CodexPlanUsage";
 import { AgentManagement, type AgentAction } from "./AgentManagement";
@@ -282,6 +283,8 @@ export function App() {
   const [forkOpen, setForkOpen] = useState(false);
   // `/changes`: the record of one turn's file edits, that turn fixed when asked.
   const [changesRequest, setChangesRequest] = useState<{ agentId: string; turnId: string | null; nonce: number } | null>(null);
+  // `/diff`: Git's diff of the Agent's folder, read when it opens.
+  const [diffRequest, setDiffRequest] = useState<{ agentId: string; nonce: number } | null>(null);
   // `/review` alone: Review with Codex, for the draft that asked for it.
   const [reviewRequest, setReviewRequest] = useState<{ agentId: string; draft: ComposerDraft; nonce: number } | null>(null);
   // `/goal`: the Codex goal dialog, with the objective typed after it.
@@ -292,6 +295,7 @@ export function App() {
   // so it neither keeps read tracking off elsewhere nor reopens on return.
   useEffect(() => {
     setChangesRequest((request) => request && request.agentId !== selected ? null : request);
+    setDiffRequest((request) => request && request.agentId !== selected ? null : request);
     setReviewRequest((request) => request && request.agentId !== selected ? null : request);
     setGoalRequest((request) => request && request.agentId !== selected ? null : request);
     setPlanRequest((request) => request && request.agentId !== selected ? null : request);
@@ -1515,6 +1519,13 @@ export function App() {
       // there and sends nothing; the draft stays, as the panels leave it.
       if (control?.command === "changes") {
         setChangesRequest({ agentId: target, turnId: latestTurnWithEdits(currentDetail?.turns || [])?.id ?? null, nonce: Date.now() });
+        return;
+      }
+      // `/diff` reads Git's diff of the Agent's folder through its Codex
+      // connection as soon as its dialog opens; nothing is sent to the model,
+      // nothing connects, and the draft stays.
+      if (control?.command === "diff") {
+        setDiffRequest({ agentId: target, nonce: Date.now() });
         return;
       }
       if (control?.command === "status" || control?.command === "usage" || control?.command === "mcp") {
@@ -3098,6 +3109,14 @@ export function App() {
             openCatchupSource({ id: `changes:${turnId}:${itemId}`, agentId: agent.id, agentName: agent.name, kind: "progress",
               title: "File edit", body: "", turnId, itemId, seq: agent.lastSeq }, "rail", true);
           }}
+        />
+      )}
+      {agent && !isClaude && !isOpenCode && diffRequest?.agentId === agent.id && (
+        <CodexDiffDialog
+          key={`diff-${agent.id}-${diffRequest.nonce}`}
+          agent={agent}
+          open
+          onOpenChange={(open) => { if (!open) setDiffRequest(null); }}
         />
       )}
       {agent && !isClaude && !isOpenCode && (

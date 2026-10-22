@@ -187,7 +187,8 @@ async fn a_read_runs_only_the_fixed_commands_read_only_in_the_agents_folder_and_
         ("sub/", None, Some("nested_repository")), ("new\nline.txt", Some("diff --git a/new\nline.txt b/new\nline.txt\n+new\nline.txt\n"), None)]);
     assert_eq!(report["untracked"]["listedAll"], true);
     assert_eq!(report["complete"], false, "a nested repository is listed, not read");
-    let flags = ["--no-textconv", "--no-ext-diff", "--submodule=short", "--ignore-submodules=dirty", "--no-color"];
+    let flags = ["--no-textconv", "--no-ext-diff", "--submodule=short", "--ignore-submodules=dirty", "--no-color",
+        "--src-prefix=a/", "--dst-prefix=b/", "--no-relative"];
     let with = |head: &[&str], tail: &[&str]| -> Vec<String> { head.iter().chain(flags.iter()).chain(tail.iter()).map(|s| s.to_string()).collect() };
     assert_eq!(lab.commands(), vec![
         vec!["rev-parse".to_owned(), "--is-inside-work-tree".to_owned()],

@@ -371,7 +371,10 @@ async fn real_git_runs_none_of_the_repositorys_programs_and_the_folder_is_left_a
     assert_eq!((large["complete"].as_bool(), large["notUtf8"].as_bool()), (Some(false), Some(false)), "cut at its limit, whole characters only");
     assert!(large["text"].as_str().unwrap().len() <= Limits::default().untracked_each);
     assert_eq!((report["complete"].as_bool(), report["stopped"].as_str(), report["untracked"]["listedAll"].as_bool()), (Some(false), None, Some(true)));
-    let read = report["untracked"]["files"].as_array().unwrap().iter().filter(|f| f["diff"].is_object()).count();
+    // A file Git was asked about: read, or not read with Git's words (not skipped by Yuzuno).
+    let skipped = ["nested_repository", "limit", "total", "stopped"];
+    let read = report["untracked"]["files"].as_array().unwrap().iter()
+        .filter(|f| f["notRead"].as_str().is_none_or(|n| !skipped.contains(&n))).count();
     let requests = lab.of("t1");
     let commands = requests.iter().filter(|r| r["method"] == "command/exec").count();
     assert_eq!((report["commands"].as_u64(), commands), (Some(5 + read as u64), 5 + read), "one command per step and per file read");

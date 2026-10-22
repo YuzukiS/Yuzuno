@@ -92,8 +92,11 @@ const HARDENING: [&str; 6] = [
     "-c", "core.fsmonitor=false",
     "-c", "core.hooksPath=/dev/null",
 ];
-/// Diff options that keep Git from running configured helpers.
-const DIFF_FLAGS: [&str; 5] = ["--no-textconv", "--no-ext-diff", "--submodule=short", "--ignore-submodules=dirty", "--no-color"];
+/// Diff options that keep Git from running configured helpers, and keep its
+/// output in one form whatever the user's diff settings (a/ and b/ names,
+/// paths from the repository's top).
+const DIFF_FLAGS: [&str; 8] = ["--no-textconv", "--no-ext-diff", "--submodule=short", "--ignore-submodules=dirty", "--no-color",
+    "--src-prefix=a/", "--dst-prefix=b/", "--no-relative"];
 /// Variables that would point Git at another repository or index, add
 /// configuration, run a diff helper or write traces: unset for every command.
 const UNSET: [&str; 14] = [
