@@ -103,12 +103,12 @@ fn same(case: &str, detail: &AgentDetail, prepare: &dyn Fn(&Store), from_rows: b
 fn a_send_view_read_a_turn_at_a_time_is_the_view_the_rows_gave() {
     let plain = record(turns(), approval("c2"));
     let view = same("as written", &plain, &|_| {}, true);
-    let turns = view["view"]["turns"].as_array().unwrap();
-    assert_eq!(turns.len(), 3);
-    assert_eq!(turns[0]["items"].as_array().unwrap().iter().map(|i| i["id"].clone()).collect::<Vec<_>>(), [json!("q0")]);
-    assert!(turns[0]["items"][0].get(record_rows::TRUNCATED).is_some(), "an async question with a large field is its preview");
-    assert!(turns[1].get("items").is_none(), "a Turn stored whole has no Item array, as before");
-    assert_eq!(turns[2]["items"].as_array().unwrap().len(), 1);
+    let seen = view["view"]["turns"].as_array().unwrap();
+    assert_eq!(seen.len(), 3);
+    assert_eq!(seen[0]["items"].as_array().unwrap().iter().map(|i| i["id"].clone()).collect::<Vec<_>>(), [json!("q0")]);
+    assert!(seen[0]["items"][0].get(record_rows::TRUNCATED).is_some(), "an async question with a large field is its preview");
+    assert!(seen[1].get("items").is_none(), "a Turn stored whole has no Item array, as before");
+    assert_eq!(seen[2]["items"].as_array().unwrap().len(), 1);
     assert_eq!(view["view"]["messageReceipts"][0]["binding"]["itemId"], "u0");
     assert_eq!(view["view"]["pending"][0]["params"]["itemId"], "c2");
 
