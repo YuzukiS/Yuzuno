@@ -167,7 +167,7 @@ def stop(pid, managed):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--run", required=True)
-    parser.add_argument("--target", type=Path, required=True, help="cargo target dir with debug Core binaries")
+    parser.add_argument("--target", type=Path, required=True, help="cargo target dir (debug or release) with the Core binaries")
     parser.add_argument("--port", type=int, default=4491)
     parser.add_argument("--cdp-port", type=int, default=9341)
     parser.add_argument("--desktop-build", choices=["debug", "release"], default="debug",
@@ -184,7 +184,7 @@ def main():
     report = {"run": args.run, "distro": os.environ["WSL_DISTRO_NAME"], "desktopBuild": args.desktop_build, "steps": [], "notCovered": [
         "WSL not running before the start (the distribution was running: stopping it would stop the daily Core)",
         "WSL not installed (only that wsl.exe is missing is checked, in unit tests)",
-        "a Windows restart, and a Core release built by CI (this is a debug fixture release)",
+        "a Windows restart, and a Core release built by CI (this is a fixture release of --target's binaries)",
     ]}
     assert health(args.port) is None and listener(args.port) is None, f"port {args.port} is in use"
     assert not devtools(args.cdp_port), f"DevTools port {args.cdp_port} is in use"
