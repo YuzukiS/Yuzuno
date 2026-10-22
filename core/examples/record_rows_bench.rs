@@ -190,7 +190,7 @@ fn main() -> Result<()> {
     })?);
 
     // Rows.
-    note("rows: read the rows with payloads (SQL only)", time(|| { rows::read(&db, &id, true)?.context("missing")?; Ok(()) })?);
+    note("rows: read the rows with payloads (SQL, each payload parsed)", time(|| { rows::read(&db, &id, true)?.context("missing")?; Ok(()) })?);
     note("rows: read the rows with previews (SQL only)", time(|| { rows::read(&db, &id, false)?.context("missing")?; Ok(()) })?);
     note("rows: load with payloads (= the record)", time(|| { rows::load(&db, &id, true)?.context("missing")?; Ok(()) })?);
     note("rows: load without payloads", time(|| { rows::load(&db, &id, false)?.context("missing")?; Ok(()) })?);

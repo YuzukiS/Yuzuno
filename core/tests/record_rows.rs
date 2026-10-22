@@ -124,12 +124,24 @@ fn split_and_assemble_give_back_exactly_the_record() {
     insert(&mut db, &detail);
     assert_same(&stored(&db, "a"), &detail);
     assert_eq!(rows::layout(&db, "a").unwrap(), Some(Layout::Rows));
-    let Some(rows::Stored::Rows(read)) = rows::read(&db, "a", false).unwrap() else { panic!("not rows") };
+    let Some(rows::Stored::Rows(read, fields)) = rows::read(&db, "a", false).unwrap() else { panic!("not rows") };
+    assert!(fields.is_empty());
     assert_eq!(sorted(read), sorted(rows::Rows { payloads: Vec::new(), ..split.clone() }), "without payloads, with previews");
-    let Some(rows::Stored::Rows(read)) = rows::read(&db, "a", true).unwrap() else { panic!("not rows") };
+    let Some(rows::Stored::Rows(read, fields)) = rows::read(&db, "a", true).unwrap() else { panic!("not rows") };
     let mut without_previews = split;
     without_previews.items.iter_mut().for_each(|i| i.previews = None);
-    assert_eq!(sorted(read), sorted(without_previews), "with payloads, without previews");
+    // Payloads come parsed where they were read: each is its row's text parsed.
+    let key = |p: &(String, String, String, Value)| (p.0.clone(), p.1.clone(), p.2.clone());
+    let mut parsed: Vec<(String, String, String, Value)> = fields.into_iter()
+        .flat_map(|((turn, item), list)| list.into_iter().map(move |(field, value)| (turn.clone(), item.clone(), field, value.unwrap())))
+        .collect();
+    parsed.sort_by_key(key);
+    let mut expected: Vec<(String, String, String, Value)> = without_previews.payloads.iter()
+        .map(|p| (p.turn.clone(), p.item.clone(), p.field.clone(), serde_json::from_str(&p.data).unwrap())).collect();
+    expected.sort_by_key(key);
+    assert!(!expected.is_empty());
+    assert_eq!(parsed, expected, "with payloads, each parsed from its row");
+    assert_eq!(sorted(read), sorted(rows::Rows { payloads: Vec::new(), ..without_previews }), "with payloads, without previews");
 }
 
 /// Rows in key order: the database returns them in index order.
