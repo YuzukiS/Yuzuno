@@ -107,6 +107,7 @@ import { RecoveryNotice, recoveryReason } from "./RecoveryNotice";
 import { AutoContinueSetting, QuotaResumeNotice } from "./QuotaResume";
 import { ClaudeRuntimeFacts } from "./ClaudeControls";
 import { ClaudeMcpStatus } from "./ClaudeMcpStatus";
+import { CodexMcpStatus } from "./CodexMcpStatus";
 import { CodexPlanUsage } from "./CodexPlanUsage";
 import { AgentManagement, type AgentAction } from "./AgentManagement";
 import { useConversationSend } from "./useConversationSend";
@@ -267,13 +268,13 @@ export function App() {
   const [modelRequest, setModelRequest] = useState<{ model: string; nonce: number; kind?: "permissions" } | null>(null);
   // What /new and /resume open New agent with (T-29); null is its usual start.
   const [createInitial, setCreateInitial] = useState<CreateInitial | null>(null);
-  // /status and /usage: the context panel, at this Agent's plan usage.
-  const [usageFocus, setUsageFocus] = useState(0);
+  // /status, /usage and /mcp: the context panel, at that part of it.
+  const [inspectorFocus, setInspectorFocus] = useState<{ id: string; nonce: number } | null>(null);
   useEffect(() => {
-    if (!usageFocus) return;
-    const frame = requestAnimationFrame(() => document.getElementById("agent-plan-usage")?.scrollIntoView({ block: "nearest" }));
+    if (!inspectorFocus) return;
+    const frame = requestAnimationFrame(() => document.getElementById(inspectorFocus.id)?.scrollIntoView({ block: "nearest" }));
     return () => cancelAnimationFrame(frame);
-  }, [usageFocus]);
+  }, [inspectorFocus]);
   const [forkOpen, setForkOpen] = useState(false);
   // `/review` alone: Review with Codex, for the draft that asked for it.
   const [reviewRequest, setReviewRequest] = useState<{ agentId: string; draft: ComposerDraft; nonce: number } | null>(null);
@@ -1490,12 +1491,12 @@ export function App() {
         setCreateOpen(true);
         return;
       }
-      if (control?.command === "status" || control?.command === "usage") {
+      if (control?.command === "status" || control?.command === "usage" || control?.command === "mcp") {
         if (phone) {
           setPhoneInspector(true);
           setPhoneList(false);
         } else setInspector(true);
-        setUsageFocus(Date.now());
+        setInspectorFocus({ id: control.command === "mcp" ? "agent-mcp-status" : "agent-plan-usage", nonce: Date.now() });
         return;
       }
       if (control?.command === "compact") {
@@ -2923,6 +2924,7 @@ export function App() {
               onOpen={openFile}
             />
             {isClaude && <ClaudeMcpStatus agent={agent} />}
+            {!isClaude && !isOpenCode && !previewMode && <CodexMcpStatus agent={agent} />}
             <section className="inspector-section">
               <div className="section-title">
                 <h2>
