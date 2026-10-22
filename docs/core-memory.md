@@ -14,6 +14,24 @@ The existing stream maintenance ticker now checks for a longer idle opportunity:
 - After a reclaim, observed RSS must grow by another 128 MiB before checking
   those pages again. Virtual free arenas can remain large after pages are returned.
 
+While records stay held, because an Agent keeps streaming, that idle check
+never comes. The pages another Agent's released record left behind would then
+stay resident for as long as the stream goes on. A slower check comes instead:
+
+- The busy period has lasted 300 seconds. It begins with the first held record
+  after the last idle check, and a short gap with none held does not end it;
+  only an idle check does, whatever it finds.
+- At least 300 seconds have passed since the last check of this path, and 30
+  seconds since a check of either path.
+- Quiet, the 128 MiB of free arena space and the 128 MiB of RSS growth are as
+  for the idle check.
+- Free arena space is at least what is in use (`fordblks >= uordblks`, read
+  with the free space). This is a ratio of glibc's own counts. It does not
+  show that the held records are small, and covers neither mmapped chunks nor
+  all of RSS.
+
+The five minutes are this path's only: the idle check is unchanged.
+
 The check calls `malloc_trim(0)` in the existing blocking maintenance closure,
 outside Store locks. It does not delete records, change cache expiry, interrupt
 an Agent, or add a new background thread. Other platforms are unchanged.
@@ -22,9 +40,11 @@ its duration and RSS observations. These are concurrent observations, not an exa
 accounting of bytes freed by that call.
 
 This is advisory maintenance, not a memory limit. The ticker starts with the
-first streamed event. Continuous activity or long-lived admission permits may
-defer reclamation. A new request can arrive after the idle snapshot and overlap
-the allocator's locks. Reading cold histories after reclamation must fault pages
+first streamed event. Held records defer the check to the slower path;
+long-lived admission permits defer both. Quiet is a snapshot, not mutual
+exclusion: a new request, or a streamed event of an Agent whose record is held,
+can arrive after it and wait for an arena the trim holds. A trim's duration in
+one lab is not a bound on that wait. Reading cold histories after reclamation must fault pages
 back in; the grace period avoids doing this during brief typing/thinking pauses
 but does not eliminate that cost.
 
@@ -51,12 +71,35 @@ an update drains and refused once the update has sealed admission.
   one is this request's own.
 - `reclaim`: the policy's thresholds, whether the maintenance tick runs, what
   holds a trim back now (`waitingFor`) and the last check that passed the time
-  gate. Reading it consumes no check. While a trim holds the gate, `gateBusy`
+  gate, with its `path` (`idle` or `held`). `gate.nextPath` is the path a check
+  would take by time alone, or null. `busyForSeconds` and
+  `sinceLastHeldCheckSeconds` time the held path. Once the held path is due,
+  held records are no longer listed as holding a trim back. Reading it consumes
+  no check and changes no time. While a trim holds the gate, `gateBusy`
   is true and the gate is not read.
 
 Each part is read in turn, so they are not one snapshot. On a platform where a
 part can't be read it says `available: false` with a reason; no count is 0
 because it is unknown.
+
+## While an Agent streams on
+
+T-140 Job `459d0b2a-f9cd-4da9-aeb0-43cae468fcc6`, 2026-10-22, a lab build on
+`37d0bef` (before the held path), one process per case. A synthetic Agent
+with 63.5 MiB of history reconnected; a small synthetic Agent streamed through
+Core's own ticker. The ticker released the large record about 5 seconds after
+its last use, in both cases.
+
+| | Idle after one delta | Small Agent streaming for 95 s |
+| --- | --- | --- |
+| Held records after the large one was released | 0 | 1 (the small one) |
+| What held a trim back while streaming | — | `heldRecords`, at every reading |
+| RSS just before the trim | 298.8 MiB | 299.3 MiB |
+| Trim | 66 s after the start, to 18.2 MiB | 60 s after the small record went, to 19.2 MiB |
+
+The idle path waited for the last held record however small it was, and the
+large record's freed pages stayed resident the whole time. This is what the
+held path addresses. One run per case, synthetic, not the daily Core.
 
 ## Reproduce the isolated comparison
 
@@ -369,7 +412,8 @@ record are all in use there. The reconcile still peaks at 205.5 MiB, in its
 own commit. The RSS rows are this process at the end of a phase only, not its
 highest point; why the end of the reconnect differs was not measured. The
 Job is marked failed: its comparison step stopped on a check that saw
-1,056 B allocated, by any thread, before the first run began; the four runs
+1,056 B allocated, by any thread, in run 1's process before its first
+measured phase; the four runs
 completed and are compared here from their reports. These are synthetic
 measurements, not the daily Core's.
 
