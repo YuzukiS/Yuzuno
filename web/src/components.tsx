@@ -10,7 +10,7 @@ import { userRequestText, userText } from "./message-content";
 import { messageImages } from "./image-input";
 import { messageSkills } from "./skill-refs";
 import { SkillChips } from "./SkillChips";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -22,6 +22,7 @@ import {
   SquareDashedMousePointer,
   FileCode2,
   FileText,
+  ListChecks,
   LoaderCircle,
   MessageSquare,
   RefreshCw,
@@ -42,7 +43,7 @@ import type {
 import { api, artifactUrl, errorText, NO_ANSWER_REPLY, respondToRequest } from "./api";
 import { AnswerAgain, DraftNotSaved, useUnconfirmedAnswer } from "./unconfirmed-answer";
 import { useRequestDraft } from "./request-draft";
-import { ClaudePermission, ClaudeSubAgentScope, ClaudeTool } from "./ClaudeControls";
+import { ClaudePermission, ClaudeSubAgentScope, ClaudeTool, PlanText, planTitle } from "./ClaudeControls";
 import { OpenCodeRequest, OpenCodeTool } from "./OpenCodeControls";
 import { agentHarnessName } from "./machine-checks";
 import character from "./assets/yuzu-character.png";
@@ -487,9 +488,11 @@ function ToolItem({
   executionUnconfirmed: boolean;
 }) {
   const view = useFullItem(agentId, turnId, preview);
-  const [opened, setOpened] = useConversationDisclosure(`tool:${turnId}:${preview.id}`, false);
+  // A Codex plan is what Plan mode is for: open unless the reader closes it.
+  const [opened, setOpened] = useConversationDisclosure(`tool:${turnId}:${preview.id}`, preview.type === "plan");
   const item = view.item;
   const notice = <TruncationNotice view={view} />;
+  if (item.type === "plan") return <CodexPlanItem item={item} notice={notice} opened={opened} onOpenChange={setOpened} />;
   if (item.type === "claudeToolUse") return <ClaudeTool item={item} notice={notice} opened={opened} onOpenChange={setOpened} unconfirmed={executionUnconfirmed && /inProgress|running/.test(item.status || "")} />;
   if (item.type === "opencodeTool") return <OpenCodeTool item={item} notice={notice} opened={opened} onOpenChange={setOpened} unconfirmed={executionUnconfirmed && /inProgress|running/.test(item.status || "")} />;
   const isCommand = item.type === "commandExecution";
@@ -550,6 +553,33 @@ function ToolItem({
               : itemText(item)}
           </pre>
         )}
+      </div>
+    </details>
+  );
+}
+
+/**
+ * Codex's proposed plan (a `plan` Item, from Plan mode), as Markdown with the
+ * renderer Claude's plans use. Nothing here acts on it: carrying it out is
+ * the user's next message.
+ */
+function CodexPlanItem({ item, notice, opened, onOpenChange }: {
+  item: NativeItem; notice: ReactNode; opened: boolean; onOpenChange: (open: boolean) => void;
+}) {
+  const text = item.text || "";
+  const title = planTitle(text);
+  return (
+    <details className="tool-item codex-plan" id={`item-${item.id}`} open={opened} onToggle={event => {
+      if (event.target === event.currentTarget && event.currentTarget.open !== opened) onOpenChange(event.currentTarget.open);
+    }}>
+      <summary>
+        <ChevronRight size={12} />
+        <ListChecks size={14} />
+        <span><strong>Proposed plan</strong>{title ? ` · ${title}` : ""}</span>
+      </summary>
+      <div className="tool-content">
+        {notice}
+        <PlanText plan={text} id={`plan-${item.id}`} empty="No plan text yet." />
       </div>
     </details>
   );

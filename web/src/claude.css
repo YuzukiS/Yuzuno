@@ -43,3 +43,5 @@
 .claude-plan-empty, .claude-plan-file { margin: 4px 0; color: var(--muted); }
 .claude-plan-file .mono-small { overflow-wrap: anywhere; }
 .claude-tool .tool-content .claude-plan-text { margin-bottom: 10px; }
+/* A Codex plan Item (/plan) uses the same plan text. */
+.codex-plan .tool-content .claude-plan-text { margin-bottom: 4px; }
