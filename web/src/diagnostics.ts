@@ -345,8 +345,9 @@ export type Facts = {
   desktop: { now: DesktopRead | null; failed: string | null; last: DesktopRead | null } | null;
 };
 
-const WAITING = ["heldRecords", "requestsInFlight", "updateOperation", "sealed", "idleGrace", "interval", "freeBelowThreshold", "rssGrowthBelowThreshold"];
-const CHECKS = ["freeBelowThreshold", "rssGrowthBelowThreshold", "trimmed"];
+const WAITING = ["heldRecords", "heldGrace", "heldInterval", "requestsInFlight", "updateOperation", "sealed", "idleGrace", "interval",
+  "freeBelowThreshold", "freeNotDominant", "rssGrowthBelowThreshold"];
+const CHECKS = ["freeBelowThreshold", "freeNotDominant", "rssGrowthBelowThreshold", "trimmed"];
 const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null);
 const flag = (value: unknown) => (typeof value === "boolean" ? value : null);
 const time = (value: unknown) => (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? value : null);

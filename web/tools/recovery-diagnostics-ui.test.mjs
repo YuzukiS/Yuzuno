@@ -37,7 +37,7 @@ const memoryReport = {
   admission: { inFlight: 1, includesThisRequest: true, updateOperation: false, sealed: false },
   reclaim: {
     available: true, maintenanceTickRunning: true, gateBusy: false,
-    gate: { waitingFor: ["heldRecords", "idleGrace", "ReasonSentinel /home/person/private"], lastCheck: { at: "2026-10-21T19:00:00+00:00", result: "trimmed", reclaim: { rssBeforeBytes: 625 * MiB, rssAfterBytes: 13.5 * MiB } } },
+    gate: { waitingFor: ["heldRecords", "heldGrace", "ReasonSentinel /home/person/private"], lastCheck: { at: "2026-10-21T19:00:00+00:00", result: "trimmed", reclaim: { rssBeforeBytes: 625 * MiB, rssAfterBytes: 13.5 * MiB } } },
   },
   extra: { path: "/home/person/ExtraFieldSentinel" },
 };
@@ -365,7 +365,7 @@ test("Copy diagnostics adds Core's memory counters, read only for the text: numb
     assert.match(text, /^ {2}Process: RSS 678\.0 MiB, peak 903\.5 MiB, anonymous 671\.5 MiB, file 6\.5 MiB, swap 0\.0 MiB, 45 threads$/m);
     assert.match(text, /^ {2}glibc malloc, its own counts \(free space need not be resident\): arena 1100\.0 MiB, uordblks 126\.0 MiB, fordblks 967\.0 MiB, hblkhd 0\.0 MiB$/m);
     assert.match(text, /^ {2}Held records: 2 of 8; requests in flight: 1 \(this one included\)$/m);
-    assert.match(text, /^ {2}Idle trim: maintenance tick running yes; waiting for heldRecords, idleGrace, 1 other; last check trimmed at 2026-10-21T19:00:00\+00:00, RSS 625\.0 MiB to 13\.5 MiB$/m);
+    assert.match(text, /^ {2}Idle trim: maintenance tick running yes; waiting for heldRecords, heldGrace, 1 other; last check trimmed at 2026-10-21T19:00:00\+00:00, RSS 625\.0 MiB to 13\.5 MiB$/m);
     for (const word of ["MemoryNoteSentinel", "ReasonSentinel", "ExtraFieldSentinel", "/home/person", "kernel process status"]) assert.ok(!text.includes(word), `${word} is not copied`);
     assert.equal(p.calls.filter((c) => c.url.endsWith("/api/diagnostics/memory")).length, 1, "read once, for this text");
     assert.ok(!(p.w.localStorage.getItem("yuzuno.diagnostics.v1") || "").includes("uordblks"), "the memory read is not stored");
