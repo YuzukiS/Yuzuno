@@ -88,6 +88,7 @@ function StatusPanel({ agent }: { agent: Agent }) {
         </li>;
       })}
     </ul>}
-    {!!view?.more && <p className="mcp-status-note">{view.more} more services reported and are not listed.</p>}
+    {/* Counted per report, not per server: a server may report more than once. */}
+    {!!view?.more && <p className="mcp-status-note">{view.more} more startup {view.more === 1 ? "report" : "reports"} came in and {view.more === 1 ? "is" : "are"} not shown.</p>}
   </section>;
 }

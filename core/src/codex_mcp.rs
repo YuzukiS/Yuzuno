@@ -17,7 +17,8 @@ use serde::Serialize;
 use serde_json::Value;
 use std::{collections::{BTreeMap, HashMap}, sync::{Arc, Mutex}};
 
-/// Servers one connection keeps; any more are counted, not kept.
+/// Servers one connection keeps; reports of any further server are counted,
+/// not kept.
 const MAX_SERVERS: usize = 200;
 const MAX_NAME: usize = 200;
 const MAX_ERROR: usize = 1000;
@@ -37,7 +38,9 @@ struct Server {
 struct Observed {
     generation: u64,
     servers: BTreeMap<String, Server>,
-    /// Further servers that reported, beyond MAX_SERVERS.
+    /// Startup reports not kept: those of servers beyond MAX_SERVERS. Counted
+    /// per report, so a server that reports twice counts twice; no set of
+    /// their names is kept to count servers instead.
     dropped: usize,
 }
 
@@ -106,7 +109,7 @@ pub struct View {
     reason: &'static str,
     generation: Option<u64>,
     servers: Vec<Server>,
-    /// Servers that reported beyond those listed.
+    /// Startup reports not shown (`Observed::dropped`): reports, not servers.
     more: usize,
 }
 
@@ -120,7 +123,9 @@ impl Workspace {
     /// This Codex Agent's MCP servers as they reported starting on its
     /// current connection. Nothing is sent to Codex or started for this.
     pub async fn codex_mcp(self: &Arc<Self>, id: &str) -> Result<View> {
-        let agent = self.detail(id).await?.agent;
+        // The Agent as listed: its harness, closing and connection state,
+        // never its history (T-140).
+        let agent = self.listed(id).await?;
         if agent.harness != "codex" {
             return Ok(View::not("unsupported", "harness"));
         }
@@ -174,5 +179,8 @@ mod tests {
         for i in 0..MAX_SERVERS + 2 { state.observe("b", 1, &json!({"name":format!("s{i}"),"status":"ready"})); }
         let (servers, more) = state.servers("b", 1);
         assert_eq!((servers.len(), more), (MAX_SERVERS, 2));
+        // A server not kept that reports again is counted again: reports, not servers.
+        state.observe("b", 1, &json!({"name":format!("s{}", MAX_SERVERS + 1),"status":"failed"}));
+        assert_eq!(state.servers("b", 1).1, 3);
     }
 }
