@@ -102,6 +102,7 @@ import { agentHarnessName, nativeSession } from "./machine-checks";
 import { observedEffort } from "./claude-effort";
 import { CodexWriterNotice, ForkCodexDialog } from "./ForkCodexSession";
 import { CodexReviewDialog, startCodexReview } from "./CodexReview";
+import { CodexGoalDialog } from "./CodexGoal";
 import { RecoveryNotice, recoveryReason } from "./RecoveryNotice";
 import { AutoContinueSetting, QuotaResumeNotice } from "./QuotaResume";
 import { ClaudeRuntimeFacts } from "./ClaudeControls";
@@ -276,6 +277,8 @@ export function App() {
   const [forkOpen, setForkOpen] = useState(false);
   // `/review` alone: Review with Codex, for the draft that asked for it.
   const [reviewRequest, setReviewRequest] = useState<{ agentId: string; draft: ComposerDraft; nonce: number } | null>(null);
+  // `/goal`: the Codex goal dialog, with the objective typed after it.
+  const [goalRequest, setGoalRequest] = useState<{ agentId: string; draft: ComposerDraft; nonce: number; objective: string } | null>(null);
   const [turnDockEngaged, setTurnDockEngaged] = useState(false);
   const [inspector, setInspector] = useState(true);
   // A wide window's choice; on a phone the list is a screen of its own.
@@ -733,7 +736,8 @@ export function App() {
       !scopeMenuOpen &&
       !machinesOpen &&
       !forkOpen &&
-      !reviewRequest,
+      !reviewRequest &&
+      !goalRequest,
     scrollRef: scroll,
     endRef: readEnd,
     onRead: reviewDisplayed,
@@ -1449,6 +1453,14 @@ export function App() {
         }
         await startCodexReview(target, { type: "custom", instructions: control.args });
         reviewStarted(target, sentDraft);
+        return;
+      }
+      // `/goal` shows this Agent's Codex goal; words after it (other than
+      // the CLI's own pause, resume, clear and edit) are a new objective,
+      // set there only when the user confirms it.
+      if (control?.command === "goal") {
+        const objective = ["pause", "resume", "clear", "edit"].includes(control.args) ? "" : control.args;
+        setGoalRequest({ agentId: target, draft: sentDraft, nonce: Date.now(), objective });
         return;
       }
       // The rest open their part of Yuzuno, as the CLI command opens its
@@ -2984,6 +2996,21 @@ export function App() {
         scope={scope}
         focus={taskFocus}
       />
+      {agent && !isClaude && !isOpenCode && (
+        <CodexGoalDialog
+          key={`goal-${agent.id}-${goalRequest?.nonce ?? 0}`}
+          agent={agent}
+          open={goalRequest?.agentId === agent.id}
+          initialObjective={goalRequest?.objective ?? ""}
+          onOpenChange={(open) => { if (!open) setGoalRequest(null); }}
+          onChanged={(notice) => {
+            // The command is done once Codex has changed its goal.
+            if (goalRequest) clearIfUnchanged(goalRequest.agentId, goalRequest.draft);
+            setNotice(notice);
+            refresh();
+          }}
+        />
+      )}
       {agent && !isClaude && !isOpenCode && (
         <CodexReviewDialog
           key={`review-${agent.id}-${reviewRequest?.nonce ?? 0}`}

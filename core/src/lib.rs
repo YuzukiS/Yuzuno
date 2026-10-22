@@ -14,6 +14,7 @@ pub mod client_view;
 pub mod conversation_window;
 pub mod codex_sessions;
 pub mod codex_skills;
+pub mod codex_goal;
 pub mod codex_usage;
 pub mod collaboration_mcp;
 pub(crate) mod mcp_views;

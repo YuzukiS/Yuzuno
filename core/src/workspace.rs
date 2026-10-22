@@ -2767,6 +2767,10 @@ mod codex_skills_tests;
 mod codex_review_tests;
 
 #[cfg(all(test, unix))]
+#[path = "codex_goal_tests.rs"]
+mod codex_goal_tests;
+
+#[cfg(all(test, unix))]
 #[path = "subagent_requests_tests.rs"]
 mod subagent_requests_tests;
 
