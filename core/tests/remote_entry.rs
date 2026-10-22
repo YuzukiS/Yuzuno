@@ -144,6 +144,20 @@ async fn the_remote_entry_does_not_serve_the_agents_mcp_endpoints() {
 }
 
 #[tokio::test]
+async fn where_core_is_installed_is_told_only_on_its_own_port() {
+    // T-171: the desktop on the Core's computer asks; a phone never needs it.
+    let tmp = tempfile::tempdir().unwrap();
+    let (remote, local) = apps(&tmp);
+    let (status, body) = send(&local, request("GET", "/api/desktop/start-profile", &[("host", "127.0.0.1:4317")])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("\"available\""), "{body}");
+    let (profile, profile_body) = send(&remote, request("GET", "/api/desktop/start-profile", READ)).await;
+    let (other, other_body) = send(&remote, request("GET", "/api/no-such-route", READ)).await;
+    assert_eq!((profile, &profile_body), (other, &other_body));
+    assert!(!profile_body.contains("available"), "{profile_body}");
+}
+
+#[tokio::test]
 async fn the_local_port_refuses_what_only_a_proxy_sends() {
     let tmp = tempfile::tempdir().unwrap();
     let (_, local) = apps(&tmp);

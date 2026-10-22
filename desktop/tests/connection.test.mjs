@@ -41,6 +41,85 @@ test('an offline Core keeps a visible address and an actionable retry', async ()
   } finally { dom.window.close(); }
 });
 
+// T-171: the saved Core in WSL, as connection_info names it.
+const saved = { coreUrl: 'http://127.0.0.1:4317/', autoConnect: true, startDistro: 'Ubuntu-24.04' };
+const offline = 'Core is not reachable yet. Start it in WSL or on your chosen host, then try again.';
+
+test('a saved Core in WSL is offered a start once connecting to it fails, and starts once', async () => {
+  const calls = [];
+  let finish;
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'connection_info') return saved;
+    if (command === 'start_core') return new Promise((resolve) => { finish = resolve; });
+    if (command === 'connect_core') throw offline;
+  });
+  try {
+    const document = dom.window.document;
+    const startButton = document.querySelector('#start-button');
+    assert.equal(document.querySelector('#start-row').hidden, false);
+    assert.equal(startButton.textContent, 'Start Core in WSL (Ubuntu-24.04)');
+    startButton.click();
+    await settle();
+    assert.match(document.querySelector('[role="status"]').textContent, /Starting Core in WSL \(Ubuntu-24\.04\)/);
+    for (const control of ['#start-button', '#connect-button', '#core-url'])
+      assert.equal(document.querySelector(control).disabled, true, control);
+    // Clicking again, or connecting, while it starts asks for nothing more.
+    startButton.click();
+    document.querySelector('form').dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
+    await settle();
+    assert.deepEqual(calls.filter((call) => call.command === 'start_core').map((call) => call.args.url),
+      ['http://127.0.0.1:4317/']);
+    assert.equal(calls.filter((call) => call.command === 'connect_core').length, 1);
+    finish('http://127.0.0.1:4317/?shell=desktop');
+    await settle();
+    assert.match(document.querySelector('[role="status"]').textContent, /Core is running/);
+  } finally { dom.window.close(); }
+});
+
+test('the start is offered only at the saved address, and a failed one keeps both choices', async () => {
+  const calls = [];
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'connection_info') return saved;
+    if (command === 'start_core') throw 'Port 4317 is used by something other than Yuzuno Core. Nothing was started.';
+    throw offline;
+  });
+  try {
+    const document = dom.window.document;
+    const row = document.querySelector('#start-row');
+    const address = document.querySelector('#core-url');
+    address.value = 'http://127.0.0.1:4321';
+    address.dispatchEvent(new dom.window.Event('input'));
+    assert.equal(row.hidden, true);
+    address.value = 'http://127.0.0.1:4317';
+    address.dispatchEvent(new dom.window.Event('input'));
+    assert.equal(row.hidden, false);
+    document.querySelector('#start-button').click();
+    await settle();
+    const status = document.querySelector('[role="status"]');
+    assert.match(status.textContent, /used by something other than Yuzuno Core/);
+    assert.equal(status.dataset.error, 'true');
+    assert.equal(address.value, 'http://127.0.0.1:4317');
+    assert.equal(row.hidden, false);
+    for (const control of ['#start-button', '#connect-button', '#core-url'])
+      assert.equal(document.querySelector(control).disabled, false, control);
+  } finally { dom.window.close(); }
+});
+
+test('no start is offered without a saved Core in WSL, or while Core answers', async () => {
+  for (const [info, connected] of [[{ ...saved, startDistro: undefined }, false], [saved, true]]) {
+    const dom = await mount(async (command) => {
+      if (command === 'connection_info') return info;
+      if (command === 'connect_core' && connected) return 'http://127.0.0.1:4317/?shell=desktop';
+      throw offline;
+    });
+    try {
+      assert.equal(dom.window.document.querySelector('#start-row').hidden, true);
+    } finally { dom.window.close(); }
+  }
+});
+
 test('opening Connection from the native menu waits for a deliberate new selection', async () => {
   const calls = [];
   const dom = await mount(async (command) => {

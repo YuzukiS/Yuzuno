@@ -59,6 +59,8 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
     ws.start_delivery();
     let mcp = crate::collaboration_mcp::router(ws.clone(), port);
     let router = browser_routes(assets, updates.clone())
+        // Only on Core's own port: the desktop app on this computer asks.
+        .route("/api/desktop/start-profile", get(start_profile))
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
         .with_state(ws)
         .merge(mcp);
@@ -210,6 +212,25 @@ async fn health(State(ws): State<Arc<Workspace>>, updates: Option<Extension<Arc<
     }
     Ok(Json(json!({"product":PRODUCT,"application":LEGACY_APPLICATION,"version":env!("CARGO_PKG_VERSION"),
         "workspaceId":ws.stored(|store| store.workspace_id()).await?})))
+}
+
+/// Where this Core is installed in WSL, which the Windows desktop app keeps
+/// to start it again when it does not answer (T-171). Paths and names only;
+/// it starts nothing.
+async fn start_profile(updates: Option<Extension<Arc<crate::updates::controller::Controller>>>) -> ApiResult<Json<Value>> {
+    let Some(Extension(controller)) = updates else {
+        return Ok(Json(json!({"available":false,"reason":"notManaged"})));
+    };
+    #[cfg(unix)]
+    {
+        let workspace = controller.runtime_read(|runtime| runtime.workspace_id()).await?;
+        Ok(Json(crate::updates::start::profile(controller.layout.as_ref(), controller.launch.port, &workspace)))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = controller;
+        Ok(Json(json!({"available":false,"reason":"notWsl"})))
+    }
 }
 
 #[derive(Deserialize)]

@@ -7,8 +7,9 @@ mod health;
 mod update;
 
 use connection::{
-    desktop_url, hand_outside, is_connection_page, launch_url, open_failure_notice, parse_core_url,
-    permits_appearance, permits_navigation, startup_url, Outside,
+    desktop_url, hand_outside, is_connection_page, is_loopback, launch_url, open_failure_notice,
+    parse_core_url, permits_appearance, permits_navigation, startup_url, Outside, StartProfile,
+    Started,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -93,19 +94,23 @@ fn saved_core_file(app: &AppHandle) -> Option<PathBuf> {
         .map(|dir| dir.join(SAVED_CORE_FILE))
 }
 
-fn read_saved_core(app: &AppHandle) -> Option<Url> {
-    connection::saved_core(&std::fs::read(saved_core_file(app)?).ok()?)
+/// The saved Core, and where it is installed in WSL if it said so.
+fn read_saved_core(app: &AppHandle) -> (Option<Url>, Option<StartProfile>) {
+    let Some(bytes) = saved_core_file(app).and_then(|path| std::fs::read(path).ok()) else {
+        return (None, None);
+    };
+    (connection::saved_core(&bytes), connection::saved_start(&bytes))
 }
 
 /// Written whole, then renamed over the old record, so a crash leaves one
 /// or the other. Failing to save only means the next launch asks again.
-fn save_core(app: &AppHandle, core: &Url) {
+fn save_core(app: &AppHandle, core: &Url, start: Option<&StartProfile>) {
     let Some(path) = saved_core_file(app) else {
         return;
     };
     let staged = path.with_extension("json.new");
     let saved = std::fs::create_dir_all(path.parent().unwrap_or(&path))
-        .and_then(|()| std::fs::write(&staged, connection::saved_record(core)))
+        .and_then(|()| std::fs::write(&staged, connection::saved_record(core, start)))
         .and_then(|()| std::fs::rename(&staged, &path));
     if let Err(error) = saved {
         eprintln!("Unable to remember the workspace for the next launch: {error}");
@@ -120,6 +125,11 @@ struct ConnectionState {
     selected: Arc<Mutex<Option<Url>>>,
     client: reqwest::Client,
     first_open: AtomicBool,
+    /// Where the saved Core is installed in WSL, so the connection page can
+    /// start it (T-171); only ever from that Core's own answer.
+    start: Mutex<Option<StartProfile>>,
+    /// A start from this window is under way.
+    starting: AtomicBool,
 }
 
 #[derive(Serialize)]
@@ -128,6 +138,8 @@ struct ConnectionInfo {
     core_url: String,
     error: Option<String>,
     auto_connect: bool,
+    /// The WSL distribution the shown Core can be started in, if any.
+    start_distro: Option<String>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -195,8 +207,16 @@ fn connection_info(
         .map(Url::as_str)
         .unwrap_or(connection::DEFAULT_CORE_URL)
         .to_owned();
+    let start_distro = state
+        .start
+        .lock()
+        .map_err(|_| "Connection state unavailable.")?
+        .as_ref()
+        .filter(|start| start.core.as_str() == core_url)
+        .map(|start| start.wsl_distro.clone());
     Ok(ConnectionInfo {
         core_url,
+        start_distro,
         error: startup
             .as_ref()
             .err()
@@ -204,6 +224,46 @@ fn connection_info(
             .filter(|_| selected.is_none()),
         auto_connect: state.first_open.swap(false, Ordering::Relaxed),
     })
+}
+
+/// A small JSON answer from the selected Core, read with a size limit.
+/// None: nothing answered at all.
+async fn read_json(client: &reqwest::Client, url: Url) -> Option<Result<serde_json::Value, String>> {
+    let mut response = client.get(url).send().await.ok()?;
+    if !response.status().is_success() {
+        return Some(Err(format!(
+            "Core returned HTTP {}. Check its address and try again.",
+            response.status().as_u16()
+        )));
+    }
+    let not_core = || "This address did not return a Yuzuno Core health response.".to_owned();
+    if response.content_length().is_some_and(|length| length > 65_536) {
+        return Some(Err(not_core()));
+    }
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) if body.len() + chunk.len() <= 65_536 => body.extend_from_slice(&chunk),
+            Ok(Some(_)) => return Some(Err(not_core())),
+            Ok(None) => break,
+            Err(_) => return Some(Err("Could not read the Core health response.".into())),
+        }
+    }
+    Some(serde_json::from_slice(&body).map_err(|_| not_core()))
+}
+
+/// The Core's health: its Workspace if it is a Yuzuno Core.
+async fn core_health(client: &reqwest::Client, core: &Url) -> Option<Result<String, String>> {
+    let health = match read_json(client, core.join("api/health").ok()?).await? {
+        Ok(health) => health,
+        Err(error) => return Some(Err(error)),
+    };
+    let product = health.get("product").and_then(serde_json::Value::as_str);
+    let application = health.get("application").and_then(serde_json::Value::as_str);
+    if !health::is_core(product, application) {
+        return Some(Err("This address is reachable, but it is not a Yuzuno Core.".into()));
+    }
+    Some(Ok(health["workspaceId"].as_str().unwrap_or_default().to_owned()))
 }
 
 #[tauri::command]
@@ -215,46 +275,36 @@ async fn connect_core(
 ) -> Result<String, String> {
     require_connection_page(&window)?;
     let core = parse_core_url(&url)?;
-    let mut response = state
-        .client
-        .get(core.join("api/health").map_err(|e| e.to_string())?)
-        .send()
-        .await
-        .map_err(|_| {
-            "Core is not reachable yet. Start it in WSL or on your chosen host, then try again."
-                .to_owned()
-        })?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Core returned HTTP {}. Check its address and try again.",
-            response.status().as_u16()
-        ));
+    open_core(&window, &state, &updates, core, None).await
+}
+
+/// Opens `core` once its health says it is a Yuzuno Core (and, after a
+/// start, the expected Workspace); remembers it, and on Windows where it is
+/// installed in WSL if it says so.
+async fn open_core(
+    window: &WebviewWindow,
+    state: &ConnectionState,
+    updates: &update::DesktopUpdates,
+    core: Url,
+    expected: Option<&str>,
+) -> Result<String, String> {
+    let workspace = core_health(&state.client, &core).await.unwrap_or_else(|| {
+        Err("Core is not reachable yet. Start it in WSL or on your chosen host, then try again.".into())
+    })?;
+    if expected.is_some_and(|expected| expected != workspace) {
+        return Err("Core answered, but with another Workspace. Check its address.".into());
     }
-    if response
-        .content_length()
-        .is_some_and(|length| length > 65_536)
-    {
-        return Err("This address did not return a Yuzuno Core health response.".into());
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| "Could not read the Core health response.".to_owned())?
-    {
-        if body.len() + chunk.len() > 65_536 {
-            return Err("This address did not return a Yuzuno Core health response.".into());
+    // Only a Core on this computer can say where it is installed; the Mac
+    // app and other platforms never start one.
+    let offered = if cfg!(windows) && is_loopback(&core) {
+        match core.join("api/desktop/start-profile") {
+            Ok(url) => read_json(&state.client, url).await.and_then(Result::ok),
+            Err(_) => None,
         }
-        body.extend_from_slice(&chunk);
-    }
-    let health: serde_json::Value = serde_json::from_slice(&body)
-        .map_err(|_| "This address did not return a Yuzuno Core health response.".to_owned())?;
-    let product = health.get("product").and_then(serde_json::Value::as_str);
-    let application = health.get("application").and_then(serde_json::Value::as_str);
-    if !health::is_core(product, application) {
-        return Err("This address is reachable, but it is not a Yuzuno Core.".into());
-    }
-    require_connection_page(&window)?;
+    } else {
+        None
+    };
+    require_connection_page(window)?;
     let mut selected = state
         .selected
         .lock()
@@ -301,8 +351,177 @@ async fn connect_core(
         updates.forget();
     }
     *selected = Some(core.clone());
-    save_core(window.app_handle(), &core);
+    let mut start = state
+        .start
+        .lock()
+        .map_err(|_| "Connection state unavailable.")?;
+    // What this Core offers now; an older Core that cannot say keeps what
+    // was saved for the same Core and Workspace.
+    let kept = match offered {
+        Some(offered) => StartProfile::offered(&core, &workspace, &offered),
+        None => start.take().filter(|saved| saved.core == core && saved.workspace_id == workspace),
+    };
+    *start = kept;
+    save_core(window.app_handle(), &core, start.as_ref());
     Ok(desktop_url(&core).into())
+}
+
+/// How long the connection page waits for a start in WSL. The start itself
+/// waits up to two minutes for Core to answer; booting WSL comes first.
+#[cfg(windows)]
+const START_WAIT: Duration = Duration::from_secs(180);
+
+/// Runs the installation's start entry in its WSL distribution and reads
+/// its result as soon as it is printed. After starting Core the entry stays
+/// while Core runs, so WSL keeps the distribution running: that `wsl.exe`
+/// is left running, hidden, and outlives this window. Waiting ends after
+/// [`START_WAIT`]; nothing is stopped then.
+#[cfg(windows)]
+fn wsl_start(profile: &StartProfile) -> Result<Started, String> {
+    use std::{
+        io::{BufRead, BufReader, Read},
+        os::windows::process::CommandExt,
+        process::{Command, Stdio},
+        sync::mpsc::{self, RecvTimeoutError},
+        time::Instant,
+    };
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    // Windows' own wsl.exe, never one found on PATH.
+    let wsl = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join(r"System32\wsl.exe");
+    if !wsl.is_file() {
+        return Err("WSL is not installed on this computer, so Core cannot be started from here.".into());
+    }
+    let mut child = Command::new(&wsl)
+        .args(profile.wsl_arguments())
+        // wsl.exe's own messages in UTF-8 rather than UTF-16.
+        .env("WSL_UTF8", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|error| format!("Could not run WSL: {error}"))?;
+    fn read_all(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(pipe) = pipe {
+                let _ = pipe.take(64 * 1024).read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    }
+    let stderr = read_all(child.stderr.take());
+    let (lines, arriving) = mpsc::channel();
+    if let Some(stdout) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let mut stdout = BufReader::new(stdout.take(64 * 1024));
+            let mut line = Vec::new();
+            while matches!(stdout.read_until(b'\n', &mut line), Ok(read) if read > 0) {
+                if lines.send(String::from_utf8_lossy(&line).into_owned()).is_err() {
+                    break;
+                }
+                line.clear();
+            }
+        });
+    }
+    let deadline = Instant::now() + START_WAIT;
+    let mut output = String::new();
+    loop {
+        match arriving.recv_timeout(Duration::from_millis(200)) {
+            Ok(line) if connection::start_result_line(&line).is_some() => {
+                return connection::start_result(profile, &line);
+            }
+            Ok(line) => output.push_str(&line),
+            // wsl.exe ended without a result: what it said is why.
+            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        if Instant::now() >= deadline {
+            return Ok(Started::Slow);
+        }
+    }
+    // Its output has closed; give it and its error stream a moment to end,
+    // never more.
+    let ending = Instant::now() + Duration::from_secs(5);
+    while (matches!(child.try_wait(), Ok(None)) || !stderr.is_finished()) && Instant::now() < ending {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if stderr.is_finished() {
+        output.push('\n');
+        output.push_str(&String::from_utf8_lossy(&stderr.join().unwrap_or_default()));
+    }
+    connection::start_result(profile, &output)
+}
+
+#[cfg(windows)]
+async fn run_start(profile: &StartProfile) -> Result<Started, String> {
+    let profile = profile.clone();
+    tauri::async_runtime::spawn_blocking(move || wsl_start(&profile))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[cfg(not(windows))]
+async fn run_start(_: &StartProfile) -> Result<Started, String> {
+    Err("Starting Core is available in the Windows app with WSL only.".into())
+}
+
+/// Starts the saved Core in its WSL distribution when it does not answer,
+/// then opens it once it answers with its own Workspace. A Core that already
+/// answers is opened, never started again. Only the embedded connection page
+/// may ask, only for the address it was saved with; what runs is fixed by
+/// that Core's own earlier answer, not by the page.
+#[tauri::command]
+async fn start_core(
+    window: WebviewWindow,
+    state: tauri::State<'_, ConnectionState>,
+    updates: tauri::State<'_, update::DesktopUpdates>,
+    url: String,
+) -> Result<String, String> {
+    require_connection_page(&window)?;
+    let core = parse_core_url(&url)?;
+    let profile = state
+        .start
+        .lock()
+        .map_err(|_| "Connection state unavailable.")?
+        .clone()
+        .filter(|start| start.core == core)
+        .ok_or("This app can start only a Core it has connected to on this computer, at the same address.")?;
+    if state.starting.swap(true, Ordering::SeqCst) {
+        return Err("Core is already being started.".into());
+    }
+    struct Done<'a>(&'a AtomicBool);
+    impl Drop for Done<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+    let _done = Done(&state.starting);
+    match core_health(&state.client, &core).await {
+        Some(Ok(workspace)) if workspace == profile.workspace_id => {
+            return open_core(&window, &state, &updates, core, Some(&profile.workspace_id)).await;
+        }
+        Some(Ok(_)) => return Err("Another Workspace's Core answers at this address. Nothing was started.".into()),
+        Some(Err(error)) => return Err(format!("{error} Nothing was started.")),
+        None => {}
+    }
+    if run_start(&profile).await? == Started::Slow {
+        return Err("Core was started but has not answered yet. Try Connect in a moment; nothing was stopped.".into());
+    }
+    // WSL's forwarding to Windows can lag the Core's own answer slightly.
+    let mut tries = 0;
+    loop {
+        match open_core(&window, &state, &updates, core.clone(), Some(&profile.workspace_id)).await {
+            Err(error) if tries < 10 && error.starts_with("Core is not reachable") => {
+                tries += 1;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            result => return result,
+        }
+    }
 }
 
 fn main() {
@@ -336,11 +555,14 @@ fn main() {
             selected,
             client,
             first_open: AtomicBool::new(true),
+            start: Mutex::new(None),
+            starting: AtomicBool::new(false),
         })
         .manage(update::DesktopUpdates::default())
         .invoke_handler(tauri::generate_handler![
             connection_info,
             connect_core,
+            start_core,
             set_appearance,
             update::desktop_update_status,
             update::desktop_update_check,
@@ -352,8 +574,10 @@ fn main() {
             {
                 let state = app.state::<ConnectionState>();
                 let mut startup = state.startup.lock().unwrap();
-                let opened = startup_url(launch, read_saved_core(app.handle()));
+                let (saved, start) = read_saved_core(app.handle());
+                let opened = startup_url(launch, saved);
                 *startup = update::restore_startup_core(app.handle(), opened);
+                *state.start.lock().unwrap() = start;
             }
             let connect =
                 MenuItem::with_id(app, "connection", "Connection…", true, Some("CmdOrCtrl+,"))?;

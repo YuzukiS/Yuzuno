@@ -118,6 +118,7 @@ setsid nohup "$ROOT/releases/$RELEASE/bin/yuzuno-workspace" --install-dir "$ROOT
 - **Check it:** `curl -s http://127.0.0.1:4317/api/health` shows the release and Workspace.
 - **Stop:** `pkill -INT -f "$ROOT/releases/"`. Core shuts down cleanly on an interrupt.
 - **After a reboot:** run the start command again; it picks up the release an update left in `current.json`.
+- **From the Windows desktop app:** each Core records how it started (`$ROOT/updates/launch.json`). After a reboot, the desktop app's connection page can then start it again with the same settings; see [Start Core from the app](../desktop/README.md#start-core-from-the-app-windows-wsl). Releases up to core.14 do not record this.
 
 Starting Core as a systemd service is not supported yet. An update replaces the Core process, and a default service would treat the old process's exit as the service stopping. That has not been tested.
 

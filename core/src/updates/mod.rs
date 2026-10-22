@@ -14,6 +14,8 @@ pub mod lifecycle;
 pub(crate) mod notices;
 pub mod package;
 pub mod releases;
+#[cfg(unix)]
+pub mod start;
 pub mod state;
 pub mod storage;
 #[cfg(test)]

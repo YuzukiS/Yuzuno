@@ -22,6 +22,11 @@ button:disabled { cursor: wait; opacity: .7; }
 .hint { color: #919385; font-size: 11px; line-height: 1.6; margin: 10px 1px 0; }
 .message { min-height: 42px; padding-top: 15px; font-size: 12px; line-height: 1.6; color: #7b8173; }
 .message[data-error="true"] { color: #a35e50; }
+.start-row { display: flex; align-items: center; gap: 14px; margin-top: 2px; }
+.start-row[hidden] { display: none; }
+.start-row .hint { margin: 0; }
+button.secondary { height: 40px; background: #fffefa; border-color: #d9d5c3; color: #495647; }
+button.secondary:hover { background: #f3f1e8; }
 .connection-note { border-top: 1px solid #e7e7de; margin-top: 19px; padding-top: 21px; display: flex; gap: 12px; color: #8f9b7a; }
 .connection-note > span { font-size: 23px; line-height: 1.1; }
 .connection-note p { font-size: 12px; margin: 0; color: #707c69; line-height: 1.7; }
