@@ -111,13 +111,15 @@ test("advice never changes the checked section", () => {
 });
 
 test("the tools and the guide say what a check writes, what advice is and both problem limits", () => {
-  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /validateOnly:true checks without writing\./);
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /validateOnly:true pre-checks without writing\./);
   // T-175's hint and preference, for Home content editors only; the preference grants nothing.
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_get, /for a Home content editor homeHint, and homePreference once the user set one: .*granting nothing\}/);
   const sections = briefGuide("sections");
-  assert.match(sections, /validateOnly:true checks a brief_update as it would be sent and writes nothing: .*no requestId kept, no version reserved, and it is not your update\./);
-  assert.match(sections, /checkedAll: whether this check ran to the end\..*false means later steps did not run and the problems listed may not be all\./);
-  assert.match(sections, /sending the update checks everything again/);
+  assert.match(sections, /validateOnly:true pre-checks a brief_update: it runs the checks made before the write.* writes nothing: no requestId kept, no version or space reserved, and it is not your update\./);
+  assert.match(sections, /valid, whether the pre-check passed, and checkedAll, only whether it ran all its steps\..*false means later steps did not run and the problems listed may not be all\./);
+  // A passing pre-check is no promise: the write checks again and can refuse.
+  assert.match(sections, /Checks made only on writing are outside it: sending the update checks version, Turn and permissions again .*can still be refused, e\.g\. with snapshot_limit/);
+  assert.doesNotMatch(sections, /the same problems|ran to the end|checks everything again/);
   assert.match(briefGuide("errors"), new RegExp(`at most ${BRIEF_LIMITS.problems} for each section's format and at most ${BRIEF_LIMITS.callProblems} in all\\. moreProblems says how many more Core found past ${BRIEF_LIMITS.callProblems}`));
   const content = briefGuide("content");
   assert.match(content, new RegExp(`Advice: .*up to ${BRIEF_LIMITS.advice.items} advice .*not a score or a limit: nothing is cut, refused or rewritten`));

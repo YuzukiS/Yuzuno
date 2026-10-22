@@ -1028,7 +1028,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Other changes: {op:"resolve", key} resolves your ask; {op:"remove", key} removes your section (reports and status go to history); {op:"claim", key} takes an orphaned section of your Project; change it in a later brief_update, not in the one that claims it.`,
     `Only a section's owner changes it. To add to another Agent's section, put your own section under its key as topic/sub; Home shows them together with each author.`,
     `Pass expectedVersion from brief_get. On version_conflict the rejection includes latest: merge and retry with a new requestId. Nothing requires an update each turn; noChange:true is still accepted and changes nothing.`,
-    `validateOnly:true checks a brief_update as it would be sent and writes nothing: the same problems (and latest), no requestId kept, no version reserved, and it is not your update. Its answer has valid, and checkedAll: whether this check ran to the end. Checking stops at the first step with problems, so false means later steps did not run and the problems listed may not be all. A valid check holds only for the Brief as it was read; sending the update checks everything again. Use it for a complex section; an ordinary edit needs no check first.`,
+    `validateOnly:true pre-checks a brief_update: it runs the checks made before the write, with their problems as the update would give them (and latest), and writes nothing: no requestId kept, no version or space reserved, and it is not your update. Its answer has valid, whether the pre-check passed, and checkedAll, only whether it ran all its steps. Checking stops at the first step with problems, so false means later steps did not run and the problems listed may not be all. Checks made only on writing are outside it: sending the update checks version, Turn and permissions again against the Brief as it is then, and can still be refused, e.g. with snapshot_limit when the Brief's snapshots would exceed their total. Use it for a complex section; an ordinary edit needs no check first.`,
   ],
   ask: [
     `kind ask needs ask:`,
@@ -1146,7 +1146,7 @@ export const BRIEF_TOOL_DESCRIPTIONS = {
     `(a-z, 0-9, -); add to another Agent's section with a topic/sub key of your own. kind ask needs ask {question, reply} ` +
     `with reply options, freeText, form or choice; kind status needs status {asOf, validFor}. body is {root, elements} ` +
     `with a BriefBody root. A rejection lists problems {code, path, reason, guide}: fix them and retry with a new ` +
-    `requestId; on version_conflict merge with the latest it returns. validateOnly:true checks without writing. ` +
+    `requestId; on version_conflict merge with the latest it returns. validateOnly:true pre-checks without writing. ` +
     `Content never executes actions. Formats: brief_guide.`,
   brief_guide:
     `The Project Brief format guide, generated from the contract: sections and their kinds, ask replies, body components ` +

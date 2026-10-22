@@ -81,24 +81,28 @@ pub(super) fn rejection(mut problems: Vec<Value>, latest: Option<Value>) -> Valu
     answer
 }
 
-/// A `validateOnly` answer: what brief_update would answer, without having
-/// written anything (T-176). A rejection's problems, `moreProblems` and
-/// `latest` are kept as they are, so the same input gives the same problems.
-/// Checking stops at the first step with problems: `checkedAll` says
-/// whether this check ran to the end. False means later steps did not run
-/// and the problems listed may not be all; it says nothing of how many
-/// more there are. Advice comes only with a valid answer.
+/// A `validateOnly` answer (T-176): the pre-check, every check brief_update
+/// makes before its write, with nothing written or reserved. A rejection's
+/// problems, `moreProblems` and `latest` are kept as the update would give
+/// them for those checks. `valid` says the pre-check passed; `checkedAll`
+/// only that it ran all its steps. Checking stops at the first step with
+/// problems, so false means later steps did not run and the problems listed
+/// may not be all; it says nothing of how many more there are. What only the
+/// write checks is outside it: the write checks version, Turn and
+/// permissions again and can still refuse, e.g. with snapshot_limit for the
+/// Brief's snapshot total. Advice comes only with a valid answer.
 fn preview(rejected: Option<Value>, checked_all: bool, advice: Vec<Value>) -> Value {
     let Some(mut rejected) = rejected else {
         return json!({"validateOnly":true,"valid":true,"checkedAll":true,"problems":[],"advice":advice,
-            "note":"validateOnly: checked against the Brief as it is now. Nothing was written or reserved, this is not \
-                the Turn's Brief update, and sending it checks everything again."});
+            "note":"validateOnly: the pre-check passed against the Brief as it is now. Nothing was written or reserved, and \
+                this is not the Turn's Brief update. Sending it checks version, Turn and permissions again, and checks made \
+                only on writing, such as the Brief's snapshot total, can still refuse it."});
     };
     let note = if checked_all {
-        "validateOnly: nothing was written. This check ran to the end."
+        "validateOnly: nothing was written. The pre-check ran all its steps; checks made only on writing did not run."
     } else {
-        "validateOnly: nothing was written. This check stopped at the first step with problems: later steps did not run \
-            and this list may be incomplete. Fix these and check again."
+        "validateOnly: nothing was written. The pre-check stopped at the first step with problems: later steps did not \
+            run and this list may be incomplete. Fix these and check again."
     };
     let answer = rejected.as_object_mut().expect("a rejection is an object");
     answer.remove("accepted");

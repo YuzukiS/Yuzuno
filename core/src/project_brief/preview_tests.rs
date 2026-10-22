@@ -1,5 +1,7 @@
-//! T-176: brief_update with validateOnly answers with the problems the same
-//! update would get, and writes nothing.
+//! T-176: brief_update with validateOnly runs the update's checks before its
+//! write, answers with the problems they find as the update would, and writes
+//! nothing. What only the write checks (the Brief's snapshot total) is not
+//! part of it.
 use super::{
     attachments, editors, sections,
     tests::lab,
@@ -203,7 +205,7 @@ async fn attachments_are_judged_as_a_write_judges_them_and_nothing_is_copied() {
     assert_eq!(std::fs::read_dir(attachments::dir(&ws.data_dir)).unwrap().count(), 1);
 }
 
-/// The generated validator, as brief_update runs it: the same problems.
+/// The generated validator, as brief_update runs it: the same problems for the checks before the write.
 #[tokio::test]
 async fn the_generated_validator_gives_a_preview_the_same_problems() {
     let (dir, ws, project) = lab();
@@ -313,7 +315,10 @@ async fn a_preview_says_whether_every_step_was_checked() {
     assert_eq!((last["valid"].clone(), last["checkedAll"].clone()), (json!(false), json!(true)));
     let fine = preview(&ws, "a", input("p4", 1, vec![put("notes")])).await;
     assert_eq!((fine["valid"].clone(), fine["checkedAll"].clone(), fine["advice"].clone()), (json!(true), json!(true), json!([])));
-    assert!(fine["note"].as_str().unwrap().contains("checks everything again"));
+    let note = fine["note"].as_str().unwrap();
+    assert!(note.contains("the pre-check passed") && note.contains("checks version, Turn and permissions again"), "{note}");
+    assert!(note.contains("checks made only on writing, such as the Brief's snapshot total, can still refuse it"), "{note}");
+    assert!(last["note"].as_str().unwrap().contains("checks made only on writing did not run"), "{last}");
 }
 
 /// The generated validator's advice (T-176) reaches an accepted answer and a
