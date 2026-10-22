@@ -322,3 +322,124 @@ test("switching Agents drops the old read; failures are retried", async () => {
   l.sync.dispose();
   assert.equal(l.last(), null);
 });
+
+// T-170: the browser reports its network back. A read that failed while it
+// was away is tried again now, not after the retry delay; otherwise nothing
+// is read, as the event stream keeps the detail current.
+test("after a failed read, coming back online reads now; a read that fails again backs off as before (T-170)", async () => {
+  const l = lab([detail(10), new Error("Failed to fetch"), detail(20)], 10_000);
+  l.sync.select("a");
+  await pause();
+  l.sync.refetch({ now: true });
+  await pause();
+  assert.equal(l.calls.length, 2);
+  assert.equal(l.errors.at(-1)?.message, "Failed to fetch");
+  // Streamed notices still wait for the retry.
+  l.sync.refetch();
+  await pause();
+  assert.equal(l.calls.length, 2, "a notice after a failure waits for the retry");
+  l.sync.online();
+  await pause();
+  assert.equal(l.calls.length, 3, "online reads now, not after the 10 s retry");
+  assert.equal(l.last().agent.rev, 20);
+  assert.equal(l.errors.at(-1), null);
+  l.sync.dispose();
+
+  // Still away: the read online started fails, and the usual backoff follows.
+  const l2 = lab([detail(10), new Error("Failed to fetch"), new Error("Failed to fetch"), detail(30)], 80);
+  l2.sync.select("a");
+  await pause();
+  l2.sync.refetch({ now: true });
+  await pause();
+  l2.sync.online();
+  await pause();
+  assert.equal(l2.calls.length, 3, "online read once");
+  await pause(30);
+  assert.equal(l2.calls.length, 3, "its failure is not retried at once");
+  await pause(120);
+  assert.equal(l2.calls.length, 4, "but after the backoff");
+  assert.equal(l2.last().agent.rev, 30);
+  l2.sync.dispose();
+});
+
+test("online while a read runs retries at once only if that read fails; repeated online adds nothing (T-170)", async () => {
+  const l = lab([detail(10), "hold", detail(20)], 10_000);
+  l.sync.select("a");
+  await pause();
+  l.sync.refetch({ now: true });
+  await pause();
+  assert.equal(l.calls.length, 2, "a read is running");
+  for (let n = 0; n < 5; n++) l.sync.online();
+  await pause();
+  assert.equal(l.calls.length, 2, "nothing more while it runs");
+  l.pendingReads[0].reject(new Error("Failed to fetch"));
+  await pause();
+  assert.equal(l.calls.length, 3, "it failed: read again at once, once");
+  assert.equal(l.last().agent.rev, 20);
+  await pause(60);
+  assert.equal(l.calls.length, 3);
+  l.sync.dispose();
+
+  // The running read succeeds: online asked for nothing more.
+  const ok = lab([detail(10), "hold"], 10_000);
+  ok.sync.select("a");
+  await pause();
+  ok.sync.refetch({ now: true });
+  await pause();
+  ok.sync.online();
+  ok.pendingReads[0].resolve(detail(15));
+  await pause(60);
+  assert.equal(ok.calls.length, 2, "no read after a running read that succeeded");
+  assert.equal(ok.last().agent.rev, 15);
+  ok.sync.dispose();
+});
+
+test("online reads nothing with no Agent shown, after dispose, or when the last read succeeded (T-170)", async () => {
+  const l = lab([detail(10), detail(11)], 10_000);
+  l.sync.online();
+  await pause();
+  assert.equal(l.calls.length, 0, "no Agent shown");
+  l.sync.select("a");
+  await pause();
+  l.sync.online();
+  await pause();
+  assert.equal(l.calls.length, 1, "the last read succeeded: the stream keeps it current");
+  l.sync.dispose();
+  l.sync.online();
+  await pause();
+  assert.equal(l.calls.length, 1, "disposed");
+});
+
+test("after switching Agents, online reads the shown Agent; the old Agent's late answer is ignored (T-170)", async () => {
+  const l = lab(["hold", new Error("Failed to fetch"), detail(10)], 10_000);
+  l.sync.select("a");
+  await pause();
+  l.sync.select("b");
+  await pause();
+  assert.equal(l.errors.at(-1)?.message, "Failed to fetch", "b's first read failed");
+  l.sync.online();
+  await pause();
+  assert.deepEqual(l.calls.map((c) => c.agentId), ["a", "b", "b"]);
+  l.pendingReads[0].resolve(detail(99));
+  await pause();
+  assert.equal(l.last().agent.rev, 10, "a late read for the old Agent is ignored");
+  l.sync.dispose();
+});
+
+test("changes arriving during the online read are reconciled by revision, as for any read (T-170)", async () => {
+  const l = lab([detail(10), new Error("Failed to fetch"), "hold"], 10_000);
+  l.sync.select("a");
+  await pause();
+  l.sync.refetch({ now: true });
+  await pause();
+  l.sync.online();
+  await pause();
+  l.sync.push(delta(15, "m", "text", " EARLIER"));
+  l.sync.push(delta(21, "m", "text", " later"));
+  l.pendingReads[0].resolve(detail(20));
+  await pause(40);
+  const shown = text(l.last(), "m").text;
+  assert.doesNotMatch(shown, /EARLIER/, "a change the read already holds is not applied again");
+  assert.match(shown, / later$/, "a later change is applied once");
+  l.sync.dispose();
+});
