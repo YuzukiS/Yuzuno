@@ -85,6 +85,9 @@ const MIN_COMMAND: Duration = Duration::from_millis(300);
 /// After Codex's own timeout, how long its answer may take to arrive.
 const ANSWER_GRACE: Duration = Duration::from_secs(3);
 const MAX_TOKEN: usize = 64;
+/// Cancels that came before their read, kept so the read never starts.
+const EARLY_KEPT: usize = 64;
+const EARLY_FOR: Duration = Duration::from_secs(120);
 
 /// Git configuration given on every command line.
 const HARDENING: [&str; 6] = [
@@ -144,7 +147,16 @@ pub(crate) struct State {
     /// another connection or read finds nothing.
     streams: Mutex<HashMap<(String, u64, String), Stream>>,
     reads: Mutex<HashMap<String, Arc<Running>>>,
+    /// A cancel that came before its read (Close as the read was sent):
+    /// Agent, token and when, taken by that read so it does not start.
+    /// Changed only with `reads` held, so a cancel either finds its read or
+    /// is found by it.
+    early: Mutex<std::collections::VecDeque<(String, String, Instant)>>,
     pub(crate) limits: Mutex<Limits>,
+}
+
+fn valid_token(token: &str) -> bool {
+    !token.is_empty() && token.len() <= MAX_TOKEN && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 impl State {
@@ -175,9 +187,31 @@ impl State {
     }
 
     /// Cancels the Agent's running read if `token` is its own.
+    /// A cancel before the read: kept, so the read does not start when it comes.
     pub(crate) fn cancel(&self, id: &str, token: &str) -> bool {
-        let running = self.reads.lock().unwrap().get(id).filter(|r| r.token == token).cloned();
-        running.map(|r| r.cancel()).is_some()
+        let reads = self.reads.lock().unwrap();
+        let Some(running) = reads.get(id).filter(|r| r.token == token).cloned() else {
+            if valid_token(token) {
+                let mut early = self.early.lock().unwrap();
+                early.retain(|(_, _, at)| at.elapsed() < EARLY_FOR);
+                if early.len() >= EARLY_KEPT {
+                    early.pop_front();
+                }
+                early.push_back((id.to_owned(), token.to_owned(), Instant::now()));
+            }
+            return false;
+        };
+        drop(reads);
+        running.cancel();
+        true
+    }
+
+    /// Whether this read was cancelled before it came; `reads` is held.
+    fn cancelled_early(&self, id: &str, token: &str) -> bool {
+        let mut early = self.early.lock().unwrap();
+        let found = early.iter().any(|(agent, kept, at)| agent == id && kept == token && at.elapsed() < EARLY_FOR);
+        early.retain(|(agent, kept, at)| !(agent == id && kept == token) && at.elapsed() < EARLY_FOR);
+        found
     }
 }
 
@@ -720,8 +754,7 @@ impl Workspace {
     /// one read at a time per Agent.
     pub async fn codex_diff(self: &Arc<Self>, id: &str, request: Request) -> Result<Report> {
         let Request { token, generation, cwd } = request;
-        anyhow::ensure!(!token.is_empty() && token.len() <= MAX_TOKEN
-            && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'), "无效的读取标识");
+        anyhow::ensure!(valid_token(&token), "无效的读取标识");
         let started = Instant::now();
         let (agent, connection) = match self.codex_diff_on(id).await? {
             Ok(on) => on,
@@ -734,6 +767,9 @@ impl Workspace {
             cancelled: AtomicBool::new(false), current: Mutex::new(None), wake: Notify::new() });
         {
             let mut reads = self.codex_diff.reads.lock().unwrap();
+            if self.codex_diff.cancelled_early(id, &running.token) {
+                return Ok(Report { generation: Some(connection.generation), cwd: Some(agent.cwd), ..Report::not("cancelled", "cancelled") });
+            }
             if reads.contains_key(id) {
                 return Ok(Report::not("busy", "busy"));
             }

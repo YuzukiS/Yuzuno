@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { FileCode2, FolderGit2, LoaderCircle } from "lucide-react";
-import { api, errorText, post, remove } from "./api";
+import { api, errorText, remove } from "./api";
 import { Modal } from "./components";
 import { changesLimits, headLines, lineKinds } from "./changes";
 import { diffFiles, readToken, stagedLabel, type DiffPart, type DiffReport, type DiffTarget } from "./codex-diff";
@@ -75,11 +75,20 @@ export function CodexDiffDialog({ agent, open, onOpenChange }: {
   /** The read this dialog is waiting for; any other answer is dropped. */
   const current = useRef<string | null>(null);
   const reading = useRef(false);
+  /** The current read's own requests: aborted when the dialog lets it go. */
+  const requests = useRef<AbortController | null>(null);
   const path = `/agents/${encodeURIComponent(agent.id)}/codex/diff`;
 
+  /**
+   * Lets the current read go. Its requests are aborted, so a read Core is
+   * running ends with its request; the cancel names its token, and Core keeps
+   * a cancel that arrives before the read, so that read never starts.
+   */
   function stop() {
     const token = current.current;
     current.current = null;
+    requests.current?.abort();
+    requests.current = null;
     if (token && reading.current) remove(`${path}?token=${encodeURIComponent(token)}`).catch(() => undefined);
     reading.current = false;
   }
@@ -87,11 +96,13 @@ export function CodexDiffDialog({ agent, open, onOpenChange }: {
   async function read() {
     stop();
     const token = readToken();
+    const own = new AbortController();
     current.current = token;
+    requests.current = own;
     setPhase("target");
     setError("");
     try {
-      const shown = await api<DiffTarget>(path);
+      const shown = await api<DiffTarget>(path, { signal: own.signal });
       if (current.current !== token) return;
       setTarget(shown);
       if (shown.state !== "ready" || shown.generation === null) {
@@ -101,7 +112,9 @@ export function CodexDiffDialog({ agent, open, onOpenChange }: {
       }
       setPhase("reading");
       reading.current = true;
-      const answer = await post<DiffReport>(path, { token, generation: shown.generation, cwd: shown.cwd });
+      const answer = await api<DiffReport>(path, {
+        method: "POST", body: JSON.stringify({ token, generation: shown.generation, cwd: shown.cwd }), signal: own.signal,
+      });
       if (current.current !== token) return;
       reading.current = false;
       setReport(answer);

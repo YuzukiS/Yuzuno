@@ -56,6 +56,7 @@ function mount() {
   });
   const { window } = dom;
   const calls = [];
+  const signals = new Map();
   const events = [];
   // The target answers at once; each read waits for answer(body) or fail(status, error).
   let target = ready;
@@ -63,6 +64,8 @@ function mount() {
   const reply = (body, status = 200) => ({ ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body) });
   window.fetch = (url, init = {}) => {
     const call = { url: String(url), method: init.method || "GET", body: init.body ? JSON.parse(init.body) : null };
+    // Kept apart from the call, so the call stays plain data for deepEqual.
+    signals.set(calls.length, init.signal);
     calls.push(call);
     if (call.method === "GET") return Promise.resolve(reply(target));
     if (call.method === "DELETE") return Promise.resolve(reply({ cancelled: true }));
@@ -72,6 +75,8 @@ function mount() {
   const text = () => window.document.querySelector('[role="dialog"]')?.textContent ?? "";
   return {
     window, document: window.document, calls, events, errors, text,
+    /** Whether the request at this index was aborted by the dialog. */
+    aborted: (index) => !!signals.get(index)?.aborted,
     setTarget: (next) => { target = next; },
     answer: async (body, index = reads.length - 1) => { reads[index](reply(body)); await tick(); },
     fail: async (status, error, index = reads.length - 1) => { reads[index](reply({ error }, status)); await tick(); },
@@ -231,6 +236,7 @@ test("Cancel and Close stop this read only, by its token; an answer after Close 
     page.button("Cancel").click();
     await tick();
     assert.deepEqual(page.calls.at(-1), { url: `/api/agents/agent-1/codex/diff?token=${token}`, method: "DELETE", body: null });
+    assert.ok(!page.aborted(1), "Cancel keeps waiting for what was read");
     await page.answer(read({ state: "cancelled", reason: "read", stopped: "cancelled", complete: false, untracked: null, tracked: part(PARSER) }));
     assert.match(page.text(), /You cancelled the read; what was read by then is shown\./);
     assert.match(page.text(), /Changes not staged · 1 file/);
@@ -239,9 +245,11 @@ test("Cancel and Close stop this read only, by its token; an answer after Close 
     await until(() => page.calls.at(-1).method === "POST", "the next read");
     const second = page.calls.at(-1).body.token;
     assert.notEqual(second, token);
+    const secondPost = page.calls.length - 1;
     page.button("Close").click();
     await tick();
     assert.equal(page.calls.at(-1).url, `/api/agents/agent-1/codex/diff?token=${second}`, "Close cancels the read it started");
+    assert.ok(page.aborted(secondPost), "and lets its request go, so Core ends a read the cancel came too early for");
     assert.deepEqual(page.events, [["open", false]]);
     await page.render(null);
     await page.answer(read({ tracked: part(PARSER) }));
@@ -250,8 +258,10 @@ test("Cancel and Close stop this read only, by its token; an answer after Close 
     await page.render();
     await until(() => page.calls.at(-1).method === "POST", "a read");
     const third = page.calls.at(-1).body.token;
+    const thirdPost = page.calls.length - 1;
     await page.render(null);
     assert.equal(page.calls.at(-1).url, `/api/agents/agent-1/codex/diff?token=${third}`);
+    assert.ok(page.aborted(thirdPost));
     // A finished read is not cancelled by Close.
     await page.answer(read());
     await page.render();
