@@ -99,6 +99,12 @@ const home = {
 const machineLoad = { at: ago(0), cpu: { cores: 8, totalPct: 20, jobsPct: 5, agentsPct: null, otherPct: null },
   memory: { totalMiB: 32768, usedMiB: 9000, availableMiB: 23768, jobsMiB: 0, agentsMiB: null }, gpus: null, jobs: [] };
 
+/** An image on screen and drawn: lazy images load only once scrolled to. */
+async function shown(page, image) {
+  await image.scrollIntoViewIfNeeded();
+  await page.waitForFunction((el) => el.complete && el.naturalWidth > 0, await image.elementHandle(), { timeout: 15_000 });
+}
+
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 try {
   for (const viewport of [{ name: "wide", width: 1280, height: 900, touch: false }, { name: "phone", width: 390, height: 844, touch: true }]) {
@@ -156,7 +162,7 @@ try {
     await page.locator(".toolbar-nav .catchup-nav").first().click();
     const card = (key) => page.locator(`.home-section[data-section-key="${key}"]`);
     const dialog = page.getByRole("dialog");
-    await card("shots").locator("button.brief-image img").first().evaluate((img) => img.decode());
+    await shown(page, card("shots").locator("button.brief-image img").first());
     await page.screenshot({ path: resolve(output, `${viewport.name}-home.png`), fullPage: true });
     assert.equal(await card("shots").locator(".brief-attachment a").count(), 0, "no image link to a browser tab");
     const writesNow = () => report.writes.filter((w) => w.viewport === viewport.name).length;
@@ -169,7 +175,7 @@ try {
     await page.waitForFunction(() => getComputedStyle(document.querySelector('[role="dialog"]')).opacity === "1");
     assert.equal(await dialog.locator("h2").innerText(), "screen-before.png");
     assert.match(await dialog.innerText(), /Before · Snapshot/);
-    await dialog.locator(".input-image-dialog img").evaluate((img) => img.decode());
+    await shown(page, dialog.locator(".input-image-dialog img"));
     const fits = await dialog.locator(".input-image-dialog img").evaluate((img) => {
       const box = img.getBoundingClientRect(), frame = img.closest('[role="dialog"]').getBoundingClientRect();
       return img.naturalWidth === 640 && box.left >= frame.left && box.right <= frame.right && box.right <= innerWidth;
