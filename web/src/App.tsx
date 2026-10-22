@@ -244,6 +244,8 @@ export function App() {
   );
   const detail = previewMode ? previewShown : live.detail;
   const [workspaceFailure, setWorkspaceFailure] = useState<unknown>(null);
+  // Whether the last workspace read failed, set by the read itself (T-170).
+  const workspaceFailed = useRef(false);
   const workspaceError = workspaceFailure ? errorText(workspaceFailure) : "";
   const detailError = live.error ? errorText(live.error) : "";
   // Each view is read again only for changes that concern it.
@@ -519,9 +521,15 @@ export function App() {
     // the next interval (T-170). Reports share one read, queued behind one
     // already running; only its success clears the failure, never coming
     // online or the stream opening. With no failure nothing more is read.
-    if (previewMode || !workspaceFailure) return;
-    return watchBrowserNetwork({ online: () => workspaceRefresh.now() });
-  }, [workspaceFailure, workspaceRefresh]);
+    // The last read is checked when the report comes, so a failure just
+    // before it counts even before its render's effects have run.
+    if (previewMode) return;
+    return watchBrowserNetwork({
+      online: () => {
+        if (workspaceFailed.current) workspaceRefresh.now();
+      },
+    });
+  }, [workspaceRefresh]);
   const browserOffline = useBrowserOffline();
   const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode, browserOffline);
   const agent = workspace?.agents.find((a) => a.id === selected);
@@ -765,6 +773,7 @@ export function App() {
     workspaceRevision,
     (w) => {
       setWorkspace(w);
+      workspaceFailed.current = false;
       setWorkspaceFailure(null);
       const id = w.workspace?.id || "";
       const firstLoad = !!id && scopeWorkspace.current !== id;
@@ -788,7 +797,10 @@ export function App() {
           : visible.find((a) => !a.closedAt)?.id || visible[0]?.id || "",
       );
     },
-    setWorkspaceFailure,
+    (error) => {
+      workspaceFailed.current = true;
+      setWorkspaceFailure(error);
+    },
     () => setLoading(false),
   );
   useEffect(() => {
