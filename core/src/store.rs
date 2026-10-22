@@ -252,14 +252,20 @@ fn send_view_of(d: &AgentDetail) -> AgentDetail {
     }
 }
 
+/// An Item `Store::send_view` keeps: an async question (what an answer to
+/// one is checked against).
+fn send_item(item: &Value) -> bool {
+    item["delivery"] == "async"
+}
+
 /// A Turn for `Store::send_view`: everything but its Items, of which only the
-/// async questions remain (what an answer to one is checked against).
+/// async questions remain.
 fn send_turn(turn: &Value) -> Value {
     let Some(fields) = turn.as_object() else { return turn.clone() };
     let mut light: serde_json::Map<String, Value> = fields.iter()
         .filter(|(key, _)| key.as_str() != "items").map(|(k, v)| (k.clone(), v.clone())).collect();
     if let Some(items) = fields.get("items").and_then(Value::as_array) {
-        light.insert("items".into(), items.iter().filter(|i| i["delivery"] == "async").cloned().collect());
+        light.insert("items".into(), items.iter().filter(|i| send_item(i)).cloned().collect());
     }
     light.into()
 }
@@ -575,6 +581,8 @@ thread_local! {
 thread_local! {
     /// How many whole records `Store::detail` read on this thread.
     pub(crate) static DETAIL_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many send views `read_send` read from rows on this thread.
+    pub(super) static SEND_ROWS_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// How many whole records `Store::detail` read of each Agent, on any thread:
@@ -692,6 +700,17 @@ struct Shown {
     damaged: bool,
 }
 
+/// What `Store::current` reads of a record that is not held.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum View {
+    /// The whole record (`detail`).
+    Payloads,
+    /// The rows without payloads, Items a pending request refers to whole.
+    Rows,
+    /// What `send_view` keeps of `Rows` (see `read_send`).
+    Send,
+}
+
 /// Whether a journal row is replayed onto the record it belongs to (see
 /// `restore`): read marks, and deferred or ephemeral native events.
 fn replayed(kind: &str, data: &Value) -> bool {
@@ -748,6 +767,35 @@ fn finish(db: &Connection, id: &str, assembled: Result<AgentDetail>, payloads: b
         }
     }
     Ok(Shown { detail, damaged: false })
+}
+
+/// The record `Store::send_view` is made from, for a record stored as rows
+/// (T-140): what `read_record` without payloads gives, but holding only the
+/// Items the send view keeps and those `whole_referenced` makes whole, read
+/// a Turn at a time (`record_rows::load_kept`). None where only
+/// `read_record` gives the same: a record stored whole, journal rows
+/// `restore` would apply to Turns or Items, or anything that fails or does
+/// not assemble, which `read_record` then reports as before. `unlocked` runs
+/// where `current` runs it, before the journal is replayed.
+fn read_send(db: &Connection, id: &str, unlocked: &mut impl FnMut()) -> Option<Shown> {
+    let kept = record_rows::load_kept(db, id, |meta| {
+        if applies(db, id, meta.agent.last_seq)? {
+            return Ok(None);
+        }
+        let wanted: HashSet<String> = crate::client_view::referenced(&meta.pending).into_iter().map(str::to_owned).collect();
+        Ok(Some(move |item: &Value| send_item(item)
+            || (item.get(record_rows::TRUNCATED).is_some() && item["id"].as_str().is_some_and(|id| wanted.contains(id)))))
+    });
+    let Ok(record_rows::Kept::Record(mut detail)) = kept else { return None };
+    unlocked();
+    let replayed = restore(db, id, &mut detail).ok()?;
+    if !replayed.is_meta_only() {
+        return None;
+    }
+    whole_referenced(db, id, &mut detail).ok()?;
+    #[cfg(test)]
+    SEND_ROWS_READS.with(|n| n.set(n.get() + 1));
+    Some(Shown { detail, damaged: false })
 }
 
 /// Items a pending request refers to, made whole: clients are sent them
@@ -883,6 +931,25 @@ pub(crate) fn lock_workspace(path: &Path) -> Result<File> {
     Ok(lock)
 }
 
+/// Whether `restore` applies a journal row to the record's Turns or Items: a
+/// replayed row other than a read mark.
+fn applied(kind: &str, data: &Value) -> bool {
+    kind != "workspace/reviewed" && replayed(kind, data)
+}
+
+/// Whether the journal has a row after `seq` that `restore` applies.
+fn applies(db: &Connection, id: &str, seq: i64) -> Result<bool> {
+    let mut query = db.prepare_cached("SELECT kind,data FROM journal WHERE agent_id=?1 AND seq>?2")?;
+    let rows = query.query_map(params![id, seq], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    for row in rows {
+        let (kind, data) = row?;
+        if applied(&kind, &serde_json::from_str(&data)?) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Applies what was journaled after the record was last written: deferred
 /// events whose record write had not happened yet (Core was killed, or the
 /// write failed) and read marks. Every other event is written together with
@@ -908,7 +975,6 @@ fn restore(db: &Connection, id: &str, detail: &mut AgentDetail) -> Result<Dirty>
             Ok((seq, kind, serde_json::from_str(&data)?, at))
         }).collect::<Result<_>>()?
     };
-    let applied = |kind: &str, data: &Value| kind != "workspace/reviewed" && replayed(kind, data);
     // Kept only when there is something to apply, to start over from.
     let loaded = rows.iter().any(|(_, kind, data, _)| applied(kind, data)).then(|| detail.clone());
     let mut skipped: Vec<(i64, String)> = Vec::new();
@@ -1366,11 +1432,12 @@ impl Store {
     /// them, and each Turn without its Items except the async questions an
     /// answer names. A held record is read under its read lock (it is held
     /// after every commit); one that is not, idle for a while, from its rows
-    /// without payloads, which no check reads. Never written back.
+    /// without payloads, which no check reads, a Turn at a time and keeping
+    /// only those Items (`read_send`). Never written back.
     pub fn send_view(&self, id: &str) -> Result<AgentDetail> {
         let mut view = match self.held(id) {
             Some(held) => send_view_of(&held.read()),
-            None => send_view_of(&self.current(id, false, &mut || {})?),
+            None => send_view_of(&self.current(id, View::Send, &mut || {})?),
         };
         view.agent.project_id = self.agent_project(id)?;
         Ok(view)
@@ -1382,14 +1449,14 @@ impl Store {
     pub fn pending(&self, id: &str) -> Result<Vec<PendingRequest>> {
         match self.held(id) {
             Some(held) => Ok(held.read().pending.clone()),
-            None => Ok(self.current(id, false, &mut || {})?.pending),
+            None => Ok(self.current(id, View::Rows, &mut || {})?.pending),
         }
     }
 
     /// `detail`, running `unlocked` after a record is assembled and before
     /// its journal is replayed; tests race writes against the read there.
     fn detail_racing(&self, id: &str, mut unlocked: impl FnMut()) -> Result<AgentDetail> {
-        let mut detail = self.current(id, true, &mut unlocked)?;
+        let mut detail = self.current(id, View::Payloads, &mut unlocked)?;
         self.annotate_peer_turns(&mut detail)?;
         detail.agent.work_summary = crate::rail::project(&detail);
         detail.agent.project_id = self.agent_project(id)?;
@@ -1400,7 +1467,7 @@ impl Store {
     /// memory projected, else the rows without payloads, which already are
     /// that view (Items a pending request refers to with theirs).
     pub fn client_detail(&self, id: &str) -> Result<AgentDetail> {
-        let mut detail = self.current(id, false, &mut || {})?;
+        let mut detail = self.current(id, View::Rows, &mut || {})?;
         self.annotate_peer_turns(&mut detail)?;
         detail.agent.work_summary = crate::rail::project(&detail);
         detail.agent.project_id = self.agent_project(id)?;
@@ -1653,7 +1720,7 @@ impl Store {
     /// and after it (see `Memory::versions`). A write racing the read makes
     /// it read again; after two such races it is read under the Agent's
     /// record lock, where no write of it can race.
-    fn current(&self, id: &str, payloads: bool, unlocked: &mut impl FnMut()) -> Result<AgentDetail> {
+    fn current(&self, id: &str, view: View, unlocked: &mut impl FnMut()) -> Result<AgentDetail> {
         let mut attempt = 0;
         loop {
             let exclusive = attempt >= 2;
@@ -1669,7 +1736,8 @@ impl Store {
             }
             // A record known to be damaged is shown as its stand-in, which a
             // read without payloads may not find (a payload row is missing).
-            let payloads = payloads || damaged;
+            let payloads = view == View::Payloads || damaged;
+            let send = view == View::Send && !damaged;
             if version % 2 == 1 {
                 // A write of it is being committed; its writer holds the
                 // record lock, so this is never the case once that is held.
@@ -1681,11 +1749,20 @@ impl Store {
             // read: it holds every write that version counts, and any newer
             // one changes the version before it commits.
             let mut detail = {
+                // One reader, one snapshot (see `db`): the send view's read
+                // and, where it gives way, the read it gives way to.
                 let db = self.db.read()?;
-                let stored = record_rows::read(&db, id, payloads)?.context("Agent 不存在")?;
-                let assembled = record_rows::assemble_stored(id, stored, payloads);
-                unlocked();
-                let shown = finish(&db, id, assembled, payloads)?;
+                let mut ran = false;
+                let mut once = || if !std::mem::replace(&mut ran, true) { unlocked() };
+                let shown = match send.then(|| read_send(&db, id, &mut once)).flatten() {
+                    Some(shown) => shown,
+                    None => {
+                        let stored = record_rows::read(&db, id, payloads)?.context("Agent 不存在")?;
+                        let assembled = record_rows::assemble_stored(id, stored, payloads);
+                        once();
+                        finish(&db, id, assembled, payloads)?
+                    }
+                };
                 self.seen(id, shown)
             };
             let held = {
@@ -3518,3 +3595,5 @@ mod window_tests;
 mod scoped_tests;
 #[cfg(test)]
 mod restart_tests;
+#[cfg(test)]
+mod send_view_tests;

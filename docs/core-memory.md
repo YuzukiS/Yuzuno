@@ -420,6 +420,44 @@ Agent's is; "not held" is read from its rows:
 
 The listed Agent was already cached in these processes. One that is not reads
 the metadata, the Turn rows and the newest Turn. A send view that is not held
-still assembles every Turn's Items from their rows, without payloads, before
-dropping them. These are synthetic allocator measurements, not the daily
-Core's RSS.
+assembled every Turn's Items from their rows, without payloads, before
+dropping them; it now keeps only what it needs (see the next section). These
+are synthetic allocator measurements, not the daily Core's RSS.
+
+### A send view of a record that is not held
+
+About 40 callers read the send view: sends, steers, the close waits that poll
+it every 25 or 50 ms, deliveries and reconnects. For a record not held in
+memory, it assembled every Item from its rows, with the previews of its large
+fields, and then dropped all but the async questions. It is now read in the
+same reader, snapshot and version loop. The Turn rows come first, then one
+cursor over the Item rows in key order, a Turn's rows together. Each Turn is
+assembled and checked exactly as before, by the same code, and only the async
+questions and the large Items a pending request names are kept.
+`whole_referenced` then makes the named Items whole as before.
+
+Wherever this read could differ, it gives way to the old one, in the same
+snapshot and with the same stand-in and error: a record stored whole, journal
+rows `restore` would apply to Turns or Items, a replay that is not metadata
+only, anything that does not assemble or fails, and a record known to be
+damaged. The view is unchanged. Tests compare it with the old read, case by
+case, in two stores.
+
+T-140 Job `69e8518f-67cb-4229-872a-7f3fba72ca9e`, 2026-10-22, release builds of
+`core/examples/core_read_cost.rs` (on lab branches, not merged), "before" the
+product code of `2cbde4e`. One seeded synthetic image (192 MiB, 23,308 Items,
+234 Turns of 100 Items, the newest running) was copied for each read, which
+ran alone in a fresh process:
+
+| Send view, record not held | Before | After |
+| --- | ---: | ---: |
+| Rust peak above live | 137.5 MiB | 1.5 MiB |
+| RSS after the read (from 11.6 MiB) | 108.6 MiB | 11.7 MiB |
+| Time | 140 ms | 64 ms |
+| Read through syscalls (rchar) | 98.7 MiB | 98.6 MiB |
+
+A held record's send view (0.2 MiB, 1.8 ms) and a whole read (`detail`) were
+the same on both sides. The previews are still read and checked, so the bytes
+read stay the same. The peak follows the largest Turn, so a record with one
+very large Turn still reads that Turn whole. These are synthetic allocator
+measurements, not the daily Core's RSS.
