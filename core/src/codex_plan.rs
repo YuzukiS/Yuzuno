@@ -89,7 +89,8 @@ pub(crate) struct Reported {
 pub(crate) struct Switch {
     to: Mode,
     /// sending: not answered yet. accepted: Codex accepted the update and has
-    /// not reported the mode since. unknown: no answer came back.
+    /// not reported the mode since. unknown: no answer came back, or the
+    /// request asking for it went away first (`Abandoned`).
     state: &'static str,
     requested_at: String,
     #[serde(skip)]
@@ -295,7 +296,9 @@ impl Workspace {
         self.changed(id);
         let mode = json!({"mode":to.wire(),"settings":{"model":model,
             "reasoning_effort":detail.agent.settings.reasoning_effort,"developer_instructions":null}});
+        let mut abandoned = Abandoned { ws: self, id, generation, token, armed: true };
         let result = connection.rpc.request("thread/settings/update", json!({"threadId":thread,"collaborationMode":mode})).await;
+        abandoned.armed = false;
         let refused = result.as_ref().err().and_then(|error| error.downcast_ref::<RpcError>()).cloned();
         let outcome = match (&result, &refused) {
             (Ok(_), _) => Some("accepted"),
@@ -315,6 +318,27 @@ impl Workspace {
             "Codex 接受了切换到{}，但连接随后已变化；请重新打开 /plan 查看 Codex 报告的模式，不要重复", to.label());
         let (reported, switch) = self.codex_plan.shown(id, generation);
         Ok(View { state: "ready", reason: "switched".into(), generation: Some(generation), modes, reported, switch })
+    }
+}
+
+/// A switch whose request is dropped before Codex answers (the HTTP request
+/// that asked for it went away mid-wait): it was sent, or may have been, so
+/// it is left unknown rather than sending forever. Codex's report of the
+/// mode still settles it.
+struct Abandoned<'a> {
+    ws: &'a Workspace,
+    id: &'a str,
+    generation: u64,
+    token: u64,
+    armed: bool,
+}
+
+impl Drop for Abandoned<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.ws.codex_plan.answered(self.id, self.generation, self.token, Some("unknown"));
+            self.ws.changed(self.id);
+        }
     }
 }
 

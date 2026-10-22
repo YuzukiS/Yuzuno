@@ -29,6 +29,7 @@ impl Lab {
     /// - noplan: one that lists no Plan preset;
     /// - refuse: it refuses the update;
     /// - drop: it exits without answering;
+    /// - hang: it never answers the update;
     /// - early: it reports the new mode before answering;
     /// - silent: it accepts without reporting.
     async fn new(flags: &str) -> Self {
@@ -61,6 +62,7 @@ for line in sys.stdin:
  elif m=='thread/settings/update':
   if 'refuse' in flags: refuse(i,-32600,'invalid thread settings override: mode unavailable'); continue
   if 'drop' in flags: sys.exit(0)
+  if 'hang' in flags: continue
   kind=p['collaborationMode']['mode']; changed=kind!=mode(); (root/'mode').write_text(kind)
   settings={'model':'m','effort':'high','collaborationMode':collab(kind)}
   if 'early' in flags and changed: say('thread/settings/updated',{'threadId':p['threadId'],'threadSettings':settings})
@@ -298,4 +300,32 @@ async fn only_this_connections_reports_of_its_own_thread_are_shown() {
         (Some("plan"), Some("resume"), Some(next)));
     let (status, answer) = lab.switch("default", generation).await;
     assert!(status == 400 && answer["error"].as_str().unwrap().contains("连接已变化"), "the old connection's view switches nothing: {answer}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_whose_request_goes_away_before_codex_answers_is_left_unknown_not_sending() {
+    let lab = Lab::new("hang").await;
+    let generation = lab.connect().await;
+    let before = lab.sent().len();
+    // As when the browser's request is dropped while Core waits for Codex.
+    let change: crate::codex_plan::Change = serde_json::from_value(json!({"mode":"plan","generation":generation})).unwrap();
+    let ws = lab.ws.clone();
+    let switch = tokio::spawn(async move { ws.codex_plan_switch("a", change).await });
+    for _ in 0..300 {
+        if lab.methods_from(before).iter().any(|m| m == "thread/settings/update") { break; }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(lab.detail().await["codexPlan"]["switch"]["state"], "sending");
+    switch.abort();
+    assert!(switch.await.unwrap_err().is_cancelled());
+    let view = lab.get().await;
+    assert_eq!((view["switch"]["to"].as_str(), view["switch"]["state"].as_str(), view["reported"]["mode"].as_str()),
+        (Some("plan"), Some("unknown"), Some("default")), "{view}");
+    assert_eq!(lab.detail().await["codexPlan"]["switch"]["state"], "unknown");
+    assert_eq!(lab.methods_from(before), ["collaborationMode/list", "thread/settings/update", "collaborationMode/list"], "sent once, never again");
+    // Codex's own report still settles it.
+    lab.ws.dispatch_event("a", generation, json!({"method":"thread/settings/updated","params":{"threadId":"thread-a",
+        "threadSettings":{"collaborationMode":{"mode":"plan","settings":{"model":"m","reasoning_effort":"high","developer_instructions":null}}}}})).await;
+    let view = lab.get().await;
+    assert_eq!((view["reported"]["mode"].as_str(), &view["switch"]), (Some("plan"), &Value::Null));
 }
