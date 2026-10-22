@@ -337,6 +337,11 @@ async fn real_git_runs_none_of_the_repositorys_programs_and_the_folder_is_left_a
     }
 
     let marks = root.marks();
+    // The controls' git status left an fsmonitor extension in the index: with
+    // core.fsmonitor=false, Git drops it and rewrites the index, whatever
+    // GIT_OPTIONAL_LOCKS says. In the read-only sandbox it cannot.
+    let index = work.join(".git/index");
+    assert!(std::fs::read(&index).unwrap().windows(4).any(|w| w == b"FSMN"), "the index carries an fsmonitor extension");
     let before = manifest(&work);
     let report = lab.read("t1").await;
     let again = lab.read("t2").await;
@@ -385,6 +390,12 @@ async fn real_git_runs_none_of_the_repositorys_programs_and_the_folder_is_left_a
     // The read's own commands again, outside any sandbox, in Codex's
     // environment with each request's variables: its settings alone run none
     // of the programs and write nothing.
+    let listed = || {
+        let out = root.git(&work, &["-c", "core.fsmonitor=false", "ls-files", "-s"]);
+        assert!(out.status.success());
+        out.stdout
+    };
+    let entries = listed();
     let mut replayed = 0;
     for request in lab.of("t1").iter().filter(|r| r["method"] == "command/exec") {
         let p = &request["params"];
@@ -406,7 +417,18 @@ async fn real_git_runs_none_of_the_repositorys_programs_and_the_folder_is_left_a
     println!("replayed outside the sandbox: {replayed} commands");
     assert_eq!(replayed as u64, report["commands"].as_u64().unwrap());
     assert_eq!(root.marks(), marks, "no program ran");
-    assert_eq!(manifest(&work), before, "nothing was written");
+    // Outside a sandbox Git's only write is that one: the index without its
+    // fsmonitor extension, every entry as it was; nothing else changed.
+    let others = |files: Vec<(PathBuf, u32, i64, i64, Vec<u8>)>| -> Vec<_> {
+        files.into_iter().filter(|(path, ..)| *path != index && *path != work.join(".git")).collect()
+    };
+    let after = manifest(&work);
+    assert_eq!(others(after), others(before.clone()), "nothing but the index was written outside the sandbox");
+    let bytes = |files: &[(PathBuf, u32, i64, i64, Vec<u8>)]| files.iter().find(|(path, ..)| *path == index).unwrap().4.clone();
+    let rewritten = bytes(&manifest(&work));
+    println!("index outside the sandbox: {} bytes before, {} after; fsmonitor extension kept: {}", bytes(&before).len(), rewritten.len(),
+        rewritten.windows(4).any(|w| w == b"FSMN"));
+    assert_eq!(listed(), entries, "every index entry as it was");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -105,7 +105,7 @@ test("it reads as soon as it opens: the target first, then one read bound to tha
     assert.deepEqual({ generation, cwd }, { generation: 7, cwd: "/work/app" }, "the connection and folder it showed");
     assert.match(page.text(), /\/work\/app/);
     assert.match(page.text(), /On build-box, read with Git where this Agent's Codex runs/);
-    assert.match(page.text(), /Reading the folder…/);
+    await until(() => /Reading the folder…/.test(page.text()), "the read shown as running");
     assert.ok(page.button("Refresh").disabled, "no second read while one runs");
     await page.answer(read({ tracked: part(PARSER) }));
     assert.match(page.text(), /Changes not staged · 1 file/);
@@ -303,9 +303,10 @@ test("Git's names and sections are read from its own headers", () => {
       "diff --git a/old.rs b/new.rs\nsimilarity index 90%\nrename from old.rs\nrename to new.rs\n",
     ].join("");
     const sections = diffFiles(whole);
-    assert.deepEqual(sections.map((s) => s.path), ["x y", "bin.dat", "gone.rs", "new.rs"],
+    // Copied out of the page's realm: deepStrictEqual compares prototypes.
+    assert.deepEqual([...sections].map((s) => s.path), ["x y", "bin.dat", "gone.rs", "new.rs"],
       "a removed line that reads like a header is content, not a new file");
-    assert.equal(sections.map((s) => s.text).join(""), whole, "every byte in one section, in order");
+    assert.equal([...sections].map((s) => s.text).join(""), whole, "every byte in one section, in order");
     assert.equal(stagedLabel("C75"), "Copied (75% similar)");
     assert.equal(stagedLabel("T"), "Type changed");
   } finally { page.close(); }
