@@ -172,8 +172,10 @@ export function CardReply({
     });
   });
   if (!draft) return null;
+  // On the reply as it is now: another place, or a change not drawn yet, may
+  // have moved it on since this render.
   const change = (patch: Partial<CardDraft>) =>
-    update(slot, { draft: { ...draft, ...patch, at: new Date().toISOString() } });
+    update(slot, { draft: { ...(replyState(slot).draft ?? draft), ...patch, at: new Date().toISOString() } });
   const target = agents.some((a) => a.id === draft.agentId) ? draft.agentId : "";
   const name = agents.find((a) => a.id === target)?.name || "the Agent";
   const changed = section.version !== draft.version;
