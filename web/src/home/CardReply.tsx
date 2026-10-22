@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Copy, LoaderCircle, MessageSquareReply, Send, Trash2, X } from "lucide-react";
 import { errorText, HttpError, shortcutModifier } from "../api";
 import type { Agent } from "../types";
@@ -114,6 +114,9 @@ export function CardReply({
   });
   const [text, setText] = useState(() => draft?.text ?? kept?.text ?? "");
   const [busy, setBusy] = useState(false);
+  // Set at once, before React draws `busy`: a second click or Enter in the
+  // same moment sends nothing more.
+  const sending = useRef(false);
   const [error, setError] = useState("");
   const [sent, setSent] = useState<{ status: string; to: string; version: number } | null>(null);
   useEffect(() => {
@@ -126,7 +129,8 @@ export function CardReply({
   const name = agents.find((a) => a.id === target)?.name || "the Agent";
   async function send() {
     const value = text.trim();
-    if (!value || !target || busy) return;
+    if (!value || !target || sending.current) return;
+    sending.current = true;
     setBusy(true);
     setError("");
     setSent(null);
@@ -145,6 +149,7 @@ export function CardReply({
       if (olderCore(e)) dropPendingReply(slot);
       setError(explain(e));
     } finally {
+      sending.current = false;
       setBusy(false);
     }
   }

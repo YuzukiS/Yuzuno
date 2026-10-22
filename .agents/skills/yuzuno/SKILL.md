@@ -94,6 +94,7 @@ A development overview might show the running release and two active outcomes; a
   - Resolve an action the reply authorizes only after that action is confirmed done, with its result on the existing task or a Brief section. A green CI or a finished task is not that action.
   - While the action runs, or after it fails, keep the ask replied and report progress on the task or Brief: `edit` keeps it replied, while `put` asks again. Ask again only when the user has something new to decide.
   - A reply executes nothing by itself. Act on what the user has authorized, an explicit reply included, without asking for it again; never infer a retry, merge or wider permission from an answer that does not grant it.
+- A reply to a report or status card also arrives as an ordinary message. It names the section's key, the version the user saw and its title; the section may have changed since. It changes no ask, task or Seen mark, and there is nothing to resolve: answer it as you would any message, and change the section only if the reply calls for it.
 - On a Core that still holds a Turn for a Brief update (up to 2026.10.19-core.12), re-read your capabilities: permissions may change during a session. When still required, make the update and end without another message. If a stale reminder conflicts with current Ask-only permission, do not write unauthorized content; report the mismatch through the task or requester.
 
 ## When the tools disagree with your instructions
