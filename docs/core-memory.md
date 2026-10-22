@@ -101,6 +101,40 @@ The idle path waited for the last held record however small it was, and the
 large record's freed pages stayed resident the whole time. This is what the
 held path addresses. One run per case, synthetic, not the daily Core.
 
+### With the held path
+
+T-140 Job `b40c9c79-df26-44dc-b26b-8e507c9e658e`, 2026-10-22, lab builds of
+`0483701` before and after the held path, otherwise identical. The inputs were
+the same as above, and each case ran in its own process. One run per side.
+
+- **One delta, then idle:** both sides trimmed on the idle path at about 67
+  seconds, as before.
+- **A delta every 250 ms for 370 seconds, then idle, with the large record
+  read again at 330 and at 465 seconds:**
+  - Before, nothing was checked while the small record was held. After, a
+    held-path trim came once the busy period reached 300 seconds, with the
+    small record still held: 299.5 to 20.3 MiB in 23.7 ms.
+  - All 1,480 deltas were applied on both sides, none missing or out of order.
+    Before, p99 0.384 ms and max 4.6 ms; after, p99 0.408 ms and max 2.7 ms.
+    The 12 deltas around the trim took at most 0.29 ms. One run: neither these
+    figures nor the trim's duration bound the worst case.
+  - The read at 330 seconds loaded in 125 ms after the trim, against 55 ms
+    before, whose pages had stayed resident. That is consistent with faulting
+    the pages back in. Two runs cannot attribute the whole difference to it.
+  - The RSS growth threshold is shared by both paths. That read brought RSS
+    back to about 90 MiB, so the idle check after the stream stopped did not
+    trim: 70 MiB above the held trim's 20.3 MiB is under 128 MiB. Before, that
+    check trimmed 231 to 21 MiB. After the read at 465 seconds, the held side
+    passed the threshold and trimmed to 25 MiB, while the side without it
+    stayed at about 94 MiB. As after any trim, up to 128 MiB of pages that come
+    back can stay resident until RSS grows past it.
+- The two sides' RSS before 300 seconds differed (about 231 against 299.5 MiB)
+  while no policy acted on either. That is not attributed, and no average RSS
+  is compared.
+- Only the first held-path check fell inside the run. The 300 seconds to the
+  next one, and the other timing rules, are covered by the virtual-clock unit
+  tests in `heap.rs`, not by a measurement.
+
 ## Reproduce the isolated comparison
 
 Use a managed Job with 2 CPU cores, 6 GiB RAM and no swap. Build the release
