@@ -117,6 +117,13 @@ async fn a_preview_names_the_problems_the_update_gets() {
     assert_eq!(footprint(&ws, &project)["receipts"], 0);
 }
 
+#[test]
+fn the_guide_states_the_problems_a_rejection_lists() {
+    let limits = &brief_contract().unwrap()["limits"];
+    assert_eq!(limits["callProblems"].as_u64(), Some(update::MAX_PROBLEMS as u64));
+    assert!(limits["problems"].as_u64().is_some_and(|section| section < update::MAX_PROBLEMS as u64));
+}
+
 #[tokio::test]
 async fn more_problems_than_shown_are_counted_in_both() {
     let (_dir, ws, project) = lab();

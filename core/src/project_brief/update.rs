@@ -18,7 +18,8 @@ pub(crate) const TOOL: &str = "brief_update";
 pub(super) const MAX_CHANGES: usize = 24;
 /// Blocks one edit may replace: a body's component limit.
 const MAX_EDITED: usize = 32;
-const MAX_PROBLEMS: usize = 10;
+/// The problems a rejection lists, as the contract's limits.callProblems.
+pub(super) const MAX_PROBLEMS: usize = 10;
 /// Advice an answer carries at most (T-176).
 const MAX_ADVICE: usize = 3;
 
