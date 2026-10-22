@@ -1,5 +1,5 @@
 use crate::{
-    model::{ensure_agent_open, now, Agent, AgentDetail, AgentSettings, MessageInput, MessageReceipt, PendingRequest, RemoteAgent, SkillRef},
+    model::{ensure_agent_open, now, Agent, AgentDetail, AgentSettings, MessageInput, MessageReceipt, PendingRequest, RemoteAgent, ReviewTarget, SkillRef},
     rpc::{OutcomeUnknown, Rpc, RpcError},
     store::Store,
     remote,
@@ -1782,24 +1782,7 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        self.ensure_rewind_settled(id).await?;
-        let detail = self.send_view(id).await?;
-        ensure_agent_open(&detail.agent)?;
-        anyhow::ensure!(detail.agent.harness == "codex", "Claude 的 /compact 是原生命令：作为消息发送，由 Claude Code 自己执行");
-        let thread = detail.agent.thread_id.clone().context("会话 ID 尚未确认；没有执行 /compact")?;
-        if detail.agent.status == "uncertain"
-            || detail.message_receipts.iter().any(|r| matches!(r.status.as_str(), "sending" | "uncertain")) {
-            bail!("上一次发送、执行或 /compact 的结果尚未确认；请先重新连接核对，没有执行 /compact");
-        }
-        if turn_busy(&detail) || detail.turns.iter().any(|t| t["status"] == "inProgress") {
-            bail!("当前 Turn 尚未结束或正在等待回应；没有执行 /compact");
-        }
-        let connection = self.rpcs.lock().unwrap().get(id).cloned()
-            .filter(|c| !c.closing && detail.agent.connection_state == "connected")
-            .context("没有连接到这个原生会话；请先重新连接，没有执行 /compact")?;
-        anyhow::ensure!(connection.attachment.lock().await.is_none() && !self.codex_context.needs_resume(id, connection.generation),
-            "原生会话正在接续；完成后再执行 /compact");
-        anyhow::ensure!(same_generation(self.rpcs.lock().unwrap().get(id), connection.generation), "连接已变化；没有执行 /compact");
+        let (detail, thread, connection) = self.idle_codex_thread(id, "/compact").await?;
         let before = detail.agent.status.clone();
         self.record_meta(id, "compact/requested", json!({"threadId":thread,"generation":connection.generation}), |m| {
             m.agent.status = "uncertain".into();
@@ -1831,6 +1814,90 @@ impl Workspace {
                     bail!(message)
                 }
                 None => bail!("/compact 的结果无法确认：{error}；请重新连接核对，不要重复执行"),
+            },
+        }
+    }
+
+    /// For a native Codex control that runs only between turns (`what`, as
+    /// typed), with this Agent's gate held: its thread and the connection
+    /// already serving it. Nothing is connected, resumed, retried or
+    /// reconciled for it, and an unconfirmed earlier send, control or turn
+    /// refuses it.
+    async fn idle_codex_thread(&self, id: &str, what: &str) -> Result<(AgentDetail, String, Connection)> {
+        self.ensure_rewind_settled(id).await?;
+        let detail = self.send_view(id).await?;
+        ensure_agent_open(&detail.agent)?;
+        anyhow::ensure!(detail.agent.harness == "codex", "Claude 的 {what} 是原生命令：作为消息发送，由 Claude Code 自己执行");
+        let thread = detail.agent.thread_id.clone().with_context(|| format!("会话 ID 尚未确认；没有执行 {what}"))?;
+        if detail.agent.status == "uncertain"
+            || detail.message_receipts.iter().any(|r| matches!(r.status.as_str(), "sending" | "uncertain")) {
+            bail!("上一次发送、执行、/compact 或 /review 的结果尚未确认；请先重新连接核对，没有执行 {what}");
+        }
+        if turn_busy(&detail) || detail.turns.iter().any(|t| t["status"] == "inProgress") {
+            bail!("当前 Turn 尚未结束或正在等待回应；没有执行 {what}");
+        }
+        let connection = self.rpcs.lock().unwrap().get(id).cloned()
+            .filter(|c| !c.closing && detail.agent.connection_state == "connected")
+            .with_context(|| format!("没有连接到这个原生会话；请先重新连接，没有执行 {what}"))?;
+        anyhow::ensure!(connection.attachment.lock().await.is_none() && !self.codex_context.needs_resume(id, connection.generation),
+            "原生会话正在接续；完成后再执行 {what}");
+        anyhow::ensure!(same_generation(self.rpcs.lock().unwrap().get(id), connection.generation), "连接已变化；没有执行 {what}");
+        Ok((detail, thread, connection))
+    }
+
+    /// The user's explicit `/review` for a Codex Agent: Codex's own code
+    /// review of `target` (`review/start`), delivered inline as a Turn of
+    /// this thread, never a prompt. As `/compact`, it runs only between
+    /// turns on the connection already serving the thread (see
+    /// `idle_codex_thread`), and the Agent is uncertain from before the
+    /// request until Codex settles it: its answer is the review's Turn,
+    /// recorded as started (as `turn/start`'s is), and the Turn's own events
+    /// carry it on. Detached delivery, a new thread for the review, is not
+    /// used: Codex has deprecated it.
+    ///
+    /// Only a Codex without the method (JSON-RPC -32601) provably ran
+    /// nothing. Any other error, a lost answer, or an answer without its Turn
+    /// leaves the Agent uncertain, to be checked by reconnecting, never sent
+    /// again.
+    pub async fn codex_review(self: &Arc<Self>, id: &str, target: ReviewTarget) -> Result<Value> {
+        let target = target.checked()?;
+        let _permit = self.admission.enter_work()?;
+        let gate = self.gate(id).await;
+        let _held = gate.lock().await;
+        let (detail, thread, connection) = self.idle_codex_thread(id, "/review").await?;
+        let before = detail.agent.status.clone();
+        self.record_meta(id, "review/requested", json!({"threadId":thread,"generation":connection.generation,"target":target}), |m| {
+            m.agent.status = "uncertain".into();
+        }).await?;
+        self.changed(id);
+        let result = connection.rpc.request("review/start", json!({"threadId":thread,"target":target,"delivery":"inline"})).await;
+        let current = same_generation(self.rpcs.lock().unwrap().get(id), connection.generation);
+        match result {
+            Ok(r) if current && r["turn"]["id"].is_string() => {
+                // Its events may come first; merged by the Turn's ID.
+                let owned = self.owner(id).await;
+                let (agent, accepted) = (id.to_owned(), json!({"turn":r["turn"]}));
+                self.stored_owned(owned, move |store| store.record_applied(&agent, "turn/accepted", "turn/started", &accepted)).await?;
+                self.changed(id);
+                Ok(json!({"accepted":true,"threadId":thread,"turnId":r["turn"]["id"]}))
+            }
+            Ok(_) => bail!("Codex 接受了 /review，但连接随后已变化或没有给出它的 Turn；请重新连接核对结果，不要重复执行"),
+            Err(error) => match error.downcast_ref::<RpcError>() {
+                Some(refused) if refused.code == -32601 => {
+                    let message = "这台机器上的 Codex 不提供原生审查（review/start）；没有执行".to_owned();
+                    self.record_meta(id, "review/rejected", json!({"message":message,"code":refused.code}), move |m| {
+                        if m.agent.status == "uncertain" { m.agent.status = before; }
+                    }).await?;
+                    self.changed(id);
+                    bail!(message)
+                }
+                Some(refused) => {
+                    let message = format!("Codex 对 /review 返回了错误：{}；是否已开始审查无法确认，请重新连接核对，不要重复执行", refused.message);
+                    self.record_meta(id, "review/failed", json!({"message":message,"code":refused.code}), |_| {}).await?;
+                    self.changed(id);
+                    bail!(message)
+                }
+                None => bail!("/review 的结果无法确认：{error}；请重新连接核对，不要重复执行"),
             },
         }
     }
@@ -2694,6 +2761,10 @@ mod native_compact_tests;
 #[cfg(all(test, unix))]
 #[path = "codex_skills_tests.rs"]
 mod codex_skills_tests;
+
+#[cfg(all(test, unix))]
+#[path = "codex_review_tests.rs"]
+mod codex_review_tests;
 
 #[cfg(all(test, unix))]
 #[path = "subagent_requests_tests.rs"]

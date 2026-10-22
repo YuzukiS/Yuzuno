@@ -149,6 +149,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/agents/{id}/models",get(agent_models))
         .route("/api/agents/{id}/interrupt",post(interrupt))
         .route("/api/agents/{id}/compact",post(compact))
+        .route("/api/agents/{id}/codex/review",post(codex_review))
         .route("/api/agents/{id}/tasks/{task_id}/stop",post(stop_task))
         .route("/api/agents/{id}/reconnect",post(reconnect))
         .route("/api/agents/{id}/review",post(review))
@@ -949,6 +950,13 @@ async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json
 /// The composer's `/compact` for a Codex Agent: Codex's own compaction.
 async fn compact(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     Ok(Json(ws.codex_compact(&id).await?))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewInput { target: crate::model::ReviewTarget }
+/// The composer's `/review` for a Codex Agent: Codex's own review.
+async fn codex_review(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<ReviewInput>) -> ApiResult<Json<Value>> {
+    Ok(Json(ws.codex_review(&id, input.target).await?))
 }
 async fn agent_models(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let harness = ws.detail(&id).await?.agent.harness;

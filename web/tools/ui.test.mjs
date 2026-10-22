@@ -5180,3 +5180,98 @@ test("/new starts New agent without a model left from an earlier opening for ano
     page.close();
   }
 });
+
+// T-29: a Codex Agent's /review is Codex's own review (review/start), run as
+// a Turn here: alone it asks what to review, with words after it those are
+// the instructions, as in Codex's CLI. Never a message; the draft stays until
+// Codex has accepted.
+function reviewStub(answers) {
+  const reviews = [];
+  return { reviews, beforeLoad(window) {
+    const fetch = window.fetch;
+    window.fetch = (url, init = {}) => {
+      if (!url.endsWith("/codex/review")) return fetch(url, init);
+      reviews.push(JSON.parse(init.body));
+      const [status, body] = answers.shift() ?? [200, { accepted: true, threadId: "thread-a", turnId: "review" }];
+      return Promise.resolve({ ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body) });
+    };
+  } };
+}
+
+test("a Codex Agent's /review asks what to review, then asks Codex itself; nothing is sent as a message", async () => {
+  const stub = reviewStub([]);
+  const page = await mount({ harness: "codex", beforeLoad: stub.beforeLoad });
+  try {
+    const dialog = () => page.document.querySelector('[role="dialog"]');
+    const start = () => [...dialog().querySelectorAll("button")].find((b) => /Start review/.test(b.textContent));
+    let composer = await sendDraft(page, "/review");
+    await until(() => /Review with Codex/.test(dialog()?.textContent || ""), "Review with Codex to open");
+    assert.equal(chosen(page, "What to review"), "uncommittedChanges");
+    // Closing it starts nothing and keeps the draft.
+    await closeModal(page);
+    assert.deepEqual(stub.reviews, []);
+    assert.equal(composerText(composer), "/review");
+
+    await sendDraft(page, "/review");
+    await until(() => chipGroup(page, "What to review"), "Review with Codex to open again");
+    await choose(page, "What to review", "commit");
+    assert.equal(start().disabled, true, "a commit to review is needed first");
+    typeInto(page, [...dialog().querySelectorAll("label")].find((l) => /^Commit/.test(l.textContent)).querySelector("input"), " abc1234 ");
+    await pause();
+    start().click();
+    await until(() => !dialog(), "the dialog to close once Codex accepted");
+    assert.deepEqual(stub.reviews, [{ target: { type: "commit", sha: "abc1234", title: null } }]);
+    assert.equal(composerText(composer), "", "the handled command leaves the draft");
+    assert.match(page.document.body.textContent, /Codex started its review/);
+
+    // Words after /review are its instructions, sent at once as the CLI does.
+    composer = await sendDraft(page, "/review  look at the error paths ");
+    assert.deepEqual(stub.reviews.at(-1), { target: { type: "custom", instructions: "look at the error paths" } });
+    assert.equal(composerText(composer), "");
+    assert.deepEqual(posts(page).filter((u) => !u.endsWith("/codex/review")), [], "no /messages, no /turns");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("when Codex refuses /review, the reason shows and the draft is kept; a Claude Agent's /review is its own command", async () => {
+  const refusal = { error: "这台机器上的 Codex 不提供原生审查（review/start）；没有执行", code: "bad_request" };
+  const stub = reviewStub([[400, refusal], [400, refusal]]);
+  const page = await mount({ harness: "codex", beforeLoad: stub.beforeLoad });
+  try {
+    const composer = await sendDraft(page, "/review check the parser");
+    assert.match(page.document.body.textContent, /不提供原生审查/);
+    assert.equal(composerText(composer), "/review check the parser");
+    // In the dialog the reason shows there, and it stays open with the choice.
+    await sendDraft(page, "/review");
+    await until(() => chipGroup(page, "What to review"), "Review with Codex to open");
+    [...page.document.querySelectorAll('[role="dialog"] button')].find((b) => /Start review/.test(b.textContent)).click();
+    await until(() => /不提供原生审查/.test(page.document.querySelector('[role="dialog"] [role="alert"]')?.textContent || ""), "the reason in the dialog");
+    assert.equal(composerText(composer), "/review");
+    assert.equal(stub.reviews.length, 2);
+    assert.deepEqual(posts(page).filter((u) => !u.endsWith("/codex/review")), [], "never sent as a message instead");
+  } finally { page.close(); }
+  const claude = await mount({ harness: "claude" });
+  try {
+    await sendDraft(claude, "/review");
+    assert.deepEqual(posts(claude), ["/api/agents/a/messages"]);
+    assert.equal(JSON.parse(claude.calls.find((r) => r.url.endsWith("/messages")).init.body).text, "/review");
+  } finally { claude.close(); }
+});
+
+test("Codex's review findings are its review Turn's reply", async () => {
+  const findings = "Mostly sound.\n\n- The parser drops line numbers — parse.rs:12";
+  const page = await mount({ harness: "codex", extraTurns: [{ id: "review", status: "completed", items: [
+    { id: "review", type: "userMessage", content: [{ type: "text", text: "Review the current code changes" }] },
+    { id: "entered", type: "enteredReviewMode", review: "current changes" },
+    { id: "exited", type: "exitedReviewMode", review: findings },
+  ] }] });
+  try {
+    const turn = page.document.querySelector('[data-turn-id="review"] .agent-message');
+    const reply = turn.querySelector('.final-message[data-item-id="exited"]');
+    assert.ok(reply, "shown as the reply, not a tool row");
+    assert.match(reply.textContent, /Mostly sound/);
+    assert.match(reply.textContent, /parse\.rs:12/);
+    assert.ok([...reply.querySelectorAll("button")].some((b) => /Copy reply/.test(b.textContent)), "copied as a reply is");
+    assert.match(turn.querySelector(".tool-activity summary").textContent, /Review/);
+  } finally { page.close(); }
+});
