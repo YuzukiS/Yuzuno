@@ -143,7 +143,7 @@ import { ResultRequest } from "./intelligent-ui/ResultRequest";
 import { pruneResultViewCache } from "./intelligent-ui/view-storage";
 import { useSnapshot } from "./useSnapshot";
 import { POLL_MS, SAFETY_NET_MS, useWorkspaceEvents } from "./useWorkspaceEvents";
-import { useBrowserOffline } from "./browser-offline";
+import { useBrowserOffline, watchBrowserNetwork } from "./browser-offline";
 import type { WorkspaceEvent } from "./workspace-events.ts";
 import { useAgentDetail } from "./useAgentDetail";
 import { useRefreshTrigger } from "./refresh-trigger";
@@ -514,6 +514,14 @@ export function App() {
     );
     return () => clearInterval(timer);
   }, [workspaceFailure, eventConnection, workspaceRefresh]);
+  useEffect(() => {
+    // Back online after a failed workspace read: read it again now, not at
+    // the next interval (T-170). Reports share one read, queued behind one
+    // already running; only its success clears the failure, never coming
+    // online or the stream opening. With no failure nothing more is read.
+    if (previewMode || !workspaceFailure) return;
+    return watchBrowserNetwork({ online: () => workspaceRefresh.now() });
+  }, [workspaceFailure, workspaceRefresh]);
   const browserOffline = useBrowserOffline();
   const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode, browserOffline);
   const agent = workspace?.agents.find((a) => a.id === selected);
