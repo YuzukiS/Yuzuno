@@ -4650,7 +4650,11 @@ test("CI rail refreshes on Jobs, collaboration closure and reconnect, without re
     await until(()=>runtime("b")==="Ready","completion event clears waiting");
     assert.equal(page.calls.filter(c=>/\/api\/agents\/[^/]+$/.test(c.url)).length,before,"CI event does not refetch conversation");
     ci={agents:{b:{running:0,discovering:1,check:0}}};
+    // Core answers a reopened stream with `resumed` first. Without it the
+    // START_WAIT_MS fallback resets and rightly re-reads the conversation,
+    // racing the assertion below on a slow runner.
     const n=reads();page.eventSources.at(-1).onopen?.();
+    page.eventSources.at(-1).onmessage?.({data:JSON.stringify({type:"resumed"})});
     await until(()=>reads()>n&&runtime("b")==="Waiting · CI","reconnect refreshes counts");
     ci={agents:{}};
     page.eventSources.at(-1).onmessage?.({data:JSON.stringify({type:"workspace.changed",scope:"collaboration"})});
