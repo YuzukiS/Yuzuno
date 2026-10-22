@@ -6,7 +6,11 @@ param(
     [string]$CoreUrl,
     [int]$CdpPort,
     [int]$DesktopProcessId,
-    [string]$InstallDir
+    [string]$InstallDir,
+    # Which lab build runs: the debug one, or the release one that ships
+    # (no console window).
+    [ValidateSet('debug', 'release')]
+    [string]$Build = 'debug'
 )
 # Windows half of the T-171 start lab (desktop/tests/start-lab.py). It runs
 # only the lab build of the desktop (identifier dev.yuzuno.workspace.t171lab,
@@ -15,7 +19,7 @@ param(
 # read or changed.
 $ErrorActionPreference = 'Stop'
 $identifier = 'dev.yuzuno.workspace.t171lab'
-$executable = Join-Path $env:LOCALAPPDATA 'Yuzuno\build\t171-desktop\debug\yuzuno-desktop.exe'
+$executable = Join-Path $env:LOCALAPPDATA "Yuzuno\build\t171-desktop\$Build\yuzuno-desktop.exe"
 $appData = Join-Path $env:APPDATA $identifier
 $webviewData = Join-Path $env:LOCALAPPDATA $identifier
 
@@ -27,7 +31,8 @@ function Get-LabProcess([int]$Id) {
 
 switch ($Action) {
     'Paths' {
-        [pscustomobject]@{ executable = $executable; appData = $appData; webviewData = $webviewData } | ConvertTo-Json
+        $sha256 = if (Test-Path -LiteralPath $executable) { (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLower() } else { $null }
+        [pscustomobject]@{ executable = $executable; sha256 = $sha256; appData = $appData; webviewData = $webviewData } | ConvertTo-Json
     }
     'Launch' {
         if (-not (Test-Path -LiteralPath $executable)) { throw 'Build the lab desktop first.' }

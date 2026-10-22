@@ -12,6 +12,8 @@ $env:TAURI_CONFIG = '{"identifier":"dev.yuzuno.workspace.t171lab","productName":
 python3 desktop/tests/start-lab.py --run <run> --target <cargo target>/debug   # WSL_DISTRO_NAME, HOME, USER set
 ```
 
+`--desktop-build release` runs the release build instead (`desktop.ps1 -Release -BuildOnly`, same identity): the one that ships, with no console window. The report records which build ran and its SHA-256.
+
 **What is its own.**
 - **The Core.** A fixture release of this tree's Core: the debug `yuzuno-workspace` and `yuzuno-update-helper`, with fixture UI. It is packaged with `tools/package-release.py` and registered into a new managed folder under `/var/tmp/t171-<run>`. It runs on port 4491 with its own Workspace and working folders and a fake Codex, and `YUZUNO_SERVICE_PORTS=4492-4493` so it opens none of the daily Core's ports.
 - **The desktop.** The lab build's identifier is its own, so its saved Core (`core.json`) and WebView data are too. `start-lab.ps1` runs and stops only that build.
@@ -60,10 +62,32 @@ Run `r5` passed all eleven steps. Lab and code at `15b1f2f`. Setup: Windows 11, 
 
 None of these was a product failure.
 
+## The release build (2026-10-22 UTC)
+
+This is the build that ships: `desktop.ps1 -Release -BuildOnly` under the lab identity, from `desktop/` as at `be18d2a`. Its executable is 16,076,800 bytes, SHA-256 `2565195dbdce54ff47ef702f20085d36c36791ec312c40f8466d2c18abaeca6f`. It has no console window, and it starts `wsl.exe` hidden from a GUI process. The Core fixture is a release build of main `d131662`, which contains #70's Core part.
+
+**Run `r8`** (lab `b1bd911`) passed steps 1–10:
+- **The start** took 2.4 s from the click to the opened Workspace.
+- **The Core it starts** is its own session leader, a child of the start that stays. Its cgroup is `0::/init.scope`, and it has the recorded environment value.
+- **The start that stays.** One helper and the hidden `wsl.exe` stayed with the Core. They were still there, along with the Core's whole session, after the window's close button had closed the window.
+- **No restart.** A running Core was opened, not started again.
+- **Two starts at once:** one Core, and *Core is already being started.*
+- **Window killed mid-start.** The window's own `wsl.exe` was running before the kill. The Core answered 3.9 s after it and still ran 20 s later.
+- **Refusals:** a held port, a missing distribution and a missing installation, each with the same messages as `r5`.
+
+**Step 11** (the start that stays ends once no Core is left) was cut short in `r8`.
+- At 01:03:55 UTC, its call into Windows failed with `WSL ERROR: UtilAcceptVsock:273: accept4 failed 110`, a timeout. WSL restarted at 01:08:17; this record does not attribute a cause.
+- The lab had written its report, but the Job was later marked interrupted.
+- Step 11 was then run on its own, with r8's installation. It ran the desktop's exact start command through Windows' `wsl.exe`, hidden, and the Core answered. One helper and its `wsl.exe` stayed. After the Core was stopped, they ended 124.0 s later: the 120 s grace plus one 5 s look.
+
+**Earlier release-build runs.**
+- **`r6`** found no `web/node_modules` in a new worktree, so nothing ran.
+- **`r7`** passed steps 1–7, then counted the earlier start's `wsl.exe` as the new one's. It killed the window before that window had begun its start, so nothing started and nothing was stopped, as in `r1`. The lab now waits for a `wsl.exe` whose parent is that window.
+
 ## Not covered
 
 - **WSL not running before the click.** The distribution was running: stopping it would stop the daily Core and its Agents. `wsl.exe` starts a stopped distribution itself; that path, and how long it takes, is unchecked. For the same reason, whether WSL would end the distribution without the start that stays was not observed: other `wsl.exe` clients were attached throughout.
 - **WSL not installed.** Only the app's check for a missing `System32\wsl.exe` exists, unexercised.
-- **A real reboot, a release build of the desktop, a CI-built Core release.** The lab used debug builds and a fixture release.
+- **A real reboot, an installed or signed desktop, a CI-built Core release.** The lab ran the desktop's builds from their build folder, under the lab identity, and a fixture release of Core.
 - **Agents running in the started Core.** The lab Core ran none. Closing the window was checked on the Core's whole session, where its Agents would run.
 - **The regular app with the daily Core.** Its first start needs a Core release with this change, run once.

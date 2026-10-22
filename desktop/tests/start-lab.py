@@ -10,7 +10,8 @@ tools/package-release.py and registered into a new managed folder under
 folders and a fake Codex; no model is called. The desktop is the lab build
 from scripts/desktop.ps1 with TAURI_CONFIG
 {"identifier":"dev.yuzuno.workspace.t171lab"}, so its saved Core and WebView
-data are its own; desktop/tests/start-lab.ps1 runs only that build. The
+data are its own; desktop/tests/start-lab.ps1 runs only that build, debug or
+(--desktop-build release) the release build that ships. The
 regular app, the daily Core and their data are never read or changed.
 
 Run it as a Yuzuno Job with WSL_DISTRO_NAME, HOME and USER in its
@@ -166,9 +167,11 @@ def stop(pid, managed):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--run", required=True)
-    parser.add_argument("--target", type=Path, required=True, help="cargo target dir with debug Core binaries")
+    parser.add_argument("--target", type=Path, required=True, help="cargo target dir (debug or release) with the Core binaries")
     parser.add_argument("--port", type=int, default=4491)
     parser.add_argument("--cdp-port", type=int, default=9341)
+    parser.add_argument("--desktop-build", choices=["debug", "release"], default="debug",
+                        help="the lab desktop to run: the debug build, or the release build that ships")
     args = parser.parse_args()
     assert re.fullmatch(r"[a-z0-9-]{1,20}", args.run)
     assert os.environ.get("WSL_DISTRO_NAME"), "run with WSL_DISTRO_NAME set"
@@ -178,10 +181,10 @@ def main():
     for folder in (data, work, shots):
         folder.mkdir(mode=0o700)
     url = f"http://127.0.0.1:{args.port}"
-    report = {"run": args.run, "distro": os.environ["WSL_DISTRO_NAME"], "steps": [], "notCovered": [
+    report = {"run": args.run, "distro": os.environ["WSL_DISTRO_NAME"], "desktopBuild": args.desktop_build, "steps": [], "notCovered": [
         "WSL not running before the start (the distribution was running: stopping it would stop the daily Core)",
         "WSL not installed (only that wsl.exe is missing is checked, in unit tests)",
-        "a Windows restart, and a Core release built by CI (this is a debug fixture release)",
+        "a Windows restart, and a Core release built by CI (this is a fixture release of --target's binaries)",
     ]}
     assert health(args.port) is None and listener(args.port) is None, f"port {args.port} is in use"
     assert not devtools(args.cdp_port), f"DevTools port {args.cdp_port} is in use"
@@ -192,7 +195,8 @@ def main():
 
     def windows(action, **params):
         script = subprocess.run(["wslpath", "-w", str(HERE / "start-lab.ps1")], capture_output=True, text=True, check=True).stdout.strip()
-        command = [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", action]
+        command = [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", action,
+                   "-Build", args.desktop_build]
         for key, value in params.items():
             command += [f"-{key}", str(value)]
         done = subprocess.run(command, capture_output=True, timeout=120, cwd="/mnt/c/Windows")
@@ -280,6 +284,7 @@ def main():
 
         # 2. The lab desktop connects and keeps where Core is installed.
         paths = windows("Paths")
+        report["desktop"] = {"build": args.desktop_build, "sha256": paths["sha256"]}
         saved_path = Path(subprocess.run(["wslpath", "-u", paths["appData"]], capture_output=True, text=True, check=True).stdout.strip()) / "core.json"
         if saved_path.exists():
             saved_path.unlink()  # the lab identity's own saved Core from an earlier run
@@ -357,8 +362,10 @@ def main():
 
 
         window("click-start")
-        seen = {"beforeKill": until(lambda: (lambda o: o if o["wsl"] or o["helpers"] or o["listener"] else None)(observe()), 20,
-                                    "the start to be under way")}
+        # This window's own start: a wsl.exe it launched. An earlier start
+        # that stays (and its wsl.exe) is not this one.
+        seen = {"beforeKill": until(lambda: (lambda o: o if any(w["parent"] == desktop for w in o["wsl"]) else None)(observe()), 20,
+                                    "this window's start to be under way")}
         windows("Kill", DesktopProcessId=desktop)
         desktop = None
         killed_at = time.monotonic()
