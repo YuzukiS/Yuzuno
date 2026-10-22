@@ -347,15 +347,12 @@ mod tests {
     #[tokio::test]
     async fn lazy_blob_fetches_run_while_the_store_is_measured() {
         let (dir, store, blobs) = partial_store(120);
-        let list = dir.path().join("blobs");
-        fs::write(&list, blobs.join("\n") + "\n").unwrap();
+        fs::write(dir.path().join("blobs"), blobs.join("\n") + "\n").unwrap();
         // A fixed test-only alias fetches each blob from the local promisor in
         // its own Git process: for seconds, the 250 ms storage check walks
-        // objects/pack while packs arrive under temporary names.
-        let alias = format!(
-            "alias.lazy-fixture=!while read blob; do git cat-file blob $blob >/dev/null || exit 1; done < {}",
-            list.display()
-        );
+        // objects/pack while packs arrive under temporary names. Git runs in
+        // the store's parent, so the list is named there, not by its path.
+        let alias = "alias.lazy-fixture=!while read blob; do git cat-file blob \"$blob\" >/dev/null || exit 1; done < blobs";
         for blob in [&blobs[0], &blobs[blobs.len() - 1]] {
             let offline = [
                 "-c",
@@ -370,7 +367,7 @@ mod tests {
             "-c",
             "protocol.file.allow=always",
             "-c",
-            alias.as_str(),
+            alias,
             "lazy-fixture",
         ];
         store.run(&cmd, 100).await.unwrap();
