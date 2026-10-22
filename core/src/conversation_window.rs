@@ -52,6 +52,8 @@ fn message_parts(item: &Value) -> Vec<&str> {
     if item["type"] == "userMessage" {
         if let Some(original) = item["_yuzunoInputText"].as_str() { return vec![original]; }
         item["content"].as_array().into_iter().flatten().filter_map(|v| v["text"].as_str()).collect()
+    } else if item["type"] == "exitedReviewMode" {
+        item["review"].as_str().into_iter().collect()
     } else {
         item["text"].as_str().into_iter().collect()
     }
