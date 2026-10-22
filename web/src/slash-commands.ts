@@ -48,14 +48,21 @@ export type CommandList =
     }
   | { state: "unavailable" | "unsupported" | "failed"; reason: string };
 
+const control = (name: string, description: string, argumentHint = ""): SlashCommand =>
+  ({ name, description, argumentHint, aliases: [], source: "control" });
 /** `/model`: this Agent's model settings, never a prompt. */
-const modelControl: SlashCommand = {
-  name: "model",
-  description: "Opens this Agent's model settings; a change applies from the next turn",
-  argumentHint: "<model>",
-  aliases: [],
-  source: "control",
-};
+const modelControl = control("model", "Opens this Agent's model settings; a change applies from the next turn", "<model>");
+/**
+ * What the CLI command is for, where Yuzuno already has it (T-29): each
+ * opens that part of Yuzuno on Send and sends nothing; what happens next is
+ * the user's choice there.
+ */
+const permissionsControl = control("permissions", "Opens this Agent's settings, with its permissions; a change applies from the next turn");
+const newControl = control("new", "Opens New agent with this Agent's machine, folder and harness filled in; nothing starts until you create it");
+const resumeControl = control("resume", "Opens Existing session, to continue a saved session as an Agent");
+const forkControl = control("fork", "Opens Fork, for a new Agent that continues this conversation");
+const statusControl = control("status", "Shows this Agent's facts and plan usage in the context panel");
+const usageControl = control("usage", "Shows this Agent's plan usage and limits in the context panel");
 
 /**
  * What a Codex Agent offers: Codex's app-server lists no commands, so only
@@ -68,10 +75,10 @@ export const codexControls: CommandList = {
   source: "controls",
   sessionId: null,
   commands: [
-    { name: "compact", description: "Compacts this conversation now with Codex's own compaction, not a prompt", argumentHint: "", aliases: [], source: "control" },
-    modelControl,
+    control("compact", "Compacts this conversation now with Codex's own compaction, not a prompt"),
+    modelControl, permissionsControl, forkControl, newControl, resumeControl, statusControl, usageControl,
   ],
-  total: 2,
+  total: 8,
   truncated: false,
   skillsKnown: false,
 };
@@ -102,27 +109,44 @@ export function withCodexSkills(skills: CommandList): CommandList {
   };
 }
 
-/** Claude Code's list, with `/model` as the settings control it is here. */
+/** Yuzuno's controls for a Claude Agent, in place of Claude Code's commands of those names. */
+const claudeControls = [modelControl, permissionsControl, newControl, resumeControl];
+
+/** Claude Code's list, with `/model`, `/permissions`, `/new` and `/resume` as the Yuzuno controls they are here. */
 export function withModelControl(list: CommandList): CommandList {
   if (list.state !== "ready") return list;
-  const others = list.commands.filter((c) => c.name !== "model");
+  const names = new Set(claudeControls.map((c) => c.name));
+  const others = list.commands.filter((c) => !names.has(c.name));
   const replaced = list.commands.length - others.length;
-  return { ...list, commands: [...others, modelControl], total: list.total - replaced + 1 };
+  return { ...list, commands: [...others, ...claudeControls], total: list.total - replaced + claudeControls.length };
 }
 
+/** Which harnesses each of Yuzuno's controls is for. Claude Code runs its
+ * own `/compact`, `/status` and `/usage`; a fork is of a Codex session. An
+ * OpenCode Agent's model and settings are OpenCode's own: no control. */
+const controlHarnesses = {
+  compact: ["codex"],
+  model: ["codex", "claude"],
+  permissions: ["codex", "claude"],
+  fork: ["codex"],
+  new: ["codex", "claude"],
+  resume: ["codex", "claude"],
+  status: ["codex"],
+  usage: ["codex"],
+} as const;
+export type NativeControl = keyof typeof controlHarnesses;
+
 /**
- * A draft that is exactly one of Yuzuno's controls, run on Send instead of
- * being sent as a prompt: `/model [name]` for any Agent, and `/compact` for
- * a Codex Agent (Claude Code runs its own `/compact` as a native command).
- * `args` is whatever follows the name.
+ * A draft that is exactly one of Yuzuno's controls for this harness, run on
+ * Send instead of being sent as a prompt. `args` is whatever follows the
+ * name; only `/model` takes any.
  */
-export function nativeControl(text: string, harness: string): { command: "compact" | "model"; args: string } | null {
-  const match = /^\/(compact|model)(?:\s+([\s\S]*))?$/.exec(text.trim());
-  if (!match) return null;
-  if (match[1] === "compact" && harness !== "codex") return null;
-  // An OpenCode Agent's model is OpenCode's own configuration: no control.
-  if (harness === "opencode") return null;
-  return { command: match[1] as "compact" | "model", args: (match[2] ?? "").trim() };
+export function nativeControl(text: string, harness: string): { command: NativeControl; args: string } | null {
+  const match = /^\/([a-z]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+  if (!match || !Object.hasOwn(controlHarnesses, match[1])) return null;
+  const command = match[1] as NativeControl;
+  if (!(controlHarnesses[command] as readonly string[]).includes(harness)) return null;
+  return { command, args: (match[2] ?? "").trim() };
 }
 
 /**

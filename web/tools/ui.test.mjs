@@ -5064,3 +5064,119 @@ test("a skill chosen in a Codex Agent's composer is a chip its message invokes; 
     page.close();
   }
 });
+
+/** Closes the open Modal with its own close button and waits until it is gone. */
+async function closeModal(page) {
+  page.document.querySelector('[role="dialog"] [aria-label="Close dialog"]').click();
+  await until(() => !page.document.querySelector('[role="dialog"]'), "the dialog to close");
+}
+
+// T-29: Yuzuno's controls for what the CLI's /permissions, /fork, /new,
+// /resume, /status and /usage are for. Each opens that part of Yuzuno on
+// Send, as /model opens settings: nothing is sent or created until the user
+// acts there, and the draft stays.
+test("a Codex Agent's /permissions, /fork, /new, /resume and /status open their part of Yuzuno and send nothing", async () => {
+  // Fork opens with its read-only preview of what the fork would hold.
+  const preview = { sourceThreadId: "thread-a", throughTurnId: "t1", throughCompletedAt: 1791856000, includedTurns: 1, excludedTurns: 0,
+    name: "Mori", cwd: "/work/mori", model: "m", reasoningEffort: null, permissionPreset: "auto", projectId: null, forkedTo: null, warnings: [] };
+  const previewed = [];
+  const page = await mount({ harness: "codex", agentFields: { cwd: "/work/mori" }, beforeLoad(window) {
+    const fetch = window.fetch;
+    window.fetch = (url, init = {}) => url.endsWith("/codex/fork/preview")
+      ? (previewed.push(url), Promise.resolve({ ok: true, status: 200, json: async () => preview, text: async () => JSON.stringify(preview) }))
+      : fetch(url, init);
+  } });
+  try {
+    const dialog = () => page.document.querySelector('[role="dialog"]');
+    const closeDialog = () => closeModal(page);
+    let composer = await sendDraft(page, "/permissions");
+    await until(() => chipGroup(page, "Model"), "Agent settings to open");
+    assert.match(page.document.body.textContent, /Agent settings are open, with this Agent's permissions/);
+    assert.equal(composerText(composer), "/permissions", "the draft stays");
+    await closeDialog();
+
+    await sendDraft(page, "/fork");
+    await until(() => /Continue in a Codex fork/.test(dialog()?.textContent || ""), "Fork to open");
+    await closeDialog();
+
+    await sendDraft(page, "/new");
+    await until(() => chipGroup(page, "Harness"), "New agent to open");
+    assert.equal(chosen(page, "Harness"), "codex");
+    assert.equal([...dialog().querySelectorAll("label")].find((l) => /Working folder/.test(l.textContent)).querySelector("input").value,
+      "/work/mori", "this Agent's folder, not the workspace default");
+    await closeDialog();
+
+    await sendDraft(page, "/resume");
+    await until(() => [...page.document.querySelectorAll('[aria-pressed="true"]')].some((b) => b.textContent === "Existing Codex session"),
+      "Existing Codex session to open");
+    await closeDialog();
+
+    page.scrollTargets.length = 0;
+    composer = await sendDraft(page, "/status");
+    await until(() => page.document.querySelector("aside.inspector"), "the context panel");
+    await until(() => page.scrollTargets.some((t) => t.id === "agent-plan-usage"), "its plan usage in view");
+
+    // A word after one of these is not the command: it says so, and keeps the draft.
+    composer = await sendDraft(page, "/fork now");
+    assert.match(page.document.body.textContent, /\/fork takes nothing after it here/);
+    assert.equal(composerText(composer), "/fork now");
+    // Fork read its preview once; no /messages, no fork, no Agent created, no settings saved.
+    assert.deepEqual(previewed, ["/api/agents/a/codex/fork/preview"]);
+    assert.deepEqual(posts(page), []);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a Claude Agent's /new and /resume open New agent for Claude; its /status is Claude Code's own and goes as a message", async () => {
+  // The Claude tab lists this machine's saved sessions as it opens: none here.
+  const page = await mount({ harness: "claude", beforeLoad(window) {
+    const fetch = window.fetch;
+    window.fetch = (url, init = {}) => /\/api\/claude\/sessions\?/.test(url)
+      ? Promise.resolve({ ok: true, status: 200, json: async () => ({ sessions: [], next: null }), text: async () => "{}" })
+      : fetch(url, init);
+  } });
+  try {
+    await sendDraft(page, "/new");
+    await until(() => chipGroup(page, "Harness"), "New agent to open");
+    assert.equal(chosen(page, "Harness"), "claude");
+    await closeModal(page);
+    await sendDraft(page, "/resume");
+    await until(() => [...page.document.querySelectorAll('[aria-pressed="true"]')].some((b) => b.textContent === "Existing Claude session"),
+      "Existing Claude session to open");
+    await closeModal(page);
+    assert.deepEqual(posts(page), []);
+    await sendDraft(page, "/status");
+    assert.deepEqual(posts(page), ["/api/agents/a/messages"]);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+// Review cd948eaf (P2): what /new fills in is chosen afresh, as choosing a
+// harness or machine is: a model picked at an earlier opening is not kept.
+test("/new starts New agent without a model left from an earlier opening for another harness", async () => {
+  const page = await mount({ harness: "claude", beforeLoad(window) {
+    const fetch = window.fetch;
+    window.fetch = (url, init = {}) => /\/api\/claude\/sessions\?/.test(url)
+      ? Promise.resolve({ ok: true, status: 200, json: async () => ({ sessions: [], next: null }), text: async () => "{}" })
+      : fetch(url, init);
+  } });
+  try {
+    page.document.querySelector(".add-agent").click();
+    await until(() => chipGroup(page, "Model")?.querySelector('input[value="test-model"]'), "Codex's models in New agent");
+    assert.equal(chosen(page, "Harness"), "codex");
+    await choose(page, "Model", "test-model");
+    assert.equal(chosen(page, "Model"), "test-model");
+    await closeModal(page);
+    await sendDraft(page, "/new");
+    await until(() => chosen(page, "Harness") === "claude", "New agent for this Claude Agent");
+    assert.equal(chosen(page, "Model"), "", "Harness default, not the Codex model picked before");
+    assert.deepEqual(posts(page), []);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
