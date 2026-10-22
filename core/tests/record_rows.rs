@@ -143,10 +143,10 @@ fn split_and_assemble_give_back_exactly_the_record() {
     assert_eq!(parsed, expected, "with payloads, each parsed from its row");
     // Their text is not kept, so their bytes are counted where they are
     // stored: as bytes, not characters (the unicode payload has both).
-    let count = |sql: &str| -> usize { db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap() as usize };
-    let bytes = count("SELECT SUM(LENGTH(CAST(data AS BLOB))) FROM agent_payloads WHERE agent_id='a'");
+    let total = |sql: &str| -> usize { db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap() as usize };
+    let bytes = total("SELECT SUM(LENGTH(CAST(data AS BLOB))) FROM agent_payloads WHERE agent_id='a'");
     assert_eq!(bytes, without_previews.payloads.iter().map(|p| p.data.len()).sum::<usize>());
-    assert!(count("SELECT SUM(LENGTH(data)) FROM agent_payloads WHERE agent_id='a'") < bytes);
+    assert!(total("SELECT SUM(LENGTH(data)) FROM agent_payloads WHERE agent_id='a'") < bytes);
     assert_eq!(sorted(read), sorted(rows::Rows { payloads: Vec::new(), ..without_previews }), "with payloads, without previews");
 }
 
