@@ -1,6 +1,6 @@
 # Updates and platform support
 
-Which part of Yuzuno updates how, what is released, and what to try first when something looks wrong. Status on 2026-10-20, against main `08450a0`. The releases named here are the private repository's; the public repository has none yet ([the switch](public-readiness.md#where-the-repository-is-named)). The details stay in the pages linked below.
+Which part of Yuzuno updates how, what is released, and what to try first when something looks wrong. Status on 2026-10-20, against main `08450a0`. The releases named here are the private repository's. Since 2026-10-21 the public repository publishes its own signed Core releases, starting with core.13 and core.14 ([install guide](independent-core.md)); this page is not yet updated for them. The details stay in the pages linked below.
 
 ## Two things update separately
 
