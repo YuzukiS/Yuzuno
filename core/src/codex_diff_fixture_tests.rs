@@ -383,7 +383,12 @@ async fn real_git_runs_none_of_the_repositorys_programs_and_the_folder_is_left_a
     let requests = lab.of("t1");
     let commands = requests.iter().filter(|r| r["method"] == "command/exec").count();
     assert_eq!((report["commands"].as_u64(), commands), (Some(5 + read as u64), 5 + read), "one command per step and per file read");
-    assert_eq!(requests.iter().filter(|r| r["method"] == "command/exec/terminate").count(), 1, "only the capped file was stopped");
+    // Past its cap a process is stopped, unless Git finished first and its answer came before the stop.
+    let large = requests.iter().find(|r| r["method"] == "command/exec" && r["params"]["command"].as_array().unwrap().last() == Some(&json!("large.txt")))
+        .map(|r| r["params"]["processId"].clone()).unwrap();
+    let stopped: Vec<&Value> = requests.iter().filter(|r| r["method"] == "command/exec/terminate").map(|r| &r["params"]["processId"]).collect();
+    println!("stopped: {stopped:?}");
+    assert!(stopped.len() <= 1 && stopped.iter().all(|p| **p == large), "only the capped file's process, at most once: {stopped:?}");
     assert!(report["bytes"].as_u64().unwrap() <= Limits::default().total as u64);
     assert_eq!((again["state"].as_str(), &again["tracked"], &again["staged"]), (Some("read"), &report["tracked"], &report["staged"]), "the same again");
 
