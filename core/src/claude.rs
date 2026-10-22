@@ -391,10 +391,11 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        let d = self.detail(id).await?;
-        anyhow::ensure!(d.agent.harness == "claude", "Agent 不是 Claude");
-        ensure_agent_open(&d.agent)?;
-        self.claude_catalog_for_agent(&d.agent).await
+        // The catalog needs the Agent alone: its listed view (T-140).
+        let agent = self.listed(id).await?;
+        anyhow::ensure!(agent.harness == "claude", "Agent 不是 Claude");
+        ensure_agent_open(&agent)?;
+        self.claude_catalog_for_agent(&agent).await
     }
 
     async fn claude_catalog_for_agent(&self, agent: &Agent) -> Result<Value> {
@@ -3291,6 +3292,55 @@ mod tests {
             .collect();
         assert_eq!(sent, [("t", "held"), ("t", "unheld"), ("t", "replaced")].map(|(t, c)| (json!(t), json!(c), json!("mailbox notice"))));
         assert_eq!(crate::store::detail_reads_of(&id), 0, "a whole record was read");
+    }
+
+    /// T-140: the model catalog checks the Agent on its listed view, held or
+    /// not, and asks the running Claude for its models as before: a closed
+    /// Agent and one of another harness are refused, and no whole record is
+    /// read.
+    #[tokio::test]
+    async fn the_model_catalog_reads_the_agent_not_its_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(temp.path().into(), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
+        let mut d = detail();
+        d.agent.id = "catalog-reads".into();
+        let id = d.agent.id.clone();
+        ws.store.insert(&d).unwrap();
+        let (tx, mut commands) = mpsc::channel(8);
+        let (shutdown, _shutdown_rx) = watch::channel(false);
+        let (_stopped_tx, stopped) = watch::channel(None);
+        let bridge = Arc::new(Bridge { tx, pending: Arc::new(Mutex::new(HashMap::new())), next: AtomicU64::new(1),
+            shutdown, stopped, diagnostics: Default::default(), stderr_closed: watch::channel(true).1, pid: None });
+        ws.claudes.lock().unwrap().insert(id.clone(), Connection { remote_instance: None, generation: 1, bridge: bridge.clone(), events: None });
+        let asked = Arc::new(std::sync::Mutex::new(0));
+        let (counted, replying) = (asked.clone(), bridge.clone());
+        tokio::spawn(async move {
+            while let Some(command) = commands.recv().await {
+                let command: Value = command;
+                assert_eq!(command["op"], "models");
+                *counted.lock().unwrap() += 1;
+                let request: u64 = command["id"].as_str().unwrap().parse().unwrap();
+                replying.pending.lock().await.remove(&request).unwrap().send(Ok(json!({"models":[{"model":"native-model"}]}))).unwrap();
+            }
+        });
+        ws.store.update(&id, "test/held", &json!({}), |_| {}).unwrap();
+        for held in [true, false] {
+            assert_eq!(ws.claude_agent_catalog(&id).await.unwrap(), json!({"models":[{"model":"native-model"}]}));
+            assert_eq!(ws.store.release_for_test(&id), held);
+        }
+        assert_eq!(*asked.lock().unwrap(), 2, "asked Claude once per read");
+        ws.store.update(&id, "test/closed", &json!({}), |d| d.agent.closed_at = Some(now())).unwrap();
+        let closed = ws.claude_agent_catalog(&id).await.unwrap_err();
+        assert!(closed.to_string().contains("已关闭"), "{closed}");
+        let mut codex = detail();
+        codex.agent.id = "catalog-reads-codex".into();
+        codex.agent.harness = "codex".into();
+        ws.store.insert(&codex).unwrap();
+        let other = ws.claude_agent_catalog("catalog-reads-codex").await.unwrap_err();
+        assert!(other.to_string().contains("不是 Claude"), "{other}");
+        assert_eq!(*asked.lock().unwrap(), 2, "nothing asked of a closed or other Agent");
+        assert_eq!(crate::store::detail_reads_of(&id), 0, "a whole record was read");
+        assert_eq!(crate::store::detail_reads_of("catalog-reads-codex"), 0, "a whole record was read");
     }
 
     /// T-140: a Stop finds the harness on the listed Agent and the running

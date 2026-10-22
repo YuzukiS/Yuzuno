@@ -412,6 +412,26 @@ confirm. Each row is one process; a Claude close is covered by tests, not
 measured. These are synthetic allocator measurements, not the daily Core's
 RSS.
 
+### The model and permission catalog
+
+The Agent settings panel asks for `/api/agents/{id}/models` when it opens, and
+again after a save or a reload; nothing polls it. Each request read the whole
+record: twice for a Claude Agent (the route's harness lookup and the catalog's
+open check) and four times, one after another, for a Codex Agent (the route,
+the catalog's check, its read of the settings once connected, and the context
+settings). The route and both catalogs now read the Agent as listed, and the
+Codex catalog still reads it again once connected, for the settings the
+connection may change. The context settings are read from the send view,
+which has every field they use: the Agent, its pending requests, receipts,
+context usage and each Turn's status. The admission, gate, connection,
+permission and config requests, the rewind check and the answer are as before.
+
+Tests count whole reads per Agent: none for the route, the Claude catalog (a
+scripted bridge) or the Codex catalog (a scripted app-server), held or not.
+The Claude catalog still refuses a closed Agent and one of another harness,
+and the route a missing one, as before. This is a cost per opening of the
+panel, not one Core pays while streaming; it was not measured separately.
+
 ### A send's harness and a Claude mailbox notice
 
 Every message sent from the UI read the whole record only to choose its
@@ -441,6 +461,44 @@ Agent's is; "not held" is read from its rows:
 
 The listed Agent was already cached in these processes. One that is not reads
 the metadata, the Turn rows and the newest Turn. A send view that is not held
-still assembles every Turn's Items from their rows, without payloads, before
-dropping them. These are synthetic allocator measurements, not the daily
-Core's RSS.
+assembled every Turn's Items from their rows, without payloads, before
+dropping them; it now keeps only what it needs (see the next section). These
+are synthetic allocator measurements, not the daily Core's RSS.
+
+### A send view of a record that is not held
+
+About 40 callers read the send view: sends, steers, the close waits that poll
+it every 25 or 50 ms, deliveries and reconnects. For a record not held in
+memory, it assembled every Item from its rows, with the previews of its large
+fields, and then dropped all but the async questions. It is now read in the
+same reader, snapshot and version loop. The Turn rows come first, then one
+cursor over the Item rows in key order, a Turn's rows together. Each Turn is
+assembled and checked exactly as before, by the same code, and only the async
+questions and the large Items a pending request names are kept.
+`whole_referenced` then makes the named Items whole as before.
+
+Wherever this read could differ, it gives way to the old one, in the same
+snapshot and with the same stand-in and error: a record stored whole, journal
+rows `restore` would apply to Turns or Items, a replay that is not metadata
+only, anything that does not assemble or fails, and a record known to be
+damaged. The view is unchanged. Tests compare it with the old read, case by
+case, in two stores.
+
+T-140 Job `69e8518f-67cb-4229-872a-7f3fba72ca9e`, 2026-10-22, release builds of
+`core/examples/core_read_cost.rs` (on lab branches, not merged), "before" the
+product code of `2cbde4e`. One seeded synthetic image (192 MiB, 23,308 Items,
+234 Turns of 100 Items, the newest running) was copied for each read, which
+ran alone in a fresh process:
+
+| Send view, record not held | Before | After |
+| --- | ---: | ---: |
+| Rust peak above live | 137.5 MiB | 1.5 MiB |
+| RSS after the read (from 11.6 MiB) | 108.6 MiB | 11.7 MiB |
+| Time | 140 ms | 64 ms |
+| Read through syscalls (rchar) | 98.7 MiB | 98.6 MiB |
+
+A held record's send view (0.2 MiB, 1.8 ms) and a whole read (`detail`) were
+the same on both sides. The previews are still read and checked, so the bytes
+read stay the same. The peak follows the largest Turn, so a record with one
+very large Turn still reads that Turn whole. These are synthetic allocator
+measurements, not the daily Core's RSS.

@@ -695,6 +695,79 @@ pub fn load_recent(db: &Connection, id: &str) -> Result<Option<AgentDetail>> {
     Ok(Some(detail))
 }
 
+/// What `load_kept` read.
+pub enum Kept {
+    /// No such Agent.
+    Missing,
+    /// Stored whole, or `keep` read nothing more: read it with `load`.
+    Declined,
+    Record(AgentDetail),
+}
+
+/// A record stored as rows, without payloads, as `load` assembles it but
+/// holding only the Items `pick` keeps (T-140). Every Turn and Item is
+/// assembled and checked as `assemble` does, a Turn at a time from one cursor
+/// over the Item rows in key order (a Turn's rows together), and dropped
+/// unless kept: the rows of one Turn and the kept Items are held, not the
+/// record. `keep` sees the metadata first and gives `pick`, or None to read
+/// nothing more. `Damaged` where `assemble` would be.
+pub fn load_kept<P: Fn(&Value) -> bool>(db: &Connection, id: &str,
+    keep: impl FnOnce(&AgentDetail) -> Result<Option<P>>) -> Result<Kept> {
+    let _snapshot = snapshot(db)?;
+    let Some((meta, layout)) = db.prepare_cached("SELECT data, layout FROM agents WHERE id=?1")?
+        .query_row([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).optional()? else {
+        return Ok(Kept::Missing);
+    };
+    if Layout::from_column(layout)? == Layout::Whole {
+        return Ok(Kept::Declined);
+    }
+    let mut detail = from_meta(&meta).map_err(|e| damaged(id, e))?;
+    let Some(pick) = keep(&detail)? else { return Ok(Kept::Declined) };
+    let mut rows = db.prepare_cached("SELECT turn_id, ord, items, data FROM agent_turns WHERE agent_id=?1")?
+        .query_map([id], |r| Ok(TurnRow { key: r.get(0)?, ord: count(r.get(1)?)?,
+            items: r.get::<_, Option<i64>>(2)?.map(count).transpose()?, data: r.get(3)? }))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.sort_by_key(|t| t.ord);
+    let mut turns: HashMap<String, TurnRow> = HashMap::with_capacity(rows.len());
+    for (ord, row) in rows.into_iter().enumerate() {
+        if row.ord != ord {
+            return Err(damaged(id, anyhow::anyhow!("Agent {id}: Turn rows are not in order")));
+        }
+        turns.insert(row.key.clone(), row);
+    }
+    let mut assembled: Vec<Option<Value>> = vec![None; turns.len()];
+    let mut finish = |row: TurnRow, items: Vec<ItemRow>| -> Result<()> {
+        let ord = row.ord;
+        let mut turn = assemble_turn(id, row, items, &mut HashMap::new(), false).map_err(|e| damaged(id, e))?;
+        if let Some(items) = turn.get_mut("items").and_then(Value::as_array_mut) {
+            items.retain(|item| pick(item));
+        }
+        assembled[ord] = Some(turn);
+        Ok(())
+    };
+    let mut query = db.prepare_cached(
+        "SELECT turn_id, item_id, ord, payloads, data, previews FROM agent_items WHERE agent_id=?1 ORDER BY turn_id")?;
+    let mut items = query.query_map([id], item_from_row)?;
+    let mut group: Vec<ItemRow> = Vec::new();
+    loop {
+        let next = items.next().transpose()?;
+        if group.first().is_some_and(|first| next.as_ref().is_none_or(|item| item.turn != first.turn)) {
+            let row = turns.remove(&group[0].turn)
+                .ok_or_else(|| damaged(id, anyhow::anyhow!("Agent {id}: Item rows without a Turn row")))?;
+            finish(row, std::mem::take(&mut group))?;
+        }
+        match next {
+            Some(item) => group.push(item),
+            None => break,
+        }
+    }
+    for row in turns.into_values() {
+        finish(row, Vec::new())?;
+    }
+    detail.turns = assembled.into_iter().map(|turn| turn.expect("each Turn row is assembled once")).collect();
+    Ok(Kept::Record(detail))
+}
+
 /// What `Store::open` reads to mark an Agent restarted without its record
 /// (T-140): every Turn that has user messages, with its ID and those Items
 /// alone, in order and without payloads (all `message_content::bind` reads),
