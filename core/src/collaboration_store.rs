@@ -971,7 +971,7 @@ fn task_submit_result(
     // so a failed lookup leaves it out instead of failing the result.
     if actor.kind == "agent" {
         match crate::project_brief::home_hint(store, db, &task.id, &actor.id) {
-            Ok(Some(hint)) => output["homeHint"] = hint.into(),
+            Ok(Some(advice)) => advice.apply(&mut output),
             Ok(None) => {}
             Err(error) => eprintln!("Home hint for {}'s result: {error:#}", task.id),
         }
