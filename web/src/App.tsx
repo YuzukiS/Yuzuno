@@ -101,6 +101,7 @@ import { AgentSettings } from "./AgentSettings";
 import { agentHarnessName, nativeSession } from "./machine-checks";
 import { observedEffort } from "./claude-effort";
 import { CodexWriterNotice, ForkCodexDialog } from "./ForkCodexSession";
+import { CodexReviewDialog, startCodexReview } from "./CodexReview";
 import { RecoveryNotice, recoveryReason } from "./RecoveryNotice";
 import { AutoContinueSetting, QuotaResumeNotice } from "./QuotaResume";
 import { ClaudeRuntimeFacts } from "./ClaudeControls";
@@ -160,7 +161,7 @@ import { conversationTimeMarks } from "./conversation-time";
 import { PastedTextComposer, type ComposerHandle } from "./PastedTextComposer";
 import { draftTextBlocks } from "./message-content";
 import { RequestSummary } from "./MessageContent";
-import { appendDraft, draftText, hasDraftContent } from "./composer-draft";
+import { appendDraft, draftText, hasDraftContent, type ComposerDraft } from "./composer-draft";
 import { HandoffContext, HandoffDropStrip, type HandoffApi } from "./SendToAgent";
 import { handoffLabel, handoffRefusal, handoffText, type HandoffSource } from "./handoff";
 import { useComposerDraft } from "./useComposerDraft";
@@ -273,6 +274,13 @@ export function App() {
     return () => cancelAnimationFrame(frame);
   }, [usageFocus]);
   const [forkOpen, setForkOpen] = useState(false);
+  // `/review` alone: Review with Codex, for the draft that asked for it.
+  const [reviewRequest, setReviewRequest] = useState<{ agentId: string; draft: ComposerDraft; nonce: number } | null>(null);
+  // It is for the Agent it was asked from: selecting another Agent drops it,
+  // so it neither keeps read tracking off elsewhere nor reopens on return.
+  useEffect(() => {
+    setReviewRequest((request) => request && request.agentId !== selected ? null : request);
+  }, [selected]);
   const [turnDockEngaged, setTurnDockEngaged] = useState(false);
   const [inspector, setInspector] = useState(true);
   // A wide window's choice; on a phone the list is a screen of its own.
@@ -729,7 +737,8 @@ export function App() {
       !projectDialog &&
       !scopeMenuOpen &&
       !machinesOpen &&
-      !forkOpen,
+      !forkOpen &&
+      !reviewRequest,
     scrollRef: scroll,
     endRef: readEnd,
     onRead: reviewDisplayed,
@@ -1435,6 +1444,18 @@ export function App() {
         setModelRequest({ model: control.args, nonce: Date.now() });
         return;
       }
+      // `/review` asks this Agent's own Codex for its review: of the words
+      // after it, as its CLI does; alone, of what the user chooses in Review
+      // with Codex. The draft stays until Codex has accepted.
+      if (control?.command === "review") {
+        if (!control.args) {
+          setReviewRequest({ agentId: target, draft: sentDraft, nonce: Date.now() });
+          return;
+        }
+        await startCodexReview(target, { type: "custom", instructions: control.args });
+        reviewStarted(target, sentDraft);
+        return;
+      }
       // The rest open their part of Yuzuno, as the CLI command opens its
       // own: nothing is sent, and the draft stays until the user acts there.
       if (control && control.command !== "compact" && control.args)
@@ -1482,6 +1503,11 @@ export function App() {
     } catch (e) {
       if (currentSelected.current === target) setActionError(errorText(e));
     }
+  }
+  function reviewStarted(agentId: string, sentDraft: ComposerDraft) {
+    clearIfUnchanged(agentId, sentDraft);
+    setNotice("Codex started its review as a turn in this conversation. Its findings show here when it ends.");
+    refresh();
   }
   function holdResultReading() {
     stickToBottom.current = false;
@@ -2963,6 +2989,15 @@ export function App() {
         scope={scope}
         focus={taskFocus}
       />
+      {agent && !isClaude && !isOpenCode && (
+        <CodexReviewDialog
+          key={`review-${agent.id}-${reviewRequest?.nonce ?? 0}`}
+          agent={agent}
+          open={reviewRequest?.agentId === agent.id}
+          onOpenChange={(open) => { if (!open) setReviewRequest(null); }}
+          onStarted={() => { if (reviewRequest) reviewStarted(reviewRequest.agentId, reviewRequest.draft); }}
+        />
+      )}
       {agent && !isClaude && !isOpenCode && (
         <ForkCodexDialog
           key={`fork-${agent.id}`}

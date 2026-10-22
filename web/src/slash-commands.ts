@@ -66,8 +66,8 @@ const usageControl = control("usage", "Shows this Agent's plan usage and limits 
 
 /**
  * What a Codex Agent offers: Codex's app-server lists no commands, so only
- * the controls Yuzuno runs through Codex itself (`thread/compact/start`)
- * or through this Agent's settings.
+ * the controls Yuzuno runs through Codex itself (`thread/compact/start`,
+ * `review/start`) or through this Agent's settings.
  */
 export const codexControls: CommandList = {
   state: "ready",
@@ -76,9 +76,10 @@ export const codexControls: CommandList = {
   sessionId: null,
   commands: [
     control("compact", "Compacts this conversation now with Codex's own compaction, not a prompt"),
+    control("review", "Asks Codex for its own code review: of your changes, against a branch, of a commit, or by your instructions", "[instructions]"),
     modelControl, permissionsControl, forkControl, newControl, resumeControl, statusControl, usageControl,
   ],
-  total: 8,
+  total: 9,
   truncated: false,
   skillsKnown: false,
 };
@@ -122,10 +123,11 @@ export function withModelControl(list: CommandList): CommandList {
 }
 
 /** Which harnesses each of Yuzuno's controls is for. Claude Code runs its
- * own `/compact`, `/status` and `/usage`; a fork is of a Codex session. An
+ * own `/compact`, `/review`, `/status` and `/usage`; a fork is of a Codex session. An
  * OpenCode Agent's model and settings are OpenCode's own: no control. */
 const controlHarnesses = {
   compact: ["codex"],
+  review: ["codex"],
   model: ["codex", "claude"],
   permissions: ["codex", "claude"],
   fork: ["codex"],
@@ -139,7 +141,7 @@ export type NativeControl = keyof typeof controlHarnesses;
 /**
  * A draft that is exactly one of Yuzuno's controls for this harness, run on
  * Send instead of being sent as a prompt. `args` is whatever follows the
- * name; only `/model` takes any.
+ * name; only `/model` and `/review` take any.
  */
 export function nativeControl(text: string, harness: string): { command: NativeControl; args: string } | null {
   const match = /^\/([a-z]+)(?:\s+([\s\S]*))?$/.exec(text.trim());

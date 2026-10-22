@@ -343,6 +343,7 @@ export function itemText(item: NativeItem): string {
       .map((c) => `${c.path}\n${c.diff || ""}`)
       .join("\n");
   if (item.type === "reasoning") return (item.summary || []).join("\n");
+  if (item.type === "enteredReviewMode" || item.type === "exitedReviewMode") return item.review || "";
   const { _yuzunoTruncated: _, ...shown } = item;
   return item.text || JSON.stringify(shown, null, 2);
 }
@@ -357,7 +358,7 @@ export function turnText(turn: NativeTurn) {
     ...(turn._yuzunoSource === "native" ? [nativeTurnLabel(turn)] : []),
     ...turn.items.map(
       (i) =>
-        `${i.type === "userMessage" ? (isPeerInput(turn, i, firstUser) ? "Workspace mailbox" : isBriefReminder(turn, i, firstUser) ? "Yuzuno reminder" : "You") : i.type === "agentMessage" ? "Agent" : i.type}\n${itemText(i)}`,
+        `${i.type === "userMessage" ? (isPeerInput(turn, i, firstUser) ? "Workspace mailbox" : isBriefReminder(turn, i, firstUser) ? "Yuzuno reminder" : "You") : i.type === "agentMessage" ? "Agent" : i.type === "exitedReviewMode" ? "Codex review" : i.type}\n${itemText(i)}`,
     ),
   ].join("\n\n");
 }
@@ -374,10 +375,12 @@ export function messageHandoff(
   item: NativeItem,
   selected?: string,
 ): HandoffSource | null {
-  if (item.type !== "userMessage" && item.type !== "agentMessage") return null;
+  // Codex's review findings are its review Turn's reply.
+  const reply = item.type === "agentMessage" || item.type === "exitedReviewMode";
+  if (item.type !== "userMessage" && !reply) return null;
   const firstUser = turn.items.find(i => i.type === "userMessage");
   const author: MessageAuthor =
-    item.type === "agentMessage" ? { kind: "agent" }
+    reply ? { kind: "agent" }
       : isPeerInput(turn, item, firstUser) ? { kind: "mailbox" }
       : isBriefReminder(turn, item, firstUser) ? { kind: "reminder" }
       : { kind: "user" };
@@ -389,7 +392,7 @@ export function messageHandoff(
     itemId: item.id,
     author,
     at: item._yuzunoTime?.at ?? null,
-    text: selected ?? (item.type === "agentMessage" ? item.text || "" : author.kind === "user" ? userText(item) : itemText(item)),
+    text: selected ?? (item.type === "agentMessage" ? item.text || "" : reply ? item.review || "" : author.kind === "user" ? userText(item) : itemText(item)),
     excerpt: selected !== undefined,
   };
 }
@@ -499,7 +502,9 @@ function ToolItem({
       ? `${item.changes?.length || 0} file ${(item.changes?.length || 0) === 1 ? "change" : "changes"}`
       : item.type === "reasoning"
         ? "Reasoning summary"
-        : item.type.replace(/([A-Z])/g, " $1");
+        : item.type === "enteredReviewMode"
+          ? `Codex review: ${item.review || "started"}`
+          : item.type.replace(/([A-Z])/g, " $1");
   return (
     <details className="tool-item" id={`item-${item.id}`} data-running={running || undefined}
       open={opened} onToggle={event => {

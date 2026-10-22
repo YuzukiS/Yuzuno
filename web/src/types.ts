@@ -108,6 +108,9 @@ export interface NativeItem {
   /** The uuid a Claude prompt was sent with, which names it in Claude's saved history. */
   nativeUuid?: string;
   text?: string;
+  /** Codex's own review (`/review`): on `enteredReviewMode` what it
+   * reviews, on `exitedReviewMode` its findings. */
+  review?: string;
   phase?: string;
   delivery?: string;
   questions?: { title: string; options?: string[] }[] | null;

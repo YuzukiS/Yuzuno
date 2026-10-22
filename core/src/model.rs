@@ -165,6 +165,43 @@ pub struct SkillRef {
     pub path: String,
 }
 
+/// What a Codex `/review` asks Codex to review: Codex's own `ReviewTarget`,
+/// sent as given once `checked`. A commit's `title` is sent even when null,
+/// as Codex's shape has it. Uncommitted changes is an empty struct, not a
+/// unit, so that it too refuses fields it does not have.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
+pub enum ReviewTarget {
+    UncommittedChanges {},
+    BaseBranch { branch: String },
+    Commit { sha: String, title: Option<String> },
+    Custom { instructions: String },
+}
+
+impl ReviewTarget {
+    /// Trimmed, or why Codex would be asked for nothing: a branch or commit
+    /// is one name, instructions are a message's length at most.
+    pub fn checked(self) -> anyhow::Result<Self> {
+        fn name(value: String, what: &str) -> anyhow::Result<String> {
+            let value = value.trim();
+            anyhow::ensure!(!value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_whitespace),
+                "{what} 应为一个名称（不含空白，至多 256 字节）；没有执行 /review");
+            Ok(value.to_owned())
+        }
+        Ok(match self {
+            Self::UncommittedChanges {} => Self::UncommittedChanges {},
+            Self::BaseBranch { branch } => Self::BaseBranch { branch: name(branch, "基准分支")? },
+            Self::Commit { sha, title } => Self::Commit { sha: name(sha, "提交")?,
+                title: title.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()) },
+            Self::Custom { instructions } => {
+                let instructions = instructions.trim();
+                anyhow::ensure!(!instructions.is_empty() && instructions.len() <= 100_000, "审查说明不能为空，也不能超过消息长度；没有执行 /review");
+                Self::Custom { instructions: instructions.to_owned() }
+            }
+        })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageReceipt {

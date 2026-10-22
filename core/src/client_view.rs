@@ -50,11 +50,13 @@ impl Keep {
 }
 
 /// Items always sent whole: conversation text (search, copy, the reply view
-/// and Catch-up read it, and it is a small share of a record), and a file
-/// change still in progress, which is what a Codex approval asks the user to
-/// review. Stored records keep these whole too (`record_rows`).
+/// and Catch-up read it, and it is a small share of a record), Codex's
+/// review result (its Turn's reply), and a file change still in progress,
+/// which is what a Codex approval asks the user to review. Stored records
+/// keep these whole too (`record_rows`); one stored trimmed before is read
+/// back by its annotation as ever.
 pub(crate) fn whole(item: &Value) -> bool {
-    matches!(item["type"].as_str(), Some("userMessage" | "agentMessage" | "reasoning" | "plan"))
+    matches!(item["type"].as_str(), Some("userMessage" | "agentMessage" | "reasoning" | "plan" | "exitedReviewMode"))
         || (item["type"] == "fileChange" && item["status"] == "inProgress")
 }
 

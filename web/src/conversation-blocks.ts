@@ -64,6 +64,9 @@ export function conversationBlocks(
       else blocks.push({ kind: "subagents", items: (subagents = [item]) });
     } else if (item.type === "userMessage") {
       blocks.push({ kind: "user", item });
+    } else if (item.type === "exitedReviewMode") {
+      // Codex's review findings are its review Turn's reply.
+      blocks.push({ kind: "message", item: { ...item, text: item.review ?? "" } });
     } else if (hasAgentContent(item)) {
       if (item.type === "agentMessage") {
         blocks.push({ kind: "message", item });
@@ -92,6 +95,7 @@ const activityNames: Record<string, string> = {
   imageGeneration: "Generate image",
   reasoning: "Reasoning",
   contextCompaction: "Compaction",
+  enteredReviewMode: "Review",
 };
 
 /** Count native calls, not output chunks or files touched by a single edit. */
