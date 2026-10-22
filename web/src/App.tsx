@@ -2032,7 +2032,9 @@ export function App() {
               <span>
                 {workspaceError
                   ? core.detail
-                  : "The last read from Core worked. Nothing is turned off: Yuzuno keeps checking, and drafts are kept."}
+                  : workspace
+                    ? "The last read from Core worked. Nothing is turned off: Yuzuno keeps checking, and drafts are kept."
+                    : "No workspace has loaded yet. Nothing is turned off: Yuzuno keeps trying, and drafts are kept."}
               </span>
               {workspaceError && core.browser && <span>{core.browser}.</span>}
               <span>{core.stream}</span>

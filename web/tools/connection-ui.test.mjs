@@ -19,7 +19,7 @@ async function until(check) {
   for (let i = 0; i < 100; i++) { if (check()) return; await pause(15); }
   assert.ok(check(), "condition should settle");
 }
-async function mount() {
+async function mount({ deadlineMs = 180, before, settle = true } = {}) {
   const errors = [], vc = new VirtualConsole();
   vc.on("jsdomError", e => errors.push(e.message));
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
@@ -30,10 +30,11 @@ async function mount() {
   w.HTMLElement.prototype.scrollIntoView = function() {};
   w.HTMLElement.prototype.scrollTo = function() {};
   w.localStorage.setItem("yuzuno.drafts", JSON.stringify({ a: "保留我的草稿", b: "Keep Claude draft" }));
-  w.eval(`(${installConnectionFixture.toString()})({deadlineMs: 180})`);
+  w.eval(`(${installConnectionFixture.toString()})({deadlineMs: ${deadlineMs}})`);
+  before?.(w.connectionFixture);
   w.eval(bundle);
   const d = w.document, f = w.connectionFixture;
-  await until(() => d.querySelector(".prose")?.textContent.includes("initial fixture reply"));
+  if (settle) await until(() => d.querySelector(".prose")?.textContent.includes("initial fixture reply"));
   return { w, d, f, errors, close: () => w.close() };
 }
 function core(p, label) {
@@ -255,5 +256,20 @@ test("an offline report does not hide HTTP, JSON or deadline failures as unreach
     p.f.mode = "ok"; p.f.release(); p.f.network(true); p.f.refresh();
     await until(() => p.d.querySelector(".connection")?.dataset.coreStatus === "Core connected");
     retained(p);
+  } finally { p.close(); }
+});
+test("a page opened while the browser reports offline does not claim a read worked before one has (T-170)", async () => {
+  // The first workspace read is held (no deadline in reach) while the browser says offline.
+  const p = await mount({ deadlineMs: 10_000, settle: false, before: (f) => { f.mode = "hang"; f.network(false); } });
+  try {
+    await until(() => banner(p)?.textContent.includes("Browser reports offline"));
+    assert.match(banner(p).textContent, /No workspace has loaded yet/);
+    assert.doesNotMatch(banner(p).textContent, /last read from Core worked/);
+    p.f.mode = "ok"; p.f.release();
+    await until(() => banner(p)?.textContent.includes("The last read from Core worked"));
+    p.f.network(true);
+    await until(() => banner(p) === null);
+    assert.equal(p.f.calls.filter(c => c.method !== "GET").length, 0);
+    assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
