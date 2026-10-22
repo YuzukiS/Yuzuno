@@ -728,8 +728,8 @@ impl Workspace {
             Ok(b) => b,
             Err(error) => {
                 self
-                    .update_record(id, "claude/connectFailed", json!({}), |d| {
-                        d.agent.connection_state = "disconnected".into()
+                    .record_meta(id, "claude/connectFailed", json!({}), |m| {
+                        m.agent.connection_state = "disconnected".into()
                     }).await?;
                 return Err(error);
             }
@@ -804,12 +804,12 @@ impl Workspace {
                 };
                 if removed {
                     let (agent, message) = (id.to_owned(), error.to_string());
-                    self.stored_owned(owned, move |store| store.update(
+                    self.stored_owned(owned, move |store| store.update_meta(
                         &agent,
                         "claude/connectFailed",
                         &json!({"error":message}),
-                        |d| {
-                            d.agent.connection_state = "disconnected".into();
+                        |m| {
+                            m.agent.connection_state = "disconnected".into();
                         },
                     )).await?;
                 }
@@ -825,7 +825,9 @@ impl Workspace {
         );
         let agent = id.to_owned();
         let session = d.agent.claude_session_id.clone();
-        self.stored_owned(owned, move |store| store.update(
+        // It changes Turns, so it is compared as before; only the copy of the
+        // record nobody read is no longer returned (T-140).
+        self.stored_owned(owned, move |store| store.record_event(
             &agent,
             "claude/ready",
             &json!({"sessionId":session,
@@ -858,7 +860,7 @@ impl Workspace {
         if let Some(session) = d.agent.claude_session_id.as_deref() {
             if let Err(error) = self.claude_backfill(id, &c, session).await {
                 let message = error.to_string();
-                self.update_record(id, "claude/historyFailed", json!({"sessionId":session,"error":message}), |_| {}).await?;
+                self.record_meta(id, "claude/historyFailed", json!({"sessionId":session,"error":message}), |_| {}).await?;
             }
         }
         self.collaboration_started(id, c.generation).await;
@@ -897,7 +899,7 @@ impl Workspace {
             let d = self.detail(id).await?;
             let plan = crate::claude_history::plan(&d, &entries);
             if plan.unmatched {
-                self.update_record(id, "claude/historyUnmatched", json!({"sessionId":session,"saved":entries.len()}), |_| {}).await?;
+                self.record_meta(id, "claude/historyUnmatched", json!({"sessionId":session,"saved":entries.len()}), |_| {}).await?;
                 return Ok(());
             }
             if plan.steps.is_empty() {
@@ -917,7 +919,7 @@ impl Workspace {
                 wanted.retain(|offset| !messages.contains_key(offset));
             }
             let (summary, now) = (json!({"sessionId":session,"saved":entries.len(),"planned":plan.steps.len()}), Utc::now());
-            self.update_record(id, "claude/history", summary, move |d| {
+            self.record_update(id, "claude/history", summary, move |d| {
                 crate::claude_history::apply(d, &plan, &entries, &messages, now);
             }).await?;
             Ok(())
