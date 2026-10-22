@@ -1379,3 +1379,105 @@ test("an author who left waits for an explicit recipient; a card that leaves Hom
     p.close();
   }
 });
+
+test("a pinned report takes the same reply as its card: one draft, and one send whichever place sends (T-174)", async () => {
+  const home = homeFixture();
+  home.projects.forEach((panel, n) => panel.brief.sections.forEach((s, i) => (s.id = 100 * (n + 1) + i)));
+  const p = await mount({ home });
+  try {
+    const column = p.doc.querySelector(".home-widget-column");
+    const pinned = () => column.querySelector(".home-pinned");
+    card(p, "p-app", "notes").querySelector('[aria-label="Pin “Notes” to Widgets"]').click();
+    await waitFor(() => !!pinned(), "Notes is pinned");
+    p.button("Reply", pinned()).click();
+    await waitFor(() => !!replyBox(pinned()), "the reply opens in the widget");
+    assert.match(replyBox(pinned()).textContent, /Reply to “Notes” · version 2/);
+    assert.equal(replyBox(pinned()).querySelector("select").value, "a", "to the card's author");
+    await type(p, replyBox(pinned()).querySelector("textarea"), "From the widget");
+    // The card shows the same reply, not a second one.
+    const notes = card(p, "p-app", "notes");
+    p.button("Reply", notes).click();
+    await waitFor(() => !!replyBox(notes), "the card's reply opens");
+    assert.equal(replyBox(notes).querySelector("textarea").value, "From the widget");
+    await type(p, replyBox(notes).querySelector("textarea"), "From the card");
+    assert.equal(replyBox(pinned()).querySelector("textarea").value, "From the card", "one draft in both places");
+    // Both places send in the same moment: one request.
+    p.button("Send", replyBox(notes)).click();
+    p.button("Send", replyBox(pinned())).click();
+    await waitFor(() => /Sent to Mori, referring to version 2/.test(replyBox(pinned()).textContent), "the widget shows it sent");
+    await pause();
+    assert.equal(p.posts(/\/brief\/reply$/).length, 1, "sent once");
+    assert.match(replyBox(notes).textContent, /Sent to Mori, referring to version 2/);
+    const [post] = p.posts(/\/brief\/reply$/);
+    assert.deepEqual([post.body.key, post.body.version, post.body.title, post.body.text], ["notes", 2, "Notes", "From the card"]);
+    assert.equal(p.posts(/\/brief\/(seen|defer)$/).length, 0, "nothing seen or deferred");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a report marked seen takes a reply from History at its version; removed entries, older versions and live keys take none (T-174)", async () => {
+  const home = homeFixture();
+  home.projects[0].brief.history = [
+    section("weekly", "report", "Weekly", 3, owner("b", "Hana"), { history: true, historyReason: "seen", currentSource: true, seen: { version: 3, at: at(900) } }),
+    section("weekly", "report", "Weekly", 2, owner("b", "Hana"), { history: true, historyReason: "seen", currentSource: true }),
+    section("dropped", "report", "Dropped", 1, owner("a", "Mori"), { history: true, historyReason: "removed" }),
+    section("notes", "report", "Notes", 1, owner("a", "Mori"), { history: true, historyReason: "seen", currentSource: true }),
+  ];
+  const p = await mount({ home });
+  try {
+    const history = p.panel("p-app").querySelector(".home-history");
+    history.open = true;
+    const entries = [...history.querySelectorAll("li details")];
+    for (const entry of entries) {
+      entry.open = true;
+      entry.dispatchEvent(new p.w.Event("toggle"));
+    }
+    await waitFor(() => entries.every((entry) => / body/.test(entry.textContent)), "the entries open");
+    assert.deepEqual(entries.map((entry) => !!p.button("Reply", entry)), [true, false, false, false],
+      "only each key's newest seen report, while no card under its key is live");
+    p.button("Reply", entries[0]).click();
+    await waitFor(() => !!replyBox(entries[0]), "the reply opens in History");
+    assert.match(replyBox(entries[0]).textContent, /Reply to “Weekly” · version 3/);
+    assert.equal(replyBox(entries[0]).querySelector("select").value, "b");
+    await type(p, replyBox(entries[0]).querySelector("textarea"), "Can this stay weekly?");
+    p.button("Send", replyBox(entries[0])).click();
+    await waitFor(() => /Sent to Hana, referring to version 3/.test(replyBox(entries[0]).textContent), "sent");
+    const [post] = p.posts(/\/brief\/reply$/);
+    assert.deepEqual([post.body.key, post.body.version, post.body.title], ["weekly", 3, "Weekly"]);
+    assert.equal(p.posts(/\/brief\/(seen|defer)$/).length, 0, "History stays as it was");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a reply begun on a card the user then marks seen stays sendable, at that version, from its project (T-174)", async () => {
+  const p = await mount();
+  try {
+    const review = card(p, "p-app", "notes/review");
+    p.button("Reply", review).click();
+    await waitFor(() => !!replyBox(review), "the reply opens");
+    await type(p, replyBox(review).querySelector("textarea"), "Before I mark it seen");
+    // Core keeps a report the user marks seen in History, at that version.
+    const app = p.state.home.projects[0].brief;
+    const shown = app.sections.find((s) => s.key === "notes/review");
+    app.sections = app.sections.filter((s) => s !== shown);
+    app.history.unshift({ ...shown, history: true, historyReason: "seen", currentSource: true, seen: { version: 1, at: at(0) } });
+    p.button("Seen", review).click();
+    await waitFor(() => !card(p, "p-app", "notes/review"), "the card left for History");
+    const kept = p.panel("p-app").querySelector(".home-kept-reply");
+    assert.ok(!!kept, "the reply is kept in the project");
+    assert.match(kept.textContent, /Your reply to “Review notes” is kept: that card is now in History, marked seen/);
+    assert.equal(replyBox(kept).querySelector("textarea").value, "Before I mark it seen");
+    p.button("Send", replyBox(kept)).click();
+    await waitFor(() => /Sent to Hana, referring to version 1/.test(replyBox(kept).textContent), "sent from the kept reply");
+    const [post] = p.posts(/\/brief\/reply$/);
+    assert.deepEqual([post.body.key, post.body.version], ["notes/review", 1]);
+    assert.deepEqual(p.posts(/\/brief\/seen$/).map((c) => c.body), [{ sections: [{ key: "notes/review", version: 1 }] }], "only the user's own Seen");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});

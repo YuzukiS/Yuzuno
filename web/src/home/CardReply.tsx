@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { Copy, LoaderCircle, MessageSquareReply, Send, Trash2, X } from "lucide-react";
 import { errorText, HttpError, shortcutModifier } from "../api";
 import type { Agent } from "../types";
@@ -13,8 +13,13 @@ import type { Section } from "./types";
  * on screen when the user began it. A newer version arriving meanwhile never
  * changes what the reply refers to: Core sends it only while it still has
  * that version, and the user can refer the reply to the newer one. It changes
- * no ask, task or Seen mark. Drafts are kept across reloads until sent or
- * discarded, also after their card has left Home.
+ * no ask, task or Seen mark.
+ *
+ * A card can show in several places at once (its project, a pinned widget,
+ * History): every place shows the same reply, one per card, so the text, the
+ * version it refers to and a send in progress are shared, and a send started
+ * in one place blocks another anywhere. Drafts are kept across reloads until
+ * sent or discarded, also after their card has left Home.
  */
 
 const DRAFTS = "yuzuno.home-card-drafts.v1";
@@ -57,15 +62,65 @@ function saveDraft(slot: string, draft: CardDraft | null) {
   }
 }
 
+type Sent = { status: string; to: string; version: number };
+/** One card's reply, shared by every place the card shows. */
+type ReplyState = { draft: CardDraft | null; busy: boolean; error: string; sent: Sent | null };
+const replies = new Map<string, ReplyState>();
+const listeners = new Map<string, Set<() => void>>();
+
+function replyState(slot: string): ReplyState {
+  let state = replies.get(slot);
+  if (!state) {
+    state = { draft: loadDrafts()[slot] ?? null, busy: false, error: "", sent: null };
+    replies.set(slot, state);
+  }
+  return state;
+}
+
+/** Only text worth keeping is stored; the rest lives as long as this window. */
+function update(slot: string, change: Partial<ReplyState>) {
+  const next = { ...replyState(slot), ...change };
+  replies.set(slot, next);
+  if ("draft" in change) saveDraft(slot, next.draft?.text.trim() ? next.draft : null);
+  listeners.get(slot)?.forEach((listener) => listener());
+}
+
+function useReplyState(slot: string) {
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const set = listeners.get(slot) ?? new Set<() => void>();
+      set.add(listener);
+      listeners.set(slot, set);
+      return () => void set.delete(listener);
+    },
+    [slot],
+  );
+  return useSyncExternalStore(subscribe, () => replyState(slot));
+}
+
 export const cardReplySlot = (workspaceId: string, projectId: string, key: string) =>
   outboxKey(workspaceId, projectId, key, true);
 
 /** A reply here that is being written, or whose sending is not confirmed. */
-export const hasCardReply = (slot: string) => !!loadDrafts()[slot] || !!pendingReply(slot);
+export const hasCardReply = (slot: string) => !!replyState(slot).draft?.text.trim() || !!pendingReply(slot);
 
-/** This project's drafts, by slot. */
+/** This project's kept drafts, by slot. */
 export function projectCardDrafts(workspaceId: string, projectId: string): [string, CardDraft][] {
   return Object.entries(loadDrafts()).filter(([slot, draft]) => slot === cardReplySlot(workspaceId, projectId, draft.key));
+}
+
+/**
+ * The History entries a reply can still refer to: each key's newest report
+ * the user marked seen, while no section under its key is live. Removed,
+ * resolved and expired entries, asks, and older versions never take one.
+ */
+export function referableHistory(history: Section[], liveKeys: string[]) {
+  const seen = new Set<string>();
+  return history.filter((section) => {
+    if (seen.has(section.key)) return false;
+    seen.add(section.key);
+    return section.kind === "report" && section.historyReason === "seen" && !liveKeys.includes(section.key);
+  });
 }
 
 /** A Core from before card replies refuses the reply's version: nothing was sent. */
@@ -88,83 +143,79 @@ export function CardReply({
   agents,
   onClose,
 }: {
+  /** The card as this place shows it: live, or a report in History. */
   section: Section;
   projectId: string;
   workspaceId: string;
   /** The Project's open Agents. */
   agents: Agent[];
-  onClose: () => void;
+  /** Absent where the reply is the place's whole content (kept replies). */
+  onClose?: () => void;
 }) {
   const slot = cardReplySlot(workspaceId, projectId, section.key);
-  const [kept] = useState(() => pendingReply(slot));
-  const [draft] = useState(() => loadDrafts()[slot]);
-  // What the reply refers to: fixed when it was begun, changed only by the user.
-  const [bound, setBound] = useState(() =>
-    kept?.version !== undefined
-      ? { version: kept.version, title: kept.title ?? section.title }
-      : draft
-        ? { version: draft.version, title: draft.title }
-        : { version: section.version, title: section.title },
-  );
+  const { draft, busy, error, sent } = useReplyState(slot);
   const ownerOpen = section.owner.state === "active" && agents.some((a) => a.id === section.owner.agentId);
-  const [target, setTarget] = useState(() => {
-    const chosen = kept?.agentId || draft?.agentId;
-    if (chosen && agents.some((a) => a.id === chosen)) return chosen;
-    return ownerOpen ? section.owner.agentId : "";
-  });
-  const [text, setText] = useState(() => draft?.text ?? kept?.text ?? "");
-  const [busy, setBusy] = useState(false);
-  // Set at once, before React draws `busy`: a second click or Enter in the
-  // same moment sends nothing more.
-  const sending = useRef(false);
-  const [error, setError] = useState("");
-  const [sent, setSent] = useState<{ status: string; to: string; version: number } | null>(null);
+  // Begun here when no place has one: bound to the version on screen now, or
+  // to the one an unconfirmed send names.
   useEffect(() => {
-    if (!text.trim()) saveDraft(slot, null);
-    else saveDraft(slot, { key: section.key, text, ...bound, agentId: target, at: new Date().toISOString() });
-  }, [slot, section.key, text, bound, target]);
-  const changed = section.version !== bound.version;
-  // An attempt Core has not answered: only its retry, unchanged, is safe.
-  const unconfirmed = !busy && pendingReply(slot);
+    if (replyState(slot).draft) return;
+    const kept = pendingReply(slot);
+    update(slot, {
+      draft: {
+        key: section.key,
+        text: kept?.text ?? "",
+        version: kept?.version ?? section.version,
+        title: kept?.version !== undefined ? kept.title ?? section.title : section.title,
+        agentId: kept?.agentId ?? (ownerOpen ? section.owner.agentId : ""),
+        at: new Date().toISOString(),
+      },
+    });
+  });
+  if (!draft) return null;
+  const change = (patch: Partial<CardDraft>) =>
+    update(slot, { draft: { ...draft, ...patch, at: new Date().toISOString() } });
+  const target = agents.some((a) => a.id === draft.agentId) ? draft.agentId : "";
   const name = agents.find((a) => a.id === target)?.name || "the Agent";
+  const changed = section.version !== draft.version;
+  // An attempt Core has not answered: only its retry, unchanged, is safe.
+  const unconfirmed = !busy && !!pendingReply(slot);
   async function send() {
-    const value = text.trim();
-    if (!value || !target || sending.current) return;
-    sending.current = true;
-    setBusy(true);
-    setError("");
-    setSent(null);
+    // Read now, not from this render: another place may be sending.
+    const current = replyState(slot);
+    const reply = current.draft;
+    const value = reply?.text.trim();
+    if (!reply || !value || !target || current.busy) return;
+    update(slot, { busy: true, error: "", sent: null });
     try {
       const receipt = await sendReply(slot, projectId, {
-        key: section.key,
+        key: reply.key,
         agentId: target,
         text: value,
-        version: bound.version,
-        title: bound.title,
+        version: reply.version,
+        title: reply.title,
       });
-      setText("");
-      setSent({ status: receipt.status, to: name, version: bound.version });
+      // The next reply here begins afresh, at the version then on screen.
+      update(slot, { busy: false, sent: { status: receipt.status, to: name, version: reply.version }, draft: null });
     } catch (e) {
       // Refused before it was read, so never submitted: no retry record.
       if (olderCore(e)) dropPendingReply(slot);
-      setError(explain(e));
-    } finally {
-      sending.current = false;
-      setBusy(false);
+      update(slot, { busy: false, error: explain(e) });
     }
   }
   return (
-    <div className="home-card-reply" role="group" aria-label={`Reply to “${bound.title}”`}>
+    <div className="home-card-reply" role="group" aria-label={`Reply to “${draft.title}”`}>
       <div className="home-card-reply-head">
         <MessageSquareReply size={13} aria-hidden="true" />
         <span>
-          Reply to <strong>“{bound.title}”</strong> · version {bound.version}
+          Reply to <strong>“{draft.title}”</strong> · version {draft.version}
         </span>
-        <button type="button" className="icon-button" aria-label="Close the reply; the draft is kept" title="Close (the draft is kept)" onClick={onClose}>
-          <X size={13} />
-        </button>
+        {onClose && (
+          <button type="button" className="icon-button" aria-label="Close the reply; the draft is kept" title="Close (the draft is kept)" onClick={onClose}>
+            <X size={13} />
+          </button>
+        )}
       </div>
-      <TargetPicker agents={agents} value={target} onChange={setTarget} disabled={busy} label="To" />
+      <TargetPicker agents={agents} value={target} onChange={(agentId) => change({ agentId })} disabled={busy} label="To" />
       {!ownerOpen && (
         <p className="home-note">
           {section.owner.name} {section.owner.state === "active" ? "is not in this project" : ownerAway[section.owner.state]}; choose who should get this reply.
@@ -172,8 +223,10 @@ export function CardReply({
       )}
       {changed && (
         <p className="home-note" role="status">
-          {section.owner.name} changed this card after you began (now version {section.version}). Your reply still refers to version {bound.version}, as
-          you saw it; Home sends it only while it has that version.{" "}
+          {section.version > draft.version
+            ? `${section.owner.name} changed this card after you began (now version ${section.version}). `
+            : `This place shows version ${section.version}. `}
+          Your reply still refers to version {draft.version}, as you saw it; Home sends it only while it has that version.{" "}
           {unconfirmed ? (
             "Send it again first: Core then says whether the earlier attempt arrived."
           ) : (
@@ -182,8 +235,8 @@ export function CardReply({
               className="inline-link"
               disabled={busy}
               onClick={() => {
-                setBound({ version: section.version, title: section.title });
-                setError("");
+                change({ version: section.version, title: section.title });
+                update(slot, { error: "" });
               }}
             >
               Refer it to version {section.version}
@@ -202,24 +255,24 @@ export function CardReply({
         }}
       >
         <textarea
-          aria-label={`Reply to ${bound.title}`}
-          value={text}
+          aria-label={`Reply to ${draft.title}`}
+          value={draft.text}
           rows={2}
           maxLength={20_000}
           placeholder={`A reply for ${name}…`}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => change({ text: event.target.value })}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing) return;
             if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
               event.preventDefault();
               void send();
-            } else if (event.key === "Escape") {
+            } else if (event.key === "Escape" && onClose) {
               event.preventDefault();
               onClose();
             }
           }}
         />
-        <button type="submit" className="primary-button" disabled={busy || !target || !text.trim()} title={`Send (${shortcutModifier} Enter)`}>
+        <button type="submit" className="primary-button" disabled={busy || !target || !draft.text.trim()} title={`Send (${shortcutModifier} Enter)`}>
           {busy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
           Send
         </button>
@@ -238,38 +291,67 @@ export function CardReply({
 }
 
 /**
- * Replies begun on cards that are no longer on Home (removed, marked seen,
- * now an ask, or hidden): kept with their text, never sent to another card.
+ * Replies begun on cards no longer live on Home. One whose card is a report
+ * still in History, marked seen, can be sent from here; any other (removed,
+ * now an ask, hidden) is kept with its text and never sent to another card.
  */
-export function KeptCardReplies({ projectId, workspaceId, shownKeys }: { projectId: string; workspaceId: string; shownKeys: string[] }) {
+export function KeptCardReplies({
+  projectId,
+  workspaceId,
+  agents,
+  cardKeys,
+  referable,
+}: {
+  projectId: string;
+  workspaceId: string;
+  agents: Agent[];
+  /** Keys of the live report and status cards this project shows. */
+  cardKeys: string[];
+  /** History entries a reply may still refer to (referableHistory). */
+  referable: Section[];
+}) {
   const [, redraw] = useState(0);
-  const kept = projectCardDrafts(workspaceId, projectId).filter(([, draft]) => !shownKeys.includes(draft.key));
+  const kept = projectCardDrafts(workspaceId, projectId).filter(([, draft]) => !cardKeys.includes(draft.key));
   if (!kept.length) return null;
   return (
     <div className="home-kept-replies" role="list" aria-label="Replies not sent">
-      {kept.map(([slot, draft]) => (
-        <div role="listitem" key={slot} className="home-kept-reply">
-          <p className="home-note">
-            Your reply to “{draft.title}” (version {draft.version}) was not sent: that card is no longer on Home.
-          </p>
-          <blockquote>{draft.text}</blockquote>
-          <span className="home-kept-reply-actions">
-            <button type="button" className="quiet-button" onClick={() => void navigator.clipboard?.writeText(draft.text)}>
-              <Copy size={13} /> Copy text
-            </button>
-            <button
-              type="button"
-              className="quiet-button"
-              onClick={() => {
-                saveDraft(slot, null);
-                redraw((n) => n + 1);
-              }}
-            >
-              <Trash2 size={13} /> Discard
-            </button>
-          </span>
-        </div>
-      ))}
+      {kept.map(([slot, draft]) => {
+        const inHistory = referable.find((section) => section.key === draft.key);
+        return (
+          <div role="listitem" key={slot} className="home-kept-reply">
+            {inHistory ? (
+              <>
+                <p className="home-note">Your reply to “{draft.title}” is kept: that card is now in History, marked seen.</p>
+                <CardReply section={inHistory} projectId={projectId} workspaceId={workspaceId} agents={agents} />
+              </>
+            ) : (
+              <>
+                <p className="home-note">
+                  Your reply to “{draft.title}” (version {draft.version}) was not sent: that card is no longer on Home.
+                </p>
+                <blockquote>{draft.text}</blockquote>
+              </>
+            )}
+            <span className="home-kept-reply-actions">
+              {!inHistory && (
+                <button type="button" className="quiet-button" onClick={() => void navigator.clipboard?.writeText(draft.text)}>
+                  <Copy size={13} /> Copy text
+                </button>
+              )}
+              <button
+                type="button"
+                className="quiet-button"
+                onClick={() => {
+                  update(slot, { draft: null });
+                  redraw((n) => n + 1);
+                }}
+              >
+                <Trash2 size={13} /> Discard
+              </button>
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

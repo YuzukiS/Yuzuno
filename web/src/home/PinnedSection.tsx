@@ -1,4 +1,7 @@
-import { ArrowUpRight, Clock3, Eye, NotebookText, Pin as PinIcon, PinOff, TriangleAlert } from "lucide-react";
+import { useState } from "react";
+import { ArrowUpRight, Clock3, Eye, MessageSquareReply, NotebookText, Pin as PinIcon, PinOff, TriangleAlert } from "lucide-react";
+import type { Agent } from "../types";
+import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
 import { absolute, duration, relative } from "./format";
 import { SectionBody } from "./SectionBody";
 import { pinWidgetId, type Pin, type PinSource } from "./widget-layout";
@@ -7,10 +10,11 @@ import { FoldButton, useCardFold } from "./card-fold";
 /**
  * A Brief section the user pinned to the widget column: the same section
  * Home reads for its project, drawn by the same renderer. It shows where it
- * comes from (project, author, update time) and leads back there. Seen and
- * replies stay with the section in its project, so pinning counts nothing
- * twice. A source that is gone or now another section says so instead of
- * showing content as current.
+ * comes from (project, author, update time) and leads back there. Seen
+ * stays with the section in its project, so pinning counts nothing twice. A
+ * reply to its author (T-174) can start here: it is the same reply as on the
+ * card, shared, never a second one. A source that is gone or now another
+ * section says so instead of showing content as current.
  */
 export function PinnedSection({
   pin,
@@ -18,6 +22,7 @@ export function PinnedSection({
   onOpen,
   onUnpin,
   onPinCurrent,
+  reply,
 }: {
   pin: Pin;
   source: PinSource;
@@ -25,6 +30,8 @@ export function PinnedSection({
   onUnpin: () => void;
   /** Only when the section now under the key may itself be pinned (not an ask). */
   onPinCurrent?: () => void;
+  /** Where replies can be sent from (not the design preview): the workspace and the project's open Agents. */
+  reply?: { workspaceId: string; agents: Agent[] };
 }) {
   const title = source.state === "shown" ? source.section.title : pin.title;
   const projectName = source.state === "shown" ? source.projectName : pin.projectName;
@@ -33,6 +40,11 @@ export function PinnedSection({
   const [folded, toggleFold] = useCardFold(`widget:${pinWidgetId(pin)}`);
   const collapsed = folded && source.state === "shown";
   const body = `${pinWidgetId(pin)}-body`;
+  // Shown, it is its current version or the report last written and marked
+  // seen: both are versions Core can bind a reply to.
+  const [replying, setReplying] = useState(
+    () => !!reply && hasCardReply(cardReplySlot(reply.workspaceId, pin.projectId, pin.key)),
+  );
   return (
     <section className={`home-pinned${collapsed ? " is-collapsed" : ""}`} data-pin-state={source.state} aria-label={`${title}, pinned from ${projectName}`}>
       <header className="home-pinned-head">
@@ -80,8 +92,29 @@ export function PinnedSection({
             <button type="button" className="quiet-button" onClick={onOpen}>
               <ArrowUpRight size={13} /> Open in {projectName}
             </button>
+            {reply && (
+              <button
+                type="button"
+                className="quiet-button"
+                aria-expanded={replying}
+                aria-label={`Reply to “${source.section.title}”`}
+                title={`Reply to ${source.section.owner.name}`}
+                onClick={() => setReplying((open) => !open)}
+              >
+                <MessageSquareReply size={13} /> Reply
+              </button>
+            )}
           </footer>
           </div>
+          {reply && replying && (
+            <CardReply
+              section={source.section}
+              projectId={pin.projectId}
+              workspaceId={reply.workspaceId}
+              agents={reply.agents}
+              onClose={() => setReplying(false)}
+            />
+          )}
         </>
       ) : source.state === "reading" ? (
         <p className="home-pinned-note">Reading…</p>

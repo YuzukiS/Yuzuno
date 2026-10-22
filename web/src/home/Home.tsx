@@ -273,6 +273,7 @@ export function Home({
             source={source}
             onOpen={() => revealIn(p.projectId, () => document.getElementById(sectionDomId(p.projectId, p.key)))}
             onUnpin={() => unpin(p)}
+            reply={readOnly ? undefined : { workspaceId, agents: byProject.get(p.projectId) || noAgents }}
             onPinCurrent={
               source.state === "replaced" && pinSource(data, p.projectId, source.section)
                 ? () => {

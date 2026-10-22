@@ -764,9 +764,12 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
         assert!(error.to_string().starts_with(code), "{error}");
         assert!(error.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "nothing was sent: {error}");
     };
-    let message = home::compose_card("Code", &project, "news", 1, "About news", " Looks good \n");
+    // Core's own Workspace, whatever a client might say.
+    let workspace = ws.store.workspace_id().unwrap();
+    assert!(!workspace.is_empty());
+    let message = home::compose_card(&workspace, "Code", &project, "news", 1, "About news", " Looks good \n");
     assert_eq!(message, format!("Reply from the user on Home, to version 1 of the Project Brief section `news` (\"About news\") \
-        of Code (Project {project}):\n\nLooks good"));
+        of Code (Workspace {workspace}, Project {project}):\n\nLooks good"));
     // A message already sent under this id: its retry returns it, though the card changed since.
     let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
         input: crate::model::MessageInput { client_message_id: "r1".into(), text: message.clone(), text_blocks: None, images: vec![],

@@ -310,13 +310,14 @@ pub(super) fn compose(project: &str, section: Option<&sections::Row>, choice: Op
 }
 
 /// The message a reply to a card sends (T-174): which version of which
-/// section of which Project it answers, as the user saw it, then their words.
+/// section of which Project of which Workspace it answers, as the user saw
+/// it, then their words. The Workspace is Core's own, never the client's.
 /// Nothing in it depends on the section as it is now, so a retry composes the
 /// same message after the card has changed.
-pub(super) fn compose_card(project: &str, project_id: &str, key: &str, version: i64, title: &str, text: &str) -> String {
+pub(super) fn compose_card(workspace: &str, project: &str, project_id: &str, key: &str, version: i64, title: &str, text: &str) -> String {
     format!(
         "Reply from the user on Home, to version {version} of the Project Brief section `{key}` (\"{title}\") \
-         of {project} (Project {project_id}):\n\n{}",
+         of {project} (Workspace {workspace}, Project {project_id}):\n\n{}",
         text.trim()
     )
 }
@@ -415,13 +416,14 @@ async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, ver
     ensure!(input.choice.is_none(), "A choice answers an ask, not a card");
     ensure!(!input.text.trim().is_empty(), "Write a reply");
     let (id, wanted) = (project.clone(), key.clone());
-    let (name, shown) = ws.stored(move |store| {
+    let (workspace, name, shown) = ws.stored(move |store| {
+        let workspace = store.workspace_id()?;
         let db = store.db.read()?;
         let labels = crate::projects::project_labels(&db)?;
         let (name, _) = labels.get(&id).context("project_not_found: no Project has this ID")?;
-        Ok((name.clone(), sections::find(&db, &id, &wanted, Some(version))?))
+        Ok((workspace, name.clone(), sections::find(&db, &id, &wanted, Some(version))?))
     }).await?;
-    let text = compose_card(&name, &project, &key, version, &title, &input.text);
+    let text = compose_card(&workspace, &name, &project, &key, version, &title, &input.text);
     let detail = ws.detail(&input.agent_id).await?;
     if let Some(previous) = detail.message_receipts.iter().find(|r| r.input.client_message_id == input.client_message_id) {
         ensure!(previous.input.text == text, "This clientMessageId was already used for another message");
