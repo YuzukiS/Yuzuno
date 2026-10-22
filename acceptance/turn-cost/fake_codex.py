@@ -5,6 +5,7 @@ The user message selects the script:
   warmup:N:KB          N completed command Items of KB kilobytes (builds a large record)
   run:D:O:A:R          D message deltas, O 2 KB output deltas, A approvals, R events/s (0 = as fast as possible)
   mix:PATH:N:A:R       the first N real notifications from PATH (mix.py), then A approvals, R events/s
+  question             one native question (requestUserInput); the Turn ends once it is answered
   killtest             kill.py: msg-1 streamed and completed, msg-2 streamed for 12.5 s and completed,
                        then msg-3 streams until Core is killed
 Every notification carries params._bench = k; its emit time is logged to
@@ -110,6 +111,10 @@ def script(thread, turn, text):
             ask("item/commandExecution/requestApproval", {"turnId": turn, "itemId": f"approve-{turn}-{n}",
                                                          "command": "rm -rf build", "reason": "bench"}, thread)
         notify("item/completed", {"turnId": turn, "item": {"id": message, "type": "agentMessage", "text": "".join(text)}}, thread)
+    elif parts[0] == "question":
+        ask("item/tool/requestUserInput", {"turnId": turn, "itemId": f"question-{turn}",
+                                           "questions": [{"id": "answer", "header": "Check",
+                                                          "question": "Which colour should the label be?"}]}, thread)
     elif parts[0] == "killtest":
         for n, (deltas, rate) in enumerate([(30, 200), (250, 20), (2000, 20)], start=1):
             message = f"msg-{n}"
@@ -162,7 +167,9 @@ def handle(request):
         turn = f"turn-{uuid.uuid4()}"
         text = params["input"][0]["text"]
         note("received/start", thread, 0, text=text[:80])
-        user = {"id": f"{turn}:input", "type": "userMessage", "content": params["input"]}
+        # Codex echoes the client message ID on its user message as clientId.
+        user = {"id": f"{turn}:input", "type": "userMessage", "clientId": params.get("clientUserMessageId"),
+                "content": params["input"]}
         result = {"turn": {"id": turn, "status": "inProgress", "items": [user]}}
         emit({"id": request["id"], "result": result})
         notify("turn/started", {"turn": {"id": turn, "status": "inProgress", "items": [user]}}, thread)

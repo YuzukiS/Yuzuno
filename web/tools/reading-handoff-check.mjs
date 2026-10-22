@@ -1,4 +1,5 @@
-// T-170: a reading place shared between the user's browsers, in Chromium,
+// T-170: a reading place shared between the user's browsers, in Chromium (or
+// Playwright's Linux WebKit, see browser-engine.mjs),
 // against a lab Core on its own port and data folder, with a synthetic
 // conversation from the scripted Codex stand-in (no model). Two isolated
 // browser contexts, a wide desktop window and a phone-sized one, are two
@@ -6,8 +7,8 @@
 // reads; Continue opens the place as far into the message on the other
 // screen; Not now and a handled version are not offered again; nothing is
 // sent, marked read or saved by either. A Core without the endpoint (404)
-// leaves local reading as it was. Chromium's emulated phone is not a real
-// one: no Safari, no Tailnet.
+// leaves local reading as it was. An emulated phone is not a real one: no
+// iOS Safari, no Tailnet.
 //   YUZUNO_CORE_BIN=<lab Core> YUZUNO_UI_DIST=<isolated build> YUZUNO_LAB=<new short folder> \
 //     YUZUNO_BROWSER_OUTPUT=<evidence folder> [YUZUNO_LAB_PORT=4425] node tools/reading-handoff-check.mjs
 import assert from "node:assert/strict";
@@ -16,7 +17,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
-import { chromium } from "playwright-core";
+import { engine, launchBrowser } from "./browser-engine.mjs";
 import { composerDraft } from "./browser-fixtures.mjs";
 
 const need = (name) => {
@@ -132,7 +133,7 @@ try {
   check("a synthetic Workspace: Mori with five finished Turns, two of them long replies, and Hana", { long: long.length });
 
   // ---- Browsers ------------------------------------------------------------
-  browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
+  browser = await launchBrowser();
   const contexts = [];
   async function open(name, viewport, { mobile = false, oldCore = false } = {}) {
     const context = await browser.newContext({ viewport, hasTouch: mobile, isMobile: mobile, reducedMotion: "reduce" });
@@ -195,7 +196,7 @@ try {
     if (!message) return null;
     const box = message.getBoundingClientRect(), top = el.getBoundingClientRect().top;
     return { into: top - box.top, screen: box.top, height: box.height, pane: el.clientHeight, visible: Math.min(box.bottom, top + el.clientHeight) - Math.max(box.top, top),
-      atLatest: el.scrollHeight - el.clientHeight - el.scrollTop < 4 };
+      atLatest: el.scrollHeight - el.clientHeight - el.scrollTop < 4, gap: el.scrollHeight - el.clientHeight - el.scrollTop };
   }, [turn, item]);
   const scrollInto = async (page, message, progress) => {
     await pane(page).evaluate((el, [turn, item, progress]) => {
@@ -236,7 +237,17 @@ try {
   await offer(phone.page).waitFor();
   assert.match(await offer(phone.page).innerText(), /Continue where you were reading in another browser · just now/);
   const phoneBefore = await where(phone.page, long[0]);
-  assert.ok(phoneBefore.atLatest, "the offer did not move the conversation");
+  report.facts.phoneBeforeOffer = phoneBefore;
+  report.facts.offerHeight = await offer(phone.page).evaluate((el) => el.getBoundingClientRect().height);
+  if (!phoneBefore.atLatest) await shot(phone.page, "2-phone-offer-not-at-latest");
+  // The pane follows its end at the next rendering update, when the resize
+  // reaches it. Headless Linux WebKit updated about every 0.6 s here, so it
+  // gets up to 3 s to settle; Chromium must already be there.
+  const shownAt = Date.now();
+  if (engine === "webkit" && !phoneBefore.atLatest)
+    await until(async () => (await where(phone.page, long[0])).atLatest, "the conversation to keep its end in view", 3);
+  report.facts.phoneSettledAfterMs = Date.now() - shownAt;
+  assert.ok((await where(phone.page, long[0])).atLatest, "the offer did not move the conversation");
   assert.deepEqual(changes(phone.sent, 0).filter((r) => r.includes("/reading")), [], "the phone only read the place");
   await shot(phone.page, "2-phone-offer");
   check("another browser is offered the place when it opens the conversation; reading it moves and writes nothing");
