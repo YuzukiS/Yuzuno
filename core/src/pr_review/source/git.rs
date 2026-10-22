@@ -225,7 +225,9 @@ fn disk_usage(path: &Path) -> Result<u64> {
     while let Some(dir) = dirs.pop() {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
-            let meta = entry.metadata()?;
+            let Some(meta) = unless_gone(entry.metadata())? else {
+                continue;
+            };
             if meta.is_dir() {
                 dirs.push(entry.path());
             } else {
@@ -237,4 +239,168 @@ fn disk_usage(path: &Path) -> Result<u64> {
         }
     }
     Ok(sum)
+}
+
+/// A lazy blob fetch writes its pack, index and reverse index in objects/pack
+/// under temporary names and renames them once complete, while the monitor
+/// walks the store. An entry listed and gone when its metadata is read holds
+/// nothing under that name; the check after Git exits counts its new name.
+/// Every other error still fails, as does a directory gone before its listing.
+fn unless_gone<T>(read: std::io::Result<T>) -> std::io::Result<Option<T>> {
+    match read {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        read => read.map(Some),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, io::ErrorKind, process::Command};
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "Fixture")
+            .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Fixture")
+            .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().into()
+    }
+
+    /// A shallow blob:none store like `Git::create`'s, whose promisor is a
+    /// local fixture instead of GitHub, and the blob IDs it still lacks.
+    fn partial_store(files: usize) -> (tempfile::TempDir, Git, Vec<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        fs::create_dir(&work).unwrap();
+        git(&work, &["init", "--quiet"]);
+        for n in 0..files {
+            fs::write(
+                work.join(format!("m{n:03}.rs")),
+                format!("fn f{n}() {{}}\n"),
+            )
+            .unwrap();
+        }
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-qm", "fixture"]);
+        git(&work, &["config", "uploadpack.allowFilter", "true"]);
+        let url = format!("file://{}", work.display());
+        let store = Git {
+            path: dir.path().join("objects.git"),
+        };
+        let path = store.path.to_str().unwrap();
+        git(
+            dir.path(),
+            &[
+                "clone",
+                "--bare",
+                "--quiet",
+                "--no-tags",
+                "--depth=1",
+                "--filter=blob:none",
+                &url,
+                path,
+            ],
+        );
+        let tree = git(dir.path(), &["--git-dir", path, "ls-tree", "-r", "HEAD"]);
+        let blobs = tree
+            .lines()
+            .map(|l| l.split([' ', '\t']).nth(2).unwrap().to_owned())
+            .collect();
+        (dir, store, blobs)
+    }
+
+    #[test]
+    fn a_name_renamed_after_its_listing_is_counted_once_under_its_new_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let pack = dir.path().join("objects/pack");
+        fs::create_dir_all(&pack).unwrap();
+        fs::write(pack.join("tmp_pack_fixture"), b"pack").unwrap();
+        let listed = fs::read_dir(&pack).unwrap().next().unwrap().unwrap();
+        fs::rename(
+            pack.join("tmp_pack_fixture"),
+            pack.join("pack-fixture.pack"),
+        )
+        .unwrap();
+        // What the walk met during a lazy fetch: No such file or directory.
+        assert_eq!(listed.metadata().unwrap_err().kind(), ErrorKind::NotFound);
+        assert!(unless_gone(listed.metadata()).unwrap().is_none());
+        assert_eq!(disk_usage(dir.path()).unwrap(), 4);
+        let denied = std::io::Error::from(ErrorKind::PermissionDenied);
+        assert_eq!(
+            unless_gone::<()>(Err(denied)).unwrap_err().kind(),
+            ErrorKind::PermissionDenied
+        );
+    }
+
+    #[tokio::test]
+    async fn lazy_blob_fetches_run_while_the_store_is_measured() {
+        let (dir, store, blobs) = partial_store(120);
+        let list = dir.path().join("blobs");
+        fs::write(&list, blobs.join("\n") + "\n").unwrap();
+        // A fixed test-only alias fetches each blob from the local promisor in
+        // its own Git process: for seconds, the 250 ms storage check walks
+        // objects/pack while packs arrive under temporary names.
+        let alias = format!(
+            "alias.lazy-fixture=!while read blob; do git cat-file blob $blob >/dev/null || exit 1; done < {}",
+            list.display()
+        );
+        for blob in [&blobs[0], &blobs[blobs.len() - 1]] {
+            let offline = [
+                "-c",
+                "protocol.file.allow=never",
+                "cat-file",
+                "blob",
+                blob.as_str(),
+            ];
+            assert!(store.run(&offline, 100).await.is_err(), "not fetched yet");
+        }
+        let cmd = [
+            "-c",
+            "protocol.file.allow=always",
+            "-c",
+            alias.as_str(),
+            "lazy-fixture",
+        ];
+        store.run(&cmd, 100).await.unwrap();
+        for blob in &blobs {
+            let offline = [
+                "-c",
+                "protocol.file.allow=never",
+                "cat-file",
+                "blob",
+                blob.as_str(),
+            ];
+            assert!(store.run(&offline, 100).await.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_blob_its_promisor_no_longer_has_is_still_unavailable() {
+        let (dir, store, blobs) = partial_store(2);
+        fs::remove_dir_all(dir.path().join("work")).unwrap();
+        let cmd = [
+            "-c",
+            "protocol.file.allow=always",
+            "cat-file",
+            "blob",
+            blobs[0].as_str(),
+        ];
+        let error = store.run(&cmd, 100).await.unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "Fixed Git objects are unavailable or this source operation failed"
+        );
+    }
 }
