@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DetailSync } from "./detail-sync.ts";
 import { HttpError } from "./api";
+import { watchBrowserNetwork } from "./browser-offline";
 import { readSnapshot } from "./snapshot-request";
 import type { AgentDetail } from "./types";
 
@@ -50,6 +51,9 @@ export function useAgentDetail(agentId: string | null) {
     sync.select(agentId);
   }, [sync, agentId]);
   useEffect(() => () => sync.dispose(), [sync]);
+  // Back online, a read that failed while away is tried again at once,
+  // rather than after the retry delay (T-170).
+  useEffect(() => watchBrowserNetwork({ online: () => sync.online() }), [sync]);
   const navigate = useCallback(async (query: Record<string, string> = {}, retry = false) => {
     const key = JSON.stringify(query);
     if (!retry && (key === JSON.stringify(windowQuery.current) || key === missingQuery.current)) return;

@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
+import { composerText, setComposerText } from "./composer-driver.mjs";
 
 const dist = pathToFileURL(resolve(process.env.YUZUNO_UI_DIST || "dist") + "/");
 const index = await readFile(new URL("index.html", dist), "utf8");
@@ -59,7 +60,9 @@ function timerSeam(w) {
   };
 }
 
-async function mount() {
+// holdPoll: the 5 s poll (setInterval, POLL_MS) is not started, so only the
+// paths a test drives read again (T-170).
+async function mount({ holdPoll = false } = {}) {
   const errors = [];
   const vc = new VirtualConsole();
   vc.on("jsdomError", (e) => errors.push(e.message));
@@ -71,6 +74,12 @@ async function mount() {
   w.HTMLElement.prototype.scrollIntoView = function () {};
   w.HTMLElement.prototype.scrollTo = function () {};
   const timers = timerSeam(w);
+  if (holdPoll) {
+    const realInterval = w.setInterval;
+    w.setInterval = function (handler, delay, ...args) {
+      return delay === 5_000 ? 0 : realInterval.call(w, handler, delay, ...args);
+    };
+  }
   const base = { cwd: "/w", model: "m", color: "sage", status: "working", createdAt: "", updatedAt: "",
     unreadCount: 0, pendingCount: 0, reviewedSeq: 0 };
   const core = {
@@ -79,6 +88,8 @@ async function mount() {
       { ...base, id: "b", name: "Hana", lastSeq: 20, rev: 20 },
     ],
     text: "Streaming",
+    // Reads of Mori's detail that fail as an offline browser's do (T-170).
+    failAgentReads: 0,
     calls: [],
     streams: [],
   };
@@ -91,8 +102,12 @@ async function mount() {
     close() { this.readyState = 2; }
   };
   w.fetch = async (url, init = {}) => {
-    const path = new URL(String(url), w.location.href).pathname;
-    core.calls.push({ path, method: init.method || "GET" });
+    const { pathname: path, search } = new URL(String(url), w.location.href);
+    core.calls.push({ path, search, method: init.method || "GET" });
+    if (path === "/api/agents/a" && core.failAgentReads > 0) {
+      core.failAgentReads--;
+      throw new w.TypeError("Failed to fetch");
+    }
     let body = {};
     if (path === "/api/workspace") body = { agents: core.agents.map((a) => ({ ...a })), runtime: { connected: true }, defaultCwd: "/w" };
     else if (/^\/api\/agents\/[ab]$/.test(path)) {
@@ -333,6 +348,60 @@ test("an offline report reads now and keeps the stream; online after it reconnec
     assert.equal(p.core.streams.length, streams + 2, "and only one");
 
     assert.deepEqual(p.core.calls.filter((c) => c.method !== "GET"), [], "nothing is written or sent again");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a read that failed while offline is tried again as soon as the browser is back online, not after its 5 s retry; the draft and window stay, nothing is written (T-170)", async () => {
+  const p = await mount({ holdPoll: true });
+  const fire = (name) => p.w.dispatchEvent(new p.w.Event(name));
+  const agentReads = () => p.core.calls.filter((c) => c.path === "/api/agents/a");
+  try {
+    const opened = p.core.calls.length;
+    p.stream().readyState = 1;
+    p.stream().onopen?.({});
+    p.send({ type: "resumed", from: "e-1" }, "e-7");
+    await until(() => p.core.calls.slice(opened).some((c) => c.path === "/api/reviews"), "the status bar's read after the stream opened");
+    const field = () => p.d.querySelector('[data-composer-input][aria-label="Message Mori"]');
+    setComposerText(field(), "A draft kept through it all");
+    await pause();
+
+    // Offline: the report's read of the shown Agent fails, as a fetch does then.
+    p.core.failAgentReads = 1;
+    const before = agentReads().length;
+    fire("offline");
+    await until(() => p.core.failAgentReads === 0, "the offline report reads the Agent, and that read fails");
+    const failed = agentReads().at(-1);
+    await pause(100);
+    assert.equal(agentReads().length, before + 1, "one failed read, then the retry waits");
+
+    // Core moved on meanwhile; the browser comes back.
+    p.core.text = "Back online";
+    p.core.agents[0].rev = 40;
+    p.core.agents[0].lastSeq = 40;
+    const at = Date.now();
+    fire("online");
+    await until(() => p.d.querySelector('[data-item-id="m-a"]').textContent.includes("Back online"), "the shown conversation is read again");
+    const waited = Date.now() - at;
+    assert.ok(waited < 1_000, `read again at once, not after the 5 s retry (${waited} ms)`);
+    assert.equal(agentReads().length, before + 2, "one read on online");
+    assert.equal(agentReads().at(-1).search, failed.search, "the same reading window");
+    assert.equal(composerText(field()), "A draft kept through it all", "the draft stays");
+
+    // The reconnected stream opens; another online report reads nothing more:
+    // the last read succeeded and the stream keeps the conversation current.
+    p.stream().readyState = 1;
+    p.stream().onopen?.({});
+    p.send({ type: "resumed", from: "e-7" });
+    await pause(200);
+    const settled = agentReads().length;
+    fire("online");
+    fire("online");
+    await pause(300);
+    assert.equal(agentReads().length, settled, "online after a successful read reads nothing");
+    assert.deepEqual(p.core.calls.filter((c) => c.method !== "GET"), [], "nothing is written or sent");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

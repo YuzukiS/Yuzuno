@@ -47,6 +47,9 @@ export class DetailSync {
   failed = false;
   running = false;
   queued = false;
+  /** The browser came back online while a read ran: if it fails, read again
+   * at once instead of after the retry delay (T-170). */
+  retryOnline = false;
   controller: AbortController | null = null;
   /** Changes received while the running read was outstanding. */
   recent: DetailEvent[] = [];
@@ -74,7 +77,7 @@ export class DetailSync {
     for (const timer of [this.refetchTimer, this.flushTimer, this.retryTimer])
       clearTimeout(timer);
     this.refetchTimer = this.flushTimer = this.retryTimer = undefined;
-    this.running = this.queued = this.failed = false;
+    this.running = this.queued = this.failed = this.retryOnline = false;
     this.recent = [];
     this.queue = [];
     this.current = null;
@@ -96,7 +99,7 @@ export class DetailSync {
     this.controller?.abort();
     for (const timer of [this.refetchTimer, this.flushTimer, this.retryTimer]) clearTimeout(timer);
     this.refetchTimer = this.flushTimer = this.retryTimer = undefined;
-    this.running = this.queued = this.failed = false;
+    this.running = this.queued = this.failed = this.retryOnline = false;
     this.queue = this.recent = [];
     this.options.error(null);
     return this.run();
@@ -125,6 +128,19 @@ export class DetailSync {
       this.refetchTimer = undefined;
       void this.run();
     }, this.options.refetchDelayMs);
+  }
+
+  /**
+   * The browser reports its network back (T-170). A read that failed while
+   * it was away is tried again now rather than after the retry delay; one
+   * still running is tried again at once if it fails. Otherwise nothing is
+   * read: the event stream keeps the detail current. Each report starts at
+   * most one read, and a read that fails again backs off as usual.
+   */
+  online() {
+    if (!this.agentId) return;
+    if (this.running) this.retryOnline = true;
+    else if (this.failed) void this.run();
   }
 
   /** A streamed change for the shown Agent. */
@@ -228,6 +244,7 @@ export class DetailSync {
       this.baseRev = read.agent.rev ?? 0;
       this.baseSeq = read.agent.lastSeq;
       this.failed = false;
+      this.retryOnline = false;
       const missing = this.apply(replay);
       this.options.error(null);
       this.show();
@@ -245,7 +262,10 @@ export class DetailSync {
         // A read asked for while this one ran still goes; reads asked for
         // after a failure wait for the retry (see refetch).
         if (this.queued) void this.run();
-        else if (this.failed) this.scheduleRetry();
+        else if (this.failed && this.retryOnline) {
+          this.retryOnline = false;
+          void this.run();
+        } else if (this.failed) this.scheduleRetry();
         if (!this.running && this.queue.length && this.flushTimer === undefined)
           this.flushTimer = setTimeout(() => this.flush(), this.options.flushDelayMs);
       }
