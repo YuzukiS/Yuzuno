@@ -5348,13 +5348,16 @@ test("an unfinished Codex goal is paused, cleared or replaced only by its own bu
     assert.match(goalDialog(page).textContent, /1,200 tokens/);
     assert.ok(goalButton(page, "Replace and start"), "an unfinished goal is replaced, not silently overwritten");
     assert.match(goalDialog(page).textContent, /Pause and Clear only stop new work toward it; a running turn continues/, "what Pause and Clear do, and do not");
-    // The first answer is lost: it says the outcome is unknown, and nothing is sent again by itself.
+    // The first answer is lost: it says the outcome is unknown, reads the goal again, and sends nothing again by itself.
+    const readsBefore = stub.reads.length;
     goalButton(page, "Pause").click();
-    await until(() => /No answer came back.*Refresh/.test(goalDialog(page).querySelector('[role="alert"]')?.textContent || ""), "the unknown outcome");
+    await until(() => /No answer came back.*as Codex now has it/.test(goalDialog(page).querySelector('[role="alert"]')?.textContent || ""), "the unknown outcome");
+    await until(() => stub.reads.length === readsBefore + 1 && goalButton(page, "Pause"), "the goal read again");
     goalButton(page, "Pause").click();
     await until(() => /goals feature is disabled/.test(goalDialog(page).querySelector('[role="alert"]')?.textContent || ""), "Codex's refusal");
     assert.deepEqual(stub.changes, [{ action: "pause" }, { action: "pause" }], "one request per click");
     assert.equal(composerText(composer), "/goal Write the docs", "the draft stays");
+    await until(() => goalButton(page, "Replace and start"), "the goal read again");
     goalButton(page, "Replace and start").click();
     await until(() => /Write the docs/.test(goalDialog(page).querySelector('[aria-label="Current goal"]')?.textContent || ""), "the new goal shown");
     assert.deepEqual(stub.changes[2], { action: "set", objective: "Write the docs", replace: true });
@@ -5368,4 +5371,36 @@ test("an unfinished Codex goal is paused, cleared or replaced only by its own bu
     await sendDraft(claude, "/goal Ship it");
     assert.deepEqual(posts(claude), ["/api/agents/a/messages"], "Claude's /goal is whatever Claude Code makes of it");
   } finally { claude.close(); }
+});
+
+test("a replacement whose old goal was cleared but whose new one was not set shows Codex's goal as it is, and keeps the objective", async () => {
+  // Codex has an unfinished goal; the replacement clears it, then setting the new one fails.
+  let current = { objective: "Ship the parser", status: "active", tokenBudget: null, tokensUsed: 10, timeUsedSeconds: 5 };
+  const changes = [];
+  const page = await mount({ harness: "codex", beforeLoad(window) {
+    const fetch = window.fetch;
+    window.fetch = (url, init = {}) => {
+      if (!url.endsWith("/codex/goal")) return fetch(url, init);
+      let status = 200, body = { state: "ready", reason: "read", goal: current };
+      if (init.method === "POST") {
+        changes.push(JSON.parse(init.body));
+        current = null;
+        status = 400;
+        body = { error: "Codex 对设定新目标（原目标已清除）返回了错误：goal objective must not be empty；请重新打开 /goal 查看目标的实际状态" };
+      }
+      return Promise.resolve({ ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body) });
+    };
+  } });
+  try {
+    const composer = await sendDraft(page, "/goal Write the docs");
+    await until(() => goalButton(page, "Replace and start"), "the current goal");
+    goalButton(page, "Replace and start").click();
+    await until(() => /原目标已清除/.test(goalDialog(page).querySelector('[role="alert"]')?.textContent || ""), "the partial outcome, as Core says it");
+    await until(() => /No goal is set/.test(goalDialog(page).textContent), "Codex's goal as it now is, read again");
+    assert.doesNotMatch(goalDialog(page).textContent, /Ship the parser/, "the cleared goal is not shown as current");
+    assert.equal(goalDialog(page).querySelector("textarea").value, "Write the docs", "the objective is kept to set again");
+    assert.ok(goalButton(page, "Set and start"), "set, not replace, now that Codex has none");
+    assert.deepEqual(changes, [{ action: "set", objective: "Write the docs", replace: true }], "nothing cleared or set again by itself");
+    assert.equal(composerText(composer), "/goal Write the docs", "the draft stays");
+  } finally { page.close(); }
 });

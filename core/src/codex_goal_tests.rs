@@ -45,6 +45,8 @@ for line in sys.stdin:
   print(json.dumps({'id':r['id'],'error':{'code':-32600,'message':'goals feature is disabled'}}),flush=True); continue
  elif m=='thread/goal/set' and mode=='drop':
   sys.exit(0)
+ elif m=='thread/goal/set' and mode=='setfail':
+  print(json.dumps({'id':r['id'],'error':{'code':-32603,'message':'failed to persist goal'}}),flush=True); continue
  elif m=='thread/goal/get':
   result={'goal':goal}
  elif m=='thread/goal/set':
@@ -201,4 +203,22 @@ async fn a_refused_or_lost_change_says_so_and_is_never_sent_again() {
     assert!(answer["error"].as_str().unwrap().contains("无法确认") && answer["error"].as_str().unwrap().contains("不要重复"), "{answer}");
     assert_eq!(lab.methods()[before..], ["thread/goal/set"], "sent once, never again");
     assert!(!lab.methods().iter().any(|m| m.starts_with("turn/")), "never sent as a prompt");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replacement_that_cleared_the_old_goal_but_did_not_set_the_new_one_says_so() {
+    for mode in ["setfail", "drop"] {
+        let lab = Lab::new(Some(GOAL)).await;
+        lab.connect().await;
+        lab.mode(mode);
+        let (status, answer) = lab.change(json!({"action":"set","objective":"Write the docs","replace":true})).await;
+        assert_eq!(status, 400, "{mode}: {answer}");
+        let error = answer["error"].as_str().unwrap();
+        assert!(error.contains("原目标已清除") && !error.contains("没有执行"), "{mode}: the old goal is gone, said so: {error}");
+        assert_eq!(lab.methods(), ["thread/goal/get", "thread/goal/clear", "thread/goal/set"], "{mode}: each once, nothing again");
+        if mode == "setfail" {
+            lab.mode("");
+            assert_eq!(lab.get().await["goal"], Value::Null, "reading again shows what Codex has: no goal");
+        }
+    }
 }
