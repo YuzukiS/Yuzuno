@@ -20,8 +20,8 @@ pub(super) const MAX_CHANGES: usize = 24;
 const MAX_EDITED: usize = 32;
 /// The problems a rejection lists, as the contract's limits.callProblems.
 pub(super) const MAX_PROBLEMS: usize = 10;
-/// Advice an answer carries at most (T-176).
-const MAX_ADVICE: usize = 3;
+/// Advice an answer carries at most (T-176), as the contract's limits.advice.items.
+pub(super) const MAX_ADVICE: usize = 3;
 
 /// What checks a section `put`: the generated validator, or in tests a
 /// stand-in for it.

@@ -118,10 +118,11 @@ async fn a_preview_names_the_problems_the_update_gets() {
 }
 
 #[test]
-fn the_guide_states_the_problems_a_rejection_lists() {
+fn the_contract_states_cores_problem_and_advice_limits() {
     let limits = &brief_contract().unwrap()["limits"];
     assert_eq!(limits["callProblems"].as_u64(), Some(update::MAX_PROBLEMS as u64));
     assert!(limits["problems"].as_u64().is_some_and(|section| section < update::MAX_PROBLEMS as u64));
+    assert_eq!(limits["advice"]["items"].as_u64(), Some(update::MAX_ADVICE as u64));
 }
 
 #[tokio::test]

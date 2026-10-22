@@ -66,8 +66,9 @@ export const BRIEF_LIMITS = {
   callProblems: 10,
   keyPattern: BRIEF_KEY_PATTERN.source,
   // Advice only (T-176, brief-advice.ts): adjustable hints in characters
-  // (Unicode code points) and references, never a limit.
-  advice: { markdownChars: 1200, sectionMarkdownChars: 3000, refs: 12 },
+  // (Unicode code points) and references, never a limit; Core sends at most
+  // `items` with one answer.
+  advice: { markdownChars: 1200, sectionMarkdownChars: 3000, refs: 12, items: 3 },
 } as const;
 const L = BRIEF_LIMITS;
 
@@ -1047,7 +1048,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Table and chart ids, row ids, item ids and column keys are unique. Sources hrefs are http(s) URLs or local file paths (optionally :line); Table rows cite them by id in sourceIds.`,
     `Form follows the information, unless the user or Project prefers another: a real screenshot or a labelled sketch (say which) for a UI or layout change, a chart of measured data for quantities and how they relate, a short sentence for a single state. The result, compare and decision examples show each; image shows a screenshot.`,
     `Layout: a short answer first, the first Markdown on its own or in a Group with tone accent, since its first paragraph is what a reader sees first; then a Columns of Groups for parts that sit side by side, as in the overview example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
-    `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to 3 advice {code, path, reason, guide} on the report and status sections it sent; for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
+    `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to ${L.advice.items} advice {code, path, reason, guide} on the report and status sections it sent; for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
     ...Object.entries(BRIEF_ADVICE_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
   ],
   charts: [

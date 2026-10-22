@@ -2,7 +2,9 @@
 // refuse nothing. Pure module, no DOM.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { BRIEF_ADVICE_CODES, BRIEF_EXAMPLES, BRIEF_LIMITS, checkBriefSection } from "../src/intelligent-ui/brief-contract.ts";
+import {
+  BRIEF_ADVICE_CODES, BRIEF_EXAMPLES, BRIEF_LIMITS, BRIEF_TOOL_DESCRIPTIONS, briefGuide, checkBriefSection,
+} from "../src/intelligent-ui/brief-contract.ts";
 import { adviceChars, adviseBriefSection } from "../src/intelligent-ui/brief-advice.ts";
 
 const A = BRIEF_LIMITS.advice;
@@ -106,4 +108,19 @@ test("advice never changes the checked section", () => {
   const before = structuredClone(checked);
   adviseBriefSection(checked);
   assert.deepEqual(checked, before);
+});
+
+test("the tools and the guide say what a check writes, what advice is and both problem limits", () => {
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /validateOnly:true checks without writing\./);
+  // T-175's hint and preference, for Home content editors only; the preference grants nothing.
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_get, /for a Home content editor homeHint, and homePreference once the user set one: .*granting nothing\}/);
+  const sections = briefGuide("sections");
+  assert.match(sections, /validateOnly:true checks a brief_update as it would be sent and writes nothing: .*no requestId kept, no version reserved, and it is not your update\./);
+  assert.match(sections, /checkedAll: whether this check ran to the end\..*false means later steps did not run and the problems listed may not be all\./);
+  assert.match(sections, /sending the update checks everything again/);
+  assert.match(briefGuide("errors"), new RegExp(`at most ${BRIEF_LIMITS.problems} for each section's format and at most ${BRIEF_LIMITS.callProblems} in all\\. moreProblems says how many more Core found past ${BRIEF_LIMITS.callProblems}`));
+  const content = briefGuide("content");
+  assert.match(content, new RegExp(`Advice: .*up to ${BRIEF_LIMITS.advice.items} advice .*not a score or a limit: nothing is cut, refused or rewritten`));
+  assert.match(content, /Characters are Unicode code points\./);
+  for (const code of Object.keys(BRIEF_ADVICE_CODES)) assert.match(content, new RegExp(`^- ${code}: `, "m"));
 });
