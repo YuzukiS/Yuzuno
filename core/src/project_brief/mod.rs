@@ -21,6 +21,8 @@ mod refs;
 mod sections;
 mod update;
 #[cfg(test)]
+mod preview_tests;
+#[cfg(test)]
 mod tests;
 
 use crate::{model::now, store::Store, workspace::Workspace};
@@ -157,6 +159,7 @@ fn update_properties(project: Value) -> Value {
         "projectId":project,
         "expectedVersion":{"type":"integer","minimum":0,"description":"The Brief version brief_get returned (0 for a Brief with no sections yet)."},
         "noChange":{"type":"boolean","description":"true, with no changes: nothing of yours changed in this Turn."},
+        "validateOnly":{"type":"boolean","description":"true: only check this update. The answer has the problems the update would get; nothing is written, and it is not this Turn's update."},
         "changes":{"type":"array","maxItems":update::MAX_CHANGES,"items":{"type":"object","required":["op","key"],"properties":{
             "op":{"type":"string","enum":["put","edit","resolve","remove","claim"]},
             "key":{"type":"string","description":"topic or topic/sub: lowercase letters, digits and -, each part up to 48 characters."},

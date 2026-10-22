@@ -46,6 +46,9 @@ Home 的内容分两类：
 工具（yuzuno MCP）：
 - `brief_get`：返回 Brief 的当前版本和版本号。
 - `brief_update`：必须带上读取时得到的版本号。版本过期时拒收，并在拒收结果里附上最新内容。没有变化时，显式提交"无变化"。
+  - 加上 `validateOnly:true` 只做检查（T-176）。检查与正式调用相同，同一输入得到同样的 problems。什么都不写：不记 requestId、不复制附件、不算本回合的更新，也不预留版本。检查在第一个出问题的步骤停下，`checkedAll` 说明是否每一步都检查了。
+  - 被接受的更新和有效的预览，可以带至多 3 条不阻断的 `advice`。advice 只针对本次发送的正文，edit 只针对它替换的块。
+  - 拒收超过 10 条问题时，`moreProblems` 说明 Core 省略了几条。
 - `brief_guide`：详细指南和示例，内容从组件 catalog 自动生成。
 
 规则：

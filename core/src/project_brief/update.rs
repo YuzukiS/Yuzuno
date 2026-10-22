@@ -19,6 +19,8 @@ pub(super) const MAX_CHANGES: usize = 24;
 /// Blocks one edit may replace: a body's component limit.
 const MAX_EDITED: usize = 32;
 const MAX_PROBLEMS: usize = 10;
+/// Advice an answer carries at most (T-176).
+const MAX_ADVICE: usize = 3;
 
 /// What checks a section `put`: the generated validator, or in tests a
 /// stand-in for it.
@@ -26,10 +28,14 @@ pub(crate) enum Checker {
     Node(Arc<Validator>),
     #[cfg(test)]
     Fake(fn(&Value) -> Result<Value, Value>),
+    /// A stand-in that also gives advice.
+    #[cfg(test)]
+    Advising(fn(&Value) -> Result<(Value, Vec<Value>), Value>),
 }
 
 impl Checker {
-    async fn check(&self, section: &Value, previous_body: Option<&Value>) -> Result<Result<Value, Value>, String> {
+    /// The normalized section and the validator's advice on it, or its problems.
+    async fn check(&self, section: &Value, previous_body: Option<&Value>) -> Result<Result<(Value, Vec<Value>), Value>, String> {
         match self {
             Checker::Node(validator) => {
                 if brief_schema_version().is_none() {
@@ -38,7 +44,9 @@ impl Checker {
                 validator.check_brief_section(section, previous_body).await
             }
             #[cfg(test)]
-            Checker::Fake(check) => Ok(check(section)),
+            Checker::Fake(check) => Ok(check(section).map(|section| (section, vec![]))),
+            #[cfg(test)]
+            Checker::Advising(check) => Ok(check(section)),
         }
     }
 }
@@ -48,8 +56,10 @@ pub(super) fn problem(code: &str, path: impl Into<String>, reason: impl Into<Str
 }
 
 /// A rejection the Agent can fix, in result_publish's form. Nothing was
-/// changed and no receipt was given.
+/// changed and no receipt was given. Past MAX_PROBLEMS, `moreProblems` says
+/// how many were left out (T-176).
 pub(super) fn rejection(mut problems: Vec<Value>, latest: Option<Value>) -> Value {
+    let more = problems.len().saturating_sub(MAX_PROBLEMS);
     problems.truncate(MAX_PROBLEMS);
     let mut codes: Vec<String> = vec![];
     for code in problems.iter().filter_map(|p| p["code"].as_str()) {
@@ -61,10 +71,63 @@ pub(super) fn rejection(mut problems: Vec<Value>, latest: Option<Value>) -> Valu
         "error":format!("brief_rejected: {}. Nothing was changed and this call does not count as the Turn's Brief update; \
             fix the problems and call brief_update again with a new requestId", codes.join(", ")),
         "problems":problems});
+    if more > 0 {
+        answer["moreProblems"] = json!(more);
+    }
     if let Some(latest) = latest {
         answer["latest"] = latest;
     }
     answer
+}
+
+/// A `validateOnly` answer: what brief_update would answer, without having
+/// written anything (T-176). A rejection's problems, `moreProblems` and
+/// `latest` are kept as they are, so the same input gives the same problems.
+/// Checking stops at the first step with problems: `checkedAll` says
+/// whether every step ran. Advice comes only with a valid answer.
+fn preview(rejected: Option<Value>, checked_all: bool, advice: Vec<Value>) -> Value {
+    let Some(mut rejected) = rejected else {
+        return json!({"validateOnly":true,"valid":true,"checkedAll":true,"problems":[],"advice":advice,
+            "note":"validateOnly: checked against the Brief as it is now. Nothing was written or reserved, this is not \
+                the Turn's Brief update, and sending it checks everything again."});
+    };
+    let note = if checked_all {
+        "validateOnly: nothing was written. Every step was checked."
+    } else {
+        "validateOnly: nothing was written. Checking stopped at the first step with problems, so later steps have not \
+            been checked: fix these and check again."
+    };
+    let answer = rejected.as_object_mut().expect("a rejection is an object");
+    answer.remove("accepted");
+    answer.remove("error");
+    answer.insert("validateOnly".into(), json!(true));
+    answer.insert("valid".into(), json!(false));
+    answer.insert("checkedAll".into(), json!(checked_all));
+    answer.insert("note".into(), json!(note));
+    rejected
+}
+
+/// The validator's advice on change `index` (T-176), added to `advice`
+/// once each and at most MAX_ADVICE in all. A block edit is advised only
+/// on the blocks it replaced, never again on the rest of the section.
+fn advise(change: &Change, index: usize, found: Vec<Value>, advice: &mut Vec<Value>) {
+    for mut one in found.into_iter().filter(Value::is_object) {
+        let path = one["path"].as_str().unwrap_or_default().to_owned();
+        if change.op == Op::Edit && !edited_block(change, &path) {
+            continue;
+        }
+        one["path"] = json!(change_path(change, index, &path));
+        if advice.len() < MAX_ADVICE && !advice.iter().any(|known| known["code"] == one["code"] && known["path"] == one["path"]) {
+            advice.push(one);
+        }
+    }
+}
+
+/// Whether `path` (body.elements.<id>…) is in a block the edit replaced.
+fn edited_block(change: &Change, path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("body.elements.") else { return false };
+    let id = rest.split('.').next().unwrap_or_default();
+    change.edit["elements"].as_object().is_some_and(|elements| elements.contains_key(id))
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -98,6 +161,16 @@ pub(super) struct Request {
     pub expected: i64,
     pub no_change: bool,
     pub changes: Vec<Change>,
+    /// validateOnly: checked as an update is, nothing written (T-176).
+    pub validate_only: bool,
+    /// The validator's advice on the checked sections, set once they pass;
+    /// an accepted answer carries it.
+    pub advice: Vec<Value>,
+}
+
+/// Whether `input` asks only to be checked (validateOnly: true).
+fn validate_only(input: &Value) -> bool {
+    input.get("validateOnly") == Some(&Value::Bool(true))
 }
 
 pub(super) fn valid_key(key: &str) -> bool {
@@ -127,7 +200,7 @@ fn parse(input: &Value) -> Result<Request, Vec<Value>> {
     let mut problems = vec![];
     let object = input.as_object().cloned().unwrap_or_default();
     for key in object.keys() {
-        if !matches!(key.as_str(), "requestId" | "projectId" | "expectedVersion" | "changes" | "noChange") {
+        if !matches!(key.as_str(), "requestId" | "projectId" | "expectedVersion" | "changes" | "noChange" | "validateOnly") {
             problems.push(problem("invalid_input", key.as_str(), format!("Unknown argument {key}."), "sections"));
         }
     }
@@ -152,6 +225,9 @@ fn parse(input: &Value) -> Result<Request, Vec<Value>> {
             false
         }
     };
+    if !matches!(input.get("validateOnly"), None | Some(Value::Null) | Some(Value::Bool(_))) {
+        problems.push(problem("invalid_input", "validateOnly", "validateOnly is true or false.", "sections"));
+    }
     let listed = match input.get("changes") {
         None | Some(Value::Null) => vec![],
         Some(Value::Array(changes)) => changes.clone(),
@@ -187,7 +263,7 @@ fn parse(input: &Value) -> Result<Request, Vec<Value>> {
         }
     }
     match expected {
-        Some(expected) if problems.is_empty() => Ok(Request { project, expected, no_change, changes }),
+        Some(expected) if problems.is_empty() => Ok(Request { project, expected, no_change, changes, validate_only: validate_only(input), advice: vec![] }),
         _ => Err(problems),
     }
 }
@@ -529,8 +605,11 @@ fn replay(db: &Connection, actor: &str, id: &str, input: &Value) -> Result<Optio
 /// Everything up to the validator, on a reader.
 fn start(store: &Store, actor: &str, id: &str, input: &Value) -> Result<Start> {
     let db = store.db.read()?;
-    if let Some(answer) = replay(&db, actor, id, input)? {
-        return Ok(Start::Replay(answer));
+    // A check only is answered afresh: its requestId is neither replayed nor kept.
+    if !validate_only(input) {
+        if let Some(answer) = replay(&db, actor, id, input)? {
+            return Ok(Start::Replay(answer));
+        }
     }
     let request = match parse(input) {
         Ok(request) => request,
@@ -681,17 +760,22 @@ fn change_path(change: &Change, index: usize, path: &str) -> String {
 }
 
 pub(super) async fn update(ws: &Arc<Workspace>, checker: &Checker, actor: &str, input: Value) -> Result<Result<Value, Value>> {
-    let id = input["requestId"].as_str().filter(|id| !id.trim().is_empty() && id.len() <= 128)
-        .context("invalid_input: requestId must be a string of 1-128 bytes")?.to_owned();
+    let only = validate_only(&input);
+    let id = match input["requestId"].as_str().filter(|id| !id.trim().is_empty() && id.len() <= 128) {
+        Some(id) => id.to_owned(),
+        None if only => String::new(),
+        None => bail!("invalid_input: requestId must be a string of 1-128 bytes"),
+    };
     let (store, who, payload, key) = (ws.store.clone(), actor.to_owned(), input.clone(), id.clone());
-    let (request, remote, turn) = match crate::db::blocking(move || start(&store, &who, &key, &payload)).await? {
+    let (mut request, remote, turn) = match crate::db::blocking(move || start(&store, &who, &key, &payload)).await? {
         Start::Replay(answer) => return Ok(Ok(answer)),
+        Start::Reject(rejected) if only => return Ok(Ok(preview(Some(rejected), false, vec![]))),
         Start::Reject(rejected) => return Ok(Err(rejected)),
         Start::Check(request, remote, turn) => (request, remote, turn),
     };
     // Each section put, checked outside any database lock.
     let mut normalized = Vec::with_capacity(request.changes.len());
-    let mut problems = vec![];
+    let (mut problems, mut advice) = (vec![], vec![]);
     for (index, change) in request.changes.iter().enumerate() {
         if !matches!(change.op, Op::Put | Op::Edit) {
             normalized.push(Value::Null);
@@ -701,7 +785,10 @@ pub(super) async fn update(ws: &Arc<Workspace>, checker: &Checker, actor: &str, 
             anyhow::anyhow!("validator_unavailable: {reason}. Not counted against you; try again later")
         })?;
         match checked {
-            Ok(section) => normalized.push(section),
+            Ok((section, found)) => {
+                advise(change, index, found, &mut advice);
+                normalized.push(section);
+            }
             Err(found) => {
                 for mut found in found.as_array().cloned().unwrap_or_default() {
                     found["path"] = json!(change_path(change, index, found["path"].as_str().unwrap_or_default()));
@@ -712,8 +799,19 @@ pub(super) async fn update(ws: &Arc<Workspace>, checker: &Checker, actor: &str, 
         }
     }
     if !problems.is_empty() {
-        return Ok(Err(rejection(problems, None)));
+        let rejected = rejection(problems, None);
+        return Ok(if request.validate_only { Ok(preview(Some(rejected), false, vec![])) } else { Err(rejected) });
     }
+    if request.validate_only {
+        // The attachments are judged as staging judges them; nothing is copied.
+        let sections: Vec<Value> = request.changes.iter()
+            .map(|c| if c.op == Op::Put { c.section.clone() } else { Value::Null })
+            .collect();
+        let (cache, data_dir) = (attachments::dir(&ws.data_dir), ws.data_dir.clone());
+        let problems = crate::db::blocking(move || attachments::inspect(&cache, &data_dir, remote, &sections)).await?;
+        return Ok(Ok(preview((!problems.is_empty()).then(|| rejection(problems, None)), true, advice)));
+    }
+    request.advice = advice;
     // Attachment files are copied before the write; one the write then
     // does not keep is collected afterwards.
     let (cache, data_dir) = (attachments::dir(&ws.data_dir), ws.data_dir.clone());
@@ -808,9 +906,13 @@ fn commit(
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
         params![receipt, actor, ctx.project, ctx.turn.turn, ctx.turn.session(), kind, id, version, now()],
     )?;
-    let answer = json!({"accepted":true,
+    let mut answer = json!({"accepted":true,
         "receipt":{"id":receipt,"agentId":actor,"projectId":ctx.project,"turnId":ctx.turn.turn,"kind":kind},
         "version":version,"sections":changed});
+    // Advice never changes what was accepted; a retry gets it again.
+    if !request.advice.is_empty() {
+        answer["advice"] = json!(request.advice);
+    }
     tx.execute(
         "INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,?2,?3,?4,?5)",
         params![format!("agent:{actor}"), TOOL, id, input.to_string(), answer.to_string()],
