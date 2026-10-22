@@ -237,6 +237,7 @@ try {
     check(`${viewport.name}: an unreadable snapshot says so and offers no Mark up`);
 
     // History reads its own version; a pinned widget opens the same preview.
+    await page.locator(".home-team-details > summary").click();
     await page.locator(".home-history > summary").click();
     await page.locator(".home-history li > details > summary").first().click();
     await page.locator(".home-history button.brief-image").click();
