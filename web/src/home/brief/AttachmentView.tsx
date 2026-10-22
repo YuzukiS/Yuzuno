@@ -368,14 +368,31 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
   );
 }
 
+/**
+ * Attachments shown before "Show all": a long row of screenshots is evidence
+ * to open, not a page to scroll past, least of all on a phone (T-173). Up to
+ * two more show at once, as a button would save nothing.
+ */
+export const FIRST_ATTACHMENTS = 4;
+
 export function BriefAttachments({ items }: AttachmentsProps) {
+  const [all, setAll] = useState(false);
+  const folds = items.length > FIRST_ATTACHMENTS + 2;
+  const shown = folds && !all ? items.slice(0, FIRST_ATTACHMENTS) : items;
   return (
-    <ul className="brief-attachments" aria-label="Attachments">
-      {items.map((item) => (
-        <li key={item.name}>
-          <Attachment name={item.name} caption={item.caption} />
-        </li>
-      ))}
-    </ul>
+    <div className="brief-attachments-block">
+      <ul className="brief-attachments" aria-label="Attachments">
+        {shown.map((item) => (
+          <li key={item.name}>
+            <Attachment name={item.name} caption={item.caption} />
+          </li>
+        ))}
+      </ul>
+      {folds && (
+        <button type="button" className="quiet-button brief-attachments-more" aria-expanded={all} onClick={() => setAll(!all)}>
+          {all ? `Show the first ${FIRST_ATTACHMENTS}` : `Show all ${items.length} attachments`}
+        </button>
+      )}
+    </div>
   );
 }

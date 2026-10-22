@@ -1,5 +1,12 @@
 import type { HomeData, Section } from "./types";
 
+/** A topic key read as words ("memory-read-progress" → "Memory read progress"),
+ * for a topic that has no section of its own to give it a title (T-173). */
+export function topicName(topic: string) {
+  const words = topic.replace(/-+/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : topic;
+}
+
 /** A topic with its own section (if any) and the sub-topics other Agents added. */
 export type TopicGroup = { topic: string; parent: Section | null; subs: Section[] };
 

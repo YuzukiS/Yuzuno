@@ -889,6 +889,38 @@ ul.home-widget {
 .home-stale {
   color: var(--home-error-ink);
 }
+/* An author who is no longer active keeps nothing up to date (T-173). */
+.home-unmaintained {
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--home-soft);
+  color: var(--home-error-ink);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-unmaintained-note {
+  display: block;
+  color: var(--home-error-ink);
+}
+/* A folded card's own words: its summary's first paragraph in a few lines,
+   then when its data is from (T-173). */
+.home-card-glance {
+  margin-top: 4px;
+}
+.home-card-summary .brief-markdown {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+}
+.home-card-summary .brief-markdown > * {
+  margin: 0;
+}
+.home-card-glance .home-section-time {
+  margin-top: 2px;
+}
 .home-question {
   margin: 8px 0 0;
   font-weight: 500;

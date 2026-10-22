@@ -4,8 +4,10 @@ import { errorText } from "../api";
 import type { Agent } from "../types";
 import { AskReply, repliedThenUpdated } from "./AskReply";
 import { changedBlocks, rememberSeenBlocks } from "./brief/block-changes";
+import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
 import { FoldButton, useCardFold } from "./card-fold";
+import { sectionSummary, unmaintained } from "./card-summary";
 import { absolute, deferChoices, duration, relative } from "./format";
 import { deferSection, type SeenMark } from "./home-api";
 import { SectionBody } from "./SectionBody";
@@ -13,6 +15,20 @@ import type { Section } from "./types";
 import { pinnable, PinsContext } from "./widget-layout";
 
 const kindLabel = { ask: "Ask", report: "Report", status: "Status" } as const;
+
+/** Why an author no longer keeps a section up to date. */
+const gone = { closed: "has closed", deleted: "was deleted", moved: "moved to another project" } as const;
+
+/** When a status's data is from, and whether it is past its validity. */
+function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; stale: boolean }) {
+  return (
+    <span className={stale ? "home-stale" : ""} title={absolute(status.asOf)}>
+      <Clock3 size={12} />
+      Data as of {absolute(status.asOf)}
+      {stale && ` · older than its ${duration(status.validFor)} validity`}
+    </span>
+  );
+}
 
 function Time({ label, iso }: { label: string; iso?: string }) {
   if (!iso) return null;
@@ -108,6 +124,10 @@ export const SectionCard = memo(function SectionCard({
   const blocks = useMemo(() => changedBlocks(workspaceId, projectId, section), [workspaceId, projectId, section]);
   useEffect(() => rememberSeenBlocks(workspaceId, projectId, section), [workspaceId, projectId, section]);
   const stale = !!section.status?.stale;
+  // A folded card still says what it is about, when it is from and whether
+  // anyone still keeps it up to date (T-173); unfolded, the body says so.
+  const summary = useMemo(() => (section.kind === "ask" ? null : sectionSummary(section)), [section]);
+  const orphaned = unmaintained(section);
   // Answered, waiting for its owner: no longer the user's to decide, so it
   // shows in short, with the question and details one click away.
   const replied = section.ask?.state === "replied";
@@ -170,6 +190,11 @@ export const SectionCard = memo(function SectionCard({
             {section.seen ? "Updated" : "New"}
           </span>
         )}
+        {orphaned && (
+          <span className="home-unmaintained" title={`${section.owner.name} ${gone[section.owner.state as keyof typeof gone] ?? "is not active"}: nobody updates this ${kindLabel[section.kind].toLowerCase()} any more`}>
+            Not maintained
+          </span>
+        )}
         <span className="home-section-meta">
           <span className="home-owner">
             {sub ? "by " : ""}
@@ -192,16 +217,31 @@ export const SectionCard = memo(function SectionCard({
           </button>
         )}
       </header>
+      {collapsed && (summary || section.status) && (
+        <div className="home-card-glance">
+          {summary && (
+            <div className="home-card-summary">
+              <BriefMarkdown text={summary} />
+            </div>
+          )}
+          {section.status && (
+            <p className="home-section-time">
+              <DataAsOf status={section.status} stale={stale} />
+            </p>
+          )}
+        </div>
+      )}
       <div className="home-card-body" id={`${sectionDomId(projectId, section.key)}-body`} hidden={collapsed}>
+      {orphaned && (
+        <p className="home-note home-unmaintained-note">
+          {section.owner.name} {gone[section.owner.state as keyof typeof gone] ?? "is not active"}, so this {kindLabel[section.kind].toLowerCase()} is no longer
+          updated and may be out of date. A Home content editor can claim it to bring it up to date or remove it;
+          nothing is removed by itself.
+        </p>
+      )}
       {(section.status || section.time) && (
         <div className="home-section-time">
-          {section.status && (
-            <span className={stale ? "home-stale" : ""} title={absolute(section.status.asOf)}>
-              <Clock3 size={12} />
-              Data as of {absolute(section.status.asOf)}
-              {stale && ` · older than its ${duration(section.status.validFor)} validity`}
-            </span>
-          )}
+          {section.status && <DataAsOf status={section.status} stale={stale} />}
           <Time label="Due" iso={section.time?.due} />
           <Time label="Expected" iso={section.time?.eta} />
           <Time label="Next update" iso={section.time?.nextUpdate} />

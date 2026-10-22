@@ -533,6 +533,9 @@ span.brief-ref {
 }
 
 /* Attachments. Previews keep fixed frames. */
+.brief-attachments-more {
+  margin-top: 8px;
+}
 .brief-attachments {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));

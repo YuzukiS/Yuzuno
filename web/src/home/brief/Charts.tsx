@@ -3,6 +3,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  LabelList,
   Line,
   LineChart,
   ResponsiveContainer,
@@ -30,6 +31,8 @@ import {
 type Kind = "line" | "bar" | "scatter";
 /** The plot's own height: fixed, so data arriving never moves the blocks around it. */
 export const CHART_HEIGHT = 260;
+/** At most this many bars (categories × series) show their values on the bars. */
+export const LABELLED_BARS = 12;
 
 // Series take the categorical slots in a fixed order (brief.css,
 // --brief-series-1…8). Past eight a slot is reused with a second encoding:
@@ -193,9 +196,12 @@ function Plot({ kind, props, series }: { kind: Kind; props: ChartProps; series: 
         ))}
       </ScatterChart>
     );
+  // A few bars carry their values, so the comparison is read without hovering
+  // (T-173); a crowded chart keeps them in the tooltip and the data table.
+  const labelled = kind === "bar" && merged.rows.length * series.length <= LABELLED_BARS;
   if (kind === "bar")
     return (
-      <BarChart data={merged.rows} margin={margin} accessibilityLayer barCategoryGap="20%">
+      <BarChart data={merged.rows} margin={labelled ? { ...margin, top: 20 } : margin} accessibilityLayer barCategoryGap="20%">
         {grid}
         <XAxis type="category" dataKey="x" tickFormatter={tick} tick={xTick} tickLine={false} />
         {yAxis}
@@ -210,7 +216,11 @@ function Plot({ kind, props, series }: { kind: Kind; props: ChartProps; series: 
             radius={[4, 4, 0, 0]}
             maxBarSize={28}
             isAnimationActive={false}
-          />
+          >
+            {labelled && (
+              <LabelList dataKey={`s${index}`} position="top" formatter={tick} fill="var(--muted)" fontSize={11} />
+            )}
+          </Bar>
         ))}
       </BarChart>
     );
