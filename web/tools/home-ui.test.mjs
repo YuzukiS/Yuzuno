@@ -1097,12 +1097,12 @@ test("a folded card still says what it is about, when its data is from and that 
     const evidence = card(p, "p-docs", "evidence");
     const layout = card(p, "p-docs", "layout");
     // Open, the body says it all: nothing is shown twice.
-    for (const root of [overview, evidence, layout]) assert.equal(root.querySelector(".home-card-glance"), null);
+    for (const root of [overview, evidence, layout]) assert.ok(!root.querySelector(".home-card-glance"), "no excerpt while open");
     // An author who has closed: marked in the header, explained in the body.
     assert.equal(layout.querySelector(".home-unmaintained").textContent, "Not maintained");
     assert.match(layout.querySelector(".home-unmaintained").title, /Kumo has closed/);
     assert.match(layout.querySelector(".home-unmaintained-note").textContent, /Kumo has closed, so this status is no longer updated.*can claim it.*nothing is removed by itself/s);
-    assert.equal(overview.querySelector(".home-unmaintained"), null, "an active author's card is not marked");
+    assert.ok(!overview.querySelector(".home-unmaintained"), "an active author's card is not marked");
     // Folding keeps the fold button focused and the chart's data table open.
     const table = overview.querySelector("details.brief-chart-data");
     table.open = true;
@@ -1112,14 +1112,14 @@ test("a folded card still says what it is about, when its data is from and that 
       fold(root).focus();
       fold(root).click();
       await pause();
-      assert.equal(p.doc.activeElement, fold(root), "focus stays on the fold");
+      assert.ok(p.doc.activeElement === fold(root), "focus stays on the fold");
     }
     const glance = (root) => root.querySelector(".home-card-glance");
     assert.equal(glance(overview).querySelector(".home-card-summary").textContent.trim(), "Release core.15 is out; two lines wait for main.",
       "the accent Group's first paragraph");
     assert.ok(glance(overview).querySelector(".home-card-summary strong"), "as Markdown");
-    assert.equal(glance(overview).querySelector(".home-section-time"), null, "a report has no data time");
-    assert.equal(glance(evidence), null, "a card opening with evidence shows no summary rather than the evidence");
+    assert.ok(!glance(overview).querySelector(".home-section-time"), "a report has no data time");
+    assert.ok(!glance(evidence), "a card opening with evidence shows no summary rather than the evidence");
     assert.equal(glance(layout).querySelector(".home-card-summary").textContent.trim(), "Daily runs core.12.");
     assert.match(glance(layout).querySelector(".home-section-time").textContent, /Data as of/);
     assert.ok(layout.querySelector(".home-section-head .home-unmaintained"), "still marked when folded");
@@ -1130,8 +1130,8 @@ test("a folded card still says what it is about, when its data is from and that 
     }
     fold(overview).click();
     await pause();
-    assert.equal(glance(overview), null);
-    assert.equal(overview.querySelector("details.brief-chart-data"), table, "the same table, still open");
+    assert.ok(!glance(overview), "no excerpt once open");
+    assert.ok(overview.querySelector("details.brief-chart-data") === table, "the same table, still open");
     assert.equal(table.open, true);
     assert.deepEqual(p.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories")).map((c) => c.url), [],
       "folding marks nothing seen and answers nothing");
@@ -1145,8 +1145,8 @@ test("a sub-topic without its topic's section stands as its own card; several ge
   try {
     await waitFor(() => card(p, "p-docs", "ops/backup"), "the Docs cards are drawn");
     const alone = p.panel("p-docs").querySelector('[data-topic="release-core12"]');
-    assert.equal(alone.querySelector(".home-topic-name"), null, "no bare key over a single card");
-    assert.equal(alone.querySelector(".home-subs"), null);
+    assert.ok(!alone.querySelector(".home-topic-name"), "no bare key over a single card");
+    assert.ok(!alone.querySelector(".home-subs"), "not drawn as a sub-card");
     assert.ok(alone.contains(card(p, "p-docs", "release-core12/notes")));
     const ops = p.panel("p-docs").querySelector('[data-topic="ops"]');
     assert.equal(ops.querySelector(".home-topic-name").textContent, "Ops");

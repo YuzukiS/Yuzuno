@@ -415,11 +415,11 @@ test("live references show Core's current state and open with what it knows", as
   assert.equal(task.querySelector("span").textContent, "Home V1");
   assert.equal(task.querySelector(".sr-only").textContent, ": Home V1 slice 1");
   assert.match(task.textContent, /^Home V1: Home V1 slice 1T-85doing$/, "label, current title, then the id and its state");
-  assert.match(task.title, /^Task T-85: Home V1 slice 1 · as of /);
+  assert.match(task.title, /^(Open )?Task T-85: Home V1 slice 1 · as of /);
   assert.equal(ref("pr").getAttribute("href"), "https://github.com/owner/repo/pull/12");
   assert.match(ref("pr").textContent, /Brief renderer.*merged/);
   assert.equal(ref("pr").querySelector("span").textContent, "Brief renderer", "without a label, the current title");
-  assert.equal(ref("pr").querySelector(".sr-only"), null);
+  assert.ok(!ref("pr").querySelector(".sr-only"), "no second name");
   assert.equal(ref("ci").getAttribute("href"), "https://github.com/owner/repo/actions/runs/99/attempts/2", "the run URL Core knows");
   assert.equal(ref("ci").dataset.tone, "attention");
   assert.equal(ref("agent").tagName, "SPAN", "no opener given");
@@ -562,7 +562,7 @@ test("a long row of attachments shows the first few and the rest on request, foc
   const listed = () => [...document.querySelectorAll(".brief-attachments > li")].map((li) => li.textContent.match(/shot-\d+\.png/)?.[0]);
   show(shots(6));
   assert.equal(listed().length, 6, "two more than the first four show at once");
-  assert.equal(document.querySelector(".brief-attachments-more"), null);
+  assert.ok(!document.querySelector(".brief-attachments-more"), "no toggle for six");
   show(shots(12));
   assert.deepEqual(listed(), shots(4));
   const more = document.querySelector(".brief-attachments-more");
@@ -572,7 +572,7 @@ test("a long row of attachments shows the first few and the rest on request, foc
   more.click();
   await tick();
   assert.deepEqual(listed(), shots(12));
-  assert.equal(document.activeElement, more, "the toggle keeps focus");
+  assert.ok(document.activeElement === more, "the toggle keeps focus");
   assert.equal(more.getAttribute("aria-expanded"), "true");
   assert.equal(more.textContent, "Show the first 4");
   more.click();

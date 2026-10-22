@@ -33,6 +33,8 @@ type Kind = "line" | "bar" | "scatter";
 export const CHART_HEIGHT = 260;
 /** At most this many bars (categories × series) show their values on the bars. */
 export const LABELLED_BARS = 12;
+/** The longest value a bar label shows: side by side, grouped bars have less room. */
+const LABEL_CHARS = { single: 10, grouped: 6 };
 
 // Series take the categorical slots in a fixed order (brief.css,
 // --brief-series-1…8). Past eight a slot is reused with a second encoding:
@@ -44,6 +46,8 @@ const SHAPES = ["circle", "square", "triangle", "diamond", "cross", "star", "wye
 
 const ticks = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 3 });
 const tick = (value: unknown) => (typeof value === "number" ? ticks.format(value) : String(value));
+/** A bar's own value, whole, as the data table shows it; the unit is on the axis. */
+const barValue = (value: unknown) => (typeof value === "number" ? value.toLocaleString() : String(value));
 const withUnit = (axis: Axis) => (axis.unit ? `${axis.label} (${axis.unit})` : axis.label);
 const valueText = (value: unknown, axis: Axis) =>
   `${typeof value === "number" ? value.toLocaleString() : String(value)}${axis.unit ? ` ${axis.unit}` : ""}`;
@@ -197,8 +201,13 @@ function Plot({ kind, props, series }: { kind: Kind; props: ChartProps; series: 
       </ScatterChart>
     );
   // A few bars carry their values, so the comparison is read without hovering
-  // (T-173); a crowded chart keeps them in the tooltip and the data table.
-  const labelled = kind === "bar" && merged.rows.length * series.length <= LABELLED_BARS;
+  // (T-173); a crowded chart, or values too long to fit over their bars,
+  // keep them in the tooltip and the data table.
+  const longest = series.length > 1 ? LABEL_CHARS.grouped : LABEL_CHARS.single;
+  const labelled =
+    kind === "bar" &&
+    merged.rows.length * series.length <= LABELLED_BARS &&
+    series.every((item) => item.points.every(([, y]) => barValue(y).length <= longest));
   if (kind === "bar")
     return (
       <BarChart data={merged.rows} margin={labelled ? { ...margin, top: 20 } : margin} accessibilityLayer barCategoryGap="20%">
@@ -218,7 +227,7 @@ function Plot({ kind, props, series }: { kind: Kind; props: ChartProps; series: 
             isAnimationActive={false}
           >
             {labelled && (
-              <LabelList dataKey={`s${index}`} position="top" formatter={tick} fill="var(--muted)" fontSize={11} />
+              <LabelList dataKey={`s${index}`} position="top" formatter={barValue} fill="var(--muted)" fontSize={10} />
             )}
           </Bar>
         ))}

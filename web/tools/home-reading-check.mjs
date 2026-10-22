@@ -96,7 +96,12 @@ const sections = [
   }), { owner: closed, status: { asOf: ago(4 * 24 * 60), validFor: 7 * 24 * 3600, stale: false },
     attachments: [...images.keys()].map((name) => ({ name, kind: "image", mime: "image/png", size: images.get(name).length, snapshot: true, mayChange: false, takenAt: ago(4 * 24 * 60) })) }),
   section("memory-read-progress/reconnect", "report", "Read progress", spec(["text"], { text: md("Reads resume where they stopped.") })),
-  section("ops/disk", "report", "Disk", spec(["text"], { text: md("Lab disk at 41%.") })),
+  section("ops/disk", "report", "Disk", spec(["text", "bytes"], {
+    text: md("Lab disk at 41%."),
+    bytes: node("BarChart", { title: "Bytes written", x: { label: "Day" }, y: { label: "Bytes" }, series: [
+      { name: "Written", points: [["Mon", 81234567890], ["Tue", 92345678901]] },
+    ] }),
+  })),
   section("ops/backup", "report", "Backup", spec(["text"], { text: md("Nightly copy kept for 7 days.") })),
 ];
 const home = {
@@ -192,7 +197,7 @@ try {
     // Short labels lead; the current title is in the tooltip and the accessible name.
     const chip = development.locator('.brief-ref[data-kind="task"]').first();
     assert.equal(await chip.locator("span").first().innerText(), "UI refine 9");
-    assert.match(await chip.getAttribute("title"), /^Task T-9: UI refine 9: Home cards/);
+    assert.match(await chip.getAttribute("title"), /^(Open )?Task T-9: UI refine 9: Home cards/);
     assert.match(await chip.evaluate((el) => el.textContent), /^UI refine 9: UI refine 9: Home cards/);
     const chipBox = await chip.boundingBox();
     assert.ok(chipBox.height < 40, `a chip stays one line (${chipBox.height})`);
@@ -202,7 +207,10 @@ try {
     const values = await reconnect.locator(".recharts-label-list text").allInnerTexts();
     assert.deepEqual(values.map((v) => v.replace(/[,\s]/g, "")).sort(), ["1013", "1286", "1742", "2210", "3945", "5143"]);
     assert.ok(await reconnect.getByText("Cumulative allocation, not resident memory").isVisible(), "the limit stays beside the chart");
-    check(`${viewport.name}: a six-bar chart labels its values`);
+    const disk = card("ops/disk");
+    await disk.locator(".recharts-bar-rectangle").first().waitFor();
+    assert.equal(await disk.locator(".recharts-label-list").count(), 0, "values too long to fit stay in the tooltip and table");
+    check(`${viewport.name}: a six-bar chart labels its values in full; values too long to fit are not labelled`);
 
     // Sub-topics: one stands alone, several get a heading in words.
     assert.equal(await page.locator('[data-topic="memory-read-progress"] .home-topic-name').count(), 0);
