@@ -222,3 +222,25 @@ async fn a_replacement_that_cleared_the_old_goal_but_did_not_set_the_new_one_say
         }
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unconfirmed_rewind_refuses_every_goal_change_before_codex_but_not_reading() {
+    let lab = Lab::new(Some(GOAL)).await;
+    lab.connect().await;
+    // A rewind whose outcome is not yet known, as rewind.rs records one.
+    let attempt = json!({"id":"r1","agent":"a","thread":"thread-a","target":"old-turn","kept":[],"draft":"","state":"sending","message":null});
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO conversation_rewinds(id,agent_id,state,attempt,native_archive,local_archive,created_at) VALUES('r1','a','sending',?1,'[]','[]','')",
+        [attempt.to_string()]).unwrap();
+    for body in [json!({"action":"set","objective":"Next","replace":true}), json!({"action":"resume"}), json!({"action":"pause"}), json!({"action":"clear"})] {
+        let (status, answer) = lab.change(body.clone()).await;
+        assert_eq!(status, 400, "{body}: {answer}");
+        assert!(answer["error"].as_str().unwrap().contains("rewind is unconfirmed"), "{body}: {answer}");
+    }
+    assert!(lab.sent().is_empty(), "nothing reached Codex: {:?}", lab.sent());
+    assert_eq!(lab.get().await["goal"]["objective"], "Ship the parser", "reading still shows the goal");
+    // Once the rewind's outcome is known, a change goes through as before.
+    lab.ws.store.db.write().unwrap().execute("UPDATE conversation_rewinds SET state='done' WHERE id='r1'", []).unwrap();
+    let (status, answer) = lab.change(json!({"action":"pause"})).await;
+    assert_eq!((status, answer["goal"]["status"].as_str()), (200, Some("paused")), "{answer}");
+}

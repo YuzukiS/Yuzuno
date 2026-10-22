@@ -133,15 +133,18 @@ impl Workspace {
         })
     }
 
-    /// The user's change to this Codex Agent's goal. One that may start
-    /// Codex working (a new objective, resuming) waits for an earlier
-    /// unconfirmed send or control to be checked first, as a message would;
-    /// pausing and clearing stay possible, as Codex keeps them.
+    /// The user's change to this Codex Agent's goal. An unconfirmed rewind
+    /// refuses every change, as it does a message: Codex records each one in
+    /// the thread's history, and a new or resumed goal may start a turn.
+    /// One that may start Codex working (a new objective, resuming) also
+    /// waits for an earlier unconfirmed send or control to be checked first;
+    /// pausing and clearing stay possible then, as Codex keeps them.
     pub async fn codex_goal_change(self: &Arc<Self>, id: &str, change: GoalChange) -> Result<Value> {
         let change = change.checked()?;
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
+        self.ensure_rewind_settled(id).await?;
         let detail = self.send_view(id).await?;
         ensure_agent_open(&detail.agent)?;
         ensure!(detail.agent.harness == "codex", "目标是 Codex 会话的原生目标；这个 Agent 不是 Codex");
@@ -156,6 +159,8 @@ impl Workspace {
             .context("没有连接到这个原生会话；请先重新连接，目标没有改变")?;
         ensure!(connection.attachment.lock().await.is_none() && !self.codex_context.needs_resume(id, connection.generation),
             "原生会话正在接续；完成后再改变目标");
+        ensure!(self.rpcs.lock().unwrap().get(id).is_some_and(|c| c.generation == connection.generation && !c.closing),
+            "连接已变化；目标没有改变");
         let rpc = &connection.rpc;
         match change {
             GoalChange::Set { objective, replace } => {
