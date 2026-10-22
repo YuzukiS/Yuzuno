@@ -5402,6 +5402,8 @@ test("a replacement whose old goal was cleared but whose new one was not set sho
     assert.ok(goalButton(page, "Set and start"), "set, not replace, now that Codex has none");
     assert.deepEqual(changes, [{ action: "set", objective: "Write the docs", replace: true }], "nothing cleared or set again by itself");
     assert.equal(composerText(composer), "/goal Write the docs", "the draft stays");
+  } finally { page.close(); }
+});
 
 // T-29: a Codex Agent's /mcp shows its MCP servers as they reported starting
 // on this connection, from Core; Codex is not asked, since its own status
