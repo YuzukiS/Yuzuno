@@ -119,15 +119,19 @@ the same as above, and each case ran in its own process. One run per side.
     The 12 deltas around the trim took at most 0.29 ms. One run: neither these
     figures nor the trim's duration bound the worst case.
   - The read at 330 seconds loaded in 125 ms after the trim, against 55 ms
-    before, whose pages had stayed resident. That is consistent with faulting
-    the pages back in. Two runs cannot attribute the whole difference to it.
+    before, whose pages had stayed resident. That is consistent with the pages
+    becoming resident again; two runs do not attribute the whole difference
+    to it.
   - The RSS growth threshold is shared by both paths. That read brought RSS
     back to about 90 MiB, so the idle check after the stream stopped did not
     trim: 70 MiB above the held trim's 20.3 MiB is under 128 MiB. Before, that
     check trimmed 231 to 21 MiB. After the read at 465 seconds, the held side
     passed the threshold and trimmed to 25 MiB, while the side without it
-    stayed at about 94 MiB. As after any trim, up to 128 MiB of pages that come
-    back can stay resident until RSS grows past it.
+    stayed at about 94 MiB. The threshold is a trigger: RSS grown at least
+    128 MiB since the RSS observed after the last trim. It is not a bound on
+    what stays resident, on RSS or on free bytes, and once RSS reaches it a
+    trim still depends on the other gates, on timing and on what runs at the
+    same time. Here about 70 MiB of growth did not trigger one.
 - The two sides' RSS before 300 seconds differed (about 231 against 299.5 MiB)
   while no policy acted on either. That is not attributed, and no average RSS
   is compared.
