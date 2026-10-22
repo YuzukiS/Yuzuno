@@ -1905,12 +1905,14 @@ impl Workspace {
 
     pub async fn interrupt(&self, id: &str) -> Result<()> {
         let _permit = self.admission.enter_completion()?;
-        match self.detail(id).await?.agent.harness.as_str() {
+        // The harness is the Agent's, and the Turn to stop is found by its
+        // status: the listed Agent and the send view, not the history (T-140).
+        match self.listed(id).await?.harness.as_str() {
             "claude" => return self.claude_interrupt(id).await,
             "opencode" => return self.opencode_interrupt(id).await,
             _ => {}
         }
-        let d = self.detail(id).await?;
+        let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         let turn = d
             .turns
