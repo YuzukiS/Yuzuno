@@ -284,6 +284,12 @@ export function App() {
   }, [selected]);
   // `/goal`: the Codex goal dialog, with the objective typed after it.
   const [goalRequest, setGoalRequest] = useState<{ agentId: string; draft: ComposerDraft; nonce: number; objective: string } | null>(null);
+  // Each is for the Agent it was asked from: selecting another Agent drops it,
+  // so it neither keeps read tracking off elsewhere nor reopens on return.
+  useEffect(() => {
+    setReviewRequest((request) => request && request.agentId !== selected ? null : request);
+    setGoalRequest((request) => request && request.agentId !== selected ? null : request);
+  }, [selected]);
   const [turnDockEngaged, setTurnDockEngaged] = useState(false);
   const [inspector, setInspector] = useState(true);
   // A wide window's choice; on a phone the list is a screen of its own.
