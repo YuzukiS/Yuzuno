@@ -225,7 +225,9 @@ test("a lost response keeps the request so the next click settles it", async () 
   button(page, "Fork and continue").click();
   await tick();
   await tick();
-  assert.match(page.document.body.textContent, /Failed to fetch/);
+  // A lost answer reads as such; the browser's own text is kept out (T-170).
+  assert.match(page.document.body.textContent, /No answer from Core over the network\./);
+  assert.doesNotMatch(page.document.body.textContent, /Failed to fetch/);
   button(page, "Fork and continue").click();
   await tick();
   await tick();
