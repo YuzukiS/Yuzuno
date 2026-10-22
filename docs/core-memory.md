@@ -357,6 +357,27 @@ reads its history, so the peak does not change. Each row is one process.
 A Claude reopen or reconnect is covered by tests here, not measured. These are
 synthetic allocator measurements, not the daily Core's RSS.
 
+### Stop, and a Claude follow-up
+
+A Stop read the whole record to choose the harness, and then again for
+Codex and Claude to find the running Turn: the Agent's open state and each
+Turn's status and id are all it checks, and Claude's then sent the record it
+had just written back to a caller that dropped it. A message sent to a Claude
+Agent while its Turn runs (a follow-up, or an answer to a form in that Turn)
+dropped the same copy. The Stop now chooses the harness from the listed Agent
+and finds the Turn on the send view, held or not, and both writes are the same
+commit without the copy back (`record_update`). What is asked of Codex or
+Claude, how often and in which order, the generation and receipt checks, and
+that an acknowledgement is not the Turn's end are as before.
+
+Tests count whole reads per Agent: none for a Stop of a Claude Agent (a
+scripted bridge, which still refuses with no running Turn or once closed) or
+a Codex Agent (a scripted app-server), held or not. The copy a follow-up no
+longer gets back is not counted: its write is the same `Store::record_event`
+commit that `update_record` makes, which then copies the record. Neither was
+measured; the commit still copies a held record before it writes, as every
+commit does.
+
 ### Close while a Turn runs
 
 Closing an Agent whose Turn is running asks the native side to interrupt it
