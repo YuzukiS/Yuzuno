@@ -84,7 +84,9 @@ pub(super) fn rejection(mut problems: Vec<Value>, latest: Option<Value>) -> Valu
 /// written anything (T-176). A rejection's problems, `moreProblems` and
 /// `latest` are kept as they are, so the same input gives the same problems.
 /// Checking stops at the first step with problems: `checkedAll` says
-/// whether every step ran. Advice comes only with a valid answer.
+/// whether this check ran to the end. False means later steps did not run
+/// and the problems listed may not be all; it says nothing of how many
+/// more there are. Advice comes only with a valid answer.
 fn preview(rejected: Option<Value>, checked_all: bool, advice: Vec<Value>) -> Value {
     let Some(mut rejected) = rejected else {
         return json!({"validateOnly":true,"valid":true,"checkedAll":true,"problems":[],"advice":advice,
@@ -92,10 +94,10 @@ fn preview(rejected: Option<Value>, checked_all: bool, advice: Vec<Value>) -> Va
                 the Turn's Brief update, and sending it checks everything again."});
     };
     let note = if checked_all {
-        "validateOnly: nothing was written. Every step was checked."
+        "validateOnly: nothing was written. This check ran to the end."
     } else {
-        "validateOnly: nothing was written. Checking stopped at the first step with problems, so later steps have not \
-            been checked: fix these and check again."
+        "validateOnly: nothing was written. This check stopped at the first step with problems: later steps did not run \
+            and this list may be incomplete. Fix these and check again."
     };
     let answer = rejected.as_object_mut().expect("a rejection is an object");
     answer.remove("accepted");

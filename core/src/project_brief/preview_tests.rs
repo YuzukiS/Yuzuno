@@ -307,3 +307,26 @@ async fn a_preview_says_whether_every_step_was_checked() {
     assert_eq!((fine["valid"].clone(), fine["checkedAll"].clone(), fine["advice"].clone()), (json!(true), json!(true), json!([])));
     assert!(fine["note"].as_str().unwrap().contains("checks everything again"));
 }
+
+/// The generated validator's advice (T-176) reaches an accepted answer and a
+/// preview alike; an ask gets none.
+#[tokio::test]
+async fn the_generated_validator_advises_a_long_markdown_block() {
+    let (_dir, ws, _project) = lab();
+    let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
+    let limit = brief_contract().unwrap()["limits"]["advice"]["markdownChars"].as_u64().unwrap() as usize;
+    let mut long = put("notes");
+    long["body"]["elements"]["note"]["props"]["text"] = json!("x".repeat(limit + 1));
+    let checked = update::update(&ws, &checker, "a", only(input("n1", 0, vec![long.clone()]))).await.unwrap().unwrap();
+    let sent = update::update(&ws, &checker, "a", input("n1", 0, vec![long])).await.unwrap().unwrap();
+    assert_eq!(sent["receipt"]["kind"], "updated");
+    assert_eq!((sent["advice"][0]["code"].clone(), sent["advice"][0]["path"].clone()),
+        (json!("long_markdown"), json!("changes[0].body.elements.note.props.text")));
+    assert_eq!(checked["advice"], sent["advice"]);
+    let mut ask = put("decide");
+    ask["kind"] = json!("ask");
+    ask["ask"] = json!({"question":"Which way?","reply":{"options":[{"id":"left","label":"Left"},{"id":"right","label":"Right"}]}});
+    ask["body"]["elements"]["note"]["props"]["text"] = json!("x".repeat(limit + 1));
+    let asked = update::update(&ws, &checker, "a", input("n2", 1, vec![ask])).await.unwrap().unwrap();
+    assert!(asked.get("advice").is_none(), "{asked}");
+}

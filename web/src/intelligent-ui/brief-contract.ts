@@ -63,6 +63,9 @@ export const BRIEF_LIMITS = {
   validForMax: 31_536_000,
   problems: MAX_PROBLEMS,
   keyPattern: BRIEF_KEY_PATTERN.source,
+  // Advice only (T-176, brief-advice.ts): adjustable hints in characters
+  // (Unicode code points) and references, never a limit.
+  advice: { markdownChars: 1200, sectionMarkdownChars: 3000, refs: 12 },
 } as const;
 const L = BRIEF_LIMITS;
 
@@ -312,6 +315,14 @@ export const BRIEF_PROBLEM_CODES = {
   duplicate_attachment: "Two attachments share a name.",
 } as const;
 type ProblemCode = keyof typeof BRIEF_PROBLEM_CODES;
+
+/** Advice on a valid report or status section (brief-advice.ts); none refuses anything. */
+export const BRIEF_ADVICE_CODES = {
+  long_markdown: `A Markdown block over ${L.advice.markdownChars} characters, or a section whose Markdown is over ${L.advice.sectionMarkdownChars} characters in all.`,
+  summary_may_be_missing: "A Table or chart and no non-empty Markdown, Findings or Metrics block.",
+  duplicate_ref: "One LiveRefs or Sources block that names the same target twice.",
+  many_refs: `Over ${L.advice.refs} different LiveRefs and Sources targets in one section.`,
+} as const;
 
 export const BRIEF_GUIDE_PARTS = ["sections", "ask", "content", "charts", "attachments", "limits", "errors", "examples"] as const;
 export type BriefGuidePart = (typeof BRIEF_GUIDE_PARTS)[number];
