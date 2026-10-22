@@ -132,15 +132,15 @@ fn split_and_assemble_give_back_exactly_the_record() {
     without_previews.items.iter_mut().for_each(|i| i.previews = None);
     // Payloads come parsed where they were read: each is its row's text parsed.
     let key = |p: &(String, String, String, Value)| (p.0.clone(), p.1.clone(), p.2.clone());
-    let mut parsed: Vec<(String, String, String, Value)> = fields.into_iter()
-        .flat_map(|((turn, item), list)| list.into_iter().map(move |(field, value)| (turn.clone(), item.clone(), field, value.unwrap())))
+    let mut from_read: Vec<(String, String, String, Value)> = fields.into_iter()
+        .flat_map(|((turn, item_key), list)| list.into_iter().map(move |(field, value)| (turn.clone(), item_key.clone(), field, value.unwrap())))
         .collect();
-    parsed.sort_by_key(key);
+    from_read.sort_by_key(key);
     let mut expected: Vec<(String, String, String, Value)> = without_previews.payloads.iter()
         .map(|p| (p.turn.clone(), p.item.clone(), p.field.clone(), serde_json::from_str(&p.data).unwrap())).collect();
     expected.sort_by_key(key);
     assert!(!expected.is_empty());
-    assert_eq!(parsed, expected, "with payloads, each parsed from its row");
+    assert_eq!(from_read, expected, "with payloads, each parsed from its row");
     // Their text is not kept, so their bytes are counted where they are
     // stored: as bytes, not characters (the unicode payload has both).
     let total = |sql: &str| -> usize { db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap() as usize };
