@@ -1,7 +1,7 @@
 //! Home's HTTP API (acceptance/t85/spec/interfaces.md section 3). Section
 //! keys may hold '/' (topic/sub): clients send them percent-encoded as one
 //! path segment (encodeURIComponent), which Path decodes.
-use super::{attachments, editors, home, sections};
+use super::{attachments, editors, home, presentation, sections};
 use crate::{server::ApiError, workspace::Workspace};
 use axum::{
     body::Body,
@@ -21,6 +21,7 @@ pub(super) fn routes() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/home", get(view))
         .route("/api/home/order", post(order))
+        .route("/api/home/presentation", get(home_presentation).put(save_home_presentation))
         .route("/api/projects/{id}/home-editors", get(content_editors).put(save_content_editors))
         .route("/api/projects/{id}/brief/seen", post(seen))
         .route("/api/projects/{id}/brief/defer", post(defer))
@@ -78,6 +79,16 @@ async fn save_content_editors(State(ws): State<Arc<Workspace>>, Path(id): Path<S
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Order {
     project_ids: Vec<String>,
+}
+
+/// The user's Home presentation preference (T-175): Settings reads and
+/// saves it; it has no Agent tool.
+async fn home_presentation(State(ws): State<Arc<Workspace>>) -> ApiResult<Json<Value>> {
+    Ok(Json(ws.stored(|store| presentation::view(&*store.db.read()?)).await?))
+}
+
+async fn save_home_presentation(State(ws): State<Arc<Workspace>>, Json(input): Json<presentation::Presentation>) -> ApiResult<Json<Value>> {
+    Ok(Json(ws.stored(move |store| presentation::save(store, input)).await?))
 }
 
 async fn order(State(ws): State<Arc<Workspace>>, Json(input): Json<Order>) -> ApiResult<Json<Value>> {

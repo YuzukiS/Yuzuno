@@ -121,6 +121,110 @@ for line in sys.stdin:
     Ok(())
 }
 
+/// T-140: the Codex model catalog checks the Agent on its listed view, reads
+/// it again once connected for the settings the connection may change, and
+/// takes the context settings from the send view, held or not. It answers as
+/// the app-server does and as the whole record would, and reads no whole
+/// record.
+#[tokio::test]
+async fn the_codex_model_catalog_reads_the_agent_and_its_send_view_not_its_history() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir()?;
+    let script = root.path().join("native.py");
+    std::fs::write(&script, r#"#!/usr/bin/python3
+import json, sys
+thread = {'id':'thread','status':{'type':'idle'},'turns':[{'id':'prior','status':'completed','items':[]}]}
+def emit(value): print(json.dumps(value), flush=True)
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    method, result = request.get('method'), {}
+    if method == 'thread/resume': result = {'thread':thread,'model':'test-model'}
+    elif method == 'thread/read': result = {'thread':thread}
+    elif method == 'model/list': result = {'data':[{'id':'test-model','model':'test-model'}],'nextCursor':None}
+    elif method == 'config/read': result = {'config':{'model_context_window':None,'model_auto_compact_token_limit':None}}
+    elif method == 'configRequirements/read': result = {'requirements':None}
+    emit({'id':request['id'],'result':result})
+"#)?;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))?;
+    let ws = Workspace::new(root.path().join("data"), "/tmp".into(), script.to_string_lossy().into())?;
+    let agent = "codex-catalog-reads";
+    let detail: AgentDetail = serde_json::from_value(json!({"agent":{"id":agent,"name":"A","goal":"test",
+        "cwd":"/tmp","model":"test-model","color":"sage","threadId":"thread","status":"idle",
+        "createdAt":"","updatedAt":"","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},
+        "turns":[{"id":"prior","status":"completed","items":[{"id":"m","type":"agentMessage","text":"done"}]}],
+        "pending":[],"artifacts":[]}))?;
+    ws.store.insert(&detail)?;
+    ws.reconnect(agent).await?;
+    let mut catalogs = Vec::new();
+    for _ in [true, false] {
+        let before = crate::store::detail_reads_of(agent);
+        catalogs.push(ws.agent_catalog(agent).await?);
+        assert_eq!(crate::store::detail_reads_of(agent) - before, 0, "a whole record was read");
+        ws.store.release_for_test(agent);
+    }
+    assert_eq!(catalogs[0], catalogs[1], "held or not, the same catalog");
+    let catalog = &catalogs[0];
+    assert_eq!(catalog["models"], json!([{"id":"test-model","model":"test-model"}]));
+    assert!(!catalog["permissions"].is_null());
+    let whole = ws.detail(agent).await?;
+    assert_eq!(catalog["context"]["needsFirstTurn"], json!(whole.turns.is_empty()));
+    assert_eq!(catalog["context"]["canApply"], json!(ws.ensure_rewind_settled(agent).await.is_ok()
+        && crate::codex_context::idle(&whole) && !whole.turns.is_empty()));
+    assert_eq!(catalog["context"]["requestedWindowTokens"], json!(whole.agent.settings.context_window));
+    ws.close_agent(agent).await?;
+    Ok(())
+}
+
+/// T-140: a Codex Stop finds the harness on the listed Agent and the
+/// running Turn on the send view, held or not, and reads no whole record. It
+/// asks Codex once per Stop, with the Agent's own thread and that Turn, and
+/// the Turn keeps running: the acknowledgement is not its end.
+#[tokio::test]
+async fn a_codex_stop_reads_the_agent_and_its_send_view_not_its_history() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir()?;
+    let script = root.path().join("native.py");
+    std::fs::write(&script, r#"#!/usr/bin/python3
+import json, sys
+thread = {'id':'thread','status':{'type':'active'},'turns':[{'id':'active','status':'inProgress','items':[]}]}
+interrupts = []
+def emit(value): print(json.dumps(value), flush=True)
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    method, result = request.get('method'), {}
+    if method == 'thread/resume': result = {'thread':thread,'model':'test-model'}
+    elif method == 'thread/read': result = {'thread':thread}
+    elif method == 'turn/interrupt': interrupts.append(request['params'])
+    elif method == 'test/interrupts': result = {'asked':interrupts}
+    emit({'id':request['id'],'result':result})
+"#)?;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))?;
+    let ws = Workspace::new(root.path().join("data"), "/tmp".into(), script.to_string_lossy().into())?;
+    let agent = "codex-stop-reads";
+    let detail: AgentDetail = serde_json::from_value(json!({"agent":{"id":agent,"name":"A","goal":"test",
+        "cwd":"/tmp","model":"test-model","color":"sage","threadId":"thread","status":"working",
+        "createdAt":"","updatedAt":"","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},
+        "turns":[{"id":"active","status":"inProgress","items":[{"id":"m","type":"agentMessage","text":"working"}]}],
+        "pending":[],"artifacts":[]}))?;
+    ws.store.insert(&detail)?;
+    ws.reconnect(agent).await?;
+    let before = crate::store::detail_reads_of(agent);
+    // The first Stop reads the record as the reconnect left it, the second once released.
+    ws.interrupt(agent).await?;
+    ws.store.release_for_test(agent);
+    ws.interrupt(agent).await?;
+    assert_eq!(crate::store::detail_reads_of(agent) - before, 0, "a whole record was read");
+    let connection = ws.rpcs.lock().unwrap().get(agent).cloned().context("connected")?;
+    let asked = connection.rpc.request("test/interrupts", json!({})).await?;
+    assert_eq!(asked["asked"], json!([{"threadId":"thread","turnId":"active"}, {"threadId":"thread","turnId":"active"}]));
+    let after = ws.detail(agent).await?;
+    assert_eq!(after.turns.last().unwrap()["status"], "inProgress", "the acknowledgement is not the Turn's end");
+    ws.remove_connection(agent, connection.generation).await;
+    Ok(())
+}
+
 async fn small_turn(ws: &Arc<Workspace>, label: &str, checks: &mut Vec<Value>) -> Result<u64> {
     let response = ws
         .send(

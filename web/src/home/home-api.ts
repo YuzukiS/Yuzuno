@@ -19,6 +19,11 @@ export type HomeReplyInput = {
   clientMessageId: string;
   /** The id of the option or approach the user picked, when they picked one. */
   choice?: string;
+  /** A reply to a report or status card (T-174): the version of `key` on
+   * screen when the user began it, and its title there. Core binds the reply
+   * to exactly that version or sends nothing. */
+  version?: number;
+  title?: string;
 };
 
 export type LinkedRepositories = {
@@ -80,25 +85,34 @@ function saveOutbox(value: Record<string, Outbound>) {
     /* The in-memory attempt still keeps its id for this window. */
   }
 }
-export const outboxKey = (workspaceId: string, projectId: string, key?: string) =>
-  JSON.stringify([workspaceId, projectId, key ?? ""]);
+/** A card reply has its own slot: the same key may also hold an ask's reply. */
+export const outboxKey = (workspaceId: string, projectId: string, key?: string, card = false) =>
+  JSON.stringify(card ? [workspaceId, projectId, key ?? "", "card"] : [workspaceId, projectId, key ?? ""]);
 
 /** A reply whose delivery is not confirmed yet, kept for its retry. */
 export function pendingReply(slot: string): Outbound | undefined {
   return loadOutbox()[slot];
 }
 
+/** Forgets a reply Core refused before reading it (it was never submitted). */
+export function dropPendingReply(slot: string) {
+  const outbox = loadOutbox();
+  delete outbox[slot];
+  saveOutbox(outbox);
+}
+
 export const sentStatus = (receipt: MessageReceipt) =>
   receipt.status === "accepted" || receipt.status === "queued";
 
 /**
- * Sends one reply. Retrying the same text to the same Agent reuses the client
- * id; anything else is a new message. Throws when it was not delivered.
+ * Sends one reply. Retrying the same text to the same Agent (and, for a card,
+ * the same version) reuses the client id; anything else is a new message.
+ * Throws when it was not delivered.
  */
 export async function sendReply(
   slot: string,
   projectId: string,
-  reply: { key?: string; agentId: string; text: string; choice?: string },
+  reply: { key?: string; agentId: string; text: string; choice?: string; version?: number; title?: string },
 ): Promise<MessageReceipt> {
   const outbox = loadOutbox();
   const kept = outbox[slot];
@@ -106,7 +120,9 @@ export async function sendReply(
     kept &&
     kept.agentId === reply.agentId &&
     kept.text === reply.text &&
-    (kept.choice ?? null) === (reply.choice ?? null);
+    (kept.choice ?? null) === (reply.choice ?? null) &&
+    (kept.version ?? null) === (reply.version ?? null) &&
+    (kept.title ?? null) === (reply.title ?? null);
   const input: Outbound = same
     ? kept
     : {
@@ -114,6 +130,7 @@ export async function sendReply(
         text: reply.text,
         clientMessageId: crypto.randomUUID(),
         ...(reply.choice ? { choice: reply.choice } : {}),
+        ...(reply.version !== undefined ? { version: reply.version, title: reply.title ?? "" } : {}),
       };
   saveOutbox({ ...outbox, [slot]: input });
   const settle = () => {

@@ -483,9 +483,11 @@ impl Workspace {
             Rpc::spawn(&self.program, &[], tx).await?
         } else {
             let tx = crate::backlog::EventSender::observed(tx, backlog.clone());
-            let agent = self.detail(id).await?.agent;
-            self.update_record(id, "runtime/connecting", json!({}), |d| {
-                d.agent.connection_state = "connecting".into();
+            // Connecting reads and writes the Agent's fields only, so neither
+            // reads nor copies its history (T-140).
+            let agent = self.listed(id).await?;
+            self.record_meta(id, "runtime/connecting", json!({}), |m| {
+                m.agent.connection_state = "connecting".into();
             }).await?;
             self.changed(id);
             let result = async {
@@ -495,14 +497,14 @@ impl Workspace {
                         &self.stored(|store| store.workspace_id()).await?, id).await?;
                     if let Some(previous) = &remote_agent.runtime {
                         if previous.instance_id != runtime.instance_id {
-                            self.update_record(id, "runtime/replaced", json!({
+                            self.record_meta(id, "runtime/replaced", json!({
                                 "previousInstanceId":previous.instance_id,"instanceId":runtime.instance_id,
                                 "note":"Native runtime changed; only session history can be resumed."}), |_| {}).await?;
                         }
                     }
                     let located = runtime.clone();
-                    self.update_record(id, "runtime/located", json!({"instanceId":runtime.instance_id}), move |d| {
-                        if let Some(r) = &mut d.agent.remote { r.runtime = Some(located); }
+                    self.record_meta(id, "runtime/located", json!({"instanceId":runtime.instance_id}), move |m| {
+                        if let Some(r) = &mut m.agent.remote { r.runtime = Some(located); }
                     }).await?;
                     remote::connect(&remote_agent.machine, &runtime, tx).await
                 } else {
@@ -510,8 +512,8 @@ impl Workspace {
                 }
             }.await;
             if result.is_err() {
-                self.update_record(id, "runtime/connectFailed", json!({}), |d| {
-                    d.agent.connection_state = "disconnected".into();
+                self.record_meta(id, "runtime/connectFailed", json!({}), |m| {
+                    m.agent.connection_state = "disconnected".into();
                 }).await?;
                 self.changed(id);
             }
@@ -960,9 +962,12 @@ impl Workspace {
 
     /// `reconnect`, answered with the Agent as listed: for a caller that reads
     /// the conversation afterwards its own way (the UI's windowed detail). The
-    /// same admission, gate and reconcile. A Codex reconnect then does not read
-    /// the record whole to return it, nor does a Claude one; an OpenCode one
-    /// still reads it inside, and only its answer is smaller (T-140).
+    /// same admission, gate and reconcile, without reading the record whole to
+    /// return it. Inside, its checks and its connection-state and failure
+    /// writes take the Agent's fields only. The whole record is still loaded
+    /// by a write that changes Turns (a reconcile's merge, a Claude or
+    /// OpenCode runtime becoming ready), by a recovered completion and by a
+    /// Claude session's history check (T-140).
     pub async fn reconnect_summary(self: &Arc<Self>, id: &str) -> Result<crate::model::Agent> {
         let permit = self.admission.enter_work()?;
         self.reconnect_settled(id, &permit).await?;
@@ -1595,19 +1600,24 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        let agent = self.detail(id).await?.agent;
+        // The Agent as listed, not its history (T-140); read again once
+        // connected, for the settings the connection may have changed.
+        let agent = self.listed(id).await?;
         ensure_agent_open(&agent)?;
         anyhow::ensure!(agent.harness == "codex", "此模型目录仅适用于 Codex；Claude 模型在创建时选择");
         let connection = self.settings_connection(id).await?;
         let models = model_catalog(&connection).await?;
-        let agent = self.detail(id).await?.agent;
+        let agent = self.listed(id).await?;
         let permissions = permission_catalog(&connection, &agent).await;
         let context = self.context_catalog(id, &connection).await;
         Ok(json!({"models":models,"permissions":permissions,"context":context}))
     }
 
+    /// What the context settings show: from the send view, which has the
+    /// Agent, its pending requests, receipts, context usage and each Turn's
+    /// status (all `codex_context::idle` reads), without the Items (T-140).
     async fn context_catalog(&self, id: &str, connection: &Connection) -> Value {
-        let Ok(detail) = self.detail(id).await else { return json!({"supported":false}); };
+        let Ok(detail) = self.send_view(id).await else { return json!({"supported":false}); };
         let response = connection.rpc.request("config/read", json!({"cwd":detail.agent.cwd,"includeLayers":false})).await;
         let config = response.as_ref().ok().map(|r| &r["config"]).unwrap_or(&Value::Null);
         let confirmed = self.codex_context.submitted(id, connection.generation, &detail.agent.settings);
@@ -1905,12 +1915,14 @@ impl Workspace {
 
     pub async fn interrupt(&self, id: &str) -> Result<()> {
         let _permit = self.admission.enter_completion()?;
-        match self.detail(id).await?.agent.harness.as_str() {
+        // The harness is the Agent's, and the Turn to stop is found by its
+        // status: the listed Agent and the send view, not the history (T-140).
+        match self.listed(id).await?.harness.as_str() {
             "claude" => return self.claude_interrupt(id).await,
             "opencode" => return self.opencode_interrupt(id).await,
             _ => {}
         }
-        let d = self.detail(id).await?;
+        let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         let turn = d
             .turns
@@ -2323,26 +2335,28 @@ fn failure(error: &anyhow::Error) -> anyhow::Error {
 
 /// Records a runtime failure unless the Agent is closed or already shows this
 /// error. Returns whether it got as far as recording (and so must announce).
+/// Both the check and the write are of the Agent's fields only: a failing
+/// reconnect, retried while a remote machine is away, never reads or copies
+/// the history (T-140).
 fn record_failure(store: &Store, id: &str, error: &anyhow::Error) -> bool {
-    let Ok(d) = store.detail(id) else { return false };
-    if d.agent.closed_at.is_some() { return false; }
-    let unknown = error.downcast_ref::<OutcomeUnknown>().is_some() || d.agent.status == "uncertain";
+    let Ok(agent) = store.agent(id) else { return false };
+    if agent.closed_at.is_some() { return false; }
+    let unknown = error.downcast_ref::<OutcomeUnknown>().is_some() || agent.status == "uncertain";
     let message = error.to_string();
-    if d.agent.error.as_deref() == Some(&message)
-        && matches!(d.agent.status.as_str(), "error" | "uncertain") { return false; }
-    drop(d);
-    let _ = store.update(
+    if agent.error.as_deref() == Some(&message)
+        && matches!(agent.status.as_str(), "error" | "uncertain") { return false; }
+    let _ = store.update_meta(
         id,
         "runtime/error",
         &json!({"message":message,"outcomeUnknown":unknown}),
-        |d| {
-            d.agent.status = if unknown || d.agent.status == "uncertain" {
+        |m| {
+            m.agent.status = if unknown || m.agent.status == "uncertain" {
                 "uncertain"
             } else {
                 "error"
             }
             .into();
-            d.agent.error = Some(message);
+            m.agent.error = Some(message);
         },
     );
     true
@@ -2778,6 +2792,10 @@ mod subagent_requests_tests;
 #[cfg(all(test, unix))]
 #[path = "metadata_event_tests.rs"]
 mod metadata_event_tests;
+
+#[cfg(all(test, unix))]
+#[path = "reconnect_reads_tests.rs"]
+mod reconnect_reads_tests;
 
 #[cfg(test)]
 mod tests {

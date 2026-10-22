@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -9,6 +9,7 @@ import {
   Github,
   History,
   LoaderCircle,
+  MessageSquareReply,
   Workflow,
   ShieldCheck,
 } from "lucide-react";
@@ -18,6 +19,7 @@ import { GitHubLinks, GitHubSummary } from "../GitHubLinks";
 import { openJobs } from "../Jobs";
 import type { Agent, PendingRequest } from "../types";
 import { ProjectReply } from "./AskReply";
+import { CardReply, cardReplySlot, hasCardReply, KeptCardReplies, referableHistory } from "./CardReply";
 import { changedSinceSeen, groupSections, projectDomId, requestDomId, topicName } from "./brief-layout";
 import { FoldButton, useCardFold } from "./card-fold";
 import { absolute, plural, relative } from "./format";
@@ -146,7 +148,28 @@ function Approvals({ projectId, count, children }: { projectId: string; count: n
   );
 }
 
-function History30({ sections, projectId }: { sections: Section[]; projectId: string }) {
+/** A History entry a reply can still refer to (T-174): its own Reply. */
+function HistoryReply({ section, projectId, workspaceId, agents }: { section: Section; projectId: string; workspaceId: string; agents: Agent[] }) {
+  const [open, setOpen] = useState(() => hasCardReply(cardReplySlot(workspaceId, projectId, section.key)));
+  return open ? (
+    <CardReply section={section} projectId={projectId} workspaceId={workspaceId} agents={agents} onClose={() => setOpen(false)} />
+  ) : (
+    <button type="button" className="quiet-button" aria-label={`Reply to “${section.title}”`} title={`Reply to ${section.owner.name}`} onClick={() => setOpen(true)}>
+      <MessageSquareReply size={13} /> Reply
+    </button>
+  );
+}
+
+function History30({
+  sections,
+  projectId,
+  reply,
+}: {
+  sections: Section[];
+  projectId: string;
+  /** Not in the design preview: who can be replied to, and which entries a reply may refer to. */
+  reply?: { workspaceId: string; agents: Agent[]; referable: Section[] };
+}) {
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   if (!sections.length) return null;
   return (
@@ -184,6 +207,9 @@ function History30({ sections, projectId }: { sections: Section[]; projectId: st
                     {section.ask && <p className="home-question">{section.ask.question}</p>}
                     {section.ask?.replyText && <p className="home-history-reply">Your reply: {section.ask.replyText}</p>}
                     <SectionBody section={section} projectId={projectId} />
+                    {reply?.referable.includes(section) && (
+                      <HistoryReply section={section} projectId={projectId} workspaceId={reply.workspaceId} agents={reply.agents} />
+                    )}
                   </>
                 )}
               </details>
@@ -253,6 +279,13 @@ export function HomePanel({
     savePanelChoice(workspaceId, id, next);
   };
   const sections = panel.brief.sections;
+  // Live sections, shown or kept out of view, and the History entries a
+  // reply may still refer to (T-174).
+  const live = useMemo(() => [...sections, ...(panel.brief.teamSections ?? [])], [sections, panel.brief.teamSections]);
+  const referable = useMemo(
+    () => referableHistory(panel.brief.history, live.map((s) => s.key)),
+    [panel.brief.history, live],
+  );
   const groups = groupSections(sections);
   const uncapped = more || (reveal > 0 && reveal !== handled.cap);
   const capped = rank >= FULL_RANKS && !uncapped;
@@ -405,6 +438,15 @@ export function HomePanel({
               {uncapped ? "Show less" : "Show more"}
             </button>
           )}
+          {!readOnly && (
+            <KeptCardReplies
+              projectId={id}
+              workspaceId={workspaceId}
+              agents={agents}
+              cardKeys={live.filter((s) => s.kind !== "ask").map((s) => s.key)}
+              referable={referable}
+            />
+          )}
           <footer className="home-panel-foot">
             {changed > 0 && !readOnly && (
               <button type="button" className="secondary-button" disabled={seeingAll} onClick={() => void seenAll()}>
@@ -492,7 +534,11 @@ export function HomePanel({
               <p className="home-note">Earlier content from other members. Hidden from the default Home view; not marked Seen.</p>
               {panel.brief.teamSections?.map(section => card(section))}
             </div>}
-            <History30 sections={panel.brief.history} projectId={id} />
+            <History30
+              sections={panel.brief.history}
+              projectId={id}
+              reply={readOnly ? undefined : { workspaceId, agents, referable }}
+            />
           </details>
         </div>
       )}

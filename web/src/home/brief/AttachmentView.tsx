@@ -10,7 +10,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { errorText } from "../../api";
+import { ImagePreview } from "../../ImageAttachments";
 import { sourceTarget } from "../../intelligent-ui/contract.ts";
+import { usePointFix, type PointFixSource } from "../../point-fix";
 import type { SectionAttachment } from "../types";
 import { useBrief } from "./BriefContext";
 import { attachmentUrl, formatTime, type AttachmentsProps } from "./brief-catalog";
@@ -299,8 +301,14 @@ function Path({ path }: { path: string }) {
   );
 }
 
+/** An image as it was when the preview opened: a later update of the card
+ * never changes the image being looked at or marked (T-177). */
+type Shown = { url: string; version: number; takenAt: string; title: string; ownerId: string };
+
 function Attachment({ name, caption }: { name: string; caption?: string }) {
   const { projectId, section } = useBrief();
+  const markUp = usePointFix();
+  const [shown, setShown] = useState<Shown | null>(null);
   const attachment = section.attachments.find((item) => item.name === name);
   if (!attachment)
     return (
@@ -317,6 +325,24 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
   const link = attachment.kind === "link" && attachment.url ? sourceTarget(attachment.url) : null;
   const kept = attachment.snapshot && attachment.kind !== "link";
   const label = caption || attachment.caption;
+  // A kept image opens whole in the app, as a conversation's images do,
+  // rather than in a browser tab (T-177).
+  const image = kept && attachment.kind === "image";
+  const preview = () =>
+    setShown({ url, version: section.version, takenAt: attachment.takenAt, title: section.title, ownerId: section.owner.agentId });
+  // Point & Fix on the image as shown, its source named for the Agent told.
+  // The card's author is offered first; without one, the user chooses.
+  const source = (at: Shown): PointFixSource => ({
+    name: attachment.name,
+    ownerId: at.ownerId,
+    chooseWithoutOwner: true,
+    provenance: `the image “${attachment.name}” on the Home card “${at.title}” (project ${projectId}, section ${section.key}, version ${at.version}; snapshot taken ${at.takenAt})`,
+    load: async (signal) => {
+      const response = await fetch(at.url, { signal });
+      if (!response.ok) throw new Error(`the snapshot cannot be read (HTTP ${response.status})`);
+      return response.blob();
+    },
+  });
   return (
     <div className="brief-attachment" data-kind={attachment.kind}>
       <header>
@@ -330,11 +356,17 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
         {!attachment.snapshot && attachment.path && (
           <Path path={attachment.path} />
         )}
-        {kept && (
-          <a className="brief-attachment-open" href={url} target="_blank" rel="noopener noreferrer">
-            {attachment.kind === "pdf" ? "Open PDF" : "Open"}
-            <ArrowUpRight size={11} aria-hidden="true" />
-          </a>
+        {image ? (
+          <button type="button" className="brief-attachment-open" onClick={preview}>
+            Open
+          </button>
+        ) : (
+          kept && (
+            <a className="brief-attachment-open" href={url} target="_blank" rel="noopener noreferrer">
+              {attachment.kind === "pdf" ? "Open PDF" : "Open"}
+              <ArrowUpRight size={11} aria-hidden="true" />
+            </a>
+          )
         )}
       </header>
       {label && <p className="brief-attachment-caption">{label}</p>}
@@ -355,15 +387,30 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
       ) : !attachment.snapshot ? (
         <p className="brief-attachment-note">Not kept by Yuzuno, so there is nothing to preview.</p>
       ) : attachment.kind === "image" ? (
-        <a className="brief-image" href={url} target="_blank" rel="noopener noreferrer">
+        <button type="button" className="brief-image" aria-label={`Open image ${attachment.name}`} onClick={preview}>
           {/* A new snapshot under the same name loads again. */}
           <img key={attachment.takenAt} src={url} alt={label || attachment.name} loading="lazy" decoding="async" />
-        </a>
+        </button>
       ) : attachment.kind === "data" ? (
         <DataPreview url={url} attachment={attachment} />
       ) : attachment.kind === "text" ? (
         <TextTail url={url} attachment={attachment} />
       ) : null}
+      {image && (
+        <ImagePreview
+          open={!!shown}
+          src={shown?.url ?? ""}
+          name={attachment.name}
+          description={`${label ? `${label} · ` : ""}Snapshot ${formatTime(shown?.takenAt ?? attachment.takenAt)}`}
+          unavailable="This image snapshot can't be read from this Core. It may have been removed with an older version of the card."
+          onClose={() => setShown(null)}
+          onAnnotate={markUp && shown ? () => {
+            const at = shown;
+            setShown(null);
+            markUp(source(at));
+          } : undefined}
+        />
+      )}
     </div>
   );
 }

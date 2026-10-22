@@ -199,10 +199,7 @@ pub(super) fn notify(store: &Store, db: &Connection, task: &SharedTask, event: &
     // A failed lookup leaves the advice out; it never fails the result.
     if let Some(recipient) = notification["recipient"]["id"].as_str() {
         match crate::project_brief::home_hint(store, db, &task.id, recipient) {
-            Ok(Some(hint)) => {
-                body.push('\n');
-                body.push_str(hint);
-            }
+            Ok(Some(advice)) => body.push_str(&advice.lines()),
             Ok(None) => {}
             Err(error) => eprintln!("Home hint for {number}'s result mail: {error:#}"),
         }

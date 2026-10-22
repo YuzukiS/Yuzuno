@@ -114,6 +114,11 @@ export interface PointFixSource {
   /** The original is already an image in this Agent's draft (pasted or
    * attached there): marking it up never adds it to that draft again. */
   inDraft?: { agentId: string; id: string };
+  /** Its owner is told unless the user chooses another. When the owner is
+   * no longer an Agent here, nobody is picked in its place: the user
+   * chooses (a Home card's author, T-177). Otherwise the first Agent that
+   * can take images is offered. */
+  chooseWithoutOwner?: boolean;
 }
 export const PointFixOpen = createContext<((source: PointFixSource) => void) | null>(null);
 export const usePointFix = () => useContext(PointFixOpen);

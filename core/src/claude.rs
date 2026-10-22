@@ -391,10 +391,11 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        let d = self.detail(id).await?;
-        anyhow::ensure!(d.agent.harness == "claude", "Agent 不是 Claude");
-        ensure_agent_open(&d.agent)?;
-        self.claude_catalog_for_agent(&d.agent).await
+        // The catalog needs the Agent alone: its listed view (T-140).
+        let agent = self.listed(id).await?;
+        anyhow::ensure!(agent.harness == "claude", "Agent 不是 Claude");
+        ensure_agent_open(&agent)?;
+        self.claude_catalog_for_agent(&agent).await
     }
 
     async fn claude_catalog_for_agent(&self, agent: &Agent) -> Result<Value> {
@@ -728,8 +729,8 @@ impl Workspace {
             Ok(b) => b,
             Err(error) => {
                 self
-                    .update_record(id, "claude/connectFailed", json!({}), |d| {
-                        d.agent.connection_state = "disconnected".into()
+                    .record_meta(id, "claude/connectFailed", json!({}), |m| {
+                        m.agent.connection_state = "disconnected".into()
                     }).await?;
                 return Err(error);
             }
@@ -804,12 +805,12 @@ impl Workspace {
                 };
                 if removed {
                     let (agent, message) = (id.to_owned(), error.to_string());
-                    self.stored_owned(owned, move |store| store.update(
+                    self.stored_owned(owned, move |store| store.update_meta(
                         &agent,
                         "claude/connectFailed",
                         &json!({"error":message}),
-                        |d| {
-                            d.agent.connection_state = "disconnected".into();
+                        |m| {
+                            m.agent.connection_state = "disconnected".into();
                         },
                     )).await?;
                 }
@@ -825,7 +826,9 @@ impl Workspace {
         );
         let agent = id.to_owned();
         let session = d.agent.claude_session_id.clone();
-        self.stored_owned(owned, move |store| store.update(
+        // It changes Turns, so it is compared as before; only the copy of the
+        // record nobody read is no longer returned (T-140).
+        self.stored_owned(owned, move |store| store.record_event(
             &agent,
             "claude/ready",
             &json!({"sessionId":session,
@@ -858,7 +861,7 @@ impl Workspace {
         if let Some(session) = d.agent.claude_session_id.as_deref() {
             if let Err(error) = self.claude_backfill(id, &c, session).await {
                 let message = error.to_string();
-                self.update_record(id, "claude/historyFailed", json!({"sessionId":session,"error":message}), |_| {}).await?;
+                self.record_meta(id, "claude/historyFailed", json!({"sessionId":session,"error":message}), |_| {}).await?;
             }
         }
         self.collaboration_started(id, c.generation).await;
@@ -897,7 +900,7 @@ impl Workspace {
             let d = self.detail(id).await?;
             let plan = crate::claude_history::plan(&d, &entries);
             if plan.unmatched {
-                self.update_record(id, "claude/historyUnmatched", json!({"sessionId":session,"saved":entries.len()}), |_| {}).await?;
+                self.record_meta(id, "claude/historyUnmatched", json!({"sessionId":session,"saved":entries.len()}), |_| {}).await?;
                 return Ok(());
             }
             if plan.steps.is_empty() {
@@ -917,7 +920,7 @@ impl Workspace {
                 wanted.retain(|offset| !messages.contains_key(offset));
             }
             let (summary, now) = (json!({"sessionId":session,"saved":entries.len(),"planned":plan.steps.len()}), Utc::now());
-            self.update_record(id, "claude/history", summary, move |d| {
+            self.record_update(id, "claude/history", summary, move |d| {
                 crate::claude_history::apply(d, &plan, &entries, &messages, now);
             }).await?;
             Ok(())
@@ -1236,7 +1239,8 @@ impl Workspace {
     /// receipt is then already unknown, and the item says the same.
     async fn show_follow_up(self: &Arc<Self>, id: &str, turn: &str, client_id: &str, content: Value) -> Result<()> {
         let (turn, client, at) = (turn.to_owned(), client_id.to_owned(), Utc::now());
-        self.update_record(id, "claude/followUpQueued", json!({"clientMessageId":client_id,"turnId":turn}), move |d| {
+        // The same commit; the record it leaves is not copied back (T-140).
+        self.record_update(id, "claude/followUpQueued", json!({"clientMessageId":client_id,"turnId":turn}), move |d| {
             if !d.turns.iter().any(|t| t["items"].as_array().is_some_and(|items| items.iter().any(|i| i["clientId"] == client.as_str()))) {
                 let unknown = d.message_receipts.iter().any(|r| r.input.client_message_id == client && r.status == "unknown");
                 let mut item = follow_up_item(&turn, &client, content, at);
@@ -1250,7 +1254,8 @@ impl Workspace {
 
     pub async fn claude_interrupt(&self, id: &str) -> Result<()> {
         let _permit = self.admission.enter_completion()?;
-        let d = self.detail(id).await?;
+        // The running Turn is found on the send view, not the history (T-140).
+        let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         let turn_id = d
             .turns
@@ -1267,7 +1272,7 @@ impl Workspace {
             .cloned()
             .context("Claude 连接已断开，无法确认中断")?;
         let interrupted = turn_id.to_owned();
-        self.update_record(
+        self.record_update(
             id,
             "claude/interruptRequested",
             json!({"turnId":turn_id}),
@@ -3289,6 +3294,110 @@ mod tests {
             .collect();
         assert_eq!(sent, [("t", "held"), ("t", "unheld"), ("t", "replaced")].map(|(t, c)| (json!(t), json!(c), json!("mailbox notice"))));
         assert_eq!(crate::store::detail_reads_of(&id), 0, "a whole record was read");
+    }
+
+    /// T-140: the model catalog checks the Agent on its listed view, held or
+    /// not, and asks the running Claude for its models as before: a closed
+    /// Agent and one of another harness are refused, and no whole record is
+    /// read.
+    #[tokio::test]
+    async fn the_model_catalog_reads_the_agent_not_its_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(temp.path().into(), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
+        let mut d = detail();
+        d.agent.id = "catalog-reads".into();
+        let id = d.agent.id.clone();
+        ws.store.insert(&d).unwrap();
+        let (tx, mut commands) = mpsc::channel(8);
+        let (shutdown, _shutdown_rx) = watch::channel(false);
+        let (_stopped_tx, stopped) = watch::channel(None);
+        let bridge = Arc::new(Bridge { tx, pending: Arc::new(Mutex::new(HashMap::new())), next: AtomicU64::new(1),
+            shutdown, stopped, diagnostics: Default::default(), stderr_closed: watch::channel(true).1, pid: None });
+        ws.claudes.lock().unwrap().insert(id.clone(), Connection { remote_instance: None, generation: 1, bridge: bridge.clone(), events: None });
+        let asked = Arc::new(std::sync::Mutex::new(0));
+        let (counted, replying) = (asked.clone(), bridge.clone());
+        tokio::spawn(async move {
+            while let Some(command) = commands.recv().await {
+                let command: Value = command;
+                assert_eq!(command["op"], "models");
+                *counted.lock().unwrap() += 1;
+                let request: u64 = command["id"].as_str().unwrap().parse().unwrap();
+                replying.pending.lock().await.remove(&request).unwrap().send(Ok(json!({"models":[{"model":"native-model"}]}))).unwrap();
+            }
+        });
+        ws.store.update(&id, "test/held", &json!({}), |_| {}).unwrap();
+        for held in [true, false] {
+            assert_eq!(ws.claude_agent_catalog(&id).await.unwrap(), json!({"models":[{"model":"native-model"}]}));
+            assert_eq!(ws.store.release_for_test(&id), held);
+        }
+        assert_eq!(*asked.lock().unwrap(), 2, "asked Claude once per read");
+        ws.store.update(&id, "test/closed", &json!({}), |d| d.agent.closed_at = Some(now())).unwrap();
+        let closed = ws.claude_agent_catalog(&id).await.unwrap_err();
+        assert!(closed.to_string().contains("已关闭"), "{closed}");
+        let mut codex = detail();
+        codex.agent.id = "catalog-reads-codex".into();
+        codex.agent.harness = "codex".into();
+        ws.store.insert(&codex).unwrap();
+        let other = ws.claude_agent_catalog("catalog-reads-codex").await.unwrap_err();
+        assert!(other.to_string().contains("不是 Claude"), "{other}");
+        assert_eq!(*asked.lock().unwrap(), 2, "nothing asked of a closed or other Agent");
+        assert_eq!(crate::store::detail_reads_of(&id), 0, "a whole record was read");
+        assert_eq!(crate::store::detail_reads_of("catalog-reads-codex"), 0, "a whole record was read");
+    }
+
+    /// T-140: a Stop finds the harness on the listed Agent and the running
+    /// Turn on the send view, held or not, and reads no whole record. It
+    /// marks that Turn, asks Claude once per Stop and leaves the Turn running:
+    /// the acknowledgement is not its end. With no running Turn, or once the
+    /// Agent is closed, nothing is asked.
+    #[tokio::test]
+    async fn a_stop_reads_the_agent_and_its_send_view_not_its_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(temp.path().into(), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
+        let mut d = detail();
+        d.agent.id = "stop-reads".into();
+        let id = d.agent.id.clone();
+        ws.store.insert(&d).unwrap();
+        let (tx, mut commands) = mpsc::channel(8);
+        let (shutdown, _shutdown_rx) = watch::channel(false);
+        let (_stopped_tx, stopped) = watch::channel(None);
+        let bridge = Arc::new(Bridge { tx, pending: Arc::new(Mutex::new(HashMap::new())), next: AtomicU64::new(1),
+            shutdown, stopped, diagnostics: Default::default(), stderr_closed: watch::channel(true).1, pid: None });
+        ws.claudes.lock().unwrap().insert(id.clone(), Connection { remote_instance: None, generation: 1, bridge: bridge.clone(), events: None });
+        let asked = Arc::new(std::sync::Mutex::new(0));
+        let (counted, replying) = (asked.clone(), bridge.clone());
+        tokio::spawn(async move {
+            while let Some(command) = commands.recv().await {
+                let command: Value = command;
+                assert_eq!(command["op"], "interrupt");
+                *counted.lock().unwrap() += 1;
+                let request: u64 = command["id"].as_str().unwrap().parse().unwrap();
+                replying.pending.lock().await.remove(&request).unwrap().send(Ok(json!({}))).unwrap();
+            }
+        });
+        ws.store.update(&id, "test/held", &json!({}), |_| {}).unwrap();
+        // The first Stop reads the record held, the second once released.
+        for stops in [1, 2] {
+            ws.interrupt(&id).await.unwrap();
+            assert_eq!(*asked.lock().unwrap(), stops, "asked Claude once per Stop");
+            assert!(ws.store.release_for_test(&id), "the mark is a commit, which holds the record");
+        }
+        let marked = ws.store.detail(&id).unwrap();
+        assert_eq!(marked.turns[0]["interruptRequested"], true);
+        assert_eq!(marked.turns[0]["status"], "inProgress", "the acknowledgement is not the Turn's end");
+        let reads = crate::store::detail_reads_of(&id);
+        ws.store.update(&id, "test/ended", &json!({}), |d| d.turns[0]["status"] = "completed".into()).unwrap();
+        let idle = ws.interrupt(&id).await.unwrap_err();
+        assert!(idle.to_string().contains("没有正在执行"), "{idle}");
+        ws.store.update(&id, "test/closed", &json!({}), |d| {
+            d.turns[0]["status"] = "inProgress".into();
+            d.agent.closed_at = Some(now());
+        }).unwrap();
+        let closed = ws.interrupt(&id).await.unwrap_err();
+        assert!(closed.to_string().contains("已关闭"), "{closed}");
+        assert_eq!(*asked.lock().unwrap(), 2, "nothing asked without a running Turn or once closed");
+        assert_eq!(crate::store::detail_reads_of(&id), reads, "a whole record was read");
+        assert_eq!(reads, 1, "only the check above read the record whole");
     }
 
     #[tokio::test]

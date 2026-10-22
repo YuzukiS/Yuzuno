@@ -16,6 +16,7 @@ mod attachments;
 mod editors;
 mod home;
 mod http;
+mod presentation;
 mod refs;
 mod sections;
 mod update;
@@ -299,19 +300,51 @@ pub fn agent_edits_brief(store: &Store, agent_id: &str) -> Result<Option<String>
     })
 }
 
-/// The outcome hint (outcome_hint) for an Agent that may edit the Brief of
-/// this task's Project; None for anyone else, Ask-only members included.
-pub fn home_hint(store: &Store, db: &Connection, task_id: &str, agent: &str) -> Result<Option<&'static str>> {
+/// What a Home content editor is told beside an outcome: where it goes
+/// (`outcome_hint`), and how the user prefers results presented when they
+/// said so (`presentation`, T-175). Advice only.
+pub struct HomeAdvice {
+    pub hint: &'static str,
+    pub preference: Option<String>,
+}
+
+impl HomeAdvice {
+    fn read(db: &Connection) -> Result<Self> {
+        Ok(Self { hint: outcome_hint(), preference: presentation::for_agents(db)? })
+    }
+
+    /// Sets `homeHint`, and `homePreference` when the user has one.
+    pub fn apply(&self, value: &mut Value) {
+        value["homeHint"] = self.hint.into();
+        if let Some(preference) = &self.preference {
+            value["homePreference"] = preference.as_str().into();
+        }
+    }
+
+    /// The same advice as lines appended to a message.
+    pub fn lines(&self) -> String {
+        let mut lines = format!("\n{}", self.hint);
+        if let Some(preference) = &self.preference {
+            lines.push('\n');
+            lines.push_str(preference);
+        }
+        lines
+    }
+}
+
+/// The Home advice for an Agent that may edit the Brief of this task's
+/// Project; None for anyone else, Ask-only members included.
+pub fn home_hint(store: &Store, db: &Connection, task_id: &str, agent: &str) -> Result<Option<HomeAdvice>> {
     Ok(match crate::projects::task_projects(db, &[task_id])?.get(task_id) {
-        Some(project) if editors::can_edit(store, db, project, agent)? => Some(outcome_hint()),
+        Some(project) if editors::can_edit(store, db, project, agent)? => Some(HomeAdvice::read(db)?),
         _ => None,
     })
 }
 
-/// The outcome hint for an Agent that may edit its own Project's Brief.
-pub fn own_home_hint(store: &Store, db: &Connection, agent: &str) -> Result<Option<&'static str>> {
+/// The Home advice for an Agent that may edit its own Project's Brief.
+pub fn own_home_hint(store: &Store, db: &Connection, agent: &str) -> Result<Option<HomeAdvice>> {
     Ok(match crate::projects::agent_project(db, agent)? {
-        Some(project) if editors::can_edit(store, db, &project, agent)? => Some(outcome_hint()),
+        Some(project) if editors::can_edit(store, db, &project, agent)? => Some(HomeAdvice::read(db)?),
         _ => None,
     })
 }
@@ -503,7 +536,7 @@ fn get(store: &Store, actor: Option<&str>, input: &Value) -> Result<Value> {
                 "writeOwnAsk":own.as_deref() == Some(project.as_str()) && !crate::projects::is_archived(&db, &project)?
                     && store.brief_in(&db, actor)?.is_some_and(|a| a.agent.closed_at.is_none())}});
         if can_edit {
-            you["homeHint"] = outcome_hint().into();
+            HomeAdvice::read(&db)?.apply(&mut you);
         }
         Ok(you)
     }).transpose()?;

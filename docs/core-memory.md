@@ -288,6 +288,51 @@ every Turn and Item. These are synthetic allocator measurements; the daily Core'
 RSS also depends on its records' sizes and how many Agents are active at once,
 and is not measured here.
 
+### Connecting, and a reconnect that fails
+
+A Codex reconnect that starts an app-server read the whole record only for
+where the Agent's runtime is, and wrote the connection state with compared
+updates that returned copies nobody read. Recording a failed reconnect, for
+any harness, read the whole record for the Agent's status and error and wrote
+them with a compared update; a remote Agent whose machine is away is retried
+with a backoff of up to 30 s and paid both each time. These now read the
+listed Agent and write its fields as metadata, as do Claude's and OpenCode's
+connection failures. Their ready and history writes change Turns, so they are
+compared as before, only without returning a copy. A fork's attach answers
+with the listed Agent. What is recorded is unchanged: the same journal
+entries, a repeated error recorded once, nothing for a closed Agent, and an
+attach left unanswered marked uncertain.
+
+T-140 Job `df78bc42-54b5-46ec-a2c2-ef49c10e9dc6`, 2026-10-22, release build of
+`core_attach_memory`, same tool on both sides, "before" the product code of
+`27352dc`. "Allocated" is every byte the Rust allocator handed out during the
+request; "peak above live" is the most the Rust heap held above what it held
+when the request started. Neither is RSS, which these rows do not measure.
+Each row is one process; both 8 KiB processes of a side allocated the same:
+
+| Request | Before | After |
+| --- | ---: | ---: |
+| Reconnect after the open, 8 KiB per Item (63.5 MiB): allocated | 1,286 MiB | 1,014 MiB |
+| Reconnect after the open, 8 KiB per Item: peak above live | 274 MiB | 274 MiB |
+| Reconnect after the open, 1 KiB per Item (8.9 MiB): allocated | 260 MiB | 207 MiB |
+| Reopen, 8 KiB per Item: allocated | 881 MiB | 676 MiB |
+| First reconnect through the router (no view), 8 KiB per Item: allocated | 1,493 MiB | 1,288 MiB |
+| Four Agents reconnecting at once after the open: allocated | 5,144 MiB | 4,055 MiB |
+| Four Agents reconnecting at once after the open: peak above live | 870 MiB | 676 MiB |
+
+Reconnects that start no app-server (while connected, and `view=summary`)
+allocate the same on both sides. By the source, the first request through
+the router starts one: creating the router starts the collaboration endpoint,
+and the fixture's connected Agent has no MCP readiness recorded, so that
+reconnect detaches it and connects again. One Agent's peaks are the same on
+both sides; which step reaches them was not measured here. The four-Agent
+peak is one process per side, and how the concurrent reconnects overlap
+differs from run to run, so this run does not show whether the change lowers
+it. A failing reconnect is covered by tests, not measured: on main its test
+reads the whole record 4 times for two refused reconnects and twice for an
+unanswered one, now none. These are synthetic allocator measurements, not the
+daily Core's RSS.
+
 ### The UI's reconnect
 
 `POST /api/agents/{id}/reconnect` answers with the whole record. Every UI
@@ -357,6 +402,27 @@ reads its history, so the peak does not change. Each row is one process.
 A Claude reopen or reconnect is covered by tests here, not measured. These are
 synthetic allocator measurements, not the daily Core's RSS.
 
+### Stop, and a Claude follow-up
+
+A Stop read the whole record to choose the harness, and then again for
+Codex and Claude to find the running Turn: the Agent's open state and each
+Turn's status and id are all it checks, and Claude's then sent the record it
+had just written back to a caller that dropped it. A message sent to a Claude
+Agent while its Turn runs (a follow-up, or an answer to a form in that Turn)
+dropped the same copy. The Stop now chooses the harness from the listed Agent
+and finds the Turn on the send view, held or not, and both writes are the same
+commit without the copy back (`record_update`). What is asked of Codex or
+Claude, how often and in which order, the generation and receipt checks, and
+that an acknowledgement is not the Turn's end are as before.
+
+Tests count whole reads per Agent: none for a Stop of a Claude Agent (a
+scripted bridge, which still refuses with no running Turn or once closed) or
+a Codex Agent (a scripted app-server), held or not. The copy a follow-up no
+longer gets back is not counted: its write is the same `Store::record_event`
+commit that `update_record` makes, which then copies the record. Neither was
+measured; the commit still copies a held record before it writes, as every
+commit does.
+
 ### Close while a Turn runs
 
 Closing an Agent whose Turn is running asks the native side to interrupt it
@@ -390,6 +456,26 @@ much a close allocates before grew with how long the interrupt took to
 confirm. Each row is one process; a Claude close is covered by tests, not
 measured. These are synthetic allocator measurements, not the daily Core's
 RSS.
+
+### The model and permission catalog
+
+The Agent settings panel asks for `/api/agents/{id}/models` when it opens, and
+again after a save or a reload; nothing polls it. Each request read the whole
+record: twice for a Claude Agent (the route's harness lookup and the catalog's
+open check) and four times, one after another, for a Codex Agent (the route,
+the catalog's check, its read of the settings once connected, and the context
+settings). The route and both catalogs now read the Agent as listed, and the
+Codex catalog still reads it again once connected, for the settings the
+connection may change. The context settings are read from the send view,
+which has every field they use: the Agent, its pending requests, receipts,
+context usage and each Turn's status. The admission, gate, connection,
+permission and config requests, the rewind check and the answer are as before.
+
+Tests count whole reads per Agent: none for the route, the Claude catalog (a
+scripted bridge) or the Codex catalog (a scripted app-server), held or not.
+The Claude catalog still refuses a closed Agent and one of another harness,
+and the route a missing one, as before. This is a cost per opening of the
+panel, not one Core pays while streaming; it was not measured separately.
 
 ### A send's harness and a Claude mailbox notice
 
