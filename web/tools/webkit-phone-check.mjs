@@ -9,7 +9,8 @@
 //     the user sends it, and Core closes the question.
 //  3. A message whose send answer is lost on the way back is not sent again
 //     by the page; Core holds it once and the page shows it once.
-// The page may reach only the lab Core; anything else is refused and listed.
+// Of network requests, the page may reach only the lab Core; anything else is
+// refused and listed (data: and blob: URLs pass and are counted).
 //   YUZUNO_CORE_BIN=<lab Core> YUZUNO_UI_DIST=<isolated build> YUZUNO_LAB=<new short folder> \
 //     YUZUNO_BROWSER_OUTPUT=<evidence folder> [YUZUNO_LAB_PORT=4426] [YUZUNO_WEBKIT_WS=<server>] \
 //     node tools/webkit-phone-check.mjs
@@ -36,7 +37,7 @@ const port = Number(process.env.YUZUNO_LAB_PORT || 4426);
 assert.notEqual(port, 4317, "4317 is the daily Core's port");
 const fakeCodex = resolve(import.meta.dirname, "../../acceptance/turn-cost/fake_codex.py");
 
-const report = { engine, startedAt: new Date().toISOString(), checks: [], facts: {}, requests: [], refused: [], pageErrors: [] };
+const report = { engine, startedAt: new Date().toISOString(), checks: [], facts: {}, requests: [], refused: [], otherSchemes: {}, pageErrors: [] };
 const check = (name, fact) => {
   report.checks.push({ name, ...(fact === undefined ? {} : { fact }) });
   console.log(`PASS ${name}`);
@@ -124,9 +125,16 @@ try {
   browser = await launchBrowser();
   report.facts.browser = { engine, version: browser.version() };
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: "reduce" });
-  // A procedure, not network isolation: only the lab Core is let through.
+  // A procedure, not network isolation: of network requests, only the lab
+  // Core's are let through. WebKit also routes data: and blob: URLs, which
+  // stay in the page; they pass and are counted apart.
   await context.route("**/*", (route) => {
-    if (new URL(route.request().url()).origin === base) return route.continue();
+    const url = new URL(route.request().url());
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      report.otherSchemes[url.protocol] = (report.otherSchemes[url.protocol] ?? 0) + 1;
+      return route.continue();
+    }
+    if (url.origin === base) return route.continue();
     report.refused.push(route.request().url());
     return route.abort();
   });
@@ -247,7 +255,7 @@ try {
     { coreAnswered: lost, pagePosts: posts(sentAt, "/messages").length, held, shown, noteSoon: noteSoon.match(/(Delivery unconfirmed[^\n]*|Not confirmed[^\n]*|Sending…|Received by[^\n]*|Sent ·[^\n]*)/g) ?? [] });
   await page.unroute(`**/api/agents/${id}/messages`);
 
-  assert.deepEqual(report.refused, [], "the page asked for nothing outside the lab Core");
+  assert.deepEqual(report.refused, [], "the page asked the network for nothing outside the lab Core");
   assert.deepEqual(report.pageErrors, [], "no page errors");
   await context.close();
   report.passed = true;
