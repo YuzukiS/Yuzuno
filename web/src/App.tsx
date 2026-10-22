@@ -276,6 +276,11 @@ export function App() {
   const [forkOpen, setForkOpen] = useState(false);
   // `/review` alone: Review with Codex, for the draft that asked for it.
   const [reviewRequest, setReviewRequest] = useState<{ agentId: string; draft: ComposerDraft; nonce: number } | null>(null);
+  // It is for the Agent it was asked from: selecting another Agent drops it,
+  // so it neither keeps read tracking off elsewhere nor reopens on return.
+  useEffect(() => {
+    setReviewRequest((request) => request && request.agentId !== selected ? null : request);
+  }, [selected]);
   const [turnDockEngaged, setTurnDockEngaged] = useState(false);
   const [inspector, setInspector] = useState(true);
   // A wide window's choice; on a phone the list is a screen of its own.

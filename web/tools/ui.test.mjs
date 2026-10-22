@@ -5275,3 +5275,21 @@ test("Codex's review findings are its review Turn's reply", async () => {
     assert.match(turn.querySelector(".tool-activity summary").textContent, /Review/);
   } finally { page.close(); }
 });
+
+// R1 P3 (PR #75): the /review dialog belongs to the Agent it was asked from;
+// selecting another Agent meanwhile drops it.
+test("selecting another Agent drops a pending /review dialog, which does not reopen on return", async () => {
+  const page = await mount({ harness: "codex" });
+  try {
+    await sendDraft(page, "/review");
+    await until(() => page.document.querySelector('[role="dialog"]'), "the /review dialog");
+    page.document.querySelector('[aria-label="Open Hana"]').click();
+    await until(() => !page.document.querySelector('[role="dialog"]'), "the dialog to go with its Agent");
+    page.document.querySelector('[aria-label="Open Mori"]').click();
+    await pause();
+    await pause();
+    // A boolean, not the node: a failing strict assertion would inspect a
+    // live DOM node, and with it React's whole fiber graph.
+    assert.ok(!page.document.querySelector('[role="dialog"]'), "the /review dialog does not reopen");
+  } finally { page.close(); }
+});
