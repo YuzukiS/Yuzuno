@@ -95,13 +95,26 @@ pub(super) fn classify(name: &str) -> Option<(&'static str, &'static str)> {
 /// to fix; Err is a failure of this Core (its cache cannot be written).
 pub(super) fn stage(cache: &Path, data_dir: &Path, remote: bool, sections: &[Value]) -> Result<(Vec<Vec<Staged>>, Vec<Value>, Hold)> {
     let mut hold = Hold::default();
+    let (all, problems) = judge(cache, data_dir, remote, sections, Some(&mut hold))?;
+    Ok((all, problems, hold))
+}
+
+/// The problems `stage` would find, judged the same way, with nothing
+/// copied or held (brief_update validateOnly, T-176).
+pub(super) fn inspect(cache: &Path, data_dir: &Path, remote: bool, sections: &[Value]) -> Result<Vec<Value>> {
+    Ok(judge(cache, data_dir, remote, sections, None)?.1)
+}
+
+/// Each put's attachments; a snapshot is copied only with a `hold`.
+fn judge(cache: &Path, data_dir: &Path, remote: bool, sections: &[Value], mut hold: Option<&mut Hold>)
+    -> Result<(Vec<Vec<Staged>>, Vec<Value>)> {
     let (mut all, mut problems) = (vec![], vec![]);
     // Yuzuno's own data (its database holds Agent credentials) is never shown.
     let own = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_owned());
     for (index, section) in sections.iter().enumerate() {
         let mut staged = vec![];
         for (number, attachment) in section["attachments"].as_array().into_iter().flatten().enumerate() {
-            match stage_one(cache, &own, remote, attachment, &mut hold)? {
+            match stage_one(cache, &own, remote, attachment, hold.as_deref_mut())? {
                 Ok(one) => staged.push(one),
                 Err(reason) => problems.push(problem("attachment_path",
                     format!("changes[{index}].attachments[{number}].path"), reason, "attachments")),
@@ -109,10 +122,10 @@ pub(super) fn stage(cache: &Path, data_dir: &Path, remote: bool, sections: &[Val
         }
         all.push(staged);
     }
-    Ok((all, problems, hold))
+    Ok((all, problems))
 }
 
-fn stage_one(cache: &Path, own: &Path, remote: bool, attachment: &Value, hold: &mut Hold) -> Result<Result<Staged, String>> {
+fn stage_one(cache: &Path, own: &Path, remote: bool, attachment: &Value, hold: Option<&mut Hold>) -> Result<Result<Staged, String>> {
     let name = attachment["name"].as_str().unwrap_or_default();
     let mut entry = json!({"name":name,"takenAt":now()});
     if let Some(caption) = attachment["caption"].as_str() {
@@ -155,6 +168,14 @@ fn stage_one(cache: &Path, own: &Path, remote: bool, attachment: &Value, hold: &
     if real.starts_with(own) {
         return Ok(Err("Files inside Yuzuno's own data folder cannot be attached.".into()));
     }
+    let Some(hold) = hold else {
+        // Only judged: read as a copy reads it, kept nowhere.
+        let file = std::fs::File::open(&real);
+        return match file.and_then(|file| std::io::copy(&mut file.take(SNAPSHOT_FILE_BYTES + 1), &mut std::io::sink())) {
+            Ok(size) => reference(entry, size),
+            Err(error) => Ok(Err(format!("{} cannot be read: {error}", path.display()))),
+        };
+    };
     let mut bytes = Vec::new();
     if let Err(error) = std::fs::File::open(&real).and_then(|file| file.take(SNAPSHOT_FILE_BYTES + 1).read_to_end(&mut bytes)) {
         return Ok(Err(format!("{} cannot be read: {error}", path.display())));

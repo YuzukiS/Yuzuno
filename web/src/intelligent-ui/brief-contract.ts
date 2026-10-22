@@ -62,7 +62,13 @@ export const BRIEF_LIMITS = {
   validForMin: 60,
   validForMax: 31_536_000,
   problems: MAX_PROBLEMS,
+  // One brief_update's rejection, across its sections; Core enforces it.
+  callProblems: 10,
   keyPattern: BRIEF_KEY_PATTERN.source,
+  // Advice only (T-176, brief-advice.ts): adjustable hints in characters
+  // (Unicode code points) and references, never a limit; Core sends at most
+  // `items` with one answer.
+  advice: { markdownChars: 1200, sectionMarkdownChars: 3000, refs: 12, items: 3 },
 } as const;
 const L = BRIEF_LIMITS;
 
@@ -312,6 +318,14 @@ export const BRIEF_PROBLEM_CODES = {
   duplicate_attachment: "Two attachments share a name.",
 } as const;
 type ProblemCode = keyof typeof BRIEF_PROBLEM_CODES;
+
+/** Advice on a valid report or status section (brief-advice.ts); none refuses anything. */
+export const BRIEF_ADVICE_CODES = {
+  long_markdown: `A Markdown block over ${L.advice.markdownChars} characters, or a section whose Markdown is over ${L.advice.sectionMarkdownChars} characters in all.`,
+  summary_may_be_missing: "A Table or chart and no non-empty Markdown, Findings or Metrics block.",
+  duplicate_ref: "One LiveRefs or Sources block that names the same target twice.",
+  many_refs: `Over ${L.advice.refs} LiveRefs and Sources entries in one section, each target counted once per block.`,
+} as const;
 
 export const BRIEF_GUIDE_PARTS = ["sections", "ask", "content", "charts", "attachments", "limits", "errors", "examples"] as const;
 export type BriefGuidePart = (typeof BRIEF_GUIDE_PARTS)[number];
@@ -1014,6 +1028,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Other changes: {op:"resolve", key} resolves your ask; {op:"remove", key} removes your section (reports and status go to history); {op:"claim", key} takes an orphaned section of your Project; change it in a later brief_update, not in the one that claims it.`,
     `Only a section's owner changes it. To add to another Agent's section, put your own section under its key as topic/sub; Home shows them together with each author.`,
     `Pass expectedVersion from brief_get. On version_conflict the rejection includes latest: merge and retry with a new requestId. Nothing requires an update each turn; noChange:true is still accepted and changes nothing.`,
+    `validateOnly:true pre-checks a brief_update: it runs the checks made before the write, with their problems as the update would give them (and latest), and writes nothing: no requestId kept, no version or space reserved, and it is not your update. Its answer has valid, whether the pre-check passed, and checkedAll, only whether it ran all its steps. Checking stops at the first step with problems, so false means later steps did not run and the problems listed may not be all. Checks made only on writing are outside it: sending the update checks version, Turn and permissions again against the Brief as it is then, and can still be refused, e.g. with snapshot_limit when the Brief's snapshots would exceed their total. Use it for a complex section; an ordinary edit needs no check first.`,
   ],
   ask: [
     `kind ask needs ask:`,
@@ -1033,6 +1048,8 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Table and chart ids, row ids, item ids and column keys are unique. Sources hrefs are http(s) URLs or local file paths (optionally :line); Table rows cite them by id in sourceIds.`,
     `Form follows the information, unless the user or Project prefers another: a real screenshot or a labelled sketch (say which) for a UI or layout change, a chart of measured data for quantities and how they relate, a short sentence for a single state. The result, compare and decision examples show each; image shows a screenshot.`,
     `Layout: a short answer first, the first Markdown on its own or in a Group with tone accent, since its first paragraph is what a reader sees first; then a Columns of Groups for parts that sit side by side, as in the overview example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
+    `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to ${L.advice.items} advice {code, path, reason, guide} on the report and status sections it sent; for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
+    ...Object.entries(BRIEF_ADVICE_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
   ],
   charts: [
     ...CHARTS.map(componentLine),
@@ -1065,7 +1082,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Over a limit, the rejection says what to keep here and what to leave on the Task.`,
   ],
   errors: [
-    `A rejected brief_update lists at most ${MAX_PROBLEMS} problems {code, path, reason, guide}. path is where in your change (e.g. body.elements.log.props.text); reason says what to change; guide names the brief_guide part to read. Fix them all and call brief_update again with a new requestId.`,
+    `A rejected brief_update lists problems {code, path, reason, guide}: at most ${MAX_PROBLEMS} for each section's format and at most ${L.callProblems} in all. moreProblems says how many more Core found past ${L.callProblems}; problems past a section's ${MAX_PROBLEMS} are not found or counted. path is where in your change (e.g. body.elements.log.props.text); reason says what to change; guide names the brief_guide part to read. Fix them all and call brief_update again with a new requestId.`,
     ...Object.entries(BRIEF_PROBLEM_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
     `- ask_only: Your current Project permission allows only your own valid asks and optional noChange. Only the user can select content editors. Read brief_get you.capabilities and keep internal progress in tasks and mail.`,
     `Core also rejects version_conflict (the Brief changed; the rejection includes latest: merge and retry), no_active_turn (call it during your turn), unknown_element and edit_root (an edit naming a block the section does not have, or its root), and changes that break owner, topic or open-ask rules.`,
@@ -1113,12 +1130,14 @@ export const BRIEF_HARD_RULES = [
 export const BRIEF_TOOL_DESCRIPTIONS = {
   brief_get:
     `Read your Project's Brief: its version, the live sections (key, kind, title, owner, body, ask state, status, attachments), ` +
-    `you {agentId, ownsKeys, openAsks, repliedAsks (your asks the user answered, to act on and resolve), staleStatus, capabilities} and the limits. ` +
+    `you {agentId, ownsKeys, openAsks, repliedAsks (your asks the user answered, to act on and resolve), staleStatus, capabilities; ` +
+    `for a Home content editor homeHint, and homePreference once the user set one: how they like results presented, current as of this read, ` +
+    `granting nothing} and the limits. ` +
     `keys: omit for every section with its body; [] for an index of the sections without bodies; [key, ...] for those sections in full. ` +
     `Pass its version to brief_update as expectedVersion. projectId defaults to your own Project. Nothing requires reading or updating the Brief each turn. Formats: brief_guide.`,
   brief_update:
     `Write Brief changes when something changed; nothing requires a call each turn. Ask-only members may write only their own Asks. Pass expectedVersion (from ` +
-    `brief_get) and a new requestId (reuse it only to retry the same call). Send changes:[...] (noChange:true is accepted and ` +
+    `brief_get) and a new requestId (reuse it only to retry the same call). Send changes:[...] (noChange:true ` +
     `changes nothing). Changes: put {op:"put", key, kind, title, body, ask?, status?, time?, attachments?} ` +
     `creates or replaces a section you own; edit {op:"edit", key, elements:{<id>: block}} replaces only those ` +
     `blocks; resolve {op:"resolve", key} resolves your ask; remove {op:"remove", key} ` +
@@ -1127,8 +1146,8 @@ export const BRIEF_TOOL_DESCRIPTIONS = {
     `(a-z, 0-9, -); add to another Agent's section with a topic/sub key of your own. kind ask needs ask {question, reply} ` +
     `with reply options, freeText, form or choice; kind status needs status {asOf, validFor}. body is {root, elements} ` +
     `with a BriefBody root. A rejection lists problems {code, path, reason, guide}: fix them and retry with a new ` +
-    `requestId; on version_conflict merge with the latest it returns. Content never executes actions. Formats, limits ` +
-    `and examples: brief_guide.`,
+    `requestId; on version_conflict merge with the latest it returns. validateOnly:true pre-checks without writing. ` +
+    `Content never executes actions. Formats: brief_guide.`,
   brief_guide:
     `The Project Brief format guide, generated from the contract: sections and their kinds, ask replies, body components ` +
     `with props and limits, charts, attachments, error codes and worked examples; what to write is in yuzuno_guide brief. part is one of ` +

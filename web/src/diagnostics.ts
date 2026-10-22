@@ -105,7 +105,8 @@ const SUMMARIES: [RegExp, string][] = [
   [/\bis not iterable\b/, "went through something that can't be iterated"],
   [/\bis not defined$/, "used a name that is not defined"],
   [/^Maximum call stack size exceeded$|^too much recursion$/, "too much recursion"],
-  [/^(?:Failed to fetch|Load failed|NetworkError when attempting to fetch resource\.?)$/, "a request did not reach the server"],
+  // The last is api.ts's NetworkError, which wraps the first two.
+  [/^(?:Failed to fetch|Load failed|NetworkError when attempting to fetch resource\.?|No answer from Core over the network\.)$/, "a request did not reach the server"],
   [/\bnot valid JSON\b|^JSON\.parse\b|^Unexpected (?:token|end of JSON input)\b/, "a text that is not valid JSON"],
   [/dynamically imported module|Importing a module script failed/i, "a part of the web UI could not be loaded"],
   [/^ResizeObserver loop\b/, "a ResizeObserver loop"],
