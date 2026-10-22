@@ -1,4 +1,5 @@
 // The Jobs panel's disk section (T-95) against fixture HTTP only; no Core.
+import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";

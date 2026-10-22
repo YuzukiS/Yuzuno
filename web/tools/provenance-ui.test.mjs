@@ -1,6 +1,7 @@
 // T-168: a Job's provenance is previewed before it is saved, what is saved is
 // exactly what was previewed, a stage attempt can export its whole run, and a
 // failed export says why and can be asked again.
+import './jsdom-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';

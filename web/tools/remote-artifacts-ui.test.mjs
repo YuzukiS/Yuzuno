@@ -1,6 +1,7 @@
 // T-108: a remote job's artifacts are checked on its machine and stay there.
 // The panel names the machine and each file's path there and offers no
 // download; a job on this host keeps its download of verified files.
+import './jsdom-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';

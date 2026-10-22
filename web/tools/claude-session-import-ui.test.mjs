@@ -2,6 +2,7 @@
 // over a scripted API. Listing is one bounded page at a time; choosing a
 // session reads its preview; adding sends one import with the name,
 // Project and folder the user confirmed, and nothing that would run Claude.
+import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";

@@ -1,6 +1,7 @@
 // T-105: a job that is one attempt of a run's stage shows its run (stages,
 // attempts, what waits and why), the artifacts it verified, its recorded cost
 // and progress, and offers the run's retry and cancel instead of a free rerun.
+import './jsdom-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';

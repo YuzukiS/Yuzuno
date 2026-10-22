@@ -1,6 +1,7 @@
 // The CI check under React.StrictMode, as the app root renders it. Only a
 // development build runs effect setup, cleanup and setup again, so this file
 // builds in development rather than sharing jobs-ui.test.mjs's bundle.
+import './jsdom-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';

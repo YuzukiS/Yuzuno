@@ -585,6 +585,16 @@ thread_local! {
     pub(super) static SEND_ROWS_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+/// How many whole records `Store::detail` read of each Agent, on any thread:
+/// a Workspace reads on a blocking thread, and Agent IDs keep tests apart.
+#[cfg(test)]
+pub(crate) static DETAIL_READS_OF: std::sync::Mutex<Option<HashMap<String, u64>>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn detail_reads_of(id: &str) -> u64 {
+    DETAIL_READS_OF.lock().unwrap().as_ref().and_then(|reads| reads.get(id).copied()).unwrap_or(0)
+}
+
 /// Signals when `commit` has planned (serialized) the write of the watched
 /// Agent's record, before it takes the writer. A test holds the writer then.
 #[cfg(test)]
@@ -1410,7 +1420,10 @@ impl Store {
 
     pub fn detail(&self, id: &str) -> Result<AgentDetail> {
         #[cfg(test)]
-        DETAIL_READS.with(|n| n.set(n.get() + 1));
+        {
+            DETAIL_READS.with(|n| n.set(n.get() + 1));
+            *DETAIL_READS_OF.lock().unwrap().get_or_insert_with(HashMap::new).entry(id.into()).or_default() += 1;
+        }
         self.detail_racing(id, || {})
     }
 

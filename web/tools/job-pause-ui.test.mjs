@@ -3,6 +3,7 @@
 // reserved and that its timeout still counts, and is resumed only by the
 // user's button. A pause that has not taken hold says it is pausing; a
 // finished job never offers pause or resume.
+import './jsdom-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';

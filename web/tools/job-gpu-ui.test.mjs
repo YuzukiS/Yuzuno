@@ -1,6 +1,7 @@
 // T-106: the Jobs panel's GPUs (latest sample, what managed jobs hold, new
 // jobs or not, sharing) and a GPU job's request and reservation, against
 // fixture HTTP only; no Core, no GPU.
+import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";

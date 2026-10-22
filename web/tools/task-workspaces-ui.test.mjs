@@ -2,6 +2,7 @@
 // and users, offers the materials' path only as a suggestion to register,
 // lets only unprotected cleanup candidates be selected, sends exactly the
 // previewed selection, and shows what Core actually did.
+import './jsdom-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';

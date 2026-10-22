@@ -962,6 +962,8 @@ impl Workspace {
 
     /// Called under the Agent gate. Only stage an advisory notification in an
     /// existing query; the SDK hook receipt, not this enqueue, records delivery.
+    /// The Agent and its Turns' states are checked on the send view, as a
+    /// Codex steer checks them, without copying the Items (T-140).
     pub(crate) async fn claude_notify_mailbox_locked(
         self: &Arc<Self>,
         id: &str,
@@ -970,7 +972,7 @@ impl Workspace {
         client_id: &str,
     ) -> Result<Value> {
         let detail = self
-            .detail(id)
+            .send_view(id)
             .await
             .map_err(|error| Rejected(error.to_string()))?;
         ensure_agent_open(&detail.agent).map_err(|error| Rejected(error.to_string()))?;
@@ -3214,6 +3216,79 @@ mod tests {
         assert!(error.downcast_ref::<Rejected>().is_some());
         assert!(ws.claudes.lock().unwrap().is_empty());
         assert_eq!(ws.store.detail("a").unwrap().turns.len(), 1);
+    }
+
+    /// T-140: a mailbox notice checks the Agent and its Turns on the send
+    /// view, held or read from its rows, and reads no whole record. A stale
+    /// or ended Turn, a lost connection and a missing runtime are refused
+    /// before anything is sent. A notice is sent once; one whose runtime is
+    /// replaced before its acknowledgement is unknown and is not sent again.
+    #[tokio::test]
+    async fn a_mailbox_notice_checks_the_send_view_not_the_whole_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(temp.path().into(), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
+        let mut d = detail();
+        d.agent.id = "mailbox-notice-reads".into();
+        let id = d.agent.id.clone();
+        ws.store.insert(&d).unwrap();
+        let refused = |error: anyhow::Error, reason: &str| {
+            assert!(error.downcast_ref::<Rejected>().is_some_and(|e| e.0.contains(reason)), "{reason}: {error}");
+        };
+        for held in [true, false] {
+            if held {
+                ws.store.update(&id, "test/held", &json!({}), |_| {}).unwrap();
+            }
+            refused(ws.claude_notify_mailbox_locked(&id, "mailbox notice", "old-turn", "mail1").await.unwrap_err(), "stale turn");
+            refused(ws.claude_notify_mailbox_locked(&id, "mailbox notice", "t", "mail2").await.unwrap_err(), "no active runtime");
+            assert_eq!(ws.store.release_for_test(&id), held);
+        }
+
+        let (tx, mut commands) = mpsc::channel(8);
+        let (shutdown, _shutdown_rx) = watch::channel(false);
+        let (_stopped_tx, stopped) = watch::channel(None);
+        let bridge = Arc::new(Bridge { tx, pending: Arc::new(Mutex::new(HashMap::new())), next: AtomicU64::new(1),
+            shutdown, stopped, diagnostics: Default::default(), stderr_closed: watch::channel(true).1, pid: None });
+        ws.claudes.lock().unwrap().insert(id.clone(), Connection { remote_instance: None, generation: 7, bridge: bridge.clone(), events: None });
+        let sent = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let (seen, replying, native, agent) = (sent.clone(), bridge.clone(), ws.clone(), id.clone());
+        tokio::spawn(async move {
+            while let Some(command) = commands.recv().await {
+                let command: Value = command;
+                seen.lock().unwrap().push(command.clone());
+                if command["clientMessageId"] == "replaced" {
+                    // The runtime is replaced before this notice is acknowledged.
+                    native.claudes.lock().unwrap().get_mut(&agent).unwrap().generation = 8;
+                }
+                let id: u64 = command["id"].as_str().unwrap().parse().unwrap();
+                replying.pending.lock().await.remove(&id).unwrap().send(Ok(json!({"queued":true}))).unwrap();
+            }
+        });
+        ws.store.update(&id, "test/held", &json!({}), |_| {}).unwrap();
+        assert_eq!(ws.claude_notify_mailbox_locked(&id, "mailbox notice", "t", "held").await.unwrap(), json!({"queued":true}));
+        assert!(ws.store.release_for_test(&id));
+        assert_eq!(ws.claude_notify_mailbox_locked(&id, "mailbox notice", "t", "unheld").await.unwrap(), json!({"queued":true}));
+        let unknown = ws.claude_notify_mailbox_locked(&id, "mailbox notice", "t", "replaced").await.unwrap_err();
+        assert!(unknown.downcast_ref::<OutcomeUnknown>().is_some(), "{unknown}");
+        ws.claudes.lock().unwrap().get_mut(&id).unwrap().generation = 7;
+        let cases: [(&str, fn(&mut AgentDetail)); 2] = [
+            ("ended", |d| d.turns[0]["status"] = "completed".into()),
+            ("disconnected", |d| {
+                d.turns[0]["status"] = "inProgress".into();
+                d.agent.connection_state = "disconnected".into();
+            }),
+        ];
+        for (case, change) in cases {
+            ws.store.update(&id, "test/changed", &json!({}), change).unwrap();
+            for held in [true, false] {
+                refused(ws.claude_notify_mailbox_locked(&id, "mailbox notice", "t", case).await.unwrap_err(), "stale turn");
+                assert_eq!(ws.store.release_for_test(&id), held, "{case}");
+            }
+        }
+        let sent: Vec<(Value, Value, Value)> = sent.lock().unwrap().iter()
+            .map(|c| { assert_eq!(c["op"], "notify_mailbox"); (c["expectedTurnId"].clone(), c["clientMessageId"].clone(), c["text"].clone()) })
+            .collect();
+        assert_eq!(sent, [("t", "held"), ("t", "unheld"), ("t", "replaced")].map(|(t, c)| (json!(t), json!(c), json!("mailbox notice"))));
+        assert_eq!(crate::store::detail_reads_of(&id), 0, "a whole record was read");
     }
 
     #[tokio::test]
