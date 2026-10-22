@@ -123,11 +123,12 @@ const subAgentResults: Record<ClaudeSubAgentEntry["status"], string> = {
 const PLAN_LINES = 18;
 const PLAN_CHARS = 1800;
 
-/** The plan Claude sent with ExitPlanMode (`input.plan`), as Markdown. */
-function PlanText({ plan, id }: { plan: string; id: string }) {
+/** A plan as Markdown: the one Claude sent with ExitPlanMode (`input.plan`),
+ *  or a Codex plan Item's text. `empty` says there is none. */
+export function PlanText({ plan, id, empty = "Claude sent no plan text." }: { plan: string; id: string; empty?: string }) {
   const [open, setOpen] = useState(false);
   const long = plan.split("\n").length > PLAN_LINES || plan.length > PLAN_CHARS;
-  if (!plan.trim()) return <p className="claude-plan-empty">Claude sent no plan text.</p>;
+  if (!plan.trim()) return <p className="claude-plan-empty">{empty}</p>;
   return <div className="claude-plan-text">
     <div id={id} className="claude-plan-body" data-collapsed={long && !open ? true : undefined}>
       <Prose text={plan} />
@@ -186,7 +187,7 @@ export function ClaudeTool({ item, unconfirmed, notice, opened, onOpenChange }: 
 }
 
 /** A plan's first heading, or its first line, for the call's summary. */
-function planTitle(plan: string) {
+export function planTitle(plan: string) {
   const lines = plan.split("\n").map(line => line.trim()).filter(Boolean);
   const title = (lines.find(line => /^#{1,6}\s/.test(line)) || lines[0] || "").replace(/^#{1,6}\s+/, "");
   return title.length > 80 ? `${title.slice(0, 79)}…` : title;

@@ -73,6 +73,8 @@ pub struct Workspace {
     pub(crate) codex_context: crate::codex_context::State,
     /// What each Codex Agent's MCP servers reported as they started (T-29).
     pub(crate) codex_mcp: crate::codex_mcp::State,
+    /// The collaboration mode each Codex Agent's connection reported (T-29).
+    pub(crate) codex_plan: crate::codex_plan::State,
     pub(crate) github: crate::github::SyncState,
     pub(crate) pr_reviews: crate::pr_review::State,
     pub(crate) pr_operations: crate::pr_operations::State,
@@ -144,6 +146,7 @@ impl Workspace {
             codex_usage: Default::default(),
             codex_context: Default::default(),
             codex_mcp: Default::default(),
+            codex_plan: Default::default(),
             delivery: Default::default(),
             admission: Arc::new(crate::updates::admission::Admission::default()),
             update_notice_layout: OnceLock::new(),
@@ -533,6 +536,7 @@ impl Workspace {
             let _owned = self.owner(id).await;
             self.rpcs.lock().unwrap().insert(id.into(), connection.clone());
             self.codex_mcp.forget(id);
+            self.codex_plan.forget(id);
             self.codex_usage_reconnected(id, connection.generation).await;
             if id != "_catalog" {
                 self.backlogs.track(id, connection.generation, backlog.clone());
@@ -805,6 +809,9 @@ impl Workspace {
         if a.remote.is_some() && !attempt.same_thread_only {
             self.codex_context.resumed_running_turn(id, connection.generation, &result["thread"]);
         }
+        // The mode Codex resumed the thread in, if it says (/plan); a new
+        // thread's answer says none. Announced with the attachment below.
+        self.codex_plan.report(id, connection.generation, &result["collaborationMode"], "resume");
         self.codex_context.attached(id, connection.generation, &a.settings,
             attempt.same_thread_only || a.remote.is_none() || new_empty_thread);
 
@@ -1838,7 +1845,7 @@ impl Workspace {
     /// already serving it. Nothing is connected, resumed, retried or
     /// reconciled for it, and an unconfirmed earlier send, control or turn
     /// refuses it.
-    async fn idle_codex_thread(&self, id: &str, what: &str) -> Result<(AgentDetail, String, Connection)> {
+    pub(crate) async fn idle_codex_thread(&self, id: &str, what: &str) -> Result<(AgentDetail, String, Connection)> {
         self.ensure_rewind_settled(id).await?;
         let detail = self.send_view(id).await?;
         ensure_agent_open(&detail.agent)?;
@@ -2071,6 +2078,7 @@ impl Workspace {
         if method == "yuzuno/disconnected" {
             let intentional = self.rpcs.lock().unwrap().remove(id).is_some_and(|connection| connection.closing);
             self.codex_mcp.forget(id);
+            self.codex_plan.forget(id);
             let _ = self.store.update(id, "runtime/disconnected", p, |d| {
                 if let Some(usage) = &mut d.context_usage { usage.stale = true; }
                 d.agent.connection_state = "disconnected".into();
@@ -2169,6 +2177,11 @@ impl Workspace {
             if method == "mcpServer/startupStatus/updated" && event_thread.is_some()
                 && known_thread.as_deref().is_none_or(|known| Some(known) == event_thread) {
                 self.codex_mcp.observe(id, generation, p);
+            }
+            // Its own thread's settings, with the mode /plan shows.
+            if method == "thread/settings/updated" && known_thread.is_some() && known_thread.as_deref() == event_thread
+                && self.codex_plan.report(id, generation, &p["threadSettings"]["collaborationMode"], "settings") {
+                self.changed(id);
             }
             match crate::store::route(method, p) {
                 crate::store::Route::Synchronous => {
@@ -2329,7 +2342,7 @@ impl Workspace {
     }
 }
 
-fn same_generation(connection: Option<&Connection>, generation: u64) -> bool {
+pub(crate) fn same_generation(connection: Option<&Connection>, generation: u64) -> bool {
     connection.is_some_and(|c| c.generation == generation)
 }
 
@@ -2799,6 +2812,10 @@ mod codex_goal_tests;
 #[cfg(all(test, unix))]
 #[path = "codex_mcp_tests.rs"]
 mod codex_mcp_tests;
+
+#[cfg(all(test, unix))]
+#[path = "codex_plan_tests.rs"]
+mod codex_plan_tests;
 
 #[cfg(all(test, unix))]
 #[path = "subagent_requests_tests.rs"]
