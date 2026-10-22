@@ -184,7 +184,10 @@ try {
     await page.screenshot({ path: resolve(output, `${viewport.name}-preview.png`) });
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
-    assert.ok(await before.evaluate((el) => el === document.activeElement), "focus returns to the image");
+    // Radix puts focus back in a setTimeout after the dialog unmounts: wait,
+    // at most 5 s, for it to land on this same image.
+    await page.waitForFunction((el) => el === document.activeElement, await before.elementHandle(), { timeout: 5_000 })
+      .catch(() => assert.fail("focus returns to the image"));
     assert.equal(writesNow(), 0, "looking writes nothing");
     check(`${viewport.name}: a Home image opens in the app's preview by keyboard and Escape returns to it; nothing written`);
 

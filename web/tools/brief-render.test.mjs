@@ -494,14 +494,21 @@ test("live references show Core's current state and open with what it knows", as
   const ref = (kind, id) => document.querySelector(`.brief-ref[data-kind="${kind}"]${id ? `[title*="${id}"]` : ""}`);
   const task = ref("task");
   assert.equal(task.dataset.tone, "active");
-  assert.match(task.textContent, /^Home V1 slice 1T-85doing$/, "Core's title, then the id and its state");
-  assert.match(task.title, /as of /);
+  // The Agent's short label leads (T-173); Core's current title is in the
+  // tooltip and read out after it.
+  assert.equal(task.querySelector("span").textContent, "Home V1");
+  assert.equal(task.querySelector(".sr-only").textContent, ": Home V1 slice 1");
+  assert.match(task.textContent, /^Home V1: Home V1 slice 1T-85doing$/, "label, current title, then the id and its state");
+  assert.match(task.title, /^(Open )?Task T-85: Home V1 slice 1 · as of /);
   assert.equal(ref("pr").getAttribute("href"), "https://github.com/owner/repo/pull/12");
   assert.match(ref("pr").textContent, /Brief renderer.*merged/);
+  assert.equal(ref("pr").querySelector("span").textContent, "Brief renderer", "without a label, the current title");
+  assert.ok(!ref("pr").querySelector(".sr-only"), "no second name");
   assert.equal(ref("ci").getAttribute("href"), "https://github.com/owner/repo/actions/runs/99/attempts/2", "the run URL Core knows");
   assert.equal(ref("ci").dataset.tone, "attention");
   assert.equal(ref("agent").tagName, "SPAN", "no opener given");
-  assert.match(ref("agent").textContent, /Coder \(Claude\).*idle/);
+  assert.match(ref("agent").textContent, /Coder: Coder \(Claude\).*idle/);
+  assert.equal(ref("agent").querySelector("span").textContent, "Coder");
   // The machine has no state from Core: it shows as the Agent wrote it.
   assert.equal(ref("machine").dataset.tone, undefined);
   const gone = ref("job", "job-gone");
@@ -620,6 +627,44 @@ test("columns sit side by side at their widths, and a tone tints its group", asy
   assert.equal(split.style.getPropertyValue("--brief-columns"), "", "equal columns come from the stylesheet");
   assert.deepEqual([...split.children].map((column) => [column.dataset.tone, column.querySelector("h4"), column.textContent.trim()]), [["muted", null, "Left"], [undefined, null, "Right"]]);
   assert.equal(document.querySelector(".result-part-error"), null);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a long row of attachments shows the first few and the rest on request, focus kept (T-173)", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const shots = (count) => Array.from({ length: count }, (_, index) => `shot-${index + 1}.png`);
+  const put = (names) => ({
+    op: "put", key: "shots", kind: "report", title: "Screens",
+    attachments: names.map((name) => ({ name, path: `/runs/12/${name}` })),
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: {}, children: ["files"] },
+      files: { type: "Attachments", props: { items: names.map((name) => ({ name, caption: `Before/after ${name}` })) } },
+    } },
+  });
+  const show = (names) =>
+    window.renderSection(readSection(page, put(names), { attachments: names.map((name) => attachment(name, "image", "image/png")) }), PROJECT);
+  const listed = () => [...document.querySelectorAll(".brief-attachments > li")].map((li) => li.textContent.match(/shot-\d+\.png/)?.[0]);
+  show(shots(6));
+  assert.equal(listed().length, 6, "two more than the first four show at once");
+  assert.ok(!document.querySelector(".brief-attachments-more"), "no toggle for six");
+  show(shots(12));
+  assert.deepEqual(listed(), shots(4));
+  const more = document.querySelector(".brief-attachments-more");
+  assert.equal(more.textContent, "Show all 12 attachments");
+  assert.equal(more.getAttribute("aria-expanded"), "false");
+  more.focus();
+  more.click();
+  await tick();
+  assert.deepEqual(listed(), shots(12));
+  assert.ok(document.activeElement === more, "the toggle keeps focus");
+  assert.equal(more.getAttribute("aria-expanded"), "true");
+  assert.equal(more.textContent, "Show the first 4");
+  more.click();
+  await tick();
+  assert.deepEqual(listed(), shots(4));
+  assert.equal(page.requests.filter((r) => r.method !== "GET").length, 0);
   assert.deepEqual(page.errors, []);
 });
 

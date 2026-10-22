@@ -1062,6 +1062,105 @@ test("a collapsed Ask keeps what was typed in it, and folding sends nothing (T-1
   }
 });
 
+// T-173: bodies shaped like the Home audit's examples, synthetic text.
+function readingFixture() {
+  const home = homeFixture();
+  const docs = home.projects.find((entry) => entry.project.id === "p-docs");
+  const node = (type, props, children) => (children ? { type, props, children } : { type, props });
+  const md = (text) => node("Markdown", { text });
+  const spec = (top, elements) => ({ root: "body", elements: { body: node("BriefBody", {}, top), ...elements } });
+  const closed = { agentId: "k", name: "Kumo", state: "closed" };
+  docs.unseen = 4;
+  docs.brief.sections = [
+    section("overview", "report", "Development", 3, owner("b", "Hana"), {
+      body: spec(["lead", "costs"], {
+        lead: node("Group", { title: "Now", tone: "accent" }, ["now"]),
+        now: md("Release **core.15** is out; two lines wait for main.\n\nDetails below."),
+        costs: node("BarChart", { title: "Cost", x: { label: "Run" }, y: { label: "USD" }, series: [{ name: "A", points: [["r1", 4], ["r2", 5]] }] }),
+      }),
+    }),
+    section("evidence", "report", "Reconnect", 2, owner("b", "Hana"), {
+      body: spec(["runs", "result"], { runs: node("Group", { title: "Runs" }, ["log"]), log: md("Run 101: 412 passed."), result: md("Merged.") }),
+    }),
+    section("layout", "status", "Home layout", 5, closed, {
+      body: spec(["state"], { state: md("Daily runs core.12.") }),
+      status: { asOf: at(4 * 24 * 60), validFor: 7 * 24 * 3600, stale: false },
+    }),
+    section("release-core12/notes", "report", "Release notes", 1, owner("b", "Hana")),
+    section("ops/disk", "report", "Disk", 1, owner("b", "Hana")),
+    section("ops/backup", "report", "Backup", 1, owner("b", "Hana")),
+  ];
+  return home;
+}
+
+test("a folded card still says what it is about, when its data is from and that nobody keeps it (T-173)", async () => {
+  const p = await mount({ home: readingFixture() });
+  try {
+    await waitFor(() => card(p, "p-docs", "layout"), "the Docs cards are drawn");
+    const overview = card(p, "p-docs", "overview");
+    const evidence = card(p, "p-docs", "evidence");
+    const layout = card(p, "p-docs", "layout");
+    // Open, the body says it all: nothing is shown twice.
+    for (const root of [overview, evidence, layout]) assert.ok(!root.querySelector(".home-card-glance"), "no excerpt while open");
+    // An author who has closed: marked in the header, explained in the body.
+    assert.equal(layout.querySelector(".home-unmaintained").textContent, "Not maintained");
+    assert.match(layout.querySelector(".home-unmaintained").title, /Kumo has closed/);
+    assert.match(layout.querySelector(".home-unmaintained-note").textContent, /Kumo has closed, so this status is no longer updated.*can claim it.*nothing is removed by itself/s);
+    assert.ok(!overview.querySelector(".home-unmaintained"), "an active author's card is not marked");
+    // Folding keeps the fold button focused and the chart's data table open.
+    const table = overview.querySelector("details.brief-chart-data");
+    table.open = true;
+    table.dispatchEvent(new p.w.Event("toggle"));
+    await pause();
+    for (const root of [overview, evidence, layout]) {
+      fold(root).focus();
+      fold(root).click();
+      await pause();
+      assert.ok(p.doc.activeElement === fold(root), "focus stays on the fold");
+    }
+    const glance = (root) => root.querySelector(".home-card-glance");
+    assert.equal(glance(overview).querySelector(".home-card-summary").textContent.trim(), "Release core.15 is out; two lines wait for main.",
+      "the accent Group's first paragraph");
+    assert.ok(glance(overview).querySelector(".home-card-summary strong"), "as Markdown");
+    assert.ok(!glance(overview).querySelector(".home-section-time"), "a report has no data time");
+    assert.ok(!glance(evidence), "a card opening with evidence shows no summary rather than the evidence");
+    assert.equal(glance(layout).querySelector(".home-card-summary").textContent.trim(), "Daily runs core.12.");
+    assert.match(glance(layout).querySelector(".home-section-time").textContent, /Data as of/);
+    assert.ok(layout.querySelector(".home-section-head .home-unmaintained"), "still marked when folded");
+    for (const root of [overview, layout]) {
+      const id = fold(root).getAttribute("aria-controls");
+      assert.ok(!glance(root).contains(p.doc.getElementById(id)), "the excerpt is outside the hidden body");
+      assert.equal(p.doc.getElementById(id).hidden, true);
+    }
+    fold(overview).click();
+    await pause();
+    assert.ok(!glance(overview), "no excerpt once open");
+    assert.ok(overview.querySelector("details.brief-chart-data") === table, "the same table, still open");
+    assert.equal(table.open, true);
+    assert.deepEqual(p.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories")).map((c) => c.url), [],
+      "folding marks nothing seen and answers nothing");
+  } finally {
+    p.close();
+  }
+});
+
+test("a sub-topic without its topic's section stands as its own card; several get a readable heading (T-173)", async () => {
+  const p = await mount({ home: readingFixture() });
+  try {
+    await waitFor(() => card(p, "p-docs", "ops/backup"), "the Docs cards are drawn");
+    const alone = p.panel("p-docs").querySelector('[data-topic="release-core12"]');
+    assert.ok(!alone.querySelector(".home-topic-name"), "no bare key over a single card");
+    assert.ok(!alone.querySelector(".home-subs"), "not drawn as a sub-card");
+    assert.ok(alone.contains(card(p, "p-docs", "release-core12/notes")));
+    const ops = p.panel("p-docs").querySelector('[data-topic="ops"]');
+    assert.equal(ops.querySelector(".home-topic-name").textContent, "Ops");
+    assert.equal(ops.querySelector(".home-topic-name").title, "ops", "the key stays reachable");
+    assert.equal(ops.querySelectorAll(".home-subs .home-section").length, 2);
+  } finally {
+    p.close();
+  }
+});
+
 test("a report or status pins to the widget column: the same section, its source, kept per workspace; asks never pin", async () => {
   const home = homeFixture();
   home.projects.forEach((panel, n) => panel.brief.sections.forEach((s, i) => (s.id = 100 * (n + 1) + i)));

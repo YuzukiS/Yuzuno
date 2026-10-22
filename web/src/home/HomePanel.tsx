@@ -20,7 +20,7 @@ import { openJobs } from "../Jobs";
 import type { Agent, PendingRequest } from "../types";
 import { ProjectReply } from "./AskReply";
 import { CardReply, cardReplySlot, hasCardReply, KeptCardReplies, referableHistory } from "./CardReply";
-import { changedSinceSeen, groupSections, projectDomId, requestDomId } from "./brief-layout";
+import { changedSinceSeen, groupSections, projectDomId, requestDomId, topicName } from "./brief-layout";
 import { FoldButton, useCardFold } from "./card-fold";
 import { absolute, plural, relative } from "./format";
 import { readLinkedRepositories, type LinkedRepositories, type SeenMark } from "./home-api";
@@ -408,14 +408,29 @@ export function HomePanel({
                 No current Home content. Content editors can add reports and status; everyone can add an Ask.
               </p>
             ) : (
-              groups.map((group) => (
-                <div className="home-topic" key={group.topic} data-topic={group.topic}>
-                  {group.parent ? card(group.parent) : <h3 className="home-topic-name">{group.topic}</h3>}
-                  {group.subs.length > 0 && (
-                    <div className="home-subs">{group.subs.map((sub) => card(sub, true))}</div>
-                  )}
-                </div>
-              ))
+              groups.map((group) =>
+                // A sub-topic whose topic has no section of its own stands as
+                // a card of its own; several get a readable heading, never the
+                // bare key (T-173).
+                !group.parent && group.subs.length === 1 ? (
+                  <div className="home-topic" key={group.topic} data-topic={group.topic}>
+                    {card(group.subs[0])}
+                  </div>
+                ) : (
+                  <div className="home-topic" key={group.topic} data-topic={group.topic}>
+                    {group.parent ? (
+                      card(group.parent)
+                    ) : (
+                      <h3 className="home-topic-name" title={group.topic}>
+                        {topicName(group.topic)}
+                      </h3>
+                    )}
+                    {group.subs.length > 0 && (
+                      <div className="home-subs">{group.subs.map((sub) => card(sub, true))}</div>
+                    )}
+                  </div>
+                ),
+              )
             )}
           </div>
           {rank >= FULL_RANKS && (uncapped || overflowing) && (

@@ -88,12 +88,16 @@ function Chip({ item }: { item: LiveRef }) {
   // Older Cores send no current state; the chip then shows what the Agent wrote.
   const state = (brief.section.refs as Section["refs"] | undefined)?.[`${item.kind}:${item.id}`];
   const target = opening(item, brief, state);
-  const name = state?.title || item.label || item.id;
-  const title = `${kind.label} ${item.id}${state?.observedAt ? ` · as of ${formatTime(state.observedAt)}` : ""}`;
+  // The Agent's short label leads; the current title is in the tooltip and
+  // read out after it (T-173). Without a label, the current title shows.
+  const name = item.label || state?.title || item.id;
+  const full = item.label && state?.title && state.title !== item.label ? state.title : null;
+  const title = `${kind.label} ${item.id}${full ? `: ${full}` : ""}${state?.observedAt ? ` · as of ${formatTime(state.observedAt)}` : ""}`;
   const content = (
     <>
       <Icon size={13} aria-hidden="true" />
       <span>{name}</span>
+      {full && <span className="sr-only">: {full}</span>}
       {name !== item.id && <small>{item.id}</small>}
       {state && !state.found ? (
         <em className="brief-ref-state" data-tone="missing">
