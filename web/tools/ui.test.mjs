@@ -5452,6 +5452,46 @@ test("selecting another Agent drops a pending /goal dialog, which does not reope
   } finally { page.close(); }
 });
 
+// T-29: a Codex Agent's /changes shows Yuzuno's record of the file edits
+// Codex made in the latest turn loaded here that has any. It reads nothing
+// until asked there and sends nothing; the dialog's own reads
+// are covered in codex-changes-ui.test.mjs.
+test("a Codex Agent's /changes shows the latest loaded turn's recorded edits and sends nothing", async () => {
+  const editTurn = { id: "t2", status: "completed", items: [
+    { id: "u2", type: "userMessage", content: [{ type: "text", text: "Rename the helper" }] },
+    { id: "f2", type: "fileChange", status: "completed",
+      changes: [{ path: "/workspace/src/helper.ts", kind: { type: "update", move_path: null }, diff: "@@ -1 +1 @@\n-old\n+new" }] },
+    { id: "r2", type: "agentMessage", text: "Renamed.", phase: "final_answer" },
+  ] };
+  const page = await mount({ harness: "codex", extraTurns: [editTurn] });
+  try {
+    const composer = await sendDraft(page, "/changes");
+    const box = await until(() => page.document.querySelector('[role="dialog"]'), "the /changes dialog");
+    assert.match(box.textContent, /Changes in this turn/);
+    assert.match(box.textContent, /Turn 2/);
+    assert.match(box.textContent, /1 file · 1 edit · 1 applied/);
+    assert.ok(box.querySelector('section.changes-file[aria-label="src/helper.ts"]'), "the edited file, in the Agent's folder");
+    assert.equal(composerText(composer), "/changes", "the draft stays, as the panels' commands leave it");
+    assert.deepEqual(posts(page), [], "no /messages, /turns or anything else");
+    assert.ok(!page.calls.some((call) => call.url.includes("/payload")), "nothing read");
+    await closeModal(page);
+    await sendDraft(page, "/changes all");
+    assert.match(page.document.body.textContent, /\/changes takes nothing after it here/);
+    assert.ok(!page.document.querySelector('[role="dialog"]'));
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+  const plain = await mount({ harness: "codex" });
+  try {
+    await sendDraft(plain, "/changes");
+    await until(() => /No file edits are recorded in the turns loaded here\./.test(plain.document.querySelector('[role="dialog"]')?.textContent || ""), "no record");
+  } finally { plain.close(); }
+  const claude = await mount({ harness: "claude" });
+  try {
+    await sendDraft(claude, "/changes");
+    assert.deepEqual(posts(claude), ["/api/agents/a/messages"], "a Claude Agent's /changes is a message, as before");
+  } finally { claude.close(); }
+});
+
 // T-29: a Codex Agent's /mcp shows its MCP servers as they reported starting
 // on this connection, from Core; Codex is not asked, since its own status
 // list starts every configured server.
