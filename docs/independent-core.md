@@ -21,7 +21,7 @@ Core has no user accounts. Anyone who can reach its port can use the Workspace, 
 
 | Item | Status | Notes |
 |---|---|---|
-| Core on Linux x86_64 (glibc 2.35 or newer) | Tested within the scopes below | Arch Linux on WSL2: browser/Agent/update checks. Ubuntu 22.04.5 disposable rootfs, glibc 2.35: signed core.8 registration, Core and UI file serving, restart and data-preserving reinstall; no real login, browser rendering or systemd Jobs in that rootfs. |
+| Core on Linux x86_64 (glibc 2.35 or newer) | Tested within the scopes below | Arch Linux on WSL2: browser/Agent/update checks, and the public core.13's first Claude start, which downloads the Agent SDK (no sign-in). Ubuntu 22.04.5 disposable rootfs, glibc 2.35: signed core.8 and the public core.13, each with registration, Core and UI file serving, restart and data-preserving reinstall; no real login, Claude start, browser rendering or systemd Jobs in that rootfs. |
 | Core on Linux aarch64 | Planned | No package yet. |
 | Core on macOS | Planned | Not supported. A source build compiles and starts on Apple silicon, but Jobs and managed updates are refused there and no package exists. See [macOS Core: current gaps](#macos-core-current-gaps). |
 | Core on Windows | Unavailable | On Windows, run Core in WSL2. |
@@ -118,7 +118,7 @@ setsid nohup "$ROOT/releases/$RELEASE/bin/yuzuno-workspace" --install-dir "$ROOT
 - **Check it:** `curl -s http://127.0.0.1:4317/api/health` shows the release and Workspace.
 - **Stop:** `pkill -INT -f "$ROOT/releases/"`. Core shuts down cleanly on an interrupt.
 - **After a reboot:** run the start command again; it picks up the release an update left in `current.json`.
-- **From the Windows desktop app:** each Core records how it started (`$ROOT/updates/launch.json`). After a reboot, the desktop app's connection page can then start it again with the same settings; see [Start Core from the app](../desktop/README.md#start-core-from-the-app-windows-wsl). Releases up to core.14 do not record this.
+- **From the Windows desktop app:** each Core records how it started (`$ROOT/updates/launch.json`). After a reboot, the desktop app's connection page can then start it again with the same settings; see [Start Core from the app](../desktop/README.md#start-core-from-the-app-windows-wsl). Releases up to core.15 do not record this.
 
 Starting Core as a systemd service is not supported yet. An update replaces the Core process, and a default service would treat the old process's exit as the service stopping. That has not been tested.
 
@@ -322,9 +322,16 @@ The scripts are in `acceptance/t88`.
 - **Afterwards** the app, its data, the tunnel key and script, and the temporary SSH listener were removed. Two metadata differences stayed on the Mac, which the user accepted: a Finder `.DS_Store` and a temporary folder's modification time.
 - **The person's report only:** what the window showed, the drafts kept across the tunnel restart, copy and paste.
 
+**Public core.13, without a sign-in (2026-10-21 UTC):** the first release of this repository, `core-20261021-827bd32` (`2026.10.21-core.13`). Its three files were downloaded from the Releases page with `curl`, without a GitHub account or any credentials. They matched the digests recorded when the release was signed, and the publisher key above verified the descriptor. Both runs were on the same computer and WSL2 kernel as the checks above, as the existing Linux user, with made-up data only:
+- **Ubuntu 22.04.5 rootfs (glibc 2.35), no network:** the rootfs prepared for core.8 above, reused read-only after its signatures and digests were checked again. 37 of 37 checks passed: registration, Core health, the served UI's files, restart, and removing the program and reinstalling it over the kept Workspace and project. The rootfs has no Node or Claude Code, so Claude was not started there.
+- **First Claude start, on Arch Linux (glibc 2.44, Node 22.23.2):** a new installation, with core.13 as its only release and a made-up home folder holding one made-up Claude session. The first request that needed Claude made Core download the locked Agent SDK 0.3.296 from `registry.npmjs.org` and check it against the locked integrity; the bridge then listed the session. With the network then cut to loopback only, Core started again from the same installation and listed the session with the SDK it had prepared: every prepared file kept its SHA-256, size and modification time. No Claude Code CLI, sign-in or model call was involved.
+
+This does not test a sign-in, a conversation, an approval, a browser, an update, a new OS account or another computer. [Inputs, Jobs and report hashes](../acceptance/t88/README.md#public-core13-results-2026-10-21-utc).
+
 **Not tested yet:**
 - a fresh full OS installation or a new OS account (the rootfs uses a mapped existing host user; browser tests used existing Claude Code and gh sign-ins);
-- distributions beyond the Arch environment and limited Ubuntu rootfs check above; real login/Agent/approval, browser rendering and systemd Jobs inside that Ubuntu environment;
+- distributions beyond the Arch environment and limited Ubuntu rootfs check above; real login/Agent/approval, the first Claude start, browser rendering and systemd Jobs inside that Ubuntu environment;
+- **Settings → Updates** from this public repository in a test installation (the tested update, core.6 to core.7, came from the earlier private repository), and downloading or updating with a `gh` account that has no access to the repository;
 - local Jobs on a host whose user manager lacks the `cpu` controller, such as the Ubuntu 22.04.5 host above, before or after an administrator delegates it ([Prerequisites](#prerequisites-on-the-core-host));
 - the Windows desktop app through a tunnel;
 - Safari and other Mac browsers; for the Mac desktop app: sending to a daily Workspace, an automated check of what its window shows, a downloaded (quarantined) copy, and Intel Macs;

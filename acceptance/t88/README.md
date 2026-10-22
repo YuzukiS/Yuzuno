@@ -32,17 +32,12 @@ python3 acceptance/t88/install-lab.py candidate sign-in --spec /absolute/candida
 
 The lab must be new and outside the checkout. Every report also records the lab host's user-manager cgroup controllers (`jobsHost`). Local Jobs need `cpu`, `memory` and `pids`; see the guide's [prerequisites](../../docs/independent-core.md#prerequisites-on-the-core-host). After `first-use`, check local Jobs with `jobs-smoke.py` on that lab, as below.
 
-**Still open.** Each of these changes the candidate, so its stages run again afterwards:
+**Settled by the first public release,** core.13 ([results](#public-core13-results-2026-10-21-utc)). A change to any of these changes the candidate, so its stages run again afterwards:
 
-- **The repository switch.** The user chose a new public repository, built from a cleaned source snapshot (2026-10-20). It keeps the name `YuzukiS/Yuzuno`. The current private repository is to be renamed `YuzukiS/Yuzuno-dev` and stay private. Neither the rename nor the new repository exists yet. Until then, `YuzukiS/Yuzuno` still means the private repository in all of these:
-  - the guide's download, update source and `gh` prerequisite;
-  - the repository in the signed descriptor, set when the release is signed (`tools/core-release.py`);
-  - Core's relay for desktop updates (`REPOSITORY` in `core/src/updates/desktop_releases.rs`, also `desktop/README.md` and `desktop/tests/update-lab.py`).
-
-  The name in these places does not change. The public candidate is built and signed from the new repository by the normal release process.
-- **The publisher keys.** The guide's `KEY`, the Core release signing key, and the Windows app's built-in update key (`plugins.updater.pubkey`, set when the installer is built). Changed bytes always need new signatures, whichever key signs them.
-- **The Claude Agent SDK.** The Core package includes the Claude runtime with `@anthropic-ai/claude-agent-sdk` installed (`tools/build-core-artifact.py`). Whether that may be distributed is open in T-90. If it may not, both the package and the guide change.
-- **`gh`.** Download and updates need a signed-in `gh`. Once the repository is public, any GitHub account is expected to be enough (not checked yet); until then the account needs read access. There is no anonymous download path, by decision.
+- **The repository.** `YuzukiS/Yuzuno` is the public repository, built from a cleaned source snapshot; the earlier private one is `YuzukiS/Yuzuno-dev`. The guide's download, update source and `gh` prerequisite, the signed descriptor's repository and Core's relay for desktop updates (`REPOSITORY` in `core/src/updates/desktop_releases.rs`) name `YuzukiS/Yuzuno`.
+- **The publisher keys.** core.13 is signed with the key the guide names (`KEY`). The Windows app's built-in update key (`plugins.updater.pubkey`, set when the installer is built) applies to desktop installers, and none is published here. Changed bytes always need new signatures, whichever key signs them.
+- **The Claude Agent SDK.** The Core package carries `claude-agent-sdk.json` instead of the SDK, and the first Claude start downloads the locked version unless another installed release has it ([The Claude Agent SDK](../../docs/public-readiness.md#the-claude-agent-sdk)).
+- **`gh`.** The release files are public. The guide's download and Core's updates use `gh`, which needs a sign-in to some GitHub account but no access to the repository; an account without access has not been tried. Whether the guide adds a download without an account is open ([Other open decisions](../../docs/public-readiness.md#other-open-decisions)).
 
 ## Published release first use: `install-lab.py first_use`
 
@@ -200,6 +195,33 @@ The successful Job used 2 CPU / 2048 MiB / 0 swap, peaked at 323084288 bytes and
 - `isolation.json`: SHA256 `a18e32acf608a115ed80d554b85a6ee288b5e46586c0df8a078253419f9522f8` (the original receipt's environment description omits bubblewrap's PWD; the actual report records all three keys).
 
 The changed historical authenticated workflow was checked for argument parsing and syntax only, not rerun with paid model calls. Lab A/B evidence above is historical. This rootfs result does not cover browser rendering/drafts, native runtime login/conversation/approval, online update, systemd Jobs/service, a new OS account or a second physical machine. No release was built, signed, published or deployed by this slice, and the daily Core and web build were unchanged.
+
+## Public core.13 results (2026-10-21 UTC)
+
+The product: the first public release, `core-20261021-827bd32` (`2026.10.21-core.13`, source `827bd32cc373259ece3a3d25cbbf8e14713faa97`). Both runs downloaded its three files from `https://github.com/YuzukiS/Yuzuno/releases/download/core-20261021-827bd32/` with `curl`, in a cleared environment with no GitHub account or credentials (`--netrc-file /dev/null`). They compared the files with the digests recorded when the release was signed, not with digests read from the files:
+
+| Input | SHA-256 |
+|---|---|
+| Archive | `29d8e625d738ce7573258ac9247b3242db1db4b606752eb366701d0b04b9d0b1` |
+| Descriptor | `3e1e5ae0b44f00b9dbf17e4771b4ae789d25b9aa93730bd77ea688d3b77f8f90` |
+| Signature | `97126f68537f04bb9dd8de287fc1b727083d3282cd70af35e32531731352f87c` |
+| Manifest | `4a18f3b4129dcbf87ed373df836f58d7088ba9197f27737c50cebf81344701f4` |
+
+Both ran on the same computer and WSL2 kernel (`6.18.33.2-microsoft-standard-WSL2`) as the results above, as the existing Linux user. Neither had a native CLI, a sign-in, a model call, a browser or the daily Core; the data was made up.
+
+**Candidate check and Ubuntu rootfs: Job `f030798d-ed22-4d7a-8504-0f5e4bf6c2f5`, passed.** The harness was this folder at `827bd32`, from a clean checkout of that commit.
+- `install-lab.py candidate check` with the downloaded files: 4 of 4. The guide names the spec's repository, key and update source; the files are exactly the spec's; that key verifies the descriptor; the descriptor names the tag, source and manifest.
+- `rootfs-lab.py`, on the rootfs prepared for core.8 above, reused read-only. Checked again first: Ubuntu's `SHA256SUMS` signature (gpgv, key `843938DF228D22F7B3742BC0D94AA3F0EFE21092`), the image digest and the minisign binary's digest. Packages: libc6 `2.35-0ubuntu3.8`, libgcc-s1 `12.3.0-1ubuntu1~22.04.3`, python3 `3.10.6-1~22.04.1`, ca-certificates `20260601~22.04.1`.
+- **37 of 37 checks passed:** the signature, registration, Core health, the served UI's index and assets, restart, removing the program and reinstalling over the kept data (same Workspace and project), and three graceful stops. `/proc` maps showed only the installed Core, Ubuntu's loader, libc and libm, and the lab database. 2 CPU / 2048 MiB / zero swap; about 35 seconds.
+- Reports, kept outside the repository: `candidate-check.json` `ae001c61571c4a6dcb93adf302cc995799070673940b421feadeb95eecca5408`, `download.json` `2e65813106ac70e0ff5fe3151b3813d6a085e427ae40e4f5a59ed188b68c421a`, `run/report.json` `5ceb7b18b665e0a79a4658ec348e015e4c369a385a8fe9dbc338e4e237b4b027`, `isolation.json` `76529e88473729a0d10bcd4f5e663a136da035f51ee0187f98604b5ead04e26e`.
+
+**First Claude start on Arch Linux: Job `9805ef17-cfa6-49ca-8300-c8a09f2765c0`, passed.** Arch Linux, glibc 2.44, Node 22.23.2; not the Ubuntu rootfs, which has no Node. The script was a one-off, not in this repository, adapted from `package_lab.py`'s verify and register steps; the reports record its SHA-256, `e0c8582e1f0d6a6ced58d1c04746cdcfc529af30188a6f024510326efc913aea`.
+- **Online, 18 of 18.** A new installation registered with `yuzuno-update-helper register --initialize`, with core.13 as its only release, so no other release could supply the SDK, and no data folder yet. Core's environment held only `HOME` (a made-up folder with one made-up Claude session), `PATH` (Node, `/usr/bin`, `/bin`), `TMPDIR` and `LANG`: no proxy variables and no `claude`. The first `GET /api/claude/sessions` for the session's folder took 0.74 s including the preparation, and the bridge listed the session. Afterwards there was exactly one prepared runtime and no temporary file. Its receipt names the source `registry https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.296.tgz` and the locked name, version and integrity. The prepared SDK's 19 files match the locked manifest by SHA-256 and size.
+- **Offline, 13 of 13.** The same installation and data in a new network namespace with only loopback up (`unshare -rn`, then the ordinary user in a nested user namespace); an outside address gave `ENETUNREACH`. Core started again and the bridge listed the session. The prepared runtime was the same one, and all 6,906 of its files kept their SHA-256, size and modification time.
+- Reports, kept outside the repository: `online.json` `62171e69a65025a76444f47a02ff6591618b872c7bc85e922e12bf53c0af0f42`, `offline.json` `f1061eee427d395d988b0b40634f9b6a4e7ad96d37b8b21541895dd2afbd8fd3`, `prepared-tree.json` `fcc4774a4188d10b8324b5b5e32e3982f0ae9a4a6e8e4ad404914ab9da86707d`.
+- **The first attempt failed because of its setup** (Job `9f598ce3-9a52-480a-a9f4-716e7930cd26`, kept as recorded). Its installation folder was deep inside a checkout. Core refused to start, saying it could not bind its private update socket because the path was too long: a Unix socket path must be shorter than 108 bytes. The checks before the start had passed. The second run used a short folder. The guide's paths are far below that limit.
+
+Not covered by either: a sign-in, a conversation or approval, a browser, an update, systemd Jobs, the first Claude start on glibc 2.35, a new OS account or another computer.
 
 ## Real Mac browser to Linux Core: `cross-machine-lab.py`
 

@@ -62,7 +62,7 @@ On Windows 11 the native caption, caption text, and border follow the workspace'
 
 ## Start Core from the app (Windows, WSL)
 
-After a restart of Windows, Core in WSL is not running until something starts it. The connection page can start it, when Core is a managed installation in WSL ([Install a Linux Core](../docs/independent-core.md#install)) and the app has connected to it once while it ran. Core releases up to core.14 cannot be started this way: they do not record how they started. The page then only says Core is not reachable, as before.
+After a restart of Windows, Core in WSL is not running until something starts it. The connection page can start it, when Core is a managed installation in WSL ([Install a Linux Core](../docs/independent-core.md#install)) and the app has connected to it once while it ran. Core releases up to core.15 cannot be started this way: they do not record how they started. The page then only says Core is not reachable, as before.
 
 - **What the app keeps.** When you connect from the connection page to a Core at a loopback address, the app asks that Core where it is installed (`/api/desktop/start-profile`, served only on Core's own port). It keeps the answer in `core.json` with the saved Core: the WSL distribution, the Linux user, the installation folder and the Workspace ID. The port is the saved address's. Each part is checked: plain names, an absolute folder outside `/mnt`, no spaces or shell characters. A Core at another address, or one that offers nothing, gets nothing kept. The Mac app never keeps or uses one.
 - **The button.** When connecting to the saved address fails, the page offers **Start Core in WSL (<distribution>)**. It is offered for that address only. Changing the address hides it.
