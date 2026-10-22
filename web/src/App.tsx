@@ -108,6 +108,8 @@ import { AutoContinueSetting, QuotaResumeNotice } from "./QuotaResume";
 import { ClaudeRuntimeFacts } from "./ClaudeControls";
 import { ClaudeMcpStatus } from "./ClaudeMcpStatus";
 import { CodexMcpStatus } from "./CodexMcpStatus";
+import { CodexChangesDialog } from "./CodexChanges";
+import { latestTurnWithEdits } from "./changes";
 import { CodexPlanUsage } from "./CodexPlanUsage";
 import { AgentManagement, type AgentAction } from "./AgentManagement";
 import { useConversationSend } from "./useConversationSend";
@@ -277,6 +279,8 @@ export function App() {
     return () => cancelAnimationFrame(frame);
   }, [inspectorFocus]);
   const [forkOpen, setForkOpen] = useState(false);
+  // `/changes`: the record of one turn's file edits, that turn fixed when asked.
+  const [changesRequest, setChangesRequest] = useState<{ agentId: string; turnId: string | null; nonce: number } | null>(null);
   // `/review` alone: Review with Codex, for the draft that asked for it.
   const [reviewRequest, setReviewRequest] = useState<{ agentId: string; draft: ComposerDraft; nonce: number } | null>(null);
   // `/goal`: the Codex goal dialog, with the objective typed after it.
@@ -284,6 +288,7 @@ export function App() {
   // Each is for the Agent it was asked from: selecting another Agent drops it,
   // so it neither keeps read tracking off elsewhere nor reopens on return.
   useEffect(() => {
+    setChangesRequest((request) => request && request.agentId !== selected ? null : request);
     setReviewRequest((request) => request && request.agentId !== selected ? null : request);
     setGoalRequest((request) => request && request.agentId !== selected ? null : request);
   }, [selected]);
@@ -744,6 +749,7 @@ export function App() {
       !projectDialog &&
       !scopeMenuOpen &&
       !machinesOpen &&
+      !changesRequest &&
       !forkOpen &&
       !reviewRequest &&
       !goalRequest,
@@ -1491,6 +1497,13 @@ export function App() {
             cwd: agent.cwd, projectId: agent.projectId || "" }
           : { nonce: Date.now(), mode: claudeAgent ? "claude" : "existing" });
         setCreateOpen(true);
+        return;
+      }
+      // `/changes` shows Yuzuno's record of the file edits Codex made, for the
+      // latest turn loaded here that has any. It reads nothing until asked
+      // there and sends nothing; the draft stays, as the panels leave it.
+      if (control?.command === "changes") {
+        setChangesRequest({ agentId: target, turnId: latestTurnWithEdits(currentDetail?.turns || [])?.id ?? null, nonce: Date.now() });
         return;
       }
       if (control?.command === "status" || control?.command === "usage" || control?.command === "mcp") {
@@ -3035,6 +3048,24 @@ export function App() {
           open={reviewRequest?.agentId === agent.id}
           onOpenChange={(open) => { if (!open) setReviewRequest(null); }}
           onStarted={() => { if (reviewRequest) reviewStarted(reviewRequest.agentId, reviewRequest.draft); }}
+        />
+      )}
+      {agent && !isClaude && !isOpenCode && changesRequest?.agentId === agent.id && (
+        <CodexChangesDialog
+          key={`changes-${agent.id}-${changesRequest.nonce}`}
+          agent={agent}
+          open
+          turnId={changesRequest.turnId}
+          turns={currentDetail?.agent.id === agent.id ? currentDetail.turns : []}
+          turnNumber={changesRequest.turnId ? logicalTurns.findIndex((turn) => turn.id === changesRequest.turnId) + 1 || null : null}
+          olderNotLoaded={!!currentDetail?.conversation?.hasBefore || !!currentDetail?.history?.hasMore}
+          onOpenChange={(open) => { if (!open) setChangesRequest(null); }}
+          onFile={(path) => { setChangesRequest(null); turnFile(path); }}
+          onShowEdit={(turnId, itemId) => {
+            setChangesRequest(null);
+            openCatchupSource({ id: `changes:${turnId}:${itemId}`, agentId: agent.id, agentName: agent.name, kind: "progress",
+              title: "File edit", body: "", turnId, itemId, seq: agent.lastSeq }, "rail", true);
+          }}
         />
       )}
       {agent && !isClaude && !isOpenCode && (

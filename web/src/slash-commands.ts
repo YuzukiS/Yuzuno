@@ -80,8 +80,10 @@ export const codexControls: CommandList = {
     control("review", "Asks Codex for its own code review: of your changes, against a branch, of a commit, or by your instructions", "[instructions]"),
     control("goal", "Shows Codex's own goal for this conversation, to set, pause, resume or clear it", "[objective]"),
     modelControl, permissionsControl, forkControl, newControl, resumeControl, statusControl, usageControl, mcpControl,
+    // Yuzuno's own record of a turn's file edits, not a Codex request.
+    control("changes", "Yuzuno's record of the file edits Codex made in a turn, by file; not a Git diff of the folder"),
   ],
-  total: 11,
+  get total() { return this.commands.length; },
   truncated: false,
   skillsKnown: false,
 };
@@ -139,6 +141,7 @@ const controlHarnesses = {
   status: ["codex"],
   usage: ["codex"],
   mcp: ["codex"],
+  changes: ["codex"],
 } as const;
 export type NativeControl = keyof typeof controlHarnesses;
 
