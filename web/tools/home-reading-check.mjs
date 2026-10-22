@@ -140,7 +140,7 @@ try {
       if (image && images.has(image[1])) return route.fulfill({ body: images.get(image[1]), contentType: "image/png" });
       const json = {
         "/api/workspace": { workspace: { id: "ws-reading" }, agents: [agent], projects, runtime: { connected: true }, defaultCwd: "/fixture" },
-        "/api/agents/a": { agent, pending: [], messageReceipts: [], artifacts: [], turns: [] },
+        "/api/agents/a": { agent, pending: [], messageReceipts: [], artifacts: [], turns: [] }, "/api/agents/a/reading": { handoff: null },
         "/api/home": home, "/api/machine-load": machineLoad,
         "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs": noJobs,
         "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
@@ -204,7 +204,7 @@ try {
     check(`${viewport.name}: a short label leads and the current title stays reachable`);
 
     // A few bars carry their values.
-    const values = await reconnect.locator(".recharts-label-list text").allInnerTexts();
+    const values = await reconnect.locator(".recharts-label-list text").allTextContents();
     assert.deepEqual(values.map((v) => v.replace(/[,\s]/g, "")).sort(), ["1013", "1286", "1742", "2210", "3945", "5143"]);
     assert.ok(await reconnect.getByText("Cumulative allocation, not resident memory").isVisible(), "the limit stays beside the chart");
     const disk = card("ops/disk");
