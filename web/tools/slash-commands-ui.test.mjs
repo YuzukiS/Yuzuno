@@ -335,13 +335,13 @@ test("a Codex Agent lists Yuzuno's controls and the skills its Codex lists; choo
   try {
     p.w.show({ slash: "codex" });
     p.type("/");
-    await until(() => p.options().length === 15, "controls and skills");
+    await until(() => p.options().length === 16, "controls and skills");
     assert.deepEqual(p.calls, ["/api/agents/a1/codex/skills"], "read from this Agent's own Codex");
     assert.deepEqual(p.options().map((o) => [o.name, o.source, o.hint]), [
       ["/compact", "Yuzuno control", ""], ["/review", "Yuzuno control", "[instructions]"], ["/goal", "Yuzuno control", "[objective]"],
       ["/plan", "Yuzuno control", ""], ["/model", "Yuzuno control", "<model>"],
       ["/permissions", "Yuzuno control", ""], ["/fork", "Yuzuno control", ""], ["/new", "Yuzuno control", ""], ["/resume", "Yuzuno control", ""], ["/status", "Yuzuno control", ""],
-      ["/usage", "Yuzuno control", ""], ["/mcp", "Yuzuno control", ""],
+      ["/usage", "Yuzuno control", ""], ["/mcp", "Yuzuno control", ""], ["/changes", "Yuzuno control", ""],
       ["$deploy", "Codex skill", "repo · skills/deploy"], ["$deploy", "Codex skill", "user · skills/deploy"], ["$review", "Codex skill", "repo · skills/review"],
     ], "two skills of one name show where each is");
     assert.equal(p.w.document.querySelector(".slash-menu [role=listbox]").getAttribute("aria-label"), "Codex controls and skills");
@@ -405,8 +405,8 @@ test("when a Codex Agent's skills cannot be listed, its controls stay and the li
     try {
       p.w.show({ slash: "codex" });
       p.type("/");
-      await until(() => p.options().length === 12 && why.test(p.notes().join(" ")), `controls and ${why}`);
-      assert.deepEqual(p.options().map((o) => o.name), ["/compact", "/review", "/goal", "/plan", "/model", "/permissions", "/fork", "/new", "/resume", "/status", "/usage", "/mcp"]);
+      await until(() => p.options().length === 13 && why.test(p.notes().join(" ")), `controls and ${why}`);
+      assert.deepEqual(p.options().map((o) => o.name), ["/compact", "/review", "/goal", "/plan", "/model", "/permissions", "/fork", "/new", "/resume", "/status", "/usage", "/mcp", "/changes"]);
     } finally {
       p.close();
     }
@@ -457,6 +457,12 @@ test("only a draft that is exactly a control for its harness runs it", async () 
     assert.equal(c("/plan", "claude"), null, "Claude Code's own /plan, sent as a message");
     assert.equal(c("/plan", "opencode"), null);
     assert.equal(c("/planning"), null);
+    // /changes is Yuzuno's record of a Codex turn's file edits, not a command of any harness.
+    assert.deepEqual(c("/changes"), { command: "changes", args: "" });
+    assert.deepEqual(c("/changes all"), { command: "changes", args: "all" }, "App refuses what follows; the parser reports it");
+    assert.equal(c("/changes", "claude"), null, "a Claude Agent's /changes is a message, as before");
+    assert.equal(c("/changes", "opencode"), null);
+    assert.equal(c("/change"), null);
     // /mcp shows what a Codex Agent's servers reported; Claude Code has its own.
     assert.deepEqual(c("/mcp"), { command: "mcp", args: "" });
     assert.equal(c("/mcp", "claude"), null);

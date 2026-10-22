@@ -178,6 +178,21 @@ function fetchEntry(agentId: string, turnId: string, item: NativeItem): Promise<
   return request;
 }
 
+/**
+ * The Item with its trimmed fields in full, for a view that reads Items one
+ * at a time on request (`/changes`): from the bounded cache when it is
+ * current, else read once however many ask at the same time, and kept there.
+ */
+export async function loadFullItem(agentId: string, turnId: string, item: NativeItem): Promise<NativeItem> {
+  if (!isTruncated(item)) return item;
+  const key = keyOf(agentId, turnId, item.id);
+  const kept = loaded.get(key);
+  const view = kept && newest(kept, item);
+  if (view && !view.stale) return withFullFields(item, view.fields);
+  const entry = await fetchEntry(agentId, turnId, item);
+  return withFullFields(item, newest(entry, item).fields);
+}
+
 /** The Turn with every trimmed field in full. Items the Turn request does
  * not cover are read one by one; if any still cannot be read, this fails
  * rather than copy a preview as if it were the whole text. */

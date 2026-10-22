@@ -1,7 +1,7 @@
 import type { Artifact, NativeTurn } from "./types";
 
 // Compare native absolute/relative paths without changing the path sent to preview.
-function pathKey(path: string, cwd: string) {
+export function pathKey(path: string, cwd: string) {
   const normalized = path.replaceAll("\\", "/");
   const absolute = /^(\/|[a-z]:\/)/i.test(normalized)
     ? normalized

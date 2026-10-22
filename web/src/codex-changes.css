@@ -1,0 +1,92 @@
+/* /changes (T-29): Yuzuno's record of a turn's file edits, by file. Plain
+   text with each line marked as added, removed, a hunk header or context. */
+.codex-changes .changes-body {
+  display: grid;
+  gap: 12px;
+  max-height: min(68vh, 760px);
+  overflow: auto;
+  padding-right: 4px;
+}
+.changes-turn {
+  display: grid;
+  gap: 4px;
+}
+.changes-turn strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.changes-turn p,
+.changes-note,
+.changes-hidden {
+  margin: 0;
+  color: var(--muted);
+}
+.changes-ask {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.changes-file {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.changes-file-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.changes-path {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+.changes-count {
+  color: var(--muted);
+}
+.changes-file ol {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+.changes-edit-heading {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.changes-edit[data-status="failed"] .changes-status,
+.changes-edit[data-status="declined"] .changes-status {
+  color: var(--coral);
+}
+.changes-edit-body {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+}
+.changes-lines {
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--cream);
+  font:
+    calc(10px + var(--font-adjust, 3px))/1.6 "SFMono-Regular",
+    Consolas,
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+.changes-lines [data-line="add"] {
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+}
+.changes-lines [data-line="del"] {
+  background: color-mix(in srgb, var(--coral) 16%, transparent);
+}
+.changes-lines [data-line="hunk"],
+.changes-lines [data-line="meta"] {
+  color: var(--muted);
+}
+.changes-source {
+  justify-self: start;
+}
