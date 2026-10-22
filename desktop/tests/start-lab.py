@@ -362,8 +362,10 @@ def main():
 
 
         window("click-start")
-        seen = {"beforeKill": until(lambda: (lambda o: o if o["wsl"] or o["helpers"] or o["listener"] else None)(observe()), 20,
-                                    "the start to be under way")}
+        # This window's own start: a wsl.exe it launched. An earlier start
+        # that stays (and its wsl.exe) is not this one.
+        seen = {"beforeKill": until(lambda: (lambda o: o if any(w["parent"] == desktop for w in o["wsl"]) else None)(observe()), 20,
+                                    "this window's start to be under way")}
         windows("Kill", DesktopProcessId=desktop)
         desktop = None
         killed_at = time.monotonic()
