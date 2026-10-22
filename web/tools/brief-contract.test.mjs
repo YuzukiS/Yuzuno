@@ -188,15 +188,15 @@ test("every per-block limit is rejected with a reason to act on", () => {
     assert.match(found.reason, /the limit is 30\./);
   }
   assert.match(first(section("Metrics", { items: items(13, (i) => ({ label: "m", value: i })) })).reason, /has 13 items; the limit is 12\. .*Table/);
-  // Table: 200 rows, 12 columns; the remedy is an attachment.
+  // Table: 200 rows, 12 columns; the full table stays on its Task (T-172).
   const table = (rows, columns) => section("Table", {
     id: "t", columns: items(columns, (i) => ({ key: `c${i}`, label: "C" })),
     rows: items(rows, (i) => ({ id: `r${i}`, cells: Object.fromEntries(items(columns, (c) => [`c${c}`, 1])) })),
   });
   const rows = first(table(201, 1));
   assert.equal(rows.path, "body.elements.it.props.rows");
-  assert.match(rows.reason, /has 201 items; the limit is 200\. .*CSV file/);
-  assert.equal(rows.guide, "brief_guide attachments");
+  assert.match(rows.reason, /has 201 items; the limit is 200\. .*leave the full table on its Task/);
+  assert.equal(rows.guide, "brief_guide content");
   assert.match(first(table(1, 13)).reason, /has 13 items; the limit is 12/);
   // Charts: 500 inline points in total, 12 series.
   const chart = (props) => section("LineChart", { id: "c", title: "C", x: { label: "x" }, y: { label: "y" }, ...props }, props.data ? csv : {});

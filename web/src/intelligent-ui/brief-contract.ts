@@ -372,21 +372,21 @@ function partOf(input: unknown, path: Path): BriefGuidePart {
 }
 
 const remedies: Record<string, [string, BriefGuidePart]> = {
-  "Table rows": ["Show the most important rows and attach the full table as a CSV file.", "attachments"],
-  "Table columns": ["Keep the key columns and attach the full table as a CSV file.", "attachments"],
-  "Markdown text": ["Keep a summary and short excerpts here and attach the full text or log.", "attachments"],
+  "Table rows": ["Show the rows the user needs and leave the full table on its Task; a chart can read a CSV file attached as its data.", "content"],
+  "Table columns": ["Keep the key columns and leave the full table on its Task.", "content"],
+  "Markdown text": ["Keep the conclusion and a short excerpt here and leave the full text or log on its Task.", "content"],
   "Math tex": ["Split it into several Math blocks.", "content"],
   "Metrics items": ["Keep the key metrics and put the rest in a Table.", "content"],
-  "Checklist items": ["Keep the open or most important items and move the rest to another section or an attachment.", "limits"],
-  "Plan steps": ["Keep the current steps and move the rest to another section or an attachment.", "limits"],
-  "Findings items": ["Keep the most severe findings and attach the full list.", "limits"],
+  "Checklist items": ["Keep the open or most important items; the rest stay on the Task.", "limits"],
+  "Plan steps": ["Keep the current steps; earlier ones stay on the Task.", "limits"],
+  "Findings items": ["Keep the most severe findings and leave the full list on its Task.", "limits"],
   "LiveRefs items": ["Keep the most relevant references.", "limits"],
-  "Attachments items": [`A section has at most ${L.attachments} attachments; split them across sections.`, "attachments"],
+  "Attachments items": [`A section has at most ${L.attachments} attachments; show only the images and chart data the user needs.`, "attachments"],
   "series points": ["Read the data from a CSV, JSON or JSONL attachment with data:{attachment, x, series} instead.", "charts"],
   series: ["Split the series across several charts.", "charts"],
   "data series": ["Split the series across several charts.", "charts"],
-  children: ["Group related components or split the section.", "content"],
-  attachments: [`A section has at most ${L.attachments} attachments; split them across sections.`, "attachments"],
+  children: ["Group related components, or keep less here and leave the detail on its Task.", "content"],
+  attachments: [`A section has at most ${L.attachments} attachments; show only the images and chart data the user needs.`, "attachments"],
 };
 function remedyFor(input: unknown, path: Path): [string, BriefGuidePart] | undefined {
   const found = elementAt(input, path);
@@ -543,7 +543,7 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
   if (body !== undefined) {
     const bytes = new TextEncoder().encode(JSON.stringify(body) ?? "").length;
     if (bytes > L.bodyBytes)
-      add(problem("too_large", "body", `The body is ${bytes} bytes of compact JSON; the limit is ${L.bodyBytes}. Keep a summary in the body and move long logs, tables or data into attachments.`, "attachments"));
+      add(problem("too_large", "body", `The body is ${bytes} bytes of compact JSON; the limit is ${L.bodyBytes}. Keep the conclusion and short excerpts in the body and leave long logs, tables and data on the Task.`, "content"));
   }
   const parsed = sectionSchema.safeParse(input);
   if (!parsed.success) {
@@ -588,7 +588,7 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
   const spec = section.body;
   const entries = Object.entries(spec.elements);
   if (!entries.length || entries.length > L.components) {
-    add(problem("component_count", "body.elements", `The body has ${entries.length} components; use between 1 and ${L.components}. Move detail into attachments or another section.`, "content"));
+    add(problem("component_count", "body.elements", `The body has ${entries.length} components; use between 1 and ${L.components}. Keep what the user needs here and leave the detail on its Task.`, "content"));
     throw fail();
   }
   if (spec.elements[spec.root]?.type !== "BriefBody") {
@@ -845,7 +845,7 @@ export const BRIEF_EXAMPLES = {
       root: "body",
       elements: {
         body: { type: "BriefBody", props: {}, children: ["image"] },
-        image: { type: "Attachments", props: { items: [{ name: "layout.png", caption: "Updated layout" }] } },
+        image: { type: "Attachments", props: { items: [{ name: "layout.png", caption: "Screenshot of the updated layout" }] } },
       },
     },
   },
@@ -888,19 +888,18 @@ export const BRIEF_EXAMPLES = {
       },
     },
   },
-  report: {
+  result: {
     op: "put",
     key: "round-12/review",
     kind: "report",
     title: "Review of round 12",
-    attachments: [{ name: "test.log", path: "/home/me/repo/acceptance/round-12/test.log" }],
     body: {
       root: "body",
       elements: {
-        body: { type: "BriefBody", props: {}, children: ["summary", "findings", "log"] },
+        body: { type: "BriefBody", props: {}, children: ["summary", "findings", "evidence"] },
         summary: {
           type: "Markdown",
-          props: { text: "Round 12 passes **213 of 214** tests. The failure:\n\n```text\nFAIL brief limits: stale version accepted after restart\n```" },
+          props: { text: "Round 12 passes **213 of 214** tests and is merged; it is not in a release yet. The failure:\n\n```text\nFAIL brief limits: stale version accepted after restart\n```" },
         },
         findings: {
           type: "Findings",
@@ -912,7 +911,34 @@ export const BRIEF_EXAMPLES = {
             ],
           },
         },
-        log: { type: "Attachments", props: { items: [{ name: "test.log", caption: "Full test log" }] } },
+        evidence: { type: "LiveRefs", props: { items: [{ kind: "task", id: "T-12", label: "Round 12, with its test log" }] } },
+      },
+    },
+  },
+  compare: {
+    op: "put",
+    key: "batch-size",
+    kind: "report",
+    title: "Larger batch against the baseline",
+    attachments: [{ name: "runs.csv", path: "/home/me/runs/summary.csv", caption: "Validation loss of each run" }],
+    body: {
+      root: "body",
+      elements: {
+        body: { type: "BriefBody", props: {}, children: ["answer", "loss"] },
+        answer: {
+          type: "Markdown",
+          props: { text: "The larger batch ends with **6% lower validation loss** than the baseline. One seed each, so the gap may be noise; a second seed is queued." },
+        },
+        loss: {
+          type: "BarChart",
+          props: {
+            id: "loss",
+            title: "Validation loss, lower is better",
+            x: { label: "Run" },
+            y: { label: "Loss" },
+            data: { attachment: "runs.csv", x: "run", series: [{ name: "Validation loss", column: "val_loss" }] },
+          },
+        },
       },
     },
   },
@@ -950,7 +976,7 @@ export const BRIEF_EXAMPLES = {
       },
     },
   },
-  ask: {
+  decision: {
     op: "put",
     key: "next-run",
     kind: "ask",
@@ -976,6 +1002,7 @@ export const BRIEF_EXAMPLES = {
 let built: Record<BriefGuidePart, string[]> | undefined;
 const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
   sections: [
+    `This guide is the format. What to write and in which form is yuzuno_guide topic brief ("Write for Home"): one conclusion first, important limits beside it, each fact in one place, and execution evidence (logs, raw data, full test output, run and PR lists) left on its Task and linked.`,
     `What goes where: ${BRIEF_OUTCOME_HINT} Update a section when something changed, not every turn; a status past its validFor shows as stale until new facts refresh it. Details stay on the Task and its sources.`,
     `Home content editors are set by the user per Project. brief_get returns you.capabilities. When editContent is false and writeOwnAsk is true, only create/update/resolve/remove your own Asks or send noChange; do not claim sections, convert regular content into an Ask, or write reports/status. When writeOwnAsk is false, this Brief is read-only, including no noChange writes. Ownership rules still apply to editors. Hidden old content remains in team details/history.`,
     `brief_update takes changes: [...]. put creates or replaces one section you own:`,
@@ -1004,6 +1031,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     ...(Object.keys(briefComponentProps) as BriefComponent[]).filter((type) => !isChart(type)).map(componentLine),
     `- ${CHARTS.join(", ")}: see charts.`,
     `Table and chart ids, row ids, item ids and column keys are unique. Sources hrefs are http(s) URLs or local file paths (optionally :line); Table rows cite them by id in sourceIds.`,
+    `Form follows the information, unless the user or Project prefers another: a real screenshot or a labelled sketch (say which) for a UI or layout change, a chart of measured data for quantities and how they relate, a short sentence for a single state. The result, compare and decision examples show each; image shows a screenshot.`,
     `Layout: a summary first (a Group with tone accent), then a Columns of Groups for parts that sit side by side, as in the overview example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
   ],
   charts: [
@@ -1023,7 +1051,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `An unused_attachment rejection leaves the old content, snapshots and ask state unchanged. Add a reachable Attachments block, reference a supported data file from a chart, or put the section without the unused registration. Checks use the final merged body, not just an edit's blocks. Existing sections/history remain readable. An unrelated edit keeps already-unused old registrations; removing a previously used attachment's last reference is rejected. A put checks every registration, including old ones.`,
     `Image preview example: ${JSON.stringify(BRIEF_EXAMPLES.image)}`,
     `Chart-only data example: ${JSON.stringify(BRIEF_EXAMPLES.status)}`,
-    `Put long logs, full tables, raw data and large code in attachments and keep a summary or short excerpt in the body.`,
+    `Attach what the user should look at: a screenshot or a sketch (its caption says which) and the data file a chart reads. Logs, raw data, full tables and test output are execution evidence: leave them on their Task and link it with LiveRefs instead of attaching them here.`,
   ],
   limits: [
     `- Brief: ${L.topics} topics, ${L.subtopicsPerTopic} subs per topic, ${L.openAsksPerAgent} open asks per Agent; seen reports stay ${L.historyDays} days.`,
@@ -1034,7 +1062,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `- Charts: ${L.chartSeries} series; inline ${L.chartPoints} points in total; data attachments downsampled to ${L.chartPointsPerSeriesFromData} points per series.`,
     `- LiveRefs: ${L.liveRefs} per section. Attachments: ${L.attachments} per section; snapshots 25 MB per file, 1 GB per Brief (oldest history pruned first).`,
     `- ask: ${L.askOptionsMin}-${L.askOptionsMax} options; form 1-${L.formFields} fields, 2-${L.formOptions} options each.`,
-    `Over a limit, the rejection says what to move into an attachment.`,
+    `Over a limit, the rejection says what to keep here and what to leave on the Task.`,
   ],
   errors: [
     `A rejected brief_update lists at most ${MAX_PROBLEMS} problems {code, path, reason, guide}. path is where in your change (e.g. body.elements.log.props.text); reason says what to change; guide names the brief_guide part to read. Fix them all and call brief_update again with a new requestId.`,
@@ -1066,20 +1094,20 @@ export function briefGuide(part?: BriefGuidePart): string {
  * result it submits or receives, and result_publish.
  */
 export const BRIEF_OUTCOME_HINT =
-  `Home: a lasting finding, decision or stage result goes in a short report linked to its Task and sources; a current state in a status; a choice for the user in an ask. result_publish shows only in this turn.`;
+  `Home: a lasting finding, decision or stage result goes in a short report linked to its Task and sources; a current state in a status; a choice for the user in an ask. result_publish shows only in this turn. How to write it: yuzuno_guide brief.`;
 
 /**
  * Always loaded, so short and most important first: Claude's system prompt
  * append and MCP server instructions, Codex's developerInstructions.
  */
 export const BRIEF_HARD_RULES = [
-  `Yuzuno Project Brief rules, for an Agent in a Yuzuno Project:`,
-  `1. No Brief update is required each turn: write when something changed. A current state goes in a status, a lasting finding or decision in a short report linked to its Task, a choice for the user in an ask; result_publish never reaches Home. Load tools with tool search if needed.`,
-  `2. Pass expectedVersion, the version brief_get returned. On version_conflict, re-read (the rejection includes the latest), merge your changes and retry with a new requestId.`,
+  `Yuzuno Project Brief rules:`,
+  `1. No Brief update is required each turn: write when something changed, for the user: conclusion first, limits beside it, evidence on its Task. A current state goes in a status, a lasting finding or decision in a short report linked to its Task, a choice for the user in an ask; result_publish never reaches Home. Load tools with tool search if needed.`,
+  `2. Pass expectedVersion from brief_get. On version_conflict, re-read (the rejection has the latest), merge and retry with a new requestId.`,
   `3. Only the user selects Home content editors. If editContent is false and writeOwnAsk is true, write only your own Asks. If writeOwnAsk is false, this Brief is read-only. Editors still edit only their own sections; add a topic/sub to another author's topic.`,
   `4. An ask needs a question plus reply options, freeText, a form or a choice. A reply marks it replied. Resolve your asks explicitly with resolve once they are handled: a preference once taken in, an authorized action only after it is done and its result is on the Task or Brief. A reply executes nothing itself: act on what the user authorized, a reply included, and infer no retry, merge or permission it does not grant.`,
   `5. Brief content never executes actions: nothing you write merges, deploys or approves; answers come back to you as messages.`,
-  `6. If brief_update is rejected, fix the listed problems and call it again. Read brief_guide for formats, limits and examples; each problem names the part to read.`,
+  `6. If brief_update is rejected, fix the listed problems and call it again. Read yuzuno_guide brief for what to write and brief_guide for formats, limits and examples.`,
 ].join("\n");
 
 export const BRIEF_TOOL_DESCRIPTIONS = {
@@ -1103,7 +1131,7 @@ export const BRIEF_TOOL_DESCRIPTIONS = {
     `and examples: brief_guide.`,
   brief_guide:
     `The Project Brief format guide, generated from the contract: sections and their kinds, ask replies, body components ` +
-    `with props and limits, charts, attachments, error codes and worked examples. part is one of ` +
+    `with props and limits, charts, attachments, error codes and worked examples; what to write is in yuzuno_guide brief. part is one of ` +
     `${BRIEF_GUIDE_PARTS.join(", ")}; omit it for everything. Read the part a rejection's guide names: ` +
     `"brief_guide charts" means part charts.`,
 } as const;
