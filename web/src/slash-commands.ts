@@ -63,6 +63,7 @@ const resumeControl = control("resume", "Opens Existing session, to continue a s
 const forkControl = control("fork", "Opens Fork, for a new Agent that continues this conversation");
 const statusControl = control("status", "Shows this Agent's facts and plan usage in the context panel");
 const usageControl = control("usage", "Shows this Agent's plan usage and limits in the context panel");
+const mcpControl = control("mcp", "Shows this Agent's MCP servers as they reported starting, in the context panel; Codex is not asked");
 
 /**
  * What a Codex Agent offers: Codex's app-server lists no commands, so only
@@ -78,9 +79,9 @@ export const codexControls: CommandList = {
     control("compact", "Compacts this conversation now with Codex's own compaction, not a prompt"),
     control("review", "Asks Codex for its own code review: of your changes, against a branch, of a commit, or by your instructions", "[instructions]"),
     control("goal", "Shows Codex's own goal for this conversation, to set, pause, resume or clear it", "[objective]"),
-    modelControl, permissionsControl, forkControl, newControl, resumeControl, statusControl, usageControl,
+    modelControl, permissionsControl, forkControl, newControl, resumeControl, statusControl, usageControl, mcpControl,
   ],
-  total: 10,
+  total: 11,
   truncated: false,
   skillsKnown: false,
 };
@@ -124,7 +125,7 @@ export function withModelControl(list: CommandList): CommandList {
 }
 
 /** Which harnesses each of Yuzuno's controls is for. Claude Code runs its
- * own `/compact`, `/review`, `/status` and `/usage`; a goal and a fork are a Codex session's. An
+ * own `/compact`, `/review`, `/status`, `/usage` and `/mcp`; a goal and a fork are a Codex session's. An
  * OpenCode Agent's model and settings are OpenCode's own: no control. */
 const controlHarnesses = {
   compact: ["codex"],
@@ -137,6 +138,7 @@ const controlHarnesses = {
   resume: ["codex", "claude"],
   status: ["codex"],
   usage: ["codex"],
+  mcp: ["codex"],
 } as const;
 export type NativeControl = keyof typeof controlHarnesses;
 
