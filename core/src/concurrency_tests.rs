@@ -190,9 +190,8 @@ async fn gui_requests_are_answered_while_a_long_write_is_in_progress() {
     answered.expect("GUI reads waited for the writer");
 }
 
-/// Agent A's event is slow: an unsupported request makes Core refuse it and
-/// check A's large record (parsed three times) before deciding there is
-/// nothing new to record. B's events are recorded meanwhile.
+/// Agent A's event is slow: A's large record is not held, so its first native
+/// event loads it whole. B's events are recorded meanwhile.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_agents_slow_event_does_not_delay_another_agents_events() {
     let dir = tempfile::tempdir().unwrap();
@@ -207,10 +206,14 @@ async fn one_agents_slow_event_does_not_delay_another_agents_events() {
     ws.store.insert(&agent("b", "thread-b")).unwrap();
     ws.store.agents().unwrap();
     let (rpc_a, rpc_b) = (connect(&ws, "a", 1).await, connect(&ws, "b", 2).await);
+    // An unsupported request is refused; the same refusal was already shown,
+    // so nothing new is recorded for A. That check reads the Agent only.
+    let request = json!({"id":7,"method":method,"params":{"threadId":"thread-a","turnId":"turn-a"}});
+    ws.dispatch_event("a", 1, request).await;
+    assert!(kinds(&ws, "a").is_empty());
     let slow = tokio::spawn({
         let ws = ws.clone();
-        let request = json!({"id":7,"method":method,"params":{"threadId":"thread-a","turnId":"turn-a"}});
-        async move { ws.dispatch_event("a", 1, request).await }
+        async move { ws.dispatch_event("a", 1, completed("thread-a", "turn-a", "Earlier")).await }
     });
     // Let A's handler start reading its record.
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -223,8 +226,7 @@ async fn one_agents_slow_event_does_not_delay_another_agents_events() {
     assert_eq!(kinds(&ws, "b"), ["item/completed", "turn/completed"]);
     assert_eq!(ws.store.detail("b").unwrap().turns[0]["status"], "completed");
     tokio::time::timeout(PATIENCE, slow).await.unwrap().unwrap();
-    // The same refusal was already shown, so nothing new was recorded for A.
-    assert!(kinds(&ws, "a").is_empty());
+    assert_eq!(kinds(&ws, "a"), ["item/completed"]);
     rpc_a.close();
     rpc_b.close();
 }

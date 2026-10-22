@@ -187,8 +187,8 @@ impl Workspace {
             Ok(c) => Ok(c),
             Err(error) => {
                 let message = error.to_string();
-                self.update_record(id, "opencode/connectFailed", json!({"error":message}), |d| {
-                    d.agent.connection_state = "disconnected".into();
+                self.record_meta(id, "opencode/connectFailed", json!({"error":message}), |m| {
+                    m.agent.connection_state = "disconnected".into();
                 }).await?;
                 self.changed(id);
                 Err(error)
@@ -233,7 +233,9 @@ impl Workspace {
         let owned = self.owner(id).await;
         self.opencodes.lock().unwrap().insert(id.into(), c.clone());
         let (agent, data) = (id.to_owned(), json!({"sessionId":session,"generation":generation,"version":opencode::VERSION}));
-        let ready = self.stored_owned(owned, move |store| store.update(&agent, "opencode/ready", &data, move |d| {
+        // Compared as before, since it changes Turns, without returning a copy
+        // of the record nobody reads (T-140).
+        let ready = self.stored_owned(owned, move |store| store.record_event(&agent, "opencode/ready", &data, move |d| {
             d.agent.connection_state = "connected".into();
             d.agent.status = "idle".into();
             d.agent.error = None;
