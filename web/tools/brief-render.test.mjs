@@ -25,10 +25,11 @@ import {flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
 import {BriefSectionBody} from ${JSON.stringify(path.join(root, "src/home/brief/BriefSectionBody.tsx"))};
 import {BRIEF_EXAMPLES, checkBriefSection} from ${JSON.stringify(path.join(root, "src/intelligent-ui/brief-contract.ts"))};
+import {PointFixOpen} from ${JSON.stringify(path.join(root, "src/point-fix.ts"))};
 const root=createRoot(document.getElementById('root'));
 window.examples=BRIEF_EXAMPLES;
 window.checkBriefSection=checkBriefSection;
-window.renderSection=(section,projectId,extra={})=>flushSync(()=>root.render(<BriefSectionBody section={section} projectId={projectId} {...extra}/>));
+window.renderSection=(section,projectId,extra={})=>flushSync(()=>root.render(<PointFixOpen.Provider value={window.pointFixOpen||null}><BriefSectionBody section={section} projectId={projectId} {...extra}/></PointFixOpen.Provider>));
 window.unmountSection=()=>flushSync(()=>root.render(null));`,
   );
   const result = await build({
@@ -78,7 +79,7 @@ function mount(respond) {
     requests.push({ url: String(url), method: init.method || "GET", headers: init.headers || {} });
     const { status = 200, body = {}, text } = (await respond?.(String(url))) ?? {};
     const raw = text ?? JSON.stringify(body);
-    return { ok: status < 400, status, json: async () => body, text: async () => raw };
+    return { ok: status < 400, status, json: async () => body, text: async () => raw, blob: async () => new window.Blob([raw], { type: "image/png" }) };
   };
   for (const name of ["yuzuno:open-job", "yuzuno:open-task-review"])
     window.addEventListener(name, (event) => events.push({ name, detail: JSON.parse(JSON.stringify(event.detail)) }));
@@ -357,6 +358,89 @@ test("a section using every component renders each part from this Core only", as
   // Every request was a read of this Core.
   assert.ok(page.requests.every((r) => r.method === "GET" && r.url.startsWith(`${base}/`)), JSON.stringify(page.requests));
   assert.deepEqual(page.errors, []);
+});
+
+test("a Brief image opens in the app's preview, not a browser tab; without Point & Fix there is no Mark up (T-177)", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const put = {
+    op: "put", key: "shots", kind: "report", title: "Screens",
+    attachments: [{ name: "shot.png", path: "/runs/shot.png" }, { name: "paper.pdf", path: "/runs/paper.pdf" }],
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: {}, children: ["files"] },
+      files: { type: "Attachments", props: { items: [{ name: "shot.png", caption: "Login screen" }, { name: "paper.pdf" }] } },
+    } },
+  };
+  const attachments = [attachment("shot.png", "image", "image/png"), attachment("paper.pdf", "pdf", "application/pdf")];
+  window.renderSection(readSection(page, put, { attachments }), PROJECT);
+  const shot = document.querySelector('.brief-attachment[data-kind="image"]');
+  assert.ok(!shot.querySelector("a"), "no link to a browser tab");
+  const picture = shot.querySelector("button.brief-image");
+  assert.equal(picture.getAttribute("aria-label"), "Open image shot.png");
+  assert.equal(shot.querySelector("button.brief-attachment-open").textContent, "Open");
+  const pdf = document.querySelector('.brief-attachment[data-kind="pdf"] a.brief-attachment-open');
+  assert.equal(pdf.target, "_blank", "other attachments open as before");
+  const dialog = () => document.querySelector('[role="dialog"]');
+  picture.focus();
+  picture.click();
+  await until(dialog, "the preview opens");
+  assert.equal(dialog().querySelector("h2").textContent, "shot.png");
+  assert.match(dialog().textContent, /Login screen · Snapshot /);
+  assert.equal(dialog().querySelector(".input-image-dialog img").getAttribute("src"), `${base}/attachments/shots/shot.png?version=3`);
+  assert.ok(![...dialog().querySelectorAll("button")].some((b) => b.textContent.includes("Mark up")), "no Mark up without Point & Fix");
+  dialog().dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await until(() => !dialog(), "Escape closes it");
+  assert.ok(document.activeElement === picture, "focus returns to the image");
+  // Its Open opens the same preview; an image that cannot be read says so.
+  shot.querySelector("button.brief-attachment-open").click();
+  await until(dialog, "Open opens the preview");
+  dialog().querySelector(".input-image-dialog img").dispatchEvent(new window.Event("error"));
+  await until(() => dialog().querySelector('[role="alert"]'), "the failure is shown");
+  assert.match(dialog().querySelector('[role="alert"]').textContent, /can't be read from this Core/);
+  assert.ok(page.requests.every((r) => r.method === "GET"), "a preview writes nothing");
+  assert.deepEqual(page.errors, []);
+});
+
+test("Mark up on a Brief image tells Point & Fix the image shown and its card, kept at that version (T-177)", async (t) => {
+  const page = mount(() => ({ text: "png-bytes" }));
+  t.after(page.close);
+  const { document, window } = page;
+  const opened = [];
+  window.pointFixOpen = (source) => opened.push(source);
+  const put = {
+    op: "put", key: "shots", kind: "status", title: "Screens",
+    attachments: [{ name: "shot.png", path: "/runs/shot.png" }],
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: {}, children: ["files"] },
+      files: { type: "Attachments", props: { items: [{ name: "shot.png" }] } },
+    } },
+  };
+  const at = (version, takenAt) => readSection(page, put, { version, attachments: [attachment("shot.png", "image", "image/png", { takenAt })] });
+  window.renderSection(at(3, "2026-10-17T07:58:00Z"), PROJECT);
+  const dialog = () => document.querySelector('[role="dialog"]');
+  document.querySelector("button.brief-image").click();
+  await until(dialog, "the preview opens");
+  // The card is updated while the preview is open: what is shown stays.
+  window.renderSection(at(4, "2026-10-17T09:00:00Z"), PROJECT);
+  await until(() => document.querySelector(".brief-image img")?.getAttribute("src").endsWith("version=4"), "the card shows its new snapshot");
+  assert.equal(dialog().querySelector(".input-image-dialog img").getAttribute("src"), `${base}/attachments/shots/shot.png?version=3`);
+  const markUp = [...dialog().querySelectorAll("button")].find((b) => b.textContent.includes("Mark up"));
+  markUp.click();
+  await until(() => opened.length === 1 && !dialog(), "Point & Fix is asked to open, and the preview closes");
+  const [source] = opened;
+  assert.equal(source.name, "shot.png");
+  assert.equal(source.ownerId, "agent-a", "the card's author is offered first");
+  assert.equal(source.chooseWithoutOwner, true, "never another Agent in the author's place");
+  assert.equal(source.provenance,
+    `the image “shot.png” on the Home card “Screens” (project ${PROJECT}, section shots, version 3; snapshot taken 2026-10-17T07:58:00Z)`);
+  const before = page.requests.length;
+  const blob = await source.load(new AbortController().signal);
+  assert.equal(await blob.text(), "png-bytes");
+  assert.deepEqual(page.requests.slice(before).map((r) => [r.method, r.url]), [["GET", `${base}/attachments/shots/shot.png?version=3`]],
+    "it reads the version shown, not the card's newer one");
+  assert.ok(page.requests.every((r) => r.method === "GET"));
+  delete window.pointFixOpen;
 });
 
 test("live references open the app's existing panels, GitHub pages or nothing", async (t) => {

@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
+import { composerText } from "./composer-driver.mjs";
 
 // Home (T-85) against an in-memory Core: the built app, a fetch fixture, no
 // real Core, Agents or GitHub.
@@ -116,7 +117,7 @@ const machineLoad = () => ({
   jobs: [{ id: "job-1", name: "cargo test", agentId: "a", agentName: "Mori", projectId: "p-app", cpuPct: null, memMiB: 512 }],
 });
 
-async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [] } = {}) {
+async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], workspaceAgents = agents } = {}) {
   // holdWorkspace: /api/workspace answers only on releaseWorkspace(), so Home opens first.
   let releaseWorkspace = () => {};
   const workspaceRead = holdWorkspace ? new Promise((resolve) => (releaseWorkspace = resolve)) : null;
@@ -157,7 +158,7 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
     calls.push(request);
     if (url.endsWith("/api/workspace")) {
       await workspaceRead;
-      return respond({ workspace: { id: workspace }, projects, agents, runtime: { connected: true }, defaultCwd: "/w" });
+      return respond({ workspace: { id: workspace }, projects, agents: workspaceAgents, runtime: { connected: true }, defaultCwd: "/w" });
     }
     if (url.endsWith("/api/home")) return respond(state.home);
     if (url.endsWith("/api/machine-load")) return respond(load());
@@ -180,7 +181,7 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
       return respond({ observedAt: at(1), repositories: linked.map((repo) => ({ ...repo, observedAt: at(1), commits: [], pulls: [], runs: [], stale: false })) });
     const detail = url.match(/\/api\/agents\/(\w)$/);
     if (detail) {
-      const agent = agents.find((a) => a.id === detail[1]);
+      const agent = workspaceAgents.find((a) => a.id === detail[1]);
       return respond({ agent, pending: [], artifacts: [], messageReceipts: [], turns: [] });
     }
     if (url.endsWith("/api/machines")) return respond({ machines: [] });
@@ -1222,6 +1223,122 @@ test("until the workspace is read, the widget layout is neither shown as arrange
     card(p, "p-app", "notes").querySelector(".home-pin").click();
     await waitFor(() => JSON.parse(p.w.localStorage.getItem("yuzuno.homeWidgets.ws-home")).pins.length === 2, "the pin is saved");
     assert.deepEqual(keys(), ["yuzuno.homeWidgets.ws-home"], "nothing was saved under no workspace");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+// T-177: a Home image opens in the app's preview and Point & Fix marks it,
+// on Codex Agents that can take images. What Point & Fix needs from a
+// browser, which jsdom lacks, is stubbed: decoding (400×300), drawing,
+// object URLs; the snapshot read and image uploads answer here.
+function homeImages() {
+  const home = homeFixture();
+  const app = home.projects.find((entry) => entry.project.id === "p-app");
+  const shot = { name: "screen.png", kind: "image", mime: "image/png", size: 9, snapshot: true, mayChange: false, takenAt: "2026-10-22T09:00:00Z" };
+  const files = { root: "body", elements: {
+    body: { type: "BriefBody", props: {}, children: ["files"] },
+    files: { type: "Attachments", props: { items: [{ name: "screen.png", caption: "Login screen" }] } },
+  } };
+  app.brief.sections.push(
+    section("shots", "report", "Screens", 4, owner("b", "Hana"), { body: files, attachments: [shot], seen: { version: 4, at: at(9) } }),
+    section("ghost", "report", "Old screens", 2, { agentId: "z", name: "Kumo", state: "deleted" }, { body: files, attachments: [shot], seen: { version: 2, at: at(9) } }),
+  );
+  return home;
+}
+function pointFixStubs(p) {
+  const uploads = [], reads = [];
+  p.w.createImageBitmap = async () => ({ width: 400, height: 300, close() {} });
+  p.w.URL.createObjectURL = () => "blob:point-fix";
+  p.w.URL.revokeObjectURL = () => {};
+  p.w.HTMLCanvasElement.prototype.getContext = () =>
+    ({ drawImage() {}, beginPath() {}, arc() {}, fill() {}, fillText() {}, strokeRect() {} });
+  p.w.HTMLCanvasElement.prototype.toBlob = function (done, type) { done(new p.w.Blob([`annotated ${this.width}x${this.height}`], { type })); };
+  const base = p.w.fetch;
+  p.w.fetch = async (url, init = {}) => {
+    if (/\/brief\/attachments\/[^/]+\/screen\.png\?version=\d+$/.test(url) && !init.method) {
+      reads.push(url);
+      return { ok: true, status: 200, blob: async () => new p.w.Blob(["png-bytes"], { type: "image/png" }) };
+    }
+    const upload = /\/api\/agents\/(\w)\/images$/.exec(url);
+    if (upload && init.method === "POST") {
+      const content = await init.body.text();
+      uploads.push({ agent: upload[1], content });
+      return { ok: true, status: 200, json: async () => ({ id: `${String(uploads.length).repeat(64)}.png`, width: 400, height: 300, bytes: content.length }) };
+    }
+    return base(url, init);
+  };
+  return { uploads, reads };
+}
+const codexAgents = agents.map((agent) => ({ ...agent, harness: "codex" }));
+const buttonIn = (root, text) => [...root.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith(text));
+
+test("a Home image opens in the app, and Mark up adds it with its card to the author's draft, sending nothing (T-177)", async () => {
+  const p = await mount({ home: homeImages(), workspaceAgents: codexAgents });
+  try {
+    const { uploads, reads } = pointFixStubs(p);
+    await waitFor(() => card(p, "p-app", "shots")?.querySelector("button.brief-image"), "the image is drawn");
+    const shots = card(p, "p-app", "shots");
+    assert.ok(!shots.querySelector(".brief-attachment a"), "no link to a browser tab");
+    const preview = () => p.doc.querySelector('[role="dialog"]');
+    shots.querySelector("button.brief-image").click();
+    await waitFor(preview, "the preview opens");
+    assert.equal(preview().querySelector("h2").textContent, "screen.png");
+    assert.match(preview().textContent, /Login screen · Snapshot/);
+    assert.match(preview().querySelector(".input-image-dialog img").getAttribute("src"), /\/api\/projects\/p-app\/brief\/attachments\/shots\/screen\.png\?version=4$/);
+    const writes = () => p.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories"));
+    assert.deepEqual(writes().map((c) => c.url), [], "looking writes nothing");
+    buttonIn(preview(), "Mark up").click();
+    const dialog = () => p.doc.querySelector(".point-fix-dialog");
+    await waitFor(() => dialog()?.querySelector(".point-fix-image svg"), "the image opens for marking, without choosing a file");
+    assert.deepEqual(reads.map((url) => url.replace(/^.*\/api\//, "/api/")), ["/api/projects/p-app/brief/attachments/shots/screen.png?version=4"]);
+    const select = dialog().querySelector(".point-fix-target select");
+    assert.equal(select.value, "b", "the card's author is offered first");
+    assert.match(select.selectedOptions[0].textContent, /Hana · its owner/);
+    buttonIn(dialog(), "Add area").click();
+    await pause();
+    await type(p, dialog().querySelector('[aria-label="Area 1 comment"]'), "Button is cut off");
+    buttonIn(dialog(), "Add to Hana’s draft").click();
+    const hana = () => p.doc.querySelector('[data-composer-input][aria-label="Message Hana"]');
+    await waitFor(() => !dialog() && hana(), "Hana's draft opens");
+    const text = composerText(hana());
+    assert.match(text, /Point & Fix feedback on “screen\.png” \(400×300 px\): 1 marked area in the attached annotated image, with the original image attached\./);
+    assert.match(text, /Source: the image “screen\.png” on the Home card “Screens” \(project p-app, section shots, version 4; snapshot taken 2026-10-22T09:00:00Z\)/);
+    assert.match(text, /1\. Area at x \d+, y \d+, \d+×\d+ px: Button is cut off/);
+    assert.deepEqual(uploads.map((u) => [u.agent, u.content]), [["b", "annotated 400x300"], ["b", "png-bytes"]]);
+    assert.equal(p.posts(/\/(messages|turns)$|\/brief\/(reply|seen)$/).length, 0, "nothing is sent, answered or marked seen");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a Home image whose author is gone is never offered to another Agent: the user chooses (T-177)", async () => {
+  const p = await mount({ home: homeImages(), workspaceAgents: codexAgents });
+  try {
+    const { uploads } = pointFixStubs(p);
+    await waitFor(() => card(p, "p-app", "ghost")?.querySelector("button.brief-image"), "the image is drawn");
+    card(p, "p-app", "ghost").querySelector("button.brief-attachment-open").click();
+    const preview = () => p.doc.querySelector('[role="dialog"]');
+    await waitFor(preview, "Open opens the same preview");
+    buttonIn(preview(), "Mark up").click();
+    const dialog = () => p.doc.querySelector(".point-fix-dialog");
+    await waitFor(() => dialog()?.querySelector(".point-fix-image svg"), "the image opens for marking");
+    const select = dialog().querySelector(".point-fix-target select");
+    assert.equal(select.value, "", "nobody is picked in the author's place");
+    assert.match(dialog().textContent, /Its author is no longer an Agent here\. Choose whom to tell\./);
+    buttonIn(dialog(), "Add area").click();
+    await pause();
+    assert.equal(buttonIn(dialog(), "Add to the Agent’s draft").disabled, true);
+    select.value = "a";
+    select.dispatchEvent(new p.w.Event("change", { bubbles: true }));
+    await pause();
+    assert.equal(buttonIn(dialog(), "Add to Mori’s draft").disabled, false, "a chosen Agent can be told");
+    buttonIn(dialog(), "Cancel").click();
+    await waitFor(() => !dialog(), "Cancel closes it");
+    assert.deepEqual(uploads, [], "cancelling adds nothing");
+    assert.equal(p.posts(/\/(messages|turns|images)$/).length, 0);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

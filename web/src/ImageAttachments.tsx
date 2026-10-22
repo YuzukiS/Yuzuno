@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { SquareDashedMousePointer, X } from "lucide-react";
 import { Modal } from "./components";
 import { API_BASE } from "./api";
@@ -24,7 +24,6 @@ export function ImageAttachments({
   description?: string;
 }) {
   const [opened, setOpened] = useState<PreviewImage | null>(null);
-  const [failed, setFailed] = useState(false);
   if (!images.length) return null;
   return (
     <div className="input-images">
@@ -34,10 +33,7 @@ export function ImageAttachments({
             type="button"
             className="input-image-open"
             aria-label={`Open image ${index + 1}: ${image.name || "Attached image"}`}
-            onClick={() => {
-              setFailed(false);
-              setOpened(image);
-            }}
+            onClick={() => setOpened(image)}
           >
             <img
               src={inputImageUrl(image.agentId, image.id, true)}
@@ -75,41 +71,74 @@ export function ImageAttachments({
           )}
         </div>
       ))}
-      <Modal
+      <ImagePreview
         open={!!opened}
-        onOpenChange={(open) => {
-          if (!open) setOpened(null);
-        }}
-        title={opened?.name || "Attached image"}
+        src={opened ? inputImageUrl(opened.agentId, opened.id) : ""}
+        name={opened?.name || "Attached image"}
         description={description}
-        wide
-      >
-        {opened && (
-          <div className="input-image-dialog">
-            <img
-              src={inputImageUrl(opened.agentId, opened.id)}
-              alt={opened.name || "Attached image"}
-              onError={() => setFailed(true)}
-            />
-            {failed && (
-              <p role="alert">
-                This saved image is unavailable. The original file may have been
-                removed from this Core.
-              </p>
-            )}
-            {onAnnotate && !failed && (
-              <button type="button" className="secondary-button input-image-annotate" onClick={() => {
-                const image = opened;
-                setOpened(null);
-                onAnnotate(image);
-              }}>
-                <SquareDashedMousePointer size={14} />
-                Mark up
-              </button>
-            )}
-          </div>
-        )}
-      </Modal>
+        unavailable="This saved image is unavailable. The original file may have been removed from this Core."
+        onClose={() => setOpened(null)}
+        onAnnotate={onAnnotate && opened ? () => {
+          const image = opened;
+          setOpened(null);
+          onAnnotate(image);
+        } : undefined}
+      />
     </div>
+  );
+}
+
+/**
+ * An image shown whole in the app, with Point & Fix when it is offered: the
+ * preview a conversation's images open (T-31), and Home's Brief images too
+ * (T-177). Only the image is read; it loads when opened, and closing it
+ * drops the read.
+ */
+export function ImagePreview({
+  open,
+  src,
+  name,
+  description,
+  unavailable,
+  onClose,
+  onAnnotate,
+}: {
+  open: boolean;
+  src: string;
+  name: string;
+  description?: string;
+  /** What to say when the image cannot be read. */
+  unavailable: string;
+  onClose: () => void;
+  onAnnotate?: () => void;
+}) {
+  const [failed, setFailed] = useState("");
+  // Each opening reads the image again: one that failed may be back.
+  useEffect(() => {
+    if (open) setFailed("");
+  }, [open, src]);
+  return (
+    <Modal
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      title={name}
+      description={description}
+      wide
+    >
+      {open && (
+        <div className="input-image-dialog">
+          <img src={src} alt={name} onError={() => setFailed(src)} />
+          {failed === src && <p role="alert">{unavailable}</p>}
+          {onAnnotate && failed !== src && (
+            <button type="button" className="secondary-button input-image-annotate" onClick={onAnnotate}>
+              <SquareDashedMousePointer size={14} />
+              Mark up
+            </button>
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }
