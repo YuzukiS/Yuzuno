@@ -15,11 +15,13 @@ const index = await readFile(new URL("index.html", dist), "utf8");
 const entry = index.match(/src="\/(assets\/[^" ]+\.js)"/)[1];
 const bundle = await uiTestBundle(new URL(entry, dist));
 const pause = ms => new Promise(r => setTimeout(r, ms));
-async function until(check) {
+async function until(check, label = "condition") {
   for (let i = 0; i < 100; i++) { if (check()) return; await pause(15); }
-  assert.ok(check(), "condition should settle");
+  assert.ok(check(), `${label} should settle`);
 }
-async function mount({ deadlineMs = 180, before, settle = true } = {}) {
+// holdPoll: no 5 s interval (the stream's poll and the workspace safety net,
+// POLL_MS), so only the reads a test drives happen (T-170).
+async function mount({ deadlineMs = 180, before, settle = true, holdPoll = false } = {}) {
   const errors = [], vc = new VirtualConsole();
   vc.on("jsdomError", e => errors.push(e.message));
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
@@ -32,6 +34,10 @@ async function mount({ deadlineMs = 180, before, settle = true } = {}) {
   w.localStorage.setItem("yuzuno.drafts", JSON.stringify({ a: "保留我的草稿", b: "Keep Claude draft" }));
   w.eval(`(${installConnectionFixture.toString()})({deadlineMs: ${deadlineMs}})`);
   before?.(w.connectionFixture);
+  if (holdPoll) {
+    const interval = w.setInterval;
+    w.setInterval = (handler, delay, ...args) => delay === 5_000 ? 0 : interval.call(w, handler, delay, ...args);
+  }
   w.eval(bundle);
   const d = w.document, f = w.connectionFixture;
   if (settle) await until(() => d.querySelector(".prose")?.textContent.includes("initial fixture reply"));
@@ -271,5 +277,79 @@ test("a page opened while the browser reports offline does not claim a read work
     await until(() => banner(p) === null);
     assert.equal(p.f.calls.filter(c => c.method !== "GET").length, 0);
     assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+test("back online after a failed workspace read, it is read again at once and once; only a read that works clears the banner, and with no failure nothing more is read (T-170)", async () => {
+  const p = await mount({ holdPoll: true, deadlineMs: 10_000 });
+  const reads = () => p.f.calls.filter(c => c.path === "/api/workspace").length;
+  const status = () => p.d.querySelector(".connection")?.dataset.coreStatus;
+  // The reconnected stream resumes, as Core's does: no reset, so no full refresh.
+  const resume = async (count) => {
+    await until(() => p.f.streams.length === count && p.f.streams.at(-1).readyState === 1, "the reconnected stream");
+    p.f.streams.at(-1).onmessage?.({ data: '{"type":"resumed"}', lastEventId: "" });
+  };
+  try {
+    // The last read worked: online reads nothing more.
+    p.f.network(false);
+    await until(() => banner(p)?.textContent.includes("Browser reports offline"), "the offline report");
+    await pause(100);
+    let streams = p.f.streams.length;
+    let before = reads();
+    p.f.network(true);
+    await resume(streams + 1);
+    await pause(300);
+    assert.equal(reads(), before, "online after a read that worked reads nothing");
+    core(p, "Core connected");
+
+    // A read fails while offline; Core answers again before the browser says online.
+    p.f.network(false);
+    p.f.scenario("fetch-down");
+    await until(() => status() === "Core unreachable", "Core unreachable while offline");
+    p.f.mode = "ok";
+    streams = p.f.streams.length;
+    before = reads();
+    const at = Date.now();
+    p.f.network(true);
+    await resume(streams + 1);
+    await until(() => status() === "Core connected" && banner(p) === null, "the banner cleared by the read on online");
+    const waited = Date.now() - at;
+    assert.ok(waited < 1_000, `read again at once, not at the next interval (${waited} ms)`);
+    await pause(1_000);
+    assert.equal(reads(), before + 1, "one workspace read, and no full refresh after the stream resumed");
+
+    // Back online while Core still gives no answer: the read fails, the banner stays.
+    p.f.network(false);
+    p.f.scenario("fetch-down");
+    await until(() => status() === "Core unreachable", "Core unreachable while offline again");
+    streams = p.f.streams.length;
+    before = reads();
+    p.f.network(true);
+    await resume(streams + 1);
+    await pause(1_000);
+    assert.equal(reads(), before + 1, "one read on online, which failed");
+    core(p, "Core update failed");
+    assert.ok(banner(p) !== null, "a failed read leaves the banner");
+    // Repeated reports at once share one read.
+    before = reads();
+    p.f.network(true); p.f.network(true); p.f.network(true);
+    await pause(1_000);
+    assert.equal(reads(), before + 1, "repeated reports share one read");
+    core(p, "Core update failed");
+
+    // A report while a read is still out: nothing starts beside it, one read
+    // follows it, and neither the reports nor the stream clear the failure.
+    p.f.mode = "hang";
+    before = reads();
+    p.f.network(true);
+    await until(() => p.f.held.some(h => h.path === "/api/workspace"), "the held read");
+    p.f.network(true); p.f.network(true);
+    await pause(200);
+    assert.equal(reads(), before + 1, "nothing starts beside the read in flight");
+    core(p, "Core update failed");
+    p.f.mode = "ok"; p.f.release();
+    await until(() => status() === "Core connected" && banner(p) === null, "the banner cleared once a read worked");
+    await pause(300);
+    assert.equal(reads(), before + 2, "one more read after it, not one per report");
+    retained(p);
   } finally { p.close(); }
 });
