@@ -71,6 +71,8 @@ pub(crate) struct Attachment {
 /// task, and a collaboration call is a single store job.
 pub struct Workspace {
     pub(crate) codex_context: crate::codex_context::State,
+    /// What each Codex Agent's MCP servers reported as they started (T-29).
+    pub(crate) codex_mcp: crate::codex_mcp::State,
     pub(crate) github: crate::github::SyncState,
     pub(crate) pr_reviews: crate::pr_review::State,
     pub(crate) pr_operations: crate::pr_operations::State,
@@ -141,6 +143,7 @@ impl Workspace {
             ci: Default::default(),
             codex_usage: Default::default(),
             codex_context: Default::default(),
+            codex_mcp: Default::default(),
             delivery: Default::default(),
             admission: Arc::new(crate::updates::admission::Admission::default()),
             update_notice_layout: OnceLock::new(),
@@ -527,6 +530,7 @@ impl Workspace {
         {
             let _owned = self.owner(id).await;
             self.rpcs.lock().unwrap().insert(id.into(), connection.clone());
+            self.codex_mcp.forget(id);
             self.codex_usage_reconnected(id, connection.generation).await;
             if id != "_catalog" {
                 self.backlogs.track(id, connection.generation, backlog.clone());
@@ -2054,6 +2058,7 @@ impl Workspace {
         }
         if method == "yuzuno/disconnected" {
             let intentional = self.rpcs.lock().unwrap().remove(id).is_some_and(|connection| connection.closing);
+            self.codex_mcp.forget(id);
             let _ = self.store.update(id, "runtime/disconnected", p, |d| {
                 if let Some(usage) = &mut d.context_usage { usage.stale = true; }
                 d.agent.connection_state = "disconnected".into();
@@ -2147,6 +2152,12 @@ impl Workspace {
                 }
             });
         } else {
+            // Its own thread's MCP servers, as they start (shown by /mcp); a
+            // new thread's may report before its ID is recorded.
+            if method == "mcpServer/startupStatus/updated" && event_thread.is_some()
+                && known_thread.as_deref().is_none_or(|known| Some(known) == event_thread) {
+                self.codex_mcp.observe(id, generation, p);
+            }
             match crate::store::route(method, p) {
                 crate::store::Route::Synchronous => {
                     let mut scoped = p.clone();
@@ -2770,6 +2781,10 @@ mod codex_review_tests;
 #[cfg(all(test, unix))]
 #[path = "codex_goal_tests.rs"]
 mod codex_goal_tests;
+
+#[cfg(all(test, unix))]
+#[path = "codex_mcp_tests.rs"]
+mod codex_mcp_tests;
 
 #[cfg(all(test, unix))]
 #[path = "subagent_requests_tests.rs"]

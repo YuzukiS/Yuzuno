@@ -5445,3 +5445,40 @@ test("selecting another Agent drops a pending /goal dialog, which does not reope
     assert.ok(!page.document.querySelector('[role="dialog"]'), "the /goal dialog does not reopen");
   } finally { page.close(); }
 });
+
+// T-29: a Codex Agent's /mcp shows its MCP servers as they reported starting
+// on this connection, from Core; Codex is not asked, since its own status
+// list starts every configured server.
+test("a Codex Agent's /mcp shows its servers' startup reports in the context panel and asks nothing", async () => {
+  const reads = [];
+  const view = { state: "observed", reason: "startup_reports", generation: 3, more: 0, servers: [
+    { name: "docs", status: "ready", error: null, failureReason: null, observedAt: "2026-10-22T00:00:00Z" },
+    { name: "tracker", status: "failed", error: "401 from https://tracker.invalid", failureReason: "reauthenticationRequired", observedAt: "2026-10-22T00:00:01Z" },
+  ] };
+  const page = await mount({ harness: "codex", agentFields: { connectionState: "connected" }, beforeLoad(window) {
+    const fetch = window.fetch;
+    window.fetch = (url, init = {}) => url.endsWith("/codex/mcp")
+      ? (reads.push(init.method ?? "GET"), Promise.resolve({ ok: true, status: 200, json: async () => view, text: async () => JSON.stringify(view) }))
+      : fetch(url, init);
+  } });
+  try {
+    page.scrollTargets.length = 0;
+    const composer = await sendDraft(page, "/mcp");
+    await until(() => page.scrollTargets.some((t) => t.id === "agent-mcp-status"), "the MCP servers in view");
+    const panel = page.document.querySelector("#agent-mcp-status");
+    await until(() => /tracker/.test(panel.textContent), "the reports");
+    assert.match(panel.textContent, /docs\s*Ready at startup/);
+    assert.match(panel.textContent, /tracker\s*Failed to start/);
+    assert.match(panel.textContent, /not checked since/, "ready is what it reported, not a health check");
+    assert.match(panel.textContent, /401 from https:\/\/tracker\.invalid/);
+    assert.match(panel.textContent, /signed in again/);
+    assert.match(panel.textContent, /Codex is not asked here/);
+    assert.equal(composerText(composer), "/mcp", "the draft stays, as the other panels' commands leave it");
+    const before = reads.length;
+    panel.querySelector('[aria-label="Read MCP startup reports again"]').click();
+    await until(() => reads.length === before + 1, "read again from Core");
+    assert.ok(reads.every((method) => method === "GET"));
+    assert.deepEqual(posts(page), [], "nothing sent, started or saved");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
