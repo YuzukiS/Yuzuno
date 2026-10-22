@@ -419,11 +419,13 @@ async fn exchange(slot: &mut Option<Process>, validator: &Validator, spec: &Valu
 
 impl Validator {
     /// One Project Brief section `put`, without its op (see project_brief):
-    /// Ok(Ok(normalized)) or Ok(Err(problems)) for the Agent to fix. Err
-    /// says why the validator could not answer, as for `check`.
+    /// Ok(Ok((normalized, advice))) or Ok(Err(problems)) for the Agent to
+    /// fix. Err says why the validator could not answer, as for `check`.
+    /// A validator without advice (before T-176) gives none.
     /// Only block edits supply previous_body, read from the stored row at
     /// the guarded Brief version; attachment registrations cannot change.
-    pub(crate) async fn check_brief_section(self: &Arc<Self>, section: &Value, previous_body: Option<&Value>) -> Result<Result<Value, Value>, String> {
+    pub(crate) async fn check_brief_section(self: &Arc<Self>, section: &Value, previous_body: Option<&Value>)
+        -> Result<Result<(Value, Vec<Value>), Value>, String> {
         let deadline = Instant::now() + DEADLINE;
         let queued = Waiting(&self.waiting);
         if self.waiting.fetch_add(1, Ordering::SeqCst) >= MAX_WAITING {
@@ -442,7 +444,10 @@ impl Validator {
                 _ if answer["schemaVersion"].as_u64() != crate::project_brief::brief_schema_version() => {
                     Err("the validator speaks another Brief schema version".to_owned())
                 }
-                Some(true) if answer["normalized"].is_object() => Ok(Ok(answer["normalized"].take())),
+                Some(true) if answer["normalized"].is_object() => {
+                    let advice = answer["advice"].as_array().cloned().unwrap_or_default();
+                    Ok(Ok((answer["normalized"].take(), advice)))
+                }
                 Some(false) if answer["problems"].as_array().is_some_and(|p| !p.is_empty()) => Ok(Err(answer["problems"].take())),
                 _ => Err("unreadable validator answer".to_owned()),
             },

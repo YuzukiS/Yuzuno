@@ -10,11 +10,16 @@ import { createInterface } from "node:readline";
 import { checkResultSpec, ResultError, SCHEMA_VERSION } from "../src/intelligent-ui/contract.ts";
 import { clarificationMessage, clarificationSchema } from "../src/intelligent-ui/clarification.ts";
 import { BRIEF_SCHEMA_VERSION, BriefError, checkBriefSection } from "../src/intelligent-ui/brief-contract.ts";
+import { adviseBriefSection } from "../src/intelligent-ui/brief-advice.ts";
 
-/** One `put` envelope, without its op: normalized, or the problems an Agent fixes. */
+/**
+ * One `put` envelope, without its op: normalized with its advice (T-176), or
+ * the problems an Agent fixes.
+ */
 function briefSection(id, section, previousBody) {
   try {
-    return { id, ok: true, schemaVersion: BRIEF_SCHEMA_VERSION, normalized: checkBriefSection(section, previousBody) };
+    const normalized = checkBriefSection(section, previousBody);
+    return { id, ok: true, schemaVersion: BRIEF_SCHEMA_VERSION, normalized, advice: adviseBriefSection(normalized) };
   } catch (error) {
     if (error instanceof BriefError) return { id, ok: false, schemaVersion: BRIEF_SCHEMA_VERSION, problems: error.problems };
     return { id, error: error instanceof Error ? error.message : String(error) };
