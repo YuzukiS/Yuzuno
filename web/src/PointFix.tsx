@@ -120,7 +120,7 @@ export function PointFix({ source, agents, room, draftPosition, onAdd, onClose }
     if (!source) return;
     const owner = agents.find((a) => a.id === source.ownerId);
     // Its owner first, even one that cannot take images: the reason shows.
-    setTarget(owner?.id || agents.find((a) => !imageRefusal(a))?.id || "");
+    setTarget(owner?.id || (source.chooseWithoutOwner ? "" : agents.find((a) => !imageRefusal(a))?.id) || "");
     const controller = new AbortController();
     let made: Loaded | null = null;
     const release = (value: Loaded) => { URL.revokeObjectURL(value.url); value.bitmap.close?.(); };
@@ -367,6 +367,9 @@ export function PointFix({ source, agents, room, draftPosition, onAdd, onClose }
                 ))}
               </select>
             </label>
+            {!agent && !owner && source?.chooseWithoutOwner && (
+              <p className="field-hint" role="status">Its author is no longer an Agent here. Choose whom to tell.</p>
+            )}
             {(agent ? imageRefusal(agent) : owner && imageRefusal(owner)) && (
               <p className="field-hint" role="status">{agent ? imageRefusal(agent) : imageRefusal(owner)} Choose an Agent that can.</p>
             )}

@@ -593,6 +593,28 @@ span.brief-ref {
 .brief-attachment-open {
   margin-left: auto;
 }
+/* An image's Open and its picture open the in-app preview (T-177). */
+button.brief-attachment-open {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+button.brief-image {
+  text-align: inherit;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  font: inherit;
+  cursor: zoom-in;
+}
+button.brief-image:focus-visible,
+button.brief-attachment-open:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
 /* The directory gives way first; the file name always shows whole. */
 .brief-path {
   display: flex;
