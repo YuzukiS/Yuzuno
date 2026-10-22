@@ -305,8 +305,10 @@ attach left unanswered marked uncertain.
 
 T-140 Job `df78bc42-54b5-46ec-a2c2-ef49c10e9dc6`, 2026-10-22, release build of
 `core_attach_memory`, same tool on both sides, "before" the product code of
-`27352dc`. Each row is one process; both 8 KiB processes of a side allocated
-the same:
+`27352dc`. "Allocated" is every byte the Rust allocator handed out during the
+request; "peak above live" is the most the Rust heap held above what it held
+when the request started. Neither is RSS, which these rows do not measure.
+Each row is one process; both 8 KiB processes of a side allocated the same:
 
 | Request | Before | After |
 | --- | ---: | ---: |
@@ -316,17 +318,20 @@ the same:
 | Reopen, 8 KiB per Item: allocated | 881 MiB | 676 MiB |
 | First reconnect through the router (no view), 8 KiB per Item: allocated | 1,493 MiB | 1,288 MiB |
 | Four Agents reconnecting at once after the open: allocated | 5,144 MiB | 4,055 MiB |
+| Four Agents reconnecting at once after the open: peak above live | 870 MiB | 676 MiB |
 
 Reconnects that start no app-server (while connected, and `view=summary`)
 allocate the same on both sides. By the source, the first request through
 the router starts one: creating the router starts the collaboration endpoint,
 and the fixture's connected Agent has no MCP readiness recorded, so that
-reconnect detaches it and connects again. The peaks come from the reconcile
-and do not change; four Agents at once peaked at 667–870 MiB on the "before"
-binary across three runs, so that peak is not compared. A failing reconnect
-is covered by tests, not measured: on main its test reads the whole record 4
-times for two refused reconnects and twice for an unanswered one, now none.
-These are synthetic allocator measurements, not the daily Core's RSS.
+reconnect detaches it and connects again. One Agent's peaks are the same on
+both sides; which step reaches them was not measured here. The four-Agent
+peak is one process per side, and how the concurrent reconnects overlap
+differs from run to run, so this run does not show whether the change lowers
+it. A failing reconnect is covered by tests, not measured: on main its test
+reads the whole record 4 times for two refused reconnects and twice for an
+unanswered one, now none. These are synthetic allocator measurements, not the
+daily Core's RSS.
 
 ### The UI's reconnect
 
