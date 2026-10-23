@@ -243,6 +243,7 @@ The user can pause a remote job as a local one (T-107), only when its attempt ru
   - a command that exits leaving a child: the outcome is written only after the child is stopped;
   - a supervisor that dies: lost, not finished, until cancel stops the group;
   - a supervisor that dies, then the command exits leaving a child: still no outcome, until cancel stops the child;
+  - pause: an attempt without a scope of its own, or a recorded scope that is not its own, is never frozen; its own scope is frozen, read back from its cgroup and resumed; cancel thaws a paused attempt first, so its processes act on TERM, also when its supervisor is gone, and a paused attempt that reaches its timeout is stopped. The scope tests need this account's systemd user manager with the memory controller, and are skipped where there is none;
   - the same start key with another command, Workspace or a forged digest;
   - another machine behind the name, a fence that makes a start that never arrived final, a restarted machine, an unreadable record, and refusals that start nothing.
   - a terminal reply too long for one reply (Job 85755f3e's sample, and the longest submit allows: control characters, emoji, a folder named in bytes that are not UTF-8): within 224 KiB with every check, its paths left out and named, the whole check kept in `artifacts.json`, the same for a cancel or a repeated start; the frame measured with its mark, nonce and newline; an inspect too long for one reply refused with its size.
@@ -260,7 +261,8 @@ The user can pause a remote job as a local one (T-107), only when its attempt ru
   - a supervisor that dies, then the command exits leaving a sleep child: `unknown` and held until cancel stops the child;
   - a restarted machine (`interrupted`) and an unreadable record (held, even after a cancel);
   - cancel of the process tree, and a cancel before anything was sent;
-  - failures, refusals, per-machine slots, and GPU, pause and stages refused;
+  - failures, refusals, per-machine slots, and GPU and stages refused;
+  - pause refused for an attempt without a scope of its own there; for one in its own scope, the job as the machine answered, a reply that does not come back settled by the next status, and a status read around a resume settling it once;
   - a machine without `python3`, or with one too old for the helper: not started, with the shell's message, nothing sent; a helper killed at the first contact: the job waits and runs once the machine answers; a helper that breaks after the start was sent: `unknown`, held;
   - a login script that prints to stdout before every command: replies and output are read as usual;
   - forged reply lines (unmarked, or with another call's nonce) with no helper run: never an outcome, the job stays `unknown`. Several reply lines, a cut-off line, a reply that does not match the exit status, or output over the limit are no reply either;
@@ -272,28 +274,50 @@ The user can pause a remote job as a local one (T-107), only when its attempt ru
   - cancel;
   - the machine's alias re-pointed mid-run at a second `sshd` that has its own host key and machine identity, then pointed back;
   - a supervisor killed mid-run, then its command exiting with a child left;
-  - GPU and pause refused.
+  - GPU refused, and pause for an attempt without a scope of its own.
 
-  This is the same physical host over loopback, not a separate remote Linux machine. Acceptance on a real registered remote Linux host is still pending.
+  This is the same physical host over loopback, not a separate remote Linux machine. For a real one, see the next section.
 
 ## Accepting on an independent machine
 
-`acceptance/remote-jobs/independent.py --target <ssh-alias>` checks the executor on a real Linux machine that this account can already reach over SSH.
+These tools in `acceptance/remote-jobs/` check the executor on a real Linux machine that this account can already reach over SSH:
+
+| Tool | What it checks |
+|---|---|
+| `independent.py --target <alias> [--remote-root <root>] [--clean]` | a run's lifecycle and the machine's limits: the items below |
+| `io.py --target <alias> --remote-root <root>` | inputs frozen and artifacts checked there; an input changed while the job is queued; missing and malformed artifacts; a same-named file on this host never read for an input; a start whose reply is lost, with its inputs and artifacts; a failed command told apart from failed artifacts |
+| `pause.py --target <alias> --remote-root <root> [--expect scope\|none]` | where the attempt runs in a scope of its own there: the pause read back from its cgroup, a resume whose reply is lost settled by the machine's status, and cancel and a timeout while paused thawing it first. Without one: the pause refused, with nothing changed |
+| `rollback.py ... --expect red\|green` | a job with inputs and artifacts, queued by this Core and then handled by an older Core on the same Workspace, as after a rollback: `green` expects it not started there, `red` reproduces a Core from before that check |
+| `agents.mjs` | Claude Agents and Jobs on different machines through one isolated Core: an Agent on the remote machine runs a Job on the Core host, and one on the Core host runs a Job on the remote machine. It runs real model turns |
+
+`load.py` is the small CPU and memory load the resource items run there.
 
 - **Guards.** Every connection uses batch mode and strict host keys: an unknown or changed host key stops the run, and it is never accepted. If the Jobs helper reports the same machine identity as this host (loopback, or a namespace of this machine), the run stops there: that is not an independent machine.
 - **Read-only first.** It reads the OS, distribution, kernel, `python3` and whether a machine-id exists. The report keeps them, whether the account is root, and the first characters of the app-specific machine hash: never the raw machine-id, the account name or an address.
-- **Isolated.** A separate acceptance Core with its own folder and port, so the daily Core and its machine entries are never touched. Short commands (echo, `sleep` up to 60 s) run in `~/yuzuno-jobs-acceptance/<run>` there. Afterwards it removes that folder and its own jobs' attempt folders, nothing else.
-- **What each item covers.** The report names the coverage of every item:
+- **Isolated.** A separate acceptance Core with its own folder and port, so the daily Core and its machine entries are never touched. The machine is registered there with the data root `--remote-root` names (`~/.yuzuno` unless given; its parent must exist), in the limited mode. Short commands (echo, `sleep` up to 60 s, and `load.py`'s loads) run in `<root>/acceptance/<run>` there, and every file the run and its jobs create is under that root. Faults are only the run's own: the acceptance Core's `ssh` is a wrapper that can fail its calls or drop a reply. The machine, its sshd, its account and the network are never touched.
+- **Kept.** What a run created there, its folder and its jobs' attempt folders under `<root>/jobs`, is kept as evidence. `independent.py --clean` removes exactly those, and nothing else.
+- **What each item covers.** The report of `independent.py` names the coverage of every item. The resource items follow what the machine's helper reports it can enforce: held where it can, recorded as declared only where it cannot, and strict starting nothing it cannot hold.
 
   | Item | Coverage |
   |---|---|
-  | A run, its output, success and failure | the real machine |
-  | Same `requestId`, and a Core restart mid-run | the real machine; the acceptance Core is restarted |
+  | The machine registers and its check reaches it over SSH | the real machine |
+  | A run, its output, success and failure, including a failure that prints `DONE` | the real machine; this host's budget is untouched |
+  | Strict starts nothing where the machine cannot hold the declared limits | the real machine; the helper's own facts decide |
+  | Memory over a 64 MiB limit, the command's own cgroup, and a job within its limit with its peak | the real machine: held in the attempt's own scope where the account can hold memory and lingers; otherwise declared only |
+  | CPU of 500 millicores for two busy workers | the real machine: limited where the cpu controller is delegated and limits are held; otherwise declared, and measured as used |
   | A start whose reply is lost | the real machine; the acceptance Core's own `ssh` wrapper drops the reply |
-  | The control connection lost mid-run | the real machine keeps running; only the acceptance Core's `ssh` calls fail. The machine, its sshd and the network are never touched |
+  | The control connection lost mid-run | the real machine keeps running; only the acceptance Core's `ssh` calls fail |
+  | Same `requestId`, and a Core restart mid-run | the real machine; the acceptance Core is restarted |
   | Cancel of the process tree; a supervisor killed, with a child left | the real machine; the run kills only its own attempt's supervisor |
-  | GPU and pause | refused by the acceptance Core |
+  | GPU refused, and pause for an attempt without a scope of its own | the acceptance Core, and the real machine for the paused job. An attempt in a scope of its own is not paused here: `pause.py` checks that |
   | A real reboot | not covered: never done in acceptance; simulated in the fixtures |
   | The SSH name pointed at another machine | not covered there (needs a second machine); covered by `check.py` over loopback |
+  | The account's last session ending while a job runs | not covered: no session is logged out and the user manager is never stopped. Whether a process outlives it depends on the host's logind settings, which the run neither reads nor changes |
 
-`acceptance/remote-jobs/independent_selftest.sh` runs the tool over a loopback `sshd`, so a change to it can be checked without a remote machine. It covers the unknown host key, the same-machine guard, and every item with `--allow-same-host`, which reports `independent: false`. It is not acceptance on an independent machine.
+- **Run so far.** `independent.py`, `io.py` and `pause.py` have each run on one independent Linux machine: Ubuntu 22.04 with cgroup v2, an account that does not linger, and only the memory and pids controllers delegated. Every item of the first two passed there, limited held nothing, and the pause was refused with nothing changed. Still not covered on a real machine:
+  - pause and resume in a scope of its own, and cancel or a timeout while paused: that account does not linger;
+  - a CPU limit held: its cpu controller is not delegated;
+  - a real reboot, the SSH name pointed at another machine, and the account's last session ending;
+  - changes made since those runs, such as Core's shared SSH connection for helper calls (T-163), and `independent.py`'s pause item as it is now.
+
+`acceptance/remote-jobs/independent_selftest.sh` runs `independent.py` over a loopback `sshd`, so a change to it can be checked without a remote machine. It covers the unknown host key, the same-machine guard, and every item with `--allow-same-host`, which reports `independent: false`; then that `--clean` leaves nothing under the data root, and nothing outside it in the remote HOME. It is not acceptance on an independent machine.
