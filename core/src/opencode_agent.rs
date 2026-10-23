@@ -396,6 +396,7 @@ impl Workspace {
         if d.message_receipts.iter().any(|r| matches!(r.status.as_str(), "sending" | "uncertain")) {
             bail!("上一条消息的发送结果尚未确认，请先重连核对；不会自动重复发送");
         }
+        self.opencode_after_restart(id, &d).await?;
         self.opencode_send_locked(id, text, None).await
     }
 
@@ -404,9 +405,27 @@ impl Workspace {
     pub(crate) async fn opencode_admit(self: &Arc<Self>, id: &str, input: &crate::model::MessageInput, detail: &AgentDetail) -> Result<()> {
         ensure!(input.question.is_none() && input.clarification.is_none() && input.expected_turn_id.is_none(),
             "OpenCode Agent 目前只接受空闲时的新消息；草稿保留");
+        self.opencode_after_restart(id, detail).await?;
         ensure!(!busy(detail), "OpenCode 正在执行或等待回应；这条消息没有发送，草稿保留");
         self.opencode_ensure(id).await?;
         self.require_collaboration(id).await
+    }
+
+    /// Under the Agent gate, before a message: what a restart of Core leaves
+    /// (`Store::open`), the Agent offline with no connection and its last Turn
+    /// still marked running, is not a busy OpenCode. As for Codex
+    /// (`confirm_previous_turn`), its own session is connected again, which
+    /// settles that Turn, and this message is not sent: nothing is recorded
+    /// for it, and the user sends it again once they have seen that Turn. An
+    /// Agent connected now goes on as before.
+    async fn opencode_after_restart(self: &Arc<Self>, id: &str, detail: &AgentDetail) -> Result<()> {
+        let restarted = detail.agent.status == "offline" && detail.turns.iter().any(|t| t["status"] == "inProgress")
+            && !self.opencodes.lock().unwrap().contains_key(id);
+        if !restarted {
+            return Ok(());
+        }
+        self.opencode_ensure(id).await?;
+        bail!("已重新核对原会话；本次消息没有发送。请查看恢复的执行结果，再决定是否发送新任务");
     }
 
     /// Under the Agent gate: one new prompt while OpenCode is idle. Ok means

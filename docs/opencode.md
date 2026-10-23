@@ -22,6 +22,11 @@ OpenCode Agent keeps working either way.
 - **History:** each Agent keeps its session in an OpenCode database in Core's
   data folder (`opencode/<agent id>/opencode.db`). Deleting the Agent keeps
   it, as deleting a Codex or Claude Agent keeps their native sessions.
+- **After Core restarts:** an Agent connects again when it is used, by a
+  reconnect or a message. Its OpenCode starts again on the same session; a
+  turn that was running shows its outcome as unknown and is never sent again.
+  If one was running, the first message only connects again and is not sent,
+  as for Codex: send it again once you have seen how that turn ended.
 - **Stopping:** OpenCode runs the commands of its tools (a shell command,
   for example) apart from itself, so they do not end with it. When you close
   the Agent, or Core stops normally (Ctrl+C), Core first asks that Agent's
