@@ -815,6 +815,8 @@ fn a_started_turn_writes_the_message_restore_renames() {
     assert_eq!(binding(&scoped), ("n7".into(), "item-3".into(), 0));
     same("the later message, the earlier one renamed", start_both(&generic, &scoped, "turn/started", &started("n7", json!([later]))));
     assert_eq!(binding(&scoped), ("n7".into(), "u-n7".into(), 1));
+    // The event again: nothing left to rename.
+    same("the event again", start_both(&generic, &scoped, "turn/started", &started("n7", json!([]))));
     let s = state(&scoped);
     for kept in [&s["held"], &s["reloaded"]] {
         let items = &kept["turns"].as_array().unwrap().iter().find(|t| t["id"] == "n7").unwrap()["items"];
@@ -823,8 +825,6 @@ fn a_started_turn_writes_the_message_restore_renames() {
         assert!(items.as_array().unwrap().iter().all(|i| i.get(crate::message_content::BLOCKS).is_some()), "{items}");
     }
     assert!(!s["rows"]["agent_items"].as_array().unwrap().iter().any(|row| row[1] == "item-3"), "the old ID's row was kept");
-    // The event again: nothing left to rename.
-    same("the event again", start_both(&generic, &scoped, "turn/started", &started("n7", json!([]))));
 }
 
 /// Receipts bound, restored and accepted by every Turn, as `apply` and
