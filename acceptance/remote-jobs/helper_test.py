@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -22,6 +23,8 @@ remote_job = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(remote_job)
 
 MACHINE = "0123456789abcdef0123456789abcdef"
+# What one reply frame may take: Core reads 256 KiB of a call, 32 KiB are left for login scripts.
+FRAME = 224 * 1024
 OTHER = "fedcba9876543210fedcba9876543210"
 # This host's own facts when its systemd user manager can make scopes with
 # the memory controller; the tests of limits really in force need it.
@@ -740,6 +743,126 @@ class InputsAndArtifactsTests(unittest.TestCase):
         result = self.run_to_end(self.attempt("true", artifacts=[{"path": "dir"}, {"path": "away"}, {"path": "../x"}]))
         self.assertEqual([a["problem"] for a in result["artifacts"]],
                          ["not a regular file", "resolves outside the working directory", "missing"])
+
+    def framed(self, request, expect=0):
+        """The reply, and the bytes of the whole stdout a call leaves, as Core counts them."""
+        nonce = uuid.uuid4().hex
+        out = subprocess.run([sys.executable, "-c", HELPER.read_text()],
+                             input=json.dumps(dict({"root": str(self.data)}, **request, replyNonce=nonce)).encode(),
+                             capture_output=True, env=self.env, timeout=60)
+        self.assertEqual(out.returncode, expect, (out.stderr + out.stdout).decode("utf-8", "replace"))
+        line = out.stdout.decode().splitlines()[-1]
+        return json.loads(line[len(f"{remote_job.MARK}{nonce} "):]), len(out.stdout)
+
+    def long_paths(self, unit, count, budget=None):
+        """`count` distinct relative paths of about `budget` bytes of `unit`, in
+        components of at most 255 bytes, each a 1-byte file under the work
+        folder; the absolute paths stay within PATH_MAX."""
+        budget = budget or 4095 - len(str(self.work)) - 64
+        per = 255 // len(unit.encode())
+        paths = []
+        for i in range(count):
+            parts, used, tag = [], 0, "%03d" % i
+            while used + 512 < budget:
+                parts.append(unit * per)
+                used += len(parts[-1].encode()) + 1
+            parts.append(tag + unit * min(per - len(tag), max(1, (budget - used - len(tag)) // len(unit.encode()))))
+            path = "/".join(parts)
+            (self.work / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.work / path).write_bytes(b"x")
+            paths.append(path)
+        return paths
+
+    def projected(self, attempt, reply, paths):
+        """A terminal reply too long for Core, as projected: each artifact's
+        check with its index and the SHA-256 of its path, its paths left out
+        and said so, the full check kept in the attempt's own artifacts.json."""
+        result = reply["result"]
+        self.assertEqual({k: v for k, v in result["artifactsOmitted"].items() if k != "replyBytes"},
+                         {"fields": ["path", "absolutePath"], "count": len(paths), "record": "artifacts.json"})
+        self.assertGreater(result["artifactsOmitted"]["replyBytes"], 256 * 1024)
+        for i, (entry, path) in enumerate(zip(result["artifacts"], paths)):
+            self.assertEqual((entry["index"], entry["ok"], entry["bytes"], entry["sha256"]),
+                             (i, True, 1, hashlib.sha256(b"x").hexdigest()), entry)
+            self.assertEqual(entry["pathSha256"], hashlib.sha256(path.encode("utf-8", "surrogateescape")).hexdigest())
+            self.assertNotIn("path", entry)
+            self.assertNotIn("absolutePath", entry)
+        kept = json.loads((self.folder(attempt) / "artifacts.json").read_text())
+        self.assertEqual([a["path"] for a in kept["artifacts"]], paths)
+        self.assertTrue(all(a["ok"] and a["absolutePath"] for a in kept["artifacts"]))
+        return result
+
+    def test_a_terminal_reply_too_long_for_core_keeps_each_check_and_says_what_it_left_out(self):
+        # The minimal sample of Job 85755f3e: 18 artifacts with paths of about
+        # 3.8 KB of CJK characters made a 281,327-byte reply, more than Core reads.
+        paths = self.long_paths("中", 18)
+        attempt = self.attempt("true", artifacts=[{"path": p} for p in paths])
+        self.call(dict(attempt, action="start"))
+        bound = {k: attempt[k] for k in ("jobId", "attempt", "workspaceKey", "machineId", "digest", "expectHost")}
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            reply, size = self.framed(dict(bound, action="status"))
+            if reply["status"] == "terminal":
+                break
+            time.sleep(0.1)
+        self.assertLessEqual(size, FRAME)
+        result = self.projected(attempt, reply, paths)
+        self.assertEqual((result["status"], result["exitCode"], result["jobId"], result["attempt"]),
+                         ("succeeded", 0, attempt["jobId"], attempt["attempt"]))
+        self.assertEqual(reply["hostId"], host_of(MACHINE))
+        # A cancel or a repeated start of that attempt answers the same, as briefly
+        # (only the size of the reply it would have been differs).
+        same = lambda r: dict(r, artifactsOmitted={k: v for k, v in r["artifactsOmitted"].items() if k != "replyBytes"})
+        for request in (dict(bound, action="cancel"), dict(attempt, action="start")):
+            again, size = self.framed(request)
+            self.assertLessEqual(size, FRAME)
+            self.assertEqual(same(again["result"]), same(result))
+
+    def test_the_longest_terminal_reply_submit_allows_stays_within_the_frame(self):
+        # 20 artifacts (submit's limit) with paths of about 4 KB that JSON
+        # writes at six bytes a byte: control characters, emoji at three, and
+        # one whose absolute path passes a folder named in bytes that are not UTF-8.
+        paths = self.long_paths("\x01", 18) + self.long_paths("😀", 1)
+        odd = os.fsencode(self.work) + b"/\xff\xfe-" + b"\x02" * 200
+        os.mkdir(odd)
+        (Path(os.fsdecode(odd)) / "f").write_bytes(b"x")
+        (self.work / "odd").symlink_to(os.fsdecode(odd))
+        paths.append("odd/f")
+        attempt = self.attempt("true", artifacts=[{"path": p} for p in paths])
+        self.run_to_end(attempt)
+        bound = {k: attempt[k] for k in ("jobId", "attempt", "workspaceKey", "machineId", "digest", "expectHost")}
+        reply, size = self.framed(dict(bound, action="status"))
+        self.assertLessEqual(size, FRAME)
+        self.assertEqual(self.projected(attempt, reply, paths)["status"], "succeeded")
+        kept = json.loads((self.folder(attempt) / "artifacts.json").read_text())
+        self.assertIn("\udcff\udcfe-", kept["artifacts"][-1]["absolutePath"])
+
+    def test_an_inspect_too_long_for_core_is_refused_with_its_size_and_freezes_nothing(self):
+        # 128 inputs (submit's limit) with ASCII paths of 1,791 bytes made a
+        # 486,129-byte inspect reply in Job 85755f3e.
+        paths = self.long_paths("a", 128, budget=1800)
+        refused, size = self.framed({"action": "inspect", "cwd": str(self.work), "inputs": paths}, expect=3)
+        found = re.fullmatch(r"The inputs' details would make a (\d+)-byte reply, more than one reply to Core may carry "
+                             r"\(229376 bytes\); nothing was frozen\. Name fewer inputs, or ones with shorter paths",
+                             refused["error"])
+        self.assertIsNotNone(found, refused["error"])
+        self.assertGreater(int(found.group(1)), 256 * 1024)
+        self.assertLess(size, 1024)
+        # Short paths, as ever.
+        self.assertEqual(self.inspect(*self.long_paths("a", 2, budget=40))["status"], "inspected")
+
+    def test_a_frame_is_measured_with_its_mark_nonce_and_newline(self):
+        self.assertEqual(remote_job.FRAME_BUDGET, FRAME)
+        mark = remote_job.MARK + uuid.uuid4().hex + " "
+        room = FRAME - len(mark) - 1
+        filler = room - len(json.dumps({"status": "logs", "text": ""}))
+        fits = {"status": "logs", "text": "a" * filler}
+        self.assertEqual(remote_job.within_frame(fits, mark, "logs"), json.dumps(fits))
+        over = dict(fits, text="a" * (filler + 1))
+        text = remote_job.within_frame(over, mark, "logs")
+        self.assertLessEqual(len(mark) + len(text) + 1, FRAME)
+        self.assertEqual(json.loads(text)["status"], "unclear")
+        self.assertIn("a %d-byte reply" % (FRAME + 1), json.loads(text)["reason"])
 
     def test_an_input_whose_path_became_a_symlink_loop_is_named_and_the_start_rejected(self):
         (self.work / "in.txt").write_text("frozen\n")

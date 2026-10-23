@@ -1395,6 +1395,117 @@ async fn inputs_and_artifacts_go_with_the_start_and_are_checked_on_the_machine()
     assert!(said.contains("noted, not judged") && !said.contains("written by this attempt"), "{said}");
 }
 
+/// `count` relative paths of about `budget` bytes of `unit`, in components of
+/// at most 255 bytes, each a 1-byte file under the lab's work folder.
+fn long_paths(lab: &Lab, unit: &str, count: usize, budget: usize) -> Vec<String> {
+    let per = 255 / unit.len();
+    (0..count)
+        .map(|i| {
+            let tag = format!("{i:03}");
+            let (mut parts, mut used) = (Vec::new(), 0);
+            while used + 512 < budget {
+                parts.push(unit.repeat(per));
+                used += unit.len() * per + 1;
+            }
+            let room = (budget.saturating_sub(used + tag.len()) / unit.len()).clamp(1, per - tag.len());
+            parts.push(format!("{tag}{}", unit.repeat(room)));
+            let path = parts.join("/");
+            let file = lab.work.join(&path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, "x").unwrap();
+            path
+        })
+        .collect()
+}
+
+/// A terminal reply too long for one reply still ends the same attempt and
+/// releases its slot: Job 85755f3e's sample, 18 artifacts with paths of about
+/// 3.8 KB of CJK characters, made a 281,327-byte reply. Here it comes through
+/// a cancel that arrived after the attempt had ended there. Each artifact's
+/// check comes back with its declared path, and what the reply left out is
+/// named. Before, that reply and every later one had no answer, cancel's
+/// included, so the job stayed unknown and held.
+#[tokio::test]
+async fn a_terminal_reply_too_long_for_one_reply_still_ends_the_attempt_and_releases_its_slot() {
+    let lab = lab();
+    let paths = long_paths(&lab, "中", 18, 4095 - lab.work.to_string_lossy().len() - 64);
+    let declared: Vec<Value> = paths.iter().map(|path| json!({"path": path})).collect();
+    let first = create(&lab, input(&lab, "long", "while [ ! -e go ]; do sleep 0.05; done", json!({"artifacts": declared})));
+    until(&lab, &lab.ssh, &first, |j| j["status"] == "running").await;
+    std::fs::write(lab.work.join("go"), "").unwrap();
+    let outcome = folder(&lab, &first).join("result.json");
+    for _ in 0..100 {
+        if outcome.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(outcome.exists(), "the attempt did not end there");
+    cancel(&lab, &first);
+    tick(&lab, &lab.ssh).await;
+    let ended = job(&lab, &first);
+    assert_eq!((ended["status"].as_str(), ended["reserved"].as_bool()), (Some("succeeded"), Some(false)), "{ended}");
+    let checks = ended["result"]["artifacts"].as_array().unwrap();
+    assert_eq!(checks.len(), 18);
+    for (check, path) in checks.iter().zip(&paths) {
+        assert_eq!((check["path"].as_str(), check["ok"].as_bool(), check["sha256"].as_str()),
+            (Some(path.as_str()), Some(true), Some(sha("x").as_str())), "{check}");
+        assert!(check.get("absolutePath").is_none(), "{check}");
+    }
+    let record = format!("{}/artifacts.json", folder(&lab, &first).display());
+    let omitted = &ended["result"]["artifactsOmitted"];
+    assert_eq!((omitted["count"].as_u64(), omitted["unmatched"].as_u64(), omitted["record"].as_str(), omitted["machine"].as_str()),
+        (Some(18), Some(0), Some(record.as_str()), Some("lab box")), "{omitted}");
+    assert!(omitted["replyBytes"].as_u64().unwrap() > 256 * 1024, "{omitted}");
+    let reason = ended["reason"].as_str().unwrap();
+    assert!(reason.starts_with("success; its reply would have been ") && reason.contains(&record), "{reason}");
+    assert!(ended["notifications"]["succeeded"].is_string() && ended["notifications"].get("unknown").is_none(), "{ended}");
+    // The machine keeps the whole check, the absolute paths included.
+    let kept = read(folder(&lab, &first).join("artifacts.json"));
+    assert!(kept["artifacts"].as_array().unwrap().iter().all(|a| a["absolutePath"].is_string()));
+}
+
+/// A check that came without its path gets the declared one back only when
+/// the SHA-256 the machine sent is that path's; one that does not match is
+/// shown without a path, and counted and said.
+#[test]
+fn a_check_without_its_path_gets_the_declared_one_only_when_its_digest_matches() {
+    let job = json!({"id": "j", "attempt": "a", "executor": {"kind": "ssh", "machineId": "m1", "machineName": "lab box"},
+        "remote": {"hostId": "h", "root": "/data/.yuzuno"}, "artifacts": [{"path": "one.txt"}, {"path": "two.txt"}]});
+    let reply = json!({"status": "terminal", "result": {"status": "succeeded", "reason": "success", "artifacts": [
+        {"index": 0, "ok": true, "pathSha256": sha("one.txt")}, {"index": 1, "ok": true, "pathSha256": sha("other.txt")}],
+        "artifactsOmitted": {"fields": ["path", "absolutePath"], "count": 2, "replyBytes": 300000, "record": "artifacts.json"}}});
+    let value = remote::evidence(&job, &reply).unwrap();
+    assert_eq!(value["artifacts"][0]["path"], "one.txt");
+    assert!(value["artifacts"][1].get("path").is_none(), "{value}");
+    assert_eq!(value["artifactsOmitted"], json!({"fields": ["path", "absolutePath"], "count": 2, "replyBytes": 300000,
+        "unmatched": 1, "record": "/data/.yuzuno/jobs/j/a/artifacts.json", "machine": "lab box"}));
+    assert!(value["reason"].as_str().unwrap()
+        .ends_with("; 1 check(s) did not match a declared artifact and are shown without a path"), "{value}");
+    // A reply that fits is kept as it came.
+    let fits = json!({"status": "terminal", "result": {"status": "succeeded", "reason": "success",
+        "artifacts": [{"path": "one.txt", "absolutePath": "/w/one.txt", "ok": true}]}});
+    let value = remote::evidence(&job, &fits).unwrap();
+    assert_eq!((value["reason"].as_str(), &value["artifacts"]), (Some("success"), &fits["result"]["artifacts"]));
+    assert!(value.get("artifactsOmitted").is_none(), "{value}");
+}
+
+/// Inputs whose details would not fit one reply refuse the submit with the
+/// size, and nothing is frozen: Job 85755f3e's sample, 128 inputs with ASCII
+/// paths of 1,791 bytes, made a 486,129-byte inspect reply.
+#[tokio::test]
+async fn inputs_too_long_for_one_reply_refuse_the_submit_with_their_size() {
+    let lab = lab();
+    let paths = long_paths(&lab, "a", 128, 1800);
+    let named: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let error = frozen(&lab, &lab.ssh, &named).await.unwrap_err().to_string();
+    assert!(error.starts_with(
+        "The inputs could not be read on lab box, so nothing was submitted: The inputs' details would make a "), "{error}");
+    assert!(error.ends_with(
+        "-byte reply, more than one reply to Core may carry (229376 bytes); nothing was frozen. Name fewer inputs, or ones with shorter paths"),
+        "{error}");
+}
+
 /// An input changed while queued stops the start before the command runs; a
 /// failed command and a failed artifact are told apart.
 #[tokio::test]

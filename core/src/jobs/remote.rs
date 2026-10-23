@@ -656,6 +656,28 @@ pub(super) fn evidence(job: &Value, reply: &Value) -> Option<Value> {
                 value["artifactsOn"] = json!({"machineId": job["executor"]["machineId"], "name": name,
                     "hostId": job["remote"]["hostId"]});
             }
+            // A terminal reply too long for one reply carries each artifact's
+            // check without its paths (remote_job.py within_frame). Each
+            // declared path comes back from this job by its index, when its
+            // SHA-256 is the one the machine sent (the digest binds the order);
+            // the absolute paths stay, with the whole check, in the attempt's
+            // artifacts.json there, which the job names, as its reason does.
+            if let Some(omitted) = result.get("artifactsOmitted").filter(|omitted| omitted.is_object()) {
+                let unmatched = restore_paths(job, &mut value["artifacts"]);
+                let record = format!("{}/jobs/{}/{}/{}", attempt_root(job).as_str().unwrap_or_default(),
+                    job["id"].as_str().unwrap_or_default(), job["attempt"].as_str().unwrap_or_default(),
+                    omitted["record"].as_str().unwrap_or("artifacts.json"));
+                let count = omitted["count"].as_u64().unwrap_or_default();
+                let mut said = format!(
+                    "{}; its reply would have been {} bytes, more than one reply carries, so {name} reported its {count} artifact check(s) without their paths: each check is as shown, and the absolute paths, with the whole check, stay in {record} there",
+                    value["reason"].as_str().unwrap_or_default(), omitted["replyBytes"]);
+                if unmatched > 0 {
+                    said.push_str(&format!("; {unmatched} check(s) did not match a declared artifact and are shown without a path"));
+                }
+                value["reason"] = json!(said);
+                value["artifactsOmitted"] = json!({"fields": omitted["fields"], "count": count, "replyBytes": omitted["replyBytes"],
+                    "unmatched": unmatched, "record": record, "machine": name});
+            }
             if let Some(started) = reply["started"].as_object() {
                 value["started"] = if job["executor"]["kind"] == "windows" {
                     json!({"at": started.get("startedAtUnix"), "pid": started.get("pid"), "jobObject": started.get("jobObject"),
@@ -692,6 +714,24 @@ pub(super) fn evidence(job: &Value, reply: &Value) -> Option<Value> {
         // starting, settling, busy: the next check settles it.
         _ => None,
     }
+}
+
+/// Puts each declared artifact's path back into a check that came without it,
+/// by its index, when the SHA-256 of the declared path is the one the machine
+/// sent; the number of checks it could not match.
+fn restore_paths(job: &Value, artifacts: &mut Value) -> usize {
+    let declared = job["artifacts"].as_array().cloned().unwrap_or_default();
+    let mut unmatched = 0;
+    for check in artifacts.as_array_mut().into_iter().flatten() {
+        let path = check["index"].as_u64().and_then(|index| declared.get(index as usize)).and_then(|a| a["path"].as_str());
+        match path {
+            Some(path) if check["pathSha256"].as_str() == Some(format!("{:x}", Sha256::digest(path.as_bytes())).as_str()) => {
+                check["path"] = json!(path);
+            }
+            _ => unmatched += 1,
+        }
+    }
+    unmatched
 }
 
 fn unanswered(job: &Value, error: &str) -> Value {
