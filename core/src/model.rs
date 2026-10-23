@@ -581,9 +581,15 @@ impl AgentDetail {
                             items.push(json!({"id":p["itemId"],"type":typ,key:""}));
                             items.len() - 1
                         });
-                    let mut value = items[idx][key].as_str().unwrap_or_default().to_owned();
-                    value.push_str(p["delta"].as_str().unwrap_or_default());
-                    items[idx][key] = value.into();
+                    // Appended in place: a copy of the text so far for each
+                    // delta cost a long streamed message its whole length on
+                    // every delta (T-140). A field that is not a string
+                    // becomes the delta, as it did.
+                    let delta = p["delta"].as_str().unwrap_or_default();
+                    match &mut items[idx][key] {
+                        Value::String(text) => text.push_str(delta),
+                        other => *other = delta.into(),
+                    }
                 }
             }
             "serverRequest/resolved" => resolve_request(&mut self.pending, p),
@@ -787,5 +793,91 @@ mod tests {
             in_place.refresh_snapshot_evidence();
             assert_eq!(serde_json::to_value(&in_place).unwrap(), serde_json::to_value(&copied).unwrap(), "{case}");
         }
+    }
+    /// A streamed text delta's append as it was before T-140: a copy of the
+    /// text so far, the delta pushed onto it, the copy set back.
+    fn copied_append(d: &mut AgentDetail, method: &str, p: &Value, at: DateTime<Utc>) {
+        let tid = p["turnId"].as_str().unwrap();
+        let key = if method.contains("commandExecution") { "aggregatedOutput" } else { "text" };
+        let typ = if method.contains("commandExecution") {
+            "commandExecution"
+        } else if method.contains("plan") {
+            "plan"
+        } else {
+            "agentMessage"
+        };
+        let items = d.turn_at(tid, at)["items"].as_array_mut().unwrap();
+        let idx = items.iter().position(|i| i["id"] == p["itemId"]).unwrap_or_else(|| {
+            items.push(json!({"id":p["itemId"],"type":typ,key:""}));
+            items.len() - 1
+        });
+        let mut value = items[idx][key].as_str().unwrap_or_default().to_owned();
+        value.push_str(p["delta"].as_str().unwrap_or_default());
+        items[idx][key] = value.into();
+    }
+
+    /// Appended in place, each delta leaves the Turns as the copying append
+    /// did, for each method: an Item there or not, its field missing, a
+    /// string, null, a number, an array or an object; a delta of text, empty,
+    /// multi-byte, missing or not a string; a Turn not there yet.
+    #[test]
+    fn a_delta_appended_in_place_leaves_what_the_copying_append_left() {
+        let at = Utc::now();
+        let fields = [None, Some(json!("")), Some(json!("héllo 🌏 ")), Some(Value::Null), Some(json!(5)),
+            Some(json!(["a"])), Some(json!({"x":1}))];
+        let deltas = [Some(json!("x")), Some(json!("")), Some(json!("日本語 ✓")), None, Some(json!(7))];
+        let mut checked = 0;
+        for method in ["item/agentMessage/delta", "item/plan/delta", "item/commandExecution/outputDelta"] {
+            let key = if method.contains("commandExecution") { "aggregatedOutput" } else { "text" };
+            for field in &fields {
+                for delta in &deltas {
+                    for (turn, item) in [("t", true), ("t", false), ("new", false)] {
+                        let mut before = detail(json!([{"id":"t","status":"inProgress","items":[]}]), None, json!([]));
+                        if item {
+                            let mut existing = json!({"id":"i","type":"agentMessage"});
+                            if let Some(f) = field {
+                                existing[key] = f.clone();
+                            }
+                            before.turns[0]["items"] = json!([existing]);
+                        }
+                        let mut p = json!({"turnId":turn,"itemId":"i"});
+                        if let Some(d) = delta {
+                            p["delta"] = d.clone();
+                        }
+                        let mut copied = before.clone();
+                        copied_append(&mut copied, method, &p, at);
+                        let mut appended = before;
+                        appended.apply_at(method, &p, at);
+                        assert_eq!(appended.turns, copied.turns, "{method} field={field:?} delta={delta:?} turn={turn} item={item}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 3 * 7 * 5 * 3);
+    }
+
+    /// Deltas to two Items of one Turn, interleaved, one of them reset to a
+    /// non-string between them: each step leaves what the copying append
+    /// left, and the texts are the deltas in order.
+    #[test]
+    fn interleaved_deltas_appended_in_place_leave_what_the_copying_append_left() {
+        let at = Utc::now();
+        let mut copied = detail(json!([{"id":"t","status":"inProgress","items":[]}]), None, json!([]));
+        let mut appended = copied.clone();
+        let steps = [("a", "Hello"), ("b", "Wor"), ("a", ", "), ("b", "ld"), ("a", "wörld 🌏"), ("b", "!")];
+        for (n, (item, delta)) in steps.iter().enumerate() {
+            if n == 3 {
+                for d in [&mut copied, &mut appended] {
+                    d.turns[0]["items"][1]["text"] = json!(42);
+                }
+            }
+            let p = json!({"turnId":"t","itemId":item,"delta":delta});
+            copied_append(&mut copied, "item/agentMessage/delta", &p, at);
+            appended.apply_at("item/agentMessage/delta", &p, at);
+            assert_eq!(appended.turns, copied.turns, "step {n}");
+        }
+        assert_eq!(appended.turns[0]["items"][0]["text"], "Hello, wörld 🌏");
+        assert_eq!(appended.turns[0]["items"][1]["text"], "ld!");
     }
 }
