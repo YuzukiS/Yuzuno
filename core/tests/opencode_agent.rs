@@ -381,6 +381,107 @@ async fn reopening_the_workspace_keeps_the_session_and_never_resends() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// After Core restarts with a Turn running, a message to that Agent is not a
+/// message to a busy OpenCode: it connects the same session again, which
+/// settles the Turn, and it is not sent; sent again, it goes. Each Agent
+/// comes back only when asked, with its own session, process and Workspace
+/// MCP credential. Before the restart, a busy Agent refuses as ever.
+#[tokio::test]
+async fn after_a_restart_a_message_connects_the_session_again_and_goes_only_when_sent_again() {
+    const OTHER: &str = "oc2";
+    fn seen(root: &std::path::Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(root.join("start.json")).unwrap()).unwrap()
+    }
+    fn calls(root: &std::path::Path) -> Vec<Value> {
+        std::fs::read_to_string(root.join("calls.jsonl")).unwrap_or_default()
+            .lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    }
+    fn prompts(root: &std::path::Path) -> usize {
+        calls(root).iter().filter(|c| c["path"].as_str().unwrap().ends_with("/prompt_async")).count()
+    }
+    /// The credential each Workspace MCP registration handed OpenCode, in order.
+    fn credentials(root: &std::path::Path) -> Vec<Value> {
+        calls(root).into_iter().filter(|c| c["method"] == "POST" && c["path"] == "/mcp")
+            .map(|c| c["body"]["config"]["headers"]["Authorization"].clone()).collect()
+    }
+    async fn send_to(ws: &Arc<Workspace>, agent_id: &str, client: &str) -> anyhow::Result<yuzuno_workspace::model::MessageReceipt> {
+        let input: MessageInput = serde_json::from_value(json!({"clientMessageId":client,"text":"after"})).unwrap();
+        ws.send_message(agent_id, input).await
+    }
+
+    let lab = lab(&[], true).await;
+    let (a_root, b_root) = (lab.root(), lab.dir.path().join("data/opencode").join(OTHER));
+    std::fs::create_dir_all(&b_root).unwrap();
+    let mut other = agent(&lab.dir.path().join("work").to_string_lossy());
+    other.agent.id = OTHER.into();
+    lab.ws.store.insert(&other).unwrap();
+    assert_eq!(lab.ws.reconnect(OTHER).await.unwrap().agent.connection_state, "connected");
+    let (a_session, b_session) = (lab.session(), lab.ws.store.detail(OTHER).unwrap().agent.opencode_session_id.unwrap());
+    let a_running = lab.send("a1", "work").await.unwrap().turn_id.unwrap();
+    let b_running = send_to(&lab.ws, OTHER, "b1").await.unwrap().turn_id.unwrap();
+    // Connected and busy: refused as before, and nothing else happens.
+    let busy = lab.send("a-busy", "more").await.unwrap_err();
+    assert!(busy.to_string().contains("OpenCode 正在执行或等待回应"), "{busy}");
+    assert_eq!(prompts(&a_root), 1);
+    let (a_pid, b_pid) = (seen(&a_root)["pid"].as_u64().unwrap(), seen(&b_root)["pid"].as_u64().unwrap());
+    let (a_before, b_before) = (credentials(&a_root), credentials(&b_root));
+    let Lab { dir, ws } = lab;
+    // As when Core stops: the Workspace goes, and each OpenCode with it.
+    drop(ws);
+    assert!(ends(a_pid).await && ends(b_pid).await, "OpenCode ended with the Workspace");
+
+    let ws = Workspace::new(dir.path().join("data"), dir.path().join("work").to_string_lossy().into(), "unused".into()).unwrap();
+    ws.start_collaboration(4999);
+    let lab = Lab { dir, ws };
+    let d = lab.detail();
+    assert_eq!((d.agent.connection_state.as_str(), d.agent.status.as_str()), ("disconnected", "offline"));
+    assert_eq!(turn(&d, &a_running)["status"], "inProgress", "opening the Workspace changes no Turn");
+
+    // The first message: the same session again, its Turn settled, and the
+    // message not sent: no receipt, no prompt, no second session.
+    let checked = lab.send("a2", "after").await.unwrap_err();
+    assert!(checked.to_string().contains("已重新核对原会话；本次消息没有发送"), "{checked}");
+    let d = lab.detail();
+    assert_eq!(d.agent.connection_state, "connected");
+    assert_eq!(d.agent.opencode_session_id.as_deref(), Some(a_session.as_str()), "the same session");
+    assert_ne!(seen(&a_root)["pid"].as_u64().unwrap(), a_pid);
+    assert_eq!(turn(&d, &a_running)["status"], "outcomeUnknown");
+    let clients: Vec<&str> = d.message_receipts.iter().map(|r| r.input.client_message_id.as_str()).collect();
+    assert_eq!(clients, ["a1"], "nothing recorded for the message not sent");
+    assert_eq!(prompts(&a_root), 1, "not sent");
+    assert_eq!(lab.posts("/session").iter().filter(|c| c["path"] == "/session").count(), 1, "no second session");
+    // Sent again, it goes.
+    let receipt = lab.send("a2", "after").await.unwrap();
+    assert_eq!(receipt.status, "accepted");
+    assert_eq!(prompts(&a_root), 2);
+
+    // The other Agent was left as it was, until a message (through `send`) asks.
+    let b = lab.ws.store.detail(OTHER).unwrap();
+    assert_eq!(b.agent.connection_state, "disconnected");
+    assert_eq!(turn(&b, &b_running)["status"], "inProgress");
+    assert_eq!(seen(&b_root)["pid"].as_u64().unwrap(), b_pid, "no OpenCode was started for it");
+    let checked = lab.ws.send(OTHER, "after".into()).await.unwrap_err();
+    assert!(checked.to_string().contains("已重新核对原会话；本次消息没有发送"), "{checked}");
+    let b = lab.ws.store.detail(OTHER).unwrap();
+    assert_eq!(b.agent.opencode_session_id.as_deref(), Some(b_session.as_str()), "its own session");
+    assert_eq!(turn(&b, &b_running)["status"], "outcomeUnknown");
+    assert_eq!(prompts(&b_root), 1, "not sent");
+    let b_now = seen(&b_root)["pid"].as_u64().unwrap();
+    assert!(b_now != b_pid && b_now != seen(&a_root)["pid"].as_u64().unwrap(), "a process of its own");
+    // Each was handed a new credential of its own.
+    let (a_after, b_after) = (credentials(&a_root), credentials(&b_root));
+    assert_eq!((a_after.len(), b_after.len()), (a_before.len() + 1, b_before.len() + 1));
+    let (a_new, b_new) = (a_after.last().unwrap(), b_after.last().unwrap());
+    assert!(a_new.is_string() && a_new != b_new && !a_before.contains(a_new) && !b_before.contains(b_new));
+    assert!(lab.ws.collaboration_status(ID).await.unwrap().ready && lab.ws.collaboration_status(OTHER).await.unwrap().ready);
+    let sent = send_to(&lab.ws, OTHER, "b2").await.unwrap().turn_id.unwrap();
+    let created = lab.ws.store.collaboration_call(Some(OTHER), "task_create", json!({"requestId":"from-b","title":"From B"})).unwrap();
+    assert_eq!(created["activity"]["source"], json!({"agentId":OTHER,"turnId":sent,"sessionId":b_session}));
+    assert_eq!(prompts(&b_root), 2);
+    lab.ws.close_agent(ID).await.unwrap();
+    lab.ws.close_agent(OTHER).await.unwrap();
+}
+
 #[tokio::test]
 async fn a_broken_stream_is_reconciled_from_a_snapshot_once() {
     let lab = lab(&[], false).await;
