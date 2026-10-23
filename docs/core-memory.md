@@ -660,9 +660,10 @@ showing it, in record order, and writes them in place (`commit_turns`, beside
 `commit_turn`). Whether another Turn is in progress is read in place under
 the record lock, and the status settles as before. A message no Turn shows
 is built from its receipt and its images, and is compared as before, decided
-before the change runs, so its images are read once. Each delivery through a
-held record's bridge commits in place and reads no whole copy. This was not
-measured on its own: the commit copies the metadata and at most two Turns.
+before the change runs, so its images are read once. A delivery from the
+bridge, on a held record where a Turn shows the message, commits in place and
+reads no whole copy. This was not measured on its own: the commit copies the
+metadata and at most two Turns.
 
 ### A Claude Turn's end
 
