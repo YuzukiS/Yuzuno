@@ -160,29 +160,32 @@ export function HistoryComposition() {
               </ul>
             </div>
           )}
-          <table className="history-table">
-            <caption>Stored bytes (rows), read {report.readAt}</caption>
-            <thead>
-              <tr>
-                <th scope="col">Agent</th>
-                {RECORD.map(({ key, label: name }) => <th key={key} scope="col">{name}</th>)}
-                <th scope="col">Record</th>
-                <th scope="col">Previews</th>
-              </tr>
-            </thead>
-            <tbody>
-              {report.agents.map((a) => (
-                <tr key={a.id}>
-                  <th scope="row">{label(a)}{a.unwritten ? " *" : ""}{a.whole ? " †" : ""}</th>
-                  {a.parts ? <Cells parts={a.parts} /> : <td colSpan={PARTS.length + 1}>No stored rows yet</td>}
+          {/* Seven columns: on a narrow screen the table scrolls, not the page. */}
+          <div className="history-table-scroll" tabIndex={0} role="region" aria-label="Stored bytes by Agent">
+            <table className="history-table">
+              <caption>Stored bytes (rows), read {report.readAt}</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Agent</th>
+                  {RECORD.map(({ key, label: name }) => <th key={key} scope="col">{name}</th>)}
+                  <th scope="col">Record</th>
+                  <th scope="col">Previews</th>
                 </tr>
-              ))}
-              <tr className="history-total">
-                <th scope="row">All held</th>
-                <Cells parts={report.total} />
-              </tr>
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {report.agents.map((a) => (
+                  <tr key={a.id}>
+                    <th scope="row">{label(a)}{a.unwritten ? " *" : ""}{a.whole ? " †" : ""}</th>
+                    {a.parts ? <Cells parts={a.parts} /> : <td colSpan={PARTS.length + 1}>No stored rows yet</td>}
+                  </tr>
+                ))}
+                <tr className="history-total">
+                  <th scope="row">All held</th>
+                  <Cells parts={report.total} />
+                </tr>
+              </tbody>
+            </table>
+          </div>
           <p className="diagnostics-note">
             Record is Item text, large payloads, Turns and metadata. Previews are a shorter copy of large payloads kept
             for clients, so they are not in it. The event journal, originals kept from before a conversion and

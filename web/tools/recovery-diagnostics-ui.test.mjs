@@ -474,6 +474,7 @@ test("the held Agents' stored history is read only when Measure is pressed: a ch
     assert.match(section.textContent, /Previews are a shorter copy of large payloads kept for clients, so they are not in it\./);
     assert.match(section.textContent, /The event journal, originals kept from before a conversion and salvaged rows are not counted\./);
     assert.ok(section.querySelector(".history-chart"), "the composition chart is drawn");
+    assert.ok(section.querySelector('.history-table-scroll[role="region"][tabindex="0"] > table'), "the table scrolls in its own region on a narrow screen");
     assert.deepEqual([...section.querySelectorAll(".history-legend li")].map((li) => li.textContent), ["Item text", "Large payloads", "Turns", "Metadata"]);
     for (const word of ["HistoryNoteSentinel", "AgentFieldSentinel", "SqlSentinel", "/home/person"]) assert.ok(!p.doc.body.textContent.includes(word), `${word} is not shown`);
     assert.ok(!JSON.stringify(allStorage(p.w)).includes("Large payloads") && !JSON.stringify(allStorage(p.w)).includes("12582912"), "the read is not stored");

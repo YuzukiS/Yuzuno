@@ -37,6 +37,11 @@
 .history-swatch-payloads { background: var(--history-payloads); }
 .history-swatch-turns { background: var(--history-turns); }
 .history-swatch-metadata { background: var(--history-metadata); }
+.history-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
 .history-table {
   width: 100%;
   border-collapse: collapse;
