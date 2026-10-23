@@ -698,16 +698,20 @@ fn unread(db: &Connection, id: &str, reviewed: i64) -> Result<u64> {
         params![id, reviewed], |r| r.get::<_, i64>(0))? as u64)
 }
 
+/// Whether Agent ?1's Turn ?2 has its completion journaled or came from a
+/// Codex import: `completed_before` and `record_recovered_completion`. The
+/// journal half has the terms of the completion index (see
+/// `COMPLETION_INDEX`), which SQLite then uses for it.
+const COMPLETED: &str = "SELECT EXISTS(SELECT 1 FROM journal WHERE agent_id=?1 AND kind='turn/completed' AND json_extract(data,'$.turn.id')=?2)
+    OR EXISTS(SELECT 1 FROM codex_import_turns WHERE agent_id=?1 AND turn_id=?2)";
+
 /// Whether a `turn/completed` about to be journaled completes a Turn whose
 /// completion is journaled already, or that came from a Codex import. A live
 /// completion can race history reconciliation. Both may update the evidence,
 /// but only the first creates an unread result: the other is journaled as
 /// `turn/reconfirmed`. Read in the writer's transaction.
 fn completed_before(db: &Connection, id: &str, kind: &str, data: &Value) -> Result<bool> {
-    Ok(kind == "turn/completed" && db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM journal WHERE agent_id=?1 AND kind='turn/completed' AND json_extract(data,'$.turn.id')=?2)
-            OR EXISTS(SELECT 1 FROM codex_import_turns WHERE agent_id=?1 AND turn_id=?2)",
-        params![id, data["turn"]["id"].as_str()], |r| r.get(0))?)
+    Ok(kind == "turn/completed" && db.query_row(COMPLETED, params![id, data["turn"]["id"].as_str()], |r| r.get(0))?)
 }
 
 /// A record to change: with everything its journal says it already
@@ -1120,11 +1124,67 @@ fn project_window(
 }
 
 
+/// The completion check (`completed_before`, `record_recovered_completion`)
+/// looks a Turn's completion up by Agent and Turn ID. Without this index it
+/// reads every turn/completed row of the Agent, each with its whole Turn
+/// (T-140). The index has that query's own terms, so it only speeds it up:
+/// the query and what it finds are the same with or without it.
+const COMPLETION_INDEX: &str = "CREATE INDEX IF NOT EXISTS journal_turn_completed
+    ON journal(agent_id, json_extract(data,'$.turn.id')) WHERE kind='turn/completed'";
+/// How long making the completion index may take as the Workspace opens.
+const COMPLETION_INDEX_BUDGET: Duration = Duration::from_secs(2);
+/// SQLite virtual-machine steps between two checks of that budget.
+const COMPLETION_INDEX_STEPS: i32 = 1000;
+/// The busy timeout of every Store connection.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// What `completion_index` found or did.
+#[derive(Debug, PartialEq)]
+enum CompletionIndex {
+    /// It was there already: nothing was read or made.
+    Present,
+    /// Made now.
+    Made,
+    /// Not made, and why. Completions are looked up by reading the journal,
+    /// as before.
+    Missing(String),
+}
+
+/// Makes the completion index if it is missing: once, as the Workspace opens
+/// and before any other connection or background work. It is only a
+/// speed-up, so it never keeps the Workspace from opening. It does not wait
+/// for another connection's lock, and it stops once `budget` has passed, as
+/// SQLite checks that every COMPLETION_INDEX_STEPS steps of its virtual
+/// machine (not a bound on one step, on I/O or on the rollback). When it
+/// stops or fails (a row whose data is not JSON, a full disk, a locked
+/// database), SQLite rolls the statement back and no part of the index is
+/// left. The busy timeout is restored and the progress handler removed on
+/// every path; failing to do that is the only error returned.
+fn completion_index(db: &Connection, budget: Duration) -> Result<CompletionIndex> {
+    let present = db.query_row("SELECT 1 FROM sqlite_master WHERE type='index' AND name='journal_turn_completed'", [], |_| Ok(()))
+        .optional();
+    match present {
+        Ok(Some(())) => return Ok(CompletionIndex::Present),
+        Ok(None) => {}
+        Err(error) => return Ok(CompletionIndex::Missing(format!("not checked: {error}"))),
+    }
+    let deadline = Instant::now() + budget;
+    let made = db.busy_timeout(Duration::ZERO)
+        .and_then(|()| db.progress_handler(COMPLETION_INDEX_STEPS, Some(move || Instant::now() >= deadline)))
+        .and_then(|()| db.execute_batch(COMPLETION_INDEX));
+    db.progress_handler(0, None::<fn() -> bool>)?;
+    db.busy_timeout(BUSY_TIMEOUT)?;
+    Ok(match made {
+        Ok(()) => CompletionIndex::Made,
+        Err(error) => CompletionIndex::Missing(error.to_string()),
+    })
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let workspace_lock = lock_workspace(path)?;
         let mut db = Connection::open(path)?;
-        db.busy_timeout(std::time::Duration::from_secs(3))?;
+        db.busy_timeout(BUSY_TIMEOUT)?;
         // FULL is SQLite's default; stated because the writer's unsynced
         // connection uses NORMAL and this one must never (see `db`).
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;
@@ -1174,6 +1234,18 @@ impl Store {
         }
         db.execute("INSERT OR IGNORE INTO workspace_meta(key,value) VALUES('workspaceId',?1)",
             [uuid::Uuid::new_v4().to_string()])?;
+        // Before `Db` opens the other connections (see completion_index).
+        let started = Instant::now();
+        match completion_index(&db, COMPLETION_INDEX_BUDGET)? {
+            CompletionIndex::Present => {}
+            CompletionIndex::Made if started.elapsed() >= Duration::from_millis(100) => {
+                eprintln!("Workspace indexed its Turn completions in {} ms", started.elapsed().as_millis());
+            }
+            CompletionIndex::Made => {}
+            CompletionIndex::Missing(reason) => {
+                eprintln!("Workspace Turn completions stay unindexed ({reason}); they are looked up by reading the journal");
+            }
+        }
         let store = Self {
             db: crate::db::Db::new(path, db)?,
             memory: Mutex::new(Memory {
@@ -3113,10 +3185,7 @@ impl Store {
     /// A reconnect can discover a completion without receiving its event.
     /// Journal it exactly once so unread/Catch-up work across disconnects too.
     pub fn record_recovered_completion(&self, id: &str, turn: &Value) -> Result<()> {
-        let exists: bool = self.db.read()?.query_row(
-            "SELECT EXISTS(SELECT 1 FROM journal WHERE agent_id=?1 AND kind='turn/completed' AND json_extract(data,'$.turn.id')=?2)
-                OR EXISTS(SELECT 1 FROM codex_import_turns WHERE agent_id=?1 AND turn_id=?2)",
-            params![id, turn["id"].as_str()], |r| r.get(0))?;
+        let exists: bool = self.db.read()?.query_row(COMPLETED, params![id, turn["id"].as_str()], |r| r.get(0))?;
         if exists { return Ok(()); }
         // It changes no Turn: written as the metadata (`commit_meta`), without
         // copying or comparing a held record, which still deduplicates
@@ -4023,3 +4092,5 @@ mod scoped_tests;
 mod restart_tests;
 #[cfg(test)]
 mod send_view_tests;
+#[cfg(test)]
+mod completion_index_tests;
