@@ -184,6 +184,38 @@ time per delta; the lab does not show it lowering what a batch adds to live
 memory. These are synthetic allocator measurements in one process, not the
 daily Core's RSS.
 
+### A reasoning summary delta
+
+A reasoning summary's text delta was appended to its section the same way: a
+copy of the section's text so far for each delta. It is now pushed onto the
+section's string in place too. A section that is not a string still becomes
+the delta; the section index, an Item or Turn made when missing, and part
+boundaries are as they were.
+
+T-140 run `ca6603bc-6bf8-498f-aa26-f599dd743196` (build
+`624eff87-d966-423a-bc4d-51115a9a78b4`, measure
+`765cc730-a594-42a9-bf02-374a85f05973`), 2026-10-23: release builds of
+`summary_delta_lab` (on lab branches, not merged), one on main and one on this
+change, the same example. Each ran twice, alternating, its two cells in one
+fixed order. Each cell sent 200 deltas of 24 B to one section through
+`Store::record_stream`. Both runs of a side gave the same Rust counts, and the
+section read back was the deltas in order in every cell.
+
+| 200 deltas of 24 B | Before | After |
+| --- | ---: | ---: |
+| Short section: allocated, averaged per delta | 5.4 KiB | 0.8 KiB |
+| The same: highest Rust live above the batch's start | 26.4 KiB | 14.3 KiB |
+| After 1 MiB: allocated, averaged per delta | 2.0 MiB | 5.9 KiB |
+| The same: highest Rust live above the batch's start | 3.0 MiB | 1.0 MiB |
+| The same: median time of one call | 239–241 µs | 0.98–1.0 µs |
+| The same: VmRSS rise over the batch | 2.0 MiB | 8 KiB |
+
+For the short section, the median call (1.03 and 1.06 µs before, 1.13 and
+0.95 µs after) and the VmRSS rise (308 and 244 KiB before, 220 and 284 KiB
+after) overlap. Live growth over the batch's start, with the meaning and
+limits given above, was 17.1 KiB before and 13.8 KiB after for the short
+section, and 1.0 MiB on both sides after 1 MiB.
+
 ## Reproduce the isolated comparison
 
 Use a managed Job with 2 CPU cores, 6 GiB RAM and no swap. Build the release
