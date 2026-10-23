@@ -612,6 +612,62 @@ text), but keeps no second copy to compare with and returns none. These are
 synthetic allocator measurements in one process, not the daily Core's RSS;
 how often a Codex Agent's thread starts was not measured.
 
+### A Claude send
+
+An ordinary Claude send, one that steers no Turn, made two commits through
+`commit_locked`, each copying the held record whole to change one Turn:
+- `claude/turnRequested` appends the new Turn with its user message and sets
+  the Agent working;
+- `message/bound` then sets that message's client ID, once Claude has
+  accepted it.
+
+Before both, `claude_answer_form_locked` read the record whole (`detail`) to
+find a Turn in progress, and kept that copy until both had committed.
+
+That read is now `send_view`, and both commits go through
+`Store::record_send`. On a held record it writes them through
+`Store::commit_turn`, as a Codex Turn's start is: the metadata and the Turn
+the send names are copied, the change is made to the copies, and the receipts
+are bound over the held Turns with the copy in its place. Neither commit
+accepts a receipt; `message/receipt` does that afterwards, as before. These
+are committed as before:
+- a record not held, or kept as one body;
+- Turns not told apart by ID;
+- a change that leaves other than the one Turn it names, such as a
+  `message/bound` for a Turn the record lacks;
+- receipts after which an Item of another Turn would be restored.
+
+What a send writes and journals, and when clients are told, are unchanged.
+The tests make each send in two stores, one written in place and one
+compared, and compare their records, rows and journals. A send through
+`send_message` on a held record commits twice in place and reads no whole
+copy.
+
+T-140 Jobs `fa9c6459-464b-40a7-91ae-35dea66ff4bc` (builds) and
+`c29037c5-a110-47e4-a18a-d377f7808a1f` (runs), 2026-10-23: release builds of
+`core_memory_paths` on main `a3d8d8b` and on this change's first commit
+`1bc1838`, in `paths` mode. One 128 MiB synthetic record (145 MiB in use) was
+run in the order before, after, after, before, one process each. The send's
+Store calls are four `send_view` reads and the `turnRequested` commit:
+
+| A held send's Store calls | Before | After |
+| --- | ---: | ---: |
+| Allocated | 146.1 MiB | 0.94 MiB |
+| Rust peak above its start | 145.2 MiB | 0.16 MiB |
+| Time | 46.7–56.3 ms | 14.7–17.4 ms |
+
+Both runs of a side allocated the same. Every other call `paths` measures
+allocated the same before and after.
+
+The lab makes the `turnRequested` commit only. `message/bound` is the same
+commit, and the form's read was a whole copy, as `detail` is above. So by the
+code, a held send made three whole copies before and none now; two of them
+were alive at once, the form's read and a commit's copy. That peak was not
+measured. A send on a record not held still loads it and compares, as before.
+These are synthetic allocator measurements in one process, not the daily
+Core's RSS. A Claude follow-up and a message delivery still copy the record
+once each.
+
 ### A Claude Turn's end
 
 A live Claude `result` made two commits, each copying the held record whole.
