@@ -75,6 +75,7 @@ fn a_resolution_or_status_change_on_the_metadata_leaves_what_the_whole_record_le
                     let running = meta.turns.iter().any(|t| t["status"] == "inProgress");
                     apply_metadata_event(&mut crate::store::Meta {
                         agent: &mut meta.agent, message_receipts: &mut meta.message_receipts, pending: &mut meta.pending,
+                        claude_runtime: &mut meta.claude_runtime,
                     }, method, p, running);
                     // Set by `Store::update_meta`, as by the whole-record commit.
                     meta.agent.pending_count = meta.pending.len() as u64;
