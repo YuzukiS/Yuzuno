@@ -748,9 +748,9 @@ class InputsAndArtifactsTests(unittest.TestCase):
         """The reply, and the bytes of the whole stdout a call leaves, as Core counts them."""
         nonce = uuid.uuid4().hex
         out = subprocess.run([sys.executable, "-c", HELPER.read_text()],
-                             input=json.dumps(dict({"root": str(self.data)}, **request, replyNonce=nonce)),
+                             input=json.dumps(dict({"root": str(self.data)}, **request, replyNonce=nonce)).encode(),
                              capture_output=True, env=self.env, timeout=60)
-        self.assertEqual(out.returncode, expect, out.stderr + out.stdout)
+        self.assertEqual(out.returncode, expect, (out.stderr + out.stdout).decode("utf-8", "replace"))
         line = out.stdout.decode().splitlines()[-1]
         return json.loads(line[len(f"{remote_job.MARK}{nonce} "):]), len(out.stdout)
 
