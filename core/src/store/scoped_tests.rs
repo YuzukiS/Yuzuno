@@ -565,12 +565,11 @@ fn a_started_turn_is_written_without_copying_the_other_turns() {
 /// `turn/started` is committed as before.
 #[test]
 fn a_started_turn_is_compared_where_in_place_cannot_show_the_same_write() {
-    let plain = started("f1", json!([{"id":"u-f1","type":"userMessage","content":[{"type":"text","text":"x"}]}]));
-    let check_with = |generic: &Store, scoped: &Store, step: &str, data: &Value| {
-        assert!(!start_both(generic, scoped, "turn/started", data), "{step}: written in place");
+    let check = |generic: &Store, scoped: &Store, step: &str| {
+        let data = started("f1", json!([{"id":"u-f1","type":"userMessage","content":[{"type":"text","text":"x"}]}]));
+        assert!(!start_both(generic, scoped, "turn/started", &data), "{step}: written in place");
         assert_eq!(state(generic), state(scoped), "{step}");
     };
-    let check = |generic: &Store, scoped: &Store, step: &str| check_with(generic, scoped, step, &plain);
     let ((_ga, generic), (_sa, scoped)) = pair();
     for store in [&generic, &scoped] {
         store.record_event("a", "test/duplicate", &json!({}), |d| {
@@ -617,25 +616,10 @@ fn a_started_turn_is_compared_where_in_place_cannot_show_the_same_write() {
         store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
     }
     check(&generic, &scoped, "a record kept whole");
-
-    // A client ID the new Turn's message shares with an older Turn's: which
-    // Turn a receipt is bound to and accepted by depends on both.
-    let ((_ga, generic), (_sa, scoped)) = pair();
-    let sharing = started("f2", json!([{"id":"u-f2","type":"userMessage","clientId":"old-2","content":[{"type":"text","text":"again"}]}]));
-    check_with(&generic, &scoped, "a client ID also in an older Turn", &sharing);
-
-    // A receipt still sending whose message is in an older Turn: the
-    // event's apply accepts it from that Turn.
-    let ((_ga, generic), (_sa, scoped)) = pair();
-    for store in [&generic, &scoped] {
-        store.update_meta("a", "message/requested", &json!({}), |m| m.message_receipts.push(receipt("old-2", "message 2"))).unwrap();
-    }
-    check(&generic, &scoped, "a receipt to accept from an older Turn");
-    assert_eq!(scoped.detail("a").unwrap().message_receipts.iter().find(|r| r.input.client_message_id == "old-2").unwrap().status, "accepted");
 }
 
-/// Each way a `turn/started` write can fail, planning, writing rows or at
-/// COMMIT, publishes nothing: the held record, its rows and journal, rev,
+/// Each way a `turn/started` write can fail, planning, writing its journal,
+/// metadata or Item rows, or at COMMIT, publishes nothing: the held record, its rows and journal, rev,
 /// brief and the changes its rows still lack stay as they were, and once
 /// the fault is gone the next write goes through with those changes.
 #[test]
@@ -645,6 +629,8 @@ fn a_started_turn_whose_write_fails_publishes_nothing() {
         ("CREATE TRIGGER refuse BEFORE INSERT ON journal WHEN NEW.kind='turn/started' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
             "DROP TRIGGER refuse;", true),
         ("CREATE TRIGGER refuse BEFORE UPDATE ON agents BEGIN SELECT RAISE(ABORT, 'refused'); END;", "DROP TRIGGER refuse;", true),
+        ("CREATE TRIGGER refuse BEFORE INSERT ON agent_items WHEN NEW.turn_id='lost' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            "DROP TRIGGER refuse;", true),
         ("CREATE TABLE t140_parent(id INTEGER PRIMARY KEY);
           CREATE TABLE t140_child(parent INTEGER REFERENCES t140_parent(id) DEFERRABLE INITIALLY DEFERRED);
           CREATE TRIGGER t140_orphan AFTER INSERT ON journal WHEN NEW.kind='turn/started'
@@ -765,4 +751,69 @@ fn a_started_turn_writes_the_messages_its_apply_restores() {
     assert_eq!(state(&ga.1), restored);
     let item = &restored["reloaded"]["turns"].as_array().unwrap().iter().find(|t| t["id"] == "n5").unwrap()["items"][0];
     assert!(item.get(crate::message_content::BLOCKS).is_some(), "the restored message was not written: {item}");
+}
+
+/// Receipts bound, restored and accepted by every Turn, as `apply` and
+/// `commit` do, with the started Turn copied: a client ID in Turns before and
+/// after it (bound by the last, accepted by the first), a receipt whose
+/// binding moves, one still to be accepted from an older Turn, and a Turn
+/// already ended, whose `apply` skips that step while `commit` still binds.
+#[test]
+fn a_started_turn_binds_and_accepts_receipts_by_every_turn() {
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    let same = |step: &str, in_place: bool| {
+        assert!(in_place, "{step}: the scoped store copied the record");
+        assert_eq!(state(&generic), state(&scoped), "{step}");
+        for store in [&generic, &scoped] {
+            store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+        }
+    };
+    // A Turn in the middle, "mid", and one after it with a message whose
+    // client ID is also in Turn t1 and in no receipt yet.
+    for store in [&generic, &scoped] {
+        store.record_event("a", "test/turns", &json!({}), |d| {
+            d.turns[1]["items"][0]["clientId"] = json!("dup");
+            d.turns.push(json!({"id":"mid","status":"inProgress","items":[]}));
+            d.turns.push(json!({"id":"late","status":"completed","items":[
+                {"id":"u-late","type":"userMessage","clientId":"dup","content":[{"type":"text","text":"message 1"}]}]}));
+        }).unwrap();
+    }
+    // A receipt still to be accepted, its client ID in t1 and "late".
+    for store in [&generic, &scoped] {
+        store.update_meta("a", "message/requested", &json!({}), |m| m.message_receipts.push(receipt("dup", "message 1"))).unwrap();
+    }
+    // The started Turn's message carries the same client ID: bound by the
+    // last match ("late"), accepted by the first (t1).
+    let mid = started("mid", json!([{"id":"u-mid","type":"userMessage","clientId":"dup","content":[{"type":"text","text":"message 1"}]}]));
+    same("a client ID before and after the started Turn", start_both(&generic, &scoped, "turn/started", &mid));
+    let dup = scoped.detail("a").unwrap().message_receipts.into_iter().find(|r| r.input.client_message_id == "dup").unwrap();
+    assert_eq!((dup.status.as_str(), dup.turn_id.as_deref()), ("accepted", Some("t1")));
+    assert_eq!(dup.binding.map(|b| b.turn_id), Some("late".to_string()));
+
+    // A receipt bound to an older Turn's message whose client ID the started
+    // Turn's message carries now: its binding moves to the started Turn.
+    let moved = started("n6", json!([{"id":"u-n6","type":"userMessage","clientId":"old-4","content":[{"type":"text","text":"message 4"}]}]));
+    for store in [&generic, &scoped] {
+        let mut bound = receipt("old-4", "message 4");
+        bound.status = "accepted".into();
+        bound.turn_id = Some("t4".into());
+        store.update_meta("a", "message/requested", &json!({}), move |m| m.message_receipts.push(bound)).unwrap();
+    }
+    same("a binding that moves", start_both(&generic, &scoped, "turn/started", &moved));
+    let old4 = scoped.detail("a").unwrap().message_receipts.into_iter().find(|r| r.input.client_message_id == "old-4").unwrap();
+    assert_eq!(old4.binding.map(|b| b.turn_id), Some("n6".to_string()));
+
+    // A Turn already ended: `apply` returns before the receipts, so a
+    // receipt still to be accepted from an older Turn stays as it is.
+    for store in [&generic, &scoped] {
+        store.update_meta("a", "message/requested", &json!({}), |m| m.message_receipts.push(receipt("old-2", "message 2"))).unwrap();
+    }
+    let ended = started("t3", json!([{"id":"late-t3","type":"agentMessage","text":"late"}]));
+    same("a Turn already ended, a receipt still to be accepted", start_both(&generic, &scoped, "turn/started", &ended));
+    let old2 = scoped.detail("a").unwrap().message_receipts.into_iter().find(|r| r.input.client_message_id == "old-2").unwrap();
+    assert_eq!(old2.status, "sending");
+    // The next one accepts it from t2, as the whole record's apply does.
+    same("then a new Turn", start_both(&generic, &scoped, "turn/started", &started("n7", json!([]))));
+    let old2 = scoped.detail("a").unwrap().message_receipts.into_iter().find(|r| r.input.client_message_id == "old-2").unwrap();
+    assert_eq!((old2.status.as_str(), old2.turn_id.as_deref()), ("accepted", Some("t2")));
 }

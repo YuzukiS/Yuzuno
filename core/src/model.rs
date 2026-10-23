@@ -427,11 +427,7 @@ impl AgentDetail {
                     let existing = self.turn_at(id, at);
                     // The RPC response can be scheduled after completion events.
                     // A terminal turn must never become inProgress again.
-                    if method == "turn/started"
-                        && existing["status"]
-                            .as_str()
-                            .is_some_and(|s| ["completed", "failed", "interrupted"].contains(&s))
-                    {
+                    if method == "turn/started" && !starts(existing) {
                         return;
                     }
                     // Native completion payloads can contain only the final
@@ -612,20 +608,7 @@ impl AgentDetail {
 
     pub fn confirm_message_receipts(&mut self) {
         crate::message_content::bind(&mut self.turns, &mut self.message_receipts);
-        for receipt in &mut self.message_receipts {
-            if receipt.status == "accepted" || receipt.status == "rejected" { continue; }
-            for turn in &self.turns {
-                if turn["items"].as_array().is_some_and(|items| items.iter().any(|item|
-                    // Native item IDs are generated independently. clientId
-                    // echoes turn/start or turn/steer's clientUserMessageId.
-                    item["type"] == "userMessage" && item["clientId"].as_str() == Some(&receipt.input.client_message_id))) {
-                    receipt.status = "accepted".into();
-                    receipt.turn_id = turn["id"].as_str().map(str::to_owned);
-                    receipt.error = None;
-                    break;
-                }
-            }
-        }
+        accept_receipts(self.turns.iter(), &mut self.message_receipts);
     }
 
     /// The last agent message and the changed files, read from the Items in
@@ -700,6 +683,32 @@ pub(crate) fn resolve_request(pending: &mut Vec<PendingRequest>, p: &Value) {
 pub(crate) fn thread_status_changed(agent: &mut Agent, p: &Value) {
     if p["status"]["type"] == "systemError" {
         agent.status = "error".into();
+    }
+}
+
+/// Whether `turn/started` changes this Turn: one already ended never becomes
+/// inProgress again (see `AgentDetail::apply_at`).
+pub(crate) fn starts(turn: &Value) -> bool {
+    !turn["status"].as_str().is_some_and(|s| ["completed", "failed", "interrupted"].contains(&s))
+}
+
+/// `confirm_message_receipts`' acceptance: each receipt not yet accepted or
+/// rejected is accepted by the first of `turns`, in order, with a user
+/// message carrying its client ID.
+pub(crate) fn accept_receipts<'a>(turns: impl Iterator<Item = &'a Value> + Clone, receipts: &mut [MessageReceipt]) {
+    for receipt in receipts {
+        if receipt.status == "accepted" || receipt.status == "rejected" { continue; }
+        for turn in turns.clone() {
+            if turn["items"].as_array().is_some_and(|items| items.iter().any(|item|
+                // Native item IDs are generated independently. clientId
+                // echoes turn/start or turn/steer's clientUserMessageId.
+                item["type"] == "userMessage" && item["clientId"].as_str() == Some(&receipt.input.client_message_id))) {
+                receipt.status = "accepted".into();
+                receipt.turn_id = turn["id"].as_str().map(str::to_owned);
+                receipt.error = None;
+                break;
+            }
+        }
     }
 }
 
