@@ -166,7 +166,6 @@ impl Db {
 
     /// Whether reads use their own snapshot connections (WAL) rather than
     /// the writer.
-    #[cfg(test)]
     pub(crate) fn is_wal(&self) -> bool {
         self.wal
     }

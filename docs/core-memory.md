@@ -82,6 +82,39 @@ Each part is read in turn, so they are not one snapshot. On a platform where a
 part can't be read it says `available: false` with a reason; no count is 0
 because it is unknown.
 
+### What the held records' stored history is made of
+
+`GET /api/diagnostics/memory/history` answers which parts of the held Agents'
+records take the most space where they are stored. Settings → Updates shows it
+as a chart and a table, read only when you press Measure. It is not part of
+`/api/diagnostics/memory`, Copy diagnostics, `/api/health` or any polling, and
+it adds nothing to opening the Workspace.
+
+For each Agent whose record is held now, it gives the rows and stored bytes of
+its metadata row (`layout` 0 keeps the whole record there), its Turns, its
+Items' own data, the previews kept for clients, and its payloads (the full
+large fields of tool Items), and their total. It gives only counts, the
+Agent's id and name, and whether the held record has changes its rows lack
+yet (`unwrittenChanges`): no text, path, key or SQL. An Agent held without a
+row says `stored: false` and adds nothing to the total.
+
+- **Bytes as stored.** The bytes are SQLite's `octet_length` of each value,
+  taken from the row's header: a value on overflow pages is not read.
+  `length` of TEXT counts characters and has to read them, so it is not
+  used. The test `stored_bytes_are_read_from_row_headers_not_from_the_payloads`
+  counts the pages each reads.
+- **Not memory.** Stored bytes are not the Rust heap a held record takes,
+  String capacity, RSS or SQLite's page cache. A record with unwritten
+  changes holds more than is stored.
+- **Not one snapshot with the held list.** The held Agents are listed
+  first, then their rows read in one read snapshot. No held record is
+  copied or serialized.
+- **Budget.** The reads stop after 2 s. Then, or on any error, the answer
+  is `available: false` with a reason and no numbers at all: no Agent's and
+  no total, never a partial sum. One measurement runs at a time, and one
+  asked meanwhile is told so. Without WAL a read would share the one writer
+  and hold up its writes, so it is not measured.
+
 ## While an Agent streams on
 
 T-140 Job `459d0b2a-f9cd-4da9-aeb0-43cae468fcc6`, 2026-10-22, a lab build on

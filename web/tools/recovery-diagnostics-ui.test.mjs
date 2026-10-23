@@ -41,13 +41,27 @@ const memoryReport = {
   },
   extra: { path: "/home/person/ExtraFieldSentinel" },
 };
+// A synthetic GET /api/diagnostics/memory/history report (T-140): two held
+// Agents, one with unwritten changes and one without stored rows, and fields
+// the page does not show, each carrying a sentinel.
+const part = (rows, bytes) => ({ rows, bytes });
+const stored = { stored: true, layout: 1, metadata: part(1, 2048), turns: part(3, 6144), items: part(40, 3 * MiB), itemsWithPayloads: 2, previews: part(2, 8192), payloads: part(2, 12 * MiB), path: "/home/person/AgentFieldSentinel" };
+const historyReport = {
+  format: 1, readAt: "2026-10-23T08:00:00+00:00", available: true, budgetMs: 2000, note: "HistoryNoteSentinel", heldAgents: 2,
+  agents: [
+    { agentId: "a", name: "Mori", unwrittenChanges: true, ...stored },
+    { agentId: "b0c1d2e3f4", name: null, unwrittenChanges: false, stored: false },
+  ],
+  total: { metadata: part(1, 2048), turns: part(3, 6144), items: part(40, 3 * MiB), itemsWithPayloads: 2, previews: part(2, 8192), payloads: part(2, 12 * MiB) },
+  sql: "SELECT SqlSentinel",
+};
 
 /**
  * The built app, with the page's script tag as Core serves it. `named: false`
  * serves an Agent without a name, which the rail can't draw: a real render
  * error that no part of the app handles.
  */
-async function mount({ named = true, storage = {}, clipboard = "ok", desktop = null, memory = memoryReport } = {}) {
+async function mount({ named = true, storage = {}, clipboard = "ok", desktop = null, memory = memoryReport, history = historyReport } = {}) {
   const calls = [];
   const copied = [];
   const dom = new JSDOM(`<!doctype html><html><body><div id="root"></div><script type="module" src="/${entry}"></script></body></html>`, {
@@ -60,6 +74,7 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
   for (const [key, value] of Object.entries(storage)) w.localStorage.setItem(key, value);
   w.matchMedia = (media) => ({ media, matches: false, addEventListener() {}, removeEventListener() {} });
   w.EventSource = class { addEventListener() {} close() {} };
+  w.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
   w.HTMLElement.prototype.scrollIntoView = function () {};
   w.HTMLElement.prototype.scrollTo = function () {};
   if (clipboard !== "none")
@@ -97,6 +112,10 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
     if (url.endsWith("/api/health")) {
       if (!state.health) throw new TypeError("Failed to fetch");
       return respond(health);
+    }
+    if (url.endsWith("/api/diagnostics/memory/history")) {
+      if (history === "older core") return respond({ error: "Not found" }, 404);
+      return respond(history);
     }
     if (url.endsWith("/api/diagnostics/memory")) {
       if (memory === "unreachable") throw new TypeError("Failed to fetch");
@@ -414,5 +433,75 @@ test("when Core's memory can't be read, the text says why and everything else is
     assert.match(busy.copied[0], /^ {2}Idle trim: maintenance tick running yes; a trim held its gate as Core read it, so what it waits for was not read$/m);
   } finally {
     busy.close();
+  }
+});
+
+const historyCalls = (p) => p.calls.filter((c) => c.url.endsWith("/api/diagnostics/memory/history")).length;
+async function openHistory(p) {
+  await waitFor(() => railShows(p, "Mori"), "the app is drawn");
+  p.doc.querySelector('[aria-label="Settings and updates"]').click();
+  await waitFor(() => p.doc.querySelector("#settings-history"), "Settings shows the stored history");
+  return p.doc.querySelector("#settings-history");
+}
+
+test("the held Agents' stored history is read only when Measure is pressed: a chart and a table of Core's numbers, nothing else from the report", async () => {
+  const p = await mount();
+  try {
+    const section = await openHistory(p);
+    assert.equal(historyCalls(p), 0, "opening Settings does not read it");
+    assert.match(section.textContent, /stored bytes, not the memory Core uses/);
+    assert.equal(section.querySelector("table"), null, "nothing is shown before it is read");
+    p.button("Copy diagnostics", p.doc.querySelector("#settings-diagnostics")).click();
+    await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
+    assert.equal(historyCalls(p), 0, "the diagnostics text does not read it");
+    assert.ok(!p.copied[0].includes("Stored history"), "nor include it");
+    p.button("Measure", section).click();
+    await waitFor(() => section.querySelector("table"), "the table shows");
+    assert.equal(historyCalls(p), 1, "read once, for this press");
+    const rows = [...section.querySelectorAll("tbody tr")].map((tr) => [...tr.children].map((c) => c.textContent));
+    assert.deepEqual(rows, [
+      ["Mori *", "3.0 MiB (40)", "12.0 MiB (2)", "8.0 KiB (2)", "6.0 KiB (3)", "2.0 KiB (1)", "15.0 MiB"],
+      ["Agent b0c1d2e3", "No stored rows yet"],
+      ["All held", "3.0 MiB (40)", "12.0 MiB (2)", "8.0 KiB (2)", "6.0 KiB (3)", "2.0 KiB (1)", "15.0 MiB"],
+    ]);
+    assert.deepEqual([...section.querySelectorAll("thead th")].map((th) => th.textContent), ["Agent", "Item text", "Large payloads", "Previews", "Turns", "Metadata", "All"]);
+    assert.match(section.querySelector("caption").textContent, /^Stored bytes \(rows\), read 2026-10-23T08:00:00\+00:00$/);
+    assert.match(section.textContent, /\* Has changes not written yet, so it holds more than is stored\./);
+    assert.ok(section.querySelector(".history-chart"), "the composition chart is drawn");
+    assert.deepEqual([...section.querySelectorAll(".history-legend li")].map((li) => li.textContent), ["Item text", "Large payloads", "Previews", "Turns", "Metadata"]);
+    for (const word of ["HistoryNoteSentinel", "AgentFieldSentinel", "SqlSentinel", "/home/person"]) assert.ok(!p.doc.body.textContent.includes(word), `${word} is not shown`);
+    assert.ok(!JSON.stringify(allStorage(p.w)).includes("Large payloads") && !JSON.stringify(allStorage(p.w)).includes("12582912"), "the read is not stored");
+    await pause(200);
+    assert.equal(historyCalls(p), 1, "and not read again by itself");
+    p.button("Measure", section).click();
+    await waitFor(() => historyCalls(p) === 2, "pressed again, read again");
+    assert.equal(p.calls.filter((c) => c.method && c.method !== "GET").length, 0, "measuring sends nothing");
+  } finally {
+    p.close();
+  }
+});
+
+test("when Core does not measure the stored history, the section says why and gives no numbers", async () => {
+  const cases = [
+    [{ format: 1, readAt: "2026-10-23T08:00:00+00:00", available: false, budgetMs: 2000, heldAgents: 3, note: "x", reason: "Not read within 2000 ms, so no part of it is given." }, /^Not measured: Not read within 2000 ms, so no part of it is given\.$/],
+    [{ format: 1, readAt: "2026-10-23T08:00:00+00:00", available: false, budgetMs: 2000, note: "x", reason: "Another measurement is running; ask again once it has finished." }, /^Not measured: Another measurement is running; ask again once it has finished\.$/],
+    ["older core", /^Not measured: this Core can't measure it\.$/],
+    [{ format: 2 }, /^Not measured: not an answer this window understands\.$/],
+    [{ ...historyReport, agents: [{ agentId: "a", name: "Mori", stored: true, items: part(-1, 0) }] }, /^Not measured: not an answer this window understands\.$/],
+    [{ ...historyReport, heldAgents: 0, agents: [], total: historyReport.total }, /^No Agent's record is held now, so there is nothing to measure\.$/],
+  ];
+  for (const [history, says] of cases) {
+    const p = await mount({ history });
+    try {
+      const section = await openHistory(p);
+      p.button("Measure", section).click();
+      await waitFor(() => historyCalls(p) === 1 && !p.button("Measuring", section), "it was read");
+      const status = section.querySelector('[role="status"]');
+      assert.match(status?.textContent || "", says);
+      assert.equal(section.querySelector("table"), null, "no numbers are given");
+      assert.equal(section.querySelector(".history-chart"), null, "nor a chart");
+    } finally {
+      p.close();
+    }
   }
 });
