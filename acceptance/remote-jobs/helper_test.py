@@ -23,6 +23,8 @@ remote_job = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(remote_job)
 
 MACHINE = "0123456789abcdef0123456789abcdef"
+# What one reply frame may take: Core reads 256 KiB of a call, 32 KiB are left for login scripts.
+FRAME = 224 * 1024
 OTHER = "fedcba9876543210fedcba9876543210"
 # This host's own facts when its systemd user manager can make scopes with
 # the memory controller; the tests of limits really in force need it.
@@ -803,7 +805,7 @@ class InputsAndArtifactsTests(unittest.TestCase):
             if reply["status"] == "terminal":
                 break
             time.sleep(0.1)
-        self.assertLessEqual(size, remote_job.FRAME_BUDGET)
+        self.assertLessEqual(size, FRAME)
         result = self.projected(attempt, reply, paths)
         self.assertEqual((result["status"], result["exitCode"], result["jobId"], result["attempt"]),
                          ("succeeded", 0, attempt["jobId"], attempt["attempt"]))
@@ -813,7 +815,7 @@ class InputsAndArtifactsTests(unittest.TestCase):
         same = lambda r: dict(r, artifactsOmitted={k: v for k, v in r["artifactsOmitted"].items() if k != "replyBytes"})
         for request in (dict(bound, action="cancel"), dict(attempt, action="start")):
             again, size = self.framed(request)
-            self.assertLessEqual(size, remote_job.FRAME_BUDGET)
+            self.assertLessEqual(size, FRAME)
             self.assertEqual(same(again["result"]), same(result))
 
     def test_the_longest_terminal_reply_submit_allows_stays_within_the_frame(self):
@@ -830,7 +832,7 @@ class InputsAndArtifactsTests(unittest.TestCase):
         self.run_to_end(attempt)
         bound = {k: attempt[k] for k in ("jobId", "attempt", "workspaceKey", "machineId", "digest", "expectHost")}
         reply, size = self.framed(dict(bound, action="status"))
-        self.assertLessEqual(size, remote_job.FRAME_BUDGET)
+        self.assertLessEqual(size, FRAME)
         self.assertEqual(self.projected(attempt, reply, paths)["status"], "succeeded")
         kept = json.loads((self.folder(attempt) / "artifacts.json").read_text())
         self.assertIn("\udcff\udcfe-", kept["artifacts"][-1]["absolutePath"])
@@ -850,16 +852,17 @@ class InputsAndArtifactsTests(unittest.TestCase):
         self.assertEqual(self.inspect(*self.long_paths("a", 2, budget=40))["status"], "inspected")
 
     def test_a_frame_is_measured_with_its_mark_nonce_and_newline(self):
+        self.assertEqual(remote_job.FRAME_BUDGET, FRAME)
         mark = remote_job.MARK + uuid.uuid4().hex + " "
-        room = remote_job.FRAME_BUDGET - len(mark) - 1
+        room = FRAME - len(mark) - 1
         filler = room - len(json.dumps({"status": "logs", "text": ""}))
         fits = {"status": "logs", "text": "a" * filler}
         self.assertEqual(remote_job.within_frame(fits, mark, "logs"), json.dumps(fits))
         over = dict(fits, text="a" * (filler + 1))
         text = remote_job.within_frame(over, mark, "logs")
-        self.assertLessEqual(len(mark) + len(text) + 1, remote_job.FRAME_BUDGET)
+        self.assertLessEqual(len(mark) + len(text) + 1, FRAME)
         self.assertEqual(json.loads(text)["status"], "unclear")
-        self.assertIn("a %d-byte reply" % (remote_job.FRAME_BUDGET + 1), json.loads(text)["reason"])
+        self.assertIn("a %d-byte reply" % (FRAME + 1), json.loads(text)["reason"])
 
     def test_an_input_whose_path_became_a_symlink_loop_is_named_and_the_start_rejected(self):
         (self.work / "in.txt").write_text("frozen\n")
