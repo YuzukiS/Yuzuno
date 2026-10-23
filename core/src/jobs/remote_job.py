@@ -24,6 +24,9 @@ root that Core recorded for the attempt and names in each of its requests
   started.json         the command's process identity (boot, PID, /proc
                        starttime, process group and session), written before
                        that process may run the command
+  deadline.json        the deadline the supervisor counts the timeout to, on
+                       this boot's monotonic clock, with the command's
+                       identity: applied by status if the supervisor is gone
   log-0.bin, log-1.bin the output ring (2 MiB, as for local jobs)
   cancel.json          cancellation intent
   paused.json, resumed.json
@@ -757,6 +760,15 @@ def pump():
 reader = threading.Thread(target=pump, daemon=True)
 reader.start()
 deadline = time.monotonic() + spec["timeoutSeconds"]
+# The same deadline for status, if this supervisor is gone before it.
+# CLOCK_MONOTONIC (time.monotonic on Linux) is one clock for this boot's
+# processes, so the record names the boot and the command's identity. Without
+# it nothing is applied in this supervisor's place.
+try:
+    atomic(root / "deadline.json", {"bootId": group["bootId"], "pid": pid, "starttime": group["starttime"],
+                                    "timeoutSeconds": spec["timeoutSeconds"], "monotonic": deadline})
+except OSError:
+    pass
 why = None
 seen = {}
 sampled = 0.0
@@ -1283,6 +1295,40 @@ def checked(root, bound, fence):
     return intent, None
 
 
+def overdue(root, started):
+    """Whether a lost attempt's command still runs past the deadline its
+    supervisor counted to: its deadline.json for the process started.json
+    names, in this boot, on the same monotonic clock, and that process still
+    the leader of the attempt's group. Whatever cannot be confirmed is not
+    overdue, and nothing is stopped for it."""
+    try:
+        deadline = read_json(root / "deadline.json")
+        spec = read_json(root / "spec.json")
+    except Unclear:
+        return False
+    if not (isinstance(deadline, dict) and isinstance(spec, dict)):
+        return False
+    at = deadline.get("monotonic")
+    if not isinstance(at, (int, float)) or isinstance(at, bool):
+        return False
+    return (all(deadline.get(key) == started.get(key) for key in ("bootId", "pid", "starttime"))
+            and deadline["bootId"] == boot_id() and deadline.get("timeoutSeconds") == spec.get("timeoutSeconds")
+            and time.monotonic() > at and alive(started) and started["pid"] in members(started))
+
+
+def time_out(root, intent, reply):
+    """The timeout of a lost attempt, which its supervisor is no longer there
+    to apply, stopped as cancel stops one: a paused scope thawed first, and
+    the outcome recorded only once nothing of the group is left. Until then
+    it stays lost, and the next status tries again. Bounded within Core's
+    30 s for one call, as cancel is."""
+    thawed = thaw_for_stop(root, intent)
+    if stop(reply["started"], limit=4):
+        outcome(root, intent, "failed", "timeout after %d s; its supervisor was gone, so its process group was stopped here"
+                % read_json(root / "spec.json")["timeoutSeconds"], extra={"thawedToStop": thawed} if thawed else None)
+    return state(root, intent)
+
+
 def status(request, host):
     fence = request.get("fence") is True
     root, bound, reply = find(request, host, fence)
@@ -1293,6 +1339,8 @@ def status(request, host):
         if reply:
             return reply
         reply = state(root, intent)
+        if reply["status"] == "lost" and overdue(root, reply["started"]):
+            reply = time_out(root, intent, reply)
         if reply["status"] in ("running", "stopping") and (root / "limits.json").exists():
             # Whether its own scope is frozen, so Core settles a pause or
             # resume whose reply was lost, and sees one made outside Yuzuno.

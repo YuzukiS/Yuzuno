@@ -626,6 +626,39 @@ async fn a_dead_supervisor_and_a_child_left_by_the_leader_keep_the_slot_until_ca
     assert!(gone(child).await);
 }
 
+/// A supervisor that is gone does not take the timeout with it: before the
+/// deadline it recorded the attempt is unknown and keeps its slot; the first
+/// check after it stops the command's group and records the timeout, which
+/// releases the slot. The unknown is told once, the timeout once.
+#[tokio::test]
+async fn a_lost_attempt_still_running_at_its_timeout_is_stopped_and_released_at_the_next_check() {
+    let lab = lab();
+    let first = create(&lab, input(&lab, "overdue", "exec sleep 60", json!({"timeoutSeconds": 5})));
+    until(&lab, &lab.ssh, &first, |j| j["status"] == "running").await;
+    let since = std::time::Instant::now();
+    let supervisor = read(folder(&lab, &first).join("supervisor.json"))["pid"].as_i64().unwrap();
+    let leader = read(folder(&lab, &first).join("started.json"))["pid"].as_i64().unwrap();
+    std::process::Command::new("kill").args(["-KILL", &supervisor.to_string()]).status().unwrap();
+    assert!(gone(supervisor).await);
+    tick(&lab, &lab.ssh).await;
+    let lost = job(&lab, &first);
+    assert_eq!((lost["status"].as_str(), lost["reserved"].as_bool()), (Some("unknown"), Some(true)), "{lost}");
+    assert!(lost["reason"].as_str().unwrap().contains("its command is still running"), "{lost}");
+    let told = lost["notifications"]["unknown"].clone();
+    assert!(told.is_string(), "{lost}");
+    // Its deadline was taken just after it was seen running.
+    tokio::time::sleep((Duration::from_secs(5 + 2)).saturating_sub(since.elapsed())).await;
+    tick(&lab, &lab.ssh).await;
+    let ended = job(&lab, &first);
+    assert_eq!((ended["status"].as_str(), ended["reserved"].as_bool()), (Some("failed"), Some(false)), "{ended}");
+    assert_eq!(ended["reason"], "timeout after 5 s; its supervisor was gone, so its process group was stopped here");
+    assert!(gone(leader).await);
+    assert_eq!(ended["notifications"]["unknown"], told, "{ended}");
+    assert!(ended["notifications"]["failed"].is_string(), "{ended}");
+    tick(&lab, &lab.ssh).await;
+    assert_eq!(job(&lab, &first)["notifications"], ended["notifications"]);
+}
+
 #[tokio::test]
 async fn a_restarted_machine_interrupts_the_attempt_and_an_unclear_record_keeps_the_slot() {
     let lab = lab();
