@@ -674,6 +674,10 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Every test here makes or sweeps previews, and PREVIEWS is one map for
+    /// the whole process: run one at a time, so a test sees only its own
+    /// sweeps (a preview made by another sweeps expired ones too).
+    static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     fn turn(id: &str) -> Value {
         json!({"id":id,"status":"completed","itemsView":"full","items":[{"id":format!("u-{id}"),"type":"userMessage","content":[{"type":"text","text":format!("original {id}")}]},{"id":format!("a-{id}"),"type":"agentMessage","text":format!("reply {id}")} ]})
     }
@@ -741,6 +745,7 @@ mod tests {
     }
     #[tokio::test]
     async fn rewind_paged_boundary_is_durable_archived_and_sent_once() {
+        let _serial = SERIAL.lock().await;
         let (dir, ws) = fixture().await;
         let p = ws.rewind_preview("a", "2").await.unwrap();
         assert_eq!(
@@ -797,6 +802,7 @@ mod tests {
     }
     #[tokio::test]
     async fn rewind_refuses_busy_stale_legacy_and_missing_identity_without_writes() {
+        let _serial = SERIAL.lock().await;
         let (dir, ws) = fixture().await;
         ws.update_record("a", "test", json!({}), |d| {
             d.turns[3]["status"] = "inProgress".into()
@@ -845,6 +851,7 @@ mod tests {
     }
     #[tokio::test]
     async fn rewind_lost_reply_blocks_input_and_reconnect_checks_without_repeating() {
+        let _serial = SERIAL.lock().await;
         let (dir, ws) = fixture().await;
         let p = ws.rewind_preview("a", "1").await.unwrap();
         let key = p["previewId"].as_str().unwrap();
@@ -873,6 +880,7 @@ mod tests {
     }
     #[tokio::test]
     async fn rewind_native_refusal_preserves_history() {
+        let _serial = SERIAL.lock().await;
         let (dir, ws) = fixture().await;
         let p = ws.rewind_preview("a", "3").await.unwrap();
         std::fs::write(dir.path().join("refuse"), "").unwrap();
@@ -888,6 +896,7 @@ mod tests {
 
     #[tokio::test]
     async fn rewind_unknown_can_keep_unchanged_or_externally_extended_history_without_resend() {
+        let _serial = SERIAL.lock().await;
         for changed in [false, true] {
             let (dir, ws) = fixture().await;
             ws.update_record("a", "test/context", json!({}), |d| {
@@ -961,6 +970,7 @@ mod tests {
     }
     #[tokio::test]
     async fn rewind_recovery_continues_normal_reconciliation() {
+        let _serial = SERIAL.lock().await;
         let (dir, ws) = fixture().await;
         let p = ws.rewind_preview("a", "2").await.unwrap();
         std::fs::write(dir.path().join("disconnect"), "").unwrap();
@@ -985,6 +995,7 @@ mod tests {
     }
     #[tokio::test]
     async fn rewind_http_admission_failure_is_definite_without_a_draft() {
+        let _serial = SERIAL.lock().await;
         let (_dir, ws) = fixture().await;
         let result = confirm(
             State(ws.clone()),
@@ -1004,6 +1015,7 @@ mod tests {
 
     #[tokio::test]
     async fn rewind_target_can_be_older_than_the_cached_window() {
+        let _serial = SERIAL.lock().await;
         let (_dir, ws) = fixture().await;
         ws.update_record("a", "test/window", json!({}), |d| {
             d.turns.drain(..2);
@@ -1050,6 +1062,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_expired_preview_is_freed_on_its_own_and_cannot_be_confirmed() {
+        let _serial = SERIAL.lock().await;
         let (dir, ws) = fixture().await;
         let key = preview_id(&ws.rewind_preview("a", "2").await.unwrap());
         let baseline = held(&key).unwrap();
@@ -1069,6 +1082,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unexpired_preview_is_confirmed_after_the_ticker_ran_and_another_workspace_cannot_use_it() {
+        let _serial = SERIAL.lock().await;
         let (dir, ws) = fixture().await;
         let (other_dir, other) = fixture().await;
         let key = preview_id(&ws.rewind_preview("a", "2").await.unwrap());
@@ -1089,6 +1103,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_preview_keeps_no_workspace_alive_and_is_freed_once_its_workspace_is_gone() {
+        let _serial = SERIAL.lock().await;
         let (_dir, ws) = fixture().await;
         let key = preview_id(&ws.rewind_preview("a", "2").await.unwrap());
         let baseline = held(&key).unwrap();
