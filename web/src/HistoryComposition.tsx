@@ -4,18 +4,20 @@ import { API_BASE } from "./api";
 import "./history-composition.css";
 
 /** The parts of a stored record, as GET /api/diagnostics/memory/history
- * names them (core/src/history_composition.rs), in the order shown. */
-const PARTS = [
+ * names them (core/src/history_composition.rs), in the order shown. They are
+ * disjoint, so they add up to the record. */
+const RECORD = [
   { key: "items", label: "Item text" },
   { key: "payloads", label: "Large payloads" },
-  { key: "previews", label: "Previews" },
   { key: "turns", label: "Turns" },
   { key: "metadata", label: "Metadata" },
 ] as const;
+/** Previews are a shorter copy of payloads: stored too, never in the record's sum. */
+const PARTS = [...RECORD, { key: "previews", label: "Previews" }] as const;
 type Key = (typeof PARTS)[number]["key"];
 type Part = { rows: number; bytes: number };
 type Parts = Record<Key, Part>;
-type Agent = { id: string; name: string | null; unwritten: boolean; parts: Parts | null };
+type Agent = { id: string; name: string | null; unwritten: boolean; whole: boolean; parts: Parts | null };
 type Report =
   | { available: true; readAt: string; held: number; agents: Agent[]; total: Parts }
   | { available: false; readAt: string; reason: string };
@@ -52,7 +54,7 @@ export function historyReport(value: unknown): Report | null {
     const id = text(a?.agentId, 128);
     const found = a?.stored === true ? parts(a) : null;
     if (id === null || (a.stored === true && found === null)) return null;
-    agents.push({ id, name: text(a.name, 80), unwritten: a.unwrittenChanges === true, parts: found });
+    agents.push({ id, name: text(a.name, 80), unwritten: a.unwrittenChanges === true, whole: found !== null && a.layout === 0, parts: found });
   }
   return { available: true, readAt, held, agents, total };
 }
@@ -64,7 +66,19 @@ function size(bytes: number) {
   return `${bytes} B`;
 }
 const label = (a: Agent) => a.name ?? `Agent ${a.id.slice(0, 8)}`;
-const sum = (p: Parts) => PARTS.reduce((n, { key }) => n + p[key].bytes, 0);
+const record = (p: Parts) => RECORD.reduce((n, { key }) => n + p[key].bytes, 0);
+
+/** One row's cells: each part's bytes (rows), the record's sum, then previews. */
+function Cells({ parts }: { parts: Parts }) {
+  const cell = (key: Key) => <td key={key}>{size(parts[key].bytes)} ({parts[key].rows})</td>;
+  return (
+    <>
+      {RECORD.map(({ key }) => cell(key))}
+      <td>{size(record(parts))}</td>
+      {cell("previews")}
+    </>
+  );
+}
 
 /**
  * What the held Agents' stored history is made of (T-140): read only when
@@ -121,7 +135,7 @@ export function HistoryComposition() {
             <div className="history-chart" aria-label="Stored bytes by part, per held Agent; exact values in the table below">
               <ResponsiveContainer width="100%" height={Math.max(120, stored.length * 40 + 40)}>
                 <BarChart
-                  data={stored.map((a) => ({ label: label(a), ...Object.fromEntries(PARTS.map(({ key }) => [key, a.parts[key].bytes])) }))}
+                  data={stored.map((a) => ({ label: label(a), ...Object.fromEntries(RECORD.map(({ key }) => [key, a.parts[key].bytes])) }))}
                   layout="vertical"
                   margin={{ top: 4, right: 18, bottom: 4, left: 0 }}
                   accessibilityLayer
@@ -134,13 +148,13 @@ export function HistoryComposition() {
                     cursor={{ fill: "var(--cream)" }}
                     formatter={(value, name) => [size(Number(value)), PARTS.find((p) => p.key === name)?.label ?? String(name)]}
                   />
-                  {PARTS.map(({ key }) => (
+                  {RECORD.map(({ key }) => (
                     <Bar key={key} dataKey={key} stackId="stored" fill={`var(--history-${key})`} maxBarSize={20} isAnimationActive={false} />
                   ))}
                 </BarChart>
               </ResponsiveContainer>
               <ul className="history-legend">
-                {PARTS.map(({ key, label: name }) => (
+                {RECORD.map(({ key, label: name }) => (
                   <li key={key}><span className={`history-swatch history-swatch-${key}`} aria-hidden="true" />{name}</li>
                 ))}
               </ul>
@@ -149,26 +163,36 @@ export function HistoryComposition() {
           <table className="history-table">
             <caption>Stored bytes (rows), read {report.readAt}</caption>
             <thead>
-              <tr><th scope="col">Agent</th>{PARTS.map(({ key, label: name }) => <th key={key} scope="col">{name}</th>)}<th scope="col">All</th></tr>
+              <tr>
+                <th scope="col">Agent</th>
+                {RECORD.map(({ key, label: name }) => <th key={key} scope="col">{name}</th>)}
+                <th scope="col">Record</th>
+                <th scope="col">Previews</th>
+              </tr>
             </thead>
             <tbody>
               {report.agents.map((a) => (
                 <tr key={a.id}>
-                  <th scope="row">{label(a)}{a.unwritten ? " *" : ""}</th>
-                  {a.parts
-                    ? <>{PARTS.map(({ key }) => <td key={key}>{size(a.parts![key].bytes)} ({a.parts![key].rows})</td>)}<td>{size(sum(a.parts))}</td></>
-                    : <td colSpan={PARTS.length + 1}>No stored rows yet</td>}
+                  <th scope="row">{label(a)}{a.unwritten ? " *" : ""}{a.whole ? " †" : ""}</th>
+                  {a.parts ? <Cells parts={a.parts} /> : <td colSpan={PARTS.length + 1}>No stored rows yet</td>}
                 </tr>
               ))}
               <tr className="history-total">
                 <th scope="row">All held</th>
-                {PARTS.map(({ key }) => <td key={key}>{size(report.total[key].bytes)} ({report.total[key].rows})</td>)}
-                <td>{size(sum(report.total))}</td>
+                <Cells parts={report.total} />
               </tr>
             </tbody>
           </table>
+          <p className="diagnostics-note">
+            Record is Item text, large payloads, Turns and metadata. Previews are a shorter copy of large payloads kept
+            for clients, so they are not in it. The event journal, originals kept from before a conversion and
+            salvaged rows are not counted.
+          </p>
           {report.agents.some((a) => a.unwritten) && (
             <p className="diagnostics-note">* Has changes not written yet, so it holds more than is stored.</p>
+          )}
+          {report.agents.some((a) => a.whole) && (
+            <p className="diagnostics-note">† Stored in the older layout: the whole record is in its metadata row.</p>
           )}
         </>
       )}

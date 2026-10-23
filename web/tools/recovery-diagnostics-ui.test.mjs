@@ -41,18 +41,19 @@ const memoryReport = {
   },
   extra: { path: "/home/person/ExtraFieldSentinel" },
 };
-// A synthetic GET /api/diagnostics/memory/history report (T-140): two held
-// Agents, one with unwritten changes and one without stored rows, and fields
-// the page does not show, each carrying a sentinel.
+// A synthetic GET /api/diagnostics/memory/history report (T-140): three held
+// Agents, one with unwritten changes, one without stored rows and one in the
+// older layout, and fields the page does not show, each carrying a sentinel.
 const part = (rows, bytes) => ({ rows, bytes });
 const stored = { stored: true, layout: 1, metadata: part(1, 2048), turns: part(3, 6144), items: part(40, 3 * MiB), itemsWithPayloads: 2, previews: part(2, 8192), payloads: part(2, 12 * MiB), path: "/home/person/AgentFieldSentinel" };
 const historyReport = {
-  format: 1, readAt: "2026-10-23T08:00:00+00:00", available: true, budgetMs: 2000, note: "HistoryNoteSentinel", heldAgents: 2,
+  format: 1, readAt: "2026-10-23T08:00:00+00:00", available: true, budgetMs: 2000, note: "HistoryNoteSentinel", heldAgents: 3,
   agents: [
     { agentId: "a", name: "Mori", unwrittenChanges: true, ...stored },
     { agentId: "b0c1d2e3f4", name: null, unwrittenChanges: false, stored: false },
+    { agentId: "c", name: "Old", unwrittenChanges: false, stored: true, layout: 0, metadata: part(1, 5 * MiB), turns: part(0, 0), items: part(0, 0), itemsWithPayloads: 0, previews: part(0, 0), payloads: part(0, 0) },
   ],
-  total: { metadata: part(1, 2048), turns: part(3, 6144), items: part(40, 3 * MiB), itemsWithPayloads: 2, previews: part(2, 8192), payloads: part(2, 12 * MiB) },
+  total: { metadata: part(2, 5 * MiB + 2048), turns: part(3, 6144), items: part(40, 3 * MiB), itemsWithPayloads: 2, previews: part(2, 8192), payloads: part(2, 12 * MiB) },
   sql: "SELECT SqlSentinel",
 };
 
@@ -459,16 +460,21 @@ test("the held Agents' stored history is read only when Measure is pressed: a ch
     await waitFor(() => section.querySelector("table"), "the table shows");
     assert.equal(historyCalls(p), 1, "read once, for this press");
     const rows = [...section.querySelectorAll("tbody tr")].map((tr) => [...tr.children].map((c) => c.textContent));
+    // Record adds the four disjoint parts; previews, a copy of payloads, stay outside it.
     assert.deepEqual(rows, [
-      ["Mori *", "3.0 MiB (40)", "12.0 MiB (2)", "8.0 KiB (2)", "6.0 KiB (3)", "2.0 KiB (1)", "15.0 MiB"],
+      ["Mori *", "3.0 MiB (40)", "12.0 MiB (2)", "6.0 KiB (3)", "2.0 KiB (1)", "15.0 MiB", "8.0 KiB (2)"],
       ["Agent b0c1d2e3", "No stored rows yet"],
-      ["All held", "3.0 MiB (40)", "12.0 MiB (2)", "8.0 KiB (2)", "6.0 KiB (3)", "2.0 KiB (1)", "15.0 MiB"],
+      ["Old †", "0 B (0)", "0 B (0)", "0 B (0)", "5.0 MiB (1)", "5.0 MiB", "0 B (0)"],
+      ["All held", "3.0 MiB (40)", "12.0 MiB (2)", "6.0 KiB (3)", "5.0 MiB (2)", "20.0 MiB", "8.0 KiB (2)"],
     ]);
-    assert.deepEqual([...section.querySelectorAll("thead th")].map((th) => th.textContent), ["Agent", "Item text", "Large payloads", "Previews", "Turns", "Metadata", "All"]);
+    assert.deepEqual([...section.querySelectorAll("thead th")].map((th) => th.textContent), ["Agent", "Item text", "Large payloads", "Turns", "Metadata", "Record", "Previews"]);
     assert.match(section.querySelector("caption").textContent, /^Stored bytes \(rows\), read 2026-10-23T08:00:00\+00:00$/);
     assert.match(section.textContent, /\* Has changes not written yet, so it holds more than is stored\./);
+    assert.match(section.textContent, /† Stored in the older layout: the whole record is in its metadata row\./);
+    assert.match(section.textContent, /Previews are a shorter copy of large payloads kept for clients, so they are not in it\./);
+    assert.match(section.textContent, /The event journal, originals kept from before a conversion and salvaged rows are not counted\./);
     assert.ok(section.querySelector(".history-chart"), "the composition chart is drawn");
-    assert.deepEqual([...section.querySelectorAll(".history-legend li")].map((li) => li.textContent), ["Item text", "Large payloads", "Previews", "Turns", "Metadata"]);
+    assert.deepEqual([...section.querySelectorAll(".history-legend li")].map((li) => li.textContent), ["Item text", "Large payloads", "Turns", "Metadata"]);
     for (const word of ["HistoryNoteSentinel", "AgentFieldSentinel", "SqlSentinel", "/home/person"]) assert.ok(!p.doc.body.textContent.includes(word), `${word} is not shown`);
     assert.ok(!JSON.stringify(allStorage(p.w)).includes("Large payloads") && !JSON.stringify(allStorage(p.w)).includes("12582912"), "the read is not stored");
     await pause(200);

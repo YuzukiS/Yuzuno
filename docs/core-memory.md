@@ -91,18 +91,24 @@ as a chart and a table, read only when you press Measure. It is not part of
 it adds nothing to opening the Workspace.
 
 For each Agent whose record is held now, it gives the rows and stored bytes of
-its metadata row (`layout` 0 keeps the whole record there), its Turns, its
-Items' own data, the previews kept for clients, and its payloads (the full
-large fields of tool Items), and their total. It gives only counts, the
-Agent's id and name, and whether the held record has changes its rows lack
-yet (`unwrittenChanges`): no text, path, key or SQL. An Agent held without a
-row says `stored: false` and adds nothing to the total.
+its metadata row, its Turns, its Items' own data and its payloads (the full
+large fields of tool Items), and the total of each over the held Agents.
+These four parts are disjoint and together are the stored record; with
+`layout` 0 the metadata row is the whole record. The previews kept for
+clients are a shorter copy of payloads, so they are given on their own and
+are not part of the record. The journal, originals kept from before a
+conversion and salvaged rows are other copies and are not counted. It gives
+only counts, the Agent's id and name, and whether the held record has changes
+its rows lack yet (`unwrittenChanges`): no text, path, key or SQL. An Agent
+held without a row says `stored: false` and adds nothing to the total.
 
 - **Bytes as stored.** The bytes are SQLite's `octet_length` of each value,
-  taken from the row's header: a value on overflow pages is not read.
-  `length` of TEXT counts characters and has to read them, so it is not
-  used. The test `stored_bytes_are_read_from_row_headers_not_from_the_payloads`
-  counts the pages each reads.
+  in the database's encoding: UTF-8, SQLite's default, which Core never
+  changes. SQLite takes them from the row's header, so a value on overflow
+  pages is not read; the leaf pages of the Agent's rows are. `length` of TEXT
+  counts characters and has to read them, so it is not used. The test
+  `stored_bytes_are_read_from_row_headers_not_from_the_payloads` counts the
+  pages each reads.
 - **Not memory.** Stored bytes are not the Rust heap a held record takes,
   String capacity, RSS or SQLite's page cache. A record with unwritten
   changes holds more than is stored.
@@ -111,7 +117,8 @@ row says `stored: false` and adds nothing to the total.
   copied or serialized.
 - **Budget.** The reads stop after 2 s. Then, or on any error, the answer
   is `available: false` with a reason and no numbers at all: no Agent's and
-  no total, never a partial sum. One measurement runs at a time, and one
+  no total, never a partial sum. The budget's progress handler is removed on
+  every path, so the pooled connection goes back without it. One measurement runs at a time, and one
   asked meanwhile is told so. Without WAL a read would share the one writer
   and hold up its writes, so it is not measured.
 

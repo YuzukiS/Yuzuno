@@ -4,18 +4,24 @@
 //!
 //! For each Agent whose record is held (`Store::held_agents`), it counts the
 //! rows and sums the bytes the database stores for that record: the metadata
-//! row (`agents.data`; with layout 0, the whole record), its Turns, its Items
-//! (their own data, and the previews kept for clients), and its payloads (the
-//! full large fields). It never reads a record: no row is parsed and no held
-//! record is copied or serialized.
+//! row (`agents.data`; with layout 0, the whole record, and no other rows),
+//! its Turns, its Items' own data and its payloads (the full large fields).
+//! These four are disjoint, and are the record. The previews kept for
+//! clients are a shorter copy of payloads, so they are given apart and are
+//! not part of the record. The journal, originals kept from before a
+//! conversion and salvaged rows are other copies and are not counted. It
+//! never reads a record: no row is parsed and no held record is copied or
+//! serialized.
 //!
-//! The bytes are SQLite's own count of each value's UTF-8 bytes,
-//! `octet_length(column)`. For a column argument SQLite takes that from the
-//! row's header and does not read a value stored on overflow pages (the
-//! `OPFLAG_BYTELENARG` case of OP_Column; `length` of TEXT counts characters,
-//! so it reads them). They are what is stored: not the Rust heap a held
-//! record takes, String capacity, RSS or SQLite's page cache. A held record
-//! may have changes its rows lack yet, so each Agent says whether it had.
+//! The bytes are SQLite's own count of each value's bytes in the database's
+//! encoding, `octet_length(column)`: UTF-8, SQLite's default, which Core never
+//! changes. For a column argument SQLite takes that from the row's header
+//! and does not read a value stored on overflow pages (the
+//! `OPFLAG_BYTELENARG` case of OP_Column); the leaf pages of the Agent's rows
+//! are still read. `length` of TEXT counts characters, so it reads them all.
+//! They are what is stored: not the Rust heap a held record takes, String
+//! capacity, RSS or SQLite's page cache. A held record may have changes its
+//! rows lack yet, so each Agent says whether it had.
 //!
 //! The held list is read first, then the rows in one read snapshot, so the
 //! two are not one atomic view. The rows are read within a budget: a
@@ -35,7 +41,7 @@ pub const BUDGET: Duration = Duration::from_secs(2);
 /// How many virtual machine steps between checks of the budget.
 const STEPS: i32 = 1000;
 
-const NOTE: &str = "Stored bytes: the UTF-8 bytes the Workspace database keeps for each held Agent's record, counted by SQLite from each row's header without reading the values. They are not the memory the held record takes in Core (its Rust heap or capacity), RSS or SQLite's page cache. A record with unwritten changes holds more than is stored. The held Agents are listed first and their rows read after, so the two are not one atomic snapshot.";
+const NOTE: &str = "Stored bytes: the UTF-8 bytes the Workspace database keeps for each held Agent's record (metadata, Turns, Item text and payloads), counted by SQLite from each row's header without reading large values. Previews are a shorter copy of payloads for clients, given apart and not part of the record. The journal, kept originals and salvaged rows are not counted. They are not the memory the held record takes in Core (its Rust heap or capacity), RSS or SQLite's page cache. A record with unwritten changes holds more than is stored. The held Agents are listed first and their rows read after, so the two are not one atomic snapshot.";
 
 /// One part of a record: its rows and their stored bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -54,7 +60,8 @@ pub struct Composition {
     pub items: Part,
     /// Item rows with at least one payload.
     pub items_with_payloads: u64,
-    /// The previews kept for clients, in Item rows that have payloads.
+    /// The previews kept for clients, in Item rows that have payloads: a
+    /// copy of part of the payloads, not part of the record.
     pub previews: Part,
     pub payloads: Part,
 }
@@ -99,15 +106,46 @@ pub fn busy() -> Value {
         "budgetMs":BUDGET.as_millis() as u64,"note":NOTE})
 }
 
+/// The budget's progress handler, set on a connection. It is removed when
+/// this is dropped, a panic included, so the pooled connection goes back
+/// without it: left there, its passed deadline would stop every statement
+/// the connection runs after.
+struct Budget<'a> {
+    db: &'a Connection,
+    set: bool,
+}
+
+impl<'a> Budget<'a> {
+    fn set(db: &'a Connection, budget: Duration) -> rusqlite::Result<Self> {
+        let deadline = Instant::now() + budget;
+        db.progress_handler(STEPS, Some(move || Instant::now() >= deadline))?;
+        Ok(Budget { db, set: true })
+    }
+
+    fn remove(mut self) -> rusqlite::Result<()> {
+        self.set = false;
+        clear(self.db)
+    }
+}
+
+impl Drop for Budget<'_> {
+    fn drop(&mut self) {
+        if self.set {
+            let _ = clear(self.db);
+        }
+    }
+}
+
+fn clear(db: &Connection) -> rusqlite::Result<()> {
+    db.progress_handler(0, None::<fn() -> bool>)
+}
+
 /// Each held Agent's stored composition (None: no row), all within the
-/// budget, or the reason they were not read. The progress handler is removed
-/// on every path, so the pooled connection goes back as it came.
+/// budget, or the reason they were not read.
 fn measure(db: &Connection, held: &[HeldAgent], budget: Duration) -> Result<Vec<Option<Composition>>, String> {
-    let deadline = Instant::now() + budget;
-    db.progress_handler(STEPS, Some(move || Instant::now() >= deadline))
-        .map_err(|_| "The budget could not be set, so nothing was read.".to_string())?;
+    let budget_set = Budget::set(db, budget).map_err(|_| "The budget could not be set, so nothing was read.".to_string())?;
     let read: rusqlite::Result<Vec<Option<Composition>>> = held.iter().map(|agent| one(db, &agent.id)).collect();
-    let removed = db.progress_handler(0, None::<fn() -> bool>);
+    let removed = budget_set.remove();
     match (read, removed) {
         (_, Err(_)) => Err("The budget could not be removed, so nothing is given.".to_string()),
         (Ok(measured), Ok(())) => Ok(measured),
