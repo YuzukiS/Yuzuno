@@ -110,7 +110,7 @@ fn kinds(ws: &Workspace) -> Vec<(String, Value)> {
 /// Events arrive on the ownership lock's thread (`dispatch_event`); here
 /// the test thread calls `on_event` the same way, so the commit counts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_resolution_and_a_status_change_are_committed_as_metadata_unless_a_receipt_is_unconfirmed() {
+async fn a_resolution_and_a_status_change_are_committed_as_metadata_and_accept_receipts() {
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
     let mut d = record("waiting", true);
@@ -150,8 +150,8 @@ async fn a_resolution_and_a_status_change_are_committed_as_metadata_unless_a_rec
     assert_eq!(in_place(), before + 1, "the status change copied the record");
     assert_eq!(ws.store.detail("a").unwrap().agent.status, "error");
 
-    // A receipt still sending may be confirmed by the whole-record apply:
-    // that commit is used, with the same result.
+    // Beside a receipt still sending, the event is committed as metadata too
+    // (T-140): the receipt has no user message yet, and stays sending.
     ws.store.update_meta("a", "message/requested", &json!({}), |m| {
         m.message_receipts.push(serde_json::from_value(json!({"input":{"clientMessageId":"next","text":"next"},"status":"sending"})).unwrap());
         m.pending.push(approval("p", 10, 1));
@@ -159,11 +159,23 @@ async fn a_resolution_and_a_status_change_are_committed_as_metadata_unless_a_rec
     }).unwrap();
     let before = in_place();
     ws.on_event("a", 1, resolved(10));
-    assert_eq!(in_place(), before, "a resolution beside an unconfirmed receipt was committed as metadata");
+    assert_eq!(in_place(), before + 1, "a resolution beside an unconfirmed receipt copied the record");
     let after = ws.store.detail("a").unwrap();
     assert_eq!(after.pending.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["old"]);
     assert_eq!(after.agent.status, "idle");
     assert_eq!(after.message_receipts[1].status, "sending");
+
+    // Its user message is in a Turn, not yet accepted: the next status change
+    // accepts it by that Turn, as the whole record's apply does, in place.
+    ws.store.record_event("a", "test/message", &json!({}), |d| {
+        d.turns[1]["items"] = json!([{"id":"u2","type":"userMessage","clientId":"next","content":[{"type":"text","text":"next"}]}]);
+    }).unwrap();
+    assert_eq!(ws.store.detail("a").unwrap().message_receipts[1].status, "sending");
+    let before = in_place();
+    ws.on_event("a", 1, json!({"method":"thread/status/changed","params":{"threadId":"thread-a","status":{"type":"idle"}}}));
+    assert_eq!(in_place(), before + 1, "the status change beside an unconfirmed receipt copied the record");
+    let receipt = ws.store.detail("a").unwrap().message_receipts[1].clone();
+    assert_eq!((receipt.status.as_str(), receipt.turn_id.as_deref()), ("accepted", Some("t2")));
     rpc.close();
 }
 

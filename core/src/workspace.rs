@@ -2204,14 +2204,15 @@ impl Workspace {
                         scoped["_runtimeGeneration"] = generation.into();
                     }
                     // A resolution and a thread status change only the Agent and
-                    // its pending requests: committed as metadata, without
-                    // copying a long record (T-120). The kinds a send waits
-                    // behind, whose rows `Dirty::of_applied` names (verified
+                    // its pending requests, and then accept receipts by the
+                    // Turns as any applied event does: committed as metadata,
+                    // without copying a long record (T-120, T-140). The kinds
+                    // a send waits behind, whose rows `Dirty::of_applied` names (verified
                     // against apply_at), are not compared; others are. A
                     // Turn's end is written in place on a held record, and
                     // compared otherwise (`Store::record_applied`, T-140).
                     let _ = if let Some(running) = self.metadata_event(id, method) {
-                        self.store.update_meta(id, method, &scoped, |m| apply_metadata_event(m, method, &scoped, running))
+                        self.store.update_meta_applied(id, method, &scoped, |m| apply_metadata_event(m, method, &scoped, running))
                     } else if matches!(method, "thread/status/changed" | "turn/started" | "turn/completed"
                         | "mcpServer/startupStatus/updated") {
                         self.store.record_applied(id, method, method, &scoped)
@@ -2242,16 +2243,16 @@ impl Workspace {
     /// For a native event that changes only the Agent and its pending
     /// requests (`apply_metadata_event`), whether a Turn is in progress: the
     /// one fact the status it leaves reads from the Turns. None for any other
-    /// event, and while a receipt is sending or uncertain: then
-    /// `confirm_message_receipts` may have work, and the event is applied to
-    /// the whole record. The caller holds the ownership lock (`on_event`), so
-    /// this is still so at the commit: Turns change only through this
-    /// Agent's events and owned commits, and closing, which is not owned,
-    /// leaves the Agent offline, whose status does not read it.
+    /// event. A receipt still sending or uncertain is accepted by the Turns
+    /// as `apply`'s `confirm_message_receipts` accepts it, by
+    /// `Store::update_meta_applied`. The caller holds the ownership lock
+    /// (`on_event`), so this is still so at the commit: Turns change only
+    /// through this Agent's events and owned commits, and closing, which is
+    /// not owned, leaves the Agent offline, whose status does not read it.
     fn metadata_event(&self, id: &str, method: &str) -> Option<bool> {
         if !matches!(method, "serverRequest/resolved" | "thread/status/changed") { return None; }
         let (_, activity) = self.store.update_readiness(id).ok()?;
-        (!activity.sending && !activity.uncertain).then_some(activity.running)
+        Some(activity.running)
     }
 
     pub async fn respond(&self, request_id: &str, response: Value) -> Result<()> {
@@ -2532,8 +2533,9 @@ fn turn_busy(d: &AgentDetail) -> bool {
 
 /// `AgentDetail::apply` of `serverRequest/resolved` or `thread/status/changed`
 /// on the metadata alone, `running` standing in for the Turns (see
-/// `Workspace::metadata_event`). `Store::update_meta` sets the pending count
-/// and update time, and binds the receipts, as the whole-record commit does.
+/// `Workspace::metadata_event`). `Store::update_meta_applied` sets the
+/// pending count and update time, and binds and accepts the receipts, as the
+/// whole-record commit does.
 fn apply_metadata_event(m: &mut crate::store::Meta<'_>, method: &str, p: &Value, running: bool) {
     match method {
         "serverRequest/resolved" => crate::model::resolve_request(m.pending, p),
