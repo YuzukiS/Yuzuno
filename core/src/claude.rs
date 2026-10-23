@@ -1356,24 +1356,25 @@ impl Workspace {
         let connection = self.claudes.lock().unwrap().get(id).cloned();
         let (agent, request, reply) = (id.to_owned(), request_id.to_owned(), response.clone());
         let checked = self.stored_owned(owned, move |store| {
-            let d = store.detail(&agent)?;
-            ensure_agent_open(&d.agent)?;
-            let Some(p) = d.pending.iter().find(|p| p.id == request) else {
+            // The listed Agent and its pending requests, not the whole
+            // record (T-140), as a Codex answer reads them.
+            ensure_agent_open(&store.agent(&agent)?)?;
+            let Some(p) = store.pending(&agent)?.into_iter().find(|p| p.id == request) else {
                 return Ok(None);
             };
             let c = connection.context("Claude 连接已断开，请求未发送")?;
-            validate_permission(p, c.generation, &reply)?;
-            store.update(
+            validate_permission(&p, c.generation, &reply)?;
+            store.update_meta(
                 &agent,
                 "request/replied",
                 &json!({"requestId":request}),
-                |d| {
-                    if let Some(p) = d.pending.iter_mut().find(|p| p.id == request) {
+                |m| {
+                    if let Some(p) = m.pending.iter_mut().find(|p| p.id == request) {
                         p.params["_responseSent"] = true.into();
                     }
                 },
             )?;
-            Ok(Some((p.clone(), c)))
+            Ok(Some((p, c)))
         }).await?;
         let Some((p, c)) = checked else {
             return Ok(false);
@@ -1394,30 +1395,38 @@ impl Workspace {
                     .is_some_and(|v| v.generation == c.generation)
                 {
                     let (agent, request) = (id.to_owned(), request_id.to_owned());
-                    self.stored_owned(owned, move |store| store.update(
-                        &agent,
-                        "claude/permissionResolved",
-                        &json!({"requestId":request}),
-                        |d| {
-                            d.pending.retain(|p| p.id != request);
-                            refresh_status(d);
-                        },
-                    )).await?;
+                    self.stored_owned(owned, move |store| {
+                        let data = json!({"requestId":request});
+                        let resolve = |pending: &mut Vec<PendingRequest>| pending.retain(|p| p.id != request);
+                        // As a request: the metadata of a held record, else as before.
+                        let in_place = store.update_meta_by_turns(&agent, "claude/permissionResolved", &data, |_| true,
+                            |turns, m| {
+                                resolve(m.pending);
+                                refresh_meta_status(turns, m.agent, m.pending);
+                            })?;
+                        if in_place.is_none() {
+                            store.record_event(&agent, "claude/permissionResolved", &data, |d| {
+                                resolve(&mut d.pending);
+                                refresh_status(d);
+                            })?;
+                        }
+                        Ok(())
+                    }).await?;
                 }
             }
             Err(error) => {
                 // Once queued, uncertain authorization must never become an
                 // enabled button again. Rejected callbacks are stale evidence.
                 let (request, message) = (request_id.to_owned(), error.to_string());
-                self.update_record(
+                self.record_meta(
                     id,
                     "claude/permissionResponseFailed",
                     json!({"requestId":request_id,"error":message}),
-                    move |d| {
-                        if let Some(p) = d.pending.iter_mut().find(|p| p.id == request) {
+                    move |m| {
+                        if let Some(p) = m.pending.iter_mut().find(|p| p.id == request) {
                             p.stale = true;
                         }
-                        d.agent.error = Some(message);
+                        m.agent.error = Some(message);
                     },
                 ).await?;
                 self.changed(id);
@@ -1477,8 +1486,9 @@ impl Workspace {
                     return;
                 };
                 let applied = json!({"level": level, "turnId": message["turnId"]});
-                let _ = self.store.record_event(id, "claude/effortApplied", &message, |d| {
-                    d.claude_runtime.get_or_insert_with(Default::default).effort = Some(applied);
+                // Metadata alone: written without copying the record (T-140).
+                let _ = self.store.update_meta(id, "claude/effortApplied", &message, |m| {
+                    m.claude_runtime.get_or_insert_with(Default::default).effort = Some(applied);
                 });
                 self.changed(id);
             }
@@ -1648,30 +1658,54 @@ impl Workspace {
                     created_at: now(),
                     stale: false,
                 };
-                let _ = self.store.record_event(id, "request", &message, |d| {
-                    if !d.turns.iter().any(|t| t["id"] == tid) {
-                        open_native_turn(d, tid, Utc::now(), false);
-                    }
-                    if !d.pending.iter().any(|p| {
-                        !p.stale
-                            && p.params["requestId"] == native_id
-                            && p.params["_runtimeGeneration"] == generation
-                    }) {
-                        d.pending.push(request);
-                    }
-                    refresh_status(d);
+                let fresh = |pending: &[PendingRequest]| !pending.iter().any(|p| {
+                    !p.stale
+                        && p.params["requestId"] == native_id
+                        && p.params["_runtimeGeneration"] == generation
                 });
-            }
-            Some("permission_cancelled") => {
-                let _ = self
-                    .store
-                    .record_event(id, "claude/permissionCancelled", &message, |d| {
-                        d.pending.retain(|p| {
-                            p.params["requestId"] != message["requestId"]
-                                || p.params["_runtimeGeneration"] != generation
-                        });
+                // On a held record that has its Turn, a request changes only
+                // the pending requests and the Agent's status: written as the
+                // metadata, without copying the record (T-140). Otherwise
+                // (not held, or its Turn to open) as before.
+                let in_place = self.store.update_meta_by_turns(id, "request", &message,
+                    |turns| turns.iter().any(|t| t["id"] == tid),
+                    |turns, m| {
+                        if fresh(m.pending) {
+                            m.pending.push(request.clone());
+                        }
+                        refresh_meta_status(turns, m.agent, m.pending);
+                    });
+                if matches!(in_place, Ok(None)) {
+                    let _ = self.store.record_event(id, "request", &message, |d| {
+                        if !d.turns.iter().any(|t| t["id"] == tid) {
+                            open_native_turn(d, tid, Utc::now(), false);
+                        }
+                        if fresh(&d.pending) {
+                            d.pending.push(request);
+                        }
                         refresh_status(d);
                     });
+                }
+            }
+            Some("permission_cancelled") => {
+                let cancel = |pending: &mut Vec<PendingRequest>| pending.retain(|p| {
+                    p.params["requestId"] != message["requestId"]
+                        || p.params["_runtimeGeneration"] != generation
+                });
+                // As a request: the metadata of a held record, else as before.
+                let in_place = self.store.update_meta_by_turns(id, "claude/permissionCancelled", &message, |_| true,
+                    |turns, m| {
+                        cancel(m.pending);
+                        refresh_meta_status(turns, m.agent, m.pending);
+                    });
+                if matches!(in_place, Ok(None)) {
+                    let _ = self
+                        .store
+                        .record_event(id, "claude/permissionCancelled", &message, |d| {
+                            cancel(&mut d.pending);
+                            refresh_status(d);
+                        });
+                }
             }
             Some("exit" | "disconnected") => {
                 let removed = self.claudes.lock().unwrap().remove(id);
@@ -1920,15 +1954,20 @@ pub(crate) fn settle_open_tools(turn: &mut Value) {
 }
 
 fn refresh_status(d: &mut AgentDetail) {
-    if d.pending
+    refresh_meta_status(&d.turns, &mut d.agent, &d.pending);
+}
+
+/// `refresh_status` of the metadata alone, by Turns it only reads.
+fn refresh_meta_status(turns: &[Value], agent: &mut Agent, pending: &[PendingRequest]) {
+    if pending
         .iter()
         .any(|p| !p.stale && p.params["_responseSent"] != true)
     {
-        d.agent.status = "waiting".into();
-    } else if d.turns.iter().any(|t| t["status"] == "inProgress") {
-        d.agent.status = "working".into();
-    } else if d.agent.status == "waiting" || d.agent.status == "working" {
-        d.agent.status = "idle".into();
+        agent.status = "waiting".into();
+    } else if turns.iter().any(|t| t["status"] == "inProgress") {
+        agent.status = "working".into();
+    } else if agent.status == "waiting" || agent.status == "working" {
+        agent.status = "idle".into();
     }
 }
 
@@ -5725,3 +5764,7 @@ mod tests {
         assert_eq!(same(&held), same(&reread), "the record read back from its rows differs from the one held");
     }
 }
+
+#[cfg(test)]
+#[path = "claude_meta_tests.rs"]
+mod claude_meta_tests;

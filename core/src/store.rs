@@ -286,11 +286,14 @@ pub struct Meta<'a> {
     /// Pending native requests are metadata too: a request arriving, its
     /// answer and its replay change them and the Agent's status only.
     pub pending: &'a mut Vec<PendingRequest>,
+    /// What Claude's runtime reports, the effort a Turn ran at among it.
+    pub claude_runtime: &'a mut Option<crate::model::ClaudeRuntime>,
 }
 
 impl<'a> Meta<'a> {
     fn of(detail: &'a mut AgentDetail) -> Self {
-        Self { agent: &mut detail.agent, message_receipts: &mut detail.message_receipts, pending: &mut detail.pending }
+        Self { agent: &mut detail.agent, message_receipts: &mut detail.message_receipts, pending: &mut detail.pending,
+            claude_runtime: &mut detail.claude_runtime }
     }
 }
 
@@ -2377,6 +2380,13 @@ impl Store {
         Ok(())
     }
 
+    /// The copy of a record held now, for a test outside this module: a
+    /// commit that copies the record replaces it, one in place keeps it.
+    #[cfg(test)]
+    pub(crate) fn held_for_test(&self, id: &str) -> Option<Arc<RwLock<AgentDetail>>> {
+        self.held(id)
+    }
+
     /// `release` for a test outside this module, under the record lock;
     /// whether the record was held.
     #[cfg(test)]
@@ -2621,6 +2631,32 @@ impl Store {
     /// rev.
     pub fn update_meta_applied(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut Meta<'_>)) -> Result<u64> {
         Ok(self.commit_meta(id, kind, data, true, mutate, |_, _| ())?.0)
+    }
+
+    /// `update_meta` for a change to the metadata that reads a held record's
+    /// Turns without changing one: a Claude permission request, its
+    /// cancellation and its resolution, after which the Agent's status
+    /// follows whether a Turn runs (T-140). `mutate` gets the held Turns, to
+    /// read only. None, having changed nothing, where the record is not held
+    /// or `applies` refuses its Turns (a request for a Turn the record lacks,
+    /// which opens that Turn): the caller then commits as before. Checked and
+    /// committed under the Agent's record lock, so `mutate` reads the Turns
+    /// `applies` saw. Returns the change's rev.
+    pub fn update_meta_by_turns(
+        &self,
+        id: &str,
+        kind: &str,
+        data: &Value,
+        applies: impl FnOnce(&[Value]) -> bool,
+        mutate: impl FnOnce(&[Value], &mut Meta<'_>),
+    ) -> Result<Option<u64>> {
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        let Some(held) = self.held(id) else { return Ok(None) };
+        if !applies(&held.read().turns) {
+            return Ok(None);
+        }
+        Ok(Some(self.commit_meta_locked(id, kind, data, false, Some(held), mutate, |_, _| ())?.0))
     }
 
     /// `update_picking` for a change to the metadata only (see `update_meta`).
@@ -3029,17 +3065,40 @@ impl Store {
     ) -> Result<(u64, T)> {
         let lock = self.record_lock(id);
         let _record = lock.lock();
-        let Some(held) = self.held(id) else {
+        let held = self.held(id);
+        self.commit_meta_locked(id, kind, data, confirms, held, |_, meta| mutate(meta), pick)
+    }
+
+    /// `commit_meta`, for a caller holding the Agent's record lock, with the
+    /// copy it found held then (if any). `mutate` also gets the Turns, to
+    /// read only: the held ones, or those of the record loaded.
+    fn commit_meta_locked<T>(
+        &self,
+        id: &str,
+        kind: &str,
+        data: &Value,
+        confirms: bool,
+        held: Option<Arc<RwLock<AgentDetail>>>,
+        mutate: impl FnOnce(&[Value], &mut Meta<'_>),
+        pick: impl FnOnce(&AgentDetail, Option<String>) -> T,
+    ) -> Result<(u64, T)> {
+        let Some(held) = held else {
             return self.commit_locked(id, kind, data, Scope::Meta, |d| {
-                mutate(&mut Meta::of(d));
+                let turns = std::mem::take(&mut d.turns);
+                mutate(&turns, &mut Meta::of(d));
+                d.turns = turns;
                 if confirms {
                     d.confirm_message_receipts();
                 }
             }, pick);
         };
         let unwritten = self.memory.lock().unwrap().held.get(id).map(|held| held.unwritten.clone()).unwrap_or_default();
-        let mut meta = meta_of(&held.read());
-        mutate(&mut Meta::of(&mut meta));
+        let mut meta = {
+            let d = held.read();
+            let mut meta = meta_of(&d);
+            mutate(&d.turns, &mut Meta::of(&mut meta));
+            meta
+        };
         let restores = {
             let d = held.read();
             crate::message_content::bind_receipts(&d.turns, &mut meta.message_receipts);
