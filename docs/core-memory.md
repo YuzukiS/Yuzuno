@@ -359,8 +359,9 @@ besides that shared position. In the windows, the slowest call took 12.5–22.5
 ms before; after, 2.8–10.9 ms, except one window with the 37.9 MiB record in
 which one call took 46.2 ms and a delta 44.4 ms. None of that is attributed.
 Commits that still copy a held Codex record whole, which this lab does not
-make, include a status change or a request's resolution while a message is
-being sent, `error`, `thread/compacted` and an MCP server's start-up status.
+make, include `error`, `thread/compacted` and an MCP server's start-up
+status; a status change or a request's resolution while a message is being
+sent no longer does (see below).
 These are synthetic allocator measurements in one process, not the daily
 Core's RSS.
 
@@ -402,6 +403,56 @@ A record not held is still read for each such event, all of its Items
 without payloads, and neither lookup holds it. How often a parent is not
 held when its children's events arrive was not measured. These are synthetic
 allocator measurements in one process, not the daily Core's RSS.
+
+### A status change or resolution beside a message being sent
+
+A Codex `thread/status/changed` or `serverRequest/resolved` changes only the
+Agent and its pending requests, and is committed as its metadata (T-120).
+While a message receipt was sending or uncertain, though, it was applied to
+the whole record: a copy of the held record (`record_applied` for the status
+change; `record_event` with `apply` for the resolution, which also compared
+the copy), or, for a record not held, its rows loaded, and for the
+resolution a second copy to compare with. A send's reply can still be
+awaited when its Turn's status changes (how often was not measured), and a
+receipt stays uncertain after a reply is lost or Core restarts, until it is
+confirmed. The metadata commit lacked one step of `apply`: accepting each
+receipt by the first Turn with its user message. `Store::update_meta_applied`
+takes that step too: on the copy of the metadata, by the held Turns, once
+nothing is to restore, and otherwise in `commit`, after its `bind`, in the
+order `apply` takes them.
+
+T-140 run `3c8fe870-b58b-46ce-9e56-6d361528188c` (build
+`c9665670-7f71-431e-af0a-d7d8a5bae82f`, measure
+`55acb284-2544-4b5c-923b-208b084803ba`), 2026-10-23: a release build of
+`status_meta_lab` (on a lab branch, not merged) of this change, comparing
+main's commit with the new one in one binary. Two synthetic records of 100
+and 168 Turns (37.9 and 63.6 MiB of history JSON), with a receipt left
+uncertain and a request stale, as opening the store leaves a receipt still
+sending, were each run twice, with ten commits of each kind per phase. The
+events changed nothing but the journal and the update time:
+
+| One commit | Before | After |
+| --- | ---: | ---: |
+| Held, 37.9 MiB record: allocated | 40.0 MiB | 41.5–42.2 KiB |
+| The same: Rust peak above its start | 40.0 MiB | 14.8–15.4 KiB |
+| The same: median time | 6.7–8.0 ms | 2.0–2.4 ms |
+| Held, 63.6 MiB record: allocated | 67.2 MiB | 65.9–66.6 KiB |
+| The same: Rust peak above its start | 67.2 MiB | 26.5–27.1 KiB |
+| The same: median time | 9.3–13.3 ms | 2.4–2.5 ms |
+| A resolution, not held, 37.9 MiB record: allocated | 92.1 MiB | 52.2 MiB |
+| The same: Rust peak above its start | 80.0 MiB | 40.3 MiB |
+| The same: median time | 24.9–25.8 ms | 18.4–19.4 ms |
+| A resolution, not held, 63.6 MiB record: allocated | 154.6 MiB | 87.4 MiB |
+| The same: Rust peak above its start | 134.3 MiB | 67.5 MiB |
+| The same: median time | 42.1–43.1 ms | 30.8–31.1 ms |
+
+A status change to a record not held allocated the same before and after
+(52.2 and 87.4 MiB): both load its rows, and neither keeps a copy to compare
+with. Held, the new commit allocated more with 168 Turns than with 100; what
+that is spent on was not broken down. Every run checked one journal row
+per commit and the Agent, its request and the receipt as they were opened.
+These are synthetic allocator measurements in one process, not the daily
+Core's RSS.
 
 ## Claude bridge events
 
