@@ -2331,7 +2331,10 @@ impl Store {
     /// `message_content::restore` changed, not found by comparing the whole
     /// record. Returns the change's rev.
     pub fn record_applied(&self, id: &str, kind: &str, applied: &str, data: &Value) -> Result<u64> {
-        if applied == "turn/started" {
+        // Only the native event and the RPC response applied as it: another
+        // kind applied as turn/started (turn/completed has a journal check
+        // of its own in `commit`) is committed as before.
+        if applied == "turn/started" && matches!(kind, "turn/started" | "turn/accepted") {
             let lock = self.record_lock(id);
             let _record = lock.lock();
             if let Some(rev) = self.commit_started(id, kind, data)? {

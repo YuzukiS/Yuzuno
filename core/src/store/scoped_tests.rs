@@ -587,21 +587,29 @@ fn a_started_turn_is_compared_where_in_place_cannot_show_the_same_write() {
     }
     check(&generic, &scoped, "a record not held");
 
-    // A receipt whose old Item restore has yet to change: the record is
-    // held by a streamed event, and loading it binds nothing.
-    let (ga, gb) = (lab(), lab());
-    let mut d = record();
-    let mut blocks = receipt("old-4", "message 4");
-    blocks.status = "accepted".into();
-    blocks.input.text_blocks = Some(vec![crate::message_content::TextBlock { id: "b".into(), start: 0, end: 7 }]);
-    d.message_receipts.push(blocks);
-    for (_, store) in [&ga, &gb] {
-        store.insert(&d).unwrap();
-        super::tests::stream(store, "a", "item/completed",
-            &json!({"turnId":"t5","item":{"id":"m5","type":"agentMessage","text":"streamed"}}));
-        assert!(store.held("a").is_some());
+    // A receipt whose old Item restore has yet to change. Every way a record
+    // comes to be held binds and restores it (a streamed event's apply too),
+    // so the held copy is set back here, as a record read without binding is.
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        let mut blocks = receipt("old-4", "message 4");
+        blocks.status = "accepted".into();
+        blocks.input.text_blocks = Some(vec![crate::message_content::TextBlock { id: "b".into(), start: 0, end: 7 }]);
+        store.update_meta("a", "message/requested", &json!({}), move |m| m.message_receipts.push(blocks)).unwrap();
+        unrestore(store, "t4", "u4");
     }
-    check(&ga.1, &gb.1, "an old Item restore would change");
+    check(&generic, &scoped, "an old Item restore would change");
+
+    // Another kind applied as turn/started (turn/completed keeps the journal
+    // check `commit` makes for it).
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    let data = started("t5", json!([]));
+    let copy = data.clone();
+    generic.record_event("a", "turn/completed", &data, move |d| d.apply("turn/started", &copy)).unwrap();
+    let before = started_in_place();
+    scoped.record_applied("a", "turn/completed", "turn/started", &data).unwrap();
+    assert_eq!(started_in_place(), before, "another kind applied as turn/started: written in place");
+    assert_eq!(state(&generic), state(&scoped), "another kind applied as turn/started");
 
     let ((_ga, generic), (_sa, scoped)) = pair();
     for store in [&generic, &scoped] {
@@ -728,27 +736,45 @@ fn started_turns_racing_streamed_items_are_held_as_their_rows_and_journal_rebuil
     assert_eq!(t5["items"].as_array().unwrap().iter().filter(|i| i["id"].as_str().is_some_and(|id| id.starts_with('s'))).count(), 80);
 }
 
+/// `store`'s record with the text blocks `restore` gave the user message
+/// `item` of Turn `turn` taken off again, in the held copy and in its row:
+/// what a record read without binding holds (every way a record comes to be
+/// held binds and restores it, so tests set it back).
+fn unrestore(store: &Store, turn: &str, item: &str) {
+    {
+        let held = store.held("a").unwrap();
+        let mut d = held.write();
+        let message = d.turns.iter_mut().find(|t| t["id"] == turn).unwrap()["items"].as_array_mut().unwrap()
+            .iter_mut().find(|i| i["id"] == item).unwrap();
+        let fields = message.as_object_mut().unwrap();
+        fields.remove(crate::message_content::BLOCKS);
+        fields.remove("_yuzunoInputText");
+    }
+    let changed = store.db.write().unwrap().execute(
+        "UPDATE agent_items SET data=json_remove(data,'$._yuzunoTextBlocks','$._yuzunoInputText')
+         WHERE agent_id='a' AND turn_id=?1 AND item_id=?2", params![turn, item]).unwrap();
+    assert_eq!(changed, 1);
+}
+
 /// The event's own apply restores a message of the Turn it names that the
-/// event does not carry: the record is held by a streamed event, which binds
-/// nothing, with a receipt that has text blocks for that Turn's message.
-/// Written in place, that Item's row is written as comparing writes it.
+/// event does not carry. Written in place, that Item's row is written as
+/// comparing writes it.
 #[test]
 fn a_started_turn_writes_the_messages_its_apply_restores() {
-    let (ga, gb) = (lab(), lab());
-    let mut d = record();
-    d.turns.push(json!({"id":"n5","status":"inProgress","items":[
-        {"id":"u-n5","type":"userMessage","clientId":"late-5","content":[{"type":"text","text":"late text"}]}]}));
-    let mut late = receipt("late-5", "late text");
-    late.input.text_blocks = Some(vec![crate::message_content::TextBlock { id: "b".into(), start: 0, end: 4 }]);
-    d.message_receipts.push(late);
-    for (_, store) in [&ga, &gb] {
-        store.insert(&d).unwrap();
-        super::tests::stream(store, "a", "item/completed",
-            &json!({"turnId":"t5","item":{"id":"m5","type":"agentMessage","text":"streamed"}}));
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    let late = started("n5", json!([{"id":"u-n5","type":"userMessage","clientId":"late-5","content":[{"type":"text","text":"late text"}]}]));
+    let mut receipt5 = receipt("late-5", "late text");
+    receipt5.input.text_blocks = Some(vec![crate::message_content::TextBlock { id: "b".into(), start: 0, end: 4 }]);
+    for store in [&generic, &scoped] {
+        let copy = receipt5.clone();
+        store.update_meta("a", "message/requested", &json!({}), move |m| m.message_receipts.push(copy)).unwrap();
+        store.record_applied("a", "turn/started", "turn/started", &late).unwrap();
+        unrestore(store, "n5", "u-n5");
     }
-    assert!(start_both(&ga.1, &gb.1, "turn/started", &started("n5", json!([]))), "not written in place");
-    let restored = state(&gb.1);
-    assert_eq!(state(&ga.1), restored);
+    // The event again, carrying no Item: only its apply restores the message.
+    assert!(start_both(&generic, &scoped, "turn/started", &started("n5", json!([]))), "not written in place");
+    let restored = state(&scoped);
+    assert_eq!(state(&generic), restored);
     let item = &restored["reloaded"]["turns"].as_array().unwrap().iter().find(|t| t["id"] == "n5").unwrap()["items"][0];
     assert!(item.get(crate::message_content::BLOCKS).is_some(), "the restored message was not written: {item}");
 }
