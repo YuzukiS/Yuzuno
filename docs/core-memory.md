@@ -422,10 +422,10 @@ again: a reconnect that finds its attach kept (after a timeout, a refused
 write or an interrupted request) finishes it from that reply. Every other
 request waited once and dropped the reply straight after, so the copy was
 made only to be freed; for a reconcile's `thread/read` it is the whole
-history. Those requests now take the reply instead. An attach still copies
-its reply: the copy is consumed by the record's commit, and the kept reply is
+history. Those requests now take the reply instead. An attach kept copying
+its reply: the copy was consumed by the record's commit, and the kept reply is
 what a later reconnect finishes from if that commit fails or the request is
-cancelled.
+cancelled. It now shares the reply instead (see "An attach's reply" below).
 
 T-140 Job `7329a312-5e9a-4a8c-821b-eeab09b3fc2c`, 2026-10-22: a lab build of
 `core_reconnect_cycles` on `06c1ae1` with counting points inside the
@@ -454,6 +454,43 @@ Job is marked failed: its comparison step stopped on a check that saw
 measured phase; the four runs
 completed and are compared here from their reports. These are synthetic
 measurements, not the daily Core's.
+
+### An attach's reply
+
+An attach keeps its reply, unchanged, for a reconnect that finishes it later,
+and gave its commit a copy of it. While the commit loaded its working copy of
+the held record, four whole histories were in use: the held record, the kept
+reply, its copy and the commit's copy. The attach now shares the reply it
+keeps and changes nothing in it. Its commit merges the Turns one at a time,
+copying each as it goes, and an imported record's recovery page is kept
+apart. A reply that only one request holds is still handed over without a
+copy.
+
+T-140 Job `f722227c-1655-4580-8210-bcd112626b52`, 2026-10-23: lab builds of
+`core_reconnect_cycles` on main `0c93477` and on this change, with the points
+above plus glibc's own in-use and free counts and a digest of the record's
+Turns; the same synthetic Agent; four runs in the order before, after, after,
+before. Both runs of a side gave the same Rust counts, and all four the same
+Turns:
+
+| One reconnect after the open | Before | After |
+| --- | ---: | ---: |
+| Rust peak | 273.9 MiB | 206.2 MiB |
+| The attach's commit with its working copy loaded: Rust in use | 273.9 MiB | 205.5 MiB |
+| The same point: glibc in use | 282.2 MiB | 211.9 MiB |
+| Allocated | 875.2 MiB | 875.2 MiB |
+| The reconcile's commit: Rust peak | 205.5 MiB | 205.5 MiB |
+| VmHWM at the end of the reconnect | 361.3–362.0 MiB | 297.3–297.4 MiB |
+| glibc free in its heaps at the end of the reconnect | 211.1–211.9 MiB | 147.4 MiB |
+| RssAnon once the record is released (5 s later) | 283.0–283.5 MiB | 219.3 MiB |
+
+The peak is still at the attach's commit, now about one Turn above the three
+records in use there; the reconcile's commit reaches nearly the same. The
+copy is still made, a Turn at a time, so the total allocated is unchanged.
+glibc keeps what was freed for reuse, and this lab runs no trim, so the
+resident rows follow the peak; what the daily Core keeps resident also
+depends on its own reclaim. These are synthetic measurements, not the daily
+Core's.
 
 ### The UI's reconnect
 
