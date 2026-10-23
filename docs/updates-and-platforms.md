@@ -35,7 +35,7 @@ The full matrix is in [Supported platforms](independent-core.md#supported-platfo
   - On Windows, Core runs in WSL2.
 - **Windows desktop app:** in daily use with a Core on the same computer. Through an SSH tunnel it is untested.
   - **Blank Home:** the fix and the recovery page came with core.12, a **Core** release, not a desktop update. After installing core.12, the user reported that Home works in the Windows app; that is the user's report, not an automated check.
-- **Mac desktop app:** Apple silicon only. It is built from source and signed ad hoc, without notarization, and no release exists. It is **not** supported as a public install.
+- **Mac desktop app:** Apple silicon, and Intel built and tested in CI only, never opened on an Intel Mac. It is built from source and signed ad hoc, without notarization, and no release exists. It is **not** supported as a public install.
   - One trial build was installed on the user's Mac and reached a WSL Core through an SSH tunnel; afterwards the app and the tunnel setup were removed again. The trial does not make it a release.
   - It never updates itself; a newer build is installed by hand ([macOS desktop](../desktop/README.md#macos-desktop-core-on-another-computer)).
 - **Linux desktop app:** none. Use a browser.

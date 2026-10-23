@@ -31,7 +31,7 @@ Core has no user accounts. Anyone who can reach its port can use the Workspace, 
 | Browser on macOS | Tested within the scope below | Chrome 154, macOS 27.0.1, Apple silicon; SSH authentication, first conversation/approval, tunnel loss/recovery and browser/Core restart. Safari and other Mac browsers are untested. |
 | Windows desktop app, Core on the same computer (including WSL) | Tested | Daily use with a WSL Core; not repeated for this guide. |
 | Windows desktop app, through an SSH tunnel | Planned | Expected to work, because the app accepts any loopback address. Untested. |
-| macOS desktop app (Apple silicon) | Tested within the scope below | Built from source and signed ad hoc; not notarized and not published. Its installation from the disk image, connection through an SSH tunnel to a Linux/WSL Core, the saved Core and reconnection were checked on macOS 27.0.1. A person then used it at the Mac; what the window showed is that person's report. Intel Macs: not built. See [Mac desktop app](#mac-desktop-app). |
+| macOS desktop app (Apple silicon) | Tested within the scope below | Built from source and signed ad hoc; not notarized and not published. Its installation from the disk image, connection through an SSH tunnel to a Linux/WSL Core, the saved Core and reconnection were checked on macOS 27.0.1. A person then used it at the Mac; what the window showed is that person's report. Intel Macs: an x86_64 build is made and tested in CI, but none has been opened on an Intel Mac. See [Mac desktop app](#mac-desktop-app). |
 | Linux desktop app | Unavailable | No published build; use a browser. |
 | Reaching Core over a LAN, a public address or HTTPS | Unavailable | Core has no login. Use an SSH tunnel. |
 
@@ -334,5 +334,5 @@ This does not test a sign-in, a conversation, an approval, a browser, an update,
 - **Settings → Updates** from this public repository in a test installation (the tested update, core.6 to core.7, came from the earlier private repository), and downloading or updating with a `gh` account that has no access to the repository;
 - local Jobs on a host whose user manager lacks the `cpu` controller, such as the Ubuntu 22.04.5 host above, before or after an administrator delegates it ([Prerequisites](#prerequisites-on-the-core-host));
 - the Windows desktop app through a tunnel;
-- Safari and other Mac browsers; for the Mac desktop app: sending to a daily Workspace, an automated check of what its window shows, a downloaded (quarantined) copy, and Intel Macs;
+- Safari and other Mac browsers; for the Mac desktop app: sending to a daily Workspace, an automated check of what its window shows, a downloaded (quarantined) copy, and an Intel build on an Intel Mac;
 - Core as a systemd service.
