@@ -2,7 +2,7 @@ import { useState } from "react";
 import { MessageContent } from "./MessageContent";
 import { ImageAttachments } from "./ImageAttachments";
 import { agentHarnessName } from "./machine-checks";
-import { deliveryNote, steered } from "./delivery-note";
+import { compacting, deliveryNote, steered } from "./delivery-note";
 import { memo } from "react";
 import type { AgentDetail } from "./types";
 import type { OutgoingMessage } from "./useConversationSend";
@@ -71,7 +71,7 @@ export const OutgoingMessages = memo(function OutgoingMessages({
       );
       const receipt = saved && saved.status !== "sending" ? saved : local;
       const steer = steered(receipt, shown);
-      const status = deliveryNote(receipt.status, harness, steer);
+      const status = deliveryNote(receipt.status, harness, steer, !steer && compacting(receipt, shown));
       return (
         <div
           className="user-message outgoing-message"
