@@ -134,6 +134,35 @@ async fn reconnect_timeout_keeps_one_attach_and_late_reply_recovers_same_process
     }
 }
 
+/// The attach's write fails after its reply was merged (T-140: it merges from
+/// the reply it keeps): checked again, it finishes from that same reply, with
+/// thread/resume sent once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_attach_whose_write_failed_finishes_later_from_its_kept_reply() {
+    let lab = Lab::new(false, false, false).await;
+    let db = rusqlite::Connection::open(lab.ws.data_dir.join("workspace.sqlite")).unwrap();
+    db.execute_batch("CREATE TRIGGER refuse_attach BEFORE INSERT ON journal WHEN NEW.kind='thread/attached'
+        BEGIN SELECT RAISE(ABORT, 'attach write refused by test'); END;").unwrap();
+    let attached_rows = || db.query_row("SELECT count(*) FROM journal WHERE kind='thread/attached'", [], |r| r.get::<_, i64>(0)).unwrap();
+    let (status, error) = lab.post("/agents/a/reconnect", &json!({})).await;
+    assert_ne!(status, 200, "{error}");
+    assert_eq!(attached_rows(), 0);
+    let after = lab.ws.detail("a").await.unwrap();
+    assert_ne!(after.agent.connection_state, "connected");
+    db.execute_batch("DROP TRIGGER refuse_attach;").unwrap();
+    assert_eq!(lab.post("/agents/a/reconnect", &json!({})).await.0, 200);
+    assert_eq!(attached_rows(), 1);
+    let attached = lab.ws.detail("a").await.unwrap();
+    assert_eq!(attached.agent.connection_state, "connected");
+    assert_eq!(attached.agent.thread_id.as_deref(), Some("thread-a"));
+    let native: Value = serde_json::from_str(&std::fs::read_to_string(lab.dir.path().join("thread.json")).unwrap()).unwrap();
+    let shape = |turns: &[Value]| turns.iter().map(|t| (t["id"].clone(), t["status"].clone())).collect::<Vec<_>>();
+    assert_eq!(shape(&attached.turns), shape(native["turns"].as_array().unwrap()));
+    let methods = std::fs::read_to_string(lab.dir.path().join("methods")).unwrap();
+    assert_eq!(methods.lines().filter(|m| *m == "thread/resume").count(), 1);
+    assert_eq!(lab.submissions(), 0);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reconnect_retry_does_not_lose_live_approval_or_release_inflight_admission() {
     let lab = Lab::new(true, false, true).await;
