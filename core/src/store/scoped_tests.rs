@@ -490,3 +490,33 @@ fn measure_native_answer_cost() {
         println!("turns {turns:>5}: detail+update {:>9.3?}  pending+update_meta {:>9.3?}", median(before), median(after));
     }
 }
+
+/// `record_recovered_completion` commits what its `update` committed (T-140),
+/// with the record held or not: the same journal row, unread count, rows, rev
+/// and brief, and the streamed Item another Turn's rows lacked is written with
+/// it. Once the completion is in the journal, a repeat writes nothing.
+#[test]
+fn a_recovered_completion_commits_what_update_committed() {
+    for held in [true, false] {
+        let ((_ga, generic), (_sa, scoped)) = pair();
+        for store in [&generic, &scoped] {
+            super::tests::stream(store, "a", "item/completed",
+                &json!({"turnId":"t4","item":{"id":"m4","type":"agentMessage","text":"later"}}));
+            if !held {
+                assert!(store.flush().failed.is_empty());
+                assert!(store.release_for_test("a"));
+            }
+        }
+        let turn = record().turns[5].clone();
+        generic.update("a", "turn/completed", &json!({"turn":turn,"recovered":true}), |_| {}).unwrap();
+        scoped.record_recovered_completion("a", &turn).unwrap();
+        assert_eq!(published(&scoped), published(&generic), "held {held}");
+        let completions: i64 = scoped.db.read().unwrap()
+            .query_row("SELECT count(*) FROM journal WHERE agent_id='a' AND kind='turn/completed'", [], |r| r.get(0)).unwrap();
+        assert_eq!(completions, 1, "held {held}");
+        let before = published(&scoped);
+        scoped.record_recovered_completion("a", &turn).unwrap();
+        assert_eq!(published(&scoped), before, "held {held}: a repeat wrote something");
+        assert_eq!(state(&scoped), state(&generic), "held {held}");
+    }
+}

@@ -2793,8 +2793,10 @@ impl Store {
                 OR EXISTS(SELECT 1 FROM codex_import_turns WHERE agent_id=?1 AND turn_id=?2)",
             params![id, turn["id"].as_str()], |r| r.get(0))?;
         if exists { return Ok(()); }
-        // update() still deduplicates atomically if a native event races this check.
-        self.update(id, "turn/completed", &json!({"turn":turn,"recovered":true}), |_| {})?;
+        // The same commit as update(), which still deduplicates atomically if
+        // a native event races this check; nothing reads the record after it,
+        // so no copy of it is made to return (T-140).
+        self.record_event(id, "turn/completed", &json!({"turn":turn,"recovered":true}), |_| {})?;
         Ok(())
     }
 
