@@ -1,6 +1,7 @@
 //! T-120: a native request's resolution and a thread status change are
 //! committed as metadata (`apply_metadata_event`), without copying a long
-//! record, and leave what applying them to the whole record leaves.
+//! record, and leave what applying them to the whole record leaves; so is a
+//! thread's start (T-140).
 use super::*;
 
 fn record(status: &str, running: bool) -> AgentDetail {
@@ -241,4 +242,64 @@ async fn a_native_turn_completed_is_written_without_copying_the_record() {
     assert_eq!((after.agent.status.as_str(), after.agent.unread_count), ("idle", 1));
     assert_eq!(kinds(&ws).pop().unwrap().0, "turn/completed");
     rpc.close();
+}
+
+/// Codex's `thread/started` keeps the Agent's thread as its recovery handle:
+/// set only while none is recorded, and never to a sub-agent's thread. It is
+/// written as the metadata (T-140): a held record is changed in place, and,
+/// held or not, it writes what the whole-record commit (`update`) wrote.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_thread_started_is_written_as_metadata_and_writes_what_the_whole_record_commit_wrote() {
+    // The commit `on_event` made before, with the same change.
+    let whole = |ws: &Workspace, p: &Value| {
+        ws.store.update("a", "thread/started", p, |d| {
+            if d.agent.thread_id.is_none() && p["thread"]["parentThreadId"].is_null() {
+                d.agent.thread_id = p["thread"]["id"].as_str().map(str::to_owned);
+            }
+        }).unwrap();
+    };
+    // The record once written, and the journal.
+    let written = |ws: &Workspace| {
+        ws.store.release_for_test("a");
+        let d = ws.store.detail("a").unwrap();
+        let mut meta = metadata(&d);
+        meta["agent"]["rev"] = json!(0);
+        (meta, serde_json::to_value(&d.turns).unwrap(), kinds(ws))
+    };
+    // No thread yet, its own; no thread yet, a sub-agent's; the same thread again.
+    let cases = [
+        (None, json!({"thread":{"id":"thread-n","parentThreadId":null}}), json!("thread-n")),
+        (None, json!({"thread":{"id":"child-1","parentThreadId":"thread-p"}}), Value::Null),
+        (Some("thread-a"), json!({"thread":{"id":"thread-a","parentThreadId":null}}), json!("thread-a")),
+    ];
+    for (known, p, expected) in cases {
+        for held in [true, false] {
+            let mut d = record("working", true);
+            d.agent.thread_id = known.map(str::to_owned);
+            let (dir, other_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+            let other = Workspace::new(other_dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+            for w in [&ws, &other] {
+                w.store.insert(&d).unwrap();
+                w.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+                if !held {
+                    w.store.release_for_test("a");
+                }
+            }
+            let rpc = connect(&ws, 1).await;
+            let copy = ws.store.held_for_test("a");
+            let before = in_place();
+            ws.on_event("a", 1, json!({"method":"thread/started","params":p}));
+            if let Some(copy) = &copy {
+                assert!(ws.store.held_for_test("a").is_some_and(|now| Arc::ptr_eq(&now, copy)), "{p}: the record was copied");
+                assert_eq!(in_place(), before + 1, "{p}");
+            }
+            whole(&other, &p);
+            let (mine, theirs) = (written(&ws), written(&other));
+            assert_eq!(mine, theirs, "{p} held={held}");
+            assert_eq!(mine.0["agent"]["threadId"], expected, "{p}");
+            assert_eq!(mine.2.last().map(|(kind, _)| kind.as_str()), Some("thread/started"));
+            rpc.close();
+        }
+    }
 }

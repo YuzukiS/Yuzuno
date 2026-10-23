@@ -583,6 +583,35 @@ per commit and the Agent, its request and the receipt as they were opened.
 These are synthetic allocator measurements in one process, not the daily
 Core's RSS.
 
+### A Codex thread's start
+
+`thread/started` keeps the Agent's thread as its recovery handle, in case
+the answer to `thread/start` is lost: it sets the thread while none is
+recorded and the thread is not a sub-agent's, and changes nothing else; an
+event for another thread than the one recorded is dropped before it. It was
+committed with `update`, which copied a held record whole and returned a
+second copy nobody read. It is now committed as the metadata
+(`Store::update_meta`), with the same condition, and journaled the same.
+
+T-140 run `f51db46d-1978-457b-98a8-0bbaa081a6a2`, 2026-10-23: release builds of `core_memory_paths` with a
+lab mode (on lab branches, not merged) that runs the Agent's own handler
+(`on_event`) on main `12bbf7e` and on this change, in the order before,
+after, after, before, one process each. One synthetic record of 64 MiB; one
+whole copy of it held (`detail`) is 69.9 MiB. Both runs of a side gave the
+same counts, and all four wrote the same journal and thread:
+
+| One `thread/started` | Before: allocated | Before: peak above its start | After: allocated | After: peak |
+| --- | ---: | ---: | ---: | ---: |
+| Held: the same thread, a sub-agent's, or a new one while none is recorded | 139.8 MiB | 139.7 MiB | 0.03 MiB | 0.01 MiB |
+| Not held: the same thread, or a new one | 228.8 MiB | 139.7 MiB | 89.1 MiB | 71.0 MiB |
+
+Held, the event no longer copies the record (before: the working copy and
+the copy returned, both alive at once). Not held, it still loads the record
+from its rows (89.1 MiB, the fraction above a whole copy being the rows'
+text), but keeps no second copy to compare with and returns none. These are
+synthetic allocator measurements in one process, not the daily Core's RSS;
+how often a Codex Agent's thread starts was not measured.
+
 ### A Claude Turn's end
 
 A live Claude `result` made two commits, each copying the held record whole.
