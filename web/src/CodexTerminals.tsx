@@ -68,6 +68,7 @@ function outcomeText(o: Outcome) {
     case "unsupported": return "This Agent's Codex can't stop background terminals.";
     case "unknown": return "No answer came, so whether it stopped isn't known. It isn't sent again; the list below is a fresh check.";
     case "not_sent": return `Not sent: ${o.detail === "connection" ? "the connection changed" : o.detail === "unknown" ? "an earlier stop got no answer"
+      : o.detail === "unlisted" ? "it wasn't in the part of the list Codex returned, so whether it still runs isn't known"
       : o.detail === "unsupported" ? "this Codex can't stop background terminals" : o.detail ? `the check before it failed (${o.detail})` : "an earlier stop ended the run"}.`;
   }
 }

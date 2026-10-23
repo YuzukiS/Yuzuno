@@ -152,12 +152,14 @@ pub struct StopRequest {
 pub struct Outcome {
     process_id: String,
     item_id: String,
-    /// stopped; gone (not listed before the stop, or after one Codex did not
-    /// make); replaced (its number now names another terminal; not sent);
-    /// not_stopped (Codex did not stop it and it is still listed);
-    /// refused; unsupported; unknown (no answer: whether it stopped is not
-    /// known, and it is not sent again); not_sent (an earlier target's
-    /// outcome stopped the rest).
+    /// stopped; gone (not in a complete list before the stop, or after one
+    /// Codex did not make); replaced (its number now names another terminal;
+    /// not sent); not_stopped (Codex did not stop it and it is still listed,
+    /// or `unchecked`: no complete list said it ended); refused; unsupported;
+    /// unknown (no answer: whether it stopped is not known, and it is not
+    /// sent again); not_sent (`unlisted`: not in the part of an incomplete
+    /// list that was read; otherwise the connection changed or an earlier
+    /// target's outcome stopped the rest).
     outcome: &'static str,
     /// Whether a terminate was sent for it.
     sent: bool,
@@ -283,8 +285,8 @@ impl Workspace {
                 continue;
             }
             // Still the terminal the user saw: listed, with the same tool call.
-            let before = match list(&rpc, &thread).await {
-                Ok((data, _)) => data,
+            let (before, complete) = match list(&rpc, &thread).await {
+                Ok(listed) => listed,
                 Err(failed) => {
                     let (name, detail) = match failed {
                         Failure::Unsupported => ("unsupported", None),
@@ -298,8 +300,13 @@ impl Workspace {
                 }
             };
             match before.iter().find(|t| same(t, &target)) {
-                None => {
+                // Only a complete list shows it ended; one cut short may hold it in a page not read.
+                None if complete => {
                     outcomes.push(outcome("gone", false, None));
+                    continue;
+                }
+                None => {
+                    outcomes.push(outcome("not_sent", false, Some("unlisted".into())));
                     continue;
                 }
                 Some(listed) if listed["itemId"].as_str() != Some(target.item_id.as_str()) => {
@@ -308,17 +315,26 @@ impl Workspace {
                 }
                 Some(_) => {}
             }
+            // Still the Agent's connection, and still running, now that the check answered: a
+            // connection only stops taking requests once it no longer runs. This is a lookup,
+            // not a lock held to the write: one that ends after it ends with the terminate in
+            // flight (unknown, never sent again).
+            if !self.codex_connection(id).is_some_and(|(g, current)| g == generation && Arc::ptr_eq(&current, &rpc)) || !rpc.is_running() {
+                halted = Some("connection");
+                outcomes.push(outcome("not_sent", false, Some("connection".into())));
+                continue;
+            }
             let answer = rpc.request_within("thread/backgroundTerminals/terminate",
                 json!({"threadId":thread,"processId":target.process_id}), STOP_WITHIN).await;
             match answer {
                 Ok(answer) if answer["terminated"] == true => outcomes.push(outcome("stopped", true, None)),
                 Ok(_) => {
-                    // Not stopped: gone meanwhile, or Codex could not stop it; a list tells which.
-                    let still = list(&rpc, &thread).await.ok().map(|(data, _)| data.iter().any(|t| same(t, &target)));
+                    // Not stopped: gone meanwhile, or Codex could not stop it; a complete list tells which.
+                    let still = list(&rpc, &thread).await.ok().map(|(data, complete)| (data.iter().any(|t| same(t, &target)), complete));
                     outcomes.push(match still {
-                        Some(false) => outcome("gone", true, None),
-                        Some(true) => outcome("not_stopped", true, None),
-                        None => outcome("not_stopped", true, Some("unchecked".into())),
+                        Some((false, true)) => outcome("gone", true, None),
+                        Some((true, _)) => outcome("not_stopped", true, None),
+                        _ => outcome("not_stopped", true, Some("unchecked".into())),
                     });
                 }
                 Err(error) => match failure(error) {

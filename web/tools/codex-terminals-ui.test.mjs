@@ -159,6 +159,8 @@ test("\"Stop these N listed\" names every listed terminal and no other; each ans
     for (const [o, said] of [[outcome("1", "x", "not_stopped", true), /Codex didn't stop it; it is still running\./],
         [outcome("1", "x", "gone", true), /It ended before Codex stopped it\./],
         [outcome("1", "x", "unsupported", true), /can't stop background terminals/],
+        [outcome("1", "x", "not_stopped", true, "unchecked"), /Codex didn't stop it, and whether it still runs couldn't be checked\./],
+        [outcome("1", "x", "not_sent", false, "unlisted"), /Not sent: it wasn't in the part of the list Codex returned, so whether it still runs isn't known\./],
         [outcome("1", "x", "not_sent", false, "connection"), /Not sent: the connection changed\./]]) {
       await page.render(null);
       page.setList(listed([terminal("1", "x", "one")]));

@@ -41,7 +41,9 @@ for line in sys.stdin:
   if 'old' in f: out({'id':i,'error':{'code':-32601,'message':'Method not found'}}); continue
   if m.endswith('/list'):
    if 'list-refuse' in f: out({'id':i,'error':{'code':-32600,'message':'thread not loaded'}}); continue
+   if 'list-slow' in f: time.sleep(float((root/'slow').read_text()) if (root/'slow').exists() else 0.6)
    t=sorted(terms(),key=lambda x:int(x['processId'])); cur=p.get('cursor'); lim=p.get('limit') or len(t)
+   if 'list-endless' in f: out({'id':i,'result':{'data':[x|{'osPid':None,'cpuPercent':None,'rssKb':None} for x in t],'nextCursor':'0'}}); continue
    start=0 if cur is None else next((k for k,x in enumerate(t) if int(x['processId'])>int(cur)),len(t)); end=min(start+lim,len(t))
    out({'id':i,'result':{'data':[x|{'osPid':None,'cpuPercent':None,'rssKb':None} for x in t[start:end]],'nextCursor':t[end-1]['processId'] if end<len(t) else None}}); continue
   if m.endswith('/terminate'):
@@ -274,4 +276,42 @@ async fn a_stop_ends_with_its_connection_and_an_old_codex_is_told_apart() {
     let listing = lab.list().await;
     assert_eq!((listing["state"].as_str(), listing["reason"].as_str(), listing["detail"].as_str()), (Some("failed"), Some("refused"), Some("thread not loaded")));
     assert_eq!(lab.terminated(), ["1001"], "only the one terminate of the old connection");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_terminal_missing_from_a_list_cut_short_is_not_said_to_have_ended() {
+    let lab = Lab::new("").await;
+    let generation = lab.connect().await;
+    lab.terminals(json!([terminal("1001", "call-a", "a")]));
+    // Codex always says there is more, so every list stops at its page limit, incomplete; 1001 ends but Codex says it did not stop it.
+    lab.write("flags", "list-endless term-false-gone");
+    let report = lab.stop(generation, &[("1002", "call-b"), ("1001", "call-a")]).await;
+    assert_eq!(outcomes(&report), [("1002".into(), "not_sent".into(), false), ("1001".into(), "not_stopped".into(), true)],
+        "missing from a list cut short is not gone, before a stop or after one Codex did not make");
+    assert_eq!((report["outcomes"][0]["detail"].as_str(), report["outcomes"][1]["detail"].as_str()), (Some("unlisted"), Some("unchecked")));
+    assert_eq!(lab.terminated(), ["1001"], "nothing sent for the unlisted one, and it does not stop the rest");
+    assert_eq!(report["after"]["complete"], false);
+    let lists = lab.sent().iter().filter(|r| r["method"] == "thread/backgroundTerminals/list").count();
+    assert_eq!(lists, 4 * 20, "check 1002, check 1001, the check after Codex said no, the list after: each read to its 20 pages");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_is_not_sent_when_its_connection_changed_while_the_check_was_read() {
+    let lab = Lab::new("").await;
+    let generation = lab.connect().await;
+    lab.terminals(json!([terminal("1001", "call-a", "a"), terminal("1002", "call-b", "b")]));
+    lab.write("flags", "list-slow");
+    let ws = lab.ws.clone();
+    let stop = tokio::spawn(async move {
+        ws.codex_terminals_stop("a", StopRequest { generation, thread_id: "thread-a".into(), targets: vec![
+            Target { process_id: "1001".into(), item_id: "call-a".into() }, Target { process_id: "1002".into(), item_id: "call-b".into() }] }).await.unwrap()
+    });
+    lab.until("the check is asked for", |sent| sent.iter().any(|r| r["method"] == "thread/backgroundTerminals/list")).await;
+    // The Agent starts closing, as its Close does first, while Codex reads the check; the old connection still answers it.
+    lab.ws.rpcs.lock().unwrap().get_mut("a").unwrap().closing = true;
+    let report = serde_json::to_value(stop.await.unwrap()).unwrap();
+    assert_eq!(outcomes(&report), [("1001".into(), "not_sent".into(), false), ("1002".into(), "not_sent".into(), false)]);
+    assert_eq!((report["outcomes"][0]["detail"].as_str(), report["outcomes"][1]["detail"].as_str()), (Some("connection"), Some("connection")));
+    assert!(lab.terminated().is_empty(), "nothing sent on a connection that is no longer the Agent's: {:?}", lab.sent());
+    assert!(report["after"].is_null());
 }
