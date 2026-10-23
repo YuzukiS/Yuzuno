@@ -49,6 +49,7 @@ import { agentHarnessName } from "./machine-checks";
 import character from "./assets/yuzu-character.png";
 import characterOutline from "./assets/yuzu-character-outline.png";
 import { blockItems, conversationBlocks, isCompacting, shownItemId, toolActivityCounts } from "./conversation-blocks";
+import { deliveryNote } from "./delivery-note";
 import { SubAgentAnchors } from "./SubAgents";
 import { ActivityElapsed } from "./ActivityElapsed";
 import { activityStartedAt } from "./activity-time";
@@ -678,6 +679,7 @@ export function Turn({
   onOpenQuestion,
   questionSources,
   receipts,
+  sendingInTurn,
   onResultInteract,
   sourceItemId,
   pendingToolIds,
@@ -696,6 +698,9 @@ export function Turn({
   onOpenQuestion?: (source: QuestionSource) => void;
   questionSources?: ReadonlySet<string>;
   receipts?: MessageReceipt[];
+  /** New messages still sending that this Turn shows (delivery-note's
+   * `sendingInTurn`): their delivery note is shown here, not as a preview. */
+  sendingInTurn?: ReadonlySet<string>;
   onResultInteract?: () => void;
   sourceItemId?: string;
   pendingToolIds?: ReadonlySet<string>;
@@ -780,6 +785,9 @@ export function Turn({
           <div className="message-label">
             <span className="you-avatar">Y</span>You
             <MessageTime mark={timeOf(item)} />
+            {!item.clientId && item._yuzunoClientMessageId && sendingInTurn?.has(item._yuzunoClientMessageId) && (
+              <small role="status" className="message-delivery">{deliveryNote("sending", agentHarnessName(agent))}</small>
+            )}
             {item._yuzunoDelivery && (
               <small role="status" className="message-delivery">
                 {item._yuzunoDelivery === "queued"
