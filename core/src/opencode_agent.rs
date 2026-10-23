@@ -764,7 +764,11 @@ fn message(d: &mut AgentDetail, info: &Value) {
     }
 }
 
-/// OpenCode stored the prompt sent under `turn`: it was delivered.
+/// OpenCode stored the prompt sent under `turn`: it was delivered. The
+/// Turn's user message is then that message in the conversation, and carries
+/// its client ID as a Codex or Claude one does (T-120): a delivery preview
+/// waits for that ID, and the receipt is bound by it. A refused message stays
+/// refused, and its user message gets no ID.
 fn confirm(d: &mut AgentDetail, turn: &str) {
     let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == turn) else { return };
     entry["_opencodeConfirmed"] = true.into();
@@ -772,6 +776,10 @@ fn confirm(d: &mut AgentDetail, turn: &str) {
         if receipt.status != "rejected" {
             receipt.status = "accepted".into();
             receipt.error = None;
+            let input = format!("{turn}:input");
+            if let Some(message) = entry["items"].as_array_mut().and_then(|items| items.iter_mut().find(|i| i["id"] == input.as_str())) {
+                message["clientId"] = receipt.input.client_message_id.clone().into();
+            }
         }
     }
 }

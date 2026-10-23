@@ -1943,6 +1943,31 @@ test("a delivery note names the Agent's own harness, and only its acceptance rea
   }
 });
 
+test("after a reload, an OpenCode message stored under its client ID shows no delivery preview, pasted text and all (T-120)", async () => {
+  const input = { clientMessageId: "pasted", text: "hello world", textBlocks: [{ id: "b", start: 0, end: 5 }], expectedTurnId: null, question: null };
+  const stored = (fields) => [{ id: "msg_1", status: "completed", items: [
+    { id: "msg_1:input", type: "userMessage", content: [{ type: "text", text: input.text }], nativeMessageId: "msg_1", ...fields }] }];
+  const receipts = (fields) => [{ agentId: "a", input, status: "accepted", turnId: "msg_1", error: null, ...fields }];
+  const preview = (page) => page.document.querySelector('[data-client-message-id="pasted"]');
+  const opencode = { harness: "opencode", agentFields: { opencodeSessionId: "ses_0123456789" } };
+  // As Core left it before: the message without a client ID, its receipt
+  // never bound, so even a fresh page waits for it.
+  const before = await mount({ ...opencode, receipts: receipts({}), extraTurns: stored({}) });
+  try {
+    assert.match(preview(before)?.textContent ?? "", /Received by OpenCode · syncing conversation/);
+  } finally { before.close(); }
+  // As Core leaves it now (tests/opencode_agent.rs): under its client ID,
+  // its pasted text restored, its receipt bound to it.
+  const after = await mount({ ...opencode,
+    receipts: receipts({ binding: { turnId: "msg_1", itemId: "msg_1:input", userIndex: 0 } }),
+    extraTurns: stored({ clientId: "pasted", _yuzunoTextBlocks: input.textBlocks }) });
+  try {
+    assert.equal(preview(after), null);
+    assert.equal(after.document.querySelectorAll(".outgoing-message").length, 0);
+    assert.deepEqual(after.errors, []);
+  } finally { after.close(); }
+});
+
 test("the current request stays outside the scrolling log, includes human follow-ups and resets on turn or Agent changes", async () => {
   const input = (id, text, extra = {}) => ({ id, type: "userMessage", content: [{ type: "text", text }], ...extra });
   const turn = { id: "active", status: "inProgress", items: [input("request", "保留本轮最初的请求"), input("peer", "Private mailbox content", { _yuzunoSource: "peer" })] };

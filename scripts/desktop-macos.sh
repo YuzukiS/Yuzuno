@@ -35,7 +35,16 @@ grep -A1 '^name = "tauri"$' desktop/Cargo.lock | grep -q "^version = \"$TAURI_CL
   { echo "desktop/Cargo.lock's tauri is not $TAURI_CLI_VERSION; update TAURI_CLI_VERSION with it." >&2; exit 65; }
 
 arch=$(uname -m)
-case "$arch" in arm64) triple=aarch64-apple-darwin ;; x86_64) triple=x86_64-apple-darwin ;; *) echo "Unknown architecture $arch" >&2; exit 69 ;; esac
+# The oldest macOS each build is for: Tauri writes it to the bundle's
+# LSMinimumSystemVersion and sets cargo's MACOSX_DEPLOYMENT_TARGET from it.
+# Apple silicon Macs start at macOS 11, which is also what Rust's
+# aarch64-apple-darwin target links for; Intel keeps Tauri's default. The
+# build stops below if the executable says otherwise.
+case "$arch" in
+  arm64) triple=aarch64-apple-darwin minimum=11.0 ;;
+  x86_64) triple=x86_64-apple-darwin minimum=10.13 ;;
+  *) echo "Unknown architecture $arch" >&2; exit 69 ;;
+esac
 toolchain=$(ls -d "${RUSTUP_HOME:-$HOME/.rustup}"/toolchains/"$channel-$triple" 2>/dev/null) ||
   { echo "No $channel-$triple toolchain under ${RUSTUP_HOME:-$HOME/.rustup}." >&2; exit 69; }
 mkdir -p "$tools" "$out"
@@ -56,7 +65,7 @@ if [ -n "$test" ]; then
   cargo test --locked
 fi
 rm -rf "$CARGO_TARGET_DIR/release/bundle"
-set -- build --ci --bundles app,dmg
+set -- build --ci --bundles app,dmg --config "{\"bundle\":{\"macOS\":{\"minimumSystemVersion\":\"$minimum\"}}}"
 [ -z "$version" ] || set -- "$@" --config "{\"version\":\"$version\"}"
 "$cli" "$@"
 
@@ -78,6 +87,29 @@ def run(*argv):
         return {"argv": list(argv), "exit": None, "output": "not on this Mac"}
     return {"argv": list(argv), "exit": done.returncode, "output": (done.stdout + done.stderr).strip()}
 
+def macho_minimum(path):
+    """The oldest macOS a thin 64-bit Mach-O is linked for: LC_BUILD_VERSION's
+    minos (platform macOS) or LC_VERSION_MIN_MACOSX's version, as X.Y.Z."""
+    import struct
+    data = open(path, "rb").read()
+    if len(data) < 32 or struct.unpack_from("<I", data)[0] != 0xFEEDFACF:
+        sys.exit(f"{path} is not a thin 64-bit Mach-O")
+    found, offset = [], 32
+    for _ in range(struct.unpack_from("<I", data, 16)[0]):
+        command, size = struct.unpack_from("<II", data, offset)
+        if command == 0x32 and struct.unpack_from("<I", data, offset + 8)[0] == 1:
+            found.append(struct.unpack_from("<I", data, offset + 12)[0])
+        elif command == 0x24:
+            found.append(struct.unpack_from("<I", data, offset + 8)[0])
+        offset += size
+    if len(found) != 1:
+        sys.exit(f"{path}: {len(found)} macOS minimum version load commands, not one")
+    return f"{found[0] >> 16}.{(found[0] >> 8) & 0xFF}.{found[0] & 0xFF}"
+
+def version(text):
+    parts = [int(part) for part in str(text).split(".")]
+    return tuple(parts + [0] * (3 - len(parts)))
+
 def sha256(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
@@ -92,6 +124,7 @@ record = {
         "version": info.get("CFBundleShortVersionString"),
         "build": info.get("CFBundleVersion"),
         "minimumSystemVersion": info.get("LSMinimumSystemVersion"),
+        "executableMinimumSystemVersion": macho_minimum(executable),
         "executableSha256": sha256(executable),
         "architectures": run("/usr/bin/lipo", "-archs", executable)["output"].split(),
     },
@@ -113,4 +146,7 @@ record = {
 }
 json.dump(record, open(sys.argv[1], "w"), indent=1)
 print(json.dumps({k: record[k] for k in ("sourceCommit", "app", "files")}, indent=1))
+declared, linked = record["app"]["minimumSystemVersion"], record["app"]["executableMinimumSystemVersion"]
+if version(declared) != version(linked):
+    sys.exit(f"The bundle declares macOS {declared} but its executable is linked for {linked}")
 EOF
