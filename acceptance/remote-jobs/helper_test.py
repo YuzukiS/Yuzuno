@@ -60,6 +60,31 @@ def group_gone(group, seconds=5):
     return False
 
 
+def end_attempts(jobs):
+    """Before a test's folder goes: what is left of each attempt's group under
+    `jobs` (a data root's jobs folder) is killed, checked as the helper checks
+    it, then each attempt's supervisor is waited for. A supervisor holds
+    supervisor.lock for its whole life and writes the outcome into that folder
+    once its command is gone, so removing the folder before it exits races
+    with that write. One still running after 20 s fails the test."""
+    for started in jobs.glob("*/*/started.json"):
+        try:
+            group = json.loads(started.read_text())
+        except ValueError:
+            continue
+        for pid in remote_job.members(group):
+            remote_job.send(pid, signal.SIGKILL, group)
+    left = [lock.parent for lock in jobs.glob("*/*/supervisor.lock")]
+    deadline = time.monotonic() + 20
+    while True:
+        left = [folder for folder in left if remote_job.supervisor_alive(folder)]
+        if not left or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    if left:
+        raise AssertionError("a supervisor is still running for " + ", ".join(map(str, left)))
+
+
 class HelperTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -73,15 +98,9 @@ class HelperTests(unittest.TestCase):
         self.boot.write_text(Path("/proc/sys/kernel/random/boot_id").read_text())
 
     def tearDown(self):
-        # Leave no command of a failed test running: what is left of each
-        # attempt's group, checked as the helper checks it.
-        for started in self.home.glob(".yuzuno/jobs/*/*/started.json"):
-            try:
-                group = json.loads(started.read_text())
-            except ValueError:
-                continue
-            for pid in remote_job.members(group):
-                remote_job.send(pid, signal.SIGKILL, group)
+        # Leave no command of a failed test running, nor a supervisor writing
+        # into the folder about to be removed.
+        end_attempts(self.home / ".yuzuno" / "jobs")
         self.tmp.cleanup()
 
     def call(self, request, expect=0, nonce=None, env_extra=None):
@@ -262,16 +281,23 @@ class HelperTests(unittest.TestCase):
         self.assertTrue(gone(child))
 
     def lose(self, job):
-        """Start the attempt, kill its supervisor: (started, when it returned)."""
+        """Start the attempt and kill its supervisor once it has recorded its
+        deadline: (started, when that deadline began on this boot's monotonic
+        clock). The supervisor records it after started.json, which is all a
+        start waits for, so killed at once it may record none."""
         started = self.start(job)["started"]
-        since = time.monotonic()
+        path = self.folder(job) / "deadline.json"
+        limit = time.monotonic() + 10
+        while not path.exists() and time.monotonic() < limit:
+            time.sleep(0.02)
+        self.assertTrue(path.exists(), "the supervisor recorded no deadline")
+        recorded = json.loads(path.read_text())
         os.kill(started["supervisorPid"], signal.SIGKILL)
         self.assertTrue(gone(started["supervisorPid"]))
-        return started, since
+        return started, recorded["monotonic"] - recorded["timeoutSeconds"]
 
     def past(self, since, timeout):
-        """Sleep past the attempt's deadline, which its supervisor took just
-        after started.json, so after the start returned."""
+        """Sleep past the attempt's deadline: when it began, plus its timeout."""
         time.sleep(max(0.0, since + timeout + 1 - time.monotonic()))
 
     def test_a_lost_command_still_running_at_its_timeout_is_stopped_at_the_next_status(self):
@@ -838,13 +864,7 @@ class InputsAndArtifactsTests(unittest.TestCase):
         self.env = dict(os.environ, YUZUNO_JOBS_MACHINE_ID_FILE=str(machine), YUZUNO_JOBS_BOOT_ID_FILE=str(boot))
 
     def tearDown(self):
-        for started in self.data.glob("jobs/*/*/started.json"):
-            try:
-                group = json.loads(started.read_text())
-            except ValueError:
-                continue
-            for pid in remote_job.members(group):
-                remote_job.send(pid, signal.SIGKILL, group)
+        end_attempts(self.data / "jobs")
         self.tmp.cleanup()
 
     def call(self, request, expect=0):
@@ -1232,13 +1252,7 @@ class PauseTests(unittest.TestCase):
                 pass
         for unit in units:
             subprocess.run(["systemctl", "--user", "thaw", "--", unit], capture_output=True, timeout=15)
-        for started in self.data.glob("jobs/*/*/started.json"):
-            try:
-                group = json.loads(started.read_text())
-            except ValueError:
-                continue
-            for pid in remote_job.members(group):
-                remote_job.send(pid, signal.SIGKILL, group)
+        end_attempts(self.data / "jobs")
         for unit in units:
             subprocess.run(["systemctl", "--user", "stop", "--", unit], capture_output=True, timeout=15)
         self.tmp.cleanup()
