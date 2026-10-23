@@ -1431,6 +1431,54 @@ def logs(request, host):
 ACTIONS = {"hello": hello, "inspect": inspect, "start": start, "status": status, "cancel": cancel, "logs": logs,
            "pause": pause, "resume": resume}
 
+# Core reads at most 256 KiB of a call's output (remote.rs REPLY_LIMIT), what
+# the account's login scripts print before the reply included; more is no
+# answer. A reply's whole frame (its mark, the call's nonce, its JSON and the
+# newline) stays within FRAME_BUDGET, leaving the rest for them.
+FRAME_LIMIT = 256 * 1024
+FRAME_BUDGET = FRAME_LIMIT - 32 * 1024
+# Each artifact's own check, which a reply too long for its frame keeps.
+CHECKED = ("format", "minBytes", "ok", "problem", "bytes", "sha256", "hash", "lines", "mtimeNs", "preExisting",
+           "unchangedSinceStart")
+
+
+def frame_bytes(mark, text):
+    return len((mark + text + "\n").encode("utf-8", "surrogateescape"))
+
+
+def within_frame(reply, mark, action):
+    """The reply's JSON, as long as its frame fits FRAME_BUDGET.
+
+    A terminal reply too long for it is projected: the attempt, the outcome,
+    its reason and exit, and each declared artifact's check stay, by index
+    and with the SHA-256 of its path; the artifacts' paths and absolute paths
+    are left out, which artifactsOmitted says (fields, count, the reply's
+    size), and are kept, with the whole check, in the attempt's artifacts.json
+    here. Bounded by construction: an artifact's check has no path in it, at
+    most 20 artifacts are declared, and a reason with them is at most 1,000
+    characters plus a note. An inspect too long for it is refused, nothing
+    frozen. Anything else too long for it (none, by construction) is
+    unclear."""
+    text = json.dumps(reply)
+    full = frame_bytes(mark, text)
+    if full <= FRAME_BUDGET:
+        return text
+    if action == "inspect":
+        raise Refused("The inputs' details would make a %d-byte reply, more than one reply to Core may carry (%d bytes); "
+                      "nothing was frozen. Name fewer inputs, or ones with shorter paths" % (full, FRAME_BUDGET))
+    result = reply.get("result")
+    if isinstance(result, dict) and isinstance(result.get("artifacts"), list):
+        checks = [dict({key: a[key] for key in CHECKED if key in a}, index=i,
+                       pathSha256=hashlib.sha256(a["path"].encode("utf-8", "surrogateescape")).hexdigest())
+                  for i, a in enumerate(result["artifacts"])]
+        omitted = {"fields": ["path", "absolutePath"], "count": len(checks), "replyBytes": full, "record": "artifacts.json"}
+        text = json.dumps(dict(reply, result=dict(result, artifacts=checks, artifactsOmitted=omitted)))
+        if frame_bytes(mark, text) <= FRAME_BUDGET:
+            return text
+    return json.dumps({"status": "unclear", "hostId": reply.get("hostId"), "bootId": reply.get("bootId"),
+                       "reason": "its details would make a %d-byte reply, more than one reply to Core may carry (%d bytes)"
+                       % (full, FRAME_BUDGET)})
+
 
 def main():
     # The reply line carries the call's nonce: only this helper, which reads
@@ -1463,7 +1511,12 @@ def main():
         sys.exit(3)
     reply["hostId"] = host
     reply["bootId"] = boot_id()
-    print(mark + json.dumps(reply))
+    try:
+        text = within_frame(reply, mark, request.get("action"))
+    except Refused as error:
+        print(mark + json.dumps({"error": str(error)}))
+        sys.exit(3)
+    print(mark + text)
 
 
 if __name__ == "__main__":
