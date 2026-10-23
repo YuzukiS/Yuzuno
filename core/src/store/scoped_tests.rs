@@ -1259,3 +1259,260 @@ fn completed_turns_racing_streamed_items_are_held_as_their_rows_and_journal_rebu
     let t5 = reloaded.iter().find(|t| t["id"] == "t5").unwrap();
     assert_eq!(t5["items"].as_array().unwrap().iter().filter(|i| i["id"].as_str().is_some_and(|id| id.starts_with('s'))).count(), 80);
 }
+
+/// The Claude `result`s this thread got to writing without copying the
+/// record's other Turns (`Store::commit_turn`).
+fn result_in_place() -> u64 {
+    super::RESULT_IN_PLACE.with(|n| n.get())
+}
+
+/// A Claude bridge message for Turn `turn`.
+fn claude(turn: &str, event: Value) -> Value {
+    json!({"type":"event","turnId":turn,"event":event})
+}
+
+fn ended(turn: &str, extra: Value) -> Value {
+    let mut event = json!({"type":"result","subtype":"success","is_error":false,"session_id":"s","result":"final","duration_ms":5});
+    for (key, value) in extra.as_object().unwrap() {
+        event[key] = value.clone();
+    }
+    claude(turn, event)
+}
+
+/// A Claude `result` committed as claude.rs committed it before
+/// (`update_picking`, comparing the whole record) in `generic`, and through
+/// `update_picking_result` in `scoped`, each picking what claude.rs picks:
+/// the ended Turn and the usage-limit stop. The picks are the same; whether
+/// `scoped` wrote it in place.
+fn result_both(generic: &Store, scoped: &Store, message: &Value) -> bool {
+    let (turn, event) = (message["turnId"].as_str(), &message["event"]);
+    let pick = |d: &AgentDetail| {
+        let ended = turn.and_then(|tid| d.turns.iter().find(|t| t["id"] == tid
+            && matches!(t["status"].as_str(), Some("completed" | "failed" | "interrupted"))).cloned());
+        (ended, crate::claude_quota::result_stop(d).map(|stop| stop.turn_id))
+    };
+    let project = |d: &mut AgentDetail| crate::claude::project_event(d, turn, event);
+    let compared = generic.update_picking("a", "claude/result", message, project, pick).unwrap();
+    let before = result_in_place();
+    let written = scoped.update_picking_result("a", "claude/result", message, project, pick).unwrap();
+    assert_eq!(compared, written, "the picks differ");
+    result_in_place() == before + 1
+}
+
+/// `turn`, in progress with a user message, in both stores.
+fn start_both_claude(generic: &Store, scoped: &Store, turn: &str) {
+    for store in [generic, scoped] {
+        let (item, turn) = (format!("u-{turn}"), turn.to_owned());
+        store.record_event("a", "test/turn", &json!({}), move |d| d.turns.push(json!({"id":turn,"status":"inProgress",
+            "items":[{"id":item,"type":"userMessage","content":[{"type":"text","text":"task"}]}]}))).unwrap();
+    }
+}
+
+#[test]
+fn a_claude_result_is_written_without_copying_the_other_turns() {
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    let same = |step: &str, in_place: bool| {
+        assert!(in_place, "{step}: the scoped store copied the record");
+        assert_eq!(state(&generic), state(&scoped), "{step}: written in place, something else was written");
+        for store in [&generic, &scoped] {
+            store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+        }
+    };
+    // The Turn's streamed messages the rows lack, and one of another Turn;
+    // the result's text names the final answer.
+    start_both_claude(&generic, &scoped, "c1");
+    for store in [&generic, &scoped] {
+        super::tests::stream(store, "a", "item/completed",
+            &json!({"turnId":"t5","item":{"id":"m5","type":"agentMessage","text":"streamed elsewhere"}}));
+        for (i, text) in ["working on it", "final"].iter().enumerate() {
+            super::tests::stream(store, "a", "claude/assistant", &claude("c1", json!({"type":"assistant","uuid":format!("a{i}"),
+                "session_id":"s","message":{"id":format!("msg-c1-{i}"),"content":[{"type":"text","text":text}]}})));
+        }
+    }
+    same("streamed messages the rows lack, and the final answer", result_both(&generic, &scoped, &ended("c1", json!({}))));
+    let c1 = scoped.detail("a").unwrap().turns.into_iter().find(|t| t["id"] == "c1").unwrap();
+    assert_eq!(c1["items"].as_array().unwrap().last().unwrap()["phase"], "final_answer", "{c1}");
+    same("the same result again", result_both(&generic, &scoped, &ended("c1", json!({}))));
+    // Failed and interrupted.
+    start_both_claude(&generic, &scoped, "c2");
+    same("a failed Turn", result_both(&generic, &scoped,
+        &ended("c2", json!({"is_error":true,"subtype":"error_during_execution","errors":["model refused"]}))));
+    assert_eq!(scoped.agent("a").unwrap().status, "error");
+    start_both_claude(&generic, &scoped, "c3");
+    same("an interrupted Turn", result_both(&generic, &scoped, &ended("c3", json!({"is_error":true,"subtype":"interrupted"}))));
+    // Its own requests go; another's keeps the Agent waiting.
+    start_both_claude(&generic, &scoped, "c4");
+    for store in [&generic, &scoped] {
+        store.update_meta("a", "test/request", &json!({}), |m| {
+            m.pending.push(question_of("p4", 4, "c4", true));
+            m.pending.push(question_of("p5", 5, "t5", true));
+        }).unwrap();
+    }
+    same("requests of that Turn and of another", result_both(&generic, &scoped, &ended("c4", json!({}))));
+    let d = scoped.detail("a").unwrap();
+    assert_eq!(d.pending.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["p5"]);
+    assert_eq!(d.agent.status, "waiting");
+    for store in [&generic, &scoped] {
+        store.update_meta("a", "test/answered", &json!({}), |m| m.pending.clear()).unwrap();
+    }
+    // A Turn of Claude's own, with its origin.
+    start_both_claude(&generic, &scoped, "native-1");
+    same("a native Turn", result_both(&generic, &scoped, &ended("native-1", json!({"origin":{"kind":"task-notification"}}))));
+    // Another session's result: the Agent uncertain, the Turn left as it was.
+    start_both_claude(&generic, &scoped, "c5");
+    same("another session's result", result_both(&generic, &scoped, &ended("c5", json!({"session_id":"other"}))));
+    assert_eq!(scoped.agent("a").unwrap().status, "uncertain");
+}
+
+/// Where writing in place cannot be shown to write what comparing writes, a
+/// Claude `result` is committed as `update_picking` commits it.
+#[test]
+fn a_claude_result_is_compared_where_in_place_cannot_show_the_same_write() {
+    let check = |generic: &Store, scoped: &Store, step: &str, message: &Value| {
+        assert!(!result_both(generic, scoped, message), "{step}: written in place");
+        assert_eq!(state(generic), state(scoped), "{step}");
+    };
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    start_both_claude(&generic, &scoped, "c1");
+    start_both_claude(&generic, &scoped, "c2");
+    check(&generic, &scoped, "another Turn in progress", &ended("c2", json!({})));
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    start_both_claude(&generic, &scoped, "native-a");
+    start_both_claude(&generic, &scoped, "c1");
+    check(&generic, &scoped, "a native Turn in progress, which the result ends as unknown", &ended("c1", json!({})));
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    check(&generic, &scoped, "a Turn the record lacks", &ended("missing", json!({})));
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    start_both_claude(&generic, &scoped, "c1");
+    check(&generic, &scoped, "a sub-agent's result", &ended("c1", json!({"parent_tool_use_id":"call-1"})));
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    start_both_claude(&generic, &scoped, "c1");
+    for store in [&generic, &scoped] {
+        let mut memory = store.memory.lock().unwrap();
+        memory.held.clear();
+        memory.briefs.clear();
+    }
+    check(&generic, &scoped, "a record not held", &ended("c1", json!({})));
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    start_both_claude(&generic, &scoped, "c1");
+    for store in [&generic, &scoped] {
+        store.record_event("a", "test/duplicate", &json!({}), |d| {
+            let copy = d.turns[1].clone();
+            d.turns.push(copy);
+        }).unwrap();
+    }
+    check(&generic, &scoped, "Turns without distinct IDs", &ended("c1", json!({})));
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    start_both_claude(&generic, &scoped, "c1");
+    for store in [&generic, &scoped] {
+        let mut blocks = receipt("old-4", "message 4");
+        blocks.status = "accepted".into();
+        blocks.input.text_blocks = Some(vec![crate::message_content::TextBlock { id: "b".into(), start: 0, end: 7 }]);
+        store.update_meta("a", "message/requested", &json!({}), move |m| m.message_receipts.push(blocks)).unwrap();
+        unrestore(store, "t4", "u4");
+    }
+    check(&generic, &scoped, "an old Item restore would change", &ended("c1", json!({})));
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    start_both_claude(&generic, &scoped, "c1");
+    for store in [&generic, &scoped] {
+        let whole = serde_json::to_string(&store.detail("a").unwrap()).unwrap();
+        let mut db = store.db.write().unwrap();
+        let tx = db.transaction().unwrap();
+        tx.execute("UPDATE agents SET layout=0, data=?1 WHERE id='a'", [whole]).unwrap();
+        record_rows::delete_rows(&tx, "a").unwrap();
+        tx.commit().unwrap();
+        drop(db);
+        store.memory.lock().unwrap().held.clear();
+        store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+    }
+    check(&generic, &scoped, "a record kept whole", &ended("c1", json!({})));
+}
+
+/// Each way a Claude `result`'s write can fail, planning, writing its
+/// journal, metadata or Item rows, or at COMMIT, publishes nothing, and once
+/// the fault is gone the same result is journaled once.
+#[test]
+fn a_claude_result_whose_write_fails_publishes_nothing() {
+    for (fault, undo, wrote) in [
+        ("ALTER TABLE agent_turns RENAME TO hidden_turns;", "ALTER TABLE hidden_turns RENAME TO agent_turns;", false),
+        ("CREATE TRIGGER refuse BEFORE INSERT ON journal WHEN NEW.kind='claude/result' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            "DROP TRIGGER refuse;", true),
+        ("CREATE TRIGGER refuse BEFORE UPDATE ON agents BEGIN SELECT RAISE(ABORT, 'refused'); END;", "DROP TRIGGER refuse;", true),
+        ("CREATE TRIGGER refuse BEFORE INSERT ON agent_items WHEN NEW.turn_id='lost' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            "DROP TRIGGER refuse;", true),
+        ("CREATE TABLE t140_parent(id INTEGER PRIMARY KEY);
+          CREATE TABLE t140_child(parent INTEGER REFERENCES t140_parent(id) DEFERRABLE INITIALLY DEFERRED);
+          CREATE TRIGGER t140_orphan AFTER INSERT ON journal WHEN NEW.kind='claude/result'
+              BEGIN INSERT INTO t140_child(parent) VALUES(-1); END;", "DROP TRIGGER t140_orphan;", true),
+    ] {
+        let ((_ga, _generic), (_sa, store)) = pair();
+        store.record_event("a", "test/turn", &json!({}), |d| d.turns.push(json!({"id":"lost","status":"inProgress",
+            "items":[{"id":"u-lost","type":"userMessage","content":[{"type":"text","text":"task"}]}]}))).unwrap();
+        super::tests::stream(&store, "a", "item/completed",
+            &json!({"turnId":"t5","item":{"id":"m5","type":"agentMessage","text":"later"}}));
+        let unwritten = || store.memory.lock().unwrap().held.get("a").map(|held| held.unwritten.clone());
+        let (before, lacking) = (published(&store), unwritten());
+        store.db.write().unwrap().execute_batch(fault).unwrap();
+        let taken = result_in_place();
+        let message = ended("lost", json!({}));
+        let project = |d: &mut AgentDetail| crate::claude::project_event(d, Some("lost"), &message["event"]);
+        assert!(store.update_picking_result("a", "claude/result", &message, project, |_| ()).is_err(), "{fault}");
+        assert_eq!(result_in_place(), taken + u64::from(wrote), "{fault}: which path wrote");
+        assert!(store.held("a").is_some(), "{fault}");
+        store.db.write().unwrap().execute_batch(undo).unwrap();
+        assert_eq!(published(&store), before, "{fault}");
+        assert_eq!(unwritten(), lacking, "{fault}");
+        store.update_picking_result("a", "claude/result", &message, project, |_| ()).unwrap();
+        let results: i64 = store.db.read().unwrap()
+            .query_row("SELECT count(*) FROM journal WHERE agent_id='a' AND kind='claude/result'", [], |r| r.get(0)).unwrap();
+        assert_eq!(results, 1, "{fault}: the failed write was journaled");
+        let d = store.detail("a").unwrap();
+        assert_eq!(d.turns.iter().find(|t| t["id"] == "lost").unwrap()["status"], "completed", "{fault}");
+        let written: i64 = store.db.read().unwrap()
+            .query_row("SELECT count(*) FROM agent_items WHERE agent_id='a' AND item_id='m5' AND data LIKE '%later%'", [], |r| r.get(0)).unwrap();
+        assert_eq!(written, 1, "{fault}: the streamed Item was not written");
+    }
+}
+
+/// Results written in place while streamed Items reach the same record on
+/// another thread leave held what its rows and journal rebuild.
+#[test]
+fn claude_results_racing_streamed_items_are_held_as_their_rows_and_journal_rebuild_them() {
+    let ((_ga, _generic), (_sa, store)) = pair();
+    let in_place = std::thread::scope(|s| {
+        let streamer = s.spawn(|| {
+            for n in 0..80 {
+                super::tests::stream(&store, "a", "item/completed",
+                    &json!({"turnId":"t5","item":{"id":format!("s{n}"),"type":"agentMessage","text":format!("streamed {n}")}}));
+            }
+        });
+        let ender = s.spawn(|| {
+            let before = result_in_place();
+            for n in 0..30 {
+                let turn = format!("r{n}");
+                let id = turn.clone();
+                store.record_event("a", "test/turn", &json!({}), move |d| d.turns.push(json!({"id":id,"status":"inProgress","items":[]}))).unwrap();
+                let message = ended(&turn, json!({}));
+                let project = |d: &mut AgentDetail| crate::claude::project_event(d, Some(turn.as_str()), &message["event"]);
+                store.update_picking_result("a", "claude/result", &message, project, |_| ()).unwrap();
+            }
+            result_in_place() - before
+        });
+        streamer.join().unwrap();
+        ender.join().unwrap()
+    });
+    assert_eq!(in_place, 30);
+    let s = state(&store);
+    assert_eq!(s["held"], s["reloaded"], "what is held is not what its rows and journal rebuild");
+    let reloaded = s["reloaded"]["turns"].as_array().unwrap();
+    assert!((0..30).all(|n| reloaded.iter().any(|t| t["id"] == format!("r{n}").as_str() && t["status"] == "completed")));
+    let t5 = reloaded.iter().find(|t| t["id"] == "t5").unwrap();
+    assert_eq!(t5["items"].as_array().unwrap().iter().filter(|i| i["id"].as_str().is_some_and(|id| id.starts_with('s'))).count(), 80);
+}
