@@ -118,13 +118,13 @@ It builds the pinned Tauri CLI with cargo into `--tools` (nothing is installed g
 
 On macOS the app has the usual menus: Yuzuno (Quit), Edit (copy and paste in the workspace's text fields), Workspace (**Connection…**, `Cmd+,`) and Window. It does not update itself; install a newer build by hand. Apple silicon (arm64) and Intel (x86_64) are built separately; there is no universal app.
 
-**What has been checked on a Mac.** T-141 checked a package built on a Mac (`b5`, see [acceptance/t141](../acceptance/t141/README.md)). No CI-built candidate has been opened on a Mac yet; [acceptance/t165](../acceptance/t165/README.md) is the prepared check, not run.
+**What has been checked on a Mac.** T-141 checked a package built on a Mac (`b5`, see [acceptance/t141](../acceptance/t141/README.md)). One CI-built candidate, arm64, was opened once on a Mac, on 2026-10-21, by part A of [acceptance/t165](../acceptance/t165/README.md#results): run [39557597376](https://github.com/YuzukiS/Yuzuno/actions/runs/39557597376) from `aa4f9fc`, in an isolated lab, with nobody looking at the window. No later candidate, and no Intel build, has been opened on a Mac.
 
 | Behaviour | Checked | Not yet |
 |---|---|---|
 | Build and desktop tests | Each CI run on `macos-26` and on `macos-26-intel`, which also record `codesign --verify` in `build.json` and check the packages' structure; T-141 on a Mac (19/19 tests) | |
-| Opens the Core it is given, saves it (`core.json`), reopens it without arguments | T-141 lab, measured through a relay | A CI-built candidate |
-| Tunnel stopped and started: the open window reaches Core again | T-141 lab, measured through a relay | An unsent draft surviving it, measured on a Mac (a browser was) |
+| Opens the Core it is given, saves it (`core.json`), reopens it without arguments | T-141 lab, measured through a relay; T-165 A, the candidate from run 39557597376 in an isolated lab | A later candidate |
+| Tunnel stopped and started: the open window reaches Core again | T-141 lab, measured through a relay; T-165 A, the same candidate | An unsent draft surviving it, measured on a Mac (a browser was) |
 | A turn in a lab Workspace: a message with an image, a command after an approval, the reply | T-141, a person at the Mac. 13 checks: 11 passed, 2 failed because the message was sent twice. The second turn was recorded; whether the approval answered exactly that request is unknown. The window, drafts and reopening are as the user reported them | A real send on the daily Core |
 | The daily Workspace, read only | T-141: Core version, Workspace and page measured through the tunnel; the user's view as reported | |
 | Links to web pages and mail (system browser or mail app) | The rule, in the desktop tests | Clicking one on a Mac |
