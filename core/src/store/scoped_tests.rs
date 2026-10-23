@@ -2086,3 +2086,16 @@ fn a_claude_follow_up_is_compared_where_in_place_cannot_show_the_same_write() {
     assert!(!follow_up_both(&generic, &scoped, "t4", "f1"), "Turns without distinct IDs: written in place");
     assert_eq!(state(&generic), state(&scoped), "Turns without distinct IDs");
 }
+
+/// A whole read is counted for the Store that made it: two stores holding
+/// an Agent of the same ID count apart, as tests running side by side do.
+#[test]
+fn a_whole_read_is_counted_for_its_own_store() {
+    let ((_ga, one), (_sa, other)) = pair();
+    let (mine, theirs) = (one.detail_reads("a"), other.detail_reads("a"));
+    for _ in 0..3 {
+        one.detail("a").unwrap();
+    }
+    assert_eq!((one.detail_reads("a") - mine, other.detail_reads("a") - theirs), (3, 0),
+        "a read was counted for another store");
+}

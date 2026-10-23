@@ -644,14 +644,19 @@ thread_local! {
     pub(super) static SEND_ROWS_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// How many whole records `Store::detail` read of each Agent, on any thread:
-/// a Workspace reads on a blocking thread, and Agent IDs keep tests apart.
+/// How many whole records `Store::detail` read of each Agent, by the Store
+/// (its address) that read it, on any thread: a Workspace reads on a
+/// blocking thread. Agent IDs keep most tests apart; a test whose Agent ID
+/// tests running beside it use too counts its own Store's reads
+/// (`Store::detail_reads`). Counts are compared before and after.
 #[cfg(test)]
-pub(crate) static DETAIL_READS_OF: std::sync::Mutex<Option<HashMap<String, u64>>> = std::sync::Mutex::new(None);
+pub(crate) static DETAIL_READS_OF: std::sync::Mutex<Option<HashMap<(usize, String), u64>>> = std::sync::Mutex::new(None);
 
+/// Every Store's whole reads of `id`.
 #[cfg(test)]
 pub(crate) fn detail_reads_of(id: &str) -> u64 {
-    DETAIL_READS_OF.lock().unwrap().as_ref().and_then(|reads| reads.get(id).copied()).unwrap_or(0)
+    DETAIL_READS_OF.lock().unwrap().as_ref()
+        .map_or(0, |reads| reads.iter().filter(|((_, of), _)| of == id).map(|(_, n)| n).sum())
 }
 
 /// Signals when `commit` has planned (serialized) the write of the watched
@@ -1596,9 +1601,17 @@ impl Store {
         #[cfg(test)]
         {
             DETAIL_READS.with(|n| n.set(n.get() + 1));
-            *DETAIL_READS_OF.lock().unwrap().get_or_insert_with(HashMap::new).entry(id.into()).or_default() += 1;
+            *DETAIL_READS_OF.lock().unwrap().get_or_insert_with(HashMap::new)
+                .entry((self as *const Self as usize, id.into())).or_default() += 1;
         }
         self.detail_racing(id, || {})
+    }
+
+    /// This Store's whole reads of `id` (see `DETAIL_READS_OF`).
+    #[cfg(test)]
+    pub(crate) fn detail_reads(&self, id: &str) -> u64 {
+        DETAIL_READS_OF.lock().unwrap().as_ref()
+            .and_then(|reads| reads.get(&(self as *const Self as usize, id.to_owned())).copied()).unwrap_or(0)
     }
 
     /// What a send checks, without copying the rest of the record: the Agent,
