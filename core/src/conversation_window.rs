@@ -281,38 +281,75 @@ pub fn original_item(detail: &AgentDetail, turn_id: Option<&str>, item_id: &str)
 /// Saved message search is independent of loaded/mounted windows. Literal
 /// matching, 50 results and bounded snippets; tool output is excluded.
 pub fn search(detail: &AgentDetail, query: &str) -> Vec<Value> {
-    let query = query.trim();
-    if query.is_empty() || query.len() > 256 { return Vec::new(); }
-    let needle = query.to_lowercase();
-    let mut results = Vec::new();
+    let Some(mut search) = Search::new(query) else { return Vec::new() };
     for (number, turn) in detail.turns.iter().enumerate() {
         for item in turn["items"].as_array().into_iter().flatten() {
-            if !matches!(item["type"].as_str(), Some("userMessage" | "agentMessage")) { continue; }
-            for part in message_parts(item) {
-                // Lowercasing may change byte lengths. Build offsets back into
-                // the original only for the first match, never slice with an
-                // offset from the folded string.
-                let folded = part.to_lowercase();
-                let Some(at) = folded.find(&needle) else { continue };
-                let mut folded_at = 0;
-                let mut start = 0;
-                let mut end = part.len();
-                for (byte, ch) in part.char_indices() {
-                    if folded_at <= at { start = byte; }
-                    if folded_at >= at + needle.len() { end = byte; break; }
-                    folded_at += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
-                }
-                let before: String = part[..start].chars().rev().take(70).collect::<Vec<_>>().into_iter().rev().collect();
-                let after: String = part[end..].chars().take(110).collect();
-                results.push(json!({"turnId":turn["id"],"itemId":item["id"],"turnNumber":number + 1,
-                    "role":if item["type"] == "userMessage" { "user" } else if item["phase"] == "commentary" { "progress" } else { "assistant" },
-                    "before":before,"match":&part[start..end],"after":after}));
-                break;
-            }
-            if results.len() == 50 { return results; }
+            if Search::reads(item) && !search.item(number, &turn["id"], item) { return search.results; }
         }
     }
-    results
+    search.results
+}
+
+/// `search`, an Item at a time, for a caller that reads Items one by one
+/// (`Store::conversation_search`).
+pub(crate) struct Search {
+    needle: String,
+    pub(crate) results: Vec<Value>,
+}
+
+impl Search {
+    /// None for a query `search` finds nothing for (blank, or over 256 bytes).
+    pub(crate) fn new(query: &str) -> Option<Self> {
+        let query = query.trim();
+        if query.is_empty() || query.len() > 256 { return None; }
+        Some(Self { needle: query.to_lowercase(), results: Vec::new() })
+    }
+
+    /// Whether `search` reads this Item: a user or assistant message.
+    pub(crate) fn reads(item: &Value) -> bool {
+        matches!(item["type"].as_str(), Some("userMessage" | "agentMessage"))
+    }
+
+    /// Searches message `item` of the Turn at `number` (from 0) with ID
+    /// `turn`. False once there are 50 results.
+    pub(crate) fn item(&mut self, number: usize, turn: &Value, item: &Value) -> bool {
+        for part in message_parts(item) {
+            // Lowercasing may change byte lengths. Build offsets back into
+            // the original only for the first match, never slice with an
+            // offset from the folded string.
+            let folded = part.to_lowercase();
+            let Some(at) = folded.find(&self.needle) else { continue };
+            let mut folded_at = 0;
+            let mut start = 0;
+            let mut end = part.len();
+            for (byte, ch) in part.char_indices() {
+                if folded_at <= at { start = byte; }
+                if folded_at >= at + self.needle.len() { end = byte; break; }
+                folded_at += ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+            }
+            let before: String = part[..start].chars().rev().take(70).collect::<Vec<_>>().into_iter().rev().collect();
+            let after: String = part[end..].chars().take(110).collect();
+            self.results.push(json!({"turnId":turn,"itemId":item["id"],"turnNumber":number + 1,
+                "role":if item["type"] == "userMessage" { "user" } else if item["phase"] == "commentary" { "progress" } else { "assistant" },
+                "before":before,"match":&part[start..end],"after":after}));
+            break;
+        }
+        self.results.len() < 50
+    }
+}
+
+/// What `Search::item` reads of message `item`, copied: its ID, type and
+/// phase and the text `message_parts` takes, without a user message's other
+/// content (attachments) or an assistant message's other fields.
+pub(crate) fn searched(item: &Value) -> Value {
+    let mut out = json!({"id":item["id"], "type":item["type"]});
+    for key in ["phase", "_yuzunoInputText", "text"] {
+        if let Some(value) = item.get(key) { out[key] = value.clone(); }
+    }
+    if let Some(content) = item["content"].as_array() {
+        out["content"] = content.iter().map(|part| json!({"text":part["text"]})).collect();
+    }
+    out
 }
 
 #[cfg(test)]
