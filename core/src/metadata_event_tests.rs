@@ -186,3 +186,24 @@ async fn a_native_turn_started_is_written_without_copying_the_record() {
     assert_eq!(kinds(&ws).pop().unwrap().0, "turn/started");
     rpc.close();
 }
+
+/// A native `turn/completed` reaches `Store::record_applied` from `on_event`
+/// and is written without copying the record's other Turns (T-140).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_native_turn_completed_is_written_without_copying_the_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+    ws.store.insert(&record("working", true)).unwrap();
+    ws.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+    let rpc = connect(&ws, 1).await;
+    let before = crate::store::COMPLETED_IN_PLACE.with(|n| n.get());
+    ws.on_event("a", 1, json!({"method":"turn/completed","params":{"threadId":"thread-a",
+        "turn":{"id":"t2","status":"completed","items":[{"id":"m2","type":"agentMessage","text":"done"}]}}}));
+    assert_eq!(crate::store::COMPLETED_IN_PLACE.with(|n| n.get()), before + 1, "the turn/completed copied the record");
+    let after = ws.store.detail("a").unwrap();
+    assert_eq!(after.turns[1]["status"], "completed");
+    assert_eq!(after.turns[1]["items"][0]["text"], "done");
+    assert_eq!((after.agent.status.as_str(), after.agent.unread_count), ("idle", 1));
+    assert_eq!(kinds(&ws).pop().unwrap().0, "turn/completed");
+    rpc.close();
+}

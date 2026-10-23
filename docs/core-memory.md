@@ -245,7 +245,7 @@ exclude SQLite's C allocations.
 A Codex `turn/started` notification, and the reply to `turn/start` applied as
 it (`turn/accepted`), went through `commit_locked`, which copies the held
 record whole to change one Turn. Now the record's metadata and that Turn are
-copied (`Store::commit_started`) and the event is applied to the copy.
+copied (`Store::commit_turn`) and the event is applied to the copy.
 Message receipts are then bound, restored and accepted over the held Turns in
 order, with the copy in its Turn's place, as `apply` and the commit do. The
 change is written in one transaction; only after it commits do the copies
@@ -253,8 +253,8 @@ replace the held metadata and that Turn, so a write that fails leaves the
 record as it was. These are committed as before: a record that is not held or
 is stored whole, an event without a Turn ID, a record whose Turns are not told
 apart by ID, another kind applied as `turn/started`, and receipts after which
-a message of another Turn would be restored. `turn/completed` still copies the
-record whole.
+a message of another Turn would be restored. `turn/completed` is committed the
+same way since (see A Codex Turn's end).
 
 T-140 Jobs `13eb41e0-f370-4b0d-a4b7-acce70109597` (builds) and
 `2ae85522-c018-4708-9f77-bda896ad98f1` (runs), 2026-10-23: release builds of
@@ -299,6 +299,70 @@ slowest call took 22.8–32.9 ms, before and after alike (the 90th percentile
 was 11–15 ms before and 3.0–4.6 ms after); that is not attributed either. What
 a call allocates after the change grows with the number of Turns. These are
 synthetic allocator measurements in one process, not the daily Core's RSS.
+
+### A Codex Turn's end
+
+A native Codex `turn/completed` went through `record_event`: `commit_locked`
+copied the held record whole and compared the copy with it, once per Turn. It
+now goes through `record_applied` and `Store::commit_turn`, as `turn/started`
+does: the record's metadata and that Turn are copied, the event is applied to
+the copies, and the receipts are bound, restored and accepted over the held
+Turns with the copy in its Turn's place. Unlike `turn/started`, a completion
+always runs that step. Whether the Turn was completed or imported before is
+checked in the same transaction as the write, with the check `commit_locked`
+makes, so a repeat is journaled as `turn/reconfirmed` and adds no unread. A
+completion is compared as before where writing in place cannot be shown to
+write the same: a record that is not held or is stored whole, an event without
+a Turn ID, Turns not told apart by ID, and receipts after which a message of
+another Turn would be restored.
+
+T-140 run `f60bb779-f22d-4e10-9e1d-ec71614657f5`, 2026-10-23: a release build
+of `turn_completed_ab_lab` (on lab branches, not merged; derived from
+`turn_started_ab_lab`) on main `52a7836` and on this change. The same two
+synthetic records (37.9 and 63.6 MiB of history JSON), held, were each run
+four times in the order before, after, after, before. Before is main's call
+(`record_event` with `apply`), after is the change's (`record_applied`); ten
+calls of each kind per run. "Streamed" completes a Turn that first got twenty
+16 KiB command outputs and its final message through `record_stream`, not yet
+written; the completion carries the final message.
+
+| One call | Before | After |
+| --- | ---: | ---: |
+| `turn/completed`, 37.9 MiB record: allocated | 41.7 MiB | 36.9 KiB |
+| The same: Rust peak above its start | 41.6 MiB | 15.9 KiB |
+| The same: median time | 7.7–8.8 ms | 1.9–2.1 ms |
+| `turn/completed`, 63.6 MiB record: allocated | 68.9 MiB | 64.4 KiB |
+| The same: Rust peak above its start | 68.8 MiB | 27.4 KiB |
+| The same: median time | 13.4–13.9 ms | 2.4 ms |
+| Streamed, 63.6 MiB record: allocated | 70.2 MiB | 1.33 MiB |
+| The same: median time | 15.4–15.6 ms | 4.0–4.7 ms |
+| The same completion again (`turn/reconfirmed`), 63.6 MiB: allocated | 69.2 MiB | 412 KiB |
+
+| A streamed delta's p99 | Before | After |
+| --- | ---: | ---: |
+| No call, 37.9 MiB record | 467–471 µs | 447–452 µs |
+| No call, 63.6 MiB record | 756–764 µs | 718–726 µs |
+| `turn/completed` every 200 ms, 37.9 MiB record | 9.3–10.0 ms | 1.0–1.5 ms |
+| The same, 63.6 MiB record | 14.8–15.3 ms | 1.58–1.61 ms |
+
+Every run checked each Turn's status and Items, one `turn/completed` journal
+row per Turn and one `turn/reconfirmed` per repeat, unread grown by the Turns
+completed only, and the record read back from its rows equal to the one held.
+What a completion allocates after the change grows with that Turn (the
+streamed case, 1.33 MiB at both sizes), not with the record. Before, the first
+completion of each run took 20.2–33.6 ms, the first whole copy after the
+record was opened; after, 2.0–2.5 ms. Some single calls took 25–54 ms on both
+sides at the same positions (the fourth `turn/started` with the 37.9 MiB
+record, the third repeat with the 63.6 MiB one); one run after, with the 63.6
+MiB record, had five more calls of 27.7–51.8 ms, the other none above 8.1 ms
+besides that shared position. In the windows, the slowest call took 12.5–22.5
+ms before; after, 2.8–10.9 ms, except one window with the 37.9 MiB record in
+which one call took 46.2 ms and a delta 44.4 ms. None of that is attributed.
+Commits that still copy a held Codex record whole, which this lab does not
+make, include a status change or a request's resolution while a message is
+being sent, `error`, `thread/compacted` and an MCP server's start-up status.
+These are synthetic allocator measurements in one process, not the daily
+Core's RSS.
 
 ### A sub-agent's event
 

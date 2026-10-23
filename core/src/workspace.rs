@@ -2207,10 +2207,13 @@ impl Workspace {
                     // its pending requests: committed as metadata, without
                     // copying a long record (T-120). The kinds a send waits
                     // behind, whose rows `Dirty::of_applied` names (verified
-                    // against apply_at), are not compared; others are.
+                    // against apply_at), are not compared; others are. A
+                    // Turn's end is written in place on a held record, and
+                    // compared otherwise (`Store::record_applied`, T-140).
                     let _ = if let Some(running) = self.metadata_event(id, method) {
                         self.store.update_meta(id, method, &scoped, |m| apply_metadata_event(m, method, &scoped, running))
-                    } else if matches!(method, "thread/status/changed" | "turn/started" | "mcpServer/startupStatus/updated") {
+                    } else if matches!(method, "thread/status/changed" | "turn/started" | "turn/completed"
+                        | "mcpServer/startupStatus/updated") {
                         self.store.record_applied(id, method, method, &scoped)
                     } else {
                         self.store.record_event(id, method, &scoped, |d| d.apply(method, &scoped))
