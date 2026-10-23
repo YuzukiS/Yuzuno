@@ -193,7 +193,10 @@ async fn an_answer_reads_and_copies_no_record_and_writes_what_it_did() {
             let last = if refused { "claude/permissionResponseFailed" } else { "claude/permissionResolved" };
             assert_eq!(kinds, ["test/hold", "request/replied", last]);
             if refused {
-                assert_eq!((record["pending"][0]["stale"].clone(), record["agent"]["error"].clone()), (json!(true), json!("refused")));
+                // Marked sent before it went to Claude, then stale once refused.
+                let request = &record["pending"][0];
+                assert_eq!((request["params"]["_responseSent"].clone(), request["stale"].clone(), record["agent"]["error"].clone()),
+                    (json!(true), json!(true), json!("refused")));
             } else {
                 assert_eq!(record["pending"], json!([]));
                 assert_eq!(record["agent"]["status"], if turn == "inProgress" { "working" } else { "idle" });
