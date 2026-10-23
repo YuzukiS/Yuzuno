@@ -86,23 +86,23 @@ mod tests {
     }
 
     /// The Home Screen files the web build puts at the root (T-170) go out
-    /// with their own types. A missing one is answered with the page, 200 and
-    /// HTML, like any other unknown path outside /assets/: a check of these
-    /// files must look at the type and the bytes, never the status alone.
+    /// with their own types. A missing one is answered 404 with the page's
+    /// HTML, like any other unknown path outside /assets/ (the not-found
+    /// service keeps the status), so it can't pass for a manifest or an icon.
     #[tokio::test]
-    async fn home_screen_files_have_their_types_and_a_missing_one_gets_the_page() {
+    async fn home_screen_files_have_their_types_and_a_missing_one_is_not_found() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("index.html"), "<!doctype html>page").unwrap();
         std::fs::write(root.path().join("manifest.webmanifest"), "{}").unwrap();
         std::fs::write(root.path().join("apple-touch-icon.png"), b"\x89PNG\r\n\x1a\n").unwrap();
-        for (path, kind) in [
-            ("/manifest.webmanifest", "application/manifest+json"),
-            ("/apple-touch-icon.png", "image/png"),
-            ("/missing.webmanifest", "text/html"),
+        for (path, status, kind) in [
+            ("/manifest.webmanifest", axum::http::StatusCode::OK, "application/manifest+json"),
+            ("/apple-touch-icon.png", axum::http::StatusCode::OK, "image/png"),
+            ("/missing.webmanifest", axum::http::StatusCode::NOT_FOUND, "text/html"),
         ] {
             let request = Request::builder().uri(path).body(Body::empty()).unwrap();
             let response = serve(root.path().into(), None, request).await.unwrap();
-            assert_eq!(response.status(), axum::http::StatusCode::OK, "{path}");
+            assert_eq!(response.status(), status, "{path}");
             let got = response.headers()[axum::http::header::CONTENT_TYPE].to_str().unwrap();
             assert!(got.starts_with(kind), "{path}: {got}");
         }
