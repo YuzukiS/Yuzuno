@@ -106,9 +106,13 @@ held without a row says `stored: false` and adds nothing to the total.
   in the database's encoding: UTF-8, SQLite's default, which Core never
   changes. SQLite takes them from the row's header, so a value on overflow
   pages is not read; the leaf pages of the Agent's rows are. `length` of TEXT
-  counts characters and has to read them, so it is not used. The test
+  counts characters and has to read them, and so does any other use of such
+  a column, `count(previews)` included, so none is used: previews are counted
+  as `count(octet_length(previews))`. The test
   `stored_bytes_are_read_from_row_headers_not_from_the_payloads` counts the
-  pages each reads.
+  pages the report's own statements read: no more than the tables' pages
+  other than overflow pages, while its payloads and previews take more on
+  overflow pages.
 - **Not memory.** Stored bytes are not the Rust heap a held record takes,
   String capacity, RSS or SQLite's page cache. A record with unwritten
   changes holds more than is stored.

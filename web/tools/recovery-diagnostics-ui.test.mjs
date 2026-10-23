@@ -451,7 +451,7 @@ test("the held Agents' stored history is read only when Measure is pressed: a ch
     const section = await openHistory(p);
     assert.equal(historyCalls(p), 0, "opening Settings does not read it");
     assert.match(section.textContent, /stored bytes, not the memory Core uses/);
-    assert.equal(section.querySelector("table"), null, "nothing is shown before it is read");
+    assert.ok(!section.querySelector("table"), "nothing is shown before it is read");
     p.button("Copy diagnostics", p.doc.querySelector("#settings-diagnostics")).click();
     await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
     assert.equal(historyCalls(p), 0, "the diagnostics text does not read it");
@@ -501,11 +501,12 @@ test("when Core does not measure the stored history, the section says why and gi
     try {
       const section = await openHistory(p);
       p.button("Measure", section).click();
-      await waitFor(() => historyCalls(p) === 1 && !p.button("Measuring", section), "it was read");
-      const status = section.querySelector('[role="status"]');
-      assert.match(status?.textContent || "", says);
-      assert.equal(section.querySelector("table"), null, "no numbers are given");
-      assert.equal(section.querySelector(".history-chart"), null, "nor a chart");
+      // fetch is called before the button redraws, so wait for what the answer draws.
+      await waitFor(() => section.querySelector('[role="status"]'), "the answer is shown");
+      assert.equal(historyCalls(p), 1, "read once");
+      assert.match(section.querySelector('[role="status"]').textContent, says);
+      assert.ok(!section.querySelector("table"), "no numbers are given");
+      assert.ok(!section.querySelector(".history-chart"), "nor a chart");
     } finally {
       p.close();
     }

@@ -18,7 +18,9 @@
 //! changes. For a column argument SQLite takes that from the row's header
 //! and does not read a value stored on overflow pages (the
 //! `OPFLAG_BYTELENARG` case of OP_Column); the leaf pages of the Agent's rows
-//! are still read. `length` of TEXT counts characters, so it reads them all.
+//! are still read. `length` of TEXT counts characters, so it reads them all,
+//! and so does any other use of a column, `count(previews)` included: the
+//! previews are counted as `count(octet_length(previews))`.
 //! They are what is stored: not the Rust heap a held record takes, String
 //! capacity, RSS or SQLite's page cache. A held record may have changes its
 //! rows lack yet, so each Agent says whether it had.
@@ -157,7 +159,10 @@ fn measure(db: &Connection, held: &[HeldAgent], budget: Duration) -> Result<Vec<
     }
 }
 
-fn one(db: &Connection, id: &str) -> rusqlite::Result<Option<Composition>> {
+/// One Agent's stored composition, None without its metadata row. No
+/// statement reads a large value itself: every column whose value can be
+/// large is read only as `octet_length(column)`.
+pub(crate) fn one(db: &Connection, id: &str) -> rusqlite::Result<Option<Composition>> {
     let Some((layout, metadata)) = db.query_row(
         "SELECT layout, octet_length(data) FROM agents WHERE id=?1", params![id],
         |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
@@ -168,8 +173,8 @@ fn one(db: &Connection, id: &str) -> rusqlite::Result<Option<Composition>> {
     let turns = pair("SELECT count(*), coalesce(sum(octet_length(data)),0) FROM agent_turns WHERE agent_id=?1")?;
     let payloads = pair("SELECT count(*), coalesce(sum(octet_length(data)),0) FROM agent_payloads WHERE agent_id=?1")?;
     let (items, items_with_payloads, previews) = db.query_row(
-        "SELECT count(*), coalesce(sum(octet_length(data)),0), count(previews), coalesce(sum(octet_length(previews)),0),
-            coalesce(sum(payloads > 0),0) FROM agent_items WHERE agent_id=?1",
+        "SELECT count(*), coalesce(sum(octet_length(data)),0), count(octet_length(previews)),
+            coalesce(sum(octet_length(previews)),0), coalesce(sum(payloads > 0),0) FROM agent_items WHERE agent_id=?1",
         params![id],
         |r| Ok((Part { rows: count(r.get(0)?), bytes: count(r.get(1)?) }, count(r.get(4)?),
             Part { rows: count(r.get(2)?), bytes: count(r.get(3)?) })),

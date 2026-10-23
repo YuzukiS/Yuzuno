@@ -111,29 +111,51 @@ fn cache_misses(db: &Connection) -> i32 {
     current
 }
 
+/// Pages a new connection reads for `read` (its page cache starts empty),
+/// and what `read` gave.
+fn pages_read<T>(db: Connection, read: impl FnOnce(&Connection) -> T) -> (i64, T) {
+    let before = cache_misses(&db);
+    let out = read(&db);
+    (i64::from(cache_misses(&db) - before), out)
+}
+
 #[test]
 fn stored_bytes_are_read_from_row_headers_not_from_the_payloads() {
     let (dir, store) = lab();
     let mut d = detail("a");
-    // 24 command outputs of 512 KiB: 12 MiB of payloads on overflow pages.
-    d.turns = vec![json!({"id":"t","status":"completed","items":
-        (0..24).map(|i| json!({"id":format!("c{i}"),"type":"commandExecution","command":"x","status":"completed",
-            "aggregatedOutput":"z".repeat(512 * 1024)})).collect::<Vec<_>>()})];
+    // 24 commands, each with nine fields over TRIM_ABOVE: their payloads are
+    // on overflow pages, and so are most of each Item's nine previews of
+    // about 4 KiB, the last column of its row.
+    let big = |c: char, n: usize| c.to_string().repeat(n);
+    d.turns = vec![json!({"id":"t","status":"completed","items":(0..24).map(|i| {
+        let mut item = json!({"id":format!("c{i}"),"type":"commandExecution","command":"x","status":"completed",
+            "aggregatedOutput":big('z', 256 * 1024)});
+        for f in 0..8 {
+            item[format!("f{f}")] = json!(big(char::from(b'a' + f), 32 * 1024));
+        }
+        item
+    }).collect::<Vec<_>>()})];
     store.insert(&d).unwrap();
     drop(store);
     let path = dir.path().join("workspace.sqlite");
-    // A new connection each time, so its page cache starts empty.
-    let pages = |sql: &str| {
-        let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-        let before = cache_misses(&db);
-        let bytes: i64 = db.query_row(sql, [], |r| r.get(0)).unwrap();
-        (cache_misses(&db) - before, bytes)
-    };
-    let (header_pages, octets) = pages("SELECT sum(octet_length(data)) FROM agent_payloads WHERE agent_id='a'");
-    let (value_pages, characters) = pages("SELECT sum(length(data)) FROM agent_payloads WHERE agent_id='a'");
-    assert_eq!(octets, characters, "ASCII: as many bytes as characters");
-    let page_size = 4096;
-    let payload_pages = (octets / page_size) as i32;
-    assert!(value_pages >= payload_pages, "length() reads the values: {value_pages} pages of {payload_pages}");
-    assert!(header_pages * 50 < payload_pages, "octet_length() reads headers only: {header_pages} pages, values take {payload_pages}");
+    let open = || Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let count = |sql: &str| -> i64 { open().query_row(sql, [], |r| r.get(0)).unwrap() };
+    // The pages of the four tables, their indexes and the schema, other than
+    // overflow pages: all that reading the rows' headers can need.
+    let tables = "('agents','agent_turns','agent_items','agent_payloads')";
+    let rows = count(&format!("SELECT count(*) FROM dbstat WHERE pagetype != 'overflow' AND (name IN {tables}
+        OR name = 'sqlite_schema' OR name IN (SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name IN {tables}))"));
+    let overflow = |table: &str| count(&format!("SELECT count(*) FROM dbstat WHERE name='{table}' AND pagetype='overflow'"));
+    let (previews, payloads) = (overflow("agent_items"), overflow("agent_payloads"));
+    assert!(previews > rows && payloads > 10 * rows, "the fixture's large values outweigh the rest: {previews} and {payloads} overflow pages, {rows} others");
+    // Reading the previews shows: length() of TEXT reads them.
+    let (reading, characters) = pages_read(open(), |db| db.query_row::<i64, _, _>("SELECT sum(length(previews)) FROM agent_items", [], |r| r.get(0)).unwrap());
+    assert!(reading >= previews, "length() reads the previews: {reading} pages, {previews} of them overflow");
+    // What the report reads, through its own statements.
+    let (read, found) = pages_read(open(), |db| crate::history_composition::one(db, "a").unwrap().unwrap());
+    assert_eq!((found.payloads.rows, found.previews.rows, found.items_with_payloads), (24 * 9, 24, 24));
+    // ASCII: as many bytes as characters.
+    assert_eq!(found.previews.bytes, characters as u64);
+    assert!(found.payloads.bytes > 24 * (256 + 8 * 32) * 1024);
+    assert!(read <= rows, "the report reads no overflow page: {read} pages, of {rows} besides {previews} + {payloads} overflow");
 }
