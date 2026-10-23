@@ -80,12 +80,14 @@ fn same_copy(ws: &Workspace, id: &str, before: &Arc<parking_lot::RwLock<AgentDet
     ws.store.held_for_test(id).is_some_and(|now| Arc::ptr_eq(&now, before))
 }
 
-/// Nulls what a commit stamps with the clock or a random ID.
+/// Nulls what a commit stamps with the clock or a random ID (a request's,
+/// wherever it is shown: its own, the work summary's).
 fn unclocked(value: &mut Value) {
+    let random = |text: &str| uuid::Uuid::parse_str(text).is_ok();
     match value {
         Value::Object(members) => {
             for (key, member) in members.iter_mut() {
-                if key.ends_with("At") || key == "rev" || key == "id" && member.as_str().is_some_and(|id| id.len() == 36) {
+                if key.ends_with("At") || key == "rev" || member.as_str().is_some_and(random) {
                     *member = Value::Null;
                 } else {
                     unclocked(member);
