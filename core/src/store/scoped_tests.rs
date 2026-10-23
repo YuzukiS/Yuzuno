@@ -521,6 +521,40 @@ fn a_recovered_completion_commits_what_update_committed() {
     }
 }
 
+/// On a held record a recovered completion is written as the metadata
+/// (`commit_meta`), with what comparing the whole record writes: the same
+/// rows, journal row, unread count, rev and brief. A completion of a Turn
+/// whose completion is journaled already is journaled as `turn/reconfirmed`
+/// there too, adding no unread, as `commit` journals it.
+#[test]
+fn a_recovered_completion_is_written_as_the_metadata() {
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        super::tests::stream(store, "a", "item/completed",
+            &json!({"turnId":"t4","item":{"id":"m4","type":"agentMessage","text":"later"}}));
+    }
+    let turn = record().turns[5].clone();
+    let data = json!({"turn":turn,"recovered":true});
+    generic.record_event("a", "turn/completed", &data, |_| {}).unwrap();
+    let before = in_place();
+    scoped.record_recovered_completion("a", &turn).unwrap();
+    assert_eq!(in_place(), before + 1, "the recovered completion copied the record");
+    assert_eq!(published(&scoped), published(&generic), "written as the metadata, something else was written");
+    // A completion journaled meanwhile, as a native one racing the check
+    // `record_recovered_completion` makes first.
+    let unread = scoped.agent("a").unwrap().unread_count;
+    generic.record_event("a", "turn/completed", &data, |_| {}).unwrap();
+    let before = in_place();
+    scoped.update_meta("a", "turn/completed", &data, |_| {}).unwrap();
+    assert_eq!(in_place(), before + 1, "the reconfirmation copied the record");
+    assert_eq!(published(&scoped), published(&generic), "a reconfirmation written as the metadata wrote something else");
+    let kind: String = scoped.db.read().unwrap()
+        .query_row("SELECT kind FROM journal WHERE agent_id='a' ORDER BY seq DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+    assert_eq!(kind, "turn/reconfirmed");
+    assert_eq!(scoped.agent("a").unwrap().unread_count, unread);
+    assert_eq!(state(&scoped), state(&generic));
+}
+
 /// The Codex `turn/started` events this thread got to writing without
 /// copying the record's other Turns (`Store::commit_turn`).
 fn started_in_place() -> u64 {

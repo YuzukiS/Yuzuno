@@ -2759,10 +2759,12 @@ impl Store {
     /// it has committed, the copy replaces the held metadata under the
     /// record's write lock together with the change's rev and brief, so a
     /// reader sees the record before or after the change, and a write that
-    /// fails leaves it as it was. A record not held, one kept as one body, a
-    /// change after which `message_content::restore` would change an Item,
-    /// and `turn/completed` (checked against the journal) are committed by
-    /// `commit` instead, with the change already made, under the same lock.
+    /// fails leaves it as it was. A `turn/completed` of a Turn completed or
+    /// imported before is journaled as `turn/reconfirmed`, checked in the
+    /// same transaction, as `commit` journals it. A record not held, one kept
+    /// as one body, and a change after which `message_content::restore`
+    /// would change an Item are committed by `commit` instead, with the
+    /// change already made, under the same lock.
     fn commit_meta<T>(
         &self,
         id: &str,
@@ -2773,7 +2775,7 @@ impl Store {
     ) -> Result<(u64, T)> {
         let lock = self.record_lock(id);
         let _record = lock.lock();
-        let Some(held) = self.held(id).filter(|_| kind != "turn/completed") else {
+        let Some(held) = self.held(id) else {
             return self.commit_locked(id, kind, data, Scope::Meta, |d| mutate(&mut Meta::of(d)), pick);
         };
         let unwritten = self.memory.lock().unwrap().held.get(id).map(|held| held.unwritten.clone()).unwrap_or_default();
@@ -2798,13 +2800,14 @@ impl Store {
         #[cfg(test)]
         META_IN_PLACE.with(|n| n.set(n.get() + 1));
         let rewrite;
-        let project_id = {
+        let (journaled, project_id) = {
             let mut db = self.db.write()?;
             rewrite = self.rewrite(id);
             let tx = db.transaction()?;
+            let journaled = if completed_before(&tx, id, kind, data)? { "turn/reconfirmed" } else { kind };
             tx.execute(
                 "INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
-                params![id, kind, data.to_string(), now()],
+                params![id, journaled, data.to_string(), now()],
             )?;
             meta.agent.last_seq = tx.last_insert_rowid();
             meta.agent.unread_count = unread(&tx, id, meta.agent.reviewed_seq)?;
@@ -2813,7 +2816,7 @@ impl Store {
             tx.commit()?;
             #[cfg(test)]
             AFTER_COMMIT.with(|hook| if let Some(hook) = hook.borrow_mut().as_mut() { hook() });
-            project_id
+            (journaled, project_id)
         };
         drop(plan);
         // Nothing after the commit can fail. The held copy's write lock is
@@ -2823,7 +2826,7 @@ impl Store {
         put_meta(&mut d, meta);
         let mut listed = brief(&d);
         let rev = rewrite.done(|memory| {
-            let rev = memory.event(id, kind, data);
+            let rev = memory.event(id, journaled, data);
             listed.agent.rev = rev;
             memory.briefs.insert(id.into(), listed);
             if let Some(entry) = memory.held.get_mut(id).filter(|entry| Arc::ptr_eq(&entry.detail, &held)) {
@@ -2997,10 +3000,10 @@ impl Store {
                 OR EXISTS(SELECT 1 FROM codex_import_turns WHERE agent_id=?1 AND turn_id=?2)",
             params![id, turn["id"].as_str()], |r| r.get(0))?;
         if exists { return Ok(()); }
-        // The same commit as update(), which still deduplicates atomically if
-        // a native event races this check; nothing reads the record after it,
-        // so no copy of it is made to return (T-140).
-        self.record_event(id, "turn/completed", &json!({"turn":turn,"recovered":true}), |_| {})?;
+        // It changes no Turn: written as the metadata (`commit_meta`), without
+        // copying or comparing a held record, which still deduplicates
+        // atomically if a native event races this check (T-140).
+        self.update_meta(id, "turn/completed", &json!({"turn":turn,"recovered":true}), |_| {})?;
         Ok(())
     }
 
