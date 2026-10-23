@@ -304,6 +304,20 @@ enum Scope<'a> {
     Applied(&'a str),
 }
 
+/// What `Store::commit_turn` applies to its copies of a Turn and the
+/// metadata.
+#[derive(Clone, Copy)]
+enum TurnChange<'a> {
+    /// A Codex event, as `AgentDetail::apply(applied, data)` takes it.
+    Applied(&'a str),
+    /// A Claude `result`'s projection (`claude::project_event`). It changes
+    /// the Turn it ends and the metadata; of the other Turns it reads and
+    /// changes only those still in progress (`end_native_turns`,
+    /// `refresh_status`), so it is applied to the copy only where none other
+    /// is.
+    Result(&'a dyn Fn(&mut AgentDetail)),
+}
+
 /// What a change in `scope` wrote, named without comparing the whole record:
 /// what the scope names, and the Items `message_content::restore` changed
 /// meanwhile (its own and those of the `bind` after it). None to compare
@@ -578,6 +592,9 @@ thread_local! {
     /// How many Codex `turn/completed` events `Store::commit_turn` wrote on
     /// this thread without copying the other Turns.
     pub(super) static COMPLETED_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many Claude `result`s `Store::commit_turn` wrote on this thread
+    /// without copying the other Turns.
+    pub(super) static RESULT_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -2410,6 +2427,29 @@ impl Store {
         Ok(self.commit(id, kind, data, Scope::Compare, mutate, |d, _| pick(d))?.1)
     }
 
+    /// `update_picking` of a Claude `result` (claude.rs), `project` being its
+    /// projection (`claude::project_event`): written in place on a held
+    /// record whose only Turn in progress is the one it ends, without copying
+    /// the other Turns (`commit_turn`, T-140), and otherwise compared, as
+    /// `update_picking` commits it. `pick` gets the committed record either
+    /// way. `project` runs on the copy, and once more on the record compared
+    /// where writing in place turns out not to show the same write.
+    pub fn update_picking_result<T>(
+        &self,
+        id: &str,
+        kind: &str,
+        data: &Value,
+        project: impl Fn(&mut AgentDetail),
+        pick: impl FnOnce(&AgentDetail) -> T,
+    ) -> Result<T> {
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        if let Some((_, held)) = self.commit_turn(id, kind, data, TurnChange::Result(&project))? {
+            return Ok(pick(&held.read()));
+        }
+        Ok(self.commit_locked(id, kind, data, Scope::Compare, project, |d, _| pick(d))?.1)
+    }
+
     /// `update` without returning the record, which saves copying a large
     /// record held in memory. For native events, whose callers only announce
     /// the change. Returns the change's rev (see `Agent::rev`).
@@ -2477,7 +2517,7 @@ impl Store {
         if applied == "turn/started" && matches!(kind, "turn/started" | "turn/accepted") {
             let lock = self.record_lock(id);
             let _record = lock.lock();
-            if let Some(rev) = self.commit_turn(id, kind, applied, data)? {
+            if let Some((rev, _)) = self.commit_turn(id, kind, data, TurnChange::Applied(applied))? {
                 return Ok(rev);
             }
             return Ok(self.commit_locked(id, kind, data, Scope::Applied(applied), |d| d.apply(applied, data), |_, _| ())?.0);
@@ -2485,7 +2525,7 @@ impl Store {
         if applied == "turn/completed" && kind == "turn/completed" {
             let lock = self.record_lock(id);
             let _record = lock.lock();
-            if let Some(rev) = self.commit_turn(id, kind, applied, data)? {
+            if let Some((rev, _)) = self.commit_turn(id, kind, data, TurnChange::Applied(applied))? {
                 return Ok(rev);
             }
             return Ok(self.commit_locked(id, kind, data, Scope::Compare, |d| d.apply(applied, data), |_, _| ())?.0);
@@ -2610,29 +2650,36 @@ impl Store {
     }
 
     /// `record_applied` of a Codex `turn/started` (or the `turn/accepted`
-    /// applied as one) or `turn/completed` to a record held in memory,
-    /// without copying its other Turns (T-140). `apply` of either changes the
-    /// Turn with the event's ID, appended when the record has none, and the
-    /// Agent's metadata: its status and error, and for `turn/completed` the
-    /// requests of that Turn it no longer waits for. It then binds, restores
-    /// and accepts the receipts by the user messages of every Turn
+    /// applied as one) or `turn/completed`, or `update_picking_result` of a
+    /// Claude `result`, to a record held in memory, without copying its other
+    /// Turns (T-140). `apply` of a Codex event changes the Turn with the
+    /// event's ID, appended when the record has none, and the Agent's
+    /// metadata: its status and error, and for `turn/completed` the requests
+    /// of that Turn it no longer waits for. It then binds, restores and
+    /// accepts the receipts by the user messages of every Turn
     /// (`confirm_message_receipts`), unless a `turn/started` finds that Turn
-    /// already ended, and `commit` binds them once more. That Turn and the
-    /// metadata are copied and the event's own change applied to the copies;
-    /// the receipt steps run as they would, in order, over the held Turns
-    /// with the copy in that Turn's place (bound by the last match, accepted
-    /// by the first), changing only the copy; the write is planned from
-    /// those Turns. A `turn/completed` of a Turn completed before is
-    /// journaled as `turn/reconfirmed`, as `commit` journals it, checked in
-    /// the same transaction. Once it has committed, the copies replace the
-    /// held metadata and that Turn under the record's write lock, so a
-    /// reader sees the record before or after the event, and a write that
-    /// fails leaves it as it was. None, having changed nothing, where this
-    /// cannot show it writes what `commit` would: a record not held or kept
-    /// as one body, an event without a Turn ID, Turns not told apart by ID,
-    /// or receipts after which `restore` would change an Item of another
-    /// Turn. The caller holds the record lock.
-    fn commit_turn(&self, id: &str, kind: &str, applied: &str, data: &Value) -> Result<Option<u64>> {
+    /// already ended. A Claude `result` changes the Turn it ends and the
+    /// metadata, and reads or changes no other Turn while none other is in
+    /// progress (see `TurnChange::Result`); it leaves the receipts alone. And
+    /// `commit` binds them once more. That Turn and the metadata are copied
+    /// and the event's own change applied to the copies; the receipt steps
+    /// run as they would, in order, over the held Turns with the copy in that
+    /// Turn's place (bound by the last match, accepted by the first),
+    /// changing only the copy; the write is planned from those Turns. A
+    /// `turn/completed` of a Turn completed before is journaled as
+    /// `turn/reconfirmed`, as `commit` journals it, checked in the same
+    /// transaction. Once it has committed, the copies replace the held
+    /// metadata and that Turn under the record's write lock, so a reader sees
+    /// the record before or after the event, and a write that fails leaves it
+    /// as it was; the held record is returned with the rev. None, having
+    /// changed nothing, where this cannot show it writes what `commit` would:
+    /// a record not held or kept as one body, an event without a Turn ID,
+    /// Turns not told apart by ID, a `result` for a Turn the record lacks,
+    /// one of a sub-agent or one while another Turn is in progress, or
+    /// receipts after which `restore` would change an Item of another Turn.
+    /// The caller holds the record lock.
+    fn commit_turn(&self, id: &str, kind: &str, data: &Value, change: TurnChange<'_>)
+        -> Result<Option<(u64, Arc<RwLock<AgentDetail>>)>> {
         let Some(held) = self.held(id) else { return Ok(None) };
         let Some(turn_id) = data["turnId"].as_str().or_else(|| data["turn"]["id"].as_str()) else { return Ok(None) };
         let mut unwritten = self.memory.lock().unwrap().held.get(id).map(|held| held.unwritten.clone()).unwrap_or_default();
@@ -2648,6 +2695,15 @@ impl Store {
                 return Ok(None);
             }
             let at = d.turns.iter().position(|t| t["id"] == turn_id);
+            // A `result`'s projection reads and changes the Turns still in
+            // progress: only the one it ends may be, and it must be there.
+            // A sub-agent's frame would be projected onto the Turn holding
+            // its call (`claude::event_turn`), which the copy may not be.
+            if matches!(change, TurnChange::Result(_))
+                && (crate::claude::subagent_event(&data["event"]) || at.is_none()
+                    || d.turns.iter().enumerate().any(|(k, t)| Some(k) != at && t["status"] == "inProgress")) {
+                return Ok(None);
+            }
             let mut staged = meta_of(&d);
             staged.turns.extend(at.map(|k| d.turns[k].clone()));
             (at, staged)
@@ -2660,11 +2716,22 @@ impl Store {
             // A Turn already ended skips that step on `turn/started`, as
             // `apply` does. The status either event settles is `working`,
             // `idle` or `error`, else `waiting` for a blocking request, none
-            // of which asks whether a Turn runs (`model::settle_status`).
-            let confirms = applied != "turn/started" || staged.turns.first().is_none_or(crate::model::starts);
-            let receipts = std::mem::take(&mut staged.message_receipts);
-            staged.apply(applied, data);
-            staged.message_receipts = receipts;
+            // of which asks whether a Turn runs (`model::settle_status`). A
+            // Claude `result` has no such step; the status it settles asks
+            // only whether a Turn runs, which, of the Turns, only the copy
+            // may (`claude::refresh_status`).
+            let confirms = match change {
+                TurnChange::Applied(applied) => applied != "turn/started" || staged.turns.first().is_none_or(crate::model::starts),
+                TurnChange::Result(_) => false,
+            };
+            match change {
+                TurnChange::Applied(applied) => {
+                    let receipts = std::mem::take(&mut staged.message_receipts);
+                    staged.apply(applied, data);
+                    staged.message_receipts = receipts;
+                }
+                TurnChange::Result(project) => project(&mut staged),
+            }
             let d = held.read();
             let (end, start) = around(&d.turns, at);
             let (before, after) = (&d.turns[..end], &d.turns[start..]);
@@ -2700,9 +2767,27 @@ impl Store {
         }
         staged.agent.pending_count = staged.pending.len() as u64;
         staged.agent.updated_at = now();
-        let Some(dirty) = scoped(&Scope::Applied(applied), &staged, data, restored) else { return Ok(None) };
+        // What a `result` changes is found as comparing finds it, in its
+        // Turn alone (the other Turns stay as they are) and the metadata
+        // (always written): only the Turn's Items that changed are planned.
+        // An unchanged one would not change its row, but naming the whole
+        // Turn would serialize every Item of it.
+        let dirty = match change {
+            TurnChange::Applied(applied) => scoped(&Scope::Applied(applied), &staged, data, restored),
+            TurnChange::Result(_) => {
+                let mut dirty = Dirty::default();
+                if let (Some(k), Some(copy)) = (at, staged.turns.first()) {
+                    dirty.turn_between(turn_id, &held.read().turns[k], copy);
+                }
+                for (turn, item, renamed) in restored {
+                    if renamed { dirty.whole_turn(&turn) } else { dirty.item(&turn, &item) };
+                }
+                dirty.identified(&staged)
+            }
+        };
+        let Some(dirty) = dirty else { return Ok(None) };
         unwritten.merge(dirty);
-        let turn = staged.turns.pop().expect("apply keeps the Turn it names");
+        let turn = staged.turns.pop().expect("the change keeps the Turn it names");
         let plan = {
             let db = self.db.read()?;
             let d = held.read();
@@ -2712,10 +2797,10 @@ impl Store {
         };
         let Some(plan) = plan else { return Ok(None) };
         #[cfg(test)]
-        if applied == "turn/started" {
-            STARTED_IN_PLACE.with(|n| n.set(n.get() + 1));
-        } else {
-            COMPLETED_IN_PLACE.with(|n| n.set(n.get() + 1));
+        match change {
+            TurnChange::Applied("turn/started") => STARTED_IN_PLACE.with(|n| n.set(n.get() + 1)),
+            TurnChange::Applied(_) => COMPLETED_IN_PLACE.with(|n| n.set(n.get() + 1)),
+            TurnChange::Result(_) => RESULT_IN_PLACE.with(|n| n.set(n.get() + 1)),
         }
         let rewrite;
         let journaled = {
@@ -2760,7 +2845,8 @@ impl Store {
             rev
         });
         d.agent.rev = rev;
-        Ok(Some(rev))
+        drop(d);
+        Ok(Some((rev, held)))
     }
 
     /// `commit` of a change to the metadata alone (see `Meta`) of a record
@@ -2771,10 +2857,12 @@ impl Store {
     /// it has committed, the copy replaces the held metadata under the
     /// record's write lock together with the change's rev and brief, so a
     /// reader sees the record before or after the change, and a write that
-    /// fails leaves it as it was. A record not held, one kept as one body, a
-    /// change after which `message_content::restore` would change an Item,
-    /// and `turn/completed` (checked against the journal) are committed by
-    /// `commit` instead, with the change already made, under the same lock.
+    /// fails leaves it as it was. A `turn/completed` of a Turn completed or
+    /// imported before is journaled as `turn/reconfirmed`, checked in the
+    /// same transaction, as `commit` journals it. A record not held, one kept
+    /// as one body, and a change after which `message_content::restore`
+    /// would change an Item are committed by `commit` instead, with the
+    /// change already made, under the same lock.
     /// With `confirms` (`update_meta_applied`), the receipts are then
     /// accepted by the Turns as `confirm_message_receipts` accepts them: on
     /// the copy, by the held Turns once nothing is to restore (so they are
@@ -2790,7 +2878,7 @@ impl Store {
     ) -> Result<(u64, T)> {
         let lock = self.record_lock(id);
         let _record = lock.lock();
-        let Some(held) = self.held(id).filter(|_| kind != "turn/completed") else {
+        let Some(held) = self.held(id) else {
             return self.commit_locked(id, kind, data, Scope::Meta, |d| {
                 mutate(&mut Meta::of(d));
                 if confirms {
@@ -2830,13 +2918,14 @@ impl Store {
         #[cfg(test)]
         META_IN_PLACE.with(|n| n.set(n.get() + 1));
         let rewrite;
-        let project_id = {
+        let (journaled, project_id) = {
             let mut db = self.db.write()?;
             rewrite = self.rewrite(id);
             let tx = db.transaction()?;
+            let journaled = if completed_before(&tx, id, kind, data)? { "turn/reconfirmed" } else { kind };
             tx.execute(
                 "INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
-                params![id, kind, data.to_string(), now()],
+                params![id, journaled, data.to_string(), now()],
             )?;
             meta.agent.last_seq = tx.last_insert_rowid();
             meta.agent.unread_count = unread(&tx, id, meta.agent.reviewed_seq)?;
@@ -2845,7 +2934,7 @@ impl Store {
             tx.commit()?;
             #[cfg(test)]
             AFTER_COMMIT.with(|hook| if let Some(hook) = hook.borrow_mut().as_mut() { hook() });
-            project_id
+            (journaled, project_id)
         };
         drop(plan);
         // Nothing after the commit can fail. The held copy's write lock is
@@ -2855,7 +2944,7 @@ impl Store {
         put_meta(&mut d, meta);
         let mut listed = brief(&d);
         let rev = rewrite.done(|memory| {
-            let rev = memory.event(id, kind, data);
+            let rev = memory.event(id, journaled, data);
             listed.agent.rev = rev;
             memory.briefs.insert(id.into(), listed);
             if let Some(entry) = memory.held.get_mut(id).filter(|entry| Arc::ptr_eq(&entry.detail, &held)) {
@@ -3029,10 +3118,10 @@ impl Store {
                 OR EXISTS(SELECT 1 FROM codex_import_turns WHERE agent_id=?1 AND turn_id=?2)",
             params![id, turn["id"].as_str()], |r| r.get(0))?;
         if exists { return Ok(()); }
-        // The same commit as update(), which still deduplicates atomically if
-        // a native event races this check; nothing reads the record after it,
-        // so no copy of it is made to return (T-140).
-        self.record_event(id, "turn/completed", &json!({"turn":turn,"recovered":true}), |_| {})?;
+        // It changes no Turn: written as the metadata (`commit_meta`), without
+        // copying or comparing a held record, which still deduplicates
+        // atomically if a native event races this check (T-140).
+        self.update_meta(id, "turn/completed", &json!({"turn":turn,"recovered":true}), |_| {})?;
         Ok(())
     }
 
