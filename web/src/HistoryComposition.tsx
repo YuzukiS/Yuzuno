@@ -199,7 +199,7 @@ export function HistoryComposition() {
             salvaged rows are not counted.
           </p>
           {report.agents.some((a) => a.unwritten) && (
-            <p className="diagnostics-note">* Has changes not written yet, so it holds more than is stored.</p>
+            <p className="diagnostics-note">* Has changes that may not yet be included in this report.</p>
           )}
           {report.agents.some((a) => a.whole) && (
             <p className="diagnostics-note">† Stored in the older layout: the whole record is in its metadata row.</p>

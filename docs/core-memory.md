@@ -114,17 +114,22 @@ held without a row says `stored: false` and adds nothing to the total.
   other than overflow pages, while its payloads and previews take more on
   overflow pages.
 - **Not memory.** Stored bytes are not the Rust heap a held record takes,
-  String capacity, RSS or SQLite's page cache. A record with unwritten
-  changes holds more than is stored.
+  String capacity, RSS or SQLite's page cache. For an Agent marked
+  `unwrittenChanges`, the report may differ from its record in memory. That
+  implies no size, nor that they still differ: its changes may be written
+  between the two reads.
 - **Not one snapshot with the held list.** The held Agents are listed
   first, then their rows read in one read snapshot. No held record is
   copied or serialized.
-- **Budget.** The reads stop after 2 s. Then, or on any error, the answer
-  is `available: false` with a reason and no numbers at all: no Agent's and
-  no total, never a partial sum. The budget's progress handler is removed on
-  every path, so the pooled connection goes back without it. One measurement runs at a time, and one
-  asked meanwhile is told so. Without WAL a read would share the one writer
-  and hold up its writes, so it is not measured.
+- **Budget.** Uses a 2 s query budget, checked by SQLite every 1,000 VM
+  steps. This is not a hard request timeout: connection acquisition and
+  blocked I/O are outside those checks. The UI stops waiting after 10 s.
+  Past the budget, or on any error, the answer is `available: false` with a
+  reason and no numbers at all: no Agent's and no total, never a partial
+  sum. The budget's progress handler is removed on every path, so the
+  pooled connection goes back without it. One measurement runs at a time,
+  and one asked meanwhile is told so. Without WAL a read would share the one
+  writer and hold up its writes, so it is not measured.
 
 ## While an Agent streams on
 

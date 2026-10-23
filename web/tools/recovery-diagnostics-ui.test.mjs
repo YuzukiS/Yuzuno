@@ -472,7 +472,7 @@ test("the held Agents' stored history is read only when Measure is pressed: a ch
     assert.equal(section.querySelector("caption time").getAttribute("datetime"), "2026-10-23T08:00:00+00:00");
     assert.match(section.querySelector("caption").textContent, /^Stored bytes \(rows\), read \S/);
     assert.ok(!section.querySelector("caption").textContent.includes("2026-10-23T"), "not Core's raw timestamp");
-    assert.match(section.textContent, /\* Has changes not written yet, so it holds more than is stored\./);
+    assert.match(section.textContent, /\* Has changes that may not yet be included in this report\./);
     assert.match(section.textContent, /† Stored in the older layout: the whole record is in its metadata row\./);
     assert.match(section.textContent, /Previews are a shorter copy of large payloads kept for clients, so they are not in it\./);
     assert.match(section.textContent, /The event journal, originals kept from before a conversion and salvaged rows are not counted\./);

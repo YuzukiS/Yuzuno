@@ -43,7 +43,7 @@ pub const BUDGET: Duration = Duration::from_secs(2);
 /// How many virtual machine steps between checks of the budget.
 const STEPS: i32 = 1000;
 
-const NOTE: &str = "Stored bytes: the UTF-8 bytes the Workspace database keeps for each held Agent's record (metadata, Turns, Item text and payloads), counted by SQLite from each row's header without reading large values. Previews are a shorter copy of payloads for clients, given apart and not part of the record. The journal, kept originals and salvaged rows are not counted. They are not the memory the held record takes in Core (its Rust heap or capacity), RSS or SQLite's page cache. A record with unwritten changes holds more than is stored. The held Agents are listed first and their rows read after, so the two are not one atomic snapshot.";
+const NOTE: &str = "Stored bytes: the UTF-8 bytes the Workspace database keeps for each held Agent's record (metadata, Turns, Item text and payloads), counted by SQLite from each row's header without reading large values. Previews are a shorter copy of payloads for clients, given apart and not part of the record. The journal, kept originals and salvaged rows are not counted. They are not the memory the held record takes in Core (its Rust heap or capacity), RSS or SQLite's page cache. For an Agent marked with unwritten changes, this report may differ from its record in memory; that implies no size, nor that they still differ, since its changes may be written between the two reads. The held Agents are listed first and their rows read after, so the two are not one atomic snapshot.";
 
 /// One part of a record: its rows and their stored bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
