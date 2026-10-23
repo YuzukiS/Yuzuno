@@ -885,7 +885,8 @@ test("a new Claude message shows once while Claude's bridge holds it, with its n
       await until(() => started(), `${outcome}: the Turn's message`);
       assert.equal(noteOf(started()), "Sending…", `${outcome}: its note is on the message in its Turn`);
       assert.equal(previews().length, 0, `${outcome}: no second copy as a preview`);
-      assert.equal(page.document.querySelector(".message-delivery-notice"), null, `${outcome}: in flight is not "not confirmed"`);
+      // A boolean: a failing equal on a DOM node inspects the whole document.
+      assert.equal(!!page.document.querySelector(".message-delivery-notice"), false, `${outcome}: in flight is not "not confirmed"`);
       // Another Agent shows none of it.
       button(page, "Hana").click();
       await until(() => page.document.querySelector('[data-composer-input][aria-label="Message Hana"]'), "Hana's conversation");

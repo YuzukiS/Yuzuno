@@ -5437,7 +5437,8 @@ mod tests {
         assert_eq!(ws.send_message("a", input).await.unwrap().status, "accepted");
         let turn = started.turn_id.unwrap();
         assert!(ws.store.detail("a").unwrap().turns.iter().find(|t| t["id"] == turn).unwrap()["items"].as_array().unwrap().iter()
-            .any(|i| i["clientId"] == "form-start" && i["_yuzunoClientMessageId"] == "form-start"));
+            .any(|i| i["clientId"] == "form-start" && i["_yuzunoClientMessageId"] == "form-start"),
+            "the accepted start's message carries its client ID both ways");
         let second = ws.result_publish("a", publish(&turn, "second")).await.unwrap().unwrap();
         let result = second["resultId"].as_str().unwrap();
         let answer = json!({"resultId":result,"formId":"setup","answers":{"directory":"test"}});
