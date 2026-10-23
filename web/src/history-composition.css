@@ -1,12 +1,22 @@
 /* Stored history of held Agents (HistoryComposition.tsx): one colour per
-   part of a stored record, shared by the chart and its legend. */
+   part of a stored record, shared by the chart and its legend. Four hues
+   that stay apart in every palette (whose greens differ), each at least
+   3.8:1 against the light papers and 6:1 against the dark ones. */
 .history-section {
   display: grid;
+  /* One track no wider than the section: the table scrolls inside it. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
-  --history-items: var(--green, #587552);
-  --history-payloads: #b0793f;
-  --history-turns: #8d97ad;
-  --history-metadata: #cfc5b6;
+  --history-items: #3f7a45;
+  --history-payloads: #3d6ea8;
+  --history-turns: #a0652a;
+  --history-metadata: #7b756b;
+}
+:root[data-theme="dark"] .history-section {
+  --history-items: #8fc08a;
+  --history-payloads: #8ab4e8;
+  --history-turns: #d8a060;
+  --history-metadata: #aaa398;
 }
 .history-section .settings-section-heading button {
   display: inline-flex;

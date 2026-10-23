@@ -468,7 +468,10 @@ test("the held Agents' stored history is read only when Measure is pressed: a ch
       ["All held", "3.0 MiB (40)", "12.0 MiB (2)", "6.0 KiB (3)", "5.0 MiB (2)", "20.0 MiB", "8.0 KiB (2)"],
     ]);
     assert.deepEqual([...section.querySelectorAll("thead th")].map((th) => th.textContent), ["Agent", "Item text", "Large payloads", "Turns", "Metadata", "Record", "Previews"]);
-    assert.match(section.querySelector("caption").textContent, /^Stored bytes \(rows\), read 2026-10-23T08:00:00\+00:00$/);
+    // The read time in this device's time, with Core's own time kept on the element.
+    assert.equal(section.querySelector("caption time").getAttribute("datetime"), "2026-10-23T08:00:00+00:00");
+    assert.match(section.querySelector("caption").textContent, /^Stored bytes \(rows\), read \S/);
+    assert.ok(!section.querySelector("caption").textContent.includes("2026-10-23T"), "not Core's raw timestamp");
     assert.match(section.textContent, /\* Has changes not written yet, so it holds more than is stored\./);
     assert.match(section.textContent, /† Stored in the older layout: the whole record is in its metadata row\./);
     assert.match(section.textContent, /Previews are a shorter copy of large payloads kept for clients, so they are not in it\./);

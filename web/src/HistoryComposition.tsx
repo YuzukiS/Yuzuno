@@ -66,6 +66,11 @@ function size(bytes: number) {
   return `${bytes} B`;
 }
 const label = (a: Agent) => a.name ?? `Agent ${a.id.slice(0, 8)}`;
+/** When Core read it, in this device's time; Core's own text if it isn't a time. */
+function readTime(readAt: string) {
+  const at = new Date(readAt);
+  return Number.isNaN(at.getTime()) ? readAt : at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
 const record = (p: Parts) => RECORD.reduce((n, { key }) => n + p[key].bytes, 0);
 
 /** One row's cells: each part's bytes (rows), the record's sum, then previews. */
@@ -109,6 +114,8 @@ export function HistoryComposition() {
   }
   const report = state.kind === "read" ? state.report : null;
   const stored = report?.available ? report.agents.filter((a): a is Agent & { parts: Parts } => a.parts !== null) : [];
+  // The chart's unit, so its ticks are round numbers of it.
+  const scale = stored.some((a) => record(a.parts) >= MiB) ? { bytes: MiB, name: "MiB" } : { bytes: 1024, name: "KiB" };
   return (
     <section id="settings-history" className="settings-section history-section" aria-label="Stored history">
       <header className="settings-section-heading">
@@ -135,18 +142,18 @@ export function HistoryComposition() {
             <div className="history-chart" aria-label="Stored bytes by part, per held Agent; exact values in the table below">
               <ResponsiveContainer width="100%" height={Math.max(120, stored.length * 40 + 40)}>
                 <BarChart
-                  data={stored.map((a) => ({ label: label(a), ...Object.fromEntries(RECORD.map(({ key }) => [key, a.parts[key].bytes])) }))}
+                  data={stored.map((a) => ({ label: label(a), ...Object.fromEntries(RECORD.map(({ key }) => [key, a.parts[key].bytes / scale.bytes])) }))}
                   layout="vertical"
                   margin={{ top: 4, right: 18, bottom: 4, left: 0 }}
                   accessibilityLayer
                 >
                   <CartesianGrid horizontal={false} stroke="var(--line)" />
-                  <XAxis type="number" tickFormatter={size} tick={{ fill: "var(--muted)", fontSize: 12 }} axisLine={false} tickLine={false} />
+                  <XAxis type="number" tickFormatter={(value) => `${value} ${scale.name}`} tick={{ fill: "var(--muted)", fontSize: 12 }} axisLine={false} tickLine={false} />
                   <YAxis type="category" dataKey="label" width={110} tick={{ fill: "var(--ink)", fontSize: 12 }} axisLine={false} tickLine={false} />
                   <Tooltip
                     contentStyle={{ background: "var(--paper)", borderColor: "var(--line)", color: "var(--ink)", borderRadius: 8 }}
                     cursor={{ fill: "var(--cream)" }}
-                    formatter={(value, name) => [size(Number(value)), PARTS.find((p) => p.key === name)?.label ?? String(name)]}
+                    formatter={(value, name) => [size(Number(value) * scale.bytes), PARTS.find((p) => p.key === name)?.label ?? String(name)]}
                   />
                   {RECORD.map(({ key }) => (
                     <Bar key={key} dataKey={key} stackId="stored" fill={`var(--history-${key})`} maxBarSize={20} isAnimationActive={false} />
@@ -163,7 +170,7 @@ export function HistoryComposition() {
           {/* Seven columns: on a narrow screen the table scrolls, not the page. */}
           <div className="history-table-scroll" tabIndex={0} role="region" aria-label="Stored bytes by Agent">
             <table className="history-table">
-              <caption>Stored bytes (rows), read {report.readAt}</caption>
+              <caption>Stored bytes (rows), read <time dateTime={report.readAt}>{readTime(report.readAt)}</time></caption>
               <thead>
                 <tr>
                   <th scope="col">Agent</th>
