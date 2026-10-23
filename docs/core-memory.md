@@ -82,6 +82,50 @@ Each part is read in turn, so they are not one snapshot. On a platform where a
 part can't be read it says `available: false` with a reason; no count is 0
 because it is unknown.
 
+### What the held records' stored history is made of
+
+`GET /api/diagnostics/memory/history` answers which parts of the held Agents'
+records take the most space where they are stored. Settings → Updates shows it
+as a chart and a table, read only when you press Measure. It is not part of
+`/api/diagnostics/memory`, Copy diagnostics, `/api/health` or any polling, and
+it adds nothing to opening the Workspace.
+
+For each Agent whose record is held now, it gives the rows and stored bytes of
+its metadata row, its Turns, its Items' own data and its payloads (the full
+large fields of tool Items), and the total of each over the held Agents.
+These four parts are disjoint and together are the stored record; with
+`layout` 0 the metadata row is the whole record. The previews kept for
+clients are a shorter copy of payloads, so they are given on their own and
+are not part of the record. The journal, originals kept from before a
+conversion and salvaged rows are other copies and are not counted. It gives
+only counts, the Agent's id and name, and whether the held record has changes
+its rows lack yet (`unwrittenChanges`): no text, path, key or SQL. An Agent
+held without a row says `stored: false` and adds nothing to the total.
+
+- **Bytes as stored.** The bytes are SQLite's `octet_length` of each value,
+  in the database's encoding: UTF-8, SQLite's default, which Core never
+  changes. SQLite takes them from the row's header, so a value on overflow
+  pages is not read; the leaf pages of the Agent's rows are. `length` of TEXT
+  counts characters and has to read them, and so does any other use of such
+  a column, `count(previews)` included, so none is used: previews are counted
+  as `count(octet_length(previews))`. The test
+  `stored_bytes_are_read_from_row_headers_not_from_the_payloads` counts the
+  pages the report's own statements read: no more than the tables' pages
+  other than overflow pages, while its payloads and previews take more on
+  overflow pages.
+- **Not memory.** Stored bytes are not the Rust heap a held record takes,
+  String capacity, RSS or SQLite's page cache. A record with unwritten
+  changes holds more than is stored.
+- **Not one snapshot with the held list.** The held Agents are listed
+  first, then their rows read in one read snapshot. No held record is
+  copied or serialized.
+- **Budget.** The reads stop after 2 s. Then, or on any error, the answer
+  is `available: false` with a reason and no numbers at all: no Agent's and
+  no total, never a partial sum. The budget's progress handler is removed on
+  every path, so the pooled connection goes back without it. One measurement runs at a time, and one
+  asked meanwhile is told so. Without WAL a read would share the one writer
+  and hold up its writes, so it is not measured.
+
 ## While an Agent streams on
 
 T-140 Job `459d0b2a-f9cd-4da9-aeb0-43cae468fcc6`, 2026-10-22, a lab build on

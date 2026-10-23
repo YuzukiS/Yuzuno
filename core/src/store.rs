@@ -379,6 +379,16 @@ fn brief(detail: &AgentDetail) -> Brief {
     Brief { agent, active_turn, active_turn_unmatched, pending_ids, activity: Activity::of(detail) }
 }
 
+/// A held record's Agent, as `Store::held_agents` lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeldAgent {
+    pub id: String,
+    /// None when its record was being changed at that moment.
+    pub name: Option<String>,
+    /// Its record has changes its rows lack: what is stored is behind it.
+    pub unwritten: bool,
+}
+
 /// A parsed record held in memory while its Agent streams, and for a while
 /// after each write, so the next event or update need not load it. The
 /// record has its own lock, so copying it for a reader or serializing it for
@@ -2474,6 +2484,19 @@ impl Store {
         self.memory.lock().unwrap().held.len()
     }
 
+    /// The held records' Agents (T-140, history composition): each one's ID,
+    /// its name, and whether its record has changes its rows lack yet. Holds
+    /// `memory` only to list them. A record is never waited for or copied:
+    /// one being changed right now gives no name.
+    pub fn held_agents(&self) -> Vec<HeldAgent> {
+        let held: Vec<_> = self.memory.lock().unwrap().held.iter()
+            .map(|(id, held)| (id.clone(), held.detail.clone(), held.unwritten_since.is_some() || held.ephemeral))
+            .collect();
+        held.into_iter()
+            .map(|(id, detail, unwritten)| HeldAgent { name: detail.try_read().map(|d| d.agent.name.clone()), id, unwritten })
+            .collect()
+    }
+
     pub fn update(
         &self,
         id: &str,
@@ -4092,6 +4115,8 @@ mod tests {
 mod window_tests;
 #[cfg(test)]
 mod scoped_tests;
+#[cfg(test)]
+mod composition_tests;
 #[cfg(test)]
 mod restart_tests;
 #[cfg(test)]

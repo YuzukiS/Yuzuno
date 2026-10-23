@@ -21,6 +21,7 @@ import { AppearanceSection } from "./AppearanceSettings";
 import { Modal } from "./components";
 import { DesktopUpdate } from "./DesktopUpdate";
 import { DiagnosticsCopy } from "./RecoveryPage";
+import { HistoryComposition } from "./HistoryComposition";
 import { ReviewSettings } from "./ReviewSettings";
 import { HomePresentationSettings } from "./HomePresentationSettings";
 import { api, errorText, HttpError } from "./api";
@@ -977,6 +978,7 @@ export function WorkspaceUpdates({
               category of their own. */}
           {tab === "updates" && <DesktopUpdate preserveDrafts={preserveDrafts} />}
           {tab === "updates" && <DiagnosticsCopy />}
+          {tab === "updates" && <HistoryComposition />}
           {tab === "appearance" && <AppearanceSection />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
