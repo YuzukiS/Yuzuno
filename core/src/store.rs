@@ -288,12 +288,14 @@ pub struct Meta<'a> {
     pub pending: &'a mut Vec<PendingRequest>,
     /// What Claude's runtime reports, the effort a Turn ran at among it.
     pub claude_runtime: &'a mut Option<crate::model::ClaudeRuntime>,
+    /// The context window's use, marked stale when the connection ends.
+    pub context_usage: &'a mut Option<crate::model::ContextUsage>,
 }
 
 impl<'a> Meta<'a> {
     fn of(detail: &'a mut AgentDetail) -> Self {
         Self { agent: &mut detail.agent, message_receipts: &mut detail.message_receipts, pending: &mut detail.pending,
-            claude_runtime: &mut detail.claude_runtime }
+            claude_runtime: &mut detail.claude_runtime, context_usage: &mut detail.context_usage }
     }
 }
 

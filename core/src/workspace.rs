@@ -2094,16 +2094,18 @@ impl Workspace {
             let intentional = self.rpcs.lock().unwrap().remove(id).is_some_and(|connection| connection.closing);
             self.codex_mcp.forget(id);
             self.codex_plan.forget(id);
-            let _ = self.store.update(id, "runtime/disconnected", p, |d| {
-                if let Some(usage) = &mut d.context_usage { usage.stale = true; }
-                d.agent.connection_state = "disconnected".into();
-                if d.agent.status != "uncertain" {
-                    d.agent.status = "offline".into();
+            // Only the metadata changes: written without copying the record
+            // (T-140).
+            let _ = self.store.update_meta(id, "runtime/disconnected", p, |m| {
+                if let Some(usage) = m.context_usage.as_mut() { usage.stale = true; }
+                m.agent.connection_state = "disconnected".into();
+                if m.agent.status != "uncertain" {
+                    m.agent.status = "offline".into();
                 }
                 if !intentional {
-                    d.agent.error = Some(p["message"].as_str().unwrap_or("连接已断开").into());
+                    m.agent.error = Some(p["message"].as_str().unwrap_or("连接已断开").into());
                 }
-                for r in &mut d.pending {
+                for r in m.pending.iter_mut() {
                     r.stale = true;
                 }
             });

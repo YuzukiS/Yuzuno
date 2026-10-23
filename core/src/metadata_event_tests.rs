@@ -1,7 +1,7 @@
 //! T-120: a native request's resolution and a thread status change are
 //! committed as metadata (`apply_metadata_event`), without copying a long
-//! record, and leave what applying them to the whole record leaves; so is a
-//! thread's start (T-140).
+//! record, and leave what applying them to the whole record leaves; so are a
+//! thread's start and a connection's end (T-140).
 use super::*;
 
 fn record(status: &str, running: bool) -> AgentDetail {
@@ -76,7 +76,7 @@ fn a_resolution_or_status_change_on_the_metadata_leaves_what_the_whole_record_le
                     let running = meta.turns.iter().any(|t| t["status"] == "inProgress");
                     apply_metadata_event(&mut crate::store::Meta {
                         agent: &mut meta.agent, message_receipts: &mut meta.message_receipts, pending: &mut meta.pending,
-                        claude_runtime: &mut meta.claude_runtime,
+                        claude_runtime: &mut meta.claude_runtime, context_usage: &mut meta.context_usage,
                     }, method, p, running);
                     // Set by `Store::update_meta`, as by the whole-record commit.
                     meta.agent.pending_count = meta.pending.len() as u64;
@@ -302,4 +302,113 @@ async fn a_thread_started_is_written_as_metadata_and_writes_what_the_whole_recor
             rpc.close();
         }
     }
+}
+
+/// A Codex connection that ends leaves the Agent disconnected: offline unless
+/// its status is uncertain, with the reason unless Core closed it, and its
+/// context usage and pending requests stale. Only the metadata changes, so it
+/// is written as the metadata (T-140): a held record is changed in place, and,
+/// held or not, it writes what the whole-record commit (`update`) wrote, with
+/// receipts still sending or uncertain beside it. A held record with a user
+/// message whose client ID `restore` gives back is written by the commit that
+/// restores it, as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_disconnect_is_written_as_metadata_and_writes_what_the_whole_record_commit_wrote() {
+    // The commit `on_event` made before, with the same change.
+    let whole = |ws: &Workspace, p: &Value, intentional: bool| {
+        ws.store.update("a", "runtime/disconnected", p, |d| {
+            if let Some(usage) = &mut d.context_usage { usage.stale = true; }
+            d.agent.connection_state = "disconnected".into();
+            if d.agent.status != "uncertain" {
+                d.agent.status = "offline".into();
+            }
+            if !intentional {
+                d.agent.error = Some(p["message"].as_str().unwrap_or("连接已断开").into());
+            }
+            for r in &mut d.pending {
+                r.stale = true;
+            }
+        }).unwrap();
+    };
+    // The first user message's client ID taken off again, in the held copy
+    // and in its row (what a record read without binding holds).
+    let unbind = |ws: &Workspace| {
+        if let Some(held) = ws.store.held_for_test("a") {
+            held.write().turns[0]["items"][0].as_object_mut().unwrap().remove("clientId");
+        }
+        let db = rusqlite::Connection::open(ws.data_dir.join("workspace.sqlite")).unwrap();
+        let changed = db.execute("UPDATE agent_items SET data=json_remove(data,'$.clientId')
+            WHERE agent_id='a' AND turn_id='t1' AND item_id='u1'", []).unwrap();
+        assert_eq!(changed, 1);
+    };
+    // The whole record once written, but the clock, and the journal.
+    let written = |ws: &Workspace| {
+        ws.store.release_for_test("a");
+        let mut d = serde_json::to_value(ws.store.detail("a").unwrap()).unwrap();
+        d["agent"]["updatedAt"] = json!(0);
+        d["agent"]["rev"] = json!(0);
+        (d, kinds(ws))
+    };
+    let usage = serde_json::from_value::<crate::model::ContextUsage>(json!({"usedTokens":1200,"windowTokens":200000,
+        "usedPercent":0.6,"turnId":"t2","updatedAt":"2026-10-23T00:00:00Z","stale":false})).unwrap();
+    // Lost with a reason, lost without one, and closed by Core.
+    let ends = [(false, json!({"message":"pipe closed"})), (false, json!({})), (true, json!({"message":"closed"}))];
+    let mut checked = 0;
+    for (intentional, p) in &ends {
+        for status in ["working", "uncertain"] {
+            for usage in [Some(usage.clone()), None] {
+                for (held, restore) in [(true, false), (false, false), (true, true), (false, true)] {
+                    let mut d = record(status, true);
+                    d.context_usage = usage.clone();
+                    d.pending = vec![approval("p", 7, 1), PendingRequest { stale: true, ..approval("old", 6, 0) }];
+                    // A receipt sending whose user message has arrived, and one uncertain.
+                    d.turns[1]["items"] = json!([{"id":"u2","type":"userMessage","clientId":"next","content":[{"type":"text","text":"next"}]}]);
+                    d.message_receipts.push(serde_json::from_value(json!({"input":{"clientMessageId":"next","text":"next"},"status":"sending"})).unwrap());
+                    d.message_receipts.push(serde_json::from_value(json!({"input":{"clientMessageId":"maybe","text":"maybe"},"status":"uncertain"})).unwrap());
+                    let (dir, other_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+                    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+                    let other = Workspace::new(other_dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+                    for w in [&ws, &other] {
+                        w.store.insert(&d).unwrap();
+                        w.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+                        if !held {
+                            w.store.release_for_test("a");
+                        }
+                        if restore {
+                            unbind(w);
+                        }
+                    }
+                    let rpc = connect(&ws, 1).await;
+                    ws.rpcs.lock().unwrap().get_mut("a").unwrap().closing = *intentional;
+                    let copy = ws.store.held_for_test("a");
+                    let before = in_place();
+                    ws.on_event("a", 1, json!({"method":"yuzuno/disconnected","params":p}));
+                    let case = format!("{p} intentional={intentional} {status} usage={} held={held} restore={restore}", usage.is_some());
+                    if let Some(copy) = &copy {
+                        let kept = ws.store.held_for_test("a").is_some_and(|now| Arc::ptr_eq(&now, copy));
+                        assert_eq!(kept, !restore, "{case}: copied");
+                        assert_eq!(in_place(), before + u64::from(!restore), "{case}");
+                    }
+                    assert!(!ws.rpcs.lock().unwrap().contains_key("a"), "{case}");
+                    whole(&other, p, *intentional);
+                    let (mine, theirs) = (written(&ws), written(&other));
+                    assert_eq!(mine, theirs, "{case}");
+                    let agent = &mine.0["agent"];
+                    assert_eq!(agent["connectionState"], "disconnected", "{case}");
+                    assert_eq!(agent["status"], if status == "uncertain" { "uncertain" } else { "offline" }, "{case}");
+                    let reason = if *intentional { Value::Null } else { json!(p["message"].as_str().unwrap_or("连接已断开")) };
+                    assert_eq!(agent["error"], reason, "{case}");
+                    assert!(mine.0["pending"].as_array().unwrap().iter().all(|r| r["stale"] == true), "{case}");
+                    assert_eq!(mine.0["contextUsage"]["stale"], if usage.is_some() { json!(true) } else { Value::Null }, "{case}");
+                    let receipts: Vec<_> = mine.0["messageReceipts"].as_array().unwrap().iter().map(|r| r["status"].clone()).collect();
+                    assert_eq!(receipts, [json!("accepted"), json!("sending"), json!("uncertain")], "{case}");
+                    assert_eq!(mine.0["turns"][0]["items"][0]["clientId"], "sent-1", "{case}");
+                    assert_eq!(mine.1.last().map(|(kind, _)| kind.as_str()), Some("runtime/disconnected"), "{case}");
+                    rpc.close();
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 3 * 2 * 2 * 4);
 }
