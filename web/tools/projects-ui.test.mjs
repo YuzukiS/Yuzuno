@@ -756,7 +756,8 @@ test("a project's service opens only once this computer proves it reaches Core's
     // Something else answers on that port here: refused, no link.
     page.answersHere.set(4380, () => "hello");
     button(page, "Open", panel).click();
-    await waitFor(() => panel.querySelector(".services-unreached"), "the page says this computer does not reach it");
+    const note = await waitFor(() => panel.querySelector(".services-unreached"), "the page says this computer does not reach it");
+    assert.match(note.textContent, /^This computer does not reach Core’s port 4380: something else answers there/);
     assert.equal(panel.querySelector(".services-open"), null, "no address is offered");
     assert.match(panel.textContent, /Answering \(HTTP 200\) · Core port 4380/);
 
@@ -774,6 +775,50 @@ test("a project's service opens only once this computer proves it reaches Core's
     await waitFor(() => /Not open/.test(panel.textContent) && !panel.querySelector(".services-open"), "closed");
     panel.querySelector('[aria-label="Delete Notebook"]').click();
     await waitFor(() => /No services yet/.test(panel.textContent), "deleted");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a page not opened on a loopback address says only that its connection reaches no unconfirmed service (T-170)", async () => {
+  const page = await mount({ url: "https://phone-entry.test:8444/", storage: { "yuzuno.selected": "a" } });
+  try {
+    await fromScopeMenu(page, "Manage projects");
+    const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
+    button(page, "App", dialog).click();
+    const panel = await waitFor(() => dialog.querySelector('[aria-label="Services"]'), "the Services panel is shown");
+    await waitFor(() => /No services yet/.test(panel.textContent), "no services yet");
+    button(page, "Add", panel).click();
+    const form = await waitFor(() => panel.querySelector(".services-form"), "the form opens");
+    const [name, port] = form.querySelectorAll("input");
+    type(page, name, "Dev server");
+    type(page, port, "5173");
+    button(page, "Add service", form).click();
+    await waitFor(() => page.services.length === 1 && /Dev server/.test(panel.textContent), "the service is registered");
+    const probes = () => page.calls.filter((call) => call.url.includes("/.well-known/yuzuno-service/")).length;
+
+    // Nothing answers Core's port from here, then something else does: the
+    // note says what this connection gives, and nothing about why.
+    for (const answer of [undefined, () => "hello"]) {
+      if (answer) page.answersHere.set(4380, answer);
+      const before = probes();
+      button(page, before ? "Check again" : "Open", panel).click();
+      await waitFor(() => probes() === before + 1 && !/Checking that/.test(panel.textContent), "this check ends");
+      const note = await waitFor(() => panel.querySelector(".services-unreached"), "the page says the service is not reached");
+      assert.equal(note.textContent.replace(/\s+/g, " ").trim(), "Project services are not available through this page’s " +
+        "connection: Core’s port 4380 could not be confirmed from here. They open on the Core host, or on a computer with a " +
+        "tunnel to Core; see “Connect from another computer” in the guide.");
+      assert.doesNotMatch(note.textContent, /This computer|something else answers|nothing does|must forward/);
+      assert.equal(panel.querySelector(".services-open"), null, "no address is offered");
+    }
+
+    // Once the page confirms Core's port from here, the address is offered as anywhere.
+    page.answersHere.set(4380, (challenge) => (challenge === "c4380" ? "a4380" : "nope"));
+    button(page, "Check again", panel).click();
+    const link = await waitFor(() => panel.querySelector(".services-open"), "the address is offered");
+    assert.equal(link.getAttribute("href"), "http://127.0.0.1:4380/");
+    assert.equal(panel.querySelector(".services-unreached"), null);
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();

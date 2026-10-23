@@ -49,6 +49,13 @@ type Reach =
   | { kind: "proven"; url: string }
   | { kind: "unproven"; port: number };
 
+/** Whether this page was opened on a loopback address, the desktop app's own
+ * (`localhost`, `tauri.localhost`) included. Only there can the note about an
+ * unconfirmed port speak of this computer's ports and its tunnel; a page
+ * reached another way (Core's remote entry, T-170) says only that this
+ * connection gives no way to the service. */
+const loopbackPage = () => /^(localhost|[^/]+\.localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i.test(window.location.hostname);
+
 const states: Record<ServiceConnection["state"], string> = {
   closed: "Not open",
   opening: "Opening…",
@@ -264,10 +271,20 @@ export function ProjectServices({
               )}
               {shown?.kind === "unproven" && (
                 <p className="services-unreached" role="status">
-                  This computer does not reach Core’s port {shown.port}: something else answers there, or nothing
-                  does. On the Core host itself it opens directly. From another computer whose tunnel reaches Core
-                  (a Mac), that tunnel must forward Core’s service ports too; see “Connect from another computer”
-                  in the guide.
+                  {loopbackPage() ? (
+                    <>
+                      This computer does not reach Core’s port {shown.port}: something else answers there, or nothing
+                      does. On the Core host itself it opens directly. From another computer whose tunnel reaches Core
+                      (a Mac), that tunnel must forward Core’s service ports too; see “Connect from another computer”
+                      in the guide.
+                    </>
+                  ) : (
+                    <>
+                      Project services are not available through this page’s connection: Core’s port {shown.port} could
+                      not be confirmed from here. They open on the Core host, or on a computer with a tunnel to Core;
+                      see “Connect from another computer” in the guide.
+                    </>
+                  )}
                 </p>
               )}
             </li>
