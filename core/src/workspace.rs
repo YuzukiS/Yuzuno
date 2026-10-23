@@ -2177,9 +2177,11 @@ impl Workspace {
             });
         } else if method == "thread/started" {
             // Retain a recovery handle even if the thread/start response times out.
-            let _ = self.store.update(id, method, p, |d| {
-                if d.agent.thread_id.is_none() && p["thread"]["parentThreadId"].is_null() {
-                    d.agent.thread_id = p["thread"]["id"].as_str().map(str::to_owned);
+            // The Agent's thread is metadata: written without copying the
+            // record (T-140).
+            let _ = self.store.update_meta(id, method, p, |m| {
+                if m.agent.thread_id.is_none() && p["thread"]["parentThreadId"].is_null() {
+                    m.agent.thread_id = p["thread"]["id"].as_str().map(str::to_owned);
                 }
             });
         } else if method == "command/exec/outputDelta" {
