@@ -73,6 +73,8 @@ pub struct Workspace {
     pub(crate) codex_context: crate::codex_context::State,
     /// What each Codex Agent's MCP servers reported as they started (T-29).
     pub(crate) codex_mcp: crate::codex_mcp::State,
+    /// Each Codex Agent's working-folder diff read and its streamed output (T-29).
+    pub(crate) codex_diff: crate::codex_diff::State,
     /// The collaboration mode each Codex Agent's connection reported (T-29).
     pub(crate) codex_plan: crate::codex_plan::State,
     pub(crate) github: crate::github::SyncState,
@@ -146,6 +148,7 @@ impl Workspace {
             codex_usage: Default::default(),
             codex_context: Default::default(),
             codex_mcp: Default::default(),
+            codex_diff: Default::default(),
             codex_plan: Default::default(),
             delivery: Default::default(),
             admission: Arc::new(crate::updates::admission::Admission::default()),
@@ -2171,6 +2174,9 @@ impl Workspace {
                     d.agent.thread_id = p["thread"]["id"].as_str().map(str::to_owned);
                 }
             });
+        } else if method == "command/exec/outputDelta" {
+            // Output of a /diff read's command on this connection; not the thread's.
+            self.codex_diff.deliver(id, generation, p);
         } else {
             // Its own thread's MCP servers, as they start (shown by /mcp); a
             // new thread's may report before its ID is recorded.
@@ -2816,6 +2822,14 @@ mod codex_mcp_tests;
 #[cfg(all(test, unix))]
 #[path = "codex_plan_tests.rs"]
 mod codex_plan_tests;
+
+#[cfg(all(test, unix))]
+#[path = "codex_diff_tests.rs"]
+mod codex_diff_tests;
+
+#[cfg(all(test, unix))]
+#[path = "codex_diff_fixture_tests.rs"]
+mod codex_diff_fixture_tests;
 
 #[cfg(all(test, unix))]
 #[path = "subagent_requests_tests.rs"]

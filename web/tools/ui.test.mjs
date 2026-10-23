@@ -5492,6 +5492,51 @@ test("a Codex Agent's /changes shows the latest loaded turn's recorded edits and
   } finally { claude.close(); }
 });
 
+// T-29: a Codex Agent's /diff reads Git's diff of its folder through its own
+// Codex as soon as the dialog opens: the target first, then one read bound to
+// it. Nothing is sent to the model and the draft stays; the dialog's own
+// states are covered in codex-diff-ui.test.mjs.
+test("a Codex Agent's /diff reads its folder once, through Core, and sends nothing to the model", async () => {
+  const diff = [];
+  const report = { state: "read", reason: "read", detail: null, generation: 3, cwd: "/workspace",
+    tracked: { text: "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-a\n+b\n", complete: true, notUtf8: false },
+    staged: { entries: [], complete: true, error: null }, untracked: { files: [], listedAll: true, error: null },
+    complete: true, stopped: null, bytes: 60, commands: 5, elapsedMs: 80 };
+  const stub = (window) => {
+    const fetch = window.fetch;
+    window.fetch = (url, init = {}) => {
+      if (!url.includes("/codex/diff")) return fetch(url, init);
+      diff.push([init.method ?? "GET", url, init.body ? JSON.parse(init.body) : null]);
+      const body = init.method === "POST" ? report : { state: "ready", reason: "ready", generation: 3, cwd: "/workspace" };
+      return Promise.resolve({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) });
+    };
+  };
+  const page = await mount({ harness: "codex", agentFields: { connectionState: "connected" }, beforeLoad: stub });
+  try {
+    const composer = await sendDraft(page, "/diff");
+    const box = await until(() => page.document.querySelector('[role="dialog"]'), "the /diff dialog");
+    await until(() => /Changes not staged · 1 file/.test(box.textContent), "the read");
+    assert.match(box.textContent, /Folder diff/);
+    assert.match(box.textContent, /\/workspace/);
+    assert.deepEqual(diff.map(([method]) => method), ["GET", "POST"], "the target, then one read");
+    assert.deepEqual({ generation: diff[1][2].generation, cwd: diff[1][2].cwd }, { generation: 3, cwd: "/workspace" });
+    assert.equal(composerText(composer), "/diff", "the draft stays, as the panels' commands leave it");
+    assert.deepEqual(posts(page), [], "no /messages, /turns or anything else");
+    await closeModal(page);
+    assert.equal(diff.length, 2, "a finished read is not cancelled, and nothing is read again");
+    await sendDraft(page, "/diff --cached");
+    assert.match(page.document.body.textContent, /\/diff takes nothing after it here/);
+    assert.ok(!page.document.querySelector('[role="dialog"]'));
+    assert.equal(diff.length, 2);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+  const claude = await mount({ harness: "claude" });
+  try {
+    await sendDraft(claude, "/diff");
+    assert.deepEqual(posts(claude), ["/api/agents/a/messages"], "a Claude Agent's /diff is Claude Code's own, sent as a message");
+  } finally { claude.close(); }
+});
+
 // T-29: a Codex Agent's /mcp shows its MCP servers as they reported starting
 // on this connection, from Core; Codex is not asked, since its own status
 // list starts every configured server.
