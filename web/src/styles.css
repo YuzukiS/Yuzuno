@@ -3177,9 +3177,16 @@ p {
    the project switcher (T-170). */
 .app.phone .agent-scope button,
 .app.phone .project-group-add {
+  align-items: center;
   justify-content: center;
   min-width: 44px;
   min-height: 44px;
+}
+/* The list is the whole width, so the switch lies on its line rather than
+   stacking as in a narrow sidebar. */
+.app.phone .agent-scope {
+  flex-direction: row;
+  border-radius: 999px;
 }
 .app.phone .project-group-toggle,
 .app.phone .add-agent,
