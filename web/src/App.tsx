@@ -111,6 +111,7 @@ import { ClaudeMcpStatus } from "./ClaudeMcpStatus";
 import { CodexMcpStatus } from "./CodexMcpStatus";
 import { CodexChangesDialog } from "./CodexChanges";
 import { CodexDiffDialog } from "./CodexDiff";
+import { CodexTerminalsDialog } from "./CodexTerminals";
 import { latestTurnWithEdits } from "./changes";
 import { CodexPlanUsage } from "./CodexPlanUsage";
 import { AgentManagement, type AgentAction } from "./AgentManagement";
@@ -287,6 +288,8 @@ export function App() {
   const [changesRequest, setChangesRequest] = useState<{ agentId: string; turnId: string | null; nonce: number } | null>(null);
   // `/diff`: Git's diff of the Agent's folder, read when it opens.
   const [diffRequest, setDiffRequest] = useState<{ agentId: string; nonce: number } | null>(null);
+  // `/ps` and `/stop`: the conversation's background terminals, listed when asked.
+  const [terminalsRequest, setTerminalsRequest] = useState<{ agentId: string; mode: "list" | "stop"; nonce: number } | null>(null);
   // `/review` alone: Review with Codex, for the draft that asked for it.
   const [reviewRequest, setReviewRequest] = useState<{ agentId: string; draft: ComposerDraft; nonce: number } | null>(null);
   // `/goal`: the Codex goal dialog, with the objective typed after it.
@@ -298,6 +301,7 @@ export function App() {
   useEffect(() => {
     setChangesRequest((request) => request && request.agentId !== selected ? null : request);
     setDiffRequest((request) => request && request.agentId !== selected ? null : request);
+    setTerminalsRequest((request) => request && request.agentId !== selected ? null : request);
     setReviewRequest((request) => request && request.agentId !== selected ? null : request);
     setGoalRequest((request) => request && request.agentId !== selected ? null : request);
     setPlanRequest((request) => request && request.agentId !== selected ? null : request);
@@ -1546,6 +1550,13 @@ export function App() {
       // nothing connects, and the draft stays.
       if (control?.command === "diff") {
         setDiffRequest({ agentId: target, nonce: Date.now() });
+        return;
+      }
+      // `/ps` lists the conversation's background terminals; `/stop` (or
+      // Codex's alias `/clean`) lists them to stop. Nothing stops on Send:
+      // only a Stop pressed in the dialog does. The draft stays.
+      if (control?.command === "ps" || control?.command === "stop") {
+        setTerminalsRequest({ agentId: target, mode: control.command === "ps" ? "list" : "stop", nonce: Date.now() });
         return;
       }
       if (control?.command === "status" || control?.command === "usage" || control?.command === "mcp") {
@@ -3129,6 +3140,15 @@ export function App() {
             openCatchupSource({ id: `changes:${turnId}:${itemId}`, agentId: agent.id, agentName: agent.name, kind: "progress",
               title: "File edit", body: "", turnId, itemId, seq: agent.lastSeq }, "rail", true);
           }}
+        />
+      )}
+      {agent && !isClaude && !isOpenCode && terminalsRequest?.agentId === agent.id && (
+        <CodexTerminalsDialog
+          key={`terminals-${agent.id}-${terminalsRequest.nonce}`}
+          agent={agent}
+          mode={terminalsRequest.mode}
+          open
+          onOpenChange={(open) => { if (!open) setTerminalsRequest(null); }}
         />
       )}
       {agent && !isClaude && !isOpenCode && diffRequest?.agentId === agent.id && (
