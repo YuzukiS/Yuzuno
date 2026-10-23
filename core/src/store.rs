@@ -572,6 +572,13 @@ thread_local! {
 
 #[cfg(test)]
 thread_local! {
+    /// How many Codex `turn/started` events `Store::commit_started` wrote on
+    /// this thread without copying the other Turns.
+    pub(super) static STARTED_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
     /// How many Agents `Store::open` marked restarted on this thread by
     /// their metadata alone (`Store::restart_meta_only`).
     pub(super) static RESTARTED_META_ONLY: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -2324,6 +2331,14 @@ impl Store {
     /// `message_content::restore` changed, not found by comparing the whole
     /// record. Returns the change's rev.
     pub fn record_applied(&self, id: &str, kind: &str, applied: &str, data: &Value) -> Result<u64> {
+        if applied == "turn/started" {
+            let lock = self.record_lock(id);
+            let _record = lock.lock();
+            if let Some(rev) = self.commit_started(id, kind, data)? {
+                return Ok(rev);
+            }
+            return Ok(self.commit_locked(id, kind, data, Scope::Applied(applied), |d| d.apply(applied, data), |_, _| ())?.0);
+        }
         Ok(self.commit(id, kind, data, Scope::Applied(applied), |d| d.apply(applied, data), |_, _| ())?.0)
     }
 
@@ -2448,6 +2463,122 @@ impl Store {
         Ok((rev, picked))
     }
 
+    /// `record_applied` of a Codex `turn/started` (or the `turn/accepted`
+    /// applied as one) to a record held in memory, without copying its other
+    /// Turns (T-140). `apply` of `turn/started` changes only the Turn with the
+    /// event's ID, appended when the record has none, and the Agent's status
+    /// and error (`AgentDetail::apply_at`). That Turn and the metadata are
+    /// copied and the event applied to the copies; the receipts are bound
+    /// over the held Turns with the copy in that Turn's place, the copy's
+    /// messages restored, and the write planned from those Turns, as `commit`
+    /// would. Once the write has committed, the copies replace the held
+    /// metadata and that Turn under the record's write lock, so a reader sees
+    /// the record before or after the event, and a write that fails leaves
+    /// it as it was. None, having changed nothing, where this cannot show it
+    /// writes what `commit` would: a record not held or kept as one body, an
+    /// event without a Turn ID, Turns not told apart by ID, or receipts after
+    /// which `restore` would change an Item of another Turn. The caller holds
+    /// the record lock.
+    fn commit_started(&self, id: &str, kind: &str, data: &Value) -> Result<Option<u64>> {
+        let Some(held) = self.held(id) else { return Ok(None) };
+        let Some(turn_id) = data["turnId"].as_str().or_else(|| data["turn"]["id"].as_str()) else { return Ok(None) };
+        let mut unwritten = self.memory.lock().unwrap().held.get(id).map(|held| held.unwritten.clone()).unwrap_or_default();
+        // The other Turns before and after the one the event names; it is
+        // appended when the record has none.
+        let around = |turns: &[Value], at: Option<usize>| match at {
+            Some(k) => (turns[..k].len(), k + 1),
+            None => (turns.len(), turns.len()),
+        };
+        let (at, mut staged) = {
+            let d = held.read();
+            if !record_rows::told_apart(&d.turns) {
+                return Ok(None);
+            }
+            let at = d.turns.iter().position(|t| t["id"] == turn_id);
+            let mut staged = meta_of(&d);
+            staged.turns.extend(at.map(|k| d.turns[k].clone()));
+            (at, staged)
+        };
+        staged.apply("turn/started", data);
+        let (others, restored) = crate::message_content::collect_restored(|| {
+            let d = held.read();
+            let (end, start) = around(&d.turns, at);
+            let (before, after) = (&d.turns[..end], &d.turns[start..]);
+            crate::message_content::bind_receipts(before, &mut staged.message_receipts);
+            crate::message_content::bind_receipts(&staged.turns, &mut staged.message_receipts);
+            crate::message_content::bind_receipts(after, &mut staged.message_receipts);
+            let others = crate::message_content::restoring(before, &staged.message_receipts, false)
+                || crate::message_content::restoring(after, &staged.message_receipts, false);
+            if !others {
+                let restorer = crate::message_content::Restorer::new(&staged.message_receipts);
+                for turn in &mut staged.turns {
+                    restorer.restore(turn, false);
+                }
+            }
+            others
+        });
+        if others {
+            return Ok(None);
+        }
+        staged.agent.pending_count = staged.pending.len() as u64;
+        staged.agent.updated_at = now();
+        let Some(dirty) = scoped(&Scope::Applied("turn/started"), &staged, data, restored) else { return Ok(None) };
+        unwritten.merge(dirty);
+        let turn = staged.turns.pop().expect("apply keeps the Turn it names");
+        let plan = {
+            let db = self.db.read()?;
+            let d = held.read();
+            let (end, start) = around(&d.turns, at);
+            let turns = d.turns[..end].iter().chain(std::iter::once(&turn)).chain(d.turns[start..].iter());
+            record_rows::plan_parts(&db, id, turns, &staged, &unwritten)?
+        };
+        let Some(plan) = plan else { return Ok(None) };
+        #[cfg(test)]
+        STARTED_IN_PLACE.with(|n| n.set(n.get() + 1));
+        let rewrite;
+        {
+            let mut db = self.db.write()?;
+            rewrite = self.rewrite(id);
+            let tx = db.transaction()?;
+            tx.execute(
+                "INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
+                params![id, kind, data.to_string(), now()],
+            )?;
+            staged.agent.last_seq = tx.last_insert_rowid();
+            staged.agent.unread_count = unread(&tx, id, staged.agent.reviewed_seq)?;
+            record_rows::apply(&tx, id, &plan, &staged.agent)?;
+            tx.commit()?;
+            #[cfg(test)]
+            AFTER_COMMIT.with(|hook| if let Some(hook) = hook.borrow_mut().as_mut() { hook() });
+        }
+        drop(plan);
+        // Nothing after the commit can fail; locks are taken as in
+        // `commit_meta`.
+        let mut d = held.write();
+        put_meta(&mut d, staged);
+        match at {
+            Some(k) => d.turns[k] = turn,
+            None => d.turns.push(turn),
+        }
+        let mut listed = brief(&d);
+        let rev = rewrite.done(|memory| {
+            let rev = memory.event(id, kind, data);
+            listed.agent.rev = rev;
+            memory.briefs.insert(id.into(), listed);
+            if let Some(entry) = memory.held.get_mut(id).filter(|entry| Arc::ptr_eq(&entry.detail, &held)) {
+                entry.unwritten = Dirty::default();
+                entry.unwritten_since = None;
+                entry.ephemeral = false;
+                entry.last = Instant::now();
+                entry.brief_stale = false;
+                entry.changes += 1;
+            }
+            rev
+        });
+        d.agent.rev = rev;
+        Ok(Some(rev))
+    }
+
     /// `commit` of a change to the metadata alone (see `Meta`) of a record
     /// held in memory, without copying or comparing its Turns, which were
     /// nearly all of such a commit's time on a large record (T-120). A copy
@@ -2487,7 +2618,7 @@ impl Store {
             None
         } else {
             let db = self.db.read()?;
-            record_rows::plan_parts(&db, id, &held.read().turns, &meta, &unwritten)?
+            record_rows::plan_parts(&db, id, held.read().turns.iter(), &meta, &unwritten)?
         };
         let Some(plan) = plan else {
             return self.commit_locked(id, kind, data, Scope::Meta, move |d| put_meta(d, meta), pick);
