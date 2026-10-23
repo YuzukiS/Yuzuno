@@ -1,0 +1,31 @@
+/* /ps and /stop (T-29): a Codex Agent's background terminals, laid out as
+   /changes (codex-changes.css); these are its own parts. */
+.terminals-scope {
+  display: grid;
+  gap: 4px;
+}
+.terminals-heading {
+  margin: 0 0 4px;
+  font-size: inherit;
+}
+.terminals-list,
+.terminals-outcomes ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+.terminals-list li {
+  display: grid;
+  gap: 2px;
+}
+.terminals-command {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  overflow-wrap: anywhere;
+  flex: 1 1 auto;
+}
+.terminals-outcomes [data-outcome="refused"],
+.terminals-outcomes [data-outcome="not_stopped"],
+.terminals-outcomes [data-outcome="unknown"] {
+  color: var(--coral);
+}

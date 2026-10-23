@@ -75,6 +75,8 @@ pub struct Workspace {
     pub(crate) codex_mcp: crate::codex_mcp::State,
     /// Each Codex Agent's working-folder diff read and its streamed output (T-29).
     pub(crate) codex_diff: crate::codex_diff::State,
+    /// Each Codex Agent's background terminal stop in progress (T-29 /stop).
+    pub(crate) codex_terminals: crate::codex_terminals::State,
     /// The collaboration mode each Codex Agent's connection reported (T-29).
     pub(crate) codex_plan: crate::codex_plan::State,
     pub(crate) github: crate::github::SyncState,
@@ -149,6 +151,7 @@ impl Workspace {
             codex_context: Default::default(),
             codex_mcp: Default::default(),
             codex_diff: Default::default(),
+            codex_terminals: Default::default(),
             codex_plan: Default::default(),
             delivery: Default::default(),
             admission: Arc::new(crate::updates::admission::Admission::default()),
@@ -2842,6 +2845,10 @@ mod codex_diff_tests;
 #[cfg(all(test, unix))]
 #[path = "codex_diff_fixture_tests.rs"]
 mod codex_diff_fixture_tests;
+
+#[cfg(all(test, unix))]
+#[path = "codex_terminals_tests.rs"]
+mod codex_terminals_tests;
 
 #[cfg(all(test, unix))]
 #[path = "subagent_requests_tests.rs"]

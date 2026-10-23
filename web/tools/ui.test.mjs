@@ -5492,6 +5492,46 @@ test("a Codex Agent's /changes shows the latest loaded turn's recorded edits and
   } finally { claude.close(); }
 });
 
+// T-29: a Codex Agent's /ps and /stop (and Codex's alias /clean) open its
+// conversation's background terminals, listed once from Core. Nothing stops
+// on Send: only a Stop pressed in the dialog does (codex-terminals-ui.test.mjs).
+test("a Codex Agent's /ps, /stop and /clean list its background terminals and stop nothing on Send", async () => {
+  const reads = [];
+  const listing = { state: "listed", reason: "listed", detail: null, generation: 2, threadId: "thread-a", complete: true,
+    terminals: [{ processId: "1001", itemId: "call-a", command: "npm run dev", cwd: "/workspace", inRunningTurn: false }] };
+  const stub = (window) => {
+    const fetch = window.fetch;
+    window.fetch = (url, init = {}) => {
+      if (!url.includes("/codex/terminals")) return fetch(url, init);
+      reads.push([init.method ?? "GET", url]);
+      return Promise.resolve({ ok: true, status: 200, json: async () => listing, text: async () => JSON.stringify(listing) });
+    };
+  };
+  const page = await mount({ harness: "codex", agentFields: { connectionState: "connected" }, beforeLoad: stub });
+  try {
+    for (const [command, title, stops] of [["/ps", /Background terminals/, false], ["/stop", /Stop background terminals/, true], ["/clean", /Stop background terminals/, true]]) {
+      const composer = await sendDraft(page, command);
+      const box = await until(() => page.document.querySelector('[role="dialog"]'), `the ${command} dialog`);
+      await until(() => /npm run dev/.test(box.textContent), "the list");
+      assert.match(box.textContent, title);
+      assert.equal(!!box.querySelector("button") && [...box.querySelectorAll("button")].some((b) => b.textContent.trim() === "Stop process 1001"), stops, command);
+      assert.equal(composerText(composer), command, "the draft stays, as the panels' commands leave it");
+      await closeModal(page);
+    }
+    assert.deepEqual(reads.map(([method]) => method), ["GET", "GET", "GET"], "one list per open; no stop was sent");
+    assert.deepEqual(posts(page), [], "no /messages, /turns or anything else");
+    await sendDraft(page, "/stop all");
+    assert.match(page.document.body.textContent, /\/stop takes nothing after it here/);
+    assert.equal(reads.length, 3);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+  const claude = await mount({ harness: "claude" });
+  try {
+    await sendDraft(claude, "/stop");
+    assert.deepEqual(posts(claude), ["/api/agents/a/messages"], "a Claude Agent's /stop is a message, as before");
+  } finally { claude.close(); }
+});
+
 // T-29: a Codex Agent's /diff reads Git's diff of its folder through its own
 // Codex as soon as the dialog opens: the target first, then one read bound to
 // it. Nothing is sent to the model and the draft stays; the dialog's own
