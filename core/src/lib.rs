@@ -16,6 +16,7 @@ pub mod codex_sessions;
 pub mod codex_skills;
 pub mod codex_goal;
 pub mod codex_diff;
+pub mod codex_terminals;
 pub mod codex_mcp;
 pub mod codex_plan;
 pub mod codex_usage;

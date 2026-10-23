@@ -62,7 +62,8 @@ const entries = {
   Send: ".send-button",
 };
 /** The ways in and out a finger needs on a phone. */
-const touchTargets = ".phone-back, .toolbar .icon-button, .toolbar-nav .catchup-nav, .rail-actions .icon-button, .agent-select, .send-button";
+const touchTargets = ".phone-back, .toolbar .icon-button, .toolbar-nav .catchup-nav, .rail-actions .icon-button, .agent-select, .send-button, " +
+  ".agent-scope button, .project-group-toggle, .project-group-add, .add-agent, .workspace-scope";
 
 const browser = await launchBrowser();
 

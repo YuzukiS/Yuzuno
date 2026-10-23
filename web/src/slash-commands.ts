@@ -86,6 +86,9 @@ export const codexControls: CommandList = {
     control("changes", "Yuzuno's record of the file edits Codex made in a turn, by file; not a Git diff of the folder"),
     // Git's diff of the folder, read through Codex's own command runner; nothing is sent to the model.
     control("diff", "Reads Git's diff of this Agent's folder where its Codex runs: unstaged changes, untracked files and staged names; read-only"),
+    // The commands Codex keeps running in this conversation (its background terminals).
+    control("ps", "Lists the background terminals Codex keeps running in this conversation; nothing is stopped"),
+    control("stop", "Lists this conversation's background terminals to stop one or all listed; nothing stops until you press Stop"),
   ],
   get total() { return this.commands.length; },
   truncated: false,
@@ -149,6 +152,8 @@ const controlHarnesses = {
   mcp: ["codex"],
   changes: ["codex"],
   diff: ["codex"],
+  ps: ["codex"],
+  stop: ["codex"],
 } as const;
 export type NativeControl = keyof typeof controlHarnesses;
 
@@ -159,8 +164,10 @@ export type NativeControl = keyof typeof controlHarnesses;
  */
 export function nativeControl(text: string, harness: string): { command: NativeControl; args: string } | null {
   const match = /^\/([a-z]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
-  if (!match || !Object.hasOwn(controlHarnesses, match[1])) return null;
-  const command = match[1] as NativeControl;
+  // Codex's own alias of /stop.
+  const name = match?.[1] === "clean" ? "stop" : match?.[1];
+  if (!match || !name || !Object.hasOwn(controlHarnesses, name)) return null;
+  const command = name as NativeControl;
   if (!(controlHarnesses[command] as readonly string[]).includes(harness)) return null;
   return { command, args: (match[2] ?? "").trim() };
 }
