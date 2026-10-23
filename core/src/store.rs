@@ -300,9 +300,7 @@ enum Scope<'a> {
     Compare,
     /// The metadata (the change got a `Meta`).
     Meta,
-    /// One native event of this kind, whose change `Dirty::of_applied`
-    /// names: a Codex event `AgentDetail::apply` takes, or a Claude `result`
-    /// as `commit_turn` writes it.
+    /// One native event of this kind applied by `AgentDetail::apply`.
     Applied(&'a str),
 }
 
@@ -2757,13 +2755,23 @@ impl Store {
         }
         staged.agent.pending_count = staged.pending.len() as u64;
         staged.agent.updated_at = now();
-        // What a `result` changes is its Turn, whole (`Dirty::of_event` of
-        // its kind), and the metadata.
-        let scope = match change {
-            TurnChange::Applied(applied) => applied,
-            TurnChange::Result(_) => kind,
+        // What a `result` changes is found as comparing finds it, in its
+        // Turn alone (the other Turns stay as they are) and the metadata
+        // (always written): the Turn's rows that changed, not all of them.
+        let dirty = match change {
+            TurnChange::Applied(applied) => scoped(&Scope::Applied(applied), &staged, data, restored),
+            TurnChange::Result(_) => {
+                let mut dirty = Dirty::default();
+                if let (Some(k), Some(copy)) = (at, staged.turns.first()) {
+                    dirty.turn_between(turn_id, &held.read().turns[k], copy);
+                }
+                for (turn, item, renamed) in restored {
+                    if renamed { dirty.whole_turn(&turn) } else { dirty.item(&turn, &item) };
+                }
+                dirty.identified(&staged)
+            }
         };
-        let Some(dirty) = scoped(&Scope::Applied(scope), &staged, data, restored) else { return Ok(None) };
+        let Some(dirty) = dirty else { return Ok(None) };
         unwritten.merge(dirty);
         let turn = staged.turns.pop().expect("the change keeps the Turn it names");
         let plan = {

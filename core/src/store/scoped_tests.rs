@@ -1367,6 +1367,48 @@ fn a_claude_result_is_written_without_copying_the_other_turns() {
     assert_eq!(scoped.agent("a").unwrap().status, "uncertain");
 }
 
+/// A Claude `result` written in place writes the rows comparing writes: the
+/// same inserts, updates and deletes of Turn, Item and payload rows, counted
+/// by triggers, not every row of its Turn (T-140).
+#[test]
+fn a_claude_result_in_place_writes_the_rows_comparing_writes() {
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        let mut sql = String::from("CREATE TABLE t140_writes(tbl TEXT, op TEXT);");
+        for table in ["agent_turns", "agent_items", "agent_payloads"] {
+            for op in ["INSERT", "UPDATE", "DELETE"] {
+                sql += &format!("CREATE TRIGGER t140_{table}_{op} AFTER {op} ON {table} BEGIN INSERT INTO t140_writes VALUES('{table}','{op}'); END;");
+            }
+        }
+        store.db.write().unwrap().execute_batch(&sql).unwrap();
+    }
+    let writes = |store: &Store| -> Vec<(String, String, i64)> {
+        let db = store.db.read().unwrap();
+        let mut rows = db.prepare("SELECT tbl, op, count(*) FROM t140_writes GROUP BY tbl, op ORDER BY tbl, op").unwrap();
+        rows.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    };
+    let clear = |store: &Store| { store.db.write().unwrap().execute("DELETE FROM t140_writes", []).unwrap(); };
+    for (step, streamed) in [("a Turn with nothing streamed", 0), ("a Turn with messages streamed, not yet written", 3)] {
+        let turn = format!("w{streamed}");
+        start_both_claude(&generic, &scoped, &turn);
+        for store in [&generic, &scoped] {
+            for i in 0..streamed {
+                super::tests::stream(store, "a", "claude/assistant", &claude(&turn, json!({"type":"assistant","uuid":format!("{turn}-{i}"),
+                    "session_id":"s","message":{"id":format!("msg-{turn}-{i}"),"content":[{"type":"text","text":format!("{} {i}", "x".repeat(9000))}]}})));
+            }
+            clear(store);
+        }
+        assert!(result_both(&generic, &scoped, &ended(&turn, json!({}))), "{step}: the scoped store copied the record");
+        let (compared, written) = (writes(&generic), writes(&scoped));
+        assert!(!compared.is_empty(), "{step}: comparing wrote no rows");
+        assert_eq!(compared, written, "{step}: written in place, other rows were written");
+        assert_eq!(state(&generic), state(&scoped), "{step}");
+        for store in [&generic, &scoped] {
+            store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+        }
+    }
+}
+
 /// Where writing in place cannot be shown to write what comparing writes, a
 /// Claude `result` is committed as `update_picking` commits it.
 #[test]
