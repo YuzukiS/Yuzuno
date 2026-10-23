@@ -300,6 +300,45 @@ was 11–15 ms before and 3.0–4.6 ms after); that is not attributed either. Wh
 a call allocates after the change grows with the number of Turns. These are
 synthetic allocator measurements in one process, not the daily Core's RSS.
 
+### A sub-agent's event
+
+A direct sub-agent's request, the resolution of one and its file change reach
+the parent Agent's connection on the child's thread. Core finds the child
+among the parent's `subAgentActivity` Items. It read them through
+`Store::detail`: a copy of the whole held record, payloads included, or all
+the rows of one not held, payloads included. `Store::recorded_child` now
+reads those Items under the held copy's read lock, or from the rows without
+payloads, as `Store::pending` does. An Item's IDs are never payloads; a path
+longer than 8 KiB would be found as its preview, and it is only a label.
+
+T-140 Jobs `c7bae01e-70c0-4008-b2c2-62b6189e14a6` (build) and
+`2c0055cb-7b44-4ea0-b3ce-875794e10465` (runs), 2026-10-23: a release build of
+`subagent_child_lab` (on a lab branch, not merged) of this change, comparing
+main's lookup (`Store::detail` and the same search) with the new one in one
+binary. Two synthetic records of 100 and 168 Turns (37.9 and 63.6 MiB of
+history JSON; 7.1 and 11.9 MB of Item row text, 32.8 and 55.1 MB of payload
+text), with the child's Item in Turn 10, were each run twice, with ten
+lookups of each kind per run:
+
+| One lookup | Before | After |
+| --- | ---: | ---: |
+| Held, 37.9 MiB record: allocated | 40.0 MiB | 0.7 KiB |
+| The same: Rust peak above its start | 40.0 MiB | 0.7 KiB |
+| The same: median time | 4.2–5.3 ms | 0.13–0.15 ms |
+| Held, 63.6 MiB record: allocated | 67.2 MiB | 0.7 KiB |
+| The same: median time | 8.1–9.5 ms | 0.26–0.33 ms |
+| Not held, 37.9 MiB record: allocated | 52.1 MiB | 36.7 MiB |
+| The same: Rust peak above its start | 40.3 MiB | 19.1 MiB |
+| The same: median time | 20.0–21.3 ms | 11.8–12.3 ms |
+| Not held, 63.6 MiB record: allocated | 87.4 MiB | 61.8 MiB |
+| The same: Rust peak above its start | 67.5 MiB | 32.1 MiB |
+| The same: median time | 34.8–35.8 ms | 21.5–21.7 ms |
+
+A record not held is still read for each such event, all of its Items
+without payloads, and neither lookup holds it. How often a parent is not
+held when its children's events arrive was not measured. These are synthetic
+allocator measurements in one process, not the daily Core's RSS.
+
 ## Claude bridge events
 
 Five Claude bridge events still committed with `update` and discarded the copy
