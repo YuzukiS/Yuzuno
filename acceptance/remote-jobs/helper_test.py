@@ -403,21 +403,32 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(self.stopping(job), first, "the first TERM's time is never moved")
 
     def test_a_stop_a_cancel_began_is_never_taken_for_a_timeout(self):
-        job = self.attempt("trap '' TERM; sleep 60 & echo $! > child.pid; while [ ! -e go ]; do sleep 0.05; done",
-                           timeout=2)
-        started, since = self.lose(job)
-        child = self.wait_for(self.work / "child.pid")
-        (self.work / "go").write_text("")
-        self.assertTrue(gone(started["pid"]))
-        self.past(since, 2)
-        self.assertEqual(self.call(self.bound(job, "cancel")).get("status"), "lost")
-        # Past the deadline, with the cancel's first TERM recorded: a status leaves the stop to cancel.
-        state = self.call(self.bound(job, "status"))
-        self.assertEqual((state.get("status"), state.get("processes")), ("lost", 1), state)
-        os.kill(child, 0)
-        reply = self.call(self.bound(job, "cancel"))
-        self.assertEqual((reply.get("status"), reply.get("result", {}).get("status")), ("terminal", "cancelled"), reply)
-        self.assertTrue(gone(child))
+        # Whether the leader has ended and a child ignores TERM, or the leader
+        # itself ignores it and is still running past its deadline (review R2).
+        for case, script in (
+                ("leader ended", "trap '' TERM; sleep 60 & echo $! > child.pid; while [ ! -e go ]; do sleep 0.05; done"),
+                ("leader runs", "trap '' TERM; exec sleep 60")):
+            with self.subTest(case=case):
+                (self.work / "child.pid").unlink(missing_ok=True)
+                (self.work / "go").unlink(missing_ok=True)
+                job = self.attempt(script, timeout=2)
+                started, since = self.lose(job)
+                if case == "leader ended":
+                    left = self.wait_for(self.work / "child.pid")
+                    (self.work / "go").write_text("")
+                    self.assertTrue(gone(started["pid"]))
+                else:
+                    left = started["pid"]
+                self.past(since, 2)
+                self.assertEqual(self.call(self.bound(job, "cancel")).get("status"), "lost")
+                # Past the deadline, with the cancel's first TERM recorded: a status leaves the stop to cancel.
+                state = self.call(self.bound(job, "status"))
+                self.assertEqual((state.get("status"), state.get("processes")), ("lost", 1), state)
+                os.kill(left, 0)
+                reply = self.call(self.bound(job, "cancel"))
+                self.assertEqual((reply.get("status"), reply.get("result", {}).get("status")), ("terminal", "cancelled"),
+                                 reply)
+                self.assertTrue(gone(left))
 
     def test_a_cancel_of_a_lost_attempt_kills_a_child_that_ignores_term_at_a_later_call(self):
         job = self.attempt("trap '' TERM; sleep 60 & echo $! > child.pid; while [ ! -e go ]; do sleep 0.05; done")

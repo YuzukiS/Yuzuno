@@ -1348,13 +1348,12 @@ def first_term(root, intent, started):
 
 def timing_out(root, intent, started):
     """Whether a status has already begun applying this lost attempt's
-    timeout: its own first TERM is recorded, with no cancel asked for (a cancel
-    writes cancel.json before it stops anything, and goes on through cancel),
-    past the deadline. The leader was confirmed running then, so the timeout
-    goes on until nothing of the group is left, also once the leader has ended
-    on that TERM and only others of its group are left."""
-    return (not (root / "cancel.json").exists() and first_term(root, intent, started) is not None
-            and past_deadline(root, started))
+    timeout: its own first TERM is recorded, past the deadline (status asks only
+    when no cancel was asked for, so that TERM was the timeout's). The leader
+    was confirmed running then, so the timeout goes on until nothing of the
+    group is left, also once the leader has ended on that TERM and only others
+    of its group are left."""
+    return first_term(root, intent, started) is not None and past_deadline(root, started)
 
 
 def stop_lost(root, intent, started):
@@ -1412,7 +1411,10 @@ def status(request, host):
         if reply:
             return reply
         reply = state(root, intent)
-        if reply["status"] == "lost" and (overdue(root, reply["started"]) or timing_out(root, intent, reply["started"])):
+        # A cancel writes cancel.json before it stops anything: once one was
+        # asked for, the stop is the cancel's, and is never taken for a timeout.
+        if (reply["status"] == "lost" and not (root / "cancel.json").exists()
+                and (overdue(root, reply["started"]) or timing_out(root, intent, reply["started"]))):
             reply = time_out(root, intent, reply)
         if reply["status"] in ("running", "stopping") and (root / "limits.json").exists():
             # Whether its own scope is frozen, so Core settles a pause or
