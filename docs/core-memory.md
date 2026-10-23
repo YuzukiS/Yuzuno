@@ -647,8 +647,8 @@ the next. The follow-up now reads the send view, and commits through
 Turns in place, under the record lock every write takes, and writes the
 change in place as a send's commits are. Otherwise the follow-up is compared
 as before. A follow-up through `send_message` on a held record commits once
-in place and reads no whole copy. It was not measured on its own; its commit
-copies what `turnRequested`'s does.
+in place and reads no whole copy. It was not measured on its own: its commit
+copies the metadata and the one Turn, as `turnRequested`'s does.
 
 A message delivery still copies the record once. It can move the message
 from the Turn it was shown in to the Turn Claude runs it in, and it settles
