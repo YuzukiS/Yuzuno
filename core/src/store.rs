@@ -1131,7 +1131,8 @@ fn project_window(
 /// the query and what it finds are the same with or without it.
 const COMPLETION_INDEX: &str = "CREATE INDEX IF NOT EXISTS journal_turn_completed
     ON journal(agent_id, json_extract(data,'$.turn.id')) WHERE kind='turn/completed'";
-/// How long making the completion index may take as the Workspace opens.
+/// The completion index build's time target as the Workspace opens, checked
+/// by its progress handler (see `completion_index`); not a limit on opening.
 const COMPLETION_INDEX_BUDGET: Duration = Duration::from_secs(2);
 /// SQLite virtual-machine steps between two checks of that budget.
 const COMPLETION_INDEX_STEPS: i32 = 1000;
@@ -1152,10 +1153,13 @@ enum CompletionIndex {
 
 /// Makes the completion index if it is missing: once, as the Workspace opens
 /// and before any other connection or background work. It is only a
-/// speed-up, so it never keeps the Workspace from opening. It does not wait
-/// for another connection's lock, and it stops once `budget` has passed, as
-/// SQLite checks that every COMPLETION_INDEX_STEPS steps of its virtual
-/// machine (not a bound on one step, on I/O or on the rollback). When it
+/// speed-up, so it never keeps the Workspace from opening. The index build
+/// waits for no lock: it runs with no busy timeout. The check whether the
+/// index is there, before it, keeps the connection's busy timeout, as the
+/// rest of opening does. The build stops once `budget` has passed, as SQLite
+/// checks that every COMPLETION_INDEX_STEPS steps of its virtual machine: a
+/// target for the build, not a bound on one step, on I/O, on the rollback or
+/// on opening the Workspace. When it
 /// stops or fails (a row whose data is not JSON, a full disk, a locked
 /// database), SQLite rolls the statement back and no part of the index is
 /// left. The busy timeout is restored and the progress handler removed on

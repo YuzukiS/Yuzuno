@@ -604,9 +604,13 @@ once for a repeat. A partial index with the query's own terms,
 same with or without the index.
 
 Opening the Workspace makes the index when it is missing, once, before any
-other connection. It waits for no lock and stops after about 2 s of SQLite
-progress (a progress handler checks the time, so it bounds neither one step,
-nor I/O, nor the rollback). When it is stopped or fails (out of time, a
+other connection. The index build waits for no lock: it runs with no busy
+timeout, so a database another connection is writing fails it at once. The
+check whether the index is there runs before it with the connection's usual
+busy timeout, as the rest of opening does. About 2 s is the build's time
+target: a progress handler checks the time every 1000 SQLite steps, so it
+bounds neither one step, nor I/O, nor the rollback, and it is no limit on
+opening the Workspace as a whole. When it is stopped or fails (out of time, a
 journal row that is not JSON, a full disk, a locked database), the reason is
 logged, no part of the index is left, and the Workspace opens with the lookup
 reading the journal as before; the next start tries again. An index that is

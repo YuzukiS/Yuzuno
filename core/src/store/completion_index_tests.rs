@@ -1,7 +1,7 @@
-//! The completion index (T-140): `Store::open` makes it when it is missing,
-//! within a budget and without waiting for a lock, leaves one that is there
-//! alone, and opens the Workspace whatever happens to it; with or without it,
-//! the completion check finds the same.
+//! The completion index (T-140): `Store::open` makes it when it is missing
+//! (the build within its time target, waiting for no lock), leaves one that
+//! is there alone, and opens the Workspace whatever happens to it; with or
+//! without it, the completion check finds the same.
 use super::tests::{detail, lab};
 use super::*;
 
