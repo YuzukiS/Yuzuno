@@ -179,6 +179,28 @@ async fn a_resolution_and_a_status_change_are_committed_as_metadata_and_accept_r
     rpc.close();
 }
 
+/// Without a receipt sending or uncertain, a resolution or status change is
+/// the metadata commit it was before (T-120): a receipt of another state
+/// whose user message is in a Turn, here unknown (as a Claude connection that
+/// ended leaves one), is not accepted by it, as it was not before (T-140).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_an_unconfirmed_receipt_a_status_change_accepts_no_receipt() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+    let mut d = record("working", true);
+    d.turns[1]["items"] = json!([{"id":"u2","type":"userMessage","clientId":"later","content":[{"type":"text","text":"later"}]}]);
+    d.message_receipts.push(serde_json::from_value(json!({"input":{"clientMessageId":"later","text":"later"},"status":"unknown"})).unwrap());
+    ws.store.insert(&d).unwrap();
+    ws.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+    let rpc = connect(&ws, 1).await;
+    let before = in_place();
+    ws.on_event("a", 1, json!({"method":"thread/status/changed","params":{"threadId":"thread-a","status":{"type":"idle"}}}));
+    assert_eq!(in_place(), before + 1, "the status change copied the record");
+    let receipt = ws.store.detail("a").unwrap().message_receipts[1].clone();
+    assert_eq!((receipt.status.as_str(), receipt.turn_id.as_deref()), ("unknown", None));
+    rpc.close();
+}
+
 /// A native `turn/started` reaches `Store::record_applied` from `on_event`
 /// and is written without copying the record's other Turns (T-140).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

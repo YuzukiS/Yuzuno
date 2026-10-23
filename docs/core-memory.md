@@ -419,7 +419,10 @@ confirmed. The metadata commit lacked one step of `apply`: accepting each
 receipt by the first Turn with its user message. `Store::update_meta_applied`
 takes that step too: on the copy of the metadata, by the held Turns, once
 nothing is to restore, and otherwise in `commit`, after its `bind`, in the
-order `apply` takes them.
+order `apply` takes them. Only such an event beside a receipt sending or
+uncertain takes it, as only such an event was applied to the whole record:
+otherwise the commit is the one it was, and a receipt of another state (an
+unknown one, say) whose message is in a Turn is not accepted by it.
 
 T-140 run `3c8fe870-b58b-46ce-9e56-6d361528188c` (build
 `c9665670-7f71-431e-af0a-d7d8a5bae82f`, measure

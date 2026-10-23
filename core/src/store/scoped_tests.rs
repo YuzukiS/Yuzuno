@@ -1262,20 +1262,23 @@ fn status_events() -> [(&'static str, Value); 5] {
 
 /// Receipts in each state beside such an event, bound but not yet accepted:
 /// "old-2" sending and "old-4" uncertain, their user messages in Turns t2 and
-/// t4; "q" queued, its message in t3; "rej" rejected, its message in t1;
-/// "next" sending, with no message yet. A blocking question (rpc 7) the
-/// resolution answers, and with `running` a Turn in progress.
+/// t4; "q" queued, its message in t3; "unk" unknown, its message in t5; "rej"
+/// rejected, its message in t1; "next" sending, with no message yet. A
+/// blocking question (rpc 7) the resolution answers, and with `running` a
+/// Turn in progress.
 fn unconfirmed(store: &Store, running: bool) {
     store.record_event("a", "test/turns", &json!({}), |d| {
         d.turns[1]["items"][0]["clientId"] = json!("rej");
         d.turns[3]["items"][0]["clientId"] = json!("q");
+        d.turns[5]["items"][0]["clientId"] = json!("unk");
         if running {
             d.turns.push(json!({"id":"t6","status":"inProgress","items":[]}));
         }
     }).unwrap();
     store.update_meta("a", "message/requested", &json!({}), |m| {
         for (id, text, status) in [("old-2", "message 2", "sending"), ("old-4", "message 4", "uncertain"),
-            ("q", "message 3", "queued"), ("rej", "message 1", "rejected"), ("next", "next", "sending")] {
+            ("q", "message 3", "queued"), ("unk", "message 5", "unknown"), ("rej", "message 1", "rejected"),
+            ("next", "next", "sending")] {
             let mut r = receipt(id, text);
             r.status = status.into();
             m.message_receipts.push(r);
@@ -1292,11 +1295,12 @@ fn receipt_states(state: &Value) -> Vec<(String, String, Value)> {
         .collect()
 }
 
-/// A resolution or a thread status change beside receipts still sending,
-/// uncertain or queued (T-140): written in place, it accepts each by the
-/// first Turn with its user message, as the whole record's `apply` does, and
-/// leaves the same record held and in the rows; a rejected receipt and one
-/// without a message stay as they are.
+/// A resolution or a thread status change beside receipts still sending or
+/// uncertain (T-140): written in place, it accepts each receipt neither
+/// accepted nor rejected (queued and unknown too) by the first Turn with its
+/// user message, as the whole record's `apply` does, and leaves the same
+/// record held and in the rows; a rejected receipt and one without a message
+/// stay as they are.
 #[test]
 fn a_resolution_or_status_change_accepts_receipts_as_the_whole_record_does() {
     for running in [false, true] {
@@ -1313,7 +1317,8 @@ fn a_resolution_or_status_change_accepts_receipts_as_the_whole_record_does() {
             assert_eq!(state(&generic), s, "{method} {p} running={running}");
             assert_eq!(receipt_states(&s)[1..], [
                 ("old-2".into(), "accepted".into(), json!("t2")), ("old-4".into(), "accepted".into(), json!("t4")),
-                ("q".into(), "accepted".into(), json!("t3")), ("rej".into(), "rejected".into(), Value::Null),
+                ("q".into(), "accepted".into(), json!("t3")), ("unk".into(), "accepted".into(), json!("t5")),
+                ("rej".into(), "rejected".into(), Value::Null),
                 ("next".into(), "sending".into(), Value::Null),
             ], "{method} {p}");
         }
