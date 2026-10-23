@@ -3172,6 +3172,20 @@ p {
 .app.phone .agent-select {
   min-height: 44px;
 }
+/* The rest of the list's controls, which a phone shows as one screen: the
+   Active/Closed switch, each project group's fold row and +, New agent and
+   the project switcher (T-170). */
+.app.phone .agent-scope button,
+.app.phone .project-group-add {
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+}
+.app.phone .project-group-toggle,
+.app.phone .add-agent,
+.app.phone .workspace-scope {
+  min-height: 44px;
+}
 /* A phone held sideways: room for the conversation above the composer.
    The status bar, the composer's project and model line and the turn dock
    (which would sit over Send) wait for a taller screen. */
