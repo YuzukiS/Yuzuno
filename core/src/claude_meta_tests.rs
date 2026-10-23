@@ -97,9 +97,8 @@ fn unclocked(value: &mut Value) {
     }
 }
 
-/// The record as its rows have it once released, and its journal.
-fn written(ws: &Workspace, id: &str) -> (Value, Vec<(String, Value)>) {
-    ws.store.release_for_test(id);
+/// The record as it is read now, held or not, and its journal.
+fn shown(ws: &Workspace, id: &str) -> (Value, Vec<(String, Value)>) {
     let mut record = serde_json::to_value(ws.store.detail(id).unwrap()).unwrap();
     unclocked(&mut record);
     let db = ws.store.db.read().unwrap();
@@ -107,6 +106,12 @@ fn written(ws: &Workspace, id: &str) -> (Value, Vec<(String, Value)>) {
     let journal = query.query_map([id], |r| Ok((r.get::<_, String>(0)?, serde_json::from_str(&r.get::<_, String>(1)?).unwrap())))
         .unwrap().map(Result::unwrap).collect();
     (record, journal)
+}
+
+/// The record as its rows have it once released, and its journal.
+fn written(ws: &Workspace, id: &str) -> (Value, Vec<(String, Value)>) {
+    ws.store.release_for_test(id);
+    shown(ws, id)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -144,6 +149,9 @@ async fn requests_and_cancellations_write_what_the_whole_record_commit_wrote() {
                 held.claude_event(id, 7, request(turn));
                 assert_eq!(same_copy(&held, id, &copy), !copies, "{case}: request");
                 rows.claude_event(id, 7, request(turn));
+                // The cancellation below undoes much of the request: compared
+                // here too, the held copy as it is and the other's record.
+                assert_eq!(shown(&held, id), shown(&rows, id), "{case}: after the request");
                 rows.store.release_for_test(id);
                 let copy = held.store.held_for_test(id).unwrap();
                 held.claude_event(id, 7, cancel.clone());
