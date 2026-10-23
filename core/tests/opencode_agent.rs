@@ -205,6 +205,57 @@ async fn a_message_is_sent_once_under_its_kept_id_and_ends_only_on_its_answer() 
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// The conversation window the web reads: the client IDs of its user messages
+/// are what a delivery preview waits for.
+async fn window_client_ids(lab: &Lab) -> Value {
+    let router = server::router_on_port(lab.ws.clone(), lab.dir.path().join("assets"), 4317);
+    let request = Request::get(format!("/api/agents/{ID}?view=window")).header("host", "localhost:4317")
+        .header("x-yuzuno-client", "desktop").body(Body::empty()).unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert!(response.status().is_success());
+    let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 1 << 22).await.unwrap()).unwrap();
+    body["conversation"]["nativeClientIds"].clone()
+}
+
+/// A message OpenCode stored is its Turn's user message, under the client ID
+/// it was sent with, as a Codex or Claude message is (T-120): the delivery
+/// preview, waiting for that ID, gives way to it, and the receipt is bound to
+/// it. Stored only later, it gets the ID then. One not confirmed is not given
+/// it, and its receipt stays uncertain.
+#[tokio::test]
+async fn a_stored_message_is_its_turns_user_message_under_its_client_id() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let receipt = lab.send("c1", "hello").await.unwrap();
+    assert_eq!(receipt.status, "accepted");
+    let first = receipt.turn_id.unwrap();
+    let d = lab.detail();
+    let users = items(turn(&d, &first), "userMessage");
+    assert_eq!((users.len(), &users[0]["clientId"]), (1, &json!("c1")));
+    let binding = d.message_receipts[0].binding.as_ref().map(|b| (b.turn_id.clone(), b.user_index));
+    assert_eq!(binding, Some((first.clone(), 0)), "the receipt is bound to it");
+    assert_eq!(window_client_ids(&lab).await, json!(["c1"]));
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
+
+    // Answered, but not stored: unknown, and its message has no client ID.
+    lab.control("mode", json!({"prompt":"unstored"})).await;
+    let lost = lab.send("c2", "later").await.unwrap();
+    assert_eq!(lost.status, "uncertain");
+    let second = lost.turn_id.unwrap();
+    let d = lab.detail();
+    assert!(items(turn(&d, &second), "userMessage")[0].get("clientId").is_none());
+    assert_eq!(window_client_ids(&lab).await, json!(["c1"]), "its preview still says it is unconfirmed");
+
+    // OpenCode reports it stored after all: accepted, under its client ID.
+    lab.control("store", json!({"sessionID":session,"messageID":second,"text":"later"})).await;
+    let d = lab.until("the late confirmation", |d| d.message_receipts[1].status == "accepted").await;
+    assert_eq!(items(turn(&d, &second), "userMessage")[0]["clientId"], "c2");
+    assert_eq!(window_client_ids(&lab).await, json!(["c1", "c2"]));
+    assert_eq!(lab.prompts().len(), 2, "each message once");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 #[tokio::test]
 async fn answers_go_only_to_the_session_and_process_that_asked() {
     let lab = lab(&[], false).await;
