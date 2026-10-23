@@ -205,6 +205,90 @@ async fn a_message_is_sent_once_under_its_kept_id_and_ends_only_on_its_answer() 
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// The conversation window the web reads (`conversation_window::project`, not
+/// the HTTP route, whose router starts collaboration): the client IDs of its
+/// user messages are what a delivery preview waits for.
+fn window_client_ids(d: &AgentDetail) -> Value {
+    use yuzuno_workspace::conversation_window::{project, Query};
+    let mut d = d.clone();
+    let query = Query { view: Some("window".into()), before: None, after: None, turn_id: None, item_id: None };
+    let metadata = project(&mut d, &query).unwrap_or_else(|_| panic!("no window"));
+    metadata["nativeClientIds"].clone()
+}
+
+/// A message OpenCode stored is its Turn's user message, under the client ID
+/// it was sent with, as a Codex or Claude message is (T-120): the delivery
+/// preview, waiting for that ID, gives way to it, and the receipt is bound to
+/// it, which restores its pasted text blocks onto it. Stored only later, it
+/// gets the ID then. One refused stays refused, even if OpenCode later shows
+/// it stored, and one not confirmed stays uncertain: neither gets the ID. All
+/// of it is in the rows: the Workspace opened again reads it the same.
+#[tokio::test]
+async fn a_stored_message_is_its_turns_user_message_under_its_client_id() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let blocks = json!([{"id":"b","start":0,"end":5}]);
+    let input: MessageInput = serde_json::from_value(json!({"clientMessageId":"c1","text":"hello world","textBlocks":blocks})).unwrap();
+    let receipt = lab.ws.send_message(ID, input).await.unwrap();
+    assert_eq!(receipt.status, "accepted");
+    let first = receipt.turn_id.unwrap();
+    let d = lab.detail();
+    let users = items(turn(&d, &first), "userMessage");
+    assert_eq!((users.len(), &users[0]["clientId"]), (1, &json!("c1")));
+    assert_eq!(users[0]["_yuzunoTextBlocks"], blocks, "its pasted text blocks, restored by its receipt");
+    let binding = d.message_receipts[0].binding.as_ref().map(|b| (b.turn_id.clone(), b.user_index));
+    assert_eq!(binding, Some((first.clone(), 0)), "the receipt is bound to it");
+    assert_eq!(window_client_ids(&d), json!(["c1"]));
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
+
+    // Refused (HTTP 400): rejected, and no client ID, even once OpenCode
+    // shows a message of that ID stored.
+    let mut fail = serde_json::Map::new();
+    fail.insert(format!("/session/{session}/prompt_async"), json!(400));
+    lab.control("mode", json!({"fail":fail})).await;
+    let refused = lab.send("c3", "no").await.unwrap();
+    assert_eq!(refused.status, "rejected");
+    let third = refused.turn_id.unwrap();
+    lab.control("mode", json!({"fail":{}})).await;
+    lab.control("store", json!({"sessionID":session,"messageID":third,"text":"no"})).await;
+    let d = lab.until("the stored refusal", |d| turn(d, &third)["_opencodeConfirmed"] == true).await;
+    assert_eq!(d.message_receipts[1].status, "rejected");
+    assert!(items(turn(&d, &third), "userMessage")[0].get("clientId").is_none());
+
+    // Answered, but not stored: uncertain, and its message has no client ID.
+    lab.control("mode", json!({"prompt":"unstored"})).await;
+    let lost = lab.send("c2", "later").await.unwrap();
+    assert_eq!(lost.status, "uncertain");
+    let second = lost.turn_id.unwrap();
+    let d = lab.detail();
+    assert!(items(turn(&d, &second), "userMessage")[0].get("clientId").is_none());
+    assert_eq!(window_client_ids(&d), json!(["c1"]), "its preview still says it is unconfirmed");
+
+    // OpenCode reports it stored after all: accepted, under its client ID.
+    lab.control("store", json!({"sessionID":session,"messageID":second,"text":"later"})).await;
+    let d = lab.until("the late confirmation", |d| d.message_receipts[2].status == "accepted").await;
+    assert_eq!(items(turn(&d, &second), "userMessage")[0]["clientId"], "c2");
+    assert_eq!(window_client_ids(&d), json!(["c1", "c2"]));
+    assert_eq!(lab.prompts().len(), 3, "each message once");
+
+    // Read again from the rows, by the Workspace opened again.
+    let old = lab.seen()["pid"].as_u64().unwrap();
+    let Lab { dir, ws } = lab;
+    drop(ws);
+    assert!(ends(old).await, "OpenCode ended with the Workspace");
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let d = ws.store.detail(ID).unwrap();
+    let message = |turn_id: &str| items(turn(&d, turn_id), "userMessage")[0].clone();
+    assert_eq!((&message(&first)["clientId"], &message(&first)["_yuzunoTextBlocks"]), (&json!("c1"), &blocks));
+    assert_eq!(message(&second)["clientId"], "c2");
+    assert!(message(&third).get("clientId").is_none());
+    let bound: Vec<_> = d.message_receipts.iter()
+        .map(|r| (r.input.client_message_id.as_str(), r.status.as_str(), r.binding.as_ref().map(|b| b.turn_id.clone()))).collect();
+    assert_eq!(bound, [("c1", "accepted", Some(first.clone())), ("c3", "rejected", None), ("c2", "accepted", Some(second.clone()))]);
+    assert_eq!(window_client_ids(&d), json!(["c1", "c2"]));
+}
+
 #[tokio::test]
 async fn answers_go_only_to_the_session_and_process_that_asked() {
     let lab = lab(&[], false).await;
