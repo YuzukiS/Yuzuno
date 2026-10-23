@@ -284,18 +284,20 @@ async function mount(overrides = {}, shell, seed) {
     [...w.document.querySelectorAll('[aria-label="Update progress"] li')].map(
       (li) => `${li.querySelector(".update-step-label")?.textContent ?? ""}:${li.className.replace("is-", "")}`,
     );
-  // Presses a button once it takes a press, `times` times. While Settings'
-  // own update check is out, Update and Reload are disabled (WorkspaceUpdates
-  // `blocked`), and jsdom dispatches no click on a disabled button: a click
-  // then is lost. The check and the clicks are one predicate call, so
-  // nothing runs between them.
-  const press = (text, times = 1) =>
+  // Presses a button once it takes a press and `when` holds, `times` times.
+  // While Settings' own update check is out, Update and Reload are disabled
+  // (WorkspaceUpdates `blocked`), and jsdom dispatches no click on a
+  // disabled button: a click then is lost. The checks and the clicks are one
+  // predicate call, so nothing runs between them.
+  const press = (text, { times = 1, when = () => true } = {}) =>
     until(() => {
       const el = button(text);
-      if (!el || el.disabled) return false;
+      if (!el || el.disabled || !when()) return false;
       for (let n = 0; n < times; n++) el.click();
       return true;
     });
+  // Core's status shows the release transfer (the card's progress bar).
+  const transferShown = () => !!w.document.querySelector('progress[aria-label="Release download"]');
   const holdChecks = () => {
     checks.held = true;
   };
@@ -303,7 +305,7 @@ async function mount(overrides = {}, shell, seed) {
     checks.held = false;
     for (const resume of checks.waiting.splice(0)) resume();
   };
-  return { dom, w, status, calls, errors, button, press, holdChecks, releaseChecks, open, close, openDesktop, steps, pollTimers };
+  return { dom, w, status, calls, errors, button, press, transferShown, holdChecks, releaseChecks, open, close, openDesktop, steps, pollTimers };
 }
 
 test("one click prepares a local release, saves drafts, applies once and survives closing the dialog", async () => {
@@ -315,7 +317,7 @@ test("one click prepares a local release, saves drafts, applies once and survive
     for (const name of ["Download update", "Prepare update", "Apply when idle"])
       assert.ok(f.button(name) === undefined, `no separate "${name}" step`);
     // Pressed twice in one go: one choice, applied once.
-    assert.ok(await f.press("Update to 2026.10.B", 2), "Update can be pressed");
+    assert.ok(await f.press("Update to 2026.10.B", { times: 2 }), "Update can be pressed");
     assert.ok(await until(() => posts(f.calls, "apply").length > 0), "Apply follows preparation");
     await polls(f);
     assert.equal(posts(f.calls, "prepare").length, 1);
@@ -750,8 +752,9 @@ test("cancelling during the download stops the transfer and the rest of the chai
   try {
     await f.open();
     assert.ok(await f.press("Update to 2026.10.B"), "Update can be pressed");
-    assert.ok(await until(() => !!f.button("Cancel update")), "the update can be cancelled");
-    f.button("Cancel update").click();
+    // Cancel update shows once the release is chosen, but it stops a transfer
+    // only once Core's status shows one; before that it forgets the choice.
+    assert.ok(await f.press("Cancel update", { when: f.transferShown }), "the update can be cancelled during the download");
     assert.ok(await until(() => /Download cancelled/.test(f.w.document.body.textContent)), "the cancel is answered");
     assert.equal(posts(f.calls, "download/cancel").length, 1);
     assert.equal(f.w.localStorage.getItem(intentKey), null);
@@ -779,8 +782,8 @@ test("a release published while a local package waits is a second explicit choic
     assert.ok(await until(() => posts(f.calls, "download").length === 1));
     assert.equal(posts(f.calls, "download")[0].body.releaseId, "C");
     assert.ok(await until(() => /Updating to 2026\.10\.C/.test(f.w.document.body.textContent)), "the update to C shows");
-    assert.ok(f.w.document.querySelector('progress[aria-label="Release download"]'), "the card shows the transfer");
-    f.button("Cancel update").click();
+    assert.ok(await until(f.transferShown), "the card shows the transfer");
+    assert.ok(await f.press("Cancel update", { when: f.transferShown }), "Update to 2026.10.C can be cancelled");
     assert.ok(await until(() => posts(f.calls, "download/cancel").length > 0), "the cancel is sent");
     assert.equal(posts(f.calls, "download/cancel").length, 1);
     assert.equal(f.calls.filter(c => /updates\/(apply|prepare)$|interrupt/.test(c.url)).length, 0);
