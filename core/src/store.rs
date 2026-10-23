@@ -2435,7 +2435,19 @@ impl Store {
     /// whole record: the metadata, and the Items `message_content::restore`
     /// changed. Returns the change's rev.
     pub fn update_meta(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut Meta<'_>)) -> Result<u64> {
-        Ok(self.commit_meta(id, kind, data, mutate, |_, _| ())?.0)
+        Ok(self.commit_meta(id, kind, data, false, mutate, |_, _| ())?.0)
+    }
+
+    /// `update_meta` of a native event that `AgentDetail::apply` takes as a
+    /// change to the metadata alone (`serverRequest/resolved`,
+    /// `thread/status/changed`), with `apply`'s last step too: each receipt
+    /// not yet accepted or rejected is accepted by the first Turn with its
+    /// user message (`confirm_message_receipts`), after the receipts are
+    /// bound. So a receipt still sending or uncertain is left as `apply`
+    /// leaves it, without a copy of the record (T-140). Returns the change's
+    /// rev.
+    pub fn update_meta_applied(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut Meta<'_>)) -> Result<u64> {
+        Ok(self.commit_meta(id, kind, data, true, mutate, |_, _| ())?.0)
     }
 
     /// `update_picking` for a change to the metadata only (see `update_meta`).
@@ -2447,7 +2459,7 @@ impl Store {
         mutate: impl FnOnce(&mut Meta<'_>),
         pick: impl FnOnce(&AgentDetail) -> T,
     ) -> Result<T> {
-        Ok(self.commit_meta(id, kind, data, mutate, |d, _| pick(d))?.1)
+        Ok(self.commit_meta(id, kind, data, false, mutate, |d, _| pick(d))?.1)
     }
 
     /// `record_event` for one native event that the record takes as
@@ -2763,18 +2775,28 @@ impl Store {
     /// change after which `message_content::restore` would change an Item,
     /// and `turn/completed` (checked against the journal) are committed by
     /// `commit` instead, with the change already made, under the same lock.
+    /// With `confirms` (`update_meta_applied`), the receipts are then
+    /// accepted by the Turns as `confirm_message_receipts` accepts them: on
+    /// the copy, by the held Turns once nothing is to restore (so they are
+    /// as `bind` leaves them), and otherwise by `commit`, after its `bind`.
     fn commit_meta<T>(
         &self,
         id: &str,
         kind: &str,
         data: &Value,
+        confirms: bool,
         mutate: impl FnOnce(&mut Meta<'_>),
         pick: impl FnOnce(&AgentDetail, Option<String>) -> T,
     ) -> Result<(u64, T)> {
         let lock = self.record_lock(id);
         let _record = lock.lock();
         let Some(held) = self.held(id).filter(|_| kind != "turn/completed") else {
-            return self.commit_locked(id, kind, data, Scope::Meta, |d| mutate(&mut Meta::of(d)), pick);
+            return self.commit_locked(id, kind, data, Scope::Meta, |d| {
+                mutate(&mut Meta::of(d));
+                if confirms {
+                    d.confirm_message_receipts();
+                }
+            }, pick);
         };
         let unwritten = self.memory.lock().unwrap().held.get(id).map(|held| held.unwritten.clone()).unwrap_or_default();
         let mut meta = meta_of(&held.read());
@@ -2782,7 +2804,11 @@ impl Store {
         let restores = {
             let d = held.read();
             crate::message_content::bind_receipts(&d.turns, &mut meta.message_receipts);
-            crate::message_content::restoring(&d.turns, &meta.message_receipts, false)
+            let restores = crate::message_content::restoring(&d.turns, &meta.message_receipts, false);
+            if confirms && !restores {
+                crate::model::accept_receipts(d.turns.iter(), &mut meta.message_receipts);
+            }
+            restores
         };
         meta.agent.pending_count = meta.pending.len() as u64;
         meta.agent.updated_at = now();
@@ -2793,7 +2819,13 @@ impl Store {
             record_rows::plan_parts(&db, id, held.read().turns.iter(), &meta, &unwritten)?
         };
         let Some(plan) = plan else {
-            return self.commit_locked(id, kind, data, Scope::Meta, move |d| put_meta(d, meta), pick);
+            return self.commit_locked(id, kind, data, Scope::Meta, move |d| {
+                put_meta(d, meta);
+                // Accepting again changes nothing a first acceptance made.
+                if confirms {
+                    d.confirm_message_receipts();
+                }
+            }, pick);
         };
         #[cfg(test)]
         META_IN_PLACE.with(|n| n.set(n.get() + 1));
