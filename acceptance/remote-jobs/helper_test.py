@@ -383,6 +383,42 @@ class HelperTests(unittest.TestCase):
         self.assertTrue(group_gone(started["pid"]))
         self.assertEqual(self.stopping(job), first, "the first TERM's time is never moved")
 
+    def test_a_timeout_that_began_goes_on_once_the_leader_ended_and_a_child_ignores_term(self):
+        job = self.attempt("(trap '' TERM; exec sleep 60) & echo $! > child.pid; exec sleep 60", timeout=2)
+        started, since = self.lose(job)
+        child = self.wait_for(self.work / "child.pid")
+        self.past(since, 2)
+        # The call that applies the timeout: the leader ends on its TERM, the child does not.
+        state = self.call(self.bound(job, "status"))
+        self.assertEqual((state.get("status"), state.get("leaderAlive"), state.get("processes")), ("lost", False, 1), state)
+        self.assertTrue(gone(started["pid"]))
+        os.kill(child, 0)
+        first = self.stopping(job)
+        # The next status goes on with that timeout, without its leader: KILL 5 s after the first TERM.
+        state = self.call(self.bound(job, "status"))
+        self.assertEqual(state.get("status"), "terminal", state)
+        self.assertEqual(state["result"]["reason"],
+                         "timeout after 2 s; its supervisor was gone, so its process group was stopped here")
+        self.assertTrue(gone(child))
+        self.assertEqual(self.stopping(job), first, "the first TERM's time is never moved")
+
+    def test_a_stop_a_cancel_began_is_never_taken_for_a_timeout(self):
+        job = self.attempt("trap '' TERM; sleep 60 & echo $! > child.pid; while [ ! -e go ]; do sleep 0.05; done",
+                           timeout=2)
+        started, since = self.lose(job)
+        child = self.wait_for(self.work / "child.pid")
+        (self.work / "go").write_text("")
+        self.assertTrue(gone(started["pid"]))
+        self.past(since, 2)
+        self.assertEqual(self.call(self.bound(job, "cancel")).get("status"), "lost")
+        # Past the deadline, with the cancel's first TERM recorded: a status leaves the stop to cancel.
+        state = self.call(self.bound(job, "status"))
+        self.assertEqual((state.get("status"), state.get("processes")), ("lost", 1), state)
+        os.kill(child, 0)
+        reply = self.call(self.bound(job, "cancel"))
+        self.assertEqual((reply.get("status"), reply.get("result", {}).get("status")), ("terminal", "cancelled"), reply)
+        self.assertTrue(gone(child))
+
     def test_a_cancel_of_a_lost_attempt_kills_a_child_that_ignores_term_at_a_later_call(self):
         job = self.attempt("trap '' TERM; sleep 60 & echo $! > child.pid; while [ ! -e go ]; do sleep 0.05; done")
         started, _ = self.lose(job)

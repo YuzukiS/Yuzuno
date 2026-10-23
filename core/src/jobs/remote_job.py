@@ -1301,12 +1301,10 @@ def checked(root, bound, fence):
     return intent, None
 
 
-def overdue(root, started):
-    """Whether a lost attempt's command still runs past the deadline its
-    supervisor counted to: its deadline.json for the process started.json
-    names, in this boot, on the same monotonic clock, and that process still
-    the leader of the attempt's group. Whatever cannot be confirmed is not
-    overdue, and nothing is stopped for it."""
+def past_deadline(root, started):
+    """Whether the deadline a lost attempt's supervisor counted to has passed:
+    its deadline.json for the process started.json names, in this boot, on the
+    same monotonic clock. Whatever cannot be confirmed has not passed."""
     try:
         deadline = read_json(root / "deadline.json")
         spec = read_json(root / "spec.json")
@@ -1319,10 +1317,44 @@ def overdue(root, started):
         return False
     return (all(deadline.get(key) == started.get(key) for key in ("bootId", "pid", "starttime"))
             and deadline["bootId"] == boot_id() and deadline.get("timeoutSeconds") == spec.get("timeoutSeconds")
-            and time.monotonic() > at and alive(started) and started["pid"] in members(started))
+            and time.monotonic() > at)
+
+
+def overdue(root, started):
+    """Whether a lost attempt's command still runs past that deadline, as the
+    leader of the attempt's group: only then does a status apply the timeout,
+    and nothing is stopped for what cannot be confirmed."""
+    return past_deadline(root, started) and alive(started) and started["pid"] in members(started)
 
 
 STOPPING = ("bootId", "pid", "pgid", "sid", "starttime")
+
+
+def first_term(root, intent, started):
+    """The monotonic time this helper first sent TERM to a lost attempt's
+    group (stopping.json), when the record is for this attempt, boot and
+    recorded process and on this clock; None otherwise."""
+    try:
+        record = read_json(root / "stopping.json")
+    except Unclear:
+        return None
+    at = record.get("monotonic") if isinstance(record, dict) else None
+    if (isinstance(at, (int, float)) and not isinstance(at, bool) and record.get("attempt") == intent["attempt"]
+            and all(record.get(key) == started.get(key) for key in STOPPING)
+            and record["bootId"] == boot_id() and at <= time.monotonic()):
+        return at
+    return None
+
+
+def timing_out(root, intent, started):
+    """Whether a status has already begun applying this lost attempt's
+    timeout: its own first TERM is recorded, with no cancel asked for (a cancel
+    writes cancel.json before it stops anything, and goes on through cancel),
+    past the deadline. The leader was confirmed running then, so the timeout
+    goes on until nothing of the group is left, also once the leader has ended
+    on that TERM and only others of its group are left."""
+    return (not (root / "cancel.json").exists() and first_term(root, intent, started) is not None
+            and past_deadline(root, started))
 
 
 def stop_lost(root, intent, started):
@@ -1334,14 +1366,8 @@ def stop_lost(root, intent, started):
     clock counts as none: it never brings a KILL forward, and this call's own
     first TERM replaces it. (whether nothing is left, why the time could not be
     recorded or None.)"""
-    try:
-        record = read_json(root / "stopping.json")
-    except Unclear:
-        record = None
-    at = record.get("monotonic") if isinstance(record, dict) else None
-    if (isinstance(at, (int, float)) and not isinstance(at, bool) and record.get("attempt") == intent["attempt"]
-            and all(record.get(key) == started.get(key) for key in STOPPING)
-            and record["bootId"] == boot_id() and at <= time.monotonic()):
+    at = first_term(root, intent, started)
+    if at is not None:
         return stop(started, limit=4, since=at), None
     first = time.monotonic()
     left = members(started)
@@ -1386,7 +1412,7 @@ def status(request, host):
         if reply:
             return reply
         reply = state(root, intent)
-        if reply["status"] == "lost" and overdue(root, reply["started"]):
+        if reply["status"] == "lost" and (overdue(root, reply["started"]) or timing_out(root, intent, reply["started"])):
             reply = time_out(root, intent, reply)
         if reply["status"] in ("running", "stopping") and (root / "limits.json").exists():
             # Whether its own scope is frozen, so Core settles a pause or
