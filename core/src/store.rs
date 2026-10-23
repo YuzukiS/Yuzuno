@@ -572,7 +572,7 @@ thread_local! {
 
 #[cfg(test)]
 thread_local! {
-    /// How many Codex `turn/started` events `Store::commit_started` wrote on
+    /// How many Codex `turn/started` events `Store::commit_turn` wrote on
     /// this thread without copying the other Turns.
     pub(super) static STARTED_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -676,6 +676,18 @@ fn machine_jobs(db: &Connection, id: &str) -> Result<i64> {
 fn unread(db: &Connection, id: &str, reviewed: i64) -> Result<u64> {
     Ok(db.query_row("SELECT COUNT(*) FROM journal WHERE agent_id=?1 AND seq>?2 AND kind IN ('turn/completed','request','runtime/error')",
         params![id, reviewed], |r| r.get::<_, i64>(0))? as u64)
+}
+
+/// Whether a `turn/completed` about to be journaled completes a Turn whose
+/// completion is journaled already, or that came from a Codex import. A live
+/// completion can race history reconciliation. Both may update the evidence,
+/// but only the first creates an unread result: the other is journaled as
+/// `turn/reconfirmed`. Read in the writer's transaction.
+fn completed_before(db: &Connection, id: &str, kind: &str, data: &Value) -> Result<bool> {
+    Ok(kind == "turn/completed" && db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM journal WHERE agent_id=?1 AND kind='turn/completed' AND json_extract(data,'$.turn.id')=?2)
+            OR EXISTS(SELECT 1 FROM codex_import_turns WHERE agent_id=?1 AND turn_id=?2)",
+        params![id, data["turn"]["id"].as_str()], |r| r.get(0))?)
 }
 
 /// A record to change: with everything its journal says it already
@@ -2436,7 +2448,7 @@ impl Store {
         if applied == "turn/started" && matches!(kind, "turn/started" | "turn/accepted") {
             let lock = self.record_lock(id);
             let _record = lock.lock();
-            if let Some(rev) = self.commit_started(id, kind, data)? {
+            if let Some(rev) = self.commit_turn(id, kind, applied, data)? {
                 return Ok(rev);
             }
             return Ok(self.commit_locked(id, kind, data, Scope::Applied(applied), |d| d.apply(applied, data), |_, _| ())?.0);
@@ -2522,12 +2534,7 @@ impl Store {
             let mut db = self.db.write()?;
             rewrite = self.rewrite(id);
             let tx = db.transaction()?;
-            // A live completion can race history reconciliation. Both may update
-            // the evidence, but only the first creates an unread result.
-            let already_completed: bool = kind == "turn/completed" && tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM journal WHERE agent_id=?1 AND kind='turn/completed' AND json_extract(data,'$.turn.id')=?2)
-                    OR EXISTS(SELECT 1 FROM codex_import_turns WHERE agent_id=?1 AND turn_id=?2)",
-                params![id, data["turn"]["id"].as_str()], |r| r.get(0))?;
+            let already_completed = completed_before(&tx, id, kind, data)?;
             tx.execute(
                 "INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
                 params![id, if already_completed { "turn/reconfirmed" } else { kind }, data.to_string(), now()],
@@ -2584,7 +2591,7 @@ impl Store {
     /// as one body, an event without a Turn ID, Turns not told apart by ID,
     /// or receipts after which `restore` would change an Item of another
     /// Turn. The caller holds the record lock.
-    fn commit_started(&self, id: &str, kind: &str, data: &Value) -> Result<Option<u64>> {
+    fn commit_turn(&self, id: &str, kind: &str, applied: &str, data: &Value) -> Result<Option<u64>> {
         let Some(held) = self.held(id) else { return Ok(None) };
         let Some(turn_id) = data["turnId"].as_str().or_else(|| data["turn"]["id"].as_str()) else { return Ok(None) };
         let mut unwritten = self.memory.lock().unwrap().held.get(id).map(|held| held.unwritten.clone()).unwrap_or_default();
@@ -2614,7 +2621,7 @@ impl Store {
             // whether a Turn runs (`model::settle_status`).
             let confirms = staged.turns.first().is_none_or(crate::model::starts);
             let receipts = std::mem::take(&mut staged.message_receipts);
-            staged.apply("turn/started", data);
+            staged.apply(applied, data);
             staged.message_receipts = receipts;
             let d = held.read();
             let (end, start) = around(&d.turns, at);
@@ -2651,7 +2658,7 @@ impl Store {
         }
         staged.agent.pending_count = staged.pending.len() as u64;
         staged.agent.updated_at = now();
-        let Some(dirty) = scoped(&Scope::Applied("turn/started"), &staged, data, restored) else { return Ok(None) };
+        let Some(dirty) = scoped(&Scope::Applied(applied), &staged, data, restored) else { return Ok(None) };
         unwritten.merge(dirty);
         let turn = staged.turns.pop().expect("apply keeps the Turn it names");
         let plan = {

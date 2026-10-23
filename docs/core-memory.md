@@ -245,7 +245,7 @@ exclude SQLite's C allocations.
 A Codex `turn/started` notification, and the reply to `turn/start` applied as
 it (`turn/accepted`), went through `commit_locked`, which copies the held
 record whole to change one Turn. Now the record's metadata and that Turn are
-copied (`Store::commit_started`) and the event is applied to the copy.
+copied (`Store::commit_turn`) and the event is applied to the copy.
 Message receipts are then bound, restored and accepted over the held Turns in
 order, with the copy in its Turn's place, as `apply` and the commit do. The
 change is written in one transaction; only after it commits do the copies

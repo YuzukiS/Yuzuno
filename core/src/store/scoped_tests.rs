@@ -522,7 +522,7 @@ fn a_recovered_completion_commits_what_update_committed() {
 }
 
 /// The Codex `turn/started` events this thread got to writing without
-/// copying the record's other Turns (`Store::commit_started`).
+/// copying the record's other Turns (`Store::commit_turn`).
 fn started_in_place() -> u64 {
     super::STARTED_IN_PLACE.with(|n| n.get())
 }
