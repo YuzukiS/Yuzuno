@@ -64,9 +64,12 @@ function mount(listing) {
     setList: (next) => { list = next; },
     answer: async (body) => { stops.at(-1)(reply(body)); await tick(); },
     fail: async (status, error) => { stops.at(-1)(reply({ error }, status)); await tick(); },
+    /** Renders it and, when shown, waits until its list has been read and drawn. */
     render: async (extra) => {
       window.renderTerminals(extra === null ? null : { agent, mode: "stop", open: true, onOpenChange: (open) => events.push(["open", open]), ...extra });
       await tick();
+      const text = () => window.document.querySelector('[role="dialog"]')?.textContent ?? "";
+      if (extra !== null) await until(() => text() && !/Listing background terminals…/.test(text()), "the list drawn");
     },
     button: (name) => [...window.document.querySelectorAll("button")].find((b) => b.textContent.trim() === name),
     buttons: () => [...window.document.querySelectorAll("button")].map((b) => b.textContent.trim()),
@@ -74,6 +77,13 @@ function mount(listing) {
   };
 }
 const tick = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
+async function until(read, message) {
+  for (let n = 0; n < 200; n++) {
+    if (read()) return;
+    await tick(10);
+  }
+  assert.fail(message);
+}
 const posts = (page) => page.calls.filter((c) => c.method === "POST");
 
 test("/ps lists once when it opens, on the Agent's machine and conversation, and has nothing that stops", async () => {
