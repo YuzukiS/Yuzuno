@@ -551,10 +551,15 @@ impl AgentDetail {
                         // A reconnect may start with a later section. Repeated
                         // part boundaries must not erase text already received.
                         while summary.len() <= index { summary.push(json!("")); }
+                        // Appended in place, as a streamed text delta is
+                        // below (T-140). A section that is not a string
+                        // becomes the delta, as it did.
                         if method == "item/reasoning/summaryTextDelta" {
-                            let mut text = summary[index].as_str().unwrap_or_default().to_owned();
-                            text.push_str(p["delta"].as_str().unwrap_or_default());
-                            summary[index] = text.into();
+                            let delta = p["delta"].as_str().unwrap_or_default();
+                            match &mut summary[index] {
+                                Value::String(text) => text.push_str(delta),
+                                other => *other = delta.into(),
+                            }
                         }
                     }
                 }
@@ -879,5 +884,124 @@ mod tests {
         }
         assert_eq!(appended.turns[0]["items"][0]["text"], "Hello, wörld 🌏");
         assert_eq!(appended.turns[0]["items"][1]["text"], "ld!");
+    }
+
+    /// A reasoning summary event as it was applied before T-140: a summary
+    /// delta copied its section's text so far, pushed the delta onto the
+    /// copy and set the copy back.
+    fn copied_summary(d: &mut AgentDetail, method: &str, p: &Value, at: DateTime<Utc>) {
+        let turn_id = p["turnId"].as_str().or_else(|| p["turn"]["id"].as_str());
+        if let (Some(tid), Some(item_id), Some(index)) = (
+            turn_id,
+            p["itemId"].as_str(),
+            p["summaryIndex"].as_u64().and_then(|n| usize::try_from(n).ok()),
+        ) {
+            let items = d.turn_at(tid, at)["items"].as_array_mut().unwrap();
+            let idx = items.iter().position(|i| i["id"] == item_id).unwrap_or_else(|| {
+                items.push(json!({"id":item_id,"type":"reasoning","summary":[],"content":[]}));
+                items.len() - 1
+            });
+            let item = &mut items[idx];
+            if item["type"] == "reasoning" {
+                if !item["summary"].is_array() { item["summary"] = json!([]); }
+                let summary = item["summary"].as_array_mut().unwrap();
+                while summary.len() <= index { summary.push(json!("")); }
+                if method == "item/reasoning/summaryTextDelta" {
+                    let mut text = summary[index].as_str().unwrap_or_default().to_owned();
+                    text.push_str(p["delta"].as_str().unwrap_or_default());
+                    summary[index] = text.into();
+                }
+            }
+        }
+    }
+
+    /// Appended in place, each reasoning summary event leaves the Turns as
+    /// the copying append did: the Item there or not, not a reasoning Item,
+    /// its summary missing, not an array, shorter than the index, or with a
+    /// section that is a string, null, a number, an array or an object; an
+    /// index of 0, 1 or 3, missing or not a number; a delta of text, empty,
+    /// multi-byte, missing or not a string; a Turn not there yet, or no Turn
+    /// ID.
+    #[test]
+    fn a_summary_delta_appended_in_place_leaves_what_the_copying_append_left() {
+        let at = Utc::now();
+        let sections = [None, Some(json!("")), Some(json!("héllo 🌏 ")), Some(Value::Null), Some(json!(5)),
+            Some(json!(["a"])), Some(json!({"x":1}))];
+        let mut items = vec![None, Some(json!({"id":"r","type":"agentMessage","text":"t"})),
+            Some(json!({"id":"r","type":"reasoning"})), Some(json!({"id":"r","type":"reasoning","summary":"s"}))];
+        for section in &sections {
+            let mut summary = vec![json!("first")];
+            if let Some(s) = section {
+                summary.push(s.clone());
+            }
+            items.push(Some(json!({"id":"r","type":"reasoning","summary":summary,"content":[]})));
+        }
+        let indexes = [Some(json!(0)), Some(json!(1)), Some(json!(3)), None, Some(json!("1")), Some(json!(-1))];
+        let deltas = [Some(json!("x")), Some(json!("")), Some(json!("日本語 ✓")), None, Some(json!(7))];
+        let mut checked = 0;
+        for method in ["item/reasoning/summaryTextDelta", "item/reasoning/summaryPartAdded"] {
+            for item in &items {
+                for index in &indexes {
+                    for delta in &deltas {
+                        for turn in [Some("t"), Some("new"), None] {
+                            let mut before = detail(json!([{"id":"t","status":"inProgress","items":[]}]), None, json!([]));
+                            if let Some(existing) = item {
+                                before.turns[0]["items"] = json!([existing]);
+                            }
+                            let mut p = json!({"itemId":"r"});
+                            if let Some(t) = turn {
+                                p["turnId"] = t.into();
+                            }
+                            if let Some(i) = index {
+                                p["summaryIndex"] = i.clone();
+                            }
+                            if let Some(d) = delta {
+                                p["delta"] = d.clone();
+                            }
+                            let mut copied = before.clone();
+                            copied_summary(&mut copied, method, &p, at);
+                            let mut appended = before;
+                            appended.apply_at(method, &p, at);
+                            assert_eq!(appended.turns, copied.turns,
+                                "{method} item={item:?} index={index:?} delta={delta:?} turn={turn:?}");
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 2 * 11 * 6 * 5 * 3);
+    }
+
+    /// Two reasoning Items of one Turn, their summary sections interleaved:
+    /// a later section first (as after a reconnect), repeated part
+    /// boundaries, and a section reset to a non-string between deltas. Each
+    /// step leaves what the copying append left, and each section is its
+    /// deltas in order.
+    #[test]
+    fn interleaved_summary_deltas_appended_in_place_leave_what_the_copying_append_left() {
+        let at = Utc::now();
+        let mut copied = detail(json!([{"id":"t","status":"inProgress","items":[]}]), None, json!([]));
+        let mut appended = copied.clone();
+        let text = "item/reasoning/summaryTextDelta";
+        let part = "item/reasoning/summaryPartAdded";
+        let steps = [
+            (text, "a", 1, "Later"), (part, "a", 0, ""), (text, "a", 0, "First"), (text, "b", 0, "Ot"),
+            (text, "a", 1, " sectión"), (part, "a", 1, ""), (text, "b", 0, "her 🌏"), (text, "a", 0, ", then"),
+            (part, "b", 1, ""), (text, "b", 1, "Two"), (text, "a", 1, "!"),
+        ];
+        for (n, (method, item, index, delta)) in steps.iter().enumerate() {
+            if n == 7 {
+                for d in [&mut copied, &mut appended] {
+                    d.turns[0]["items"][0]["summary"][0] = json!(42);
+                }
+            }
+            let p = json!({"turnId":"t","itemId":item,"summaryIndex":index,"delta":delta});
+            copied_summary(&mut copied, method, &p, at);
+            appended.apply_at(method, &p, at);
+            assert_eq!(appended.turns, copied.turns, "step {n}");
+        }
+        assert_eq!(appended.turns[0]["items"][0]["summary"], json!([", then", "Later sectión!"]));
+        assert_eq!(appended.turns[0]["items"][1]["summary"], json!(["Other 🌏", "Two"]));
     }
 }
