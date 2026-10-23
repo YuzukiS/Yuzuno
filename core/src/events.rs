@@ -188,7 +188,10 @@ impl Events {
     /// waits for a client. Returns its number (0 once closed).
     pub fn publish(&self, value: &Value) -> u64 {
         // Encoded outside the lock; a large Item must not hold up others.
-        let data = value.to_string();
+        let mut data = value.to_string();
+        // The ring and client queues keep it and count its length; encoding
+        // left up to as much again reserved beyond that.
+        data.shrink_to_fit();
         let mut hub = self.hub.lock().unwrap();
         if hub.closed {
             return 0;
@@ -838,6 +841,24 @@ mod tests {
         let hub = events.hub.lock().unwrap();
         assert_eq!(hub.ring.len(), 1);
         assert_eq!(hub.ring[0].n, 3);
+    }
+
+    #[test]
+    fn the_ring_and_a_queue_hold_each_message_at_the_length_they_count() {
+        let events = Events::new();
+        let mut live = events.subscribe(None);
+        // Encoding grows the string as it writes, doubling it when it is full.
+        for len in [1, 300, 5_000, 70_000] {
+            events.publish(&json!({"text":"z".repeat(len)}));
+        }
+        let Start::Resumed { replay, .. } = events.subscribe(Some(&events.id(0))).start else { panic!() };
+        let queued: Vec<_> = std::iter::from_fn(|| live.try_next()).collect();
+        for entries in [&replay, &queued] {
+            assert_eq!(ids(entries), vec![1, 2, 3, 4]);
+            for e in entries {
+                assert_eq!(e.data.capacity(), e.data.len(), "#{}", e.n);
+            }
+        }
     }
 
     #[test]
