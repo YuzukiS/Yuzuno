@@ -1968,6 +1968,47 @@ test("after a reload, an OpenCode message stored under its client ID shows no de
   } finally { after.close(); }
 });
 
+test("a new Codex message whose Turn begins by compacting says so until Codex adds it (T-120)", async () => {
+  // Codex 0.162.1 answers turn/start at once and adds the message only after
+  // a compaction that begins its Turn; the preview names what it waits on.
+  const extraTurns = [];
+  const reply = (url, init) => {
+    const receipt = { input: JSON.parse(init.body), status: "accepted", turnId: "new", error: null };
+    extraTurns.push({ id: "new", status: "inProgress", _yuzunoCompactionId: "compaction-1", items: [{ id: "compaction-1", type: "contextCompaction" }] });
+    return { ok: true, status: 200, json: async () => receipt, text: async () => JSON.stringify(receipt) };
+  };
+  const page = await mount({ extraTurns, messageResponse: reply });
+  const refresh = async () => { page.window.dispatchEvent(new page.window.Event("focus")); await pause(); await pause(); };
+  try {
+    const note = () => page.document.querySelector(".outgoing-message [role=status]")?.textContent;
+    const composer = page.document.querySelector('[data-composer-input][aria-label="Message Mori"]');
+    setValue(page.window, composer, "Summarize the plan.");
+    await pause();
+    page.document.querySelector('[aria-label="Send message"]').click();
+    await until(() => note() === "Received by Codex · compacting conversation", "the compacting note");
+    const input = JSON.parse(page.calls.find((r) => r.url.endsWith("/messages")).init.body);
+    assert.equal(input.expectedTurnId ?? null, null, "a new Turn, not a steer");
+    assert.equal(page.document.querySelector(".outgoing-message .outgoing-hide"), null, "not offered for hiding");
+    // Another Agent never shows it; back here it still waits on the compaction.
+    button(page, "Hana").click();
+    await until(() => page.document.querySelector('[data-composer-input][aria-label="Message Hana"]'), "Hana's conversation");
+    assert.equal(page.document.querySelector(".outgoing-message"), null);
+    button(page, "Mori").click();
+    await until(() => note() === "Received by Codex · compacting conversation", "the compacting note again");
+    // The compaction ends before the message is seen: syncing, as before.
+    delete extraTurns[0]._yuzunoCompactionId;
+    await refresh();
+    assert.equal(note(), "Received by Codex · syncing conversation");
+    // Codex adds the message: the preview gives way to it, sent once.
+    extraTurns[0].items.push({ id: "native-user", clientId: input.clientMessageId, type: "userMessage", content: [{ type: "text", text: input.text }] });
+    await refresh();
+    assert.equal(page.document.querySelector(".outgoing-message"), null);
+    assert.match(page.document.querySelector('[data-item-id="native-user"]').textContent, /Summarize the plan/);
+    assert.equal(page.calls.filter((r) => r.url.endsWith("/messages")).length, 1);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("the current request stays outside the scrolling log, includes human follow-ups and resets on turn or Agent changes", async () => {
   const input = (id, text, extra = {}) => ({ id, type: "userMessage", content: [{ type: "text", text }], ...extra });
   const turn = { id: "active", status: "inProgress", items: [input("request", "保留本轮最初的请求"), input("peer", "Private mailbox content", { _yuzunoSource: "peer" })] };
