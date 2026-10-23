@@ -166,3 +166,23 @@ async fn a_resolution_and_a_status_change_are_committed_as_metadata_unless_a_rec
     assert_eq!(after.message_receipts[1].status, "sending");
     rpc.close();
 }
+
+/// A native `turn/started` reaches `Store::record_applied` from `on_event`
+/// and is written without copying the record's other Turns (T-140).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_native_turn_started_is_written_without_copying_the_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+    ws.store.insert(&record("idle", false)).unwrap();
+    ws.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+    let rpc = connect(&ws, 1).await;
+    let before = crate::store::STARTED_IN_PLACE.with(|n| n.get());
+    ws.on_event("a", 1, json!({"method":"turn/started","params":{"threadId":"thread-a",
+        "turn":{"id":"t3","status":"inProgress","items":[{"id":"u3","type":"userMessage","content":[{"type":"text","text":"third"}]}]}}}));
+    assert_eq!(crate::store::STARTED_IN_PLACE.with(|n| n.get()), before + 1, "the turn/started copied the record");
+    let after = ws.store.detail("a").unwrap();
+    assert_eq!(after.turns.iter().map(|t| t["id"].as_str().unwrap()).collect::<Vec<_>>(), ["t1", "t2", "t3"]);
+    assert_eq!(after.agent.status, "working");
+    assert_eq!(kinds(&ws).pop().unwrap().0, "turn/started");
+    rpc.close();
+}

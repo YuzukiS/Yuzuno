@@ -325,6 +325,14 @@ fn scoped(scope: &Scope<'_>, after: &AgentDetail, data: &Value, restored: Vec<cr
     dirty.identified(after)
 }
 
+/// The client IDs of these Turns' user messages, which receipts are bound to
+/// and accepted by (`message_content::bind_receipts`,
+/// `AgentDetail::confirm_message_receipts`).
+fn user_clients(turns: &[Value]) -> impl Iterator<Item = &str> {
+    turns.iter().flat_map(|t| t["items"].as_array().into_iter().flatten())
+        .filter(|i| i["type"] == "userMessage").filter_map(|i| i["clientId"].as_str())
+}
+
 /// The record without its Turns: what `Store::commit_meta` changes.
 fn meta_of(detail: &AgentDetail) -> AgentDetail {
     let AgentDetail { agent, turns: _, history, pending, artifacts, context_usage, message_receipts, claude_runtime, codex_handoff } = detail;
@@ -2465,20 +2473,24 @@ impl Store {
 
     /// `record_applied` of a Codex `turn/started` (or the `turn/accepted`
     /// applied as one) to a record held in memory, without copying its other
-    /// Turns (T-140). `apply` of `turn/started` changes only the Turn with the
-    /// event's ID, appended when the record has none, and the Agent's status
-    /// and error (`AgentDetail::apply_at`). That Turn and the metadata are
-    /// copied and the event applied to the copies; the receipts are bound
-    /// over the held Turns with the copy in that Turn's place, the copy's
-    /// messages restored, and the write planned from those Turns, as `commit`
-    /// would. Once the write has committed, the copies replace the held
-    /// metadata and that Turn under the record's write lock, so a reader sees
-    /// the record before or after the event, and a write that fails leaves
-    /// it as it was. None, having changed nothing, where this cannot show it
-    /// writes what `commit` would: a record not held or kept as one body, an
-    /// event without a Turn ID, Turns not told apart by ID, or receipts after
-    /// which `restore` would change an Item of another Turn. The caller holds
-    /// the record lock.
+    /// Turns (T-140). `apply` of `turn/started` changes the Turn with the
+    /// event's ID, appended when the record has none, the Agent's status and
+    /// error, and, through `confirm_message_receipts`, the receipts it binds,
+    /// restores and accepts by the user messages of every Turn
+    /// (`AgentDetail::apply_at`). That Turn and the metadata are copied and
+    /// the event applied to the copies; the receipts are bound over the held
+    /// Turns with the copy in that Turn's place, the copy's messages
+    /// restored, and the write planned from those Turns, as `commit` would.
+    /// Once the write has committed, the copies replace the held metadata and
+    /// that Turn under the record's write lock, so a reader sees the record
+    /// before or after the event, and a write that fails leaves it as it
+    /// was. None, having changed nothing, where this cannot show it writes
+    /// what `commit` would: a record not held or kept as one body, an event
+    /// without a Turn ID, Turns not told apart by ID, a client ID of that
+    /// Turn's user messages also in another Turn's, a receipt still to be
+    /// accepted whose client ID is in another Turn, or receipts after which
+    /// `restore` would change an Item of another Turn. The caller holds the
+    /// record lock.
     fn commit_started(&self, id: &str, kind: &str, data: &Value) -> Result<Option<u64>> {
         let Some(held) = self.held(id) else { return Ok(None) };
         let Some(turn_id) = data["turnId"].as_str().or_else(|| data["turn"]["id"].as_str()) else { return Ok(None) };
@@ -2499,11 +2511,21 @@ impl Store {
             staged.turns.extend(at.map(|k| d.turns[k].clone()));
             (at, staged)
         };
-        staged.apply("turn/started", data);
         let (others, restored) = crate::message_content::collect_restored(|| {
+            // What `confirm_message_receipts` would accept from another Turn,
+            // or bind and accept by an ID that Turn shares with the copy: the
+            // copy alone cannot show it.
+            let open: Vec<String> = staged.message_receipts.iter()
+                .filter(|r| !matches!(r.status.as_str(), "accepted" | "rejected"))
+                .map(|r| r.input.client_message_id.clone()).collect();
+            staged.apply("turn/started", data);
             let d = held.read();
             let (end, start) = around(&d.turns, at);
             let (before, after) = (&d.turns[..end], &d.turns[start..]);
+            let elsewhere: HashSet<&str> = user_clients(before).chain(user_clients(after)).collect();
+            if user_clients(&staged.turns).any(|c| elsewhere.contains(c)) || open.iter().any(|c| elsewhere.contains(c.as_str())) {
+                return true;
+            }
             crate::message_content::bind_receipts(before, &mut staged.message_receipts);
             crate::message_content::bind_receipts(&staged.turns, &mut staged.message_receipts);
             crate::message_content::bind_receipts(after, &mut staged.message_receipts);
