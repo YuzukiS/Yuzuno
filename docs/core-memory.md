@@ -636,8 +636,23 @@ code, a held send made three whole copies before and none now; two of them
 were alive at once, the form's read and a commit's copy. That peak was not
 measured. A send on a record not held still loads it and compares, as before.
 These are synthetic allocator measurements in one process, not the daily
-Core's RSS. A Claude follow-up and a message delivery still copy the record
-once each.
+Core's RSS.
+
+A follow-up, a message sent while a Turn runs, read the record whole
+(`claude_steer_locked`, `detail`) and committed `claude/followUpQueued` with a
+copy to compare. Its change adds the message to the Turn it was sent to,
+unless some Turn already shows it: a delivery may have put it in this Turn or
+the next. The follow-up now reads the send view, and commits through
+`Store::record_send_unless`. That function makes the same check over the held
+Turns in place, under the record lock every write takes, and writes the
+change in place as a send's commits are. Otherwise the follow-up is compared
+as before. A follow-up through `send_message` on a held record commits once
+in place and reads no whole copy. It was not measured on its own; its commit
+copies what `turnRequested`'s does.
+
+A message delivery still copies the record once. It can move the message
+from the Turn it was shown in to the Turn Claude runs it in, and it settles
+the Agent's status by every Turn, so it changes more than one Turn.
 
 ### A Claude Turn's end
 
