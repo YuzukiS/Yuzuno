@@ -323,8 +323,10 @@ enum TurnChange<'a> {
     /// (`claude::claude_send_input_locked`) finds it, appended as `turn_mut`
     /// appends it when the record has none, and sets its status and user
     /// message and the Agent's status and error; `message/bound`
-    /// (`claude_answer_form_locked`) sets that user message's client ID. It
-    /// reads and changes no other Turn.
+    /// (`claude_answer_form_locked`) sets that user message's client ID;
+    /// `followUpQueued` (`claude::show_follow_up`) adds a follow-up to it,
+    /// found or appended as `turn_at` finds it, unless `record_send_unless`
+    /// found the follow-up already shown. It reads and changes no other Turn.
     Sent(&'a dyn Fn(&mut AgentDetail)),
 }
 
@@ -2593,6 +2595,29 @@ impl Store {
         Ok(self.commit_locked(id, kind, data, Scope::Compare, mutate, |_, _| ())?.0)
     }
 
+    /// `record_send` of a change made only where `shown`, reading every Turn
+    /// before it, finds nothing: a Claude follow-up is shown once, in
+    /// whichever Turn a delivery may already have put it (`followUpQueued`,
+    /// claude.rs). The commit is made either way, as `record_event` makes
+    /// one that changes no Turn. On a held record the Turns are read in
+    /// place under the record lock, which every write takes, so none comes
+    /// between that read and the change; otherwise `shown` reads the record
+    /// compared, as the change did when it read every Turn itself.
+    pub fn record_send_unless(&self, id: &str, kind: &str, data: &Value, shown: impl Fn(&[Value]) -> bool,
+        mutate: impl Fn(&mut AgentDetail)) -> Result<u64> {
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        if let Some(held) = self.held(id) {
+            let found = shown(&held.read().turns[..]);
+            let change = |d: &mut AgentDetail| if !found { mutate(d) };
+            if let Some((rev, _)) = self.commit_turn(id, kind, data, TurnChange::Sent(&change))? {
+                return Ok(rev);
+            }
+        }
+        let change = |d: &mut AgentDetail| if !shown(&d.turns[..]) { mutate(d) };
+        Ok(self.commit_locked(id, kind, data, Scope::Compare, change, |_, _| ())?.0)
+    }
+
     /// `update` without returning the record, which saves copying a large
     /// record held in memory. For native events, whose callers only announce
     /// the change. Returns the change's rev (see `Agent::rev`).
@@ -2821,8 +2846,8 @@ impl Store {
     /// `record_applied` of a Codex `turn/started` (or the `turn/accepted`
     /// applied as one) or `turn/completed`, `update_picking_result` of a
     /// Claude `result`, or `record_send` of a Claude send's `turnRequested`
-    /// or `message/bound`, to a record held in memory, without copying its other
-    /// Turns (T-140). `apply` of a Codex event changes the Turn with the
+    /// or `message/bound` (or `record_send_unless` of its `followUpQueued`),
+    /// to a record held in memory, without copying its other Turns (T-140). `apply` of a Codex event changes the Turn with the
     /// event's ID, appended when the record has none, and the Agent's
     /// metadata: its status and error, and for `turn/completed` the requests
     /// of that Turn it no longer waits for. It then binds, restores and
