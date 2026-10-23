@@ -194,12 +194,19 @@ test("nothing is stopped for a target that changed, a stop already running, or w
       [{ state: "unavailable", reason: "no_thread", detail: null, generation: null, threadId: null, terminals: [], complete: false }, /no Codex conversation yet/],
       [{ state: "failed", reason: "refused", detail: "thread not loaded", generation: 4, threadId: null, terminals: [], complete: false }, /Couldn't list them: Codex refused \(thread not loaded\)\./],
       [listed([terminal("1001", "call-a", "a")], { complete: false }), /more background terminals than this list shows/],
+      // One stop names at most 100 terminals, as Core accepts: above that, no bulk button that could only fail.
+      [listed(Array.from({ length: 101 }, (_, n) => terminal(String(2000 + n), `call-${n}`, `job ${n}`))),
+        /Stopping every listed terminal at once is offered for up to 100; stop these one at a time\./],
     ]) {
       await page.render(null);
       page.setList(list);
       await page.render();
       assert.match(page.text(), said);
       if (list.state !== "listed") assert.ok(!page.buttons().some((b) => b.startsWith("Stop")), "nothing to stop without a list");
+      if (list.terminals.length > 100) {
+        assert.ok(!page.buttons().some((b) => b.startsWith("Stop these")), "no stop of more than one request can name");
+        assert.ok(page.button("Stop process 2100"), "each one can still be stopped");
+      }
     }
     const before = page.calls.length;
     page.button("Refresh").click();

@@ -43,6 +43,9 @@ interface StopReport {
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
+/** The most terminals one stop names: Core checks each one just before stopping it, and refuses more. */
+export const STOP_AT_ONCE = 100;
+
 const unavailable: Record<string, string> = {
   not_connected: "This Agent isn't connected to Codex. Nothing is listed or stopped here, and nothing connects by itself.",
   closed: "This Agent is closed.",
@@ -221,11 +224,14 @@ export function CodexTerminalsDialog({ agent, mode, open, onOpenChange }: {
               </ol>
             )}
             {!listing.complete && <p className="changes-note">There are more background terminals than this list shows.</p>}
-            {mode === "stop" && terminals.length > 1 && (
+            {mode === "stop" && terminals.length > 1 && terminals.length <= STOP_AT_ONCE && (
               <button type="button" className="secondary-button" disabled={!canStop}
                 onClick={() => void stop(terminals, `the ${terminals.length} listed`)}>
                 Stop these {terminals.length} listed terminals
               </button>
+            )}
+            {mode === "stop" && terminals.length > STOP_AT_ONCE && (
+              <p className="changes-note">Stopping every listed terminal at once is offered for up to {STOP_AT_ONCE}; stop these one at a time.</p>
             )}
           </section>
         )}
