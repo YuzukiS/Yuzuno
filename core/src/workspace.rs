@@ -321,6 +321,20 @@ impl Workspace {
         self.stored(move |store| store.record_event(&id, &kind, &data, mutate).map(drop)).await
     }
 
+    /// `record_update` of a Claude send's `turnRequested` or `message/bound`
+    /// (`Store::record_send`): on a held record, written without copying the
+    /// other Turns. `mutate` may run twice (see there).
+    pub(crate) async fn record_send(
+        &self,
+        id: &str,
+        kind: &str,
+        data: Value,
+        mutate: impl Fn(&mut AgentDetail) + Send + 'static,
+    ) -> Result<()> {
+        let (id, kind) = (id.to_owned(), kind.to_owned());
+        self.stored(move |store| store.record_send(&id, &kind, &data, mutate).map(drop)).await
+    }
+
     /// `record_update` for a change to the metadata only (`Store::update_meta`):
     /// the send path's own changes, written without comparing a large record.
     pub(crate) async fn record_meta(

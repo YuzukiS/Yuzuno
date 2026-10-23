@@ -1027,7 +1027,9 @@ impl Workspace {
     }
 
     pub(crate) async fn claude_answer_form_locked(self: &Arc<Self>, id: &str, input: &crate::model::MessageInput) -> Result<Value> {
-        let detail = self.detail(id).await?;
+        // Only the Turns' statuses, IDs and sources are read: the send view,
+        // not a copy of every Item (T-140).
+        let detail = self.send_view(id).await?;
         if let Some(turn) = detail.turns.iter().rev().find(|t| t["status"] == "inProgress") {
             anyhow::ensure!(turn["_yuzunoSource"] != "native", "Wait for Claude to finish this recovered turn before submitting the form");
             self.claude_steer_locked(id, &input.text, turn["id"].as_str().context("Missing Claude turn ID")?, &input.client_message_id, &input.images).await
@@ -1039,10 +1041,12 @@ impl Workspace {
             let client_id = input.client_message_id.clone();
             // Bind the optimistic input only after the native bridge accepted
             // it; an unacknowledged start must never confirm its own receipt.
-            self.record_update(id, "message/bound", json!({"clientMessageId":client_id,"turnId":turn_id}), move |d| {
+            // Only that Turn changes: written without copying the others
+            // (T-140); the change may run twice (`Store::record_send`).
+            self.record_send(id, "message/bound", json!({"clientMessageId":client_id,"turnId":turn_id}), move |d| {
                 if let Some(turn) = d.turns.iter_mut().find(|t| t["id"] == turn_id) {
                     if let Some(item) = turn["items"].as_array_mut().and_then(|items| items.iter_mut().find(|i| i["type"] == "userMessage")) {
-                        item["clientId"] = client_id.into();
+                        item["clientId"] = client_id.as_str().into();
                     }
                 }
             }).await?;
@@ -1092,13 +1096,16 @@ impl Workspace {
         let turn_id = uuid::Uuid::new_v4().to_string();
         let (requested, content) = (turn_id.clone(), user_content(&text, shown));
         let blocks = input.and_then(|input| input.text_blocks.clone());
-        self.record_update(id, "claude/turnRequested", json!({"turnId":turn_id,"text":text,"images":images}), move |d| {
+        // The new Turn and the Agent's status, written without copying the
+        // other Turns of a held record (T-140); the change may run twice
+        // (`Store::record_send`).
+        self.record_send(id, "claude/turnRequested", json!({"turnId":turn_id,"text":text,"images":images}), move |d| {
             let turn = d.turn_mut(&requested);
             turn["status"] = "inProgress".into();
             // The prompt is sent with its turn's id as its uuid, recorded
             // first: Claude's saved history names it (claude_history).
             turn["items"] = json!([{"id":format!("{requested}:input"),"type":"userMessage","content":content,"nativeUuid":requested}]);
-            if let Some(blocks) = blocks { turn["items"][0][crate::message_content::BLOCKS] = serde_json::to_value(blocks).expect("text boundaries"); }
+            if let Some(blocks) = &blocks { turn["items"][0][crate::message_content::BLOCKS] = serde_json::to_value(blocks).expect("text boundaries"); }
             // The prompt is sent as the Turn starts, at the same moment.
             let started = turn["_yuzunoStartedAt"].as_i64();
             conversation_time::stamp_message(&mut turn["items"][0], started, "core");
@@ -5648,5 +5655,73 @@ mod tests {
         // The same message id with other images is not the same message.
         let changed = ws.send_message("a", input(json!({"clientMessageId":"m1","text":"What color?","images":[blue]}))).await.unwrap_err();
         assert!(changed.to_string().contains("不同的内容"), "{changed}");
+    }
+
+    /// T-140: an ordinary send on a held record, as `send_message` makes it
+    /// for a Claude Agent, copies none of the record. Its new Turn
+    /// (`turnRequested`) and the client ID bound to its user message
+    /// (`message/bound`) are written in place, and what the send reads is the
+    /// send view, not a whole copy. The Turn, its message, the receipt, the
+    /// journal and the record read back from its rows are as the send leaves
+    /// them.
+    #[tokio::test]
+    async fn an_ordinary_send_on_a_held_record_copies_none_of_it() {
+        const ID: &str = "claude-send-held";
+        let temp = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(temp.path().join("data"), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
+        let mut d = detail();
+        d.agent.id = ID.into();
+        d.turns[0]["status"] = "completed".into();
+        d.agent.status = "idle".into();
+        d.agent.claude_session_id = Some("s".into());
+        ws.store.insert(&d).unwrap();
+        ws.store.record_event(ID, "test/hold", &json!({}), |_| {}).unwrap();
+        let (tx, mut commands) = mpsc::channel::<Value>(8);
+        let (shutdown, _shutdown_rx) = watch::channel(false);
+        let (_stopped_tx, stopped) = watch::channel(None);
+        let bridge = Arc::new(Bridge {
+            tx,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            next: AtomicU64::new(1),
+            shutdown,
+            stopped,
+            diagnostics: Default::default(),
+            stderr_closed: watch::channel(true).1, pid: None,
+        });
+        ws.claudes.lock().unwrap().insert(ID.into(), Connection { remote_instance: None, generation: 7, bridge: bridge.clone(), events: None });
+        let answering = bridge.clone();
+        tokio::spawn(async move {
+            while let Some(command) = commands.recv().await {
+                let id: u64 = command["id"].as_str().unwrap().parse().unwrap();
+                let reply = if command["op"] == "send" { json!({"turnId":command["turnId"]}) } else { json!({}) };
+                answering.pending.lock().await.remove(&id).unwrap().send(Ok(reply)).unwrap();
+            }
+        });
+        let sent = || crate::store::SENT_IN_PLACE_FOR.lock().unwrap().iter().filter(|id| id.as_str() == ID).count();
+        let (written, read) = (sent(), crate::store::detail_reads_of(ID));
+        let input: crate::model::MessageInput = serde_json::from_value(json!({"clientMessageId":"m1","text":"next task"})).unwrap();
+        let receipt = ws.send_message(ID, input).await.unwrap();
+        assert_eq!(receipt.status, "accepted", "{:?}", receipt.error);
+        assert_eq!(sent() - written, 2, "turnRequested and message/bound were not both written in place");
+        assert_eq!(crate::store::detail_reads_of(ID), read, "the send read a whole copy of the record");
+        let turn = receipt.turn_id.clone().unwrap();
+        let held = ws.store.send_view(ID).unwrap();
+        assert_eq!(held.agent.status, "working");
+        let d = ws.store.detail(ID).unwrap();
+        let new = d.turns.iter().find(|t| t["id"] == turn.as_str()).unwrap();
+        assert_eq!((new["status"].clone(), new["items"][0]["clientId"].clone(), new["items"][0]["nativeUuid"].clone()),
+            (json!("inProgress"), json!("m1"), json!(turn)));
+        let r = d.message_receipts.iter().find(|r| r.input.client_message_id == "m1").unwrap();
+        assert_eq!((r.status.as_str(), r.turn_id.as_deref()), ("accepted", Some(turn.as_str())));
+        let kinds: Vec<String> = ws.store.db.read().unwrap()
+            .prepare("SELECT kind FROM journal WHERE agent_id=?1 AND kind IN ('claude/turnRequested','message/bound') ORDER BY seq").unwrap()
+            .query_map([ID], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(kinds, ["claude/turnRequested", "message/bound"]);
+        let held = serde_json::to_value(&d).unwrap();
+        assert!(ws.store.flush().failed.is_empty());
+        assert!(ws.store.release_for_test(ID));
+        let reread = serde_json::to_value(ws.store.detail(ID).unwrap()).unwrap();
+        let same = |v: &Value| { let mut v = v.clone(); v["agent"]["rev"] = Value::Null; v };
+        assert_eq!(same(&held), same(&reread), "the record read back from its rows differs from the one held");
     }
 }

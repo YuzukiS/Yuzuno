@@ -316,6 +316,13 @@ enum TurnChange<'a> {
     /// `refresh_status`), so it is applied to the copy only where none other
     /// is.
     Result(&'a dyn Fn(&mut AgentDetail)),
+    /// A Claude send's change of the Turn it names: `turnRequested`
+    /// (`claude::claude_send_input_locked`) finds it, appended as `turn_mut`
+    /// appends it when the record has none, and sets its status and user
+    /// message and the Agent's status and error; `message/bound`
+    /// (`claude_answer_form_locked`) sets that user message's client ID. It
+    /// reads and changes no other Turn.
+    Sent(&'a dyn Fn(&mut AgentDetail)),
 }
 
 /// What a change in `scope` wrote, named without comparing the whole record:
@@ -605,7 +612,17 @@ thread_local! {
     /// How many Claude `result`s `Store::commit_turn` wrote on this thread
     /// without copying the other Turns.
     pub(super) static RESULT_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many Claude sends' commits (`turnRequested`, `message/bound`)
+    /// `Store::commit_turn` wrote on this thread without copying the other
+    /// Turns.
+    pub(super) static SENT_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
+
+/// The Agents, one entry per commit, whose sends' commits `Store::commit_turn`
+/// wrote without copying the other Turns, on any thread: a Workspace commits
+/// on its blocking pool, so a test of a send reads this, by its own Agent ID.
+#[cfg(test)]
+pub(crate) static SENT_IN_PLACE_FOR: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]
 thread_local! {
@@ -2549,6 +2566,23 @@ impl Store {
         Ok(self.commit_locked(id, kind, data, Scope::Compare, project, |d, _| pick(d))?.1)
     }
 
+    /// `record_event` of a Claude send's `turnRequested` or `message/bound`
+    /// (claude.rs), which changes the Turn it names (`data.turnId`), appended
+    /// when the record has none, and the Agent's status and error: written in
+    /// place on a held record, without copying the other Turns
+    /// (`commit_turn`, `TurnChange::Sent`, T-140), and otherwise as
+    /// `record_event` writes it. `mutate` runs on the copy, and once more on
+    /// the record compared where writing in place turns out not to show the
+    /// same write. Returns the change's rev.
+    pub fn record_send(&self, id: &str, kind: &str, data: &Value, mutate: impl Fn(&mut AgentDetail)) -> Result<u64> {
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        if let Some((rev, _)) = self.commit_turn(id, kind, data, TurnChange::Sent(&mutate))? {
+            return Ok(rev);
+        }
+        Ok(self.commit_locked(id, kind, data, Scope::Compare, mutate, |_, _| ())?.0)
+    }
+
     /// `update` without returning the record, which saves copying a large
     /// record held in memory. For native events, whose callers only announce
     /// the change. Returns the change's rev (see `Agent::rev`).
@@ -2749,8 +2783,9 @@ impl Store {
     }
 
     /// `record_applied` of a Codex `turn/started` (or the `turn/accepted`
-    /// applied as one) or `turn/completed`, or `update_picking_result` of a
-    /// Claude `result`, to a record held in memory, without copying its other
+    /// applied as one) or `turn/completed`, `update_picking_result` of a
+    /// Claude `result`, or `record_send` of a Claude send's `turnRequested`
+    /// or `message/bound`, to a record held in memory, without copying its other
     /// Turns (T-140). `apply` of a Codex event changes the Turn with the
     /// event's ID, appended when the record has none, and the Agent's
     /// metadata: its status and error, and for `turn/completed` the requests
@@ -2759,7 +2794,10 @@ impl Store {
     /// (`confirm_message_receipts`), unless a `turn/started` finds that Turn
     /// already ended. A Claude `result` changes the Turn it ends and the
     /// metadata, and reads or changes no other Turn while none other is in
-    /// progress (see `TurnChange::Result`); it leaves the receipts alone. And
+    /// progress (see `TurnChange::Result`); it leaves the receipts alone. A
+    /// send's change touches the Turn it names, appended when the record has
+    /// none, and the metadata, and reads no other Turn (see
+    /// `TurnChange::Sent`); it leaves the receipts alone too. And
     /// `commit` binds them once more. That Turn and the metadata are copied
     /// and the event's own change applied to the copies; the receipt steps
     /// run as they would, in order, over the held Turns with the copy in that
@@ -2774,8 +2812,9 @@ impl Store {
     /// changed nothing, where this cannot show it writes what `commit` would:
     /// a record not held or kept as one body, an event without a Turn ID,
     /// Turns not told apart by ID, a `result` for a Turn the record lacks,
-    /// one of a sub-agent or one while another Turn is in progress, or
-    /// receipts after which `restore` would change an Item of another Turn.
+    /// one of a sub-agent or one while another Turn is in progress, a send
+    /// whose change leaves other than the one Turn it names, or receipts
+    /// after which `restore` would change an Item of another Turn.
     /// The caller holds the record lock.
     fn commit_turn(&self, id: &str, kind: &str, data: &Value, change: TurnChange<'_>)
         -> Result<Option<(u64, Arc<RwLock<AgentDetail>>)>> {
@@ -2818,10 +2857,12 @@ impl Store {
             // of which asks whether a Turn runs (`model::settle_status`). A
             // Claude `result` has no such step; the status it settles asks
             // only whether a Turn runs, which, of the Turns, only the copy
-            // may (`claude::refresh_status`).
+            // may (`claude::refresh_status`). A send sets the status it
+            // leaves itself, if any, and confirms nothing, as `record_event`
+            // of it does not.
             let confirms = match change {
                 TurnChange::Applied(applied) => applied != "turn/started" || staged.turns.first().is_none_or(crate::model::starts),
-                TurnChange::Result(_) => false,
+                TurnChange::Result(_) | TurnChange::Sent(_) => false,
             };
             match change {
                 TurnChange::Applied(applied) => {
@@ -2829,7 +2870,7 @@ impl Store {
                     staged.apply(applied, data);
                     staged.message_receipts = receipts;
                 }
-                TurnChange::Result(project) => project(&mut staged),
+                TurnChange::Result(project) | TurnChange::Sent(project) => project(&mut staged),
             }
             let d = held.read();
             let (end, start) = around(&d.turns, at);
@@ -2864,19 +2905,29 @@ impl Store {
         if !copied {
             return Ok(None);
         }
+        // A send's change leaves the one Turn it names, or is compared: one
+        // that finds no Turn to change appends none.
+        if matches!(change, TurnChange::Sent(_)) && !(staged.turns.len() == 1 && staged.turns[0]["id"] == turn_id) {
+            return Ok(None);
+        }
         staged.agent.pending_count = staged.pending.len() as u64;
         staged.agent.updated_at = now();
-        // What a `result` changes is found as comparing finds it, in its
-        // Turn alone (the other Turns stay as they are) and the metadata
-        // (always written): only the Turn's Items that changed are planned.
-        // An unchanged one would not change its row, but naming the whole
-        // Turn would serialize every Item of it.
+        // What a `result` or a send changes is found as comparing finds it,
+        // in its Turn alone (the other Turns stay as they are) and the
+        // metadata (always written): only the Turn's Items that changed are
+        // planned. An unchanged one would not change its row, but naming the
+        // whole Turn would serialize every Item of it. A Turn the send
+        // appends is new, all of it, as `Dirty::between` names an added one.
         let dirty = match change {
             TurnChange::Applied(applied) => scoped(&Scope::Applied(applied), &staged, data, restored),
-            TurnChange::Result(_) => {
+            TurnChange::Result(_) | TurnChange::Sent(_) => {
                 let mut dirty = Dirty::default();
-                if let (Some(k), Some(copy)) = (at, staged.turns.first()) {
-                    dirty.turn_between(turn_id, &held.read().turns[k], copy);
+                match (at, staged.turns.first()) {
+                    (Some(k), Some(copy)) => dirty.turn_between(turn_id, &held.read().turns[k], copy),
+                    (None, Some(_)) => {
+                        dirty.whole_turn(turn_id);
+                    }
+                    _ => {}
                 }
                 for (turn, item, renamed) in restored {
                     if renamed { dirty.whole_turn(&turn) } else { dirty.item(&turn, &item) };
@@ -2900,6 +2951,10 @@ impl Store {
             TurnChange::Applied("turn/started") => STARTED_IN_PLACE.with(|n| n.set(n.get() + 1)),
             TurnChange::Applied(_) => COMPLETED_IN_PLACE.with(|n| n.set(n.get() + 1)),
             TurnChange::Result(_) => RESULT_IN_PLACE.with(|n| n.set(n.get() + 1)),
+            TurnChange::Sent(_) => {
+                SENT_IN_PLACE.with(|n| n.set(n.get() + 1));
+                SENT_IN_PLACE_FOR.lock().unwrap().push(id.to_owned());
+            }
         }
         let rewrite;
         let journaled = {
