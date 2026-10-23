@@ -27,6 +27,9 @@ root that Core recorded for the attempt and names in each of its requests
   deadline.json        the deadline the supervisor counts the timeout to, on
                        this boot's monotonic clock, with the command's
                        identity: applied by status if the supervisor is gone
+  stopping.json        when this helper first sent TERM to a lost attempt's
+                       group, on the same clock, with the same identity: KILL
+                       follows 5 s later, at whichever call reaches it
   log-0.bin, log-1.bin the output ring (2 MiB, as for local jobs)
   cancel.json          cancellation intent
   paused.json, resumed.json
@@ -206,20 +209,23 @@ def send(pid, signum, group):
             os.close(handle)
 
 
-def stop(group, limit=None):
-    """TERM the group's checked members, KILL whatever is left from 5 s on,
-    and go on until none is left (or for `limit` seconds). True once empty."""
+def stop(group, limit=None, since=None):
+    """TERM the group's checked members, KILL whatever is left from 5 s after
+    the first TERM (`since`, this boot's monotonic time an earlier call sent
+    it, or now), and go on until none is left (or for `limit` seconds of this
+    call). True once empty."""
     begin = time.monotonic()
+    first = begin if since is None else since
     for pid in members(group):
         send(pid, signal.SIGTERM, group)
     while True:
         left = members(group)
         if not left:
             return True
-        waited = time.monotonic() - begin
-        if limit is not None and waited >= limit:
+        now = time.monotonic()
+        if limit is not None and now - begin >= limit:
             return False
-        if waited >= 5:
+        if now - first >= 5:
             for pid in left:
                 send(pid, signal.SIGKILL, group)
         time.sleep(0.1)
@@ -1316,17 +1322,58 @@ def overdue(root, started):
             and time.monotonic() > at and alive(started) and started["pid"] in members(started))
 
 
+STOPPING = ("bootId", "pid", "pgid", "sid", "starttime")
+
+
+def stop_lost(root, intent, started):
+    """Stop what is left of a lost attempt's group from this helper, for at
+    most 4 s of this call: TERM, and KILL once 5 s have passed since the first
+    TERM any call sent it. That time is kept in stopping.json, for this
+    attempt, boot and recorded process, under the attempt's lock, and is never
+    moved later. A record that cannot be read, is another's or is not on this
+    clock counts as none: it never brings a KILL forward, and this call's own
+    first TERM replaces it. (whether nothing is left, why the time could not be
+    recorded or None.)"""
+    try:
+        record = read_json(root / "stopping.json")
+    except Unclear:
+        record = None
+    at = record.get("monotonic") if isinstance(record, dict) else None
+    if (isinstance(at, (int, float)) and not isinstance(at, bool) and record.get("attempt") == intent["attempt"]
+            and all(record.get(key) == started.get(key) for key in STOPPING)
+            and record["bootId"] == boot_id() and at <= time.monotonic()):
+        return stop(started, limit=4, since=at), None
+    first = time.monotonic()
+    left = members(started)
+    for pid in left:
+        send(pid, signal.SIGTERM, started)
+    since, problem = None, None
+    if left:
+        try:
+            atomic(root / "stopping.json", dict({key: started[key] for key in STOPPING}, attempt=intent["attempt"],
+                                                monotonic=first))
+            since = first
+        except OSError as error:
+            problem = "the time of its first TERM could not be recorded (%s), so no later call KILLs it" % (
+                error.strerror or error)
+    return stop(started, limit=4, since=since), problem
+
+
 def time_out(root, intent, reply):
     """The timeout of a lost attempt, which its supervisor is no longer there
     to apply, stopped as cancel stops one: a paused scope thawed first, and
     the outcome recorded only once nothing of the group is left. Until then
-    it stays lost, and the next status tries again. Bounded within Core's
-    30 s for one call, as cancel is."""
+    it stays lost, and the next status goes on. Bounded within Core's 30 s for
+    one call, as cancel is."""
     thawed = thaw_for_stop(root, intent)
-    if stop(reply["started"], limit=4):
+    stopped, problem = stop_lost(root, intent, reply["started"])
+    if stopped:
         outcome(root, intent, "failed", "timeout after %d s; its supervisor was gone, so its process group was stopped here"
                 % read_json(root / "spec.json")["timeoutSeconds"], extra={"thawedToStop": thawed} if thawed else None)
-    return state(root, intent)
+    reply = state(root, intent)
+    if problem and reply["status"] != "terminal":
+        reply["stopRecord"] = problem
+    return reply
 
 
 def status(request, host):
@@ -1437,10 +1484,13 @@ def cancel(request, host):
             # Its supervisor is gone: a paused scope is thawed first, so its
             # processes act on TERM (frozen, they would stop only at KILL).
             thaw_for_stop(root, intent)
-            if stop(reply["started"], limit=4):
+            stopped, problem = stop_lost(root, intent, reply["started"])
+            if stopped:
                 outcome(root, intent, "cancelled",
                         "Cancelled; its supervisor was gone, so what was left of its process group was stopped here")
                 return state(root, intent)
+            if problem:
+                reply["stopRecord"] = problem
         return reply
 
 

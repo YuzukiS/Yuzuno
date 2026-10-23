@@ -659,6 +659,31 @@ async fn a_lost_attempt_still_running_at_its_timeout_is_stopped_and_released_at_
     assert_eq!(job(&lab, &first)["notifications"], ended["notifications"]);
 }
 
+/// A cancel of a lost attempt whose command ignores TERM is not settled by
+/// the call that sends it TERM (4 s); Core asks again at its next check, and
+/// that call KILLs it, 5 s after the first TERM: cancelled, slot released.
+#[tokio::test]
+async fn a_cancel_of_a_lost_attempt_that_ignores_term_is_settled_at_a_later_check() {
+    let lab = lab();
+    let first = submit(&lab, "stubborn", "trap '' TERM; exec sleep 60");
+    until(&lab, &lab.ssh, &first, |j| j["status"] == "running").await;
+    let supervisor = read(folder(&lab, &first).join("supervisor.json"))["pid"].as_i64().unwrap();
+    let leader = read(folder(&lab, &first).join("started.json"))["pid"].as_i64().unwrap();
+    std::process::Command::new("kill").args(["-KILL", &supervisor.to_string()]).status().unwrap();
+    assert!(gone(supervisor).await);
+    cancel(&lab, &first);
+    tick(&lab, &lab.ssh).await;
+    let held = job(&lab, &first);
+    assert_eq!((held["status"].as_str(), held["reserved"].as_bool()), (Some("unknown"), Some(true)), "{held}");
+    assert!(alive(leader));
+    tick(&lab, &lab.ssh).await;
+    let cancelled = job(&lab, &first);
+    assert_eq!((cancelled["status"].as_str(), cancelled["reserved"].as_bool()), (Some("cancelled"), Some(false)), "{cancelled}");
+    assert!(cancelled["reason"].as_str().unwrap().contains("its supervisor was gone"), "{cancelled}");
+    assert!(gone(leader).await);
+    assert!(cancelled["notifications"]["cancelled"].is_string(), "{cancelled}");
+}
+
 #[tokio::test]
 async fn a_restarted_machine_interrupts_the_attempt_and_an_unclear_record_keeps_the_slot() {
     let lab = lab();

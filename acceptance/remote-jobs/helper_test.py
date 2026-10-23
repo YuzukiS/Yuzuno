@@ -355,14 +355,109 @@ class HelperTests(unittest.TestCase):
             # tearDown finds the command by its real record.
             (folder / "started.json").write_text(json.dumps(started))
 
-    def test_a_lost_command_that_ignores_term_is_not_reported_stopped(self):
+    def stopping(self, job):
+        return json.loads((self.folder(job) / "stopping.json").read_text())
+
+    def own_stopping(self, job, started, at):
+        return dict({key: started[key] for key in ("bootId", "pid", "pgid", "sid", "starttime")},
+                    attempt=job["attempt"], monotonic=at)
+
+    def test_a_lost_command_that_ignores_term_is_killed_by_a_later_status_after_its_timeout(self):
         job = self.attempt("trap '' TERM; exec sleep 60", timeout=2)
         started, since = self.lose(job)
         self.past(since, 2)
+        # One call waits 4 s after its TERM: nothing is recorded as stopped.
+        before = time.monotonic()
         state = self.call(self.bound(job, "status"))
-        self.assertEqual((state["status"], state["leaderAlive"]), ("lost", True), state)
+        self.assertEqual((state.get("status"), state.get("leaderAlive")), ("lost", True), state)
         self.assertFalse((self.folder(job) / "result.json").exists())
         os.kill(started["pid"], 0)
+        first = self.stopping(job)
+        self.assertEqual(first, self.own_stopping(job, started, first["monotonic"]))
+        self.assertTrue(before <= first["monotonic"] <= time.monotonic(), first)
+        # The next call goes on from that first TERM: KILL 5 s after it.
+        state = self.call(self.bound(job, "status"))
+        self.assertEqual(state.get("status"), "terminal", state)
+        self.assertEqual(state["result"]["reason"],
+                         "timeout after 2 s; its supervisor was gone, so its process group was stopped here")
+        self.assertTrue(group_gone(started["pid"]))
+        self.assertEqual(self.stopping(job), first, "the first TERM's time is never moved")
+
+    def test_a_cancel_of_a_lost_attempt_kills_a_child_that_ignores_term_at_a_later_call(self):
+        job = self.attempt("trap '' TERM; sleep 60 & echo $! > child.pid; while [ ! -e go ]; do sleep 0.05; done")
+        started, _ = self.lose(job)
+        child = self.wait_for(self.work / "child.pid")
+        (self.work / "go").write_text("")
+        self.assertTrue(gone(started["pid"]))
+        reply = self.call(self.bound(job, "cancel"))
+        self.assertEqual((reply.get("status"), reply.get("processes")), ("lost", 1), reply)
+        os.kill(child, 0)
+        first = self.stopping(job)
+        reply = self.call(self.bound(job, "cancel"))
+        self.assertEqual((reply.get("status"), reply.get("result", {}).get("status")), ("terminal", "cancelled"), reply)
+        self.assertTrue(gone(child))
+        self.assertEqual(self.stopping(job), first, "the first TERM's time is never moved")
+
+    def test_a_stopping_record_that_is_not_this_attempts_never_brings_a_kill_forward(self):
+        long_ago = time.monotonic() - 100
+        for case, change in (("another attempt", {"attempt": "other"}), ("another boot", {"bootId": "other"}),
+                             ("another process", {"pid": 1}), ("another start", {"starttime": 1}),
+                             ("another group", {"pgid": 1, "sid": 1}), ("a later clock", {"monotonic": long_ago + 10 ** 6}),
+                             ("no clock reading", {"monotonic": "soon"}), ("unreadable", None), ("its own", {})):
+            with self.subTest(case=case):
+                job = self.attempt("trap '' TERM; exec sleep 60", timeout=600)
+                started, _ = self.lose(job)
+                record = self.own_stopping(job, started, long_ago)
+                (self.folder(job) / "stopping.json").write_text("{" if change is None else json.dumps(dict(record, **change)))
+                before = time.monotonic()
+                reply = self.call(self.bound(job, "cancel"))
+                if case == "its own":
+                    # This attempt's own record, 100 s old: KILL at once.
+                    self.assertEqual(reply.get("result", {}).get("status"), "cancelled", reply)
+                    self.assertTrue(gone(started["pid"]))
+                    continue
+                self.assertEqual(reply.get("status"), "lost", reply)
+                os.kill(started["pid"], 0)
+                # Replaced by this call's own first TERM.
+                now = self.stopping(job)
+                self.assertEqual(now, self.own_stopping(job, started, now["monotonic"]))
+                self.assertTrue(before <= now["monotonic"] <= time.monotonic(), now)
+
+    def test_a_first_term_whose_time_cannot_be_recorded_is_reported_and_brings_no_outcome(self):
+        job = self.attempt("trap '' TERM; exec sleep 60", timeout=2)
+        started, since = self.lose(job)
+        self.past(since, 2)
+        folder = self.folder(job)
+        mode = folder.stat().st_mode & 0o777
+        folder.chmod(0o500)
+        try:
+            state = self.call(self.bound(job, "status"))
+        finally:
+            folder.chmod(mode)
+        self.assertEqual((state.get("status"), state.get("leaderAlive")), ("lost", True), state)
+        self.assertIn("the time of its first TERM could not be recorded", state.get("stopRecord", ""), state)
+        self.assertFalse((folder / "stopping.json").exists())
+        self.assertFalse((folder / "result.json").exists())
+        os.kill(started["pid"], 0)
+
+    def test_a_thaw_that_failed_is_recorded_with_the_timeout_it_preceded(self):
+        # In this process, with the thaw answered by a stand-in for systemd's
+        # refusal: no real scope is made or frozen.
+        job = self.attempt("exec sleep 60", timeout=600)
+        started, _ = self.lose(job)
+        folder = self.folder(job)
+        intent = json.loads((folder / "intent.json").read_text())
+        refused = {"wasFrozen": True, "thawReturnCode": 1, "thawError": "Failed to thaw unit",
+                   "freezer": {"populated": True, "frozen": True}}
+        saved = remote_job.thaw_for_stop
+        remote_job.thaw_for_stop = lambda root, of: refused
+        try:
+            reply = remote_job.time_out(folder, intent, remote_job.state(folder, intent))
+        finally:
+            remote_job.thaw_for_stop = saved
+        self.assertEqual(reply.get("status"), "terminal", reply)
+        self.assertEqual((reply["result"]["status"], reply["result"]["thawedToStop"]), ("failed", refused))
+        self.assertTrue(group_gone(started["pid"]))
 
     def test_after_a_restart_a_lost_attempt_is_interrupted_not_timed_out(self):
         job = self.attempt("exec sleep 60", timeout=2)

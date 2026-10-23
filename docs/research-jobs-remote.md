@@ -40,13 +40,13 @@ Every later request names the Workspace, the machine entry, the digest and the p
 
 Cancel and timeouts stop the attempt's process group: TERM, then KILL from 5 seconds on, repeated until no process of the group is left. Each process is checked before every signal: same boot, same process group and session, started no earlier than the command. Where the machine has pidfds, the process is opened before the check, so its PID cannot change hands in between. Nothing is matched by name.
 
-When the command exits on its own, the supervisor stops whatever is left of its group the same way, as systemd does for a local job. The outcome is written only once nothing of the group is left. A cancel after the supervisor died stops the group from the helper, and records `cancelled` only once the group is empty.
+When the command exits on its own, the supervisor stops whatever is left of its group the same way, as systemd does for a local job. The outcome is written only once nothing of the group is left. A cancel after the supervisor died stops the group from the helper, and records `cancelled` only once the group is empty. Each such call waits at most 4 s. KILL follows from 5 s after the first TERM any of them sent, which the helper keeps with the attempt (`stopping.json`: on that boot's monotonic clock, with the command's identity, never moved later), so a process that ignores TERM is stopped by a later call. A record that cannot be read or is not this attempt's never brings a KILL forward; one that cannot be written is reported with the attempt's state, and the next call starts again from TERM.
 
 **A timeout after the supervisor died.** The supervisor records the deadline it counts to (`deadline.json`, on that boot's monotonic clock, with the command's identity). If the supervisor is gone, the first status check that reaches the machine after that deadline, while the command itself still runs as its group's leader, stops the group as such a cancel does (a paused scope is thawed first). Once nothing of the group is left it records `failed`, `timeout after N s; its supervisor was gone, so its process group was stopped here`, which releases the slot. Nothing is applied:
 - before the deadline, or while the machine cannot be reached: the timeout is applied by the next check that reaches it, not on time;
 - in another boot (the attempt is `interrupted`), or when the deadline's record or the command's identity cannot be confirmed (an attempt started before this record keeps its slot `unknown` until a cancel);
 - once the command has exited: its exit status was not recorded, so a child it left behind stays `unknown` until a cancel;
-- when the stop leaves something of the group running within its call: nothing is recorded, and the next check sends TERM again. As for that cancel, each call waits 4 s after TERM and sends no KILL, so a process that ignores TERM is not stopped this way.
+- while something of the group is still running at the end of the call: nothing is recorded, and the next check goes on, with KILL from 5 s after the first TERM, as for that cancel.
 
 **A process group is not a cgroup.** A process that starts its own session or process group leaves the attempt's group. It is not seen, not stopped and not counted by cancel or the outcome. Where the attempt's limits are held in its own systemd scope (see Limits below), every process it starts stays in that scope and under its limits, even one that leaves the group; cancel still stops only the group.
 
@@ -247,7 +247,8 @@ The user can pause a remote job as a local one (T-107), only when its attempt ru
   - a command that exits leaving a child: the outcome is written only after the child is stopped;
   - a supervisor that dies: lost, not finished, until cancel stops the group;
   - a supervisor that dies, then the command exits leaving a child: still no outcome, until cancel stops the child;
-  - a supervisor that dies, then its command runs past its timeout: the next status stops the group and records the timeout, and then the same outcome stays. Before the deadline, after the command exited, after a restart, with a deadline record or a leader that is not this start's, or with a command that ignores TERM: no outcome;
+  - a supervisor that dies, then its command runs past its timeout: the next status stops the group and records the timeout, and then the same outcome stays. Before the deadline, after the command exited, after a restart, or with a deadline record or a leader that is not this start's: no outcome. A command that ignores TERM: no outcome from the call that sent TERM, KILLed and timed out by a later one, the first TERM's time unchanged; a first TERM whose time cannot be recorded: reported, no outcome;
+  - a cancel after the supervisor died, with a child that ignores TERM: KILLed by a later call; a first-TERM record that is another attempt's, boot's or process's, on another clock or unreadable never brings the KILL forward and is replaced;
   - the same start key with another command, Workspace or a forged digest;
   - another machine behind the name, a fence that makes a start that never arrived final, a restarted machine, an unreadable record, and refusals that start nothing.
 - **Core's executor through its own reconciliation** (`core/src/jobs/remote_tests.rs`), over stand-ins for OpenSSH:
@@ -263,6 +264,7 @@ The user can pause a remote job as a local one (T-107), only when its attempt ru
   - a name that now reaches another machine: `unknown` and held, a cancel cannot release it, and it goes through once the name reaches the machine again;
   - a supervisor that dies, then the command exits leaving a sleep child: `unknown` and held until cancel stops the child;
   - a supervisor that dies, then the timeout passes: `unknown` and held until the next check, which stops the command and records the timeout; the slot is released, and each is told once;
+  - a supervisor that dies, then a cancel of a command that ignores TERM: `unknown` and held after the first check, cancelled and released by the next;
   - a restarted machine (`interrupted`) and an unreadable record (held, even after a cancel);
   - cancel of the process tree, and a cancel before anything was sent;
   - failures, refusals, per-machine slots, and GPU, pause and stages refused;
