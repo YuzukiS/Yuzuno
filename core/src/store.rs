@@ -2757,7 +2757,9 @@ impl Store {
         staged.agent.updated_at = now();
         // What a `result` changes is found as comparing finds it, in its
         // Turn alone (the other Turns stay as they are) and the metadata
-        // (always written): the Turn's rows that changed, not all of them.
+        // (always written): only the Turn's Items that changed are planned.
+        // An unchanged one would not change its row, but naming the whole
+        // Turn would serialize every Item of it.
         let dirty = match change {
             TurnChange::Applied(applied) => scoped(&Scope::Applied(applied), &staged, data, restored),
             TurnChange::Result(_) => {

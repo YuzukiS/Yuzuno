@@ -1367,11 +1367,15 @@ fn a_claude_result_is_written_without_copying_the_other_turns() {
     assert_eq!(scoped.agent("a").unwrap().status, "uncertain");
 }
 
-/// A Claude `result` written in place writes the rows comparing writes: the
-/// same inserts, updates and deletes of Turn, Item and payload rows, counted
-/// by triggers, not every row of its Turn (T-140).
+/// A Claude `result` written in place serializes and writes the Items
+/// comparing does (T-140): the same Items planned (`record_rows::plan_items`)
+/// and the same inserts, updates and deletes of Turn, Item and payload rows,
+/// counted by triggers. An Item planned but unchanged would not change its
+/// row (`record_rows::apply` writes a row only where it differs), so only the
+/// planned count tells a write of the Turn's every Item from one of those
+/// that changed.
 #[test]
-fn a_claude_result_in_place_writes_the_rows_comparing_writes() {
+fn a_claude_result_in_place_plans_and_writes_what_comparing_does() {
     let ((_ga, generic), (_sa, scoped)) = pair();
     for store in [&generic, &scoped] {
         let mut sql = String::from("CREATE TABLE t140_writes(tbl TEXT, op TEXT);");
@@ -1388,6 +1392,7 @@ fn a_claude_result_in_place_writes_the_rows_comparing_writes() {
         rows.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap()
     };
     let clear = |store: &Store| { store.db.write().unwrap().execute("DELETE FROM t140_writes", []).unwrap(); };
+    let planned = || crate::record_rows::PLANNED_ITEMS.with(|n| n.get());
     for (step, streamed) in [("a Turn with nothing streamed", 0), ("a Turn with messages streamed, not yet written", 3)] {
         let turn = format!("w{streamed}");
         start_both_claude(&generic, &scoped, &turn);
@@ -1398,7 +1403,16 @@ fn a_claude_result_in_place_writes_the_rows_comparing_writes() {
             }
             clear(store);
         }
-        assert!(result_both(&generic, &scoped, &ended(&turn, json!({}))), "{step}: the scoped store copied the record");
+        let message = ended(&turn, json!({}));
+        let project = |d: &mut AgentDetail| crate::claude::project_event(d, Some(turn.as_str()), &message["event"]);
+        let start = planned();
+        generic.update_picking("a", "claude/result", &message, project, |_| ()).unwrap();
+        let compared = planned() - start;
+        let (start, taken) = (planned(), result_in_place());
+        scoped.update_picking_result("a", "claude/result", &message, project, |_| ()).unwrap();
+        let in_place = planned() - start;
+        assert_eq!(result_in_place(), taken + 1, "{step}: the scoped store copied the record");
+        assert_eq!(compared, in_place, "{step}: written in place, other Items were serialized");
         let (compared, written) = (writes(&generic), writes(&scoped));
         assert!(!compared.is_empty(), "{step}: comparing wrote no rows");
         assert_eq!(compared, written, "{step}: written in place, other rows were written");

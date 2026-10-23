@@ -55,6 +55,12 @@ use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+thread_local! {
+    /// How many Items `plan_items` serialized on this thread to write them.
+    pub(crate) static PLANNED_ITEMS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// Item annotation naming each field stored as a payload: the client
 /// view's, with its full size, which end the preview keeps, and its lines.
 pub const TRUNCATED: &str = crate::client_view::TRUNCATED;
@@ -1442,6 +1448,8 @@ fn plan_items(db: &Connection, agent: &str, turn: &str, items: &[Value], all: bo
             }
             continue;
         }
+        #[cfg(test)]
+        PLANNED_ITEMS.with(|n| n.set(n.get() + 1));
         let ItemOut { data, previews, payloads } = item_row(item)?;
         ops.push(Op::Item { turn: turn.into(), key: key.clone(), ord, payloads: payloads.len(), data, previews });
         if old.is_some() {
