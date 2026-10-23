@@ -101,6 +101,9 @@ async function mount(overrides = {}, shell, seed) {
     ...overrides,
   };
   const calls = [];
+  // Every /updates/check answer can be held until released, so a test can
+  // keep Settings' own check out (see `press`).
+  const checks = { held: false, waiting: [] };
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (e) => errors.push(e.message));
@@ -151,7 +154,10 @@ async function mount(overrides = {}, shell, seed) {
       savedDraft: savedDraftText(w.localStorage, "a"),
     });
     if (url.endsWith("/api/updates")) return respond(status);
-    if (url.endsWith("/api/updates/check")) return respond(status);
+    if (url.endsWith("/api/updates/check")) {
+      if (checks.held) await new Promise((resume) => checks.waiting.push(resume));
+      return respond(status);
+    }
     if (url.endsWith("/api/updates/download")) {
       status.releaseSource.phase = "downloading";
       status.releaseSource.receivedBytes = 1024;
@@ -278,7 +284,26 @@ async function mount(overrides = {}, shell, seed) {
     [...w.document.querySelectorAll('[aria-label="Update progress"] li')].map(
       (li) => `${li.querySelector(".update-step-label")?.textContent ?? ""}:${li.className.replace("is-", "")}`,
     );
-  return { dom, w, status, calls, errors, button, open, close, openDesktop, steps, pollTimers };
+  // Presses a button once it takes a press, `times` times. While Settings'
+  // own update check is out, Update and Reload are disabled (WorkspaceUpdates
+  // `blocked`), and jsdom dispatches no click on a disabled button: a click
+  // then is lost. The check and the clicks are one predicate call, so
+  // nothing runs between them.
+  const press = (text, times = 1) =>
+    until(() => {
+      const el = button(text);
+      if (!el || el.disabled) return false;
+      for (let n = 0; n < times; n++) el.click();
+      return true;
+    });
+  const holdChecks = () => {
+    checks.held = true;
+  };
+  const releaseChecks = () => {
+    checks.held = false;
+    for (const resume of checks.waiting.splice(0)) resume();
+  };
+  return { dom, w, status, calls, errors, button, press, holdChecks, releaseChecks, open, close, openDesktop, steps, pollTimers };
 }
 
 test("one click prepares a local release, saves drafts, applies once and survives closing the dialog", async () => {
@@ -289,9 +314,8 @@ test("one click prepares a local release, saves drafts, applies once and survive
     assert.match(f.w.document.body.textContent, /Desktop app/);
     for (const name of ["Download update", "Prepare update", "Apply when idle"])
       assert.ok(f.button(name) === undefined, `no separate "${name}" step`);
-    const update = f.button("Update to 2026.10.B");
-    update.click();
-    update.click();
+    // Pressed twice in one go: one choice, applied once.
+    assert.ok(await f.press("Update to 2026.10.B", 2), "Update can be pressed");
     assert.ok(await until(() => posts(f.calls, "apply").length > 0), "Apply follows preparation");
     await polls(f);
     assert.equal(posts(f.calls, "prepare").length, 1);
@@ -332,6 +356,35 @@ test("one click prepares a local release, saves drafts, applies once and survive
     assert.equal(posts(f.calls, "apply").length, 1, "a cancelled choice is not applied again");
     assert.deepEqual(f.errors, []);
   } finally {
+    f.dom.window.close();
+  }
+});
+
+test("while Settings' own update check is out, a click on Update is lost; pressing waits for the check", async () => {
+  const f = await mount();
+  try {
+    f.holdChecks();
+    await f.open();
+    assert.ok(await until(() => posts(f.calls, "check").length === 1), "opening Settings checks for a release");
+    const update = () => f.button("Update to 2026.10.B");
+    assert.ok(await until(() => update()?.disabled === true), "Update waits for the check");
+    // A click now is dropped: nothing is chosen, saved or sent, however long
+    // the page then runs.
+    update().click();
+    await polls(f);
+    assert.equal(f.w.localStorage.getItem(intentKey), null, "the click chose nothing");
+    assert.equal(f.calls.filter((c) => /updates\/(download|prepare|apply)$/.test(c.url)).length, 0, "the click sent nothing");
+    // Pressing waits while the check is out, then clicks once it is done.
+    const pressed = f.press("Update to 2026.10.B");
+    await polls(f);
+    assert.equal(f.w.localStorage.getItem(intentKey), null, "not pressed while the check is out");
+    f.releaseChecks();
+    assert.ok(await pressed, "Update is pressed once the check has answered");
+    assert.ok(await until(() => posts(f.calls, "apply").length === 1), "the choice runs: Apply is sent once");
+    assert.equal(posts(f.calls, "check").length, 1, "one check");
+    assert.deepEqual(f.errors, []);
+  } finally {
+    f.releaseChecks();
     f.dom.window.close();
   }
 });
@@ -515,7 +568,7 @@ test("Apply and Reload cannot discard a pasted body whose storage write failed; 
         action === "apply" ? "Update to 2026.10.B" : "Reload this window";
       const readsBefore = statusReads(f);
       const clickedAt = Date.now();
-      f.button(name).click();
+      assert.ok(await f.press(name), `${name} can be pressed`);
       const reported = await until(() =>
         /Draft body storage is full/.test(f.w.document.querySelector('[role="dialog"]').textContent),
       );
@@ -538,7 +591,7 @@ test("Apply and Reload cannot discard a pasted body whose storage write failed; 
       proto.setItem = set;
       if (action === "apply") {
         assert.equal(f.w.localStorage.getItem(intentKey), null, "the stopped choice is not resumed by itself");
-        f.button(name).click();
+        assert.ok(await f.press(name), `${name} can be pressed again`);
         assert.ok(await until(() => posts(f.calls, "apply").length > 0), "Apply is sent");
         assert.equal(posts(f.calls, "prepare").length, 1, "the prepared release is reused");
         const apply = f.calls.filter((c) => c.url.endsWith("/updates/apply"));
@@ -602,9 +655,7 @@ test("Apply and Reload never republish a clean stale draft after another window 
           1,
         );
         await f.open();
-        f.button(
-          action === "apply" ? "Update to 2026.10.B" : "Reload this window",
-        ).click();
+        assert.ok(await f.press(action === "apply" ? "Update to 2026.10.B" : "Reload this window"), `${action} can be pressed`);
         if (action === "apply") assert.ok(await until(() => posts(f.calls, "apply").length > 0), "Apply is sent");
         await wait();
         assert.deepEqual(writes, []);
@@ -668,7 +719,7 @@ test("one click carries a signed release through download, verification, prepara
     await f.open();
     assert.match(f.w.document.body.textContent, /Publisher signature verified/);
     assert.match(f.w.document.body.textContent, /One click downloads and verifies it/);
-    f.button("Update to 2026.10.B").click();
+    assert.ok(await f.press("Update to 2026.10.B"), "Update can be pressed");
     assert.ok(await until(() => posts(f.calls, "download").length === 1));
     assert.equal(posts(f.calls, "download")[0].body.releaseId, "B");
     assert.ok(await until(() => !!f.w.document.querySelector('progress[aria-label="Release download"]')), "the transfer shows");
@@ -698,7 +749,7 @@ test("cancelling during the download stops the transfer and the rest of the chai
   const f = await mount({ candidates: [], releaseSource: published("B") });
   try {
     await f.open();
-    f.button("Update to 2026.10.B").click();
+    assert.ok(await f.press("Update to 2026.10.B"), "Update can be pressed");
     assert.ok(await until(() => !!f.button("Cancel update")), "the update can be cancelled");
     f.button("Cancel update").click();
     assert.ok(await until(() => /Download cancelled/.test(f.w.document.body.textContent)), "the cancel is answered");
@@ -724,7 +775,7 @@ test("a release published while a local package waits is a second explicit choic
     assert.ok(f.button("Update to 2026.10.B"), "the local package keeps its own one click");
     const later = [...row().querySelectorAll("button")].find((b) => b.textContent.trim() === "Update to 2026.10.C");
     assert.ok(later, "the published release has its own one click");
-    later.click();
+    assert.ok(await f.press("Update to 2026.10.C"), "Update to 2026.10.C can be pressed");
     assert.ok(await until(() => posts(f.calls, "download").length === 1));
     assert.equal(posts(f.calls, "download")[0].body.releaseId, "C");
     assert.ok(await until(() => /Updating to 2026\.10\.C/.test(f.w.document.body.textContent)), "the update to C shows");
@@ -741,7 +792,7 @@ test("a downloaded release reuses its download: one click prepares and applies",
   const f = await mount({ releaseSource: published("B", "downloaded") });
   try {
     await f.open();
-    f.button("Update to 2026.10.B").click();
+    assert.ok(await f.press("Update to 2026.10.B"), "Update can be pressed");
     assert.ok(await until(() => posts(f.calls, "apply").length === 1));
     assert.equal(posts(f.calls, "download").length, 0);
     assert.equal(posts(f.calls, "prepare").length, 1);
@@ -829,7 +880,7 @@ test("an unanswered Apply is asked again with the same request ID, a bounded num
   };
   try {
     await f.open();
-    f.button("Update to 2026.10.B").click();
+    assert.ok(await f.press("Update to 2026.10.B"), "Update can be pressed");
     assert.ok(await until(() => /Workspace did not answer/.test(f.w.document.body.textContent), 8000));
     const sent = posts(f.calls, "apply");
     assert.equal(sent.length, 3, "three unanswered requests, then the user decides");
@@ -852,7 +903,7 @@ test("an Apply Core acted on whose answer was lost is followed, not sent again",
   };
   try {
     await f.open();
-    f.button("Update to 2026.10.B").click();
+    assert.ok(await f.press("Update to 2026.10.B"), "Update can be pressed");
     assert.ok(await until(() => posts(f.calls, "apply").length === 1));
     await polls(f);
     assert.equal(posts(f.calls, "apply").length, 1);
@@ -877,7 +928,7 @@ test("a preparation or download Core began whose answer was lost is followed to 
   };
   try {
     await f.open();
-    f.button("Update to 2026.10.B").click();
+    assert.ok(await f.press("Update to 2026.10.B"), "Update can be pressed");
     assert.ok(await until(() => posts(f.calls, "prepare").length === 1));
     await polls(f);
     assert.deepEqual(f.steps().slice(2, 3), ["Prepare:current"], "the preparation Core began is followed");
@@ -902,7 +953,7 @@ test("a preparation or download Core began whose answer was lost is followed to 
   };
   try {
     await g.open();
-    g.button("Update to 2026.10.B").click();
+    assert.ok(await g.press("Update to 2026.10.B"), "Update can be pressed");
     assert.ok(await until(() => posts(g.calls, "download").length === 1));
     await polls(g);
     g.status.releaseSource.phase = "failed";
@@ -930,7 +981,7 @@ test("a reload while a step is out still follows what Core did with it", async (
   let saved;
   try {
     await f.open();
-    f.button("Update to 2026.10.B").click();
+    assert.ok(await f.press("Update to 2026.10.B"), "Update can be pressed");
     assert.ok(await until(() => posts(f.calls, "prepare").length === 1));
     saved = f.w.localStorage.getItem(intentKey);
     assert.equal(JSON.parse(saved).asked?.step, "prepare", "the pending step is saved before it is sent");
@@ -999,7 +1050,7 @@ test("a step Core refuses or fails ends the chain once, with its reason, and is 
   };
   try {
     await f.open();
-    f.button("Update to 2026.10.B").click();
+    assert.ok(await f.press("Update to 2026.10.B"), "Update can be pressed");
     assert.ok(await until(() => /The update to 2026\.10\.B stopped\. Available release changed/.test(f.w.document.body.textContent)));
     await polls(f);
     assert.equal(posts(f.calls, "download").length, 1);
@@ -1018,7 +1069,7 @@ test("a step Core refuses or fails ends the chain once, with its reason, and is 
   };
   try {
     await g.open();
-    g.button("Update to 2026.10.B").click();
+    assert.ok(await g.press("Update to 2026.10.B"), "Update can be pressed");
     assert.ok(await until(() => posts(g.calls, "prepare").length === 1), "the preparation is sent");
     await polls(g);
     assert.deepEqual(g.steps().slice(2, 3), ["Prepare:current"], "preparation accepted is not preparation done");
