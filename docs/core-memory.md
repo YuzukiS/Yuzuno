@@ -692,6 +692,61 @@ change, 2026-10-21, 128 MiB synthetic record (145 MiB in use):
 The memory in use after each call is the same either way: these are copies
 that are freed again, which the allocator may keep. As above, these are
 allocator measurements of one synthetic Agent, not the daily Core's RSS.
+Since then, a permission and the effort no longer copy the record at all (see
+below).
+
+### A Claude permission, and the effort a Turn ran at
+
+A Claude permission request, its cancellation, the answer to it and the
+effort a Turn ran at change only the pending requests, the Agent's status or
+error, and what Claude's runtime reports. Each was committed with a copy of
+the whole record (`record_event`, or `update`, which also returns one), and
+the answer first read the record whole (`detail`). They are now committed as
+the metadata (`Store::update_meta`), as a Codex request and its answer are.
+The answer reads the listed Agent and its pending requests. A request, its
+cancellation and its resolution, which settle the Agent's status by whether a
+Turn runs, read the held Turns under the record lock
+(`Store::update_meta_by_turns`). A request for a Turn the record lacks, which
+opens that Turn, and a request, cancellation or resolution on a record not
+held, are committed as before; so is a change after which a receipt would
+restore an Item, as for every metadata commit. What the answer checks, what
+is sent to Claude and what is journaled are unchanged: tests run each case
+with the record held and not held, in two Workspaces, and compare them.
+
+T-140 run `ad5dc87b-91c8-4c56-a487-22788e646f2a`, 2026-10-23: release builds of `core_memory_paths` with a
+lab mode (on lab branches, not merged) that runs the Agent's own handlers
+against a bridge the lab answers, on main `930092e` and on this change, in the
+order before, after, after, before, one process each. One synthetic record of
+64 MiB; one whole copy of it held (`detail`) is 69.9 MiB. An answer is split
+where the bridge gets it: what came before (the answer read and marked sent),
+and what came after (resolved, or the failure recorded). Both runs of a side
+gave the same counts, and all four wrote the same journal and record:
+
+| One stage | Before: allocated | Before: peak above its start | After: allocated | After: peak |
+| --- | ---: | ---: | ---: | ---: |
+| Request, record held | 69.9 MiB | 69.9 MiB | 0.04 MiB | 0.02 MiB |
+| Answer until sent, held | 209.7 MiB | 209.6 MiB | 0.04 MiB | 0.02 MiB |
+| Answer resolved, held | 139.8 MiB | 139.7 MiB | 0.03 MiB | 0.01 MiB |
+| Answer's failure recorded, held | 139.8 MiB | 139.7 MiB | 0.04 MiB | 0.01 MiB |
+| Cancellation, held | 69.9 MiB | 69.9 MiB | 0.04 MiB | 0.01 MiB |
+| Effort, held | 69.9 MiB | 69.9 MiB | 0.04 MiB | 0.01 MiB |
+| Request opening a Turn the record lacks, held | 69.9 MiB | 69.9 MiB | 69.9 MiB | 69.9 MiB |
+| Request, not held | 248.0 MiB | 139.7 MiB | 248.0 MiB | 139.7 MiB |
+| Answer until sent, not held | 317.9 MiB | 209.6 MiB | 177.4 MiB | 71.0 MiB |
+| Answer resolved (held by then) | 139.8 MiB | 139.7 MiB | 0.04 MiB | 0.01 MiB |
+| Cancellation, not held | 159.0 MiB | 139.7 MiB | 159.0 MiB | 139.7 MiB |
+| Effort, not held | 159.0 MiB | 139.7 MiB | 89.1 MiB | 71.0 MiB |
+
+On a held record, a request answered and resolved made six whole copies
+before, at most three of them alive at once (while the answer was marked
+sent: the read, the commit's working copy and the copy it returned); now
+none. A peak is per stage: the stages ran one after another, so their copies
+do not add up to one peak. On a record not held, each stage still loads the
+record from its rows, and the answer first reads its pending requests from
+them too (with every Item's preview), as a Codex answer does; the answer and
+the effort no longer keep a second copy to compare with, nor return one. These
+are synthetic allocator measurements in one process, not the daily Core's
+RSS; how often a Claude Agent asks for permission was not measured.
 
 ## Opening the Workspace
 
