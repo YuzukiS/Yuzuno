@@ -592,6 +592,47 @@ Before this, the whole-record commit read and parsed every open Agent's record,
 payloads included, and dropped it again, so each start left about the largest
 record's worth of freed memory in the allocator.
 
+### The completion index
+
+Whether a Turn's completion is journaled already (`completed_before`, and the
+check `record_recovered_completion` makes before it writes) is looked up by
+Agent and Turn ID. That lookup read every `turn/completed` row of the Agent,
+and a Claude result's recovered completion journals its whole Turn, so each
+lookup read about the Agent's whole history: twice for a new Claude result,
+once for a repeat. A partial index with the query's own terms,
+`journal_turn_completed`, now answers it; the query and what it finds are the
+same with or without the index.
+
+Opening the Workspace makes the index when it is missing, once, before any
+other connection. The index build waits for no lock: it runs with no busy
+timeout, so a database another connection is writing fails it at once. The
+check whether the index is there runs before it with the connection's usual
+busy timeout, as the rest of opening does. About 2 s is the build's time
+target: a progress handler checks the time every 1000 SQLite steps, so it
+bounds neither one step, nor I/O, nor the rollback, and it is no limit on
+opening the Workspace as a whole. When it is stopped or fails (out of time, a
+journal row that is not JSON, a full disk, a locked database), the reason is
+logged, no part of the index is left, and the Workspace opens with the lookup
+reading the journal as before; the next start tries again. An index that is
+there is left alone and not read.
+
+T-140 run `85a16149-5590-4f94-a0f1-d8be7a647b51`: probes around the two
+lookups in a Claude result's chain (candidate `c94e426`, synthetic records of
+100 and 168 Turns of about 0.38 MiB each, held) found them 86–89% of the
+call's time (about 28 of 32 ms and 39 of 45 ms), each reading about all the
+Agent's `turn/completed` data. Run `bd27a023-1267-4892-8b53-e61450f5daf2`
+measured the index alone on synthetic journals with this host's 2 CPUs; these
+are SQL timings, not a whole result's:
+
+| Agent's turn/completed rows (journal's turn/completed data) | Lookup without | With the index | Making the index |
+| --- | ---: | ---: | ---: |
+| 100 (37.9 MiB) | 17.9 ms | 0.006 ms | 20 ms |
+| 250 (379 MiB) | 37.2 ms | 0.006 ms | 165 ms |
+| 500 (1.48 GiB) | 72.7 ms | 0.009 ms | 709 ms |
+
+The index took 0.01–0.15 MiB. Journaling a whole-Turn completion took 0.14–0.44
+ms more with it (medians of 40 each way).
+
 ## Reconnect, restart and idle writes
 
 On core.13 (2026-10-21) the daily Core reached 5.08 GiB RSS, peak 5.46 GiB,
