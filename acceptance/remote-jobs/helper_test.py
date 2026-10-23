@@ -261,6 +261,263 @@ class HelperTests(unittest.TestCase):
         self.assertEqual((reply["status"], reply["result"]["status"]), ("terminal", "cancelled"))
         self.assertTrue(gone(child))
 
+    def lose(self, job):
+        """Start the attempt, kill its supervisor: (started, when it returned)."""
+        started = self.start(job)["started"]
+        since = time.monotonic()
+        os.kill(started["supervisorPid"], signal.SIGKILL)
+        self.assertTrue(gone(started["supervisorPid"]))
+        return started, since
+
+    def past(self, since, timeout):
+        """Sleep past the attempt's deadline, which its supervisor took just
+        after started.json, so after the start returned."""
+        time.sleep(max(0.0, since + timeout + 1 - time.monotonic()))
+
+    def test_a_lost_command_still_running_at_its_timeout_is_stopped_at_the_next_status(self):
+        job = self.attempt("exec sleep 60", timeout=3)
+        started, since = self.lose(job)
+        # Before its deadline nothing is stopped: it stays lost.
+        state = self.call(self.bound(job, "status"))
+        self.assertEqual((state["status"], state["leaderAlive"], state["processes"]), ("lost", True, 1))
+        self.past(since, 3)
+        state = self.call(self.bound(job, "status"))
+        self.assertEqual(state["status"], "terminal", state)
+        self.assertEqual(state["result"]["status"], "failed")
+        self.assertEqual(state["result"]["reason"],
+                         "timeout after 3 s; its supervisor was gone, so its process group was stopped here")
+        self.assertTrue(gone(started["pid"]))
+        self.assertTrue(group_gone(started["pid"]), "a member of the attempt's group is left")
+        # Settled once: a later status, cancel or repeated start finds the same outcome.
+        for request in (self.bound(job, "status"), self.bound(job, "cancel"), dict(job, action="start")):
+            self.assertEqual(self.call(request)["result"], state["result"])
+
+    def test_a_lost_command_that_has_exited_is_not_given_an_outcome_at_its_timeout(self):
+        # Its exit status was not recorded: neither a group left empty nor a
+        # child left behind is taken for a timeout.
+        for script, left in (("while [ ! -e go ]; do sleep 0.05; done", 0),
+                             ("sleep 60 & echo $! > child.pid; while [ ! -e go ]; do sleep 0.05; done", 1)):
+            with self.subTest(left=left):
+                (self.work / "go").unlink(missing_ok=True)
+                job = self.attempt(script, timeout=2)
+                started, since = self.lose(job)
+                (self.work / "go").write_text("")
+                self.assertTrue(gone(started["pid"]))
+                self.past(since, 2)
+                state = self.call(self.bound(job, "status"))
+                self.assertEqual((state["status"], state["leaderAlive"], state["processes"]), ("lost", False, left))
+                self.assertFalse((self.folder(job) / "result.json").exists())
+
+    def test_a_deadline_record_that_is_not_this_starts_stops_nothing(self):
+        job = self.attempt("exec sleep 60", timeout=600)
+        started, _ = self.lose(job)
+        path = self.folder(job) / "deadline.json"
+        recorded = json.loads(path.read_text())
+        self.assertEqual({key: recorded[key] for key in ("bootId", "pid", "starttime", "timeoutSeconds")},
+                         {"bootId": started["bootId"], "pid": started["pid"], "starttime": started["starttime"],
+                          "timeoutSeconds": 600})
+        overdue = dict(recorded, monotonic=time.monotonic() - 1)
+        for case, record in (("another boot", dict(overdue, bootId="other")),
+                             ("another process", dict(overdue, pid=started["pid"] + 1)),
+                             ("another start", dict(overdue, starttime=started["starttime"] + 1)),
+                             ("another timeout", dict(overdue, timeoutSeconds=1)),
+                             ("no clock reading", dict(overdue, monotonic="soon")),
+                             ("unreadable", None), ("missing", None)):
+            with self.subTest(case=case):
+                if case == "missing":
+                    path.unlink()
+                else:
+                    path.write_text("{" if record is None else json.dumps(record))
+                state = self.call(self.bound(job, "status"))
+                self.assertEqual((state["status"], state["leaderAlive"]), ("lost", True))
+                self.assertFalse((self.folder(job) / "result.json").exists())
+        # The same record, overdue: the attempt's own deadline is applied.
+        path.write_text(json.dumps(overdue))
+        self.assertEqual(self.call(self.bound(job, "status"))["result"]["status"], "failed")
+        self.assertTrue(group_gone(started["pid"]))
+
+    def test_a_leader_that_is_not_the_recorded_process_is_not_stopped_at_the_timeout(self):
+        job = self.attempt("exec sleep 60", timeout=600)
+        started, _ = self.lose(job)
+        folder = self.folder(job)
+        recorded = json.loads((folder / "deadline.json").read_text())
+        # As if its PID now named another process: another start time, or
+        # another process group and session.
+        try:
+            for case, fields in (("another start", {"starttime": started["starttime"] + 1}),
+                                 ("another group", {"pgid": started["pid"] + 1, "sid": started["pid"] + 1})):
+                with self.subTest(case=case):
+                    (folder / "started.json").write_text(json.dumps(dict(started, **fields)))
+                    (folder / "deadline.json").write_text(json.dumps(dict(
+                        recorded, monotonic=time.monotonic() - 1, starttime=fields.get("starttime", started["starttime"]))))
+                    state = self.call(self.bound(job, "status"))
+                    self.assertEqual(state["status"], "lost", state)
+                    self.assertFalse((folder / "result.json").exists())
+                    os.kill(started["pid"], 0)
+        finally:
+            # tearDown finds the command by its real record.
+            (folder / "started.json").write_text(json.dumps(started))
+
+    def stopping(self, job):
+        return json.loads((self.folder(job) / "stopping.json").read_text())
+
+    def own_stopping(self, job, started, at):
+        return dict({key: started[key] for key in ("bootId", "pid", "pgid", "sid", "starttime")},
+                    attempt=job["attempt"], monotonic=at)
+
+    def test_a_lost_command_that_ignores_term_is_killed_by_a_later_status_after_its_timeout(self):
+        job = self.attempt("trap '' TERM; exec sleep 60", timeout=2)
+        started, since = self.lose(job)
+        self.past(since, 2)
+        # One call waits 4 s after its TERM: nothing is recorded as stopped.
+        before = time.monotonic()
+        state = self.call(self.bound(job, "status"))
+        self.assertEqual((state.get("status"), state.get("leaderAlive")), ("lost", True), state)
+        self.assertFalse((self.folder(job) / "result.json").exists())
+        os.kill(started["pid"], 0)
+        first = self.stopping(job)
+        self.assertEqual(first, self.own_stopping(job, started, first["monotonic"]))
+        self.assertTrue(before <= first["monotonic"] <= time.monotonic(), first)
+        # The next call goes on from that first TERM: KILL 5 s after it.
+        state = self.call(self.bound(job, "status"))
+        self.assertEqual(state.get("status"), "terminal", state)
+        self.assertEqual(state["result"]["reason"],
+                         "timeout after 2 s; its supervisor was gone, so its process group was stopped here")
+        self.assertTrue(group_gone(started["pid"]))
+        self.assertEqual(self.stopping(job), first, "the first TERM's time is never moved")
+
+    def test_a_timeout_that_began_goes_on_once_the_leader_ended_and_a_child_ignores_term(self):
+        job = self.attempt("(trap '' TERM; exec sleep 60) & echo $! > child.pid; exec sleep 60", timeout=2)
+        started, since = self.lose(job)
+        child = self.wait_for(self.work / "child.pid")
+        self.past(since, 2)
+        # The call that applies the timeout: the leader ends on its TERM, the child does not.
+        state = self.call(self.bound(job, "status"))
+        self.assertEqual((state.get("status"), state.get("leaderAlive"), state.get("processes")), ("lost", False, 1), state)
+        self.assertTrue(gone(started["pid"]))
+        os.kill(child, 0)
+        first = self.stopping(job)
+        # The next status goes on with that timeout, without its leader: KILL 5 s after the first TERM.
+        state = self.call(self.bound(job, "status"))
+        self.assertEqual(state.get("status"), "terminal", state)
+        self.assertEqual(state["result"]["reason"],
+                         "timeout after 2 s; its supervisor was gone, so its process group was stopped here")
+        self.assertTrue(gone(child))
+        self.assertEqual(self.stopping(job), first, "the first TERM's time is never moved")
+
+    def test_a_stop_a_cancel_began_is_never_taken_for_a_timeout(self):
+        # Whether the leader has ended and a child ignores TERM, or the leader
+        # itself ignores it and is still running past its deadline (review R2).
+        for case, script in (
+                ("leader ended", "trap '' TERM; sleep 60 & echo $! > child.pid; while [ ! -e go ]; do sleep 0.05; done"),
+                ("leader runs", "trap '' TERM; exec sleep 60")):
+            with self.subTest(case=case):
+                (self.work / "child.pid").unlink(missing_ok=True)
+                (self.work / "go").unlink(missing_ok=True)
+                job = self.attempt(script, timeout=2)
+                started, since = self.lose(job)
+                if case == "leader ended":
+                    left = self.wait_for(self.work / "child.pid")
+                    (self.work / "go").write_text("")
+                    self.assertTrue(gone(started["pid"]))
+                else:
+                    left = started["pid"]
+                self.past(since, 2)
+                self.assertEqual(self.call(self.bound(job, "cancel")).get("status"), "lost")
+                # Past the deadline, with the cancel's first TERM recorded: a status leaves the stop to cancel.
+                state = self.call(self.bound(job, "status"))
+                self.assertEqual((state.get("status"), state.get("processes")), ("lost", 1), state)
+                os.kill(left, 0)
+                reply = self.call(self.bound(job, "cancel"))
+                self.assertEqual((reply.get("status"), reply.get("result", {}).get("status")), ("terminal", "cancelled"),
+                                 reply)
+                self.assertTrue(gone(left))
+
+    def test_a_cancel_of_a_lost_attempt_kills_a_child_that_ignores_term_at_a_later_call(self):
+        job = self.attempt("trap '' TERM; sleep 60 & echo $! > child.pid; while [ ! -e go ]; do sleep 0.05; done")
+        started, _ = self.lose(job)
+        child = self.wait_for(self.work / "child.pid")
+        (self.work / "go").write_text("")
+        self.assertTrue(gone(started["pid"]))
+        reply = self.call(self.bound(job, "cancel"))
+        self.assertEqual((reply.get("status"), reply.get("processes")), ("lost", 1), reply)
+        os.kill(child, 0)
+        first = self.stopping(job)
+        reply = self.call(self.bound(job, "cancel"))
+        self.assertEqual((reply.get("status"), reply.get("result", {}).get("status")), ("terminal", "cancelled"), reply)
+        self.assertTrue(gone(child))
+        self.assertEqual(self.stopping(job), first, "the first TERM's time is never moved")
+
+    def test_a_stopping_record_that_is_not_this_attempts_never_brings_a_kill_forward(self):
+        long_ago = time.monotonic() - 100
+        for case, change in (("another attempt", {"attempt": "other"}), ("another boot", {"bootId": "other"}),
+                             ("another process", {"pid": 1}), ("another start", {"starttime": 1}),
+                             ("another group", {"pgid": 1, "sid": 1}), ("a later clock", {"monotonic": long_ago + 10 ** 6}),
+                             ("no clock reading", {"monotonic": "soon"}), ("unreadable", None), ("its own", {})):
+            with self.subTest(case=case):
+                job = self.attempt("trap '' TERM; exec sleep 60", timeout=600)
+                started, _ = self.lose(job)
+                record = self.own_stopping(job, started, long_ago)
+                (self.folder(job) / "stopping.json").write_text("{" if change is None else json.dumps(dict(record, **change)))
+                before = time.monotonic()
+                reply = self.call(self.bound(job, "cancel"))
+                if case == "its own":
+                    # This attempt's own record, 100 s old: KILL at once.
+                    self.assertEqual(reply.get("result", {}).get("status"), "cancelled", reply)
+                    self.assertTrue(gone(started["pid"]))
+                    continue
+                self.assertEqual(reply.get("status"), "lost", reply)
+                os.kill(started["pid"], 0)
+                # Replaced by this call's own first TERM.
+                now = self.stopping(job)
+                self.assertEqual(now, self.own_stopping(job, started, now["monotonic"]))
+                self.assertTrue(before <= now["monotonic"] <= time.monotonic(), now)
+
+    def test_a_first_term_whose_time_cannot_be_recorded_is_reported_and_brings_no_outcome(self):
+        job = self.attempt("trap '' TERM; exec sleep 60", timeout=2)
+        started, since = self.lose(job)
+        self.past(since, 2)
+        folder = self.folder(job)
+        mode = folder.stat().st_mode & 0o777
+        folder.chmod(0o500)
+        try:
+            state = self.call(self.bound(job, "status"))
+        finally:
+            folder.chmod(mode)
+        self.assertEqual((state.get("status"), state.get("leaderAlive")), ("lost", True), state)
+        self.assertIn("the time of its first TERM could not be recorded", state.get("stopRecord", ""), state)
+        self.assertFalse((folder / "stopping.json").exists())
+        self.assertFalse((folder / "result.json").exists())
+        os.kill(started["pid"], 0)
+
+    def test_a_thaw_that_failed_is_recorded_with_the_timeout_it_preceded(self):
+        # In this process, with the thaw answered by a stand-in for systemd's
+        # refusal: no real scope is made or frozen.
+        job = self.attempt("exec sleep 60", timeout=600)
+        started, _ = self.lose(job)
+        folder = self.folder(job)
+        intent = json.loads((folder / "intent.json").read_text())
+        refused = {"wasFrozen": True, "thawReturnCode": 1, "thawError": "Failed to thaw unit",
+                   "freezer": {"populated": True, "frozen": True}}
+        saved = remote_job.thaw_for_stop
+        remote_job.thaw_for_stop = lambda root, of: refused
+        try:
+            reply = remote_job.time_out(folder, intent, remote_job.state(folder, intent))
+        finally:
+            remote_job.thaw_for_stop = saved
+        self.assertEqual(reply.get("status"), "terminal", reply)
+        self.assertEqual((reply["result"]["status"], reply["result"]["thawedToStop"]), ("failed", refused))
+        self.assertTrue(group_gone(started["pid"]))
+
+    def test_after_a_restart_a_lost_attempt_is_interrupted_not_timed_out(self):
+        job = self.attempt("exec sleep 60", timeout=2)
+        _, since = self.lose(job)
+        self.past(since, 2)
+        self.boot.write_text(str(uuid.uuid4()) + "\n")
+        result = self.call(self.bound(job, "status"))["result"]
+        self.assertEqual((result["status"], result["reason"]),
+                         ("interrupted", "The machine restarted; this attempt's processes ended with that boot"))
+
     def test_a_start_key_is_bound_to_its_request_workspace_and_machine(self):
         job = self.attempt("sleep 1")
         first = self.start(job)
@@ -1134,6 +1391,23 @@ class PauseTests(unittest.TestCase):
         cancelled = self.call(self.bound(attempt, "cancel"))
         self.assertEqual(cancelled["status"], "terminal", cancelled)
         self.assertEqual(cancelled["result"]["status"], "cancelled")
+        self.assertEqual((self.work / "term.txt").read_text(), "term\n")
+
+    @unittest.skipUnless(USER_MANAGER, "no systemd user manager with the memory controller here")
+    def test_a_paused_attempt_whose_supervisor_is_gone_is_thawed_and_stopped_at_its_timeout(self):
+        attempt = self.attempt("exec 2>>stderr.txt; " + self.TICKS, timeout=3)
+        self.running(attempt, self.facts(linger=True))
+        since = time.monotonic()
+        self.assertEqual(self.call(self.bound(attempt, "pause"))["state"], "paused")
+        supervisor = json.loads((self.folder(attempt) / "supervisor.json").read_text())["pid"]
+        os.kill(supervisor, signal.SIGKILL)
+        self.assertTrue(gone(supervisor))
+        # The timeout counts while it is paused.
+        time.sleep(max(0.0, since + 4 - time.monotonic()))
+        state = self.call(self.bound(attempt, "status"))
+        self.assertEqual(state["status"], "terminal", state)
+        self.assertEqual(state["result"]["status"], "failed")
+        self.assertEqual(state["result"]["thawedToStop"]["wasFrozen"], True, state["result"])
         self.assertEqual((self.work / "term.txt").read_text(), "term\n")
 
 
