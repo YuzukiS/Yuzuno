@@ -1548,8 +1548,10 @@ impl Workspace {
                     crate::store::Route::Ignored => return,
                     crate::store::Route::Synchronous if event["type"] == "result" => {
                         // Only the ended Turn and the usage-limit check are taken
-                        // from the committed record, not a copy of all of it (T-140).
-                        let result = self.store.update_picking(
+                        // from the committed record, not a copy of all of it; on a
+                        // held record whose other Turns have ended it is written
+                        // without copying them (T-140).
+                        let result = self.store.update_picking_result(
                             id,
                             &kind,
                             &message,
@@ -5059,6 +5061,53 @@ mod tests {
         assert_eq!(ws.store.detail("a").unwrap().agent.unread_count, 1);
         ws.dispatch_claude_event("a", 7, ended).await;
         assert_eq!(journaled().len(), 1, "the same result journaled the completion again");
+        assert_eq!(ws.store.detail("a").unwrap().agent.unread_count, 1);
+    }
+
+    /// A result through the bridge's event handler, the record held and its
+    /// other Turns ended, is written without copying them, and the completion
+    /// it journals as the metadata (T-140): one result row and one recovered
+    /// completion, unread one. The same result again is also written in place
+    /// and journals no second completion.
+    #[tokio::test]
+    async fn a_result_on_a_held_record_is_written_without_copying_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(temp.path().join("data"), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
+        let mut d = detail();
+        d.agent.claude_session_id = Some("s".into());
+        ws.store.insert(&d).unwrap();
+        ws.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+        let (tx, _commands) = mpsc::channel(8);
+        let (shutdown, _shutdown_rx) = watch::channel(false);
+        let (_stopped_tx, stopped) = watch::channel(None);
+        let bridge = Arc::new(Bridge {
+            tx,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            next: AtomicU64::new(1),
+            shutdown,
+            stopped,
+            diagnostics: Default::default(),
+            stderr_closed: watch::channel(true).1, pid: None,
+        });
+        ws.claudes.lock().unwrap().insert("a".into(), Connection { remote_instance: None, generation: 7, bridge, events: None });
+        let message = json!({"type":"event","turnId":"t","event":{"type":"result","subtype":"success","is_error":false,
+            "session_id":"s","result":"done","duration_ms":5}});
+        let rows = |kind: &str| -> i64 {
+            ws.store.db.read().unwrap().query_row("SELECT count(*) FROM journal WHERE agent_id='a' AND kind=?1", [kind], |r| r.get(0)).unwrap()
+        };
+        let counts = || (crate::store::RESULT_IN_PLACE.with(|n| n.get()), crate::store::META_IN_PLACE.with(|n| n.get()));
+        let before = counts();
+        // On this thread, so the counters see it (dispatch_claude_event runs it on a blocking one).
+        ws.claude_event("a", 7, message.clone());
+        assert_eq!(counts(), (before.0 + 1, before.1 + 1), "the result or its completion copied the record");
+        let after = ws.store.detail("a").unwrap();
+        assert_eq!(after.turns[0]["status"], "completed");
+        assert_eq!((after.agent.status.as_str(), after.agent.unread_count), ("idle", 1));
+        assert_eq!((rows("claude/result"), rows("turn/completed")), (1, 1));
+        let before = counts();
+        ws.claude_event("a", 7, message);
+        assert_eq!(counts().0, before.0 + 1, "the same result again copied the record");
+        assert_eq!((rows("claude/result"), rows("turn/completed")), (2, 1));
         assert_eq!(ws.store.detail("a").unwrap().agent.unread_count, 1);
     }
 

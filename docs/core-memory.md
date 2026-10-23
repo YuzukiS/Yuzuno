@@ -457,6 +457,79 @@ per commit and the Agent, its request and the receipt as they were opened.
 These are synthetic allocator measurements in one process, not the daily
 Core's RSS.
 
+### A Claude Turn's end
+
+A live Claude `result` made two commits, each copying the held record whole.
+- First, `update_picking` projected the result onto a copy and compared the
+  copy with the record.
+- Then `record_recovered_completion` journaled the ended Turn's completion
+  through `record_event`, which copied and compared again, for a record whose
+  Turns it does not change.
+
+The second now commits as the metadata (`commit_meta`). That commit makes, in
+its own transaction, the check `commit` makes: whether that Turn was completed
+or imported before. A repeat is therefore journaled as `turn/reconfirmed` and
+adds no unread.
+
+The first is written in place through `Store::commit_turn`, as a Codex Turn's
+start and end are. The record's metadata and the ended Turn are copied, the
+result is projected onto the copies, and the receipts are bound over the held
+Turns with the copy in its place. Only that Turn's Items that changed are
+planned, found as comparing finds them (`Dirty::turn_between`). This applies
+where the projection can change no other Turn: the record is held, the ended
+Turn is in it, the result is not a sub-agent's, and no other Turn is in
+progress. Otherwise the result is compared as before.
+
+T-140 run `b2a21d9c-ad2b-494a-a12e-4ef243e4f553`, 2026-10-23, used release
+builds of `claude_result_ab_lab` (on lab branches, not merged) on four sides,
+all with the same lab patches:
+- main `063d949`;
+- the completion change alone;
+- both changes, with every Item of the ended Turn planned;
+- this change, with only the Items that changed planned.
+
+Each side dispatched the bridge's own messages, so it ran its own production
+chain. Two synthetic Claude records of 100 and 168 Turns (37.9 and 63.6 MiB of
+history JSON) were each run in the order base, completion, both, this, this,
+both, completion, base. Each run had ten calls of each kind, and four calls on
+a record let go first (not held). Upper medians (the 6th of 10 sorted):
+
+| One result and its completion, record held | Before | Completion change | This change |
+| --- | ---: | ---: | ---: |
+| 37.9 MiB record: allocated | 89.4 MiB | 44.8 MiB | 0.07 MiB |
+| The same: Rust peak above its start | 44.7 MiB | 44.7 MiB | 0.02 MiB |
+| The same: time | 47.9–56.0 ms | 38.9–42.1 ms | 32.3–32.5 ms |
+| 63.6 MiB record: allocated | 143.9 MiB | 72.0 MiB | 0.12 MiB |
+| The same: Rust peak above its start | 71.9 MiB | 71.9 MiB | 0.03 MiB |
+| The same: time | 72.6–73.0 ms | 58.6–60.3 ms | 46.8–47.0 ms |
+| After twenty 16 KiB messages streamed into the Turn, 63.6 MiB: allocated | 150.4 MiB | 77.6 MiB | 5.69 MiB |
+| A streamed delta's p99, a result every 200 ms, 63.6 MiB | 36.6–36.7 ms | 22.1–23.8 ms | 23.2–23.5 ms |
+
+Every run checked:
+- each Turn's status and Items, and a streamed Turn's final answer;
+- one `claude/result` row per dispatch and one recovered `turn/completed` per
+  Turn;
+- unread grown by the Turns only;
+- the record read back from its rows, equal to the one held.
+
+The completion change alone halves what the chain allocates but not its peak:
+the result's copy remains. With every Item planned, a repeated result on the
+streamed Turn allocated 3.6 MiB; with only those that changed, 1.9 MiB. A row
+unchanged is not written either way, so the rows written do not differ.
+
+**Not held.** A result on a record not held is compared as before; only its
+completion is written as the metadata, which saves a copy of the record
+loaded. The result's peak (the load and its compare) is unchanged. On both
+changed sides such a result runs the same code, with the same allocation, I/O
+and database size. In this lab its time depended on the earlier calls in the
+same process: on how much memory they had freed and left resident for its load
+to reuse. This lab does not compare it, and it is not a cost of either change.
+
+The lab does not set `M_ARENA_MAX` as Core's `main` does, and two single calls
+(545.9 ms and 182.8 ms) are not attributed. These are synthetic allocator
+measurements in one process, not the daily Core's RSS. Several Agents ending
+Turns at once was not measured.
+
 ## Claude bridge events
 
 Five Claude bridge events still committed with `update` and discarded the copy

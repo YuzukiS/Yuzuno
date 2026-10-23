@@ -55,6 +55,12 @@ use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+thread_local! {
+    /// How many Items `plan_items` serialized on this thread to write them.
+    pub(crate) static PLANNED_ITEMS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// Item annotation naming each field stored as a payload: the client
 /// view's, with its full size, which end the preview keeps, and its lines.
 pub const TRUNCATED: &str = crate::client_view::TRUNCATED;
@@ -1262,36 +1268,44 @@ impl Dirty {
         for turn in &after.turns {
             let id = turn["id"].as_str().expect("checked by by_id");
             match old.get(id) {
-                Some(previous) if *previous == turn => {}
-                Some(previous) => {
-                    dirty.turn(id);
-                    let (Some(was), Some(now)) = (split_items(previous), split_items(turn)) else {
-                        dirty.whole_turn(id);
-                        continue;
-                    };
-                    let Some(was) = by_id(was) else {
-                        dirty.whole_turn(id);
-                        continue;
-                    };
-                    for item in now {
-                        match item["id"].as_str() {
-                            Some(item_id) if was.get(item_id) == Some(&item) => {}
-                            Some(item_id) => {
-                                dirty.item(id, item_id);
-                            }
-                            None => {
-                                dirty.whole_turn(id);
-                                break;
-                            }
-                        }
-                    }
-                }
+                Some(previous) => dirty.turn_between(id, previous, turn),
                 None => {
                     dirty.whole_turn(id);
                 }
             }
         }
         dirty
+    }
+
+    /// What changed in Turn `id`, `previous` before and `turn` after, as
+    /// `between` finds it: nothing where they are the same, else the Turn's
+    /// row and its Items that changed, or all its Items where they cannot be
+    /// told apart by ID.
+    pub fn turn_between(&mut self, id: &str, previous: &Value, turn: &Value) {
+        if previous == turn {
+            return;
+        }
+        self.turn(id);
+        let (Some(was), Some(now)) = (split_items(previous), split_items(turn)) else {
+            self.whole_turn(id);
+            return;
+        };
+        let Some(was) = by_id(was) else {
+            self.whole_turn(id);
+            return;
+        };
+        for item in now {
+            match item["id"].as_str() {
+                Some(item_id) if was.get(item_id) == Some(&item) => {}
+                Some(item_id) => {
+                    self.item(id, item_id);
+                }
+                None => {
+                    self.whole_turn(id);
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -1434,6 +1448,8 @@ fn plan_items(db: &Connection, agent: &str, turn: &str, items: &[Value], all: bo
             }
             continue;
         }
+        #[cfg(test)]
+        PLANNED_ITEMS.with(|n| n.set(n.get() + 1));
         let ItemOut { data, previews, payloads } = item_row(item)?;
         ops.push(Op::Item { turn: turn.into(), key: key.clone(), ord, payloads: payloads.len(), data, previews });
         if old.is_some() {
