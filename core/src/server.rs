@@ -850,7 +850,7 @@ async fn turn_original(State(ws): State<Arc<Workspace>>, Path((id, turn_id)): Pa
 struct SearchQuery { q: String }
 async fn conversation_search(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Query(query): Query<SearchQuery>) -> ApiResult<Response> {
     if query.q.len() > 256 { return Ok((StatusCode::BAD_REQUEST, Json(json!({"error":"Search is limited to 256 bytes"}))).into_response()); }
-    stored_json(&ws, move |store| Ok(crate::conversation_window::search(&store.client_detail(&id)?, &query.q))).await
+    stored_json(&ws, move |store| store.conversation_search(&id, &query.q)).await
 }
 /// Full values of an Item's trimmed fields, or of one named field. Reads
 /// that Item's rows only, unless its record is held in memory.
