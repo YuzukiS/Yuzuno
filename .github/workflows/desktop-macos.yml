@@ -1,12 +1,13 @@
-# Builds the macOS desktop app (T-165) with scripts/desktop-macos.sh on a
-# standard GitHub-hosted Apple silicon runner, and runs the desktop tests:
+# Builds the macOS desktop app (T-165) with scripts/desktop-macos.sh on
+# standard GitHub-hosted runners, one per architecture: Apple silicon (arm64)
+# and Intel (x86_64). Each runs the desktop tests and checks what it packed:
 # - A pull request that changes desktop/, the script or this workflow builds
 #   and tests it. Nothing is uploaded; the checksums and build.json are in
 #   the run's log and summary.
 # - Run on request (workflow_dispatch) for the current head of main, after
 #   the CI workflow has passed on that commit's push to main, it is a
-#   candidate: the disk image, the app as a ZIP, build.json and SHA256SUMS,
-#   one artifact kept 14 days. Never a Release.
+#   candidate: per architecture, the disk image, the app as a ZIP,
+#   build.json and SHA256SUMS, one artifact kept 14 days. Never a Release.
 #
 # The app is signed ad hoc and not notarized: there is no Developer ID, and
 # this workflow uses no secret. See desktop/README.md.
@@ -39,10 +40,20 @@ env:
 
 jobs:
   app:
-    name: macOS app (arm64)
-    # The standard Apple silicon runner (macOS 26, arm64), free for public
-    # repositories; not a paid -xlarge or a self-hosted one.
-    runs-on: macos-26
+    name: macOS app (${{ matrix.arch }})
+    # The standard macOS 26 runners, free for public repositories: Apple
+    # silicon (macos-26) and Intel (macos-26-intel). Not a paid -large or
+    # -xlarge one, nor a self-hosted one. Each builds for its own
+    # architecture only; there is no universal app.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-26
+          - arch: x86_64
+            runner: macos-26-intel
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       # Before anything else, refuse any runner but a GitHub-hosted one.
@@ -72,6 +83,13 @@ jobs:
       - name: Runner details
         run: .github/scripts/hosted-guard.sh
 
+      # The label's architecture is the one built for: refuse any other.
+      - name: Architecture
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          [ "$(uname -m)" = "$ARCH" ] || { echo "::error::this runner is $(uname -m), not $ARCH"; exit 1; }
+
       # Read-only check of free disk before building; see the script.
       - name: Disk space precheck
         run: .github/scripts/disk-precheck.sh 6 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
@@ -94,13 +112,55 @@ jobs:
           export SOURCE_COMMIT
           scripts/desktop-macos.sh --toolchain "$RUST_TOOLCHAIN" --tools "$RUNNER_TEMP/tools" --out "$RUNNER_TEMP/out" --test
 
+      # What was packed: the executable is this architecture's only, and
+      # the ZIP and the disk image (mounted read-only) hold that same
+      # executable; the image also holds the Applications link to drag to.
+      - name: Package structure
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          check="$RUNNER_TEMP/check"
+          mkdir -p "$check/zip" "$check/dmg"
+          ditto -x -k "$RUNNER_TEMP/out/Yuzuno.app.zip" "$check/zip"
+          hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$check/dmg" "$RUNNER_TEMP"/out/*.dmg
+          status=0
+          /usr/bin/python3 - "$RUNNER_TEMP/out" "$check" <<'EOF' || status=$?
+          import glob, hashlib, json, os, plistlib, sys
+          out, check = sys.argv[1:]
+          arch = os.environ["ARCH"]
+          app = json.load(open(os.path.join(out, "build.json")))["app"]
+          problems = []
+          if app["architectures"] != [arch]:
+              problems.append(f"the executable is {app['architectures']}, not [{arch}]")
+          dmgs = glob.glob(os.path.join(out, "*.dmg"))
+          if len(dmgs) != 1:
+              problems.append(f"{len(dmgs)} disk images")
+          for where in ("zip", "dmg"):
+              bundle = os.path.join(check, where, "Yuzuno.app")
+              info = plistlib.load(open(os.path.join(bundle, "Contents", "Info.plist"), "rb"))
+              executable = os.path.join(bundle, "Contents", "MacOS", info["CFBundleExecutable"])
+              digest = hashlib.sha256(open(executable, "rb").read()).hexdigest()
+              if digest != app["executableSha256"]:
+                  problems.append(f"{where}: the executable is {digest}, not build.json's")
+          listing = sorted(os.listdir(os.path.join(check, "dmg")))
+          link = os.path.join(check, "dmg", "Applications")
+          if "Yuzuno.app" not in listing or not os.path.islink(link) or os.readlink(link) != "/Applications":
+              problems.append(f"the disk image holds {listing}")
+          print(f"{arch}: {os.path.basename(dmgs[0]) if dmgs else '-'}, image {listing}, executable {app['executableSha256']}")
+          for problem in problems:
+              print(f"::error::{problem}")
+          sys.exit(1 if problems else 0)
+          EOF
+          hdiutil detach "$check/dmg" || status=1
+          exit "$status"
+
       - name: Checksums
         run: |
           cd "$RUNNER_TEMP/out"
           shasum -a 256 *.dmg Yuzuno.app.zip build.json > SHA256SUMS
           cat SHA256SUMS build.json
           {
-            echo "### macOS app"
+            echo "### macOS app (${{ matrix.arch }})"
             echo
             echo '```'
             cat SHA256SUMS
@@ -115,7 +175,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: github.event_name == 'workflow_dispatch'
         with:
-          name: yuzuno-macos-arm64-${{ github.sha }}-${{ github.run_attempt }}
+          name: yuzuno-macos-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/out/*.dmg
             ${{ runner.temp }}/out/Yuzuno.app.zip
