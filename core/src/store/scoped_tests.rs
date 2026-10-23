@@ -921,3 +921,309 @@ fn a_started_turn_binds_and_accepts_receipts_by_every_turn() {
     let old2 = scoped.detail("a").unwrap().message_receipts.into_iter().find(|r| r.input.client_message_id == "old-2").unwrap();
     assert_eq!((old2.status.as_str(), old2.turn_id.as_deref()), ("accepted", Some("t2")));
 }
+
+/// The Codex `turn/completed` events this thread got to writing without
+/// copying the record's other Turns (`Store::commit_turn`).
+fn completed_in_place() -> u64 {
+    super::COMPLETED_IN_PLACE.with(|n| n.get())
+}
+
+fn completed(turn: &str, status: &str, items: Value) -> Value {
+    json!({"threadId":"thread","turn":{"id":turn,"status":status,"items":items}})
+}
+
+/// A native question of Turn `turn`, which blocks the Agent unless
+/// `blocking` is false.
+fn question_of(id: &str, rpc: u64, turn: &str, blocking: bool) -> PendingRequest {
+    serde_json::from_value(json!({"id":id,"agentId":"a","method":"item/tool/requestUserInput",
+        "params":{"threadId":"thread","turnId":turn,"itemId":format!("q{rpc}"),"questions":[{"id":"q"}],"isBlocking":blocking,
+                  "_rpcId":rpc,"_runtimeGeneration":1,"_responseSent":false},
+        "createdAt":"2026-10-20T00:00:00Z"})).unwrap()
+}
+
+/// `turn/completed` committed as `record_event` commits it (comparing the
+/// whole record) in `generic` and through `record_applied` in `scoped`;
+/// whether `scoped` wrote it in place.
+fn complete_both(generic: &Store, scoped: &Store, data: &Value) -> bool {
+    let copy = data.clone();
+    generic.record_event("a", "turn/completed", data, move |d| d.apply("turn/completed", &copy)).unwrap();
+    let before = completed_in_place();
+    scoped.record_applied("a", "turn/completed", "turn/completed", data).unwrap();
+    completed_in_place() == before + 1
+}
+
+/// The kinds of Agent `a`'s last `n` journal rows, oldest first.
+fn last_kinds(store: &Store, n: usize) -> Vec<String> {
+    let db = store.db.read().unwrap();
+    let mut statement = db.prepare("SELECT kind FROM journal WHERE agent_id='a' ORDER BY seq DESC LIMIT ?1").unwrap();
+    let mut kinds: Vec<String> = statement.query_map([n as i64], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    kinds.reverse();
+    kinds
+}
+
+#[test]
+fn a_completed_turn_is_written_without_copying_the_other_turns() {
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    let both = |change: &dyn Fn(&Store)| {
+        for store in [&generic, &scoped] {
+            change(store);
+        }
+    };
+    let same = |step: &str, in_place: bool| {
+        assert!(in_place, "{step}: the scoped store copied the record");
+        assert_eq!(state(&generic), state(&scoped), "{step}: written in place, something else was written");
+        for store in [&generic, &scoped] {
+            store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+        }
+    };
+    let start = |turn: &str| both(&|store: &Store| {
+        store.record_applied("a", "turn/started", "turn/started", &started(turn, json!([]))).unwrap();
+    });
+    // The Turn's streamed Items, and one of another Turn, the rows lack; the
+    // completion carries the final message, which replaces the streamed one.
+    start("n1");
+    both(&|store: &Store| {
+        super::tests::stream(store, "a", "item/completed",
+            &json!({"turnId":"t5","item":{"id":"m5","type":"agentMessage","text":"streamed elsewhere"}}));
+        super::tests::stream(store, "a", "item/completed", &json!({"turnId":"n1","item":{"id":"c-n1",
+            "type":"commandExecution","status":"completed","aggregatedOutput":"tool\n".repeat(4000)}}));
+        super::tests::stream(store, "a", "item/completed",
+            &json!({"turnId":"n1","item":{"id":"m-n1","type":"agentMessage","text":"partial"}}));
+    });
+    let unread = scoped.agent("a").unwrap().unread_count;
+    let end = completed("n1", "completed", json!([{"id":"m-n1","type":"agentMessage","text":"final"}]));
+    same("streamed Items the rows lack, and the final message carried", complete_both(&generic, &scoped, &end));
+    assert_eq!(scoped.agent("a").unwrap().unread_count, unread + 1);
+    assert_eq!(last_kinds(&scoped, 1), ["turn/completed"]);
+    // The same completion again: journaled as a reconfirmation, no unread.
+    same("the same completion again", complete_both(&generic, &scoped, &end));
+    assert_eq!(last_kinds(&scoped, 1), ["turn/reconfirmed"]);
+    assert_eq!(scoped.agent("a").unwrap().unread_count, unread + 1);
+    // A Turn imported from Codex's own history is reconfirmed too.
+    start("imported");
+    both(&|store: &Store| {
+        let db = store.db.write().unwrap();
+        db.execute("INSERT INTO codex_imports(agent_id,thread_id,awaiting_handoff) VALUES('a','thread',0)", []).unwrap();
+        db.execute("INSERT INTO codex_import_turns(agent_id,turn_id) VALUES('a','imported')", []).unwrap();
+    });
+    same("an imported Turn", complete_both(&generic, &scoped, &completed("imported", "completed", json!([]))));
+    assert_eq!(last_kinds(&scoped, 1), ["turn/reconfirmed"]);
+    // A Turn the record lacks, appended; one that failed.
+    same("a Turn never started", complete_both(&generic, &scoped, &completed("n2", "completed", json!([]))));
+    start("n3");
+    let failed = json!({"threadId":"thread","turn":{"id":"n3","status":"failed","error":{"message":"model refused"},"items":[]}});
+    same("a failed Turn", complete_both(&generic, &scoped, &failed));
+    assert_eq!((scoped.agent("a").unwrap().status.as_str(), scoped.agent("a").unwrap().error.as_deref()), ("error", Some("model refused")));
+    // Its own requests go, an async question stays, and another Turn's
+    // blocking request keeps the Agent waiting.
+    start("n4");
+    start("n5");
+    both(&|store: &Store| {
+        store.update_meta("a", "test/request", &json!({}), |m| {
+            m.pending.push(question_of("p4", 4, "n4", true));
+            m.pending.push(question_of("q4", 5, "n4", false));
+            m.pending.push(question_of("p5", 6, "n5", true));
+        }).unwrap();
+    });
+    same("requests of that Turn and another", complete_both(&generic, &scoped, &completed("n4", "completed", json!([]))));
+    let d = scoped.detail("a").unwrap();
+    assert_eq!(d.pending.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["q4", "p5"]);
+    assert_eq!(d.agent.status, "waiting");
+    both(&|store: &Store| { store.update_meta("a", "test/answered", &json!({}), |m| m.pending.clear()).unwrap(); });
+    // Another Turn still in progress: idle as the whole record's apply leaves it.
+    start("n6");
+    start("n7");
+    same("another Turn still in progress", complete_both(&generic, &scoped, &completed("n7", "completed", json!([]))));
+    // A sent message the completion carries: its receipt bound, restored and
+    // accepted by every Turn, as `apply` does.
+    let mut sent = receipt("send-9", "hello there");
+    sent.input.text_blocks = Some(vec![crate::message_content::TextBlock { id: "b".into(), start: 0, end: 5 }]);
+    both(&|store: &Store| {
+        let copy = sent.clone();
+        store.record_event("a", "message/requested", &json!({}), move |d| d.message_receipts.push(copy)).unwrap();
+    });
+    start("n8");
+    let message = completed("n8", "completed", json!([{"id":"native-n8","type":"userMessage","clientId":"send-9",
+        "content":[{"type":"text","text":"hello there"}]}]));
+    same("a sent message, its receipt bound, restored and accepted", complete_both(&generic, &scoped, &message));
+    let d = scoped.detail("a").unwrap();
+    let r = d.message_receipts.iter().find(|r| r.input.client_message_id == "send-9").unwrap();
+    assert_eq!((r.status.as_str(), r.turn_id.as_deref()), ("accepted", Some("n8")));
+    let item = &d.turns.iter().find(|t| t["id"] == "n8").unwrap()["items"][0];
+    assert!(item.get(crate::message_content::BLOCKS).is_some(), "the message was not restored: {item}");
+    // An Item without an ID, which names the whole Turn.
+    start("n9");
+    same("an Item without an ID", complete_both(&generic, &scoped,
+        &completed("n9", "completed", json!([{"type":"agentMessage","text":"no id"}]))));
+}
+
+/// Where writing in place cannot be shown to write what comparing writes,
+/// `turn/completed` is committed as `record_event` commits it.
+#[test]
+fn a_completed_turn_is_compared_where_in_place_cannot_show_the_same_write() {
+    let check = |generic: &Store, scoped: &Store, step: &str, data: &Value| {
+        assert!(!complete_both(generic, scoped, data), "{step}: written in place");
+        assert_eq!(state(generic), state(scoped), "{step}");
+    };
+    let end = completed("f1", "completed", json!([{"id":"m-f1","type":"agentMessage","text":"x"}]));
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        store.record_event("a", "test/duplicate", &json!({}), |d| {
+            let copy = d.turns[1].clone();
+            d.turns.push(copy);
+        }).unwrap();
+    }
+    check(&generic, &scoped, "Turns without distinct IDs", &end);
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        let mut memory = store.memory.lock().unwrap();
+        memory.held.clear();
+        memory.briefs.clear();
+    }
+    check(&generic, &scoped, "a record not held", &end);
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        let mut blocks = receipt("old-4", "message 4");
+        blocks.status = "accepted".into();
+        blocks.input.text_blocks = Some(vec![crate::message_content::TextBlock { id: "b".into(), start: 0, end: 7 }]);
+        store.update_meta("a", "message/requested", &json!({}), move |m| m.message_receipts.push(blocks)).unwrap();
+        unrestore(store, "t4", "u4");
+    }
+    check(&generic, &scoped, "an old Item restore would change", &end);
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    check(&generic, &scoped, "a completion without a Turn ID", &json!({"threadId":"thread","turn":{"status":"completed","items":[]}}));
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        let whole = serde_json::to_string(&store.detail("a").unwrap()).unwrap();
+        let mut db = store.db.write().unwrap();
+        let tx = db.transaction().unwrap();
+        tx.execute("UPDATE agents SET layout=0, data=?1 WHERE id='a'", [whole]).unwrap();
+        record_rows::delete_rows(&tx, "a").unwrap();
+        tx.commit().unwrap();
+        drop(db);
+        store.memory.lock().unwrap().held.clear();
+        store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+    }
+    check(&generic, &scoped, "a record kept whole", &end);
+}
+
+/// Each way a `turn/completed` write can fail, planning, writing its
+/// journal, metadata or Item rows, or at COMMIT, publishes nothing: the held
+/// record, its rows and journal, rev, brief and the changes its rows still
+/// lack stay as they were, and once the fault is gone the same completion is
+/// journaled once, as a first completion.
+#[test]
+fn a_completed_turn_whose_write_fails_publishes_nothing() {
+    for (fault, undo, wrote) in [
+        ("ALTER TABLE agent_turns RENAME TO hidden_turns;", "ALTER TABLE hidden_turns RENAME TO agent_turns;", false),
+        ("CREATE TRIGGER refuse BEFORE INSERT ON journal WHEN NEW.kind='turn/completed' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            "DROP TRIGGER refuse;", true),
+        ("CREATE TRIGGER refuse BEFORE UPDATE ON agents BEGIN SELECT RAISE(ABORT, 'refused'); END;", "DROP TRIGGER refuse;", true),
+        ("CREATE TRIGGER refuse BEFORE INSERT ON agent_items WHEN NEW.turn_id='lost' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            "DROP TRIGGER refuse;", true),
+        ("CREATE TABLE t140_parent(id INTEGER PRIMARY KEY);
+          CREATE TABLE t140_child(parent INTEGER REFERENCES t140_parent(id) DEFERRABLE INITIALLY DEFERRED);
+          CREATE TRIGGER t140_orphan AFTER INSERT ON journal WHEN NEW.kind='turn/completed'
+              BEGIN INSERT INTO t140_child(parent) VALUES(-1); END;", "DROP TRIGGER t140_orphan;", true),
+    ] {
+        let ((_ga, _generic), (_sa, store)) = pair();
+        store.record_applied("a", "turn/started", "turn/started", &started("lost", json!([]))).unwrap();
+        super::tests::stream(&store, "a", "item/completed",
+            &json!({"turnId":"t5","item":{"id":"m5","type":"agentMessage","text":"later"}}));
+        let unwritten = || store.memory.lock().unwrap().held.get("a").map(|held| held.unwritten.clone());
+        let (before, lacking) = (published(&store), unwritten());
+        store.db.write().unwrap().execute_batch(fault).unwrap();
+        let taken = completed_in_place();
+        let end = completed("lost", "completed", json!([{"id":"m-lost","type":"agentMessage","text":"final"}]));
+        assert!(store.record_applied("a", "turn/completed", "turn/completed", &end).is_err(), "{fault}");
+        assert_eq!(completed_in_place(), taken + u64::from(wrote), "{fault}: which path wrote");
+        assert!(store.held("a").is_some(), "{fault}");
+        store.db.write().unwrap().execute_batch(undo).unwrap();
+        assert_eq!(published(&store), before, "{fault}");
+        assert_eq!(unwritten(), lacking, "{fault}");
+        store.record_applied("a", "turn/completed", "turn/completed", &end).unwrap();
+        assert_eq!(last_kinds(&store, 1), ["turn/completed"], "{fault}: the failed write was journaled");
+        let d = store.detail("a").unwrap();
+        assert_eq!(d.turns.iter().find(|t| t["id"] == "lost").unwrap()["status"], "completed", "{fault}");
+        let written: i64 = store.db.read().unwrap()
+            .query_row("SELECT count(*) FROM agent_items WHERE agent_id='a' AND item_id='m5' AND data LIKE '%later%'", [], |r| r.get(0)).unwrap();
+        assert_eq!(written, 1, "{fault}: the streamed Item was not written");
+    }
+}
+
+/// A reader of the held record sees each Turn's completion whole: never the
+/// Turn completed without its journal row, nor the other way round, and
+/// revs only grow.
+#[test]
+fn readers_see_a_completed_turn_with_its_journal_position_and_rev() {
+    let ((_ga, _generic), (_sa, scoped)) = pair();
+    for n in 0..60 {
+        scoped.record_applied("a", "turn/started", "turn/started", &started(&format!("r{n}"), json!([]))).unwrap();
+    }
+    let scoped = std::sync::Arc::new(scoped);
+    let seq = scoped.detail("a").unwrap().agent.last_seq;
+    let ended = |d: &AgentDetail| d.turns.iter()
+        .filter(|t| t["id"].as_str().is_some_and(|id| id.starts_with('r')) && t["status"] == "completed").count() as i64;
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = {
+        let (store, done) = (scoped.clone(), done.clone());
+        std::thread::spawn(move || {
+            let (mut rev, mut reads) = (0, 0);
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                let d = store.detail("a").unwrap();
+                assert_eq!(d.agent.last_seq - seq, ended(&d), "a completion and its journal row seen apart");
+                assert!(d.agent.rev >= rev, "rev went back");
+                rev = d.agent.rev;
+                reads += 1;
+            }
+            reads
+        })
+    };
+    let taken = completed_in_place();
+    for n in 0..60 {
+        scoped.record_applied("a", "turn/completed", "turn/completed", &completed(&format!("r{n}"), "completed", json!([]))).unwrap();
+    }
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(reader.join().unwrap() > 0);
+    assert_eq!(completed_in_place(), taken + 60);
+    assert_eq!(ended(&scoped.detail("a").unwrap()), 60);
+}
+
+/// Turns completed in place while streamed Items reach the same record on
+/// another thread leave held what its rows and journal rebuild.
+#[test]
+fn completed_turns_racing_streamed_items_are_held_as_their_rows_and_journal_rebuild_them() {
+    let ((_ga, _generic), (_sa, store)) = pair();
+    for n in 0..40 {
+        store.record_applied("a", "turn/started", "turn/started", &started(&format!("r{n}"), json!([]))).unwrap();
+    }
+    let in_place = std::thread::scope(|s| {
+        let streamer = s.spawn(|| {
+            for n in 0..80 {
+                super::tests::stream(&store, "a", "item/completed",
+                    &json!({"turnId":"t5","item":{"id":format!("s{n}"),"type":"agentMessage","text":format!("streamed {n}")}}));
+            }
+        });
+        let completer = s.spawn(|| {
+            let before = completed_in_place();
+            for n in 0..40 {
+                let data = completed(&format!("r{n}"), "completed", json!([{"id":format!("m-r{n}"),"type":"agentMessage","text":"done"}]));
+                store.record_applied("a", "turn/completed", "turn/completed", &data).unwrap();
+            }
+            completed_in_place() - before
+        });
+        streamer.join().unwrap();
+        completer.join().unwrap()
+    });
+    assert_eq!(in_place, 40);
+    let s = state(&store);
+    assert_eq!(s["held"], s["reloaded"], "what is held is not what its rows and journal rebuild");
+    let reloaded = s["reloaded"]["turns"].as_array().unwrap();
+    assert!((0..40).all(|n| reloaded.iter().any(|t| t["id"] == format!("r{n}").as_str() && t["status"] == "completed")));
+    let t5 = reloaded.iter().find(|t| t["id"] == "t5").unwrap();
+    assert_eq!(t5["items"].as_array().unwrap().iter().filter(|i| i["id"].as_str().is_some_and(|id| id.starts_with('s'))).count(), 80);
+}

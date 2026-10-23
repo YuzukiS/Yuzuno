@@ -575,6 +575,9 @@ thread_local! {
     /// How many Codex `turn/started` events `Store::commit_turn` wrote on
     /// this thread without copying the other Turns.
     pub(super) static STARTED_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// How many Codex `turn/completed` events `Store::commit_turn` wrote on
+    /// this thread without copying the other Turns.
+    pub(super) static COMPLETED_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -2440,7 +2443,9 @@ impl Store {
     /// (`turn/accepted` applies the RPC response as `turn/started`). What it
     /// wrote is what the event names (`Dirty::of_applied`) and the Items
     /// `message_content::restore` changed, not found by comparing the whole
-    /// record. Returns the change's rev.
+    /// record. A Codex `turn/completed` is the exception: written so only
+    /// in place (`commit_turn`), and otherwise compared, as `record_event`
+    /// commits it. Returns the change's rev.
     pub fn record_applied(&self, id: &str, kind: &str, applied: &str, data: &Value) -> Result<u64> {
         // Only the native event and the RPC response applied as it: another
         // kind applied as turn/started (turn/completed has a journal check
@@ -2452,6 +2457,14 @@ impl Store {
                 return Ok(rev);
             }
             return Ok(self.commit_locked(id, kind, data, Scope::Applied(applied), |d| d.apply(applied, data), |_, _| ())?.0);
+        }
+        if applied == "turn/completed" && kind == "turn/completed" {
+            let lock = self.record_lock(id);
+            let _record = lock.lock();
+            if let Some(rev) = self.commit_turn(id, kind, applied, data)? {
+                return Ok(rev);
+            }
+            return Ok(self.commit_locked(id, kind, data, Scope::Compare, |d| d.apply(applied, data), |_, _| ())?.0);
         }
         Ok(self.commit(id, kind, data, Scope::Applied(applied), |d| d.apply(applied, data), |_, _| ())?.0)
     }
@@ -2573,18 +2586,22 @@ impl Store {
     }
 
     /// `record_applied` of a Codex `turn/started` (or the `turn/accepted`
-    /// applied as one) to a record held in memory, without copying its other
-    /// Turns (T-140). `apply` of `turn/started` changes the Turn with the
-    /// event's ID, appended when the record has none, and the Agent's status
-    /// and error; unless that Turn had already ended, it then binds,
-    /// restores and accepts the receipts by the user messages of every Turn
-    /// (`confirm_message_receipts`), and `commit` binds them once more. That
-    /// Turn and the metadata are copied and the event's own change applied
-    /// to the copies; the receipt steps run as they would, in order, over
-    /// the held Turns with the copy in that Turn's place (bound by the last
-    /// match, accepted by the first), changing only the copy; the write is
-    /// planned from those Turns. Once it has committed, the copies replace
-    /// the held metadata and that Turn under the record's write lock, so a
+    /// applied as one) or `turn/completed` to a record held in memory,
+    /// without copying its other Turns (T-140). `apply` of either changes the
+    /// Turn with the event's ID, appended when the record has none, and the
+    /// Agent's metadata: its status and error, and for `turn/completed` the
+    /// requests of that Turn it no longer waits for. It then binds, restores
+    /// and accepts the receipts by the user messages of every Turn
+    /// (`confirm_message_receipts`), unless a `turn/started` finds that Turn
+    /// already ended, and `commit` binds them once more. That Turn and the
+    /// metadata are copied and the event's own change applied to the copies;
+    /// the receipt steps run as they would, in order, over the held Turns
+    /// with the copy in that Turn's place (bound by the last match, accepted
+    /// by the first), changing only the copy; the write is planned from
+    /// those Turns. A `turn/completed` of a Turn completed before is
+    /// journaled as `turn/reconfirmed`, as `commit` journals it, checked in
+    /// the same transaction. Once it has committed, the copies replace the
+    /// held metadata and that Turn under the record's write lock, so a
     /// reader sees the record before or after the event, and a write that
     /// fails leaves it as it was. None, having changed nothing, where this
     /// cannot show it writes what `commit` would: a record not held or kept
@@ -2616,10 +2633,11 @@ impl Store {
             // aside: `apply`'s last step (`confirm_message_receipts`) binds,
             // restores and accepts them by every Turn, so it runs below over
             // the held Turns with the copy in place, not over the copy alone.
-            // A Turn already ended skips that step, as `apply` does. The
-            // status it settles is `working` or `waiting`, which does not ask
-            // whether a Turn runs (`model::settle_status`).
-            let confirms = staged.turns.first().is_none_or(crate::model::starts);
+            // A Turn already ended skips that step on `turn/started`, as
+            // `apply` does. The status either event settles is `working`,
+            // `idle` or `error`, else `waiting` for a blocking request, none
+            // of which asks whether a Turn runs (`model::settle_status`).
+            let confirms = applied != "turn/started" || staged.turns.first().is_none_or(crate::model::starts);
             let receipts = std::mem::take(&mut staged.message_receipts);
             staged.apply(applied, data);
             staged.message_receipts = receipts;
@@ -2670,15 +2688,20 @@ impl Store {
         };
         let Some(plan) = plan else { return Ok(None) };
         #[cfg(test)]
-        STARTED_IN_PLACE.with(|n| n.set(n.get() + 1));
+        if applied == "turn/started" {
+            STARTED_IN_PLACE.with(|n| n.set(n.get() + 1));
+        } else {
+            COMPLETED_IN_PLACE.with(|n| n.set(n.get() + 1));
+        }
         let rewrite;
-        {
+        let journaled = {
             let mut db = self.db.write()?;
             rewrite = self.rewrite(id);
             let tx = db.transaction()?;
+            let journaled = if completed_before(&tx, id, kind, data)? { "turn/reconfirmed" } else { kind };
             tx.execute(
                 "INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
-                params![id, kind, data.to_string(), now()],
+                params![id, journaled, data.to_string(), now()],
             )?;
             staged.agent.last_seq = tx.last_insert_rowid();
             staged.agent.unread_count = unread(&tx, id, staged.agent.reviewed_seq)?;
@@ -2686,7 +2709,8 @@ impl Store {
             tx.commit()?;
             #[cfg(test)]
             AFTER_COMMIT.with(|hook| if let Some(hook) = hook.borrow_mut().as_mut() { hook() });
-        }
+            journaled
+        };
         drop(plan);
         // Nothing after the commit can fail; locks are taken as in
         // `commit_meta`.
@@ -2698,7 +2722,7 @@ impl Store {
         }
         let mut listed = brief(&d);
         let rev = rewrite.done(|memory| {
-            let rev = memory.event(id, kind, data);
+            let rev = memory.event(id, journaled, data);
             listed.agent.rev = rev;
             memory.briefs.insert(id.into(), listed);
             if let Some(entry) = memory.held.get_mut(id).filter(|entry| Arc::ptr_eq(&entry.detail, &held)) {
