@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="desktop/icons/icon.svg" width="88" height="88" alt="Yuzuno's smiling yuzu icon" />
+  <img src="web/src/assets/yuzu-character.png" width="88" height="88" alt="Yuzu, the Yuzuno character" />
 </p>
 
 <h1 align="center">Yuzuno</h1>

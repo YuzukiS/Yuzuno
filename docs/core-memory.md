@@ -830,3 +830,59 @@ and their slots (0.6 MiB). Shrinking is one more allocator call for each message
 did not time `publish` itself. Whether the reserved bytes were resident
 depends on the allocator, so RSS may fall by less. These are synthetic
 allocator measurements, not the daily Core's RSS.
+
+## A conversation search
+
+A search of an Agent's saved messages (`/api/agents/{id}/conversation/search`)
+read the record as the detail API gives it: a held record copied whole,
+payloads included, and one stored as rows read with all its Items. The
+search itself reads only user and assistant messages and stops at 50
+results. Now a held record's messages, only what the search reads of them,
+are copied under its read lock and searched after it: a streamed event waits
+for that copy, not for a copy of the record or for the search. A record
+stored as rows is searched from the conversation window's index and its
+messages' rows, read one at a time until there are 50 results. The index
+builds and keeps an entry for each Item it has none for, as a window read
+does, so the first search after the record changed still reads those Items'
+rows. A damaged record, one stored whole, one with journaled changes its
+rows lack, and a blank or too long query are searched as before. The
+results are the same.
+
+T-140 run `c44da464-b65a-40e9-92b0-4903d3402e57`, 2026-10-23: release builds
+of `conversation_search_lab` (on lab branches, not merged) on main
+`21d8394` and on this change. One synthetic record of 100 Turns, each a
+user message, 30 tool outputs and two assistant messages (6.8 MiB of Item
+row text, 31.3 MiB of payload row text), was searched in four runs in the
+order before, after, after, before. Every search found the same results:
+
+| One search | Before | After |
+| --- | ---: | ---: |
+| Not held, once the index is built, a word found nowhere: allocated | 37.1 MiB | 4.3 MiB |
+| The same: Rust peak | 19.1 MiB | 2.6 MiB |
+| The same: time | 11.3–15.8 ms | 5.2–7.6 ms |
+| Not held, the first search after the record changed: allocated | 36.8 MiB | 41.1 MiB |
+| The same: Rust peak | 19.1 MiB | 3.8 MiB |
+| The same: time | 21.2–22.3 ms | 39.7–44.8 ms |
+| Held, a word found nowhere: allocated | 51.4 MiB | 1.0 MiB |
+| The same: Rust peak | 40.0 MiB | 0.6 MiB |
+| The same: time | 8.4–10.6 ms | 0.3–0.6 ms |
+
+The same runs streamed a delta into the held record every 2 ms for 12
+seconds, as Core applies one (`record_stream`, with the stream tick every
+250 ms), alone and while the process searched back to back:
+
+| A streamed delta | Before | After |
+| --- | ---: | ---: |
+| Alone: p50 | 198–200 µs | 222–227 µs |
+| Alone: p99 | 457–568 µs | 458–543 µs |
+| While searching: p50 | 228–254 µs | 348–370 µs |
+| While searching: p90 | 2.3–3.0 ms | 0.49–0.52 ms |
+| While searching: p99 | 3.9–4.3 ms | 0.66–0.69 ms |
+| Searches in those 12 seconds | 1,212–1,330 | 27,253–27,699 |
+
+The first search after a change builds the index's missing entries and
+writes them, as a window read would, and takes longer than before. Alone,
+a delta's p50 was higher in both runs after; that is not attributed. While
+searching, the process searched about 20 times as often after, and a delta's
+p50 was higher too. These are synthetic allocator measurements in one
+process, not the daily Core's RSS.

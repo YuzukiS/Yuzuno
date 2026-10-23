@@ -63,8 +63,12 @@ for line in sys.stdin:
         cwd.to_string_lossy().into(),
         native.to_string_lossy().into(),
     )?;
+    // A lab started again on its folder already has its Agents. `listed_agent`
+    // cannot say so: right after opening it lists none (Store::open marks them
+    // restarted without keeping their view), so ask the store itself.
+    let known: Vec<String> = ws.store.agents()?.into_iter().map(|agent| agent.id).collect();
     for (id, name) in [("lab-a", "Mori"), ("lab-b", "Hana")] {
-        if ws.store.listed_agent(id).is_none() {
+        if !known.iter().any(|seen| seen.as_str() == id) {
             let detail: AgentDetail = serde_json::from_value(
                 json!({"agent":{"id":id,"name":name,"cwd":cwd,"model":"fixture","color":"sage","status":"offline","createdAt":"2026-10-15","updatedAt":"2026-10-15","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]}),
             )?;

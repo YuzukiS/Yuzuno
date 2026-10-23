@@ -912,6 +912,33 @@ fn replays(db: &Connection, id: &str, seq: i64) -> Result<bool> {
     Ok(false)
 }
 
+/// `Store::conversation_search` over a record stored as rows: the window's
+/// index and each message's row, read in order until the search has 50
+/// results. None where the rows do not give what `client_detail` reads:
+/// journaled changes to Turns or Items they lack, or rows that do not
+/// assemble (`Damaged`), which `client_detail` then reports as before.
+fn search_rows(db: &Connection, id: &str, query: &str)
+    -> Result<Option<(Vec<Value>, Vec<record_rows::window::Fill>)>> {
+    use crate::conversation_window::Search;
+    let read = || -> Result<Option<_>> {
+        let record_rows::window::Index { detail, keys, fills, mut stats } = record_rows::window::index(db, id)?;
+        if replays(db, id, detail.agent.last_seq)? { return Ok(None); }
+        let mut search = Search::new(query).expect("searchable");
+        'turns: for (t, turn) in detail.turns.iter().enumerate() {
+            for (i, item) in turn["items"].as_array().into_iter().flatten().enumerate() {
+                if !Search::reads(item) { continue; }
+                let item = record_rows::window::item(db, id, &keys[t].0, &keys[t].1[i], false, &mut stats)?;
+                if !search.item(t, &turn["id"], &item) { break 'turns; }
+            }
+        }
+        Ok(Some((search.results, fills)))
+    };
+    match read() {
+        Err(e) if e.is::<Damaged>() => Ok(None),
+        result => result,
+    }
+}
+
 /// The Workspace's exclusive lock, held as long as the file stays open. A
 /// second Core must not mark the first Core's running Agents offline merely
 /// because it uses another port, and records are not converted (or
@@ -1480,6 +1507,78 @@ impl Store {
         detail.agent.project_id = self.agent_project(id)?;
         self.annotate_imported_questions(&mut detail)?;
         Ok(crate::client_view::detail(detail))
+    }
+
+    /// `conversation_window::search` of what `client_detail` gives, without
+    /// copying the record. A held record's messages, only what the search
+    /// reads of them, are copied under its read lock and searched after it.
+    /// A record stored as rows is searched from the window's index and its
+    /// messages' rows, read one at a time until there are 50 results. One
+    /// these cannot read (damaged, stored whole, or with journaled changes
+    /// to Turns or Items its rows lack), and a query that finds nothing
+    /// (blank or too long), are searched in `client_detail` as before.
+    pub fn conversation_search(&self, id: &str, query: &str) -> Result<Vec<Value>> {
+        self.conversation_search_racing(id, query, || {})
+    }
+
+    /// `conversation_search`, running `unlocked` after the rows are read and
+    /// before the version is checked again; tests race writes there.
+    fn conversation_search_racing(&self, id: &str, query: &str, mut unlocked: impl FnMut()) -> Result<Vec<Value>> {
+        use crate::conversation_window::{self, Search};
+        if Search::new(query).is_none() {
+            return Ok(conversation_window::search(&self.client_detail(id)?, query));
+        }
+        let mut attempt = 0;
+        loop {
+            let lock = (attempt >= 2).then(|| self.record_lock(id));
+            let _record = lock.as_ref().map(|lock| lock.lock());
+            let (held, version, damaged) = {
+                let memory = self.memory.lock().unwrap();
+                (memory.held.get(id).map(|held| held.detail.clone()), memory.version(id), memory.damaged.contains(id))
+            };
+            if let Some(held) = held {
+                // A streamed event waits for the copy, not for the search.
+                let messages: Vec<(usize, Value, Vec<Value>)> = held.read().turns.iter().enumerate()
+                    .map(|(number, turn)| (number, turn["id"].clone(), turn["items"].as_array().into_iter().flatten()
+                        .filter(|item| Search::reads(item)).map(conversation_window::searched).collect()))
+                    .collect();
+                let mut search = Search::new(query).expect("searchable");
+                'turns: for (number, turn, items) in &messages {
+                    for item in items {
+                        if !search.item(*number, turn, item) { break 'turns; }
+                    }
+                }
+                return Ok(search.results);
+            }
+            if version % 2 == 1 {
+                attempt += 1;
+                std::thread::yield_now();
+                continue;
+            }
+            let found = {
+                let db = self.db.read()?;
+                if damaged || record_rows::layout(&db, id)? != Some(Layout::Rows) { None } else { search_rows(&db, id, query)? }
+            };
+            let Some((results, fills)) = found else {
+                return Ok(conversation_window::search(&self.client_detail(id)?, query));
+            };
+            unlocked();
+            {
+                let memory = self.memory.lock().unwrap();
+                if memory.held.contains_key(id) || memory.version(id) != version {
+                    attempt += 1;
+                    continue;
+                }
+            }
+            // As for a window read: published only over unchanged rows.
+            if !fills.is_empty() {
+                let mut writer = self.db.write()?;
+                let tx = writer.transaction()?;
+                record_rows::window::fill(&tx, id, fills)?;
+                tx.commit()?;
+            }
+            return Ok(results);
+        }
     }
 
     /// Window reads retain the complete light index, questions and receipts,
@@ -2855,8 +2954,10 @@ impl Store {
                 OR EXISTS(SELECT 1 FROM codex_import_turns WHERE agent_id=?1 AND turn_id=?2)",
             params![id, turn["id"].as_str()], |r| r.get(0))?;
         if exists { return Ok(()); }
-        // update() still deduplicates atomically if a native event races this check.
-        self.update(id, "turn/completed", &json!({"turn":turn,"recovered":true}), |_| {})?;
+        // The same commit as update(), which still deduplicates atomically if
+        // a native event races this check; nothing reads the record after it,
+        // so no copy of it is made to return (T-140).
+        self.record_event(id, "turn/completed", &json!({"turn":turn,"recovered":true}), |_| {})?;
         Ok(())
     }
 

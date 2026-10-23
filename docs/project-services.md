@@ -31,7 +31,11 @@ Core host, and the machine the service runs on.
   `GET /.well-known/yuzuno-service/<challenge>` on `P` itself. The page asks
   that from the client and offers the link only if the exact answer comes back.
   Anything else on the client's `P` cannot answer it, so the page says this
-  computer does not reach the service and offers no address. The service is
+  computer does not reach the service and offers no address. A page not opened
+  on a loopback address (such as a phone through
+  [the remote entry](independent-core.md#connect-from-a-phone-tailscale-serve))
+  says instead that services are not available through its connection, and
+  that they open on the Core host or on a computer with a tunnel to Core. The service is
   shown as available only when it answered HTTP on its own port in time, not
   because SSH is running.
 

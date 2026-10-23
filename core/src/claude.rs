@@ -5020,6 +5020,48 @@ mod tests {
         assert_eq!((d.turns.len(), d.pending[0].params["turnId"].clone()), (1, json!("t")));
     }
 
+    /// A result through the bridge's event handler journals the Turn it ended
+    /// once as a completion, which unread and Catch-up count; the same result
+    /// again adds none. That completion is committed without a copy of the
+    /// record to return (T-140).
+    #[tokio::test]
+    async fn a_result_journals_its_turn_completion_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(temp.path().join("data"), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
+        let mut d = detail();
+        d.agent.claude_session_id = Some("s".into());
+        ws.store.insert(&d).unwrap();
+        let (tx, _commands) = mpsc::channel(8);
+        let (shutdown, _shutdown_rx) = watch::channel(false);
+        let (_stopped_tx, stopped) = watch::channel(None);
+        let bridge = Arc::new(Bridge {
+            tx,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            next: AtomicU64::new(1),
+            shutdown,
+            stopped,
+            diagnostics: Default::default(),
+            stderr_closed: watch::channel(true).1, pid: None,
+        });
+        ws.claudes.lock().unwrap().insert("a".into(), Connection { remote_instance: None, generation: 7, bridge, events: None });
+        let ended = json!({"type":"event","turnId":"t","event":{"type":"result","subtype":"success","is_error":false,
+            "session_id":"s","result":"done","duration_ms":5}});
+        let journaled = || -> Vec<Value> {
+            let db = ws.store.db.read().unwrap();
+            let mut rows = db.prepare("SELECT data FROM journal WHERE agent_id='a' AND kind='turn/completed' ORDER BY seq").unwrap();
+            rows.query_map([], |r| r.get::<_, String>(0)).unwrap().map(|data| serde_json::from_str(&data.unwrap()).unwrap()).collect()
+        };
+        ws.dispatch_claude_event("a", 7, ended.clone()).await;
+        let first = journaled();
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!((first[0]["turn"]["id"].clone(), first[0]["turn"]["status"].clone(), first[0]["recovered"].clone()),
+            (json!("t"), json!("completed"), json!(true)));
+        assert_eq!(ws.store.detail("a").unwrap().agent.unread_count, 1);
+        ws.dispatch_claude_event("a", 7, ended).await;
+        assert_eq!(journaled().len(), 1, "the same result journaled the completion again");
+        assert_eq!(ws.store.detail("a").unwrap().agent.unread_count, 1);
+    }
+
     /// T-37 on these events: a result goes only to a Turn Core can vouch
     /// for. Output Claude has not said is its own is no such Turn, and after
     /// a close a call for the old Turn never reaches the next one.

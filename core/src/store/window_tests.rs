@@ -359,3 +359,73 @@ fn window_cache_is_published_only_for_rows_unchanged_since_it_was_built() {
     assert_eq!(published, [("big".to_string(), 3), ("same".to_string(), 3)],
         "same-length data, an empty preview where there was none, a payload count and a deleted row are not published");
 }
+
+/// Forty Turns of a user message, a tool output (a payload row), a reasoning
+/// Item and two assistant messages, all with "needle" in them; the search
+/// reads the three messages of each. A last Turn holds the only "zephyr".
+fn messages() -> AgentDetail {
+    let mut d = detail("a");
+    d.turns = (0..40).map(|t| json!({"id":format!("t{t}"),"status":"completed","items":[
+        {"id":format!("u{t}"),"type":"userMessage","clientId":format!("c{t}"),"content":[
+            {"type":"text","text":format!("Needle question {t}")},{"type":"image","url":"data:image/png;base64,AAAA"}]},
+        {"id":format!("run{t}"),"type":"commandExecution","command":"ls","aggregatedOutput":format!("needle {}", "x".repeat(9000))},
+        {"id":format!("think{t}"),"type":"reasoning","summary":["needle thought"],"text":"needle"},
+        {"id":format!("p{t}"),"type":"agentMessage","phase":"commentary","text":format!("Working on the NEEDLE {t}")},
+        {"id":format!("f{t}"),"type":"agentMessage","text":format!("École {t}: the needle is here {}", "y".repeat(t * 50))}
+    ]})).collect();
+    d.turns[3]["items"][0]["_yuzunoInputText"] = "the original needle paste".into();
+    d.turns.push(json!({"id":"last","status":"completed","items":[{"id":"rare","type":"agentMessage","text":"a unique Zephyr word"}]}));
+    d
+}
+
+fn searches_agree(store: &Store) {
+    let long = "n".repeat(257);
+    for query in ["needle", "NEEDLE 3", "zephyr", "école", "ÉCOLE 7", "original NEEDLE", "absent", "", "   ", &long] {
+        let expected = conversation_window::search(&store.client_detail("a").unwrap(), query);
+        assert_eq!(store.conversation_search("a", query).unwrap(), expected, "{query:?}");
+    }
+}
+
+#[test]
+fn a_search_finds_what_a_search_of_the_client_detail_finds() {
+    let (_dir, store) = lab();
+    store.insert(&messages()).unwrap();
+    assert_eq!(store.conversation_search("a", "needle").unwrap().len(), 50);
+    // From rows: the window's index built by the first search, then kept.
+    searches_agree(&store);
+    searches_agree(&store);
+    // A journaled change the rows lack: read as `client_detail` reads it.
+    store.db.write().unwrap().execute("INSERT INTO journal(agent_id,kind,data,at) VALUES('a','item/agentMessage/delta',?1,?2)",
+        params![json!({"turnId":"last","itemId":"rare","delta":" replayed needle"}).to_string(), now()]).unwrap();
+    searches_agree(&store);
+    assert_eq!(store.conversation_search("a", "replayed").unwrap().len(), 1);
+    // Held.
+    stream(&store, "a", "item/agentMessage/delta", &json!({"turnId":"last","itemId":"rare","delta":" streamed"}));
+    assert_eq!(store.streamed_records(), 1);
+    searches_agree(&store);
+    assert_eq!(store.conversation_search("a", "streamed").unwrap().len(), 1);
+    assert!(store.conversation_search("missing", "needle").is_err());
+    assert!(store.conversation_search("missing", "").is_err());
+}
+
+#[test]
+fn a_search_retries_a_rewrite_or_stream_racing_its_read() {
+    for held in [false, true] {
+        let (_dir, store) = lab();
+        store.insert(&messages()).unwrap();
+        let mut once = true;
+        let found = store.conversation_search_racing("a", "zephyr", || {
+            if !std::mem::take(&mut once) {
+                return;
+            }
+            if held {
+                stream(&store, "a", "item/agentMessage/delta", &json!({"turnId":"last","itemId":"rare","delta":" again"}));
+            } else {
+                store.update("a", "test/rewrite", &json!({}), |d| d.turns[40]["items"][0]["text"] = "rewritten zephyr".into()).unwrap();
+            }
+        }).unwrap();
+        assert_eq!(found, conversation_window::search(&store.client_detail("a").unwrap(), "zephyr"));
+        let text = format!("{}{}{}", found[0]["before"].as_str().unwrap(), found[0]["match"].as_str().unwrap(), found[0]["after"].as_str().unwrap());
+        assert_eq!(text, if held { "a unique Zephyr word again" } else { "rewritten zephyr" });
+    }
+}
