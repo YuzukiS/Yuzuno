@@ -631,6 +631,19 @@ pub(crate) static SENT_IN_PLACE_FOR: std::sync::Mutex<Vec<String>> = std::sync::
 
 #[cfg(test)]
 thread_local! {
+    /// How many Claude deliveries `Store::commit_turns` wrote on this thread
+    /// without copying the other Turns.
+    pub(super) static DELIVERED_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The Agents, one entry per commit, whose deliveries `Store::commit_turns`
+/// wrote without copying the other Turns, on any thread (see
+/// `SENT_IN_PLACE_FOR`).
+#[cfg(test)]
+pub(crate) static DELIVERED_IN_PLACE_FOR: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+thread_local! {
     /// How many Agents `Store::open` marked restarted on this thread by
     /// their metadata alone (`Store::restart_meta_only`).
     pub(super) static RESTARTED_META_ONLY: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -2631,6 +2644,26 @@ impl Store {
         Ok(self.commit_locked(id, kind, data, Scope::Compare, change, |_, _| ())?.0)
     }
 
+    /// `record_event` of a Claude `message_delivery` (`claude::deliver_message`),
+    /// which shows the follow-up Claude named in the Turn it names
+    /// (`data.turnId`), moved from the first Turn showing it, and settles the
+    /// Agent's status. On a held record where some Turn shows it, only that
+    /// Turn and the one named are copied and changed (`commit_turns`, T-140);
+    /// `change` is told whether another Turn is in progress, read in place
+    /// under the record lock. Otherwise it is compared as `record_event`
+    /// compares it, and told no other Turn is: so is a follow-up no Turn
+    /// shows, which the change builds, reading its images, only once.
+    /// `change` may run twice where it does not. Returns the change's rev.
+    pub fn record_delivery(&self, id: &str, kind: &str, data: &Value, client_id: &str,
+        change: impl Fn(&mut AgentDetail, bool)) -> Result<u64> {
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        if let Some(rev) = self.commit_turns(id, kind, data, client_id, &change)? {
+            return Ok(rev);
+        }
+        Ok(self.commit_locked(id, kind, data, Scope::Compare, |d| change(d, false), |_, _| ())?.0)
+    }
+
     /// `update` without returning the record, which saves copying a large
     /// record held in memory. For native events, whose callers only announce
     /// the change. Returns the change's rev (see `Agent::rev`).
@@ -3072,6 +3105,170 @@ impl Store {
         d.agent.rev = rev;
         drop(d);
         Ok(Some((rev, held)))
+    }
+
+    /// `commit_turn` of a Claude delivery (`record_delivery`), which may change
+    /// two Turns: the Turn it names (T), and the first Turn in order showing
+    /// the follow-up (S), unless T shows it. T, where the record has it, and
+    /// S are copied with the metadata, in record order, so the change finds
+    /// the Turns it finds on the whole record: T if and only if the record
+    /// has it, and the follow-up first in S. It is told whether a Turn other
+    /// than those is in progress, the one thing it reads of the others. The
+    /// receipts are bound and Items restored over the held Turns in order,
+    /// the copies in their places and T, appended, last, as `commit` binds
+    /// them; only the copies change. The write is planned from those Turns
+    /// and made in one transaction; only after it commits do the copies
+    /// replace the held metadata and Turns, so a reader sees the record
+    /// before or after the delivery, and a write that fails leaves it as it
+    /// was. None, having changed nothing, where this cannot show it writes
+    /// what `commit` would: a record not held or kept as one body, no Turn
+    /// ID, Turns not told apart by ID, no Turn showing the follow-up, a change
+    /// that leaves other Turns than those copied (and T, appended where the
+    /// record lacked it), or receipts after which `restore` would change an
+    /// Item of another Turn. The caller holds the record lock.
+    fn commit_turns(&self, id: &str, kind: &str, data: &Value, client_id: &str,
+        change: &dyn Fn(&mut AgentDetail, bool)) -> Result<Option<u64>> {
+        let Some(held) = self.held(id) else { return Ok(None) };
+        let Some(turn_id) = data["turnId"].as_str() else { return Ok(None) };
+        let mut unwritten = self.memory.lock().unwrap().held.get(id).map(|held| held.unwritten.clone()).unwrap_or_default();
+        let shows = |turn: &Value| turn["items"].as_array().is_some_and(|items| items.iter().any(|i| i["clientId"] == client_id));
+        // The positions of the Turns copied, in record order, and the IDs
+        // the change must leave: those, then T where it appends it.
+        let (at, expected, running, mut staged) = {
+            let d = held.read();
+            if !record_rows::told_apart(&d.turns) {
+                return Ok(None);
+            }
+            let named = d.turns.iter().position(|t| t["id"] == turn_id);
+            let from = match named {
+                Some(k) if shows(&d.turns[k]) => None,
+                // A follow-up no Turn shows is built from its receipt and its
+                // images, read from disk: compared, before the change runs.
+                _ => Some(match d.turns.iter().position(shows) { Some(k) => k, None => return Ok(None) }),
+            };
+            let mut at: Vec<usize> = named.into_iter().chain(from).collect();
+            at.sort_unstable();
+            let mut expected: Vec<Value> = at.iter().map(|&k| d.turns[k]["id"].clone()).collect();
+            if named.is_none() {
+                expected.push(turn_id.into());
+            }
+            let running = d.turns.iter().enumerate().any(|(k, t)| !at.contains(&k) && t["status"] == "inProgress");
+            let mut staged = meta_of(&d);
+            staged.turns.extend(at.iter().map(|&k| d.turns[k].clone()));
+            (at, expected, running, staged)
+        };
+        let (copied, restored) = crate::message_content::collect_restored(|| {
+            change(&mut staged, running);
+            if staged.turns.len() != expected.len() || staged.turns.iter().zip(&expected).any(|(t, id)| t["id"] != *id) {
+                return false;
+            }
+            // `message_content::bind` over the Turns in order, the copies in
+            // their places: bound by the last match; only the copies may change.
+            // The held Turns before the k-th copy (after the last, for k = at.len()).
+            fn between<'a>(turns: &'a [Value], at: &[usize], k: usize) -> &'a [Value] {
+                let start = if k == 0 { 0 } else { at[k - 1] + 1 };
+                &turns[start..at.get(k).copied().unwrap_or(turns.len())]
+            }
+            let d = held.read();
+            let held_between = |k: usize| between(&d.turns, &at, k);
+            for k in 0..=at.len() {
+                crate::message_content::bind_receipts(held_between(k), &mut staged.message_receipts);
+                if let Some(copy) = staged.turns.get(k).filter(|_| k < at.len()) {
+                    crate::message_content::bind_receipts(std::slice::from_ref(copy), &mut staged.message_receipts);
+                }
+            }
+            crate::message_content::bind_receipts(&staged.turns[at.len()..], &mut staged.message_receipts);
+            if (0..=at.len()).any(|k| crate::message_content::restoring(held_between(k), &staged.message_receipts, false)) {
+                return false;
+            }
+            let restorer = crate::message_content::Restorer::new(&staged.message_receipts);
+            for turn in &mut staged.turns {
+                restorer.restore(turn, false);
+            }
+            true
+        });
+        if !copied {
+            return Ok(None);
+        }
+        staged.agent.pending_count = staged.pending.len() as u64;
+        staged.agent.updated_at = now();
+        // What changed in the copies, found as comparing finds it; T, where
+        // appended, has no row yet, so `record_rows::plan_parts` writes it whole.
+        let mut dirty = Dirty::default();
+        {
+            let d = held.read();
+            for (copy, &k) in staged.turns.iter().zip(&at) {
+                if let Some(turn) = d.turns[k]["id"].as_str() {
+                    dirty.turn_between(turn, &d.turns[k], copy);
+                }
+            }
+        }
+        for (turn, item, renamed) in restored {
+            if renamed { dirty.whole_turn(&turn) } else { dirty.item(&turn, &item) };
+        }
+        let Some(dirty) = dirty.identified(&staged) else { return Ok(None) };
+        unwritten.merge(dirty);
+        let mut copies = std::mem::take(&mut staged.turns);
+        let appended = copies.split_off(at.len());
+        let plan = {
+            let db = self.db.read()?;
+            let d = held.read();
+            let turns = d.turns.iter().enumerate()
+                .map(|(k, turn)| at.iter().position(|&c| c == k).map_or(turn, |i| &copies[i]))
+                .chain(appended.iter());
+            record_rows::plan_parts(&db, id, turns, &staged, &unwritten)?
+        };
+        let Some(plan) = plan else { return Ok(None) };
+        #[cfg(test)]
+        {
+            DELIVERED_IN_PLACE.with(|n| n.set(n.get() + 1));
+            DELIVERED_IN_PLACE_FOR.lock().unwrap().push(id.to_owned());
+        }
+        let rewrite;
+        let journaled = {
+            let mut db = self.db.write()?;
+            rewrite = self.rewrite(id);
+            let tx = db.transaction()?;
+            let journaled = if completed_before(&tx, id, kind, data)? { "turn/reconfirmed" } else { kind };
+            tx.execute(
+                "INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
+                params![id, journaled, data.to_string(), now()],
+            )?;
+            staged.agent.last_seq = tx.last_insert_rowid();
+            staged.agent.unread_count = unread(&tx, id, staged.agent.reviewed_seq)?;
+            record_rows::apply(&tx, id, &plan, &staged.agent)?;
+            tx.commit()?;
+            #[cfg(test)]
+            AFTER_COMMIT.with(|hook| if let Some(hook) = hook.borrow_mut().as_mut() { hook() });
+            journaled
+        };
+        drop(plan);
+        // Nothing after the commit can fail; locks are taken as in
+        // `commit_turn`.
+        let mut d = held.write();
+        put_meta(&mut d, staged);
+        for (copy, &k) in copies.into_iter().zip(&at) {
+            d.turns[k] = copy;
+        }
+        d.turns.extend(appended);
+        let mut listed = brief(&d);
+        let rev = rewrite.done(|memory| {
+            let rev = memory.event(id, journaled, data);
+            listed.agent.rev = rev;
+            memory.briefs.insert(id.into(), listed);
+            if let Some(entry) = memory.held.get_mut(id).filter(|entry| Arc::ptr_eq(&entry.detail, &held)) {
+                entry.unwritten = Dirty::default();
+                entry.unwritten_since = None;
+                entry.ephemeral = false;
+                entry.last = Instant::now();
+                entry.brief_stale = false;
+                entry.changes += 1;
+            }
+            rev
+        });
+        d.agent.rev = rev;
+        drop(d);
+        Ok(Some(rev))
     }
 
     /// `commit` of a change to the metadata alone (see `Meta`) of a record
