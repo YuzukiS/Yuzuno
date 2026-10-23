@@ -101,7 +101,7 @@ The Mac app is a client only, as on Windows: Core, its Agents and Jobs, and the 
 scripts/desktop-macos.sh --tools ~/Library/Caches/Yuzuno/toolchains --out ~/yuzuno-desktop-build --test
 ```
 
-It builds the pinned Tauri CLI with cargo into `--tools` (nothing is installed globally), runs the desktop tests with `--test`, and writes `Yuzuno.app`, the disk image (`Yuzuno_<version>_aarch64.dmg` on Apple silicon, `Yuzuno_<version>_x64.dmg` on Intel), `Yuzuno.app.zip` and `build.json` to `--out`. `build.json` records the source commit, the tool versions, each file's SHA-256, and what `codesign`, `spctl` and `syspolicy_check` say about the app. Bundling uses `desktop/tauri.macos.conf.json`, which Tauri merges on macOS only.
+It builds the pinned Tauri CLI with cargo into `--tools` (nothing is installed globally), runs the desktop tests with `--test`, and writes `Yuzuno.app`, the disk image (`Yuzuno_<version>_aarch64.dmg` on Apple silicon, `Yuzuno_<version>_x64.dmg` on Intel), `Yuzuno.app.zip` and `build.json` to `--out`. `build.json` records the source commit, the tool versions, each file's SHA-256, and what `codesign`, `spctl` and `syspolicy_check` say about the app. It also records the oldest macOS the bundle declares (`LSMinimumSystemVersion`) next to the one its executable is linked for, read from the executable itself; the build fails if they differ. An Apple silicon build is for macOS 11.0 or later, the oldest macOS on those Macs; an Intel build keeps Tauri's 10.13. Both are only what the build declares: the app has been opened on macOS 27.0.1 only, on Apple silicon. Bundling uses `desktop/tauri.macos.conf.json`, which Tauri merges on macOS only.
 
 **CI builds.** [`desktop-macos.yml`](../.github/workflows/desktop-macos.yml) runs the same script with `--test` on GitHub's standard macOS 26 runners, one job per architecture: `macos-26` (Apple silicon, arm64) and `macos-26-intel` (Intel, x86_64), with CI's pinned Rust. Each job also checks what it packed: the executable is its architecture's only, and the ZIP and the disk image (mounted read-only) hold that same executable, the image with its Applications link.
 - **A pull request** that changes `desktop/` or the script builds and tests it, and uploads nothing.
@@ -132,6 +132,7 @@ On macOS the app has the usual menus: Yuzuno (Quit), Edit (copy and paste in the
 | First open of a browser download (Gatekeeper, **Open Anyway**) | `build.json` records `spctl` rejecting the app and `syspolicy_check` reporting the ad hoc signature and missing notarization. On the CI runner `syspolicy_check` also reports an "Internal Xprotect Error", which T-141's build on a Mac did not; its cause is not known | On a Mac, including whether a Mac reports that error for a CI build |
 | Install to `/Applications`, uninstall | | On a Mac (the checks used a folder of their own) |
 | Intel Macs | Built and tested for x86_64 on `macos-26-intel` in CI | Any Intel build opened on an Intel Mac |
+| The oldest macOS a build is for | Declared, and equal to what the executable is linked for: each CI build checks it (11.0 Apple silicon, 10.13 Intel) | Opening it on any macOS older than 27.0.1 |
 
 ## Native boundary
 
