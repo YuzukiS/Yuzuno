@@ -2917,17 +2917,14 @@ impl Store {
         // metadata (always written): only the Turn's Items that changed are
         // planned. An unchanged one would not change its row, but naming the
         // whole Turn would serialize every Item of it. A Turn the send
-        // appends is new, all of it, as `Dirty::between` names an added one.
+        // appends has no row yet, so `record_rows::plan_parts` writes it
+        // whole without its being named.
         let dirty = match change {
             TurnChange::Applied(applied) => scoped(&Scope::Applied(applied), &staged, data, restored),
             TurnChange::Result(_) | TurnChange::Sent(_) => {
                 let mut dirty = Dirty::default();
-                match (at, staged.turns.first()) {
-                    (Some(k), Some(copy)) => dirty.turn_between(turn_id, &held.read().turns[k], copy),
-                    (None, Some(_)) => {
-                        dirty.whole_turn(turn_id);
-                    }
-                    _ => {}
+                if let (Some(k), Some(copy)) = (at, staged.turns.first()) {
+                    dirty.turn_between(turn_id, &held.read().turns[k], copy);
                 }
                 for (turn, item, renamed) in restored {
                     if renamed { dirty.whole_turn(&turn) } else { dirty.item(&turn, &item) };
