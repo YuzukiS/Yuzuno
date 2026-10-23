@@ -116,11 +116,26 @@ fn note_restored(turn: &str, item: &Value, renamed: bool) {
 /// history reconstructs item-N IDs; the recorded turn/user position addresses
 /// that occurrence. Exact text is an integrity check, never a body search.
 pub fn restore(turns: &mut [Value], receipts: &[MessageReceipt], full_history: bool) {
-    let shown = Shown::of(receipts);
+    let restorer = Restorer::new(receipts);
     for turn in turns {
+        restorer.restore(turn, full_history);
+    }
+}
+
+/// `restore` one Turn at a time, the receipts' lookups built once: for a
+/// snapshot whose Turns are copied as they merge (T-140).
+pub(crate) struct Restorer<'a>(Shown<'a>);
+
+impl<'a> Restorer<'a> {
+    pub(crate) fn new(receipts: &'a [MessageReceipt]) -> Self {
+        Self(Shown::of(receipts))
+    }
+
+    pub(crate) fn restore(&self, turn: &mut Value, full_history: bool) {
+        let shown = &self.0;
         let tid = turn["id"].as_str().unwrap_or_default().to_owned();
         let Some(items) = turn["items"].as_array_mut() else {
-            continue;
+            return;
         };
         for (index, item) in items
             .iter_mut()
@@ -450,8 +465,9 @@ mod tests {
         });
         let (each, noted_each) = collect_restored(|| {
             let mut turns = turns.clone();
+            let restorer = Restorer::new(&d.message_receipts);
             for turn in &mut turns {
-                restore(std::slice::from_mut(turn), &d.message_receipts, true);
+                restorer.restore(turn, true);
             }
             turns
         });

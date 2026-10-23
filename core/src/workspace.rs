@@ -2653,10 +2653,11 @@ fn apply_snapshot_turns(d: &mut AgentDetail, thread: &Value, turns: Option<impl 
     }
     let newer_items = &newer_items;
     if let Some(turns) = turns {
+        // Turn by Turn, as `restore` does them: a borrowed snapshot is
+        // copied one Turn at a time (T-140).
+        let restorer = crate::message_content::Restorer::new(&d.message_receipts);
         for mut incoming in turns {
-            // Turn by Turn, as `restore` does them: a borrowed snapshot is
-            // copied one Turn at a time (T-140).
-            crate::message_content::restore(std::slice::from_mut(&mut incoming), &d.message_receipts, true);
+            restorer.restore(&mut incoming, true);
             if let Some(existing) = d.turns.iter_mut().find(|t| t["id"] == incoming["id"]) {
                 let mut incoming = normalize_snapshot_message_ids_owned(existing, incoming);
                 let items = take_items(&mut incoming);
