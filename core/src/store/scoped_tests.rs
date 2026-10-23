@@ -1260,6 +1260,151 @@ fn completed_turns_racing_streamed_items_are_held_as_their_rows_and_journal_rebu
     assert_eq!(t5["items"].as_array().unwrap().iter().filter(|i| i["id"].as_str().is_some_and(|id| id.starts_with('s'))).count(), 80);
 }
 
+/// `Workspace::on_event`'s metadata commit of a native resolution or thread
+/// status change (`metadata_event`, `apply_metadata_event`), its Turn in
+/// progress read as `metadata_event` reads it.
+fn meta_event(store: &Store, method: &str, p: &Value) {
+    let running = store.update_readiness("a").unwrap().1.running;
+    store.update_meta_applied("a", method, p, |m| {
+        match method {
+            "serverRequest/resolved" => crate::model::resolve_request(m.pending, p),
+            _ => crate::model::thread_status_changed(m.agent, p),
+        }
+        crate::model::settle_status(m.agent, m.pending, || running);
+    }).unwrap();
+}
+
+/// The commit `on_event` made of them while a receipt was sending or
+/// uncertain: the event applied to the whole record.
+fn whole_event(store: &Store, method: &str, p: &Value) {
+    if method == "thread/status/changed" {
+        store.record_applied("a", method, method, p).unwrap();
+    } else {
+        store.record_event("a", method, p, |d| d.apply(method, p)).unwrap();
+    }
+}
+
+fn status_events() -> [(&'static str, Value); 5] {
+    [
+        ("serverRequest/resolved", json!({"threadId":"thread","requestId":7,"_runtimeGeneration":1})),
+        ("serverRequest/resolved", json!({"threadId":"thread","requestId":42,"_runtimeGeneration":1})),
+        ("thread/status/changed", json!({"threadId":"thread","status":{"type":"systemError"}})),
+        ("thread/status/changed", json!({"threadId":"thread","status":{"type":"active","activeFlags":[]}})),
+        ("thread/status/changed", json!({"threadId":"thread","status":{"type":"idle"}})),
+    ]
+}
+
+/// Receipts in each state beside such an event, bound but not yet accepted:
+/// "old-2" sending and "old-4" uncertain, their user messages in Turns t2 and
+/// t4; "q" queued, its message in t3; "unk" unknown, its message in t5; "rej"
+/// rejected, its message in t1; "next" sending, with no message yet. A
+/// blocking question (rpc 7) the resolution answers, and with `running` a
+/// Turn in progress.
+fn unconfirmed(store: &Store, running: bool) {
+    store.record_event("a", "test/turns", &json!({}), |d| {
+        d.turns[1]["items"][0]["clientId"] = json!("rej");
+        d.turns[3]["items"][0]["clientId"] = json!("q");
+        d.turns[5]["items"][0]["clientId"] = json!("unk");
+        if running {
+            d.turns.push(json!({"id":"t6","status":"inProgress","items":[]}));
+        }
+    }).unwrap();
+    store.update_meta("a", "message/requested", &json!({}), |m| {
+        for (id, text, status) in [("old-2", "message 2", "sending"), ("old-4", "message 4", "uncertain"),
+            ("q", "message 3", "queued"), ("unk", "message 5", "unknown"), ("rej", "message 1", "rejected"),
+            ("next", "next", "sending")] {
+            let mut r = receipt(id, text);
+            r.status = status.into();
+            m.message_receipts.push(r);
+        }
+        m.pending.push(pending_request("p7", 7));
+        m.agent.status = "waiting".into();
+    }).unwrap();
+}
+
+/// Each receipt's status and Turn, by client ID, as `state` read it back.
+fn receipt_states(state: &Value) -> Vec<(String, String, Value)> {
+    state["reloaded"]["messageReceipts"].as_array().unwrap().iter()
+        .map(|r| (r["input"]["clientMessageId"].as_str().unwrap().to_owned(), r["status"].as_str().unwrap().to_owned(), r["turnId"].clone()))
+        .collect()
+}
+
+/// A resolution or a thread status change beside receipts still sending or
+/// uncertain (T-140): written in place, it accepts each receipt neither
+/// accepted nor rejected (queued and unknown too) by the first Turn with its
+/// user message, as the whole record's `apply` does, and leaves the same
+/// record held and in the rows; a rejected receipt and one without a message
+/// stay as they are.
+#[test]
+fn a_resolution_or_status_change_accepts_receipts_as_the_whole_record_does() {
+    for running in [false, true] {
+        for (method, p) in status_events() {
+            let ((_ga, generic), (_sa, scoped)) = pair();
+            for store in [&generic, &scoped] {
+                unconfirmed(store, running);
+            }
+            let before = in_place();
+            whole_event(&generic, method, &p);
+            meta_event(&scoped, method, &p);
+            assert_eq!(in_place(), before + 1, "{method} {p}: the scoped store copied the record");
+            let s = state(&scoped);
+            assert_eq!(state(&generic), s, "{method} {p} running={running}");
+            assert_eq!(receipt_states(&s)[1..], [
+                ("old-2".into(), "accepted".into(), json!("t2")), ("old-4".into(), "accepted".into(), json!("t4")),
+                ("q".into(), "accepted".into(), json!("t3")), ("unk".into(), "accepted".into(), json!("t5")),
+                ("rej".into(), "rejected".into(), Value::Null),
+                ("next".into(), "sending".into(), Value::Null),
+            ], "{method} {p}");
+        }
+    }
+}
+
+/// t2's user message without the client ID its receipt is bound by, held
+/// and in its row, as `restore` must give it back.
+fn unbind_client(store: &Store, turn: &str, item: &str) {
+    {
+        let held = store.held("a").unwrap();
+        let mut d = held.write();
+        let message = d.turns.iter_mut().find(|t| t["id"] == turn).unwrap()["items"].as_array_mut().unwrap()
+            .iter_mut().find(|i| i["id"] == item).unwrap();
+        message.as_object_mut().unwrap().remove("clientId");
+    }
+    let changed = store.db.write().unwrap().execute(
+        "UPDATE agent_items SET data=json_remove(data,'$.clientId') WHERE agent_id='a' AND turn_id=?1 AND item_id=?2",
+        params![turn, item]).unwrap();
+    assert_eq!(changed, 1);
+}
+
+/// Where the event cannot be written in place, a held record with a message
+/// `restore` gives its client ID back, or a record not held, `commit` writes
+/// it and the receipts are accepted after its `bind`, as `apply` accepts
+/// them: also by the client ID restored.
+#[test]
+fn a_resolution_or_status_change_accepts_receipts_after_restore_where_it_is_not_written_in_place() {
+    for held in [true, false] {
+        for (method, p) in status_events() {
+            let ((_ga, generic), (_sa, scoped)) = pair();
+            for store in [&generic, &scoped] {
+                unconfirmed(store, false);
+                unbind_client(store, "t2", "u2");
+                if !held {
+                    let mut memory = store.memory.lock().unwrap();
+                    memory.held.clear();
+                    memory.briefs.clear();
+                }
+            }
+            let before = in_place();
+            whole_event(&generic, method, &p);
+            meta_event(&scoped, method, &p);
+            assert_eq!(in_place(), before, "{method} {p} held={held}: written in place");
+            let s = state(&scoped);
+            assert_eq!(state(&generic), s, "{method} {p} held={held}");
+            assert_eq!(receipt_states(&s)[1], ("old-2".into(), "accepted".into(), json!("t2")), "{method} {p} held={held}");
+            assert_eq!(s["reloaded"]["turns"][2]["items"][0]["clientId"], "old-2", "{method} {p} held={held}");
+        }
+    }
+}
+
 /// The Claude `result`s this thread got to writing without copying the
 /// record's other Turns (`Store::commit_turn`).
 fn result_in_place() -> u64 {

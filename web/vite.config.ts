@@ -46,8 +46,49 @@ const licenses: Plugin = {
   },
 };
 
+// The Home Screen entry (T-170): a web app manifest and an apple-touch-icon,
+// both at the root, made at build time from the character art the UI already
+// shows (src/assets/yuzu-character.png, copied unchanged; see
+// desktop/icons/README.md). Paths only, never an origin, so one build serves
+// every address Core is reached at. No service worker.
+const characterArt = join(here, "src/assets/yuzu-character.png");
+
+/** A PNG's width and height from its IHDR chunk; anything else fails the build. */
+function pngSize(png: Buffer): [number, number] {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (png.length < 24 || !png.subarray(0, 8).equals(signature) || png.toString("latin1", 12, 16) !== "IHDR")
+    throw new Error(`${characterArt} is not a PNG`);
+  return [png.readUInt32BE(16), png.readUInt32BE(20)];
+}
+
+const homeScreen: Plugin = {
+  name: "yuzuno-home-screen",
+  apply: "build",
+  transformIndexHtml: () => [
+    { tag: "link", attrs: { rel: "manifest", href: "/manifest.webmanifest" }, injectTo: "head" },
+    { tag: "link", attrs: { rel: "apple-touch-icon", href: "/apple-touch-icon.png" }, injectTo: "head" },
+  ],
+  generateBundle() {
+    const icon = readFileSync(characterArt);
+    const [width, height] = pngSize(icon);
+    const manifest = {
+      id: "/",
+      name: "Yuzuno",
+      short_name: "Yuzuno",
+      start_url: "/",
+      scope: "/",
+      display: "standalone",
+      background_color: "#f5f4ee",
+      theme_color: "#f5f4ee",
+      icons: [{ src: "/apple-touch-icon.png", sizes: `${width}x${height}`, type: "image/png" }],
+    };
+    this.emitFile({ type: "asset", fileName: "apple-touch-icon.png", source: icon });
+    this.emitFile({ type: "asset", fileName: "manifest.webmanifest", source: `${JSON.stringify(manifest, null, 2)}\n` });
+  },
+};
+
 export default defineConfig({
-  plugins: [react(), licenses],
+  plugins: [react(), licenses, homeScreen],
   server: {
     port: 5173,
     strictPort: true,
