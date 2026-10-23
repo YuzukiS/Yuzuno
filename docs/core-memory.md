@@ -612,6 +612,22 @@ text), but keeps no second copy to compare with and returns none. These are
 synthetic allocator measurements in one process, not the daily Core's RSS;
 how often a Codex Agent's thread starts was not measured.
 
+### A Codex connection's end
+
+When a Codex connection ends (`yuzuno/disconnected`), the Agent is marked
+disconnected: offline unless its status is uncertain, with the reason unless
+Core closed the connection itself (which keeps an error recorded before),
+and its context usage and pending requests stale. That changes no Turn, but
+it was committed with `update`, which copied a held record whole to compare
+and returned a second copy nobody read. It is now committed as the metadata
+(`Store::update_meta`), with the same change, and journaled the same
+(`runtime/disconnected`); `Meta` gains the context usage, which the
+metadata row already holds. A held record with a user message whose client
+ID `restore` gives back is still written by the commit that restores it,
+and a write that fails changes and publishes nothing, as before. By the
+source, this is the same change of commit as a thread's start above; it was
+not measured separately.
+
 ### A Claude Turn's end
 
 A live Claude `result` made two commits, each copying the held record whole.

@@ -305,8 +305,9 @@ async fn a_thread_started_is_written_as_metadata_and_writes_what_the_whole_recor
 }
 
 /// A Codex connection that ends leaves the Agent disconnected: offline unless
-/// its status is uncertain, with the reason unless Core closed it, and its
-/// context usage and pending requests stale. Only the metadata changes, so it
+/// its status is uncertain, with the reason unless Core closed it (which keeps
+/// an error recorded before), and its context usage and pending requests
+/// stale. Only the metadata changes, so it
 /// is written as the metadata (T-140): a held record is changed in place, and,
 /// held or not, it writes what the whole-record commit (`update`) wrote, with
 /// receipts still sending or uncertain beside it. A held record with a user
@@ -349,16 +350,22 @@ async fn a_disconnect_is_written_as_metadata_and_writes_what_the_whole_record_co
         d["agent"]["rev"] = json!(0);
         (d, kinds(ws))
     };
-    let usage = serde_json::from_value::<crate::model::ContextUsage>(json!({"usedTokens":1200,"windowTokens":200000,
-        "usedPercent":0.6,"turnId":"t2","updatedAt":"2026-10-23T00:00:00Z","stale":false})).unwrap();
-    // Lost with a reason, lost without one, and closed by Core.
-    let ends = [(false, json!({"message":"pipe closed"})), (false, json!({})), (true, json!({"message":"closed"}))];
+    // Lost with a reason, lost without one after an error, and closed by
+    // Core, without and after an error.
+    let ends = [
+        (false, json!({"message":"pipe closed"}), None),
+        (false, json!({}), Some("earlier")),
+        (true, json!({"message":"closed"}), None),
+        (true, json!({"message":"closed"}), Some("earlier")),
+    ];
     let mut checked = 0;
-    for (intentional, p) in &ends {
+    for (intentional, p, earlier) in &ends {
         for status in ["working", "uncertain"] {
-            for usage in [Some(usage.clone()), None] {
+            // Current, already stale, and none.
+            for usage in [Some(usage_of(false)), Some(usage_of(true)), None] {
                 for (held, restore) in [(true, false), (false, false), (true, true), (false, true)] {
                     let mut d = record(status, true);
+                    d.agent.error = (*earlier).map(str::to_owned);
                     d.context_usage = usage.clone();
                     d.pending = vec![approval("p", 7, 1), PendingRequest { stale: true, ..approval("old", 6, 0) }];
                     // A receipt sending whose user message has arrived, and one uncertain.
@@ -383,7 +390,8 @@ async fn a_disconnect_is_written_as_metadata_and_writes_what_the_whole_record_co
                     let copy = ws.store.held_for_test("a");
                     let before = in_place();
                     ws.on_event("a", 1, json!({"method":"yuzuno/disconnected","params":p}));
-                    let case = format!("{p} intentional={intentional} {status} usage={} held={held} restore={restore}", usage.is_some());
+                    let case = format!("{p} intentional={intentional} earlier={earlier:?} {status} usage={:?} held={held} restore={restore}",
+                        usage.as_ref().map(|u| u.stale));
                     if let Some(copy) = &copy {
                         let kept = ws.store.held_for_test("a").is_some_and(|now| Arc::ptr_eq(&now, copy));
                         assert_eq!(kept, !restore, "{case}: copied");
@@ -396,7 +404,7 @@ async fn a_disconnect_is_written_as_metadata_and_writes_what_the_whole_record_co
                     let agent = &mine.0["agent"];
                     assert_eq!(agent["connectionState"], "disconnected", "{case}");
                     assert_eq!(agent["status"], if status == "uncertain" { "uncertain" } else { "offline" }, "{case}");
-                    let reason = if *intentional { Value::Null } else { json!(p["message"].as_str().unwrap_or("连接已断开")) };
+                    let reason = if *intentional { json!(earlier) } else { json!(p["message"].as_str().unwrap_or("连接已断开")) };
                     assert_eq!(agent["error"], reason, "{case}");
                     assert!(mine.0["pending"].as_array().unwrap().iter().all(|r| r["stale"] == true), "{case}");
                     assert_eq!(mine.0["contextUsage"]["stale"], if usage.is_some() { json!(true) } else { Value::Null }, "{case}");
@@ -410,5 +418,58 @@ async fn a_disconnect_is_written_as_metadata_and_writes_what_the_whole_record_co
             }
         }
     }
-    assert_eq!(checked, 3 * 2 * 2 * 4);
+    assert_eq!(checked, 4 * 2 * 3 * 4);
+}
+
+/// A disconnect whose write fails, its journal row or its metadata row
+/// refused, changes nothing and publishes nothing (T-140): held or not, the
+/// record, its rows, its rev and the Agent listed stay as they were, and
+/// nothing is journaled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_disconnect_whose_write_fails_changes_and_publishes_nothing() {
+    let faults = [
+        "CREATE TRIGGER refuse BEFORE INSERT ON journal WHEN NEW.kind='runtime/disconnected' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        "CREATE TRIGGER refuse BEFORE UPDATE ON agents BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+    ];
+    let rows = |db: &rusqlite::Connection| -> (String, i64) {
+        (db.query_row("SELECT data FROM agents WHERE id='a'", [], |r| r.get(0)).unwrap(),
+            db.query_row("SELECT count(*) FROM journal WHERE agent_id='a'", [], |r| r.get(0)).unwrap())
+    };
+    for fault in faults {
+        for held in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+            let mut d = record("working", true);
+            d.context_usage = Some(usage_of(false));
+            d.pending = vec![approval("p", 7, 1)];
+            ws.store.insert(&d).unwrap();
+            ws.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+            if !held {
+                ws.store.release_for_test("a");
+            }
+            let rpc = connect(&ws, 1).await;
+            let db = rusqlite::Connection::open(ws.data_dir.join("workspace.sqlite")).unwrap();
+            let copy = ws.store.held_for_test("a");
+            let seen = || (ws.store.rev("a"), serde_json::to_value(ws.store.agents().unwrap()).unwrap(),
+                copy.as_ref().map(|c| serde_json::to_value(&*c.read()).unwrap()), rows(&db));
+            let before = seen();
+            db.execute_batch(fault).unwrap();
+            ws.on_event("a", 1, json!({"method":"yuzuno/disconnected","params":{"message":"pipe closed"}}));
+            let case = format!("{fault} held={held}");
+            assert_eq!(ws.store.held_for_test("a").is_some(), held, "{case}");
+            if let Some(copy) = &copy {
+                assert!(ws.store.held_for_test("a").is_some_and(|now| Arc::ptr_eq(&now, copy)), "{case}: replaced");
+            }
+            assert_eq!(seen(), before, "{case}");
+            assert!(kinds(&ws).iter().all(|(kind, _)| kind != "runtime/disconnected"), "{case}");
+            db.execute_batch("DROP TRIGGER refuse;").unwrap();
+            rpc.close();
+        }
+    }
+}
+
+/// Context usage, stale or not.
+fn usage_of(stale: bool) -> crate::model::ContextUsage {
+    serde_json::from_value(json!({"usedTokens":1200,"windowTokens":200000,"usedPercent":0.6,"turnId":"t2",
+        "updatedAt":"2026-10-23T00:00:00Z","stale":stale})).unwrap()
 }
