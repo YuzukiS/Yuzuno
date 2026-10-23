@@ -76,9 +76,9 @@ impl State {
     }
     /// A surviving remote thread can already be running when we reattach.
     /// Its matching usage is live evidence; replay from older turns is not.
-    pub fn resumed_running_turn(&self, id: &str, generation: u64, thread: &Value) {
-        let active = thread["turns"].as_array().and_then(|turns| turns.iter().rev()
-            .find(|turn| turn["status"] == "inProgress")).and_then(|turn| turn["id"].as_str());
+    pub fn resumed_running_turn(&self, id: &str, generation: u64, turns: &[Value]) {
+        let active = turns.iter().rev()
+            .find(|turn| turn["status"] == "inProgress").and_then(|turn| turn["id"].as_str());
         let mut awaiting = self.awaiting_turn.lock().unwrap();
         if let Some((g, allowed)) = awaiting.get_mut(id) {
             if *g == generation { *allowed = active.map(str::to_owned); }
@@ -166,10 +166,10 @@ mod tests {
     fn resumed_remote_turn_accepts_its_usage_but_not_older_replay() {
         let state = State::default();
         state.awaiting_fresh_usage("a", 3);
-        let thread = json!({"turns":[{"id":"old","status":"completed"},{"id":"active","status":"inProgress"}]});
-        state.resumed_running_turn("a", 2, &thread);
+        let turns = [json!({"id":"old","status":"completed"}), json!({"id":"active","status":"inProgress"})];
+        state.resumed_running_turn("a", 2, &turns);
         assert!(!state.accepts_usage_event("a", 3, "thread/tokenUsage/updated", Some("active")));
-        state.resumed_running_turn("a", 3, &thread);
+        state.resumed_running_turn("a", 3, &turns);
         assert!(state.accepts_usage_event("a", 3, "thread/tokenUsage/updated", Some("active")));
         assert!(!state.accepts_usage_event("a", 3, "thread/tokenUsage/updated", Some("old")));
         assert!(!state.accepts_usage_event("a", 3, "thread/tokenUsage/updated", None));

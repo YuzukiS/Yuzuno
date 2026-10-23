@@ -749,7 +749,9 @@ impl Workspace {
         let a = attempt.agent.clone();
         let (new_empty_thread, replacing_empty_thread, imported) =
             (attempt.new_empty_thread, attempt.replacing_empty_thread, attempt.imported);
-        let mut result = match result {
+        // Shared with the attachment, which keeps it unchanged for a later
+        // finish (T-140).
+        let result = match result {
             Ok(v) => v,
             Err(e) => {
                 // Structured, so the GUI can explain it and offer an explicit
@@ -787,7 +789,9 @@ impl Workspace {
         if !new_empty_thread {
             anyhow::ensure!(a.thread_id.as_deref() == Some(thread_id.as_str()), "Codex 恢复了不同会话；原会话未确认");
         }
-        let imported_history = if imported {
+        // An imported record's Turns are the recovery page's, kept apart
+        // from the reply, which stays as it came.
+        let (imported_history, page_turns) = if imported {
             anyhow::ensure!(a.thread_id.as_deref() == Some(thread_id.as_str()), "Codex 恢复了不同会话；不会替换导入记录");
             let page = match crate::codex_sessions::recovery_page(&connection.rpc, &thread_id, &attempt.before).await {
                 Ok(page) => page,
@@ -799,15 +803,15 @@ impl Workspace {
                 }
             };
             let history = crate::model::HistoryWindow { loaded_count: page.turns.len(), has_more: page.has_more, next_cursor: page.next_cursor };
-            result["thread"]["turns"] = page.turns.into();
-            Some(history)
-        } else { None };
+            (Some(history), Some(page.turns))
+        } else { (None, None) };
         let owned = self.owner(id).await;
         if !same_generation(self.rpcs.lock().unwrap().get(id), connection.generation) {
             return Err(OutcomeUnknown("连接在恢复期间结束；会话状态需要重新确认".into()).into());
         }
         if a.remote.is_some() && !attempt.same_thread_only {
-            self.codex_context.resumed_running_turn(id, connection.generation, &result["thread"]);
+            let turns = page_turns.as_deref().or(result["thread"]["turns"].as_array().map(Vec::as_slice));
+            self.codex_context.resumed_running_turn(id, connection.generation, turns.unwrap_or_default());
         }
         // The mode Codex resumed the thread in, if it says (/plan); a new
         // thread's answer says none. Announced with the attachment below.
@@ -822,9 +826,7 @@ impl Workspace {
             let id = agent.as_str();
             let changes = store.changed_items_since(id, request_rev)?;
             let has_new_error = store.has_error_since(id, request_seq)?;
-            // The snapshot's Turns are merged by value: a resumed thread's
-            // whole history is not copied again (T-140).
-            let turns = take_turns(&mut result["thread"]);
+            let thread = &result["thread"];
             store.record_event(
                 id,
                 "thread/attached",
@@ -836,9 +838,14 @@ impl Workspace {
                     // Yuzuno now owns the writer; an earlier conflict is resolved.
                     if let Some(handoff) = &mut d.codex_handoff { handoff.writer_conflict_at = None; }
                     if let Some(history) = imported_history { d.history = Some(history); }
-                    apply_snapshot_turns(d, &result["thread"], turns, &changes);
+                    match page_turns {
+                        Some(turns) => apply_snapshot_turns(d, thread, Some(turns), &changes),
+                        // The kept reply's Turns, copied one at a time as
+                        // they merge, not a whole history first (T-140).
+                        None => apply_snapshot_turns(d, thread, thread["turns"].as_array().map(|turns| turns.iter().cloned()), &changes),
+                    }
                     d.confirm_message_receipts();
-                    if !has_new_error { clear_transport_error(d, &result["thread"]); }
+                    if !has_new_error { clear_transport_error(d, thread); }
                     if replacing_empty_thread {
                         d.agent.error = None;
                     }
@@ -2632,9 +2639,11 @@ fn take_items(value: &mut Value) -> Option<Vec<Value>> {
     }
 }
 
-/// Merges the snapshot `thread`, whose Turns (`take_turns`) are given by
-/// value so a long history is merged without being copied.
-fn apply_snapshot_turns(d: &mut AgentDetail, thread: &Value, turns: Option<Vec<Value>>, changes: &crate::store::Changes) {
+/// Merges the snapshot `thread`, whose Turns are given by value one at a
+/// time: taken out of a reply it owns (`take_turns`), or copied Turn by Turn
+/// from one an attach keeps, so a long history is never copied whole.
+fn apply_snapshot_turns(d: &mut AgentDetail, thread: &Value, turns: Option<impl IntoIterator<Item = Value>>,
+    changes: &crate::store::Changes) {
     let newer_events = changes.newer;
     let mut newer_items = changes.items.clone();
     if newer_events && !changes.complete {
@@ -2643,9 +2652,11 @@ fn apply_snapshot_turns(d: &mut AgentDetail, thread: &Value, turns: Option<Vec<V
         newer_items.extend(unfinished_items(d));
     }
     let newer_items = &newer_items;
-    if let Some(mut restored) = turns {
-        crate::message_content::restore(&mut restored, &d.message_receipts, true);
-        for incoming in restored {
+    if let Some(turns) = turns {
+        for mut incoming in turns {
+            // Turn by Turn, as `restore` does them: a borrowed snapshot is
+            // copied one Turn at a time (T-140).
+            crate::message_content::restore(std::slice::from_mut(&mut incoming), &d.message_receipts, true);
             if let Some(existing) = d.turns.iter_mut().find(|t| t["id"] == incoming["id"]) {
                 let mut incoming = normalize_snapshot_message_ids_owned(existing, incoming);
                 let items = take_items(&mut incoming);
@@ -2904,6 +2915,46 @@ mod tests {
 
     fn changes(newer: bool, items: &[&str]) -> crate::store::Changes {
         crate::store::Changes { newer, items: items.iter().map(|item| item.to_string()).collect(), complete: true }
+    }
+
+    /// An attach merges the Turns of the reply it keeps one at a time (T-140):
+    /// the record comes out as merging them owned does, and the reply is left
+    /// as it was, for one large Turn and for many, new and repeated ones.
+    #[test]
+    fn a_kept_snapshot_merges_as_its_own_turns_do_and_stays_unchanged() {
+        let base: AgentDetail = serde_json::from_value(json!({
+            "agent":{"id":"a","name":"A","goal":"test","cwd":"/tmp","model":"","color":"sage",
+                "threadId":"thread","status":"working","createdAt":"","updatedAt":"","unreadCount":0,
+                "pendingCount":0,"lastSeq":9,"reviewedSeq":0},
+            "turns":[{"id":"t1","status":"completed","items":[{"id":"a1","type":"agentMessage","text":"old"}]},
+                {"id":"t2","status":"inProgress","items":[{"id":"live","type":"agentMessage","text":"streamed"}]}],
+            "pending":[],"artifacts":[],
+            "messageReceipts":[{"input":{"clientMessageId":"c1","text":"hi","textBlocks":[]},"status":"sending"}]
+        })).unwrap();
+        let large: Vec<Value> = (0..400).map(|i| json!({"id":format!("i{i}"),"type":"agentMessage","text":"x".repeat(512)})).collect();
+        let snapshots = [
+            json!({"status":{"type":"idle"},"turns":[{"id":"t1","status":"completed","items":large}]}),
+            json!({"status":{"type":"active"},"turns":[
+                {"id":"t1","status":"completed","items":[{"id":"a1","type":"agentMessage","text":"native"},
+                    {"id":"u","type":"userMessage","clientId":"c1","content":[{"type":"text","text":"hi"}]}]},
+                {"id":"t2","status":"completed","items":[{"id":"live","type":"agentMessage","text":"older"}]},
+                {"id":"t3","status":"inProgress","items":[]},
+                {"id":"t3","status":"completed","items":[{"id":"again","type":"agentMessage"}]},
+                {"status":"completed","items":[]}]}),
+            json!({"status":{"type":"idle"},"turns":[]}),
+            json!({"status":{"type":"systemError"}}),
+        ];
+        for snapshot in &snapshots {
+            for changes in [changes(false, &[]), changes(true, &["live"])] {
+                let kept = snapshot.clone();
+                let mut owned = base.clone();
+                apply_snapshot_turns(&mut owned, &kept, kept["turns"].as_array().cloned(), &changes);
+                let mut borrowed = base.clone();
+                apply_snapshot_turns(&mut borrowed, &kept, kept["turns"].as_array().map(|turns| turns.iter().cloned()), &changes);
+                assert_eq!(serde_json::to_value(&borrowed).unwrap(), serde_json::to_value(&owned).unwrap(), "{snapshot}");
+                assert_eq!(&kept, snapshot);
+            }
+        }
     }
 
     #[test]

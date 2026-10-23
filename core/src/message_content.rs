@@ -423,6 +423,43 @@ mod tests {
         assert_eq!(text(&history[0]["items"][0]), source);
     }
 
+    /// A snapshot's Turns restored one at a time, as a merge from a kept
+    /// reply does (T-140), come out as restoring them together does, and note
+    /// the same Items in the same order.
+    #[test]
+    fn restoring_turn_by_turn_is_restoring_them_together() {
+        let mut d = fixture();
+        d.confirm_message_receipts();
+        let source = d.message_receipts[0].input.text.clone();
+        let user = |id: &str, client: Option<&str>| {
+            let mut item = json!({"id":id,"type":"userMessage","content":[{"type":"text","text":source}]});
+            if let Some(client) = client { item["clientId"] = client.into(); }
+            item
+        };
+        let turns = vec![
+            json!({"id":"t","items":[user("item-1", None), user("item-2", None)]}),
+            json!({"id":"other","items":[user("x", Some("c2")), {"id":"a","type":"agentMessage"}]}),
+            json!({"items":[user("item-1", Some("c1"))]}),
+            json!({"id":"t","items":[user("item-1", None)]}),
+            json!({"id":"empty"}),
+        ];
+        let (together, noted_together) = collect_restored(|| {
+            let mut turns = turns.clone();
+            restore(&mut turns, &d.message_receipts, true);
+            turns
+        });
+        let (each, noted_each) = collect_restored(|| {
+            let mut turns = turns.clone();
+            for turn in &mut turns {
+                restore(std::slice::from_mut(turn), &d.message_receipts, true);
+            }
+            turns
+        });
+        assert_ne!(together, turns, "the fixture restores something");
+        assert_eq!(each, together);
+        assert_eq!(noted_each, noted_together);
+    }
+
     #[test]
     fn metadata_never_matches_prose_in_another_turn_or_conflicting_identity() {
         let mut d = fixture();

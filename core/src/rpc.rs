@@ -84,7 +84,8 @@ pub struct Rpc {
 pub(crate) struct PendingReply {
     id: u64,
     rx: oneshot::Receiver<Result<Value>>,
-    result: Option<Result<Value>>,
+    /// Shared with what `wait` handed out, never changed (T-140).
+    result: Option<Result<Arc<Value>>>,
 }
 
 impl PendingReply {
@@ -93,7 +94,7 @@ impl PendingReply {
     async fn receive(&mut self, limit: Duration) -> Result<()> {
         if self.result.is_none() {
             self.result = Some(match timeout(limit, &mut self.rx).await {
-                Ok(Ok(result)) => result,
+                Ok(Ok(result)) => result.map(Arc::new),
                 Ok(Err(_)) => Err(OutcomeUnknown("Codex 连接在请求期间结束；操作结果尚未确认".into()).into()),
                 Err(_) => return Err(OutcomeUnknown("Codex 请求超时；操作结果尚未确认，请勿重复发送原任务".into()).into()),
             });
@@ -102,12 +103,12 @@ impl PendingReply {
     }
 
     /// The reply, kept for waiting again: an attach that is checked again
-    /// after a failed or interrupted write finishes from it, so each wait
-    /// gets a copy.
-    pub(crate) async fn wait(&mut self, limit: Duration) -> Result<Value> {
+    /// after a failed or interrupted write finishes from it. Each wait shares
+    /// it, unchanged; a resumed Thread's history is not copied (T-140).
+    pub(crate) async fn wait(&mut self, limit: Duration) -> Result<Arc<Value>> {
         self.receive(limit).await?;
         match self.result.as_ref().unwrap() {
-            Ok(value) => Ok(value.clone()),
+            Ok(value) => Ok(Arc::clone(value)),
             Err(error) => Err(if let Some(error) = error.downcast_ref::<RpcError>() {
                 error.clone().into()
             } else if let Some(error) = error.downcast_ref::<OutcomeUnknown>() {
@@ -120,9 +121,10 @@ impl PendingReply {
 
     /// The reply, handed over whole to a caller that will not wait for it
     /// again; a resumed or read Thread's history is not copied (T-140).
+    /// Only a reply `wait` already shared, and still shared, is copied.
     pub(crate) async fn into_result(mut self, limit: Duration) -> Result<Value> {
         self.receive(limit).await?;
-        self.result.take().unwrap()
+        self.result.take().unwrap().map(Arc::unwrap_or_clone)
     }
 }
 
@@ -586,8 +588,51 @@ mod reply_tests {
         assert!(error.downcast_ref::<OutcomeUnknown>().is_some(), "{error:#}");
         let resumed = json!({"thread":{"id":"t","turns":[]},"model":"m"});
         tx.send(Ok(resumed.clone())).unwrap();
-        assert_eq!(reply.wait(Duration::from_secs(1)).await.unwrap(), resumed);
-        assert_eq!(reply.wait(Duration::from_secs(1)).await.unwrap(), resumed);
-        assert_eq!(reply.result.as_ref().unwrap().as_ref().unwrap(), &resumed);
+        assert_eq!(*reply.wait(Duration::from_secs(1)).await.unwrap(), resumed);
+        assert_eq!(*reply.wait(Duration::from_secs(1)).await.unwrap(), resumed);
+        assert_eq!(**reply.result.as_ref().unwrap().as_ref().unwrap(), resumed);
+    }
+
+    /// The text of `value["text"]`, where it lives: a moved Value keeps it,
+    /// a copy has its own.
+    fn text_at(value: &Value) -> *const u8 {
+        value["text"].as_str().unwrap().as_ptr()
+    }
+
+    #[tokio::test]
+    async fn a_reply_handed_over_is_moved_not_copied() {
+        let (tx, mut reply) = pending();
+        tx.send(Ok(json!({"text":"x".repeat(4096)}))).unwrap();
+        reply.receive(Duration::from_secs(1)).await.unwrap();
+        let received = text_at(reply.result.as_ref().unwrap().as_ref().unwrap());
+        let value = reply.into_result(Duration::from_secs(1)).await.unwrap();
+        assert_eq!(text_at(&value), received);
+    }
+
+    /// Every wait shares the one reply kept, and none changes it.
+    #[tokio::test]
+    async fn an_attach_reply_is_shared_not_copied() {
+        let (tx, mut reply) = pending();
+        let resumed = json!({"text":"x".repeat(4096)});
+        tx.send(Ok(resumed.clone())).unwrap();
+        let first = reply.wait(Duration::from_secs(1)).await.unwrap();
+        let second = reply.wait(Duration::from_secs(1)).await.unwrap();
+        let kept = reply.result.as_ref().unwrap().as_ref().unwrap();
+        assert!(Arc::ptr_eq(&first, kept) && Arc::ptr_eq(&second, kept));
+        drop((first, second));
+        assert_eq!(Arc::strong_count(reply.result.as_ref().unwrap().as_ref().unwrap()), 1);
+        assert_eq!(*reply.wait(Duration::from_secs(1)).await.unwrap(), resumed);
+    }
+
+    /// A reply a wait still shares is copied when handed over; the shared
+    /// one stays as it was.
+    #[tokio::test]
+    async fn a_reply_still_shared_is_copied_when_handed_over() {
+        let (tx, mut reply) = pending();
+        tx.send(Ok(json!({"text":"x".repeat(4096)}))).unwrap();
+        let shared = reply.wait(Duration::from_secs(1)).await.unwrap();
+        let value = reply.into_result(Duration::from_secs(1)).await.unwrap();
+        assert_eq!(value, *shared);
+        assert_ne!(text_at(&value), text_at(&shared));
     }
 }
