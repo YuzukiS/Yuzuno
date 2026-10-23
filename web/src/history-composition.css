@@ -1,0 +1,81 @@
+/* Stored history of held Agents (HistoryComposition.tsx): one colour per
+   part of a stored record, shared by the chart and its legend. Four hues
+   that stay apart in every palette (whose greens differ), each at least
+   3.8:1 against the light papers and 6:1 against the dark ones. */
+.history-section {
+  display: grid;
+  /* One track no wider than the section: the table scrolls inside it. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  --history-items: #3f7a45;
+  --history-payloads: #3d6ea8;
+  --history-turns: #a0652a;
+  --history-metadata: #7b756b;
+}
+:root[data-theme="dark"] .history-section {
+  --history-items: #8fc08a;
+  --history-payloads: #8ab4e8;
+  --history-turns: #d8a060;
+  --history-metadata: #aaa398;
+}
+.history-section .settings-section-heading button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.history-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-secondary, #574c40);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.history-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.history-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+.history-swatch-items { background: var(--history-items); }
+.history-swatch-payloads { background: var(--history-payloads); }
+.history-swatch-turns { background: var(--history-turns); }
+.history-swatch-metadata { background: var(--history-metadata); }
+.history-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+}
+.history-table caption {
+  text-align: left;
+  color: var(--text-secondary, #574c40);
+  padding-bottom: 4px;
+}
+.history-table th,
+.history-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line, #cfc5b6);
+  text-align: right;
+  white-space: nowrap;
+}
+.history-table th[scope="row"],
+.history-table thead th:first-child {
+  text-align: left;
+  white-space: normal;
+}
+.history-total th,
+.history-total td {
+  font-weight: 600;
+}

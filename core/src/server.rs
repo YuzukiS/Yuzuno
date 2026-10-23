@@ -163,6 +163,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/requests/{id}/respond",post(respond))
         .route("/api/models",get(models))
         .route("/api/diagnostics/memory",get(memory_diagnostics))
+        .route("/api/diagnostics/memory/history",get(memory_history))
         .route("/api/events",get(events))
         .route("/api/collaboration/{operation}",post(collaboration))
         .route("/api/artifact",get(artifact))
@@ -184,6 +185,30 @@ async fn update_admission(State(admission): State<Arc<crate::updates::admission:
         Err(error) => return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":error.to_string()}))).into_response(),
     };
     next.run(request).await
+}
+
+/// What the held Agents' stored history is made of (T-140), read only when
+/// the user asks: row counts and stored bytes, never contents, within
+/// `history_composition::BUDGET`. Not part of /api/diagnostics/memory. One
+/// measurement at a time: another asked meanwhile is told so, not queued.
+async fn memory_history(State(ws): State<Arc<Workspace>>) -> ApiResult<Json<Value>> {
+    static MEASURING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    struct Measuring;
+    impl Drop for Measuring {
+        fn drop(&mut self) {
+            MEASURING.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+    if MEASURING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return Ok(Json(crate::history_composition::busy()));
+    }
+    let measuring = Measuring;
+    // The guard goes with the read, so a client that leaves does not free it early.
+    let report = tokio::task::spawn_blocking(move || {
+        let _measuring = measuring;
+        crate::history_composition::composition(&ws.store, crate::history_composition::BUDGET)
+    }).await?;
+    Ok(Json(report))
 }
 
 /// This process's memory and its heap maintenance, read only when asked

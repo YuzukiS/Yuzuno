@@ -82,6 +82,50 @@ Each part is read in turn, so they are not one snapshot. On a platform where a
 part can't be read it says `available: false` with a reason; no count is 0
 because it is unknown.
 
+### What the held records' stored history is made of
+
+`GET /api/diagnostics/memory/history` answers which parts of the held Agents'
+records take the most space where they are stored. Settings → Updates shows it
+as a chart and a table, read only when you press Measure. It is not part of
+`/api/diagnostics/memory`, Copy diagnostics, `/api/health` or any polling, and
+it adds nothing to opening the Workspace.
+
+For each Agent whose record is held now, it gives the rows and stored bytes of
+its metadata row, its Turns, its Items' own data and its payloads (the full
+large fields of tool Items), and the total of each over the held Agents.
+These four parts are disjoint and together are the stored record; with
+`layout` 0 the metadata row is the whole record. The previews kept for
+clients are a shorter copy of payloads, so they are given on their own and
+are not part of the record. The journal, originals kept from before a
+conversion and salvaged rows are other copies and are not counted. It gives
+only counts, the Agent's id and name, and whether the held record has changes
+its rows lack yet (`unwrittenChanges`): no text, path, key or SQL. An Agent
+held without a row says `stored: false` and adds nothing to the total.
+
+- **Bytes as stored.** The bytes are SQLite's `octet_length` of each value,
+  in the database's encoding: UTF-8, SQLite's default, which Core never
+  changes. SQLite takes them from the row's header, so a value on overflow
+  pages is not read; the leaf pages of the Agent's rows are. `length` of TEXT
+  counts characters and has to read them, and so does any other use of such
+  a column, `count(previews)` included, so none is used: previews are counted
+  as `count(octet_length(previews))`. The test
+  `stored_bytes_are_read_from_row_headers_not_from_the_payloads` counts the
+  pages the report's own statements read: no more than the tables' pages
+  other than overflow pages, while its payloads and previews take more on
+  overflow pages.
+- **Not memory.** Stored bytes are not the Rust heap a held record takes,
+  String capacity, RSS or SQLite's page cache. A record with unwritten
+  changes holds more than is stored.
+- **Not one snapshot with the held list.** The held Agents are listed
+  first, then their rows read in one read snapshot. No held record is
+  copied or serialized.
+- **Budget.** The reads stop after 2 s. Then, or on any error, the answer
+  is `available: false` with a reason and no numbers at all: no Agent's and
+  no total, never a partial sum. The budget's progress handler is removed on
+  every path, so the pooled connection goes back without it. One measurement runs at a time, and one
+  asked meanwhile is told so. Without WAL a read would share the one writer
+  and hold up its writes, so it is not measured.
+
 ## While an Agent streams on
 
 T-140 Job `459d0b2a-f9cd-4da9-aeb0-43cae468fcc6`, 2026-10-22, a lab build on
@@ -183,6 +227,38 @@ memory. So this lowers allocation turnover, the batch's highest live and the
 time per delta; the lab does not show it lowering what a batch adds to live
 memory. These are synthetic allocator measurements in one process, not the
 daily Core's RSS.
+
+### A reasoning summary delta
+
+A reasoning summary's text delta was appended to its section the same way: a
+copy of the section's text so far for each delta. It is now pushed onto the
+section's string in place too. A section that is not a string still becomes
+the delta; the section index, an Item or Turn made when missing, and part
+boundaries are as they were.
+
+T-140 run `ca6603bc-6bf8-498f-aa26-f599dd743196` (build
+`624eff87-d966-423a-bc4d-51115a9a78b4`, measure
+`765cc730-a594-42a9-bf02-374a85f05973`), 2026-10-23: release builds of
+`summary_delta_lab` (on lab branches, not merged), one on main and one on this
+change, the same example. Each ran twice, alternating, its two cells in one
+fixed order. Each cell sent 200 deltas of 24 B to one section through
+`Store::record_stream`. Both runs of a side gave the same Rust counts, and the
+section read back was the deltas in order in every cell.
+
+| 200 deltas of 24 B | Before | After |
+| --- | ---: | ---: |
+| Short section: allocated, averaged per delta | 5.4 KiB | 0.8 KiB |
+| The same: highest Rust live above the batch's start | 26.4 KiB | 14.3 KiB |
+| After 1 MiB: allocated, averaged per delta | 2.0 MiB | 5.9 KiB |
+| The same: highest Rust live above the batch's start | 3.0 MiB | 1.0 MiB |
+| The same: median time of one call | 239–241 µs | 0.98–1.0 µs |
+| The same: VmRSS rise over the batch | 2.0 MiB | 8 KiB |
+
+For the short section, the median call (1.03 and 1.06 µs before, 1.13 and
+0.95 µs after) and the VmRSS rise (308 and 244 KiB before, 220 and 284 KiB
+after) overlap. Live growth over the batch's start, with the meaning and
+limits given above, was 17.1 KiB before and 13.8 KiB after for the short
+section, and 1.0 MiB on both sides after 1 MiB.
 
 ## Reproduce the isolated comparison
 
