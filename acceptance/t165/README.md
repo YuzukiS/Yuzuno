@@ -1,6 +1,6 @@
-# T-165: a CI-built Mac app on a real Mac (prepared, not run)
+# T-165: a CI-built Mac app on a real Mac (A run once; B-minimal not run)
 
-Checks a candidate from [`desktop-macos.yml`](../../.github/workflows/desktop-macos.yml) on an Apple silicon Mac. **Nothing here has been run.** Each part runs only after the user decides it, for one named candidate; this file grants nothing.
+Checks a candidate from [`desktop-macos.yml`](../../.github/workflows/desktop-macos.yml) on an Apple silicon Mac. **Part A ran once, on 2026-10-21, for one candidate ([Results](#results)); B-minimal and Open Anyway have not been run.** Each part runs only after the user decides it, for one named candidate; this file grants nothing, and that run's decision covered that run only.
 
 No step changes:
 - the daily Core, its data or settings;
@@ -95,3 +95,31 @@ Choosing **Open Anyway** records an approval in macOS's own policy that this pla
 **After either:** if the app ran, the preferences service may still hold the defaults it wrote in memory. The defaults file is only seen absent at the second look, not proven absent later.
 
 Any difference between the records is reported as it is, never as "no trace".
+
+## Results
+
+### A, 2026-10-21 (UTC), once
+
+- **Candidate:** `desktop-macos.yml` run [39557597376](https://github.com/YuzukiS/Yuzuno/actions/runs/39557597376), built from main at `aa4f9fcebd3488f2eabc543ef7bf6485b34f30f8`. It is arm64 and signed ad hoc, with disk image sha256 `99ba6dab605bb6f26e05f2756d4b82e15510358befd2ccc08de705560c2bc184` and executable `a074c899a2aeba9a45c235df87f883b625de00367baf5e7545c3d7edf2f3caa3`. It was not rebuilt. Its artifact expires on 2026-11-04.
+- **Harness and plan:** this file and [acceptance/t141](../t141/README.md) at `5d07ad66939a96d8bd1d864c11d0347b6ab18589`.
+- **Mac and lab:**
+  - an Apple silicon Mac on macOS 27.0.1, reached over a private network;
+  - a released Core with a new data folder of its own as the lab Core.
+  - `--daily-port` pointed the read-only relay at that lab Core. The harness's checks call it "daily", but it was the lab Workspace, and the daily Core was not contacted.
+- **Before record:** no problems.
+- **Result:** 41 of 41 checks passed, exit 0, not rerun.
+  - The copied app's bytes matched `build.json`. `codesign --verify` passed, and the copy had no quarantine attribute because it arrived over SSH.
+  - Opened with the lab Core's address, the app opened the lab Workspace and saved that Core.
+  - After the tunnel stopped and started, the open window reached Core again.
+  - Quit and reopened without arguments, it returned to the saved Core.
+  - The tunnel script's failure cases and the SSH key restrictions and refusals all held.
+  - Only reads reached the read-only relay.
+- **Cleanup:**
+  - The run folder and the data folders the app had created were removed. Nothing was kept, and no removal failed.
+  - The after record matched the before record.
+  - What the user accepted as remaining: the LaunchServices entry, log lines and ctimes, the shared `$TMPDIR`'s modification time, and possibly defaults still cached by the preferences service.
+- **Not shown by A:**
+  - what the window shows (Agent list, Home, Jobs), sending, approvals and drafts;
+  - a downloaded, quarantined copy and Gatekeeper (B-minimal);
+  - installing to `/Applications`, signing and notarization;
+  - any later candidate, and any Intel build.

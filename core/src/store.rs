@@ -1502,6 +1502,18 @@ impl Store {
         }
     }
 
+    /// The direct sub-agent `thread` of Agent `id` as its own Turns record it
+    /// (`subagents::recorded_child`), without copying the record: from the
+    /// held copy under its read lock, else from its rows without payloads.
+    /// An Item's IDs are never payloads; a path longer than
+    /// `client_view::TRIM_ABOVE` would be its preview, and it is only a label.
+    pub fn recorded_child(&self, id: &str, thread: &str) -> Result<Option<Value>> {
+        match self.held(id) {
+            Some(held) => Ok(crate::subagents::recorded_child(&held.read(), thread)),
+            None => Ok(crate::subagents::recorded_child(&self.current(id, View::Rows, &mut || {})?, thread)),
+        }
+    }
+
     /// `detail`, running `unlocked` after a record is assembled and before
     /// its journal is replayed; tests race writes against the read there.
     fn detail_racing(&self, id: &str, mut unlocked: impl FnMut()) -> Result<AgentDetail> {

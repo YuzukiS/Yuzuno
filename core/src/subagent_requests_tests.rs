@@ -243,6 +243,43 @@ async fn a_childs_file_change_request_shows_the_changes_its_item_proposed() {
     rpc.close();
 }
 
+/// A child's file change, its request and its resolution find the child in
+/// the parent's `subAgentActivity` Items without reading the parent's whole
+/// record, whether it is held or not (T-140); what they do is unchanged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_childs_events_find_it_without_reading_the_parents_whole_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = workspace(&dir);
+    let log = dir.path().join("sent.jsonl");
+    let rpc = connect(&ws, 1, &log).await;
+    let reads = || crate::store::detail_reads_of("a");
+    let held = |ws: &Workspace| ws.store.peek("a", |_| ()).is_some();
+    // Inserted, the record is not held, and a file change commits nothing.
+    assert!(!held(&ws));
+    let before = reads();
+    ws.dispatch_event("a", 1, file_started(ALPHA, "edit", "alpha\n")).await;
+    ws.dispatch_event("a", 1, file_started(STRANGER, "foreign", "x\n")).await;
+    assert!(!held(&ws));
+    // The request's commit holds it.
+    ws.dispatch_event("a", 1, file_approval(0, ALPHA, "edit")).await;
+    assert!(held(&ws));
+    ws.dispatch_event("a", 1, approval(1, BETA, "turn-beta", "beta")).await;
+    ws.dispatch_event("a", 1, resolved(0, ALPHA)).await;
+    ws.dispatch_event("a", 1, file_started(BETA, "edit-b", "beta\n")).await;
+    ws.dispatch_event("a", 1, approval(2, STRANGER, "turn-x", "x")).await;
+    assert_eq!(reads(), before, "a child's event read the parent's whole record");
+
+    let requests = pending(&ws);
+    assert_eq!(requests.len(), 1, "ALPHA's request resolved, BETA's waits, STRANGER's refused: {requests:?}");
+    assert_eq!(requests[0].params["threadId"], BETA);
+    assert_eq!(requests[0].params["_subAgent"]["path"], "/root/beta");
+    assert!(ws.child_changes.take("a", BETA, "edit-b").is_some(), "a child's file change is kept");
+    assert!(ws.child_changes.take("a", STRANGER, "foreign").is_none());
+    let lines = sent(&log, 1).await;
+    assert!(lines.iter().any(|l| l["id"] == 2 && l["error"]["code"] == -32601), "{lines:?}");
+    rpc.close();
+}
+
 /// Codex answering `thread/turns/list` for the children: ALPHA's first Turn
 /// has ended and its second still runs; BETA cannot be read.
 async fn connect_codex(ws: &Workspace, generation: u64) -> Arc<Rpc> {

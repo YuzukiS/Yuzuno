@@ -16,10 +16,12 @@ passed, checks the inputs (never the Claude Agent SDK) before uploading the
 one core-inputs artifact.
 
 .github/workflows/desktop-macos.yml (T-165) builds the macOS app on the
-standard GitHub-hosted Apple silicon runner, macos-26: only pull_request and
+standard GitHub-hosted macOS 26 runners, one per architecture: arm64 on
+macos-26 and x86_64 on macos-26-intel. Only pull_request and
 workflow_dispatch trigger it; its token reads contents and actions only; no
-secret, cache or other runner. Only a run on request uploads, the one macOS
-artifact, and such a run builds only main whose push CI passed.
+secret, cache or other runner. Only a run on request uploads, one macOS
+artifact per architecture, and such a run builds only main whose push CI
+passed.
 """
 from pathlib import Path
 import os
@@ -185,7 +187,9 @@ def release_inputs_problems(text):
     return found
 
 
-MACOS_UPLOAD_NAME = 'name: yuzuno-macos-arm64-${{ github.sha }}-${{ github.run_attempt }}'
+MACOS_UPLOAD_NAME = 'name: yuzuno-macos-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}'
+# Each architecture on its own standard runner, and nothing else.
+MACOS_RUNNERS = [('arm64', 'macos-26'), ('x86_64', 'macos-26-intel')]
 ON_REQUEST = "if: github.event_name == 'workflow_dispatch'"
 
 
@@ -211,7 +215,10 @@ def desktop_macos_problems(text):
     if len(all_jobs) != 1:
         found.append(f'{len(all_jobs)} jobs, not one')
     for name, job in all_jobs.items():
-        found += runner_problems(name, job, 'macos-26')
+        found += runner_problems(name, job, '${{ matrix.runner }}')
+        matrix = re.findall(r'^          - arch: (\S+)\n            runner: (\S+)$', '\n'.join(job), re.M)
+        if matrix != MACOS_RUNNERS:
+            found.append(f'job {name} builds {matrix}, not arm64 on macos-26 and x86_64 on macos-26-intel')
         steps = steps_of(job)
         def first(predicate):
             return next((i for i, step in enumerate(steps) if predicate(step)), None)
@@ -295,8 +302,11 @@ class PublicCi(unittest.TestCase):
             'pull_request_target': (good.replace('  pull_request:\n', '  pull_request_target:\n', 1), 'triggers'),
             'a write permission': (good.replace('  actions: read', '  actions: write', 1), 'permissions'),
             'a secret': (good.replace('GH_TOKEN: ${{ github.token }}', 'GH_TOKEN: ${{ secrets.X }}', 1), 'a secret'),
-            'a larger runner': (good.replace('runs-on: macos-26', 'runs-on: macos-26-xlarge', 1), 'not macos-26'),
-            'a self-hosted runner': (good.replace('runs-on: macos-26', 'runs-on: [self-hosted, macOS, ARM64]', 1), 'self-hosted'),
+            'a larger runner': (good.replace('runner: macos-26-intel\n', 'runner: macos-26-large\n', 1), 'not arm64 on macos-26'),
+            'a third runner': (good.replace('            runner: macos-26-intel\n', '            runner: macos-26-intel\n'
+                                            '          - arch: x86_64\n            runner: macos-15-intel\n', 1), 'not arm64 on macos-26'),
+            'a runner outside the matrix': (good.replace('runs-on: ${{ matrix.runner }}', 'runs-on: macos-26', 1), 'not ${{ matrix.runner }}'),
+            'a self-hosted runner': (good.replace('runs-on: ${{ matrix.runner }}', 'runs-on: [self-hosted, macOS, ARM64]', 1), 'self-hosted'),
             'a Rust cache': (good.replace('      - name: Runner details', '      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6\n      - name: Runner details', 1), 'cache'),
             'an unpinned action': (good.replace('@3d3c42e5aac5ba805825da76410c181273ba90b1', '@v7', 1), 'not pinned'),
             'no first-step runner check': (good.replace('[ "$RUNNER_ENVIRONMENT" = github-hosted ] ||', 'true ||', 1), 'first step'),
@@ -306,7 +316,7 @@ class PublicCi(unittest.TestCase):
             'checkout credentials kept': (good.replace('          persist-credentials: false\n', '', 1), 'credentials'),
             'an upload from PRs': (good.replace(f'{upload}ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n        {ON_REQUEST}\n',
                                                 f'{upload}ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n', 1), 'from a pull request'),
-            'another artifact name': (good.replace('name: yuzuno-macos-arm64-${{ github.sha }}', 'name: macos-${{ github.sha }}', 1), 'one macOS artifact'),
+            'another artifact name': (good.replace('name: yuzuno-macos-${{ matrix.arch }}-${{ github.sha }}', 'name: macos-${{ github.sha }}', 1), 'one macOS artifact'),
             'a second upload': (good.replace(upload, upload + 'ea165f8d65b6e75b540449e92b4886f43607fa02\n        with:\n          path: target\n' + upload, 1), 'one macOS artifact'),
         }
         for label, (text, message) in cases.items():

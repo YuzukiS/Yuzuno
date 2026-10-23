@@ -2038,10 +2038,8 @@ impl Workspace {
         let child = if wrong_thread
             && (message.get("id").is_some() || method == "serverRequest/resolved" || child_changes)
         {
-            event_thread.and_then(|thread| {
-                let detail = self.store.detail(id).ok()?;
-                crate::subagents::recorded_child(&detail, thread)
-            })
+            // Only its Items are read, not a copy of the record (T-140).
+            event_thread.and_then(|thread| self.store.recorded_child(id, thread).ok().flatten())
         } else {
             None
         };
