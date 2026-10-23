@@ -1,16 +1,17 @@
-// T-170: the web app at phone sizes, in Chromium, on a production build with
+// T-170: the web app at phone sizes, in Chromium (or Playwright's Linux WebKit,
+// see browser-engine.mjs), on a production build with
 // every API answered here (no Core). A phone held upright, one held sideways
 // and an ordinary wide window: which entries can be reached, how large the
 // touch targets are, and screenshots for review. Without --baseline it also
 // walks the phone navigation: the Agent list and a conversation one screen
 // each, drafts, reading place and an annotation kept across the list, another
-// Agent and a narrow/wide resize. Chromium's emulated phone is not a real one:
-// no on-screen keyboard, lock screen or Safari.
+// Agent and a narrow/wide resize. An emulated phone is not a real one: no
+// on-screen keyboard, lock screen or iOS Safari.
 //   YUZUNO_UI_DIST=<isolated build> node tools/narrow-layout-check.mjs [--baseline]
 import assert from "node:assert/strict";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
-import { chromium } from "playwright-core";
+import { engine, launchBrowser } from "./browser-engine.mjs";
 import { composerDraft, idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
@@ -63,7 +64,7 @@ const entries = {
 /** The ways in and out a finger needs on a phone. */
 const touchTargets = ".phone-back, .toolbar .icon-button, .toolbar-nav .catchup-nav, .rail-actions .icon-button, .agent-select, .send-button";
 
-const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
+const browser = await launchBrowser();
 
 async function open(viewport) {
   const context = await browser.newContext({
@@ -81,11 +82,22 @@ async function open(viewport) {
   page.on("pageerror", (error) => report.errors.push(`${viewport.name}: ${error.message}`));
   await page.route("**/*", async (route) => {
     const request = route.request(), url = new URL(request.url()), method = request.method();
+    // WebKit also routes data: and blob: URLs, which Chromium does not.
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      (report.otherSchemes ??= []).push(`${viewport.name}: ${url.protocol}`);
+      return route.continue();
+    }
     assert.equal(url.hostname, "yuzuno-narrow.test");
     const path = url.pathname;
     if (method === "POST" && path === "/api/collaboration/github_repositories")
       return route.fulfill({ json: { repositories: [], links: [] } });
     if (method === "POST" && /^\/api\/agents\/[abc]\/review$/.test(path)) return route.fulfill({ json: {} });
+    // Where this browser left an Agent (T-170, #65): written on leaving, by design.
+    if (/^\/api\/agents\/[abc]\/reading$/.test(path)) {
+      if (method === "GET") return route.fulfill({ json: { handoff: null } });
+      (report.readingWrites ??= []).push({ viewport: viewport.name, method, path });
+      return route.fulfill({ json: { accepted: true, sourceSeq: JSON.parse(request.postData() || "{}").clientSeq ?? 0 } });
+    }
     if (method !== "GET") {
       report.mutations.push({ viewport: viewport.name, method, path });
       return route.fulfill({ status: 400, json: { error: `Unexpected ${method} ${path} in this check` } });
@@ -250,11 +262,15 @@ try {
     await back(page);
     assert.match(await page.locator(".app").getAttribute("class"), /phone-list/);
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Open Mori", "focus returns to the open Agent's row");
-    // Scrolling the list stays in the list.
-    await page.mouse.move(195, 400);
-    await page.mouse.wheel(0, 400);
-    await page.waitForTimeout(200);
-    assert.equal(await scroller(page).evaluate((el) => el.scrollTop), place, "the conversation under the list did not scroll");
+    // Scrolling the list stays in the list. Playwright has no wheel, and no
+    // touch scrolling, in mobile WebKit: that step is not checked there.
+    if (engine === "webkit") (report.notChecked ??= []).push(`${viewport.name}: a wheel over the list (mobile WebKit has none in Playwright)`);
+    else {
+      await page.mouse.move(195, 400);
+      await page.mouse.wheel(0, 400);
+      await page.waitForTimeout(200);
+      assert.equal(await scroller(page).evaluate((el) => el.scrollTop), place, "the conversation under the list did not scroll");
+    }
     await tapAgent(page, "Mori");
     assert.equal(await scroller(page).evaluate((el) => el.scrollTop), place, "the same Agent comes back where it was");
     assert.equal(await composerDraft(composer(page, "Mori")), "Draft typed on the phone.");

@@ -62,3 +62,14 @@ A failed step is reported as it happened, with those files. Nothing is rerun to 
 - the local port refusing a proxied request.
 
 It does not go through Serve, Tailscale or a phone.
+
+## In WebKit, without a phone
+
+`web/tools/narrow-layout-check.mjs`, `reading-handoff-check.mjs` and `webkit-phone-check.mjs` drive Playwright's Linux WebKit when `YUZUNO_WEBKIT_WS` names a server from `webkit.launchServer()` of the same Playwright version as `web/node_modules` (otherwise the system Chromium). `webkit-phone-check.mjs` adds, in a phone-sized context against a lab Core with the scripted Codex stand-in:
+- offline and back: the message draft stays and the page reconnects;
+- a native question's typed answer survives a reload and is sent once;
+- a message whose send answer is lost is not sent again, and appears once.
+
+Playwright's WebKit build loads its distribution's libraries (for the Ubuntu 22.04 build: GTK 4, GStreamer, ICU 70 and others), so run the server where those are installed, for example in a disposable rootfs, and the checks next to the lab Core. Playwright has no wheel or touch scrolling in mobile WebKit; the layout check records that step as not checked there.
+
+This is Linux WebKit, not iOS Safari: no on-screen keyboard, visual viewport, background or lock-screen lifecycle, and Playwright's WebKit reports a desktop Safari user agent.
