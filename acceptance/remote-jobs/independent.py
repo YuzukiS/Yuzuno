@@ -459,14 +459,25 @@ exec {real} "$@"
                                              "resources": {"cpuMillis": 500, "memoryMiB": 128, "swapMiB": 0},
                                              "gpu": {"memoryMiB": 1000}}, error=True)
             assert "GPU admission is not available" in no_gpu, no_gpu
+            # Whether a pause is refused is the attempt's, as Core decides it:
+            # a scope of its own there (its start's held limits), not what the
+            # machine reports it can do. Without one it is refused here; with
+            # one it would be accepted, so it is not asked: pause.py checks it.
             paused = submit("paused", "sleep 20")
-            core.status(paused["id"], "running")
-            pause_error = core.refused(f"/jobs/{paused['id']}/pause", {})
-            assert f"Pause is not available for jobs on {name}" in pause_error, pause_error
+            running = core.status(paused["id"], "running")
+            held = (((running.get("result") or {}).get("started") or {}).get("limits") or {}).get("held") or {}
+            if held.get("unit"):
+                pause = {"scope": held["unit"], "checked": False,
+                         "why": "its attempt runs in a scope of its own there, so pause is not asked here; pause.py checks it"}
+            else:
+                error = core.refused(f"/jobs/{paused['id']}/pause", {})
+                assert f"Pause is not available for this job on {name}: it runs without a scope of its own there" in error, error
+                pause = {"scope": None, "refused": error}
             core.request(f"/jobs/{paused['id']}/cancel", {})
             core.status(paused["id"], "cancelled", seconds=60)
-            return {}
-        item("GPU admission and pause are refused for a remote job, with the reason", "acceptance Core; real host for the paused job",
+            return {"gpu": no_gpu, "pause": pause}
+        item("GPU admission is refused for a remote job, and pause for an attempt without a scope of its own there, with the reason",
+             "acceptance Core; real host for the paused job; an attempt in a scope of its own is not paused here (pause.py)",
              unavailable)
 
         report["notCovered"] = [
