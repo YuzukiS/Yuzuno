@@ -240,6 +240,66 @@ These are allocator measurements of a synthetic workload with one Agent. Product
 RSS also depends on how many Agents send and end Turns at once. Rust counters
 exclude SQLite's C allocations.
 
+### A Codex Turn's start
+
+A Codex `turn/started` notification, and the reply to `turn/start` applied as
+it (`turn/accepted`), went through `commit_locked`, which copies the held
+record whole to change one Turn. Now the record's metadata and that Turn are
+copied (`Store::commit_started`) and the event is applied to the copy.
+Message receipts are then bound, restored and accepted over the held Turns in
+order, with the copy in its Turn's place, as `apply` and the commit do. The
+change is written in one transaction; only after it commits do the copies
+replace the held metadata and that Turn, so a write that fails leaves the
+record as it was. These are committed as before: a record that is not held or
+is stored whole, an event without a Turn ID, a record whose Turns are not told
+apart by ID, another kind applied as `turn/started`, and receipts after which
+a message of another Turn would be restored. `turn/completed` still copies the
+record whole.
+
+T-140 Jobs `13eb41e0-f370-4b0d-a4b7-acce70109597` (builds) and
+`2ae85522-c018-4708-9f77-bda896ad98f1` (runs), 2026-10-23: release builds of
+`turn_started_ab_lab` (on lab branches, not merged) on main `88c1e78` and on
+this change. Two synthetic records of 100 and 168 Turns (37.9 and 63.6 MiB of
+history JSON), held, were each run four times in the order before, after,
+after, before, with ten calls of each kind per run:
+
+| One call | Before | After |
+| --- | ---: | ---: |
+| `turn/started` of a new Turn, 37.9 MiB record: allocated | 40.0 MiB | 36–39 KiB |
+| The same: Rust peak above its start | 40.0 MiB | 15–16 KiB |
+| The same: median time | 5.9–7.0 ms | 2.6–2.7 ms |
+| `turn/started`, 63.6 MiB record: allocated | 67.2 MiB | 63–69 KiB |
+| The same: Rust peak above its start | 67.2 MiB | 27 KiB |
+| The same: median time | 11.0–11.2 ms | 3.0–3.3 ms |
+| `turn/accepted` of that Turn, 63.6 MiB record: allocated | 67.2 MiB | 63–64 KiB |
+| The same: median time | 9.7–11.0 ms | 2.6–3.2 ms |
+| `turn/completed`, unchanged, 63.6 MiB record: allocated | 67.2 MiB | 67.2 MiB |
+| The same: median time | 14.3–14.7 ms | 13.9–17.2 ms |
+
+The same runs streamed a delta into the held record every 2 ms
+(`record_stream`, with the stream tick every 250 ms), for 6 seconds with no
+call and for 6 seconds per kind while the process made one call every 200 ms:
+
+| A streamed delta's p99 | Before | After |
+| --- | ---: | ---: |
+| No call, 37.9 MiB record | 455–461 µs | 439–468 µs |
+| No call, 63.6 MiB record | 715–801 µs | 739–763 µs |
+| `turn/started` every 200 ms, 37.9 MiB record | 7.2–7.5 ms | 0.98–1.2 ms |
+| The same, 63.6 MiB record | 12.6–13.4 ms | 1.77–1.79 ms |
+| `turn/accepted` every 200 ms, 63.6 MiB record | 12.6–13.2 ms | 2.3–2.5 ms |
+| `turn/completed` every 200 ms, 63.6 MiB record | 17.1–17.5 ms | 16.6–16.7 ms |
+
+In every run the first whole copy after the record was opened took 20.7–37.9
+ms: before, the first `turn/started`'s; after, the first `turn/completed`'s,
+as `turn/started` no longer copies. With the 37.9 MiB record,
+`turn/completed`'s median time was higher in both runs after (9.5–9.6 ms
+against 8.2–8.8 ms); with the 63.6 MiB record one run after was lower and one
+higher. That is not attributed. In each window of `turn/accepted` calls the
+slowest call took 22.8–32.9 ms, before and after alike (the 90th percentile
+was 11–15 ms before and 3.0–4.6 ms after); that is not attributed either. What
+a call allocates after the change grows with the number of Turns. These are
+synthetic allocator measurements in one process, not the daily Core's RSS.
+
 ## Claude bridge events
 
 Five Claude bridge events still committed with `update` and discarded the copy

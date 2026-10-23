@@ -520,3 +520,404 @@ fn a_recovered_completion_commits_what_update_committed() {
         assert_eq!(state(&scoped), state(&generic), "held {held}");
     }
 }
+
+/// The Codex `turn/started` events this thread got to writing without
+/// copying the record's other Turns (`Store::commit_started`).
+fn started_in_place() -> u64 {
+    super::STARTED_IN_PLACE.with(|n| n.get())
+}
+
+fn started(turn: &str, items: Value) -> Value {
+    json!({"threadId":"thread","turn":{"id":turn,"status":"inProgress","items":items}})
+}
+
+/// `turn/started` committed by comparing the whole record in `generic` and
+/// through `record_applied` in `scoped`; whether `scoped` wrote it in place.
+fn start_both(generic: &Store, scoped: &Store, kind: &str, data: &Value) -> bool {
+    let copy = data.clone();
+    generic.record_event("a", kind, data, move |d| d.apply("turn/started", &copy)).unwrap();
+    let before = started_in_place();
+    scoped.record_applied("a", kind, "turn/started", data).unwrap();
+    started_in_place() == before + 1
+}
+
+#[test]
+fn a_started_turn_is_written_without_copying_the_other_turns() {
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    let same = |step: &str, in_place: bool| {
+        assert!(in_place, "{step}: the scoped store copied the record");
+        assert_eq!(state(&generic), state(&scoped), "{step}: written in place, something else was written");
+        for store in [&generic, &scoped] {
+            store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+        }
+    };
+    // A streamed Item the rows lack is written with the new Turn.
+    for store in [&generic, &scoped] {
+        super::tests::stream(store, "a", "item/completed",
+            &json!({"turnId":"t5","item":{"id":"m5","type":"agentMessage","text":"streamed"}}));
+    }
+    let new = started("n1", json!([{"id":"u-n1","type":"userMessage","content":[{"type":"text","text":"next"}]}]));
+    same("a new Turn, with a streamed Item the rows lack", start_both(&generic, &scoped, "turn/started", &new));
+    let again = started("n1", json!([{"id":"u-n1","type":"userMessage","content":[{"type":"text","text":"next"}]},
+        {"id":"r-n1","type":"reasoning","summary":["thinking"]}]));
+    same("the Turn it names, again, with another Item", start_both(&generic, &scoped, "turn/started", &again));
+    let reversed = started("n1", json!([{"id":"r-n1","type":"reasoning","summary":["thought again"]},
+        {"id":"u-n1","type":"userMessage","content":[{"type":"text","text":"next"}]}]));
+    same("the Turn it names, its Items in another order", start_both(&generic, &scoped, "turn/started", &reversed));
+    let late = started("t3", json!([{"id":"late","type":"agentMessage","text":"late"}]));
+    same("a Turn already completed, which it leaves", start_both(&generic, &scoped, "turn/started", &late));
+    let accepted = json!({"turn":{"id":"n2","status":"inProgress","items":[]}});
+    same("turn/accepted", start_both(&generic, &scoped, "turn/accepted", &accepted));
+    // A blocking request leaves the Agent waiting, not working.
+    for store in [&generic, &scoped] {
+        store.update_meta("a", "test/request", &json!({}), |m| m.pending.push(pending_request("p1", 1))).unwrap();
+    }
+    same("a blocking request pending", start_both(&generic, &scoped, "turn/started", &started("n4", json!([]))));
+    assert_eq!(scoped.detail("a").unwrap().agent.status, "waiting");
+    // A sent message: its receipt bound and its native Item restored.
+    let mut sent = receipt("send-9", "hello there");
+    sent.input.text_blocks = Some(vec![crate::message_content::TextBlock { id: "b".into(), start: 0, end: 5 }]);
+    for store in [&generic, &scoped] {
+        let copy = sent.clone();
+        store.record_event("a", "message/requested", &json!({}), move |d| d.message_receipts.push(copy)).unwrap();
+    }
+    let message = started("n3", json!([{"id":"native-n3","type":"userMessage","clientId":"send-9",
+        "content":[{"type":"text","text":"hello there"}]}]));
+    same("a sent message, its receipt bound and restored", start_both(&generic, &scoped, "turn/started", &message));
+    let d = scoped.detail("a").unwrap();
+    assert!(d.message_receipts.iter().any(|r| r.input.client_message_id == "send-9"
+        && r.binding.as_ref().is_some_and(|b| b.turn_id == "n3")), "the receipt was not bound");
+    let item = &d.turns.iter().find(|t| t["id"] == "n3").unwrap()["items"][0];
+    assert!(item.get(crate::message_content::BLOCKS).is_some(), "the message was not restored: {item}");
+}
+
+/// Where writing in place cannot be shown to write what comparing writes,
+/// `turn/started` is committed as before.
+#[test]
+fn a_started_turn_is_compared_where_in_place_cannot_show_the_same_write() {
+    let check = |generic: &Store, scoped: &Store, step: &str| {
+        let data = started("f1", json!([{"id":"u-f1","type":"userMessage","content":[{"type":"text","text":"x"}]}]));
+        assert!(!start_both(generic, scoped, "turn/started", &data), "{step}: written in place");
+        assert_eq!(state(generic), state(scoped), "{step}");
+    };
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        store.record_event("a", "test/duplicate", &json!({}), |d| {
+            let copy = d.turns[1].clone();
+            d.turns.push(copy);
+        }).unwrap();
+    }
+    check(&generic, &scoped, "Turns without distinct IDs");
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        let mut memory = store.memory.lock().unwrap();
+        memory.held.clear();
+        memory.briefs.clear();
+    }
+    check(&generic, &scoped, "a record not held");
+
+    // A receipt whose old Item restore has yet to change. Every way a record
+    // comes to be held binds and restores it (a streamed event's apply too),
+    // so the held copy is set back here, as a record read without binding is.
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        let mut blocks = receipt("old-4", "message 4");
+        blocks.status = "accepted".into();
+        blocks.input.text_blocks = Some(vec![crate::message_content::TextBlock { id: "b".into(), start: 0, end: 7 }]);
+        store.update_meta("a", "message/requested", &json!({}), move |m| m.message_receipts.push(blocks)).unwrap();
+        unrestore(store, "t4", "u4");
+    }
+    check(&generic, &scoped, "an old Item restore would change");
+
+    // Another kind applied as turn/started (turn/completed keeps the journal
+    // check `commit` makes for it).
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    let data = started("t5", json!([]));
+    let copy = data.clone();
+    generic.record_event("a", "turn/completed", &data, move |d| d.apply("turn/started", &copy)).unwrap();
+    let before = started_in_place();
+    scoped.record_applied("a", "turn/completed", "turn/started", &data).unwrap();
+    assert_eq!(started_in_place(), before, "another kind applied as turn/started: written in place");
+    assert_eq!(state(&generic), state(&scoped), "another kind applied as turn/started");
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        let whole = serde_json::to_string(&store.detail("a").unwrap()).unwrap();
+        let mut db = store.db.write().unwrap();
+        let tx = db.transaction().unwrap();
+        tx.execute("UPDATE agents SET layout=0, data=?1 WHERE id='a'", [whole]).unwrap();
+        record_rows::delete_rows(&tx, "a").unwrap();
+        tx.commit().unwrap();
+        drop(db);
+        store.memory.lock().unwrap().held.clear();
+        store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+    }
+    check(&generic, &scoped, "a record kept whole");
+}
+
+/// Each way a `turn/started` write can fail, planning, writing its journal,
+/// metadata or Item rows, or at COMMIT, publishes nothing: the held record, its rows and journal, rev,
+/// brief and the changes its rows still lack stay as they were, and once
+/// the fault is gone the next write goes through with those changes.
+#[test]
+fn a_started_turn_whose_write_fails_publishes_nothing() {
+    for (fault, undo, wrote) in [
+        ("ALTER TABLE agent_turns RENAME TO hidden_turns;", "ALTER TABLE hidden_turns RENAME TO agent_turns;", false),
+        ("CREATE TRIGGER refuse BEFORE INSERT ON journal WHEN NEW.kind='turn/started' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            "DROP TRIGGER refuse;", true),
+        ("CREATE TRIGGER refuse BEFORE UPDATE ON agents BEGIN SELECT RAISE(ABORT, 'refused'); END;", "DROP TRIGGER refuse;", true),
+        ("CREATE TRIGGER refuse BEFORE INSERT ON agent_items WHEN NEW.turn_id='lost' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            "DROP TRIGGER refuse;", true),
+        ("CREATE TABLE t140_parent(id INTEGER PRIMARY KEY);
+          CREATE TABLE t140_child(parent INTEGER REFERENCES t140_parent(id) DEFERRABLE INITIALLY DEFERRED);
+          CREATE TRIGGER t140_orphan AFTER INSERT ON journal WHEN NEW.kind='turn/started'
+              BEGIN INSERT INTO t140_child(parent) VALUES(-1); END;", "DROP TRIGGER t140_orphan;", true),
+    ] {
+        let ((_ga, _generic), (_sa, store)) = pair();
+        super::tests::stream(&store, "a", "item/completed",
+            &json!({"turnId":"t5","item":{"id":"m5","type":"agentMessage","text":"later"}}));
+        let unwritten = || store.memory.lock().unwrap().held.get("a").map(|held| held.unwritten.clone());
+        let (before, lacking) = (published(&store), unwritten());
+        store.db.write().unwrap().execute_batch(fault).unwrap();
+        let taken = started_in_place();
+        let lost = started("lost", json!([{"id":"u-lost","type":"userMessage","content":[{"type":"text","text":"x"}]}]));
+        assert!(store.record_applied("a", "turn/started", "turn/started", &lost).is_err(), "{fault}");
+        assert_eq!(started_in_place(), taken + u64::from(wrote), "{fault}: which path wrote");
+        assert!(store.held("a").is_some(), "{fault}");
+        store.db.write().unwrap().execute_batch(undo).unwrap();
+        assert_eq!(published(&store), before, "{fault}");
+        assert_eq!(unwritten(), lacking, "{fault}");
+        let kept = started("kept", json!([{"id":"u-kept","type":"userMessage","content":[{"type":"text","text":"x"}]}]));
+        store.record_applied("a", "turn/started", "turn/started", &kept).unwrap();
+        let d = store.detail("a").unwrap();
+        let ids: Vec<&str> = d.turns.iter().filter_map(|t| t["id"].as_str()).collect();
+        assert!(ids.contains(&"kept") && !ids.contains(&"lost"), "{fault}: {ids:?}");
+        let written: i64 = store.db.read().unwrap()
+            .query_row("SELECT count(*) FROM agent_items WHERE agent_id='a' AND item_id='m5' AND data LIKE '%later%'", [], |r| r.get(0)).unwrap();
+        assert_eq!(written, 1, "{fault}: the streamed Item was not written");
+    }
+}
+
+/// A reader of the held record sees each started Turn whole: never there
+/// without its journal position, nor the other way round, and revs only
+/// grow.
+#[test]
+fn readers_see_a_started_turn_with_its_journal_position_and_rev() {
+    let ((_ga, _generic), (_sa, scoped)) = pair();
+    let scoped = std::sync::Arc::new(scoped);
+    let base = scoped.detail("a").unwrap();
+    let (turns, seq) = (base.turns.len(), base.agent.last_seq);
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = {
+        let (store, done) = (scoped.clone(), done.clone());
+        std::thread::spawn(move || {
+            let (mut rev, mut reads) = (0, 0);
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                let d = store.detail("a").unwrap();
+                assert_eq!(d.agent.last_seq - seq, (d.turns.len() - turns) as i64, "a Turn and its journal row seen apart");
+                assert!(d.agent.rev >= rev, "rev went back");
+                rev = d.agent.rev;
+                reads += 1;
+            }
+            reads
+        })
+    };
+    let taken = started_in_place();
+    for n in 0..60 {
+        scoped.record_applied("a", "turn/started", "turn/started", &started(&format!("r{n}"), json!([]))).unwrap();
+    }
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(reader.join().unwrap() > 0);
+    assert_eq!(started_in_place(), taken + 60);
+    assert_eq!(scoped.detail("a").unwrap().turns.len(), turns + 60);
+}
+
+/// Started Turns written in place while streamed Items reach the same record
+/// on another thread leave held what its rows and journal rebuild.
+#[test]
+fn started_turns_racing_streamed_items_are_held_as_their_rows_and_journal_rebuild_them() {
+    let ((_ga, _generic), (_sa, store)) = pair();
+    let in_place = std::thread::scope(|s| {
+        let streamer = s.spawn(|| {
+            for n in 0..80 {
+                super::tests::stream(&store, "a", "item/completed",
+                    &json!({"turnId":"t5","item":{"id":format!("s{n}"),"type":"agentMessage","text":format!("streamed {n}")}}));
+            }
+        });
+        let starter = s.spawn(|| {
+            let before = started_in_place();
+            for n in 0..40 {
+                let data = started(&format!("r{n}"), json!([{"id":format!("u{n}"),"type":"userMessage","content":[{"type":"text","text":"x"}]}]));
+                store.record_applied("a", "turn/started", "turn/started", &data).unwrap();
+            }
+            started_in_place() - before
+        });
+        streamer.join().unwrap();
+        starter.join().unwrap()
+    });
+    assert_eq!(in_place, 40);
+    let s = state(&store);
+    assert_eq!(s["held"], s["reloaded"], "what is held is not what its rows and journal rebuild");
+    let reloaded = &s["reloaded"]["turns"];
+    let turns: Vec<&str> = reloaded.as_array().unwrap().iter().filter_map(|t| t["id"].as_str()).collect();
+    assert!((0..40).all(|n| turns.contains(&format!("r{n}").as_str())), "{turns:?}");
+    let t5 = reloaded.as_array().unwrap().iter().find(|t| t["id"] == "t5").unwrap();
+    assert_eq!(t5["items"].as_array().unwrap().iter().filter(|i| i["id"].as_str().is_some_and(|id| id.starts_with('s'))).count(), 80);
+}
+
+/// `store`'s record with the text blocks `restore` gave the user message
+/// `item` of Turn `turn` taken off again, in the held copy and in its row:
+/// what a record read without binding holds (every way a record comes to be
+/// held binds and restores it, so tests set it back).
+fn unrestore(store: &Store, turn: &str, item: &str) {
+    {
+        let held = store.held("a").unwrap();
+        let mut d = held.write();
+        let message = d.turns.iter_mut().find(|t| t["id"] == turn).unwrap()["items"].as_array_mut().unwrap()
+            .iter_mut().find(|i| i["id"] == item).unwrap();
+        let fields = message.as_object_mut().unwrap();
+        fields.remove(crate::message_content::BLOCKS);
+        fields.remove("_yuzunoInputText");
+    }
+    let changed = store.db.write().unwrap().execute(
+        "UPDATE agent_items SET data=json_remove(data,'$._yuzunoTextBlocks','$._yuzunoInputText')
+         WHERE agent_id='a' AND turn_id=?1 AND item_id=?2", params![turn, item]).unwrap();
+    assert_eq!(changed, 1);
+}
+
+/// The event's own apply restores a message of the Turn it names that the
+/// event does not carry. Written in place, that Item's row is written as
+/// comparing writes it.
+#[test]
+fn a_started_turn_writes_the_messages_its_apply_restores() {
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    let late = started("n5", json!([{"id":"u-n5","type":"userMessage","clientId":"late-5","content":[{"type":"text","text":"late text"}]}]));
+    let mut receipt5 = receipt("late-5", "late text");
+    receipt5.input.text_blocks = Some(vec![crate::message_content::TextBlock { id: "b".into(), start: 0, end: 4 }]);
+    for store in [&generic, &scoped] {
+        let copy = receipt5.clone();
+        store.update_meta("a", "message/requested", &json!({}), move |m| m.message_receipts.push(copy)).unwrap();
+        store.record_applied("a", "turn/started", "turn/started", &late).unwrap();
+        unrestore(store, "n5", "u-n5");
+    }
+    // The event again, carrying no Item: only its apply restores the message.
+    assert!(start_both(&generic, &scoped, "turn/started", &started("n5", json!([]))), "not written in place");
+    let restored = state(&scoped);
+    assert_eq!(state(&generic), restored);
+    let item = &restored["reloaded"]["turns"].as_array().unwrap().iter().find(|t| t["id"] == "n5").unwrap()["items"][0];
+    assert!(item.get(crate::message_content::BLOCKS).is_some(), "the restored message was not written: {item}");
+}
+
+/// A client ID twice in the Turn a `turn/started` names: the receipt is bound
+/// to the later user message, and `restore` gives the earlier one, whose ID
+/// is synthetic, that message's ID. Written in place, the Turn, its Items and
+/// the old ID's row, the receipts, the journal and the rev are as comparing
+/// leaves them. Such a rename always leaves two Items of one ID in the Turn
+/// (`restore` renames only to the ID a receipt is bound to in the same Turn),
+/// and the event names that Turn, so all its Items are written three ways:
+/// by the rename `restore` reports, by `Dirty::identified`, and by the
+/// positional row keys of Items with one ID (rows of keys gone deleted).
+#[test]
+fn a_started_turn_writes_the_message_restore_renames() {
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    let same = |step: &str, in_place: bool| {
+        assert!(in_place, "{step}: the scoped store copied the record");
+        assert_eq!(state(&generic), state(&scoped), "{step}");
+        for store in [&generic, &scoped] {
+            store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+        }
+    };
+    let mut sent = receipt("dup-7", "same text");
+    sent.input.text_blocks = Some(vec![crate::message_content::TextBlock { id: "b".into(), start: 0, end: 4 }]);
+    for store in [&generic, &scoped] {
+        let copy = sent.clone();
+        store.update_meta("a", "message/requested", &json!({}), move |m| m.message_receipts.push(copy)).unwrap();
+    }
+    let earlier = json!({"id":"item-3","type":"userMessage","clientId":"dup-7","content":[{"type":"text","text":"same text"}]});
+    let later = json!({"id":"u-n7","type":"userMessage","clientId":"dup-7","content":[{"type":"text","text":"same text"}]});
+    same("the earlier message, its receipt bound to it", start_both(&generic, &scoped, "turn/started", &started("n7", json!([earlier]))));
+    let binding = |store: &Store| {
+        let d = store.detail("a").unwrap();
+        let b = d.message_receipts.iter().find(|r| r.input.client_message_id == "dup-7").unwrap().binding.clone().unwrap();
+        (b.turn_id, b.item_id, b.user_index)
+    };
+    assert_eq!(binding(&scoped), ("n7".into(), "item-3".into(), 0));
+    same("the later message, the earlier one renamed", start_both(&generic, &scoped, "turn/started", &started("n7", json!([later]))));
+    assert_eq!(binding(&scoped), ("n7".into(), "u-n7".into(), 1));
+    // The event again: nothing left to rename.
+    same("the event again", start_both(&generic, &scoped, "turn/started", &started("n7", json!([]))));
+    let s = state(&scoped);
+    for kept in [&s["held"], &s["reloaded"]] {
+        let items = &kept["turns"].as_array().unwrap().iter().find(|t| t["id"] == "n7").unwrap()["items"];
+        let ids: Vec<&str> = items.as_array().unwrap().iter().filter_map(|i| i["id"].as_str()).collect();
+        assert_eq!(ids, ["u-n7", "u-n7"], "the earlier message was not renamed");
+        assert!(items.as_array().unwrap().iter().all(|i| i.get(crate::message_content::BLOCKS).is_some()), "{items}");
+    }
+    assert!(!s["rows"]["agent_items"].as_array().unwrap().iter().any(|row| row[1] == "item-3"), "the old ID's row was kept");
+}
+
+/// Receipts bound, restored and accepted by every Turn, as `apply` and
+/// `commit` do, with the started Turn copied: a client ID in Turns before and
+/// after it (bound by the last, accepted by the first), a receipt whose
+/// binding moves, one still to be accepted from an older Turn, and a Turn
+/// already ended, whose `apply` skips that step while `commit` still binds.
+#[test]
+fn a_started_turn_binds_and_accepts_receipts_by_every_turn() {
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    let same = |step: &str, in_place: bool| {
+        assert!(in_place, "{step}: the scoped store copied the record");
+        assert_eq!(state(&generic), state(&scoped), "{step}");
+        for store in [&generic, &scoped] {
+            store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+        }
+    };
+    // A Turn in the middle, "mid", and one after it with a message whose
+    // client ID is also in Turn t1 and in no receipt yet.
+    for store in [&generic, &scoped] {
+        store.record_event("a", "test/turns", &json!({}), |d| {
+            d.turns[1]["items"][0]["clientId"] = json!("dup");
+            d.turns.push(json!({"id":"mid","status":"inProgress","items":[]}));
+            d.turns.push(json!({"id":"late","status":"completed","items":[
+                {"id":"u-late","type":"userMessage","clientId":"dup","content":[{"type":"text","text":"message 1"}]}]}));
+        }).unwrap();
+    }
+    // A receipt still to be accepted, its client ID in t1 and "late".
+    for store in [&generic, &scoped] {
+        store.update_meta("a", "message/requested", &json!({}), |m| m.message_receipts.push(receipt("dup", "message 1"))).unwrap();
+    }
+    // The started Turn's message carries the same client ID: bound by the
+    // last match ("late"), accepted by the first (t1).
+    let mid = started("mid", json!([{"id":"u-mid","type":"userMessage","clientId":"dup","content":[{"type":"text","text":"message 1"}]}]));
+    same("a client ID before and after the started Turn", start_both(&generic, &scoped, "turn/started", &mid));
+    let dup = scoped.detail("a").unwrap().message_receipts.into_iter().find(|r| r.input.client_message_id == "dup").unwrap();
+    assert_eq!((dup.status.as_str(), dup.turn_id.as_deref()), ("accepted", Some("t1")));
+    assert_eq!(dup.binding.map(|b| b.turn_id), Some("late".to_string()));
+
+    // A receipt bound to an older Turn's message whose client ID the started
+    // Turn's message carries now: its binding moves to the started Turn.
+    let moved = started("n6", json!([{"id":"u-n6","type":"userMessage","clientId":"old-4","content":[{"type":"text","text":"message 4"}]}]));
+    for store in [&generic, &scoped] {
+        let mut bound = receipt("old-4", "message 4");
+        bound.status = "accepted".into();
+        bound.turn_id = Some("t4".into());
+        store.update_meta("a", "message/requested", &json!({}), move |m| m.message_receipts.push(bound)).unwrap();
+    }
+    same("a binding that moves", start_both(&generic, &scoped, "turn/started", &moved));
+    let old4 = scoped.detail("a").unwrap().message_receipts.into_iter().find(|r| r.input.client_message_id == "old-4").unwrap();
+    assert_eq!(old4.binding.map(|b| b.turn_id), Some("n6".to_string()));
+
+    // A Turn already ended: `apply` returns before the receipts, so a
+    // receipt still to be accepted from an older Turn stays as it is.
+    for store in [&generic, &scoped] {
+        store.update_meta("a", "message/requested", &json!({}), |m| m.message_receipts.push(receipt("old-2", "message 2"))).unwrap();
+    }
+    let ended = started("t3", json!([{"id":"late-t3","type":"agentMessage","text":"late"}]));
+    same("a Turn already ended, a receipt still to be accepted", start_both(&generic, &scoped, "turn/started", &ended));
+    let old2 = scoped.detail("a").unwrap().message_receipts.into_iter().find(|r| r.input.client_message_id == "old-2").unwrap();
+    assert_eq!(old2.status, "sending");
+    // The next one accepts it from t2, as the whole record's apply does.
+    same("then a new Turn", start_both(&generic, &scoped, "turn/started", &started("n7", json!([]))));
+    let old2 = scoped.detail("a").unwrap().message_receipts.into_iter().find(|r| r.input.client_message_id == "old-2").unwrap();
+    assert_eq!((old2.status.as_str(), old2.turn_id.as_deref()), ("accepted", Some("t2")));
+}

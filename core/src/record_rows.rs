@@ -272,8 +272,8 @@ fn positional(key: &str) -> bool {
     key.starts_with(POSITIONAL)
 }
 
-fn turn_keys(turns: &[Value]) -> Vec<String> {
-    keys(turns.iter().map(|t| t["id"].as_str()))
+fn turn_keys<'a>(turns: impl Iterator<Item = &'a Value>) -> Vec<String> {
+    keys(turns.map(|t| t["id"].as_str()))
 }
 
 fn item_keys(items: &[Value]) -> Vec<String> {
@@ -442,7 +442,7 @@ fn from_meta(text: &str) -> Result<AgentDetail> {
 /// The rows of a record.
 pub fn split(detail: &AgentDetail) -> Result<Rows> {
     let mut rows = Rows { meta: meta(detail)?, ..Rows::default() };
-    for (ord, (turn, key)) in detail.turns.iter().zip(turn_keys(&detail.turns)).enumerate() {
+    for (ord, (turn, key)) in detail.turns.iter().zip(turn_keys(detail.turns.iter())).enumerate() {
         let (data, items) = turn_row(turn)?;
         if let Some(list) = split_items(turn) {
             for (item_ord, (item, item_key)) in list.iter().zip(item_keys(list)).enumerate() {
@@ -1295,6 +1295,12 @@ impl Dirty {
     }
 }
 
+/// Whether these Turns can be told apart by ID, as `Dirty::identified` and
+/// `Dirty::between` need: each has a string ID no other shares.
+pub(crate) fn told_apart(turns: &[Value]) -> bool {
+    by_id(turns).is_some()
+}
+
 /// Values by ID, or None if one has no string ID or two share one.
 fn by_id(values: &[Value]) -> Option<HashMap<&str, &Value>> {
     let mut map = HashMap::with_capacity(values.len());
@@ -1344,14 +1350,16 @@ pub fn plan(db: &Connection, id: &str, detail: &AgentDetail, dirty: &Dirty) -> R
     if layout == Layout::Whole {
         return Ok(Plan { layout, body: whole_tail(detail)?, ops: Vec::new() });
     }
-    Ok(Plan { layout, ops: plan_turns(db, id, &detail.turns, dirty)?, body: MetaBody::of(detail)?.0 })
+    Ok(Plan { layout, ops: plan_turns(db, id, detail.turns.iter(), dirty)?, body: MetaBody::of(detail)?.0 })
 }
 
-/// `plan` for the record whose Turns are `turns` and whose metadata is
-/// `meta`'s (`meta.turns` is not read), so that a change to the metadata
-/// alone is planned without a copy of the Turns. None for a record kept as
-/// one body (`Layout::Whole`), which only `plan` plans, from the whole record.
-pub fn plan_parts(db: &Connection, id: &str, turns: &[Value], meta: &AgentDetail, dirty: &Dirty) -> Result<Option<Plan>> {
+/// `plan` for the record whose Turns are `turns`, in order, and whose
+/// metadata is `meta`'s (`meta.turns` is not read), so that a change to the
+/// metadata or to one Turn is planned without a copy of the other Turns. None
+/// for a record kept as one body (`Layout::Whole`), which only `plan` plans,
+/// from the whole record.
+pub fn plan_parts<'a>(db: &Connection, id: &str, turns: impl Iterator<Item = &'a Value> + Clone, meta: &AgentDetail,
+    dirty: &Dirty) -> Result<Option<Plan>> {
     ensure!(meta.agent.id == id, "record of Agent {} written as {id}", meta.agent.id);
     let layout = layout(db, id)?.context("Agent 不存在")?;
     if layout == Layout::Whole {
@@ -1361,9 +1369,9 @@ pub fn plan_parts(db: &Connection, id: &str, turns: &[Value], meta: &AgentDetail
 }
 
 /// The row changes of `plan` for these Turns.
-fn plan_turns(db: &Connection, id: &str, turns: &[Value], dirty: &Dirty) -> Result<Vec<Op>> {
+fn plan_turns<'a>(db: &Connection, id: &str, turns: impl Iterator<Item = &'a Value> + Clone, dirty: &Dirty) -> Result<Vec<Op>> {
     let mut ops = Vec::new();
-    let keys = turn_keys(turns);
+    let keys = turn_keys(turns.clone());
     let stored: HashMap<String, (usize, Option<usize>)> = db
         .prepare_cached("SELECT turn_id, ord, items FROM agent_turns WHERE agent_id=?1")?
         .query_map([id], |r| Ok((r.get::<_, String>(0)?, (count(r.get(1)?)?, r.get::<_, Option<i64>>(2)?.map(count).transpose()?))))?
@@ -1372,7 +1380,7 @@ fn plan_turns(db: &Connection, id: &str, turns: &[Value], dirty: &Dirty) -> Resu
     for key in stored.keys().filter(|key| !present.contains(key.as_str())) {
         ops.push(Op::DeleteTurn { key: key.clone() });
     }
-    for (ord, (turn, key)) in turns.iter().zip(&keys).enumerate() {
+    for (ord, (turn, key)) in turns.zip(&keys).enumerate() {
         let old = stored.get(key);
         let items = split_items(turn);
         let touched = if positional(key) { None } else { dirty.turns.get(key) };
