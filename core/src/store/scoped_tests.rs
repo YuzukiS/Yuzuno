@@ -952,13 +952,11 @@ fn complete_both(generic: &Store, scoped: &Store, data: &Value) -> bool {
     completed_in_place() == before + 1
 }
 
-/// The kinds of Agent `a`'s last `n` journal rows, oldest first.
-fn last_kinds(store: &Store, n: usize) -> Vec<String> {
-    let db = store.db.read().unwrap();
-    let mut statement = db.prepare("SELECT kind FROM journal WHERE agent_id='a' ORDER BY seq DESC LIMIT ?1").unwrap();
-    let mut kinds: Vec<String> = statement.query_map([n as i64], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
-    kinds.reverse();
-    kinds
+/// The kind of Agent `a`'s newest journal row of a Turn (`turn/...`): the
+/// `test/hold` a check holds the record again with comes after it.
+fn last_turn_kind(store: &Store) -> String {
+    store.db.read().unwrap().query_row(
+        "SELECT kind FROM journal WHERE agent_id='a' AND kind LIKE 'turn/%' ORDER BY seq DESC LIMIT 1", [], |r| r.get(0)).unwrap()
 }
 
 #[test]
@@ -994,10 +992,10 @@ fn a_completed_turn_is_written_without_copying_the_other_turns() {
     let end = completed("n1", "completed", json!([{"id":"m-n1","type":"agentMessage","text":"final"}]));
     same("streamed Items the rows lack, and the final message carried", complete_both(&generic, &scoped, &end));
     assert_eq!(scoped.agent("a").unwrap().unread_count, unread + 1);
-    assert_eq!(last_kinds(&scoped, 1), ["turn/completed"]);
+    assert_eq!(last_turn_kind(&scoped), "turn/completed");
     // The same completion again: journaled as a reconfirmation, no unread.
     same("the same completion again", complete_both(&generic, &scoped, &end));
-    assert_eq!(last_kinds(&scoped, 1), ["turn/reconfirmed"]);
+    assert_eq!(last_turn_kind(&scoped), "turn/reconfirmed");
     assert_eq!(scoped.agent("a").unwrap().unread_count, unread + 1);
     // A Turn imported from Codex's own history is reconfirmed too.
     start("imported");
@@ -1007,7 +1005,7 @@ fn a_completed_turn_is_written_without_copying_the_other_turns() {
         db.execute("INSERT INTO codex_import_turns(agent_id,turn_id) VALUES('a','imported')", []).unwrap();
     });
     same("an imported Turn", complete_both(&generic, &scoped, &completed("imported", "completed", json!([]))));
-    assert_eq!(last_kinds(&scoped, 1), ["turn/reconfirmed"]);
+    assert_eq!(last_turn_kind(&scoped), "turn/reconfirmed");
     // A Turn the record lacks, appended; one that failed.
     same("a Turn never started", complete_both(&generic, &scoped, &completed("n2", "completed", json!([]))));
     start("n3");
@@ -1146,7 +1144,7 @@ fn a_completed_turn_whose_write_fails_publishes_nothing() {
         assert_eq!(published(&store), before, "{fault}");
         assert_eq!(unwritten(), lacking, "{fault}");
         store.record_applied("a", "turn/completed", "turn/completed", &end).unwrap();
-        assert_eq!(last_kinds(&store, 1), ["turn/completed"], "{fault}: the failed write was journaled");
+        assert_eq!(last_turn_kind(&store), "turn/completed", "{fault}: the failed write was journaled");
         let d = store.detail("a").unwrap();
         assert_eq!(d.turns.iter().find(|t| t["id"] == "lost").unwrap()["status"], "completed", "{fault}");
         let written: i64 = store.db.read().unwrap()
