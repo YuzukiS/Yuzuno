@@ -1502,6 +1502,10 @@ fn a_claude_result_whose_write_fails_publishes_nothing() {
             "items":[{"id":"u-lost","type":"userMessage","content":[{"type":"text","text":"task"}]}]}))).unwrap();
         super::tests::stream(&store, "a", "item/completed",
             &json!({"turnId":"t5","item":{"id":"m5","type":"agentMessage","text":"later"}}));
+        // A message of the Turn the result ends, not yet written: the result
+        // writes it, so a fault on that Turn's Item rows reaches its write.
+        super::tests::stream(&store, "a", "claude/assistant", &claude("lost", json!({"type":"assistant","uuid":"lost-a",
+            "session_id":"s","message":{"id":"msg-lost","content":[{"type":"text","text":"final"}]}})));
         let unwritten = || store.memory.lock().unwrap().held.get("a").map(|held| held.unwritten.clone());
         let (before, lacking) = (published(&store), unwritten());
         store.db.write().unwrap().execute_batch(fault).unwrap();
