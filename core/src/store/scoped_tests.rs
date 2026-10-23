@@ -555,6 +555,33 @@ fn a_recovered_completion_is_written_as_the_metadata() {
     assert_eq!(state(&scoped), state(&generic));
 }
 
+/// Beside receipts sending, uncertain, queued or unknown (`unconfirmed`), a
+/// recovered completion written as the metadata accepts none of them, as
+/// comparing the whole record does not: only `update_meta_applied` takes
+/// `apply`'s last step. Where `restore` would change an Item, it is
+/// committed by `commit`, which accepts none of them either.
+#[test]
+fn a_recovered_completion_beside_unconfirmed_receipts_accepts_none_of_them() {
+    for restores in [false, true] {
+        let ((_ga, generic), (_sa, scoped)) = pair();
+        for store in [&generic, &scoped] {
+            unconfirmed(store, false);
+            if restores {
+                unbind_client(store, "t2", "u2");
+            }
+        }
+        let turn = record().turns[5].clone();
+        generic.record_event("a", "turn/completed", &json!({"turn":turn,"recovered":true}), |_| {}).unwrap();
+        let before = in_place();
+        scoped.record_recovered_completion("a", &turn).unwrap();
+        assert_eq!(in_place(), before + u64::from(!restores), "restores={restores}: written in place or not");
+        let s = state(&scoped);
+        assert_eq!(state(&generic), s, "restores={restores}");
+        let statuses: Vec<String> = receipt_states(&s)[1..].iter().map(|(_, status, _)| status.clone()).collect();
+        assert_eq!(statuses, ["sending", "uncertain", "queued", "unknown", "rejected", "sending"], "restores={restores}");
+    }
+}
+
 /// The Codex `turn/started` events this thread got to writing without
 /// copying the record's other Turns (`Store::commit_turn`).
 fn started_in_place() -> u64 {
