@@ -486,7 +486,8 @@ Turns:
 
 The peak is still at the attach's commit, now about one Turn above the three
 records in use there; the reconcile's commit reaches nearly the same. The
-copy is still made, a Turn at a time, so the total allocated is unchanged.
+copy is still made, a Turn at a time, so the total allocated is essentially
+unchanged.
 glibc keeps what was freed for reuse, and this lab runs no trim, so the
 resident rows follow the peak; what the daily Core keeps resident also
 depends on its own reclaim. These are synthetic measurements, not the daily
@@ -737,3 +738,35 @@ RSS after the load was within 1 MiB on both sides (79.2 and 78.1–78.2 MiB from
 reads 34–39 and 28–31 ms); these are single small samples. Where a record's
 large fields are in its Item rows, as in the second record, nothing changes.
 These are synthetic allocator measurements, not the daily Core's RSS.
+
+## The live-event ring
+
+Core keeps its latest live messages for clients that reconnect
+(`events::RING_EVENTS`, 10,000 of them, and `RING_BYTES`, 32 MiB), and queues
+for each client what it has not read yet (`SUBSCRIBER_BYTES`, 16 MiB). These
+limits count each message's length. A message is encoded into a string that
+doubles as it grows, and the ring kept that string as it was: in the lab
+below it held 1.5 to 1.6 times the bytes it counted. Each message is now
+shrunk to its length before it is kept. The ring keeps the same messages.
+
+T-140 Jobs `32026f1b-10dc-48bb-8ae0-3162b9ee63f3` (before) and
+`45cc4144-9561-4b06-8ec5-e3d28e505823` (after, two runs), 2026-10-23: release
+builds of `events_ring_slack` (on lab branches, not merged) on main `41952ef`
+and on this change. Three synthetic mixes of 20,000 messages went through
+`Events::publish`, each leaving 10,000 in the ring, under 32 MiB. Both runs of
+the change gave the same counts:
+
+| The ring after 20,000 messages | Before | After |
+| --- | ---: | ---: |
+| Mostly streamed text: bytes counted | 5.2 MiB | 5.2 MiB |
+| The same: Rust heap the ring holds | 8.4 MiB | 5.8 MiB |
+| Mostly tool outputs: bytes counted | 25.3 MiB | 25.3 MiB |
+| The same: Rust heap the ring holds | 41.9 MiB | 25.9 MiB |
+| Mixed: bytes counted | 11.9 MiB | 11.9 MiB |
+| The same: Rust heap the ring holds | 19.3 MiB | 12.5 MiB |
+
+What the ring now holds beyond the bytes it counts is its 10,000 entries
+and their slots (0.6 MiB). Shrinking is one more allocator call for each message; the lab
+did not time `publish` itself. Whether the reserved bytes were resident
+depends on the allocator, so RSS may fall by less. These are synthetic
+allocator measurements, not the daily Core's RSS.
