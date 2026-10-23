@@ -1295,7 +1295,10 @@ fn result_both(generic: &Store, scoped: &Store, message: &Value) -> bool {
     let compared = generic.update_picking("a", "claude/result", message, project, pick).unwrap();
     let before = result_in_place();
     let written = scoped.update_picking_result("a", "claude/result", message, project, pick).unwrap();
-    assert_eq!(compared, written, "the picks differ");
+    // Without their times, which each store took from the clock as it
+    // projected the result, as `state` and `published` compare.
+    let picked = |pick: &(Option<Value>, Option<String>)| normalized(serde_json::to_value(pick).unwrap());
+    assert_eq!(picked(&compared), picked(&written), "the picks differ");
     result_in_place() == before + 1
 }
 
