@@ -779,6 +779,54 @@ fn a_started_turn_writes_the_messages_its_apply_restores() {
     assert!(item.get(crate::message_content::BLOCKS).is_some(), "the restored message was not written: {item}");
 }
 
+/// A client ID twice in the Turn a `turn/started` names: the receipt is bound
+/// to the later user message, and `restore` gives the earlier one, whose ID
+/// is synthetic, that message's ID. Written in place, the Turn, its Items and
+/// the old ID's row, the receipts, the journal and the rev are as comparing
+/// leaves them. Such a rename always leaves two Items of one ID in the Turn
+/// (`restore` renames only to the ID a receipt is bound to in the same Turn),
+/// and the event names that Turn, so all its Items are written three ways:
+/// by the rename `restore` reports, by `Dirty::identified`, and by the
+/// positional row keys of Items with one ID (rows of keys gone deleted).
+#[test]
+fn a_started_turn_writes_the_message_restore_renames() {
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    let same = |step: &str, in_place: bool| {
+        assert!(in_place, "{step}: the scoped store copied the record");
+        assert_eq!(state(&generic), state(&scoped), "{step}");
+        for store in [&generic, &scoped] {
+            store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+        }
+    };
+    let mut sent = receipt("dup-7", "same text");
+    sent.input.text_blocks = Some(vec![crate::message_content::TextBlock { id: "b".into(), start: 0, end: 4 }]);
+    for store in [&generic, &scoped] {
+        let copy = sent.clone();
+        store.update_meta("a", "message/requested", &json!({}), move |m| m.message_receipts.push(copy)).unwrap();
+    }
+    let earlier = json!({"id":"item-3","type":"userMessage","clientId":"dup-7","content":[{"type":"text","text":"same text"}]});
+    let later = json!({"id":"u-n7","type":"userMessage","clientId":"dup-7","content":[{"type":"text","text":"same text"}]});
+    same("the earlier message, its receipt bound to it", start_both(&generic, &scoped, "turn/started", &started("n7", json!([earlier]))));
+    let binding = |store: &Store| {
+        let d = store.detail("a").unwrap();
+        let b = d.message_receipts.iter().find(|r| r.input.client_message_id == "dup-7").unwrap().binding.clone().unwrap();
+        (b.turn_id, b.item_id, b.user_index)
+    };
+    assert_eq!(binding(&scoped), ("n7".into(), "item-3".into(), 0));
+    same("the later message, the earlier one renamed", start_both(&generic, &scoped, "turn/started", &started("n7", json!([later]))));
+    assert_eq!(binding(&scoped), ("n7".into(), "u-n7".into(), 1));
+    let s = state(&scoped);
+    for kept in [&s["held"], &s["reloaded"]] {
+        let items = &kept["turns"].as_array().unwrap().iter().find(|t| t["id"] == "n7").unwrap()["items"];
+        let ids: Vec<&str> = items.as_array().unwrap().iter().filter_map(|i| i["id"].as_str()).collect();
+        assert_eq!(ids, ["u-n7", "u-n7"], "the earlier message was not renamed");
+        assert!(items.as_array().unwrap().iter().all(|i| i.get(crate::message_content::BLOCKS).is_some()), "{items}");
+    }
+    assert!(!s["rows"]["agent_items"].as_array().unwrap().iter().any(|row| row[1] == "item-3"), "the old ID's row was kept");
+    // The event again: nothing left to rename.
+    same("the event again", start_both(&generic, &scoped, "turn/started", &started("n7", json!([]))));
+}
+
 /// Receipts bound, restored and accepted by every Turn, as `apply` and
 /// `commit` do, with the started Turn copied: a client ID in Turns before and
 /// after it (bound by the last, accepted by the first), a receipt whose
