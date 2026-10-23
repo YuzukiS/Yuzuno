@@ -260,6 +260,8 @@ Core's own port is unchanged, except that it refuses a request carrying Tailscal
 4. **On the machine where Tailscale runs** (on Windows with WSL, Windows; it reaches WSL's loopback port as the Windows app reaches Core's): `tailscale serve --bg --https=8444 http://127.0.0.1:4318`.
 5. On the phone, signed in to the same tailnet, open `https://core.example-tailnet.ts.net:8444`.
 
+**On the Home Screen.** The page has a web app manifest and an apple-touch-icon (the Yuzuno character, 128 px), so a phone's browser can add it to the Home Screen; it then opens on its own, without the browser's bars, at the same address and through the same entry. It is the same page: it needs the connection as before (there is no offline copy), and drafts stay in the phone's browser storage; adding it to the Home Screen does not make them safe from loss. This has not been checked on a real phone.
+
 **To undo:** `tailscale serve --https=8444 off`, which removes only that entry, then unset the three variables and restart Core: its second port closes. Never use `tailscale serve reset`, which would also remove other services' entries. The certificate logs keep any name already published.
 
 ## Update

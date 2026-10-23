@@ -3,7 +3,8 @@
 Every Yuzuno icon is the Yuzuno character, from one file:
 [`web/src/assets/yuzu-character.png`](../../web/src/assets/yuzu-character.png).
 Its source and license are in [the asset notes](../../web/src/assets/README.md).
-The web UI and the README header use that file directly. The files here are made from it by
+The web UI and the README header use that file directly, and the web build also serves it unchanged
+as `/apple-touch-icon.png`, named by its Home Screen manifest (`web/vite.config.ts`). The files here are made from it by
 [`generate.py`](generate.py) (needs Pillow):
 
 ```sh
