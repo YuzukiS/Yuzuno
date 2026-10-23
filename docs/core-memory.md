@@ -139,6 +139,51 @@ the same as above, and each case ran in its own process. One run per side.
   next one, and the other timing rules, are covered by the virtual-clock unit
   tests in `heap.rs`, not by a measurement.
 
+### A streamed text delta
+
+`AgentDetail::apply_at` appended an agentMessage, plan or command output
+delta by copying the text so far, pushing the delta onto the copy and setting
+it back. Every delta therefore allocated its message's whole length, about
+twice over with the copy's growth. A long streamed message allocated in
+proportion to its length squared. The delta is now pushed onto the field's
+string in place. A field that is not a string still becomes the delta.
+
+T-140 run `29a0367e-f435-4ccd-9157-a5c69c727067` (build
+`a1cdd0ab-3095-46ae-8f86-b55b99dc91f0`, measure
+`9927c725-6216-4fea-a17d-cb83700b95d6`), 2026-10-23: release builds of
+`delta_append_lab` (on lab branches, not merged), one on main and one on this
+change, the same example. Each ran twice, alternating. Each cell sent 200
+deltas through `Store::record_stream` after the message had reached a given
+length. Both runs of a side gave the same Rust counts, and the text read back
+was the deltas in order in every cell.
+
+| 200 deltas of 24 B (1 KiB) | Before | After |
+| --- | ---: | ---: |
+| After 1 MiB: allocated, averaged per delta | 2.0 (2.2) MiB | 5.9 KiB |
+| The same: highest Rust live above the batch's start | 3.0 (3.8) MiB | 1.0 MiB |
+| The same: median time of one call | 238–249 (30) µs | 1.0 µs |
+| After 4 MiB: allocated, averaged per delta | 8.0 (8.2) MiB | 21.2 KiB |
+| The same: highest Rust live above the batch's start | 12.0 (12.8) MiB | 4.0 MiB |
+| The same: median time of one call | 1.10–1.15 (1.38–1.40) ms | 1.0 µs |
+| The same: VmRSS rise over the batch | 8.0 (8.6) MiB | 4 (208) KiB |
+
+What a batch allocated is divided by its 200 deltas. The highest live is one
+figure for the whole batch, not a peak of each delta. Each process measured
+its eight cells in one fixed order (24 B deltas from the shortest length up,
+then 1 KiB), so each cell starts with the allocator as the cells before it
+left it. Compare a cell before and after the change, not one cell with
+another: the 1 KiB cell's 30 µs against the 24 B cell's 238–249 µs is such a
+comparison.
+
+Live Rust bytes at a batch's end had grown over its start by about the same
+before and after (4.0–4.4 MiB after 4 MiB). That growth counts every live
+byte in the process, the measurement's own included. It is not the record's
+size, the string's capacity, which the lab did not record, or resident
+memory. So this lowers allocation turnover, the batch's highest live and the
+time per delta; the lab does not show it lowering what a batch adds to live
+memory. These are synthetic allocator measurements in one process, not the
+daily Core's RSS.
+
 ## Reproduce the isolated comparison
 
 Use a managed Job with 2 CPU cores, 6 GiB RAM and no swap. Build the release
