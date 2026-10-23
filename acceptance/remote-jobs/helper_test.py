@@ -99,9 +99,11 @@ class HelperTests(unittest.TestCase):
 
     def tearDown(self):
         # Leave no command of a failed test running, nor a supervisor writing
-        # into the folder about to be removed.
-        end_attempts(self.home / ".yuzuno" / "jobs")
-        self.tmp.cleanup()
+        # into the folder about to be removed; the folder goes even if one is.
+        try:
+            end_attempts(self.home / ".yuzuno" / "jobs")
+        finally:
+            self.tmp.cleanup()
 
     def call(self, request, expect=0, nonce=None, env_extra=None):
         # Core names the machine's data root in each request.
@@ -864,8 +866,10 @@ class InputsAndArtifactsTests(unittest.TestCase):
         self.env = dict(os.environ, YUZUNO_JOBS_MACHINE_ID_FILE=str(machine), YUZUNO_JOBS_BOOT_ID_FILE=str(boot))
 
     def tearDown(self):
-        end_attempts(self.data / "jobs")
-        self.tmp.cleanup()
+        try:
+            end_attempts(self.data / "jobs")
+        finally:
+            self.tmp.cleanup()
 
     def call(self, request, expect=0):
         nonce = uuid.uuid4().hex
@@ -1252,10 +1256,13 @@ class PauseTests(unittest.TestCase):
                 pass
         for unit in units:
             subprocess.run(["systemctl", "--user", "thaw", "--", unit], capture_output=True, timeout=15)
-        end_attempts(self.data / "jobs")
-        for unit in units:
-            subprocess.run(["systemctl", "--user", "stop", "--", unit], capture_output=True, timeout=15)
-        self.tmp.cleanup()
+        try:
+            end_attempts(self.data / "jobs")
+        finally:
+            # Stopped and removed even if a supervisor is still running.
+            for unit in units:
+                subprocess.run(["systemctl", "--user", "stop", "--", unit], capture_output=True, timeout=15)
+            self.tmp.cleanup()
 
     def facts(self, linger):
         """This host's own facts (limited holds limits in a scope only on an
