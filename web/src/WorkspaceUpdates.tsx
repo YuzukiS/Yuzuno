@@ -23,6 +23,7 @@ import { DiagnosticsCopy } from "./RecoveryPage";
 import { HistoryComposition } from "./HistoryComposition";
 import { ReviewSettings } from "./ReviewSettings";
 import { HomePresentationSettings } from "./HomePresentationSettings";
+import { WorkspaceBackup } from "./WorkspaceBackup";
 import { api, errorText, HttpError } from "./api";
 import {
   loadedRelease,
@@ -759,7 +760,7 @@ export function WorkspaceUpdates({
         navigation={navigation}
         onEditorChange={setActiveEditor}
         attention={stage === "running" || stage === "reload" || stage === "prepared" || stage === "local" || stage === "published"}
-        renderEditor={(tab) => <>
+        renderEditor={(tab, visible) => <>
           {tab === "updates" && (
             <section
               className="settings-section"
@@ -979,6 +980,7 @@ export function WorkspaceUpdates({
           {tab === "appearance" && <AppearanceSection />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
+          {tab === "backup" && <WorkspaceBackup active={open && visible} />}
         </>}
       />
     </Modal>
