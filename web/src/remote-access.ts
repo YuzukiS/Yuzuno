@@ -103,9 +103,30 @@ export const verificationStepLabels: Record<VerificationStep["id"], string> = {
 /** One line per fact, as the page shows it; `tone` says how it reads. */
 export type StateLine = { label: string; text: string; tone: "on" | "off" | "warn" | "unknown" };
 
+/** Whether the entry is set up: Core listens for it, or an applied saving says so. */
+export function setUp(view: RemoteAccessView): boolean {
+  return !!view.listening || (!!view.saved?.enabled && view.saved.applied);
+}
+
+/** The steps that say whether the host is ready, before anything is set up. */
+const readiness: VerificationStep["id"][] = ["host", "tailscale", "https"];
+
+/** What the badge beside the title says, from the view alone. */
+export function badge(view: RemoteAccessView): string {
+  if (view.url) return view.verification && !view.verification.ok ? "Not verified" : "On";
+  if (view.saved?.enabled && !view.saved.applied && !view.listening) return "Not applied";
+  if (view.listening && view.serve.state === "unchecked") return "Not checked";
+  return view.saved?.enabled || view.listening || view.serve.state === "ours" ? "Incomplete" : "Off";
+}
+
 export function stateLines(view: RemoteAccessView): StateLine[] {
   const { saved, listening, serve, verification } = view;
   const failed = verification?.steps.find((step) => step.state === "failed");
+  // Before anything is set up, Core's phone port and Serve fail by design;
+  // only the host, Tailscale and HTTPS say whether it can be set up.
+  const unready = verification?.steps.find((step) => readiness.includes(step.id) && step.state === "failed");
+  const ready = readiness.every((id) => verification?.steps.some((step) => step.id === id && step.state === "ok"));
+  const notYet = !!verification && !verification.ok && !setUp(view);
   const others = serve.otherEntries > 0 ? ` · ${serve.otherEntries} other ${serve.otherEntries === 1 ? "entry" : "entries"} left as they are` : "";
   return [
     {
@@ -142,15 +163,25 @@ export function stateLines(view: RemoteAccessView): StateLine[] {
       tone:
         serve.state === "ours" ? "on" : serve.state === "absent" ? "off" : serve.state === "unchecked" ? "unknown" : "warn",
     },
-    {
-      label: "Verification",
-      text: !verification
-        ? "Not checked yet"
-        : verification.ok
-          ? "Reached from the tailnet"
-          : `Failed at “${failed ? verificationStepLabels[failed.id] ?? failed.id : "a step"}”${failed?.detail ? `: ${failed.detail}` : ""}`,
-      tone: !verification ? "unknown" : verification.ok ? "on" : "warn",
-    },
+    notYet
+      ? {
+          label: "Verification",
+          text: unready
+            ? `Not ready: “${verificationStepLabels[unready.id] ?? unready.id}”${unready.detail ? `: ${unready.detail}` : ""}`
+            : ready
+              ? "Not set up; Core's host, Tailscale and HTTPS are ready"
+              : "Not set up",
+          tone: unready ? "warn" : "off",
+        }
+      : {
+          label: "Verification",
+          text: !verification
+            ? "Not checked yet"
+            : verification.ok
+              ? "Reached from the tailnet"
+              : `Failed at “${failed ? verificationStepLabels[failed.id] ?? failed.id : "a step"}”${failed?.detail ? `: ${failed.detail}` : ""}`,
+          tone: !verification ? "unknown" : verification.ok ? "on" : "warn",
+        },
   ];
 }
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { api, errorText, HttpError, NetworkError, post } from "./api";
 import {
+  badge,
   loadPending,
   newRequestId,
   operationStepLabels,
@@ -248,7 +249,7 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
         </div>
         {view && (
           <span className="settings-current" title="As Core reports it now">
-            {view.url ? (unverified ? "Not verified" : "On") : enabledNow ? "Incomplete" : "Off"}
+            {badge(view)}
           </span>
         )}
       </header>

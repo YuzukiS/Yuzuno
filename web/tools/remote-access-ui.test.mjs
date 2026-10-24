@@ -158,7 +158,7 @@ test("opening it only reads, and saved settings alone are not shown as reachable
     assert.match(p.states()[1][1], /Not listening/);
     assert.match(p.states()[2][1], /Not checked yet/);
     assert.match(p.states()[3][1], /Not checked yet/);
-    assert.equal(p.doc.querySelector(".settings-current").textContent, "Incomplete");
+    assert.equal(p.doc.querySelector(".settings-current").textContent, "Not applied");
     assert.equal(!!p.doc.querySelector(".remote-access-result"), false, "no address without one in the view");
     assert.match(p.text(), /WSL · Ubuntu · mirrored networking/);
     assert.match(p.text(), /Windows · not checked yet/);
@@ -166,6 +166,39 @@ test("opening it only reads, and saved settings alone are not shown as reachable
     assert.deepEqual(p.calls.map((c) => `${c.method} ${c.url}`), ["GET /api/remote-access"], "one read, nothing else");
   } finally {
     p.close();
+  }
+});
+
+test("before it is set up, a check says what is ready, not that the entry failed", async () => {
+  const steps = (tailscaleStep) => [
+    { id: "host", state: "ok", detail: "WSL with mirrored networking" },
+    tailscaleStep,
+    { id: "https", state: "ok", detail: "HTTPS certificates are on" },
+    { id: "listener", state: "failed", detail: "Core is not listening for phone access" },
+    { id: "hop", state: "skipped", detail: "" },
+    { id: "serve", state: "skipped", detail: "" },
+    { id: "endToEnd", state: "skipped", detail: "" },
+  ];
+  const ready = { id: "tailscale", state: "ok", detail: "running" };
+  const views = [
+    [checkedView({ verification: { ok: false, at: "x", steps: steps(ready) } }), ["off", "VerificationNot set up; Core's host, Tailscale and HTTPS are ready"], "Off"],
+    [checkedView({ verification: { ok: false, at: "x", steps: steps({ id: "tailscale", state: "failed", detail: "Tailscale is stopped" }) } }),
+      ["warn", "VerificationNot ready: “Tailscale on Windows”: Tailscale is stopped"], "Off"],
+    // Core listening for it: the same failure is the entry's own.
+    [checkedView({ listening: { port: 4318, origin: ENTRY, login: "user@example.com", since: "x", source: "environment" }, verification: { ok: false, at: "x", steps: steps(ready) } }),
+      ["warn", "VerificationFailed at “Core's phone port”: Core is not listening for phone access"], "Incomplete"],
+    // Listening from the environment, Serve not looked at yet.
+    [view({ listening: { port: 4318, origin: ENTRY, login: "user@example.com", since: "x", source: "environment" } }), ["unknown", "VerificationNot checked yet"], "Not checked"],
+  ];
+  for (const [body, line, badge] of views) {
+    const p = mount(() => ({ body }));
+    try {
+      await waitFor(() => p.states().length === 4, "the four states");
+      assert.deepEqual(p.states()[3], line);
+      assert.equal(p.doc.querySelector(".settings-current").textContent, badge);
+    } finally {
+      p.close();
+    }
   }
 });
 
