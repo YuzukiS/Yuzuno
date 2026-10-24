@@ -92,6 +92,8 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
   const [checking, setChecking] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const [said, setSaid] = useState(0);
+  const errorLine = useRef<HTMLParagraphElement>(null);
   const [copied, setCopied] = useState(false);
   const pending = useRef<Pending | null>(null);
   if (pending.current === null) pending.current = loadPending();
@@ -154,6 +156,16 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
     };
   }, [active, busy, operation, refresh]);
 
+  /** Says why something did not happen, and brings that line into view: on
+   * a phone's screen it can be below the buttons that were pressed. */
+  function say(text: string) {
+    setError(text);
+    setSaid((n) => n + 1);
+  }
+  useEffect(() => {
+    if (said) errorLine.current?.scrollIntoView?.({ block: "nearest" });
+  }, [said]);
+
   function edit(change: Partial<Fields>) {
     setFields((old) => (old ? { ...old, ...change } : old));
     setError("");
@@ -167,7 +179,7 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
       accept(await post<RemoteAccessView>("/remote-access/check", {}));
       setChecked(true);
     } catch (e) {
-      setError(`Check failed: ${readable(e)}`);
+      say(`Check failed: ${readable(e)}`);
     } finally {
       setChecking(false);
     }
@@ -176,7 +188,7 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
   async function send(enabled: boolean) {
     if (!fields || sending || busy) return;
     const draft: RemoteAccessDraft | string = enabled ? draftOf(fields) : { enabled: false };
-    if (typeof draft === "string") return setError(draft);
+    if (typeof draft === "string") return say(draft);
     // The same change asked again is the same request; anything else is new.
     const request: Pending =
       pending.current && JSON.stringify(pending.current.draft) === JSON.stringify(draft)
@@ -199,15 +211,15 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
       }
     } catch (e) {
       if (refusal(e) === "remote_access_busy" || (e instanceof HttpError && e.status === 409)) {
-        setError("Another phone access change is already running; its progress is shown below.");
+        say("Another phone access change is already running; its progress is shown below.");
       } else if (refusal(e) === "idempotency_conflict") {
         // This request ID names another change in Core: the next try is new.
         pending.current = null;
         savePending(null);
-        setError(`${readable(e)}. Press again to send it as a new change.`);
+        say(`${readable(e)}. Press again to send it as a new change.`);
       } else if (e instanceof NetworkError) {
-        setError("Core's answer did not arrive, so whether it started is not known. What Core recorded is shown below.");
-      } else setError(readable(e));
+        say("Core's answer did not arrive, so whether it started is not known. What Core recorded is shown below.");
+      } else say(readable(e));
       await refresh();
     } finally {
       setSending(false);
@@ -220,7 +232,7 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
-      setError("Copying is not allowed here; select the address instead.");
+      say("Copying is not allowed here; select the address instead.");
     }
   }
 
@@ -480,7 +492,7 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
             </div>
           )}
           {error && (
-            <p className="updates-error" role="alert">
+            <p className="updates-error" role="alert" ref={errorLine}>
               {error}
             </p>
           )}
