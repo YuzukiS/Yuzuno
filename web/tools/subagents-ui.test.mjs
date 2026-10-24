@@ -25,7 +25,7 @@ try {
 import {flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
 import {Turn} from ${JSON.stringify(path.join(root, "src/components.tsx"))};
-import {SubAgentDock} from ${JSON.stringify(path.join(root, "src/SubAgents.tsx"))};
+import {SubAgentDock} from ${JSON.stringify(path.join(root, "src/SubAgentPanels.tsx"))};
 const root=createRoot(document.getElementById('root'));
 window.navigated=[];
 window.renderTurn=(turn,agent)=>flushSync(()=>root.render(<><nav className="work-dock"><SubAgentDock agentId={agent.id} turns={[turn]} onNavigate={(id)=>window.navigated.push(id)}/></nav><Turn turn={turn} index={0} agent={agent} onFile={()=>{}} onAnswer={()=>{}}/></>));`,

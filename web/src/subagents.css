@@ -1,4 +1,4 @@
-/* Codex sub-agents (SubAgents.tsx): a group of the conversation's left dock
+/* Codex sub-agents (SubAgentPanels.tsx): a group of the conversation's left dock
    and, for the one chosen, a card beside it. The Turn keeps only anchors. */
 .subagent-anchor {
   display: block;

@@ -2,7 +2,7 @@ import { useId, useMemo, useState } from "react";
 import { LoaderCircle, MessageSquareReply, Send } from "lucide-react";
 import { errorText, shortcutModifier } from "../api";
 import type { Agent, MessageReceipt } from "../types";
-import { Clarification } from "../intelligent-ui/Clarification";
+import { Clarification } from "../intelligent-ui/ClarificationForm";
 import {
   clarificationAnswers,
   clarificationSchema,
