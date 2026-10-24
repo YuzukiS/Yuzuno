@@ -126,20 +126,13 @@ async fn run(
     if options.revert_record_rows {
         return revert_record_rows(&data.join("workspace.sqlite"));
     }
-    let remote = remote_entry(options.port)?;
+    // The phone entry Settings applied, or else YUZUNO_REMOTE_* (T-185).
+    let remote = yuzuno_workspace::remote_access::startup(&data, remote_entry(options.port)?);
     // Bind before touching the database: another process must not mark a live
     // workspace offline. Windows-to-WSL uses localhost, without LAN exposure.
     let listener=tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,options.port))
         .await.context("Cannot bind Core's loopback port; check permissions or whether Core is already running")?;
-    let remote = match remote {
-        Some((port, entry)) => Some((
-            tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
-                .await.context("Cannot bind the remote entry's loopback port (YUZUNO_REMOTE_PORT)")?,
-            port,
-            entry,
-        )),
-        None => None,
-    };
+    let remote = remote.bind().await?;
     let cwd = options.cwd.unwrap_or(std::env::current_dir()?);
     if let Some(layout) = &layout {
         let absolute = std::path::absolute(&data)?;
@@ -213,25 +206,7 @@ async fn run(
     // what they would mishandle (older_cores.rs).
     let store = ws.store.clone();
     let opencode = ws.clone();
-    if let Some((listener, port, entry)) = remote {
-        eprintln!("Remote entry: http://127.0.0.1:{port} for Tailscale Serve, as {}", entry.origin());
-        let app = server::remote_router(ws.clone(), options.web_dir.clone(), Some(updates.clone()), entry);
-        let mut stop = updates.shutdown.subscribe();
-        tokio::spawn(async move {
-            let served = axum::serve(listener, app)
-                .with_graceful_shutdown(async move {
-                    while !*stop.borrow_and_update() {
-                        if stop.changed().await.is_err() {
-                            break;
-                        }
-                    }
-                })
-                .await;
-            if let Err(error) = served {
-                eprintln!("Remote entry stopped: {error}");
-            }
-        });
-    }
+    yuzuno_workspace::remote_access::run(&ws, remote, options.web_dir.clone(), Some(updates.clone()), options.port);
     let graceful = axum::serve(
         listener,
         server::router_with_updates(ws, options.web_dir, options.port, Some(updates.clone())),

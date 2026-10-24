@@ -126,6 +126,8 @@ pub struct Workspace {
     pub(crate) machine_load: crate::machine_load::State,
     /// Project services opened in this Core (T-151); see `services`.
     pub(crate) services: crate::services::Runtime,
+    /// The phone entry's listener and its last check (T-185); see `remote_access`.
+    pub(crate) remote_access: crate::remote_access::State,
 }
 
 impl Workspace {
@@ -186,6 +188,7 @@ impl Workspace {
             brief_turns: Default::default(),
             machine_load: Default::default(),
             services: Default::default(),
+            remote_access: Default::default(),
         }))
     }
 
