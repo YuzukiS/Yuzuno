@@ -180,9 +180,17 @@ export function runtimeView(read: RuntimeRead, now = Date.now()): RuntimeView {
           : fact("no", read.page, `Core runs ${health.value.releaseId}: reload this page to use it.`);
   const desktop =
     read.desktop === null
-      ? fact("unknown", "Not the desktop app", "This page runs in a browser.")
+      ? fact("unknown", "Not known here", "This page isn't open in the desktop app, so it can't read the app's version.")
       : read.desktop.ok
-        ? fact("yes", read.desktop.value.version, read.desktop.value.channel === "installer" ? "Installed by the Yuzuno installer, which updates it." : read.desktop.value.unavailable ?? "How it was installed is not known.")
+        ? fact(
+            "yes",
+            read.desktop.value.version,
+            // As the Desktop app card says it: why it can't update comes first.
+            read.desktop.value.unavailable ??
+              (read.desktop.value.channel === "installer"
+                ? "Installed by the Yuzuno installer; it updates from the Desktop app card."
+                : "Not installed by the Yuzuno installer, so it can't update itself."),
+          )
         : fact("unknown", "Not known", `The desktop app didn't say: ${read.desktop.error}`);
   const iphone = fact("unknown", "Not reported", "The iPhone app doesn't report its version to this page.");
 

@@ -129,7 +129,7 @@ test("it shows Core, this device and each machine's last check, each fact with w
   });
   assert.deepEqual(page.facts(page.group("This device")), {
     "This page": "Yes · core-20261024-c215011 · The same release as Core.",
-    "Desktop app": "Unknown · Not the desktop app · This page runs in a browser.",
+    "Desktop app": "Unknown · Not known here · This page isn't open in the desktop app, so it can't read the app's version.",
     "iPhone app": "Unknown · Not reported · The iPhone app doesn't report its version to this page.",
   });
   const host = page.machine("Core host");
@@ -236,9 +236,22 @@ test("in the desktop app its version is read from the app's own status, never an
   const page = mount(core(), { desktop: { version: "0.3.0", channel: "installer", unavailable: null, phase: "idle", error: null, receivedBytes: 0, totalBytes: null, available: null } });
   page.window.show();
   await tick();
-  assert.equal(page.facts(page.group("This device"))["Desktop app"], "Yes · 0.3.0 · Installed by the Yuzuno installer, which updates it.");
+  assert.equal(page.facts(page.group("This device"))["Desktop app"], "Yes · 0.3.0 · Installed by the Yuzuno installer; it updates from the Desktop app card.");
   assert.deepEqual(page.invoked, ["desktop_update_status"]);
   page.close();
+  // A copy the installer didn't install, and one whose updates are blocked,
+  // say so as the Desktop app card does.
+  for (const [status, said] of [
+    [{ channel: "unknown", unavailable: null }, "Yes · 0.3.0 · Not installed by the Yuzuno installer, so it can't update itself."],
+    [{ channel: "installer", unavailable: "Updates are off for this copy." }, "Yes · 0.3.0 · Updates are off for this copy."],
+  ]) {
+    const other = mount(core(), { desktop: { version: "0.3.0", phase: "idle", error: null, receivedBytes: 0, totalBytes: null, available: null, ...status } });
+    other.window.show();
+    await tick();
+    assert.equal(other.facts(other.group("This device"))["Desktop app"], said);
+    assert.deepEqual(other.invoked, ["desktop_update_status"]);
+    other.close();
+  }
 });
 
 test("Read again reads the same again; nothing is read while closed; checks are left to Machines", async () => {
