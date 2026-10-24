@@ -72,7 +72,9 @@ const measure = (bottom) => {
     composer: box(composer),
     input: box(panel.querySelector("[data-composer-input]")),
     send: box(panel.querySelector(".send-button")),
-    reached: { input: reached(panel.querySelector("[data-composer-input]")), send: reached(panel.querySelector(".send-button")) },
+    // The input as a tap meets it: the editor's visible box (with a long
+    // draft the text itself runs far past it, scrolled).
+    reached: { input: reached(panel.querySelector(".pasted-text-composer .cm-scroller") ?? panel.querySelector("[data-composer-input]")), send: reached(panel.querySelector(".send-button")) },
     composerWide: composer ? { scroll: composer.scrollWidth, client: composer.clientWidth } : null,
     editor: (() => { const el = panel.querySelector(".pasted-text-composer .cm-scroller"); return el ? { box: box(el), scroll: el.scrollHeight, client: el.clientHeight } : null; })(),
     sideways: document.documentElement.scrollWidth > innerWidth,
