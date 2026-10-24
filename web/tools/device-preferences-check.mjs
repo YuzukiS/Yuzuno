@@ -33,8 +33,8 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_CHECK_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_CHECK_OUTPUT);
 await mkdir(output, { recursive: true });
-const parts = (process.env.T189_PARTS || "composer,settings,path").split(",");
-const report = { task: "T-189", source: process.env.T189_HEAD || null, parts, checks: [], composer: [], composerFailures: [], layout: [], requests: [], unmodelledGets: {}, errors: [], consoleErrors: [] };
+const parts = (process.env.T189_PARTS || "composer,settings,path,fit").split(",");
+const report = { task: "T-189", source: process.env.T189_HEAD || null, parts, checks: [], composer: [], composerFailures: [], layout: [], fit: [], fitFailures: [], requests: [], unmodelledGets: {}, errors: [], consoleErrors: [] };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -66,6 +66,8 @@ const devices = {
   keyboard: { viewport: { width: 1280, height: 800 }, reducedMotion: "reduce" },
   touch: { viewport: { width: 393, height: 852 }, hasTouch: true, isMobile: true, reducedMotion: "reduce" },
   phone: { viewport: { width: 320, height: 640 }, hasTouch: true, isMobile: true, reducedMotion: "reduce" },
+  // A phone with its software keyboard up.
+  short: { viewport: { width: 320, height: 300 }, hasTouch: true, isMobile: true, reducedMotion: "reduce" },
 };
 
 async function openApp(device, sendKey, label, fontSize = 16) {
@@ -729,9 +731,138 @@ async function pathCases() {
   await phonePath();
 }
 
+// ---- 4. Room for an editor in the real Settings ----
+
+const APPEARANCE_ENTRY = { search: "主题", title: "Theme, text & layout", editor: "appearance" };
+
+/** An editor's room in Settings: the pane as shown (clipped by every clipping
+ * ancestor and the screen), its controls (a label with its input counts as
+ * one), and for each, scrolled to as a user scrolls, whether it is wholly
+ * shown there and what a tap at its centre reaches. */
+const room = (page, editorId, selector = "input, select, button, textarea") => page.evaluate(({ editorId, selector }) => {
+  const shownBox = (el) => {
+    const r = el.getBoundingClientRect();
+    let box = { top: Math.max(r.top, 0), bottom: Math.min(r.bottom, innerHeight), left: Math.max(r.left, 0), right: Math.min(r.right, innerWidth) };
+    for (let a = el.parentElement; a; a = a.parentElement) {
+      const style = getComputedStyle(a);
+      if (!/(auto|scroll|hidden|clip)/.test(`${style.overflowX} ${style.overflowY}`)) continue;
+      const ar = a.getBoundingClientRect();
+      box = { top: Math.max(box.top, ar.top), bottom: Math.min(box.bottom, ar.bottom), left: Math.max(box.left, ar.left), right: Math.min(box.right, ar.right) };
+    }
+    return box;
+  };
+  const pane = document.querySelector(".settings-pane");
+  const editor = document.getElementById(`settings-editor-${editorId}`);
+  const paneBox = shownBox(pane);
+  const shown = Math.max(0, Math.round(paneBox.bottom - paneBox.top));
+  const controls = [...new Set([...editor.querySelectorAll(selector)].filter((el) => el.getClientRects().length).map((el) => el.closest("label") ?? el))];
+  const seen = controls.map((control) => {
+    control.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const r = control.getBoundingClientRect(), box = shownBox(pane);
+    const whole = r.top >= box.top - 1 && r.bottom <= box.bottom + 1 && r.left >= box.left - 1 && r.right <= box.right + 1;
+    const hit = document.elementFromPoint(r.left + r.width / 2, Math.max(box.top, Math.min(box.bottom - 1, r.top + r.height / 2)));
+    return { name: (control.textContent || control.getAttribute("aria-label") || control.tagName).trim().slice(0, 40), height: Math.round(r.height), whole, reached: !!hit && (hit === control || control.contains(hit)) };
+  });
+  return { shown, tallest: Math.max(0, ...seen.map((c) => c.height)), controls: seen };
+}, { editorId, selector });
+
+async function fitCase(device, fontSize, entry, { refused = false } = {}) {
+  const label = `fit, ${device} ${devices[device].viewport.width}×${devices[device].viewport.height}, ${fontSize} px, ${entry.editor}${refused ? ", refused" : ""}`;
+  try {
+    const app = await openApp(device, undefined, label, fontSize);
+    const { page } = app;
+    try {
+      const editor = await openEditor(page, entry);
+      await page.waitForTimeout(150);
+      if (refused) {
+        await refuseWrites(page, true);
+        await editor.locator('input[name="input-send-key"][value="enter"]').check();
+        await page.waitForTimeout(100);
+      }
+      const r = await room(page, entry.editor);
+      const alert = refused ? await room(page, entry.editor, ".save-status [role=alert]") : null;
+      const name = `${device}-${fontSize}-${entry.editor}${refused ? "-refused" : ""}`;
+      await page.screenshot({ path: resolve(output, `fit-${name}.png`) });
+      report.fit.push({ case: label, shown: r.shown, tallest: r.tallest, controls: r.controls.length, unreached: r.controls.filter((c) => !c.whole || !c.reached), alert });
+      assert.ok(r.controls.length > 0, `${label}: controls found`);
+      assert.ok(r.tallest <= r.shown, `${label}: the tallest control (${r.tallest} px) fits the pane as shown (${r.shown} px)`);
+      assert.deepEqual(r.controls.filter((c) => !c.whole || !c.reached), [], `${label}: every control, scrolled to, is wholly shown and reached`);
+      if (alert) {
+        assert.equal(alert.controls.length, 1);
+        assert.ok(alert.tallest <= alert.shown && alert.controls[0].whole && alert.controls[0].reached, `${label}: the refusal is read whole (${alert.tallest} px in ${alert.shown} px)`);
+      }
+    } finally {
+      await app.context.close();
+    }
+    return true;
+  } catch (error) {
+    const message = String(error?.message || error).split("\n")[0];
+    report.fitFailures.push({ case: label, message });
+    console.log(`FAIL ${label}: ${message}`);
+    return false;
+  }
+}
+
+/** The keyboard alone with a phone's software keyboard up (320×300): from
+ * search to a choice saved, the focused choice in view. */
+async function shortKeyboardCase() {
+  const label = "fit, short 320×300, 16 px, keyboard alone";
+  try {
+    const app = await openApp("short", undefined, label, 16);
+    const { page } = app;
+    try {
+      await page.getByRole("button", { name: "Settings and updates" }).click({ timeout: 10_000 });
+      const search = page.getByRole("searchbox", { name: "Search settings" });
+      await search.waitFor({ timeout: 10_000 });
+      await search.focus();
+      await page.keyboard.type(INPUT_ENTRY.search);
+      const name = () => page.evaluate(() => document.activeElement?.textContent.trim() ?? "");
+      for (let n = 0; n < 15 && (await name()) !== `Open ${INPUT_ENTRY.title}`; n++) await page.keyboard.press("Tab");
+      assert.equal(await name(), `Open ${INPUT_ENTRY.title}`);
+      await page.keyboard.press("Enter");
+      await page.locator(`#settings-editor-${INPUT_ENTRY.editor}`).waitFor({ timeout: 10_000 });
+      await page.keyboard.press("Tab");
+      await page.keyboard.press("ArrowDown");
+      await page.waitForTimeout(150);
+      // The focused radio and the start of its choice, with its ring, in the pane as shown.
+      const focus = await page.evaluate(() => {
+        const el = document.activeElement, choice = el?.closest(".input-send-choice");
+        const pane = document.querySelector(".settings-pane"), p = pane.getBoundingClientRect(), r = el.getBoundingClientRect();
+        const box = { top: Math.max(p.top, 0), bottom: Math.min(p.bottom, innerHeight) };
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return { value: el?.value ?? null, ring: choice ? getComputedStyle(choice).outlineStyle : "none", shown: Math.round(box.bottom - box.top),
+          inView: r.top >= box.top - 1 && r.bottom <= box.bottom + 1, reached: !!hit && (hit === el || choice?.contains(hit)) };
+      });
+      report.fit.push({ case: label, focus, stored: await stored(page) });
+      await page.screenshot({ path: resolve(output, "fit-short-16-keyboard.png") });
+      assert.deepEqual({ value: focus.value, ring: focus.ring, inView: focus.inView, reached: focus.reached }, { value: "enter", ring: "solid", inView: true, reached: true }, `${label}: ${JSON.stringify(focus)}`);
+      assert.equal(await stored(page), '{"sendKey":"enter"}');
+      await page.keyboard.press("Escape");
+      await page.getByRole("dialog").waitFor({ state: "detached", timeout: 10_000 });
+    } finally {
+      await app.context.close();
+    }
+    return true;
+  } catch (error) {
+    const message = String(error?.message || error).split("\n")[0];
+    report.fitFailures.push({ case: label, message });
+    console.log(`FAIL ${label}: ${message}`);
+    return false;
+  }
+}
+
+async function fitCases() {
+  for (const [device, fontSize] of [["phone", 24], ["phone", 16], ["keyboard", 16], ["keyboard", 24]])
+    for (const entry of [INPUT_ENTRY, APPEARANCE_ENTRY])
+      if (await fitCase(device, fontSize, entry)) check(`fit: ${device}, ${fontSize} px, ${entry.editor}: every control fits the pane as shown and is reached`);
+  if (await fitCase("phone", 24, INPUT_ENTRY, { refused: true })) check("fit: phone, 24 px, a refusal is read whole in the pane");
+  if (await shortKeyboardCase()) check("fit: 320×300 with the keyboard alone, the focused choice is in view with its ring and saved");
+  assert.deepEqual(report.fitFailures, [], "every fit case");
+}
+
 // Each part runs, and the report is written, also when one fails.
 report.failed = {};
-for (const [part, run] of [["composer", composerCases], ["settings", settingsCases], ["path", pathCases]]) {
+for (const [part, run] of [["composer", composerCases], ["settings", settingsCases], ["path", pathCases], ["fit", fitCases]]) {
   if (!parts.includes(part)) continue;
   try {
     await run();
