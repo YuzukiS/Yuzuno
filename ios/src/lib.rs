@@ -109,17 +109,21 @@ pub fn run() {
         .setup(move |app| {
             let outside = app.handle().clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                // Tauri opens no new window on iOS: a tap on a link that asks
+                // for one comes back as a `yuzuno-open:` navigation instead.
+                .initialization_script(include_str!("new_window_links.js"))
                 .on_navigation(move |url| {
                     let selected = navigation.lock().ok().and_then(|selected| selected.clone());
-                    let permitted = core_url::may_open(url, selected.as_ref());
-                    // A web page or mail link the window does not open itself
-                    // opens in Safari or Mail; anything else stays unopened.
-                    if !permitted && core_url::opens_outside(url) {
-                        if let Err(error) = outside.opener().open_url(url.as_str(), None::<&str>) {
-                            eprintln!("Unable to open {} outside Yuzuno: {error}", url.scheme());
+                    match core_url::destination(url, selected.as_ref()) {
+                        core_url::Destination::Window => true,
+                        core_url::Destination::Outside(link) => {
+                            if let Err(error) = outside.opener().open_url(link.as_str(), None::<&str>) {
+                                eprintln!("Unable to open {} outside Yuzuno: {error}", link.scheme());
+                            }
+                            false
                         }
+                        core_url::Destination::Nowhere => false,
                     }
-                    permitted
                 })
                 .build()?;
             Ok(())

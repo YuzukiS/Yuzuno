@@ -4,7 +4,9 @@ An iPhone app that shows your Workspace: the same web UI, the same Core, the sam
 
 The address must be an HTTPS origin on a host other than the iPhone, such as the Core's Tailnet address (`https://core.example.ts.net`). The iPhone itself must be on that private network. Plain HTTP is never accepted: an iPhone's `localhost` is the iPhone. How a Core is reached over HTTPS from a phone is not set up by this app (see [Install a Linux Core](../docs/independent-core.md)).
 
-The window shows only this app's own pages and the Core you connected to, by origin. A link to anywhere else is not opened in it. The Core's pages get no app permissions. The address you connect to is saved on the iPhone and filled in at the next launch; one tap opens it, and you can change it first.
+The window shows only this app's own pages and the Core you connected to, by origin. A link to anywhere else is not opened in it: a web page or mail link opens in Safari or Mail, and any other link opens nowhere. The Core's pages get no app permissions. The address you connect to is saved on the iPhone and filled in at the next launch; one tap opens it, and you can change it first.
+
+A link that opens a new window on a computer (`target="_blank"`), such as a GitHub link or an attachment, opens in Safari or Mail by the same rule, since the app opens no second window. That includes the Core's own attachments. Safari has its own cookies and storage, not the app's.
 
 ## What it is not yet
 
@@ -22,7 +24,7 @@ cd ios
 cargo tauri ios init      # makes the Xcode project in gen/apple (not kept in the repository yet)
 ```
 
-`cargo test` runs the app's own rules (the address and what the window may open) on the Mac.
+`cargo test` runs the app's own rules (the address, what the window opens and what goes to Safari or Mail) on the Mac.
 
 ### iOS Simulator
 
