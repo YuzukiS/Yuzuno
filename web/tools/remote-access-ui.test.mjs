@@ -170,13 +170,14 @@ test("opening it only reads, and saved settings alone are not shown as reachable
 });
 
 test("before it is set up, a check says what is ready, not that the entry failed", async () => {
-  const steps = (tailscaleStep) => [
+  const free = { id: "serve", state: "skipped", detail: "Port 8444 is free for phone access; Save and apply sets it" };
+  const steps = (tailscaleStep, serveStep = free) => [
     { id: "host", state: "ok", detail: "WSL with mirrored networking" },
     tailscaleStep,
     { id: "https", state: "ok", detail: "HTTPS certificates are on" },
     { id: "listener", state: "failed", detail: "Core is not listening for phone access" },
     { id: "hop", state: "skipped", detail: "" },
-    { id: "serve", state: "skipped", detail: "" },
+    serveStep,
     { id: "endToEnd", state: "skipped", detail: "" },
   ];
   const ready = { id: "tailscale", state: "ok", detail: "running" };
@@ -184,6 +185,10 @@ test("before it is set up, a check says what is ready, not that the entry failed
     [checkedView({ verification: { ok: false, at: "x", steps: steps(ready) } }), ["off", "VerificationNot set up; Core's host, Tailscale and HTTPS are ready"], "Off"],
     [checkedView({ verification: { ok: false, at: "x", steps: steps({ id: "tailscale", state: "failed", detail: "Tailscale is stopped" }) } }),
       ["warn", "VerificationNot ready: “Tailscale on Windows”: Tailscale is stopped"], "Off"],
+    // Another entry holds the Serve port: a Check before setup says so.
+    [checkedView({ serve: { state: "conflict", port: 8444, otherEntries: 1, detail: "proxy to http://127.0.0.1:9999" },
+      verification: { ok: false, at: "x", steps: steps(ready, { id: "serve", state: "failed", detail: "Port 8444 is already used by another Serve configuration" }) } }),
+      ["warn", "VerificationNot ready: “Tailscale Serve”: Port 8444 is already used by another Serve configuration"], "Off"],
     // Core listening for it: the same failure is the entry's own.
     [checkedView({ listening: { port: 4318, origin: ENTRY, login: "user@example.com", since: "x", source: "environment" }, verification: { ok: false, at: "x", steps: steps(ready) } }),
       ["warn", "VerificationFailed at “Core's phone port”: Core is not listening for phone access"], "Incomplete"],

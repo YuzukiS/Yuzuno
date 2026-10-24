@@ -108,8 +108,9 @@ export function setUp(view: RemoteAccessView): boolean {
   return !!view.listening || (!!view.saved?.enabled && view.saved.applied);
 }
 
-/** The steps that say whether the host is ready, before anything is set up. */
-const readiness: VerificationStep["id"][] = ["host", "tailscale", "https"];
+/** The steps that say whether the host is ready, before anything is set up:
+ * the host, Tailscale and HTTPS, and Serve when another entry holds the port. */
+const readiness: VerificationStep["id"][] = ["host", "tailscale", "https", "serve"];
 
 /** What the badge beside the title says, from the view alone. */
 export function badge(view: RemoteAccessView): string {
@@ -122,10 +123,13 @@ export function badge(view: RemoteAccessView): string {
 export function stateLines(view: RemoteAccessView): StateLine[] {
   const { saved, listening, serve, verification } = view;
   const failed = verification?.steps.find((step) => step.state === "failed");
-  // Before anything is set up, Core's phone port and Serve fail by design;
-  // only the host, Tailscale and HTTPS say whether it can be set up.
+  // Before anything is set up, Core's phone port, the hop and the whole way
+  // fail by design; only the readiness steps say whether it can be set up.
+  // Serve is skipped while its port is free, so it need not be ok.
   const unready = verification?.steps.find((step) => readiness.includes(step.id) && step.state === "failed");
-  const ready = readiness.every((id) => verification?.steps.some((step) => step.id === id && step.state === "ok"));
+  const ready = (["host", "tailscale", "https"] as const).every((id) =>
+    verification?.steps.some((step) => step.id === id && step.state === "ok"),
+  );
   const notYet = !!verification && !verification.ok && !setUp(view);
   const others =
     serve.otherEntries > 0
