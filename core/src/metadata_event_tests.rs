@@ -326,52 +326,53 @@ async fn an_mcp_startup_status_is_written_as_metadata_and_writes_what_the_whole_
         (meta, serde_json::to_value(&d.turns).unwrap(), kinds(ws))
     };
     // A second receipt: none; sending, its message in the second Turn;
-    // uncertain, its message in no Turn; unknown, its message in a Turn.
+    // uncertain, its message in no Turn; unknown, its message in a Turn. The
+    // Agent's status reaches only `settle_status`, which the test above checks
+    // for every status; here what reaches the commit varies.
     let receipts: [Option<(&str, bool)>; 4] = [None, Some(("sending", true)), Some(("uncertain", false)), Some(("unknown", true))];
+    let status = "working";
     let mut checked = 0;
-    for status in ["working", "waiting", "idle", "uncertain"] {
-        for running in [true, false] {
-            for pending in [vec![], vec![approval("p", 7, 1)]] {
-                for receipt in receipts {
-                    for held in [true, false] {
-                        let mut d = record(status, running);
-                        d.pending = pending.clone();
-                        d.agent.pending_count = pending.len() as u64;
-                        if let Some((state, shown)) = receipt {
-                            if shown {
-                                d.turns[1]["items"] = json!([{"id":"u2","type":"userMessage","clientId":"next","content":[{"type":"text","text":"next"}]}]);
-                            }
-                            d.message_receipts.push(serde_json::from_value(json!({"input":{"clientMessageId":"next","text":"next"},"status":state})).unwrap());
+    for running in [true, false] {
+        for pending in [vec![], vec![approval("p", 7, 1)]] {
+            for receipt in receipts {
+                for held in [true, false] {
+                    let mut d = record(status, running);
+                    d.pending = pending.clone();
+                    d.agent.pending_count = pending.len() as u64;
+                    if let Some((state, shown)) = receipt {
+                        if shown {
+                            d.turns[1]["items"] = json!([{"id":"u2","type":"userMessage","clientId":"next","content":[{"type":"text","text":"next"}]}]);
                         }
-                        let (dir, other_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-                        let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
-                        let other = Workspace::new(other_dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
-                        for w in [&ws, &other] {
-                            w.store.insert(&d).unwrap();
-                            w.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
-                            if !held {
-                                w.store.release_for_test("a");
-                            }
-                        }
-                        let rpc = connect(&ws, 1).await;
-                        let copy = ws.store.held_for_test("a");
-                        let before = in_place();
-                        ws.on_event("a", 1, json!({"method":method,"params":p}));
-                        let case = format!("{status} running={running} pending={} receipt={receipt:?} held={held}", pending.len());
-                        if let Some(copy) = &copy {
-                            assert!(ws.store.held_for_test("a").is_some_and(|now| Arc::ptr_eq(&now, copy)), "{case}: the record was copied");
-                            assert_eq!(in_place(), before + 1, "{case}");
-                        }
-                        other.store.record_applied("a", method, method, &p).unwrap();
-                        let (mine, theirs) = (written(&ws), written(&other));
-                        assert_eq!(mine, theirs, "{case}");
-                        assert_eq!(mine.2.last(), Some(&(method.to_owned(), p.clone())), "{case}");
-                        rpc.close();
-                        checked += 1;
+                        d.message_receipts.push(serde_json::from_value(json!({"input":{"clientMessageId":"next","text":"next"},"status":state})).unwrap());
                     }
+                    let (dir, other_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+                    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+                    let other = Workspace::new(other_dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+                    for w in [&ws, &other] {
+                        w.store.insert(&d).unwrap();
+                        w.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+                        if !held {
+                            w.store.release_for_test("a");
+                        }
+                    }
+                    let rpc = connect(&ws, 1).await;
+                    let copy = ws.store.held_for_test("a");
+                    let before = in_place();
+                    ws.on_event("a", 1, json!({"method":method,"params":p}));
+                    let case = format!("{status} running={running} pending={} receipt={receipt:?} held={held}", pending.len());
+                    if let Some(copy) = &copy {
+                        assert!(ws.store.held_for_test("a").is_some_and(|now| Arc::ptr_eq(&now, copy)), "{case}: the record was copied");
+                        assert_eq!(in_place(), before + 1, "{case}");
+                    }
+                    other.store.record_applied("a", method, method, &p).unwrap();
+                    let (mine, theirs) = (written(&ws), written(&other));
+                    assert_eq!(mine, theirs, "{case}");
+                    assert_eq!(mine.2.last(), Some(&(method.to_owned(), p.clone())), "{case}");
+                    rpc.close();
+                    checked += 1;
                 }
             }
         }
     }
-    assert_eq!(checked, 4 * 2 * 2 * 4 * 2);
+    assert_eq!(checked, 2 * 2 * 4 * 2);
 }
