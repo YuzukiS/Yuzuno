@@ -22,6 +22,7 @@ import { DesktopUpdate } from "./DesktopUpdate";
 import { DiagnosticsCopy } from "./RecoveryPage";
 import { HistoryComposition } from "./HistoryComposition";
 import { ReviewSettings } from "./ReviewSettings";
+import { AgentDefaults } from "./AgentDefaults";
 import { HomePresentationSettings } from "./HomePresentationSettings";
 import { api, errorText, HttpError } from "./api";
 import {
@@ -977,6 +978,7 @@ export function WorkspaceUpdates({
           {tab === "diagnostics" && <DiagnosticsCopy />}
           {tab === "history" && <HistoryComposition />}
           {tab === "appearance" && <AppearanceSection />}
+          {tab === "agent-defaults" && <AgentDefaults active={open} />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
         </>}

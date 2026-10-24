@@ -17,6 +17,15 @@ import { ImportCodexSession } from "./ImportCodexSession";
 import { ImportClaudeSession } from "./ImportClaudeSession";
 import { harnessName, runMachineCheck, type MachineCheck } from "./machine-checks";
 import { LastCheck } from "./MachinesPage";
+import {
+  CLAUDE_MODES,
+  CODEX_PRESETS,
+  type AgentDefaultsView,
+  claudeModeText,
+  codexPermissionText,
+  readAgentDefaults,
+  sourceText,
+} from "./agent-defaults";
 import "./remote.css";
 
 export interface WorkspaceMachine {
@@ -99,6 +108,12 @@ export function RemoteCreateAgent({
   useEffect(() => {
     if (!opencode && isOpenCode) setHarness("codex");
   }, [opencode, isOpenCode]);
+  // The Workspace's defaults for new Agents (T-190): "unknown" from a Core
+  // that doesn't report them. The harness starts on the default until this
+  // Agent's own harness is chosen; a permission is sent only when chosen.
+  const [defaults, setDefaults] = useState<AgentDefaultsView | "unknown" | null>(null);
+  const harnessChosen = useRef(false);
+  const [permission, setPermission] = useState("");
   const [projectId, setProjectId] = useState(initialProjectId);
   const [saveDefault, setSaveDefault] = useState(false);
   const activeProjectList = activeProjects(projects);
@@ -156,7 +171,11 @@ export function RemoteCreateAgent({
     if (initial.harness || initial.machineId) {
       // As choosing them does: a model or a machine check of an earlier
       // opening is not this harness's or machine's.
-      if (initial.harness) setHarness(initial.harness);
+      if (initial.harness) {
+        harnessChosen.current = true;
+        setHarness(initial.harness);
+        setPermission("");
+      }
       if (initial.machineId) setMachineId(initial.machineId);
       checkRequest.current += 1;
       setModel("");
@@ -229,6 +248,41 @@ export function RemoteCreateAgent({
     return () => controller.abort();
   }, [open, disabled, remote, harness, modelReload, mode]);
 
+  // Read on each opening, so a change in Settings or another client shows.
+  useEffect(() => {
+    if (!open || disabled || mode !== "new") return;
+    const controller = new AbortController();
+    void readAgentDefaults(controller.signal)
+      .then((view) => {
+        if (controller.signal.aborted) return;
+        const harness = view?.effective?.harness?.value;
+        if (harness !== "codex" && harness !== "claude") {
+          setDefaults("unknown");
+          return;
+        }
+        setDefaults(view);
+        if (!harnessChosen.current) setHarness(harness);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setDefaults("unknown");
+      });
+    return () => controller.abort();
+  }, [open, disabled, mode]);
+  const known = defaults && defaults !== "unknown" ? defaults : null;
+  const defaultPermission =
+    harness === "claude"
+      ? known && { text: claudeModeText(known.effective.claudePermissionMode.value), source: known.effective.claudePermissionMode.source }
+      : known && { text: codexPermissionText(known.effective.codexPermissionPreset.value), source: known.effective.codexPermissionPreset.source };
+  const chosenModel = models.find((m) => (m.model || m.id) === model);
+  // Auto mode needs a model that supports it; where Core's catalog says this
+  // one doesn't, a default of Auto mode is not sent for it.
+  const autoUnavailable = harness === "claude" && !remote && chosenModel?.supportsAutoMode === false;
+  const permissionConflict =
+    autoUnavailable && !permission && known?.effective.claudePermissionMode.value === "auto";
+  useEffect(() => {
+    if (autoUnavailable && permission === "auto") setPermission("");
+  }, [autoUnavailable, permission]);
+
   useEffect(() => {
     if (!open) {
       checkRequest.current += 1;
@@ -279,7 +333,7 @@ export function RemoteCreateAgent({
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
-    if (disabled || locked || adding || checking) return;
+    if (disabled || locked || adding || checking || permissionConflict) return;
     setBusy(true);
     setError("");
     try {
@@ -291,6 +345,9 @@ export function RemoteCreateAgent({
           machineId: machine.id,
           harness,
           ...(model.trim() ? { model: model.trim() } : {}),
+          // Only this Agent's own choice; Core applies the default otherwise.
+          ...(permission && harness === "codex" ? { permissionPreset: permission } : {}),
+          ...(permission && harness === "claude" ? { permissionMode: permission } : {}),
           ...(projectId
             ? { projectId, saveProjectDefault: saveDefault && !!cwd.trim() }
             : {}),
@@ -299,6 +356,8 @@ export function RemoteCreateAgent({
       onCreated(agent);
       close();
       setName("");
+      harnessChosen.current = false;
+      setPermission("");
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -385,7 +444,9 @@ export function RemoteCreateAgent({
               name="create-harness"
               value={harness}
               onChange={(value) => {
+                harnessChosen.current = true;
                 setHarness(value as "codex" | "claude" | "opencode");
+                setPermission("");
                 setModel("");
                 if (value === "opencode" && remote)
                   selectMachine(machines.find((m) => m.kind === "local") || localMachine);
@@ -396,6 +457,12 @@ export function RemoteCreateAgent({
                 ...(opencode ? [{ value: "opencode", label: "OpenCode", note: "Experimental" }] : []),
               ]}
             />
+            {known && (
+              <p className="remote-field-note create-default-source" data-source={known.effective.harness.source}>
+                {sourceText(known.effective.harness.source)}: {harnessName(known.effective.harness.value)} for new
+                Agents.
+              </p>
+            )}
             <ChoiceChips
               label="Where to work"
               name="create-machine"
@@ -614,6 +681,42 @@ export function RemoteCreateAgent({
               </p>
             )}
             {!isOpenCode && (
+              <ChoiceChips
+                label="Permissions"
+                name="create-permissions"
+                value={permission}
+                onChange={setPermission}
+                choices={[
+                  {
+                    value: "",
+                    label: `Default · ${defaultPermission ? defaultPermission.text : "Not reported by this Core"}`,
+                    note: defaultPermission ? sourceText(defaultPermission.source) : undefined,
+                  },
+                  ...(harness === "claude"
+                    ? CLAUDE_MODES.map((mode) => ({
+                        value: mode,
+                        label: claudeModeText(mode),
+                        disabled: mode === "auto" && autoUnavailable,
+                        note: mode === "auto" && autoUnavailable ? "not available for this model" : undefined,
+                      }))
+                    : CODEX_PRESETS.map((preset) => ({ value: preset, label: codexPermissionText(preset) }))),
+                ]}
+              />
+            )}
+            {permissionConflict && (
+              <p className="remote-field-error" role="alert">
+                Auto mode isn’t available for this model, so the default for new Agents can’t be used. Choose this
+                Agent’s permissions.
+              </p>
+            )}
+            {!isOpenCode && (
+              <p className="remote-field-note">
+                {harness === "codex"
+                  ? "Follow Codex config uses this machine’s own Codex configuration; the others are Yuzuno’s choice. The machine checks it when the Agent starts."
+                  : "The Agent shows the mode its Claude Code session reports once it starts."}
+              </p>
+            )}
+            {!isOpenCode && (
               <p className="remote-login-note">
                 <Server size={13} />
                 <span>
@@ -650,7 +753,8 @@ export function RemoteCreateAgent({
                 adding ||
                 checking ||
                 !name.trim() ||
-                !cwd.trim()
+                !cwd.trim() ||
+                permissionConflict
               }
             >
               {busy ? (
