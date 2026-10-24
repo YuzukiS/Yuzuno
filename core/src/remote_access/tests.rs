@@ -20,67 +20,12 @@ struct Lab {
 /// `serve --bg --https=P target` and `serve --https=P off`, with faults the
 /// state names: `failAdd` and `failOff` (refused), `lostAdd` (added, then no
 /// answer) and `slow` (seconds before any answer).
-const TAILSCALE: &str = r#"#!/usr/bin/env python3
-import json, sys, time
-STATE, LOG = sys.argv[0] + ".json", sys.argv[0] + ".log"
-args = sys.argv[1:]
-s = json.load(open(STATE))
-open(LOG, "a").write(" ".join(args) + "\n")
-time.sleep(s.get("slow", 0))
-def save(): json.dump(s, open(STATE, "w"))
-serve = s.setdefault("serve", {})
-if args == ["status", "--json"]:
-    print("﻿" + json.dumps(s["status"])); sys.exit(0)
-if args == ["serve", "status", "--json"]:
-    print(json.dumps(serve) if serve.get("TCP") else ""); sys.exit(0)
-if args[:2] == ["serve", "--bg"] and args[2].startswith("--https="):
-    port, target = args[2].split("=")[1], args[3]
-    if s.get("failAdd"):
-        print(s["failAdd"], file=sys.stderr); sys.exit(1)
-    serve.setdefault("TCP", {})[port] = {"HTTPS": True}
-    serve.setdefault("Web", {})[s["status"]["Self"]["DNSName"].rstrip(".") + ":" + port] = {"Handlers": {"/": {"Proxy": target}}}
-    save()
-    if s.get("lostAdd"):
-        s.pop("lostAdd"); save(); time.sleep(30)
-    sys.exit(0)
-if len(args) == 3 and args[0] == "serve" and args[1].startswith("--https=") and args[2] == "off":
-    if s.get("failOff"):
-        print(s["failOff"], file=sys.stderr); sys.exit(1)
-    port = args[1].split("=")[1]
-    serve.get("TCP", {}).pop(port, None)
-    for key in [k for k in serve.get("Web", {}) if k.endswith(":" + port)]:
-        serve["Web"].pop(key)
-    save(); sys.exit(0)
-print("unsupported: " + " ".join(args), file=sys.stderr); sys.exit(2)
-"#;
+const TAILSCALE: &str = include_str!("../../../acceptance/t185-remote-access/fake_tailscale.py");
 
 /// The fake curl.exe: `-sS -m S -o - -w "\n%{http_code}" URL`. Loopback URLs
 /// are fetched as they are; an https URL goes through the Serve entry for its
 /// host and port, as this PC's owner.
-const CURL: &str = r#"#!/usr/bin/env python3
-import json, sys, urllib.request, urllib.error
-url = sys.argv[-1]
-s = json.load(open(sys.argv[0].replace("curl.exe", "tailscale.exe") + ".json"))
-headers = {}
-if url.startswith("https://"):
-    rest = url[len("https://"):]
-    hostport, _, path = rest.partition("/")
-    port = hostport.rsplit(":", 1)[1] if ":" in hostport else "443"
-    web = s.get("serve", {}).get("Web", {}).get(hostport if ":" in hostport else hostport + ":443")
-    if not web or "/" not in web["Handlers"]:
-        print("curl: (7) Failed to connect", file=sys.stderr); print("\n000", end=""); sys.exit(7)
-    target = web["Handlers"]["/"]["Proxy"]
-    headers = {"Host": hostport, "Tailscale-User-Login": s["owner"]}
-    url = target + "/" + path
-try:
-    r = urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=10)
-    code, body = r.status, r.read().decode()
-except urllib.error.HTTPError as e:
-    code, body = e.code, e.read().decode()
-except Exception as e:
-    print("curl: (7) " + str(e), file=sys.stderr); print("\n000", end=""); sys.exit(7)
-print(body + "\n" + str(code), end="")
-"#;
+const CURL: &str = include_str!("../../../acceptance/t185-remote-access/fake_curl.py");
 
 fn lab(kind: &str) -> Lab {
     let dir = tempfile::tempdir().unwrap();
