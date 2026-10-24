@@ -2663,12 +2663,13 @@ impl Store {
 
     /// `update_meta` of a native event that `AgentDetail::apply` takes as a
     /// change to the metadata alone (`serverRequest/resolved`,
-    /// `thread/status/changed`), with `apply`'s last step too: each receipt
-    /// not yet accepted or rejected is accepted by the first Turn with its
-    /// user message (`confirm_message_receipts`), after the receipts are
-    /// bound. So a receipt still sending or uncertain is left as `apply`
-    /// leaves it, without a copy of the record (T-140). Returns the change's
-    /// rev.
+    /// `thread/status/changed`) or as no change at all
+    /// (`mcpServer/startupStatus/updated`), with `apply`'s last step too:
+    /// each receipt not yet accepted or rejected is accepted by the first
+    /// Turn with its user message (`confirm_message_receipts`), after the
+    /// receipts are bound. So a receipt still sending or uncertain is left as
+    /// `apply` leaves it, without a copy of the record (T-140). Returns the
+    /// change's rev.
     pub fn update_meta_applied(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut Meta<'_>)) -> Result<u64> {
         Ok(self.commit_meta(id, kind, data, true, mutate, |_, _| ())?.0)
     }
