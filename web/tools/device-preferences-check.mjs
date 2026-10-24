@@ -529,21 +529,21 @@ const editorState = (editor) => editor.evaluate((el) => ({
   alert: el.querySelector(".save-status [role=alert]")?.textContent.trim() ?? null,
   checked: el.querySelector('input[name="input-send-key"]:checked')?.value ?? null,
 }));
-/** The browser refusing (or again keeping) this device's preferences, from now on in this page. */
-const refuseWrites = (page, refuse) => page.evaluate((refuse) => {
+/** The browser refusing (or again keeping) a preference set, this device's send key by default, from now on in this page. */
+const refuseWrites = (page, refuse, refusedKey = "yuzuno.preferences") => page.evaluate(({ refuse, refusedKey }) => {
   const storage = Storage.prototype;
   window.t189Storage ||= { setItem: storage.setItem, removeItem: storage.removeItem };
   if (!refuse) return Object.assign(storage, window.t189Storage);
   const full = function (key, ...rest) {
-    if (key === "yuzuno.preferences") throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+    if (key === refusedKey) throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
     return window.t189Storage.setItem.call(this, key, ...rest);
   };
   storage.setItem = full;
   storage.removeItem = function (key) {
-    if (key === "yuzuno.preferences") throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+    if (key === refusedKey) throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
     return window.t189Storage.removeItem.call(this, key);
   };
-}, refuse);
+}, { refuse, refusedKey });
 const composerHint = async (page) => (await page.locator(".composer-keys").textContent()).replace(/\s+/g, " ").trim();
 /** A fresh "draft" and one press in the conversation: what it did. */
 async function pressInConversation(app, key) {
@@ -673,7 +673,9 @@ async function keyboardPath() {
   }
 }
 
-/** A 320 px phone at the largest text: both sections in the real Settings, and a refusal. */
+/** A 320 px phone at the largest text: both sections in the real Settings
+ * (nothing sideways or cut off), and a refusal (each button reachable by
+ * scrolling). Whether all of it fits the pane as shown is part 4's. */
 async function phonePath() {
   const label = "path, phone 320 px, 24 px";
   const app = await openApp("phone", undefined, label, 24);
@@ -719,7 +721,7 @@ async function phonePath() {
     assert.ok(buttons.every((b) => b.onScreen && b.hit), `each button reachable ${JSON.stringify(buttons)}`);
     await closeSettings(page);
     assert.equal(await composerHint(page), SENDS_HINT, "the refused choice applies on the phone too");
-    check("path: 320 px phone at 24 px, both sections fit in the real Settings; a refusal is said, each button reachable, and it applies");
+    check("path: 320 px phone at 24 px, both sections in the real Settings: nothing sideways or cut off; a refusal is said, each of its buttons reachable by scrolling, and it applies");
   } finally {
     await app.context.close();
   }
@@ -739,7 +741,7 @@ const APPEARANCE_ENTRY = { search: "主题", title: "Theme, text & layout", edit
  * ancestor and the screen), its controls (a label with its input counts as
  * one), and for each, scrolled to as a user scrolls, whether it is wholly
  * shown there and what a tap at its centre reaches. */
-const room = (page, editorId, selector = "input, select, button, textarea") => page.evaluate(({ editorId, selector }) => {
+const room = (page, editorId, selector = "input, select, button, textarea", scroll = true) => page.evaluate(({ editorId, selector, scroll }) => {
   const shownBox = (el) => {
     const r = el.getBoundingClientRect();
     let box = { top: Math.max(r.top, 0), bottom: Math.min(r.bottom, innerHeight), left: Math.max(r.left, 0), right: Math.min(r.right, innerWidth) };
@@ -757,14 +759,20 @@ const room = (page, editorId, selector = "input, select, button, textarea") => p
   const shown = Math.max(0, Math.round(paneBox.bottom - paneBox.top));
   const controls = [...new Set([...editor.querySelectorAll(selector)].filter((el) => el.getClientRects().length).map((el) => el.closest("label") ?? el))];
   const seen = controls.map((control) => {
-    control.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (scroll) control.scrollIntoView({ block: "nearest", inline: "nearest" });
     const r = control.getBoundingClientRect(), box = shownBox(pane);
     const whole = r.top >= box.top - 1 && r.bottom <= box.bottom + 1 && r.left >= box.left - 1 && r.right <= box.right + 1;
     const hit = document.elementFromPoint(r.left + r.width / 2, Math.max(box.top, Math.min(box.bottom - 1, r.top + r.height / 2)));
     return { name: (control.textContent || control.getAttribute("aria-label") || control.tagName).trim().slice(0, 40), height: Math.round(r.height), whole, reached: !!hit && (hit === control || control.contains(hit)) };
   });
   return { shown, tallest: Math.max(0, ...seen.map((c) => c.height)), controls: seen };
-}, { editorId, selector });
+}, { editorId, selector, scroll });
+
+// A refused save, per editor: the storage key refused and the choice made.
+const refusals = {
+  input: { key: "yuzuno.preferences", choose: (editor) => editor.locator('input[name="input-send-key"][value="enter"]').check() },
+  appearance: { key: "yuzuno.appearance", choose: (editor) => editor.getByRole("radio", { name: "Dark Low light" }).check() },
+};
 
 async function fitCase(device, fontSize, entry, { refused = false } = {}) {
   const label = `fit, ${device} ${devices[device].viewport.width}×${devices[device].viewport.height}, ${fontSize} px, ${entry.editor}${refused ? ", refused" : ""}`;
@@ -774,13 +782,15 @@ async function fitCase(device, fontSize, entry, { refused = false } = {}) {
     try {
       const editor = await openEditor(page, entry);
       await page.waitForTimeout(150);
+      // A refusal is read where it appears, before anything here scrolls.
+      let alert = null;
       if (refused) {
-        await refuseWrites(page, true);
-        await editor.locator('input[name="input-send-key"][value="enter"]').check();
-        await page.waitForTimeout(100);
+        await refuseWrites(page, true, refusals[entry.editor].key);
+        await refusals[entry.editor].choose(editor);
+        await page.waitForTimeout(300);
+        alert = await room(page, entry.editor, ".save-status [role=alert]", false);
       }
       const r = await room(page, entry.editor);
-      const alert = refused ? await room(page, entry.editor, ".save-status [role=alert]") : null;
       const name = `${device}-${fontSize}-${entry.editor}${refused ? "-refused" : ""}`;
       await page.screenshot({ path: resolve(output, `fit-${name}.png`) });
       report.fit.push({ case: label, shown: r.shown, tallest: r.tallest, controls: r.controls.length, unreached: r.controls.filter((c) => !c.whole || !c.reached), alert });
@@ -788,8 +798,8 @@ async function fitCase(device, fontSize, entry, { refused = false } = {}) {
       assert.ok(r.tallest <= r.shown, `${label}: the tallest control (${r.tallest} px) fits the pane as shown (${r.shown} px)`);
       assert.deepEqual(r.controls.filter((c) => !c.whole || !c.reached), [], `${label}: every control, scrolled to, is wholly shown and reached`);
       if (alert) {
-        assert.equal(alert.controls.length, 1);
-        assert.ok(alert.tallest <= alert.shown && alert.controls[0].whole && alert.controls[0].reached, `${label}: the refusal is read whole (${alert.tallest} px in ${alert.shown} px)`);
+        assert.equal(alert.controls.length, 1, `${label}: one refusal said`);
+        assert.ok(alert.controls[0].whole && alert.controls[0].reached, `${label}: the refusal is in view whole as it appears (${JSON.stringify(alert.controls[0])} in ${alert.shown} px)`);
       }
     } finally {
       await app.context.close();
@@ -855,7 +865,8 @@ async function fitCases() {
   for (const [device, fontSize] of [["phone", 24], ["phone", 16], ["keyboard", 16], ["keyboard", 24]])
     for (const entry of [INPUT_ENTRY, APPEARANCE_ENTRY])
       if (await fitCase(device, fontSize, entry)) check(`fit: ${device}, ${fontSize} px, ${entry.editor}: every control fits the pane as shown and is reached`);
-  if (await fitCase("phone", 24, INPUT_ENTRY, { refused: true })) check("fit: phone, 24 px, a refusal is read whole in the pane");
+  for (const entry of [INPUT_ENTRY, APPEARANCE_ENTRY])
+    if (await fitCase("phone", 24, entry, { refused: true })) check(`fit: phone, 24 px, ${entry.editor}: a refusal is in view whole as it appears`);
   if (await shortKeyboardCase()) check("fit: 320×300 with the keyboard alone, the focused choice is in view with its ring and saved");
   assert.deepEqual(report.fitFailures, [], "every fit case");
 }
