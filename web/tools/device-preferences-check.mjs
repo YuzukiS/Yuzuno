@@ -771,7 +771,9 @@ const room = (page, editorId, selector = "input, select, button, textarea", scro
   if (sideways) {
     pane.scrollLeft = 0;
     const edge = pane.getBoundingClientRect().left + pane.clientWidth;
-    wide = [...editor.querySelectorAll("*")].filter((el) => el.getBoundingClientRect().right > edge + 1).map((el) => {
+    const past = new Set([...editor.querySelectorAll("*")].filter((el) => el.getBoundingClientRect().right > edge + 1));
+    // The deepest: past the edge with no child past it, what pushes the rest.
+    wide = [...past].filter((el) => ![...el.children].some((child) => past.has(child))).map((el) => {
       const r = el.getBoundingClientRect();
       return { el: `${el.tagName.toLowerCase()}${typeof el.className === "string" && el.className ? "." + el.className.trim().split(/\s+/).join(".") : ""}`,
         text: (el.textContent || "").trim().slice(0, 30), width: Math.round(r.width), right: Math.round(r.right), edge: Math.round(edge) };

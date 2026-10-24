@@ -759,6 +759,21 @@
   }
 }
 @media (max-width: 520px) {
+  /* As many choices to a row as their names and notes fit, at any text
+     size: three themes, or two Agent list and project group styles, no
+     longer fit a 320 px phone at 24 px (T-189). */
+  .theme-options,
+  .agent-list-options,
+  .project-group-options {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .theme-options > .theme-choice,
+  .agent-list-options > .theme-choice,
+  .project-group-options > .theme-choice {
+    flex: 1 1 0;
+    min-width: min-content;
+  }
   .theme-options {
     gap: 7px;
   }
