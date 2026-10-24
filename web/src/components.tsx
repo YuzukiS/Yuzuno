@@ -49,7 +49,7 @@ import { agentHarnessName } from "./machine-checks";
 import character from "./assets/yuzu-character.png";
 import characterOutline from "./assets/yuzu-character-outline.png";
 import { blockItems, conversationBlocks, isCompacting, shownItemId, toolActivityCounts } from "./conversation-blocks";
-import { SubAgentAnchors } from "./SubAgents";
+import { SubAgentAnchors } from "./SubAgentPanels";
 import { ActivityElapsed } from "./ActivityElapsed";
 import { activityStartedAt } from "./activity-time";
 import { timeMarkKey, turnFooter, type Moment } from "./conversation-time";

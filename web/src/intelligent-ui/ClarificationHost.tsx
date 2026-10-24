@@ -1,7 +1,7 @@
 import { createContext, useContext } from "react";
 import type { AgentDetail, MessageInput, MessageReceipt } from "../types";
 import type { OutgoingMessage } from "../useConversationSend";
-import { Clarification } from "./Clarification";
+import { Clarification } from "./ClarificationForm";
 import { clarificationMessage, type ClarificationProps } from "./clarification";
 import { useResult } from "./ResultContext";
 
