@@ -342,6 +342,22 @@ impl Workspace {
         self.stored(move |store| store.record_send(&id, &kind, &data, mutate).map(drop)).await
     }
 
+    /// `record_update` of a Claude follow-up's `followUpQueued`
+    /// (`Store::record_send_unless`): `mutate` is made unless `shown` finds the
+    /// follow-up in some Turn, and on a held record written without copying
+    /// the other Turns. Either may run twice (see there).
+    pub(crate) async fn record_send_unless(
+        &self,
+        id: &str,
+        kind: &str,
+        data: Value,
+        shown: impl Fn(&[Value]) -> bool + Send + 'static,
+        mutate: impl Fn(&mut AgentDetail) + Send + 'static,
+    ) -> Result<()> {
+        let (id, kind) = (id.to_owned(), kind.to_owned());
+        self.stored(move |store| store.record_send_unless(&id, &kind, &data, shown, mutate).map(drop)).await
+    }
+
     /// `record_update` for a change to the metadata only (`Store::update_meta`):
     /// the send path's own changes, written without comparing a large record.
     pub(crate) async fn record_meta(
@@ -2111,16 +2127,18 @@ impl Workspace {
             let intentional = self.rpcs.lock().unwrap().remove(id).is_some_and(|connection| connection.closing);
             self.codex_mcp.forget(id);
             self.codex_plan.forget(id);
-            let _ = self.store.update(id, "runtime/disconnected", p, |d| {
-                if let Some(usage) = &mut d.context_usage { usage.stale = true; }
-                d.agent.connection_state = "disconnected".into();
-                if d.agent.status != "uncertain" {
-                    d.agent.status = "offline".into();
+            // Only the metadata changes: written without copying the record
+            // (T-140).
+            let _ = self.store.update_meta(id, "runtime/disconnected", p, |m| {
+                if let Some(usage) = m.context_usage.as_mut() { usage.stale = true; }
+                m.agent.connection_state = "disconnected".into();
+                if m.agent.status != "uncertain" {
+                    m.agent.status = "offline".into();
                 }
                 if !intentional {
-                    d.agent.error = Some(p["message"].as_str().unwrap_or("连接已断开").into());
+                    m.agent.error = Some(p["message"].as_str().unwrap_or("连接已断开").into());
                 }
-                for r in &mut d.pending {
+                for r in m.pending.iter_mut() {
                     r.stale = true;
                 }
             });
@@ -2227,7 +2245,8 @@ impl Workspace {
                         scoped["_runtimeGeneration"] = generation.into();
                     }
                     // A resolution and a thread status change only the Agent and
-                    // its pending requests, and beside a receipt sending or
+                    // its pending requests, and an MCP server's startup status
+                    // changes no field at all; beside a receipt sending or
                     // uncertain accept receipts by the Turns as `apply` does:
                     // committed as metadata, without copying a long record
                     // (T-120, T-140). The kinds
@@ -2276,14 +2295,17 @@ impl Workspace {
     /// receipts by the Turns (`confirm_message_receipts`), may have work, and
     /// the commit takes it too (`Store::update_meta_applied`), as applying
     /// the event to the whole record did; otherwise, as before, it does not.
+    /// An MCP server's startup status was always applied to the whole record
+    /// (`record_applied`), whose last step accepts every receipt not yet
+    /// accepted or rejected, so it always takes that step (T-140).
     /// None for any other event. The caller holds the ownership lock
     /// (`on_event`), so this is still so at the commit: Turns change only
     /// through this Agent's events and owned commits, and closing, which is
     /// not owned, leaves the Agent offline, whose status does not read it.
     fn metadata_event(&self, id: &str, method: &str) -> Option<(bool, bool)> {
-        if !matches!(method, "serverRequest/resolved" | "thread/status/changed") { return None; }
+        if !matches!(method, "serverRequest/resolved" | "thread/status/changed" | "mcpServer/startupStatus/updated") { return None; }
         let (_, activity) = self.store.update_readiness(id).ok()?;
-        Some((activity.running, activity.sending || activity.uncertain))
+        Some((activity.running, method == "mcpServer/startupStatus/updated" || activity.sending || activity.uncertain))
     }
 
     pub async fn respond(&self, request_id: &str, response: Value) -> Result<()> {
@@ -2571,6 +2593,9 @@ fn turn_busy(d: &AgentDetail) -> bool {
 fn apply_metadata_event(m: &mut crate::store::Meta<'_>, method: &str, p: &Value, running: bool) {
     match method {
         "serverRequest/resolved" => crate::model::resolve_request(m.pending, p),
+        // Not one `AgentDetail::apply` acts on: only the status is settled
+        // and the receipts accepted, as for any event (T-140).
+        "mcpServer/startupStatus/updated" => {}
         _ => crate::model::thread_status_changed(m.agent, p),
     }
     crate::model::settle_status(m.agent, m.pending, || running);

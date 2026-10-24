@@ -44,6 +44,17 @@
 .turn-footer-separator {
   color: #c4c9b8;
 }
+/* On a phone the reply's actions keep their own line, and its time with
+   Rewind start the next one, so neither crowds the other. */
+.app.phone .reply-actions:has(> .copy-button):has(> :is(.turn-footer, .rewind-open))::before {
+  content: "";
+  order: 1;
+  flex-basis: 100%;
+  height: 0;
+}
+.app.phone .reply-actions:has(> .copy-button) > :is(.turn-footer, .rewind-open) {
+  order: 2;
+}
 .turn-footer-standalone {
   display: flex;
   margin: 10px 0 0 30px;

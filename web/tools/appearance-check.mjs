@@ -38,7 +38,7 @@ const state = () =>
 // Appearance is a category of Settings.
 async function openAppearance() {
   await page.getByRole("button", { name: "Settings and updates" }).click();
-  await page.getByRole("tab", { name: "Appearance" }).click();
+  await page.getByRole("tab", { name: "Appearance & interaction" }).click();
 }
 async function closeSettings() {
   await page.getByRole("button", { name: "Close dialog" }).click();

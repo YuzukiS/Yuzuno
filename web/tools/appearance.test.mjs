@@ -5,16 +5,32 @@ import assert from "node:assert/strict";
 // and applied to the page root, where the rail's compact rules read it. A
 // minimal page for appearance.ts: storage, the root element, no theme meta.
 const store = new Map();
+// A write the browser refuses, as it does when storage is full or blocked.
+let refuse = null;
 globalThis.localStorage = {
   getItem: (key) => (store.has(key) ? store.get(key) : null),
-  setItem: (key, value) => store.set(key, String(value)),
+  setItem: (key, value) => {
+    if (refuse) throw refuse;
+    store.set(key, String(value));
+  },
+  removeItem: (key) => {
+    if (refuse) throw refuse;
+    store.delete(key);
+  },
 };
 const styles = new Map();
 const root = { dataset: {}, style: { setProperty: (name, value) => styles.set(name, value) } };
 globalThis.document = { documentElement: root, querySelector: () => null };
-globalThis.window = { matchMedia: () => ({ matches: false }) };
+// The system's light or dark, which the test changes as the OS does.
+const system = { matches: false, listeners: [], addEventListener(type, listener) { this.listeners.push(listener); } };
+const osTheme = (dark) => {
+  system.matches = dark;
+  system.listeners.forEach((listener) => listener());
+};
+globalThis.window = Object.assign(new EventTarget(), { matchMedia: () => system });
 globalThis.getComputedStyle = () => ({ getPropertyValue: () => "" });
-const { applyAppearance, readAppearance, saveAppearance } = await import("../src/appearance.ts");
+const { applyAppearance, defaultAppearance, initializeAppearance, readAppearance, restoreDefaultAppearance, retryAppearanceWrite, saveAppearance } =
+  await import("../src/appearance.ts");
 const KEY = "yuzuno.appearance";
 
 test("the Agent list is detailed until chosen; earlier saved choices keep theirs", () => {
@@ -94,4 +110,112 @@ test("the turn dock numbers 5 turns with 5 bars each side until chosen; 0 number
   assert.deepEqual(readAppearance().turnDock, { numbers: 12, bars: 5 });
   saveAppearance({ ...readAppearance(), turnDock: { numbers: 3, bars: 0 } });
   assert.deepEqual(JSON.parse(store.get(KEY)).turnDock, { numbers: 3, bars: 0 });
+});
+
+test("a save the browser refuses is reported, not hidden; the choice still applies in this window (T-187)", () => {
+  store.clear();
+  assert.deepEqual(saveAppearance({ ...readAppearance(), palette: "pine" }), { saved: true });
+  refuse = new DOMException("The quota has been exceeded.", "QuotaExceededError");
+  try {
+    const outcome = saveAppearance({ ...readAppearance(), palette: "graphite" });
+    assert.deepEqual(outcome, { saved: false, reason: "full", detail: "this browser’s storage for Yuzuno is full" });
+    assert.equal(root.dataset.palette, "graphite", "applied here");
+    assert.equal(JSON.parse(store.get(KEY)).palette, "pine", "the saved choice is unchanged");
+    refuse = new DOMException("The operation is insecure.", "SecurityError");
+    assert.equal(saveAppearance({ ...readAppearance(), palette: "yuzu" }).reason, "blocked");
+    refuse = new Error("disk unplugged");
+    assert.deepEqual(saveAppearance({ ...readAppearance(), palette: "yuzu" }),
+      { saved: false, reason: "unknown", detail: "the browser refused it (disk unplugged)" });
+  } finally {
+    refuse = null;
+  }
+  assert.deepEqual(saveAppearance({ ...readAppearance(), palette: "graphite" }), { saved: true }, "saved once it can be");
+  assert.equal(JSON.parse(store.get(KEY)).palette, "graphite");
+});
+
+test("a write that doesn't stick is not called saved (T-187)", () => {
+  store.clear();
+  const setItem = localStorage.setItem;
+  localStorage.setItem = () => {}; // accepted, not kept
+  try {
+    assert.deepEqual(saveAppearance({ ...readAppearance(), theme: "dark" }),
+      { saved: false, reason: "unknown", detail: "the browser didn’t keep it" });
+  } finally {
+    localStorage.setItem = setItem;
+  }
+});
+
+test("restore defaults removes this device's choice only, and says whether it could (T-187)", () => {
+  store.clear();
+  store.set("yuzuno.selected", JSON.stringify("a"));
+  saveAppearance({ ...readAppearance(), palette: "pine", fontSize: 20 });
+  assert.deepEqual(restoreDefaultAppearance(), { saved: true });
+  assert.equal(store.has(KEY), false);
+  assert.equal(store.get("yuzuno.selected"), JSON.stringify("a"), "nothing else is removed");
+  assert.deepEqual(readAppearance(), defaultAppearance);
+  assert.equal(root.dataset.palette, defaultAppearance.palette);
+  saveAppearance({ ...readAppearance(), palette: "pine" });
+  refuse = new DOMException("The operation is insecure.", "SecurityError");
+  try {
+    assert.equal(restoreDefaultAppearance().reason, "blocked");
+    assert.equal(root.dataset.palette, defaultAppearance.palette, "the defaults apply here");
+    assert.equal(JSON.parse(store.get(KEY)).palette, "pine", "the saved choice is still there");
+  } finally {
+    refuse = null;
+  }
+});
+
+test("a choice this device refused to save stays in effect when the system theme changes (T-187)", () => {
+  store.clear();
+  osTheme(false);
+  initializeAppearance();
+  // Saved: follow the system. Chosen, not saved: dark.
+  saveAppearance({ ...readAppearance(), theme: "system" });
+  refuse = new DOMException("The quota has been exceeded.", "QuotaExceededError");
+  try {
+    saveAppearance({ ...readAppearance(), theme: "dark" });
+    assert.equal(root.dataset.theme, "dark");
+    osTheme(false);
+    assert.equal(root.dataset.theme, "dark", "the system's light does not undo the dark chosen here");
+  } finally {
+    refuse = null;
+  }
+  // Saved: dark. Chosen, not saved: follow the system.
+  saveAppearance({ ...readAppearance(), theme: "dark" });
+  refuse = new DOMException("The quota has been exceeded.", "QuotaExceededError");
+  try {
+    saveAppearance({ ...readAppearance(), theme: "system" });
+    assert.equal(root.dataset.theme, "light");
+    osTheme(true);
+    assert.equal(root.dataset.theme, "dark", "it follows the system, as chosen here");
+    osTheme(false);
+    assert.equal(root.dataset.theme, "light");
+  } finally {
+    refuse = null;
+  }
+  assert.equal(JSON.parse(store.get(KEY)).theme, "dark", "what is saved is unchanged");
+});
+
+test("trying again repeats the last write as it was: a refused reset is retried as a reset (T-187)", () => {
+  store.clear();
+  store.set("yuzuno.selected", JSON.stringify("a"));
+  saveAppearance({ ...readAppearance(), palette: "pine" });
+  refuse = new DOMException("The operation is insecure.", "SecurityError");
+  try {
+    assert.equal(restoreDefaultAppearance().reason, "blocked");
+  } finally {
+    refuse = null;
+  }
+  assert.deepEqual(retryAppearanceWrite(), { saved: true });
+  assert.equal(store.has(KEY), false, "removed, not the defaults saved");
+  assert.equal(store.get("yuzuno.selected"), JSON.stringify("a"));
+  // A refused save is retried as a save of the choice in effect.
+  refuse = new DOMException("The quota has been exceeded.", "QuotaExceededError");
+  try {
+    saveAppearance({ ...readAppearance(), palette: "yuzu" });
+  } finally {
+    refuse = null;
+  }
+  assert.deepEqual(retryAppearanceWrite(), { saved: true });
+  assert.equal(JSON.parse(store.get(KEY)).palette, "yuzu");
 });

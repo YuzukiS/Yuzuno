@@ -67,6 +67,7 @@ pub mod task_proposals;
 pub mod task_workspaces;
 pub mod updates;
 pub mod workspace;
+pub mod workspace_backup;
 
 pub mod delivery;
 pub mod heap;

@@ -110,6 +110,9 @@ async function mount({
   settingsResponse,
   compactResponse,
   skillsResponse,
+  interruptResponse,
+  reconnectResponse,
+  otherAgentFields,
 } = {}) {
   const calls = [];
   const eventUrls = [];
@@ -156,6 +159,8 @@ async function mount({
     if (url.endsWith("/messages") && messageResponse) return messageResponse(url, init);
     if (url.endsWith("/settings") && settingsResponse) return settingsResponse(url, init);
     if (url.endsWith("/compact") && compactResponse) return compactResponse(url, init);
+    if (url.endsWith("/interrupt") && interruptResponse) return interruptResponse(url, init);
+    if (url.includes("/reconnect") && reconnectResponse) return reconnectResponse(url, init);
     if (url.endsWith("/codex/skills") && skillsResponse) return skillsResponse(url, init);
     if (url.endsWith("/models") && modelsResponse) return modelsResponse(url, init);
     if (url.includes("/api/artifact?") && artifactResponse)
@@ -177,7 +182,7 @@ async function mount({
                 error: agentError,
                 ...agentFields,
               }
-            : a,
+            : { ...a, ...otherAgentFields },
         ),
         runtime: { connected: true },
         defaultCwd: "/workspace",
@@ -836,6 +841,80 @@ test("claude: a follow-up while your turn runs is sent once, as queued and not y
       const ids = page.calls.filter((c) => c.init.method === "POST").map((c) => JSON.parse(c.init.body).clientMessageId);
       assert.deepEqual(ids.map((id) => id === "lost"), known ? [false] : [true, false], `known=${known}`);
       assert.equal(composerText(field), "", `known=${known}`);
+    } finally { page.close(); }
+  }
+});
+
+test("a new Claude message shows once while Claude's bridge holds it, with its note in its Turn (T-120)", async () => {
+  // As Core leaves it (Job dc43ce8d): the receipt is recorded sending, then
+  // the Turn opens with the message named by its client ID, then Claude's
+  // bridge answers. Accepted binds it; rejected or a lost answer keeps the
+  // preview as before.
+  for (const outcome of ["accepted", "rejected", "lost"]) {
+    const extraTurns = [];
+    const receipts = [];
+    let answer;
+    const reply = (url, init) => {
+      const input = JSON.parse(init.body);
+      receipts.push({ agentId: "a", input, status: "sending", turnId: null, error: null });
+      extraTurns.push({ id: "t-new", status: "inProgress", items: [{ id: "t-new:input", type: "userMessage", nativeUuid: "t-new",
+        _yuzunoClientMessageId: input.clientMessageId, content: [{ type: "text", text: input.text }] }] });
+      return new Promise((resolve, reject) => {
+        answer = () => {
+          if (outcome === "lost") return reject(new Error("Response lost"));
+          const receipt = receipts[0];
+          if (outcome === "accepted") {
+            Object.assign(receipt, { status: "accepted", turnId: "t-new", binding: { turnId: "t-new", itemId: "t-new:input", userIndex: 0 } });
+            extraTurns[0].items[0].clientId = input.clientMessageId;
+          } else {
+            Object.assign(receipt, { status: "rejected", error: "Claude refused the prompt" });
+            extraTurns[0].status = "failed";
+          }
+          const { agentId: _agent, ...body } = receipt;
+          resolve({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) });
+        };
+      });
+    };
+    const page = await mount({ harness: "claude", extraTurns, receipts, messageResponse: reply });
+    const refresh = async () => { page.window.dispatchEvent(new page.window.Event("focus")); await pause(); await pause(); };
+    try {
+      const text = `Summarize the release notes (${outcome}).`;
+      const started = () => page.document.querySelector('[data-item-id="t-new:input"]');
+      const noteOf = (el) => el?.querySelector("[role=status]")?.textContent ?? null;
+      const previews = () => [...page.document.querySelectorAll(".outgoing-message")];
+      setValue(page.window, page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), text);
+      await pause();
+      page.document.querySelector('[aria-label="Send message"]').click();
+      await until(() => answer, `${outcome}: the send reached Core`);
+      await refresh();
+      await until(() => started(), `${outcome}: the Turn's message`);
+      assert.equal(noteOf(started()), "Sending…", `${outcome}: its note is on the message in its Turn`);
+      assert.equal(previews().length, 0, `${outcome}: no second copy as a preview`);
+      // A boolean: a failing equal on a DOM node inspects the whole document.
+      assert.equal(!!page.document.querySelector(".message-delivery-notice"), false, `${outcome}: in flight is not "not confirmed"`);
+      // Another Agent shows none of it.
+      button(page, "Hana").click();
+      await until(() => page.document.querySelector('[data-composer-input][aria-label="Message Hana"]'), "Hana's conversation");
+      assert.equal(previews().length, 0);
+      assert.notEqual(noteOf(started()), "Sending…", "Hana's view has no note for Mori's message");
+      button(page, "Mori").click();
+      await until(() => noteOf(started()) === "Sending…", `${outcome}: back to Mori, still one copy sending`);
+      assert.equal(previews().length, 0);
+      answer();
+      await pause(); await pause();
+      await refresh();
+      if (outcome === "accepted") {
+        assert.equal(previews().length, 0, "accepted: the message alone");
+        assert.notEqual(noteOf(started()), "Sending…");
+      } else {
+        const note = outcome === "rejected" ? "Not sent · draft kept" : "Delivery unconfirmed · draft kept";
+        await until(() => previews().length === 1, `${outcome}: its preview as before`);
+        assert.equal(noteOf(previews()[0]), note, outcome);
+        assert.notEqual(noteOf(started()), "Sending…", `${outcome}: the Turn's message no longer says sending`);
+        assert.ok(previews()[0].querySelector(".outgoing-hide"), `${outcome}: it can be hidden as before`);
+      }
+      assert.equal(page.calls.filter((c) => c.url.endsWith("/messages")).length, 1, `${outcome}: sent once`);
+      assert.deepEqual(page.errors, []);
     } finally { page.close(); }
   }
 });
@@ -2785,18 +2864,25 @@ test("an image pasted into the draft is marked up where it is: no file is chosen
 });
 
 test("the composer says something under the draft only when it needs you", async () => {
-  for (const [status, notice] of [
+  for (const [status, notice, agentFields = {}] of [
     ["idle", null],
+    // No session to reconnect to: sending starts one.
     ["offline", "Send a message to resume this session"],
+    // Its session can be reconnected from the notice above (T-184).
+    ["offline", "Reconnect above, or send a message to resume this session", { threadId: "thread-a", connectionState: "disconnected" }],
     ["uncertain", "Send to check the previous result first"],
   ]) {
-    const page = await mount({ status });
+    const page = await mount({ status, agentFields });
     try {
+      // The Reconnect line reads the Agent's detail, which loads after the list.
+      if (notice) await until(() => page.document.querySelector(".composer-bottom > .composer-hint")?.textContent === notice, `${status}: ${notice}`);
       const hint = page.document.querySelector(".composer-bottom > .composer-hint");
       assert.equal(hint?.hasAttribute("data-notice"), notice !== null, status);
       if (notice) assert.equal(hint.textContent, notice, status);
       // Otherwise the line holds only the keys, which show while typing.
       else assert.ok(!!hint?.querySelector(".composer-keys"), status);
+      // The notice it points to is there when it says so.
+      assert.equal(!!page.document.querySelector(".recovery-notice button"), !!notice?.startsWith("Reconnect above"), status);
     } finally { page.close(); }
   }
 });
@@ -3222,7 +3308,10 @@ test("drafts follow their agent and reading the conversation never implicitly ac
       "Remember the small details",
     );
     assert.equal(page.calls.filter((c) => c.init.method === "POST").length, 0);
+    // The header's actions are a menu now; managing the Agent is one entry (T-184).
     page.document.querySelector('[aria-label="Conversation actions"]').click();
+    await pause();
+    page.document.querySelector('[role="menuitem"][data-action="manage"]').click();
     await pause();
     button(page, "Mark all as read").click();
     await pause();
@@ -3462,6 +3551,119 @@ test("Escape interrupts the current turn but not while the creation dialog is op
       1,
     );
     assert.match(page.document.body.textContent, /Interrupt requested/);
+  } finally {
+    page.close();
+  }
+});
+test("the Agent action menu takes Escape: it closes and the running turn is not interrupted (T-184)", async () => {
+  const page = await mount({ status: "working" });
+  try {
+    const trigger = page.document.querySelector('[aria-label="Conversation actions"]');
+    assert.equal(trigger.getAttribute("aria-haspopup"), "menu");
+    trigger.click();
+    await pause();
+    assert.ok(page.document.querySelector('[role="menu"]'), "the menu opened");
+    const first = page.document.activeElement;
+    assert.equal(first.getAttribute("role"), "menuitem", "focus is on its first entry");
+    assert.ok(page.document.querySelector('[role="menuitem"][data-action="interrupt"]'), "a working Agent offers Interrupt");
+    first.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await pause();
+    assert.ok(page.document.querySelector('[role="menu"]') === null, "Escape closed the menu");
+    assert.ok(page.document.activeElement === trigger, "focus is back on its button");
+    assert.equal(page.calls.filter((c) => c.url.endsWith("/interrupt")).length, 0, "Escape in the menu interrupted nothing");
+    // Outside the menu, Escape still interrupts the running turn.
+    page.window.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await pause();
+    assert.equal(page.calls.filter((c) => c.url.endsWith("/interrupt")).length, 1);
+    assert.equal(page.calls.filter((c) => c.url.includes("/messages")).length, 0);
+  } finally {
+    page.close();
+  }
+});
+test("the rail offers reconnecting several Agents; its dialog takes Escape and sends only the chosen reconnect (T-184)", async () => {
+  let release;
+  const page = await mount({
+    status: "working",
+    otherAgentFields: { threadId: "thread-b", status: "offline", connectionState: "disconnected" },
+    reconnectResponse: () => new Promise((resolve) => (release = resolve)),
+  });
+  try {
+    const trigger = await until(() => page.document.querySelector(".rail-reconnect"), "the rail offers it while Hana is offline");
+    assert.equal(trigger.getAttribute("aria-label"), "Reconnect agents: 1 not connected");
+    trigger.click();
+    await pause();
+    const names = () => [...page.document.querySelectorAll(".batch-row .batch-name")].map((n) => n.textContent);
+    assert.deepEqual(names(), ["Hana"], "Mori is working: only Hana is listed");
+    const box = page.document.querySelector(".batch-row input");
+    assert.equal(box.checked, false, "nothing is chosen for the user");
+    // Escape in the dialog closes it; Mori's running turn is not interrupted.
+    page.document.activeElement.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await pause();
+    assert.equal(page.document.querySelector(".batch-reconnect"), null, "Escape closed the dialog");
+    assert.equal(page.calls.filter((c) => c.url.endsWith("/interrupt")).length, 0, "Escape interrupted nothing");
+    page.document.querySelector(".rail-reconnect").click();
+    await pause();
+    page.document.querySelector(".batch-row input").click();
+    await pause();
+    const reads = page.calls.filter((c) => c.url.endsWith("/api/workspace")).length;
+    page.document.querySelector(".batch-reconnect .primary-button").click();
+    await until(() => release, "Hana's reconnect was sent");
+    release({ ok: true, status: 200, json: async () => ({}), text: async () => "{}" });
+    await until(() => page.calls.filter((c) => c.url.endsWith("/api/workspace")).length > reads, "the Workspace is read again");
+    const posts = page.calls.filter((c) => c.init?.method === "POST").map((c) => c.url);
+    assert.deepEqual(posts.filter((url) => url.includes("/reconnect")), ["/api/agents/b/reconnect?view=summary"], "Hana's reconnect, once");
+    assert.deepEqual(posts.filter((url) => /\/(messages|turns|reopen|interrupt)$/.test(url)), [], "no message, turn, reopen or interrupt");
+  } finally {
+    page.close();
+  }
+});
+test("a reconnect already on its way is not sent again from another control: the notice and the menu share it (T-184)", async () => {
+  let release;
+  const page = await mount({
+    status: "offline",
+    agentFields: { threadId: "thread-a", connectionState: "disconnected" },
+    reconnectResponse: () => new Promise((resolve) => (release = resolve)),
+  });
+  try {
+    const notice = await until(() => page.document.querySelector(".recovery-notice button"), "the offline notice offers Reconnect");
+    assert.equal(notice.textContent, "Reconnect");
+    notice.click();
+    await until(() => release, "the notice's reconnect was sent");
+    page.document.querySelector('[aria-label="Conversation actions"]').click();
+    await pause();
+    page.document.querySelector('[role="menuitem"][data-action="reconnect"]').click();
+    await pause();
+    const reconnects = () => page.calls.filter((c) => c.url.includes("/reconnect"));
+    assert.equal(reconnects().length, 1, "the menu waited for the notice's request");
+    release({ ok: true, status: 200, json: async () => ({}), text: async () => "{}" });
+    await pause();
+    assert.equal(reconnects().length, 1);
+    assert.ok(reconnects()[0].url.endsWith("/api/agents/a/reconnect?view=summary"));
+    assert.equal(page.calls.filter((c) => c.url.includes("/messages")).length, 0, "nothing was sent to the Agent");
+  } finally {
+    page.close();
+  }
+});
+test("a menu action that fails after another Agent is opened is reported for its own Agent, not in the one shown (T-184)", async () => {
+  let release;
+  const page = await mount({
+    status: "working",
+    interruptResponse: () => new Promise((resolve) => (release = resolve)),
+  });
+  try {
+    page.document.querySelector('[aria-label="Conversation actions"]').click();
+    await pause();
+    page.document.querySelector('[role="menuitem"][data-action="interrupt"]').click();
+    await until(() => release, "Mori's interrupt was sent");
+    page.document.querySelector('[aria-label="Open Hana"]').click();
+    await until(() => page.document.querySelector('[aria-label="Message Hana"]'), "Hana is shown");
+    const error = JSON.stringify({ error: "No running turn" });
+    release({ ok: false, status: 409, json: async () => JSON.parse(error), text: async () => error });
+    await until(() => page.document.querySelector(".toast-error[role=alert]"), "the failure is reported");
+    assert.equal(page.document.querySelector(".toast-error").textContent, "Couldn’t interrupt Mori: No running turn");
+    assert.equal(page.document.querySelector(".inline-error"), null, "Hana's conversation shows no error of Mori's");
+    assert.equal(page.calls.filter((c) => c.url.endsWith("/interrupt")).length, 1);
+    assert.ok(page.calls.find((c) => c.url.endsWith("/interrupt")).url.endsWith("/api/agents/a/interrupt"));
   } finally {
     page.close();
   }
@@ -3831,8 +4033,9 @@ test("rail shows attributed current work as plain text; the inspector opens the 
       false,
     );
     assert.match(rail.textContent, /Reported/);
-    // One target per card; the machine is shown, the working folder is not.
-    assert.equal(rail.querySelectorAll("button").length, 1);
+    // One target opens the card, then its actions (T-184); the machine is
+    // shown, the working folder is not.
+    assert.deepEqual([...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")), ["Open Mori", "Actions for Mori"]);
     // The machine heads the name, beside the avatar, inside the one target.
     const identity = rail.querySelector(".agent-select .agent-identity");
     assert.deepEqual(
