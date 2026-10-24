@@ -1,0 +1,26 @@
+.settings-center { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.settings-search { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+.settings-search input { width: 100%; min-width: 0; font: inherit; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; }
+.settings-center .settings-layout { grid-template-columns: 12rem minmax(0, 1fr); gap: 20px; margin-top: 14px; }
+.settings-center .settings-nav { max-height: 100%; overflow-y: auto; }
+.settings-center .settings-nav [role="tab"] { white-space: normal; min-height: 40px; }
+.settings-catalog-heading h3 { margin: 0 0 8px; }
+.settings-catalog-heading p { color: var(--text-secondary); margin: 0 0 14px; }
+.settings-catalog { display: grid; gap: 12px; }
+.settings-catalog-card { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; overflow-wrap: anywhere; }
+.settings-catalog-card h4 { margin: 0 0 8px; font-size: 1em; }
+.settings-catalog-card p { margin: 6px 0; color: var(--text-secondary); font-size: .9em; line-height: 1.5; }
+.settings-catalog-card .settings-scope { color: var(--ink); }
+.settings-catalog-card .secondary-button { margin-top: 8px; max-width: 100%; white-space: normal; text-align: left; }
+.settings-catalog-card .secondary-button svg { flex-shrink: 0; }
+.settings-object-choice { display: grid; gap: 6px; margin-top: 10px; }
+.settings-object-choice select { min-width: 0; width: 100%; padding: 8px; font: inherit; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; }
+.settings-editor { padding-top: 20px; min-width: 0; scroll-margin-top: 8px; }
+.settings-editor[hidden] { display: none; }
+.settings-editor:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
+@media (max-width: 720px) {
+  .settings-center .settings-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .settings-center .settings-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 9rem; overflow: auto; margin: 0; padding: 2px; }
+  .settings-center .settings-nav [role="tab"] { width: 100%; font-size: .8em; padding: 8px; }
+  .settings-catalog-card { padding: 10px; }
+}
