@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Yuzuno",
+  "version": "0.1.0",
+  "identifier": "dev.yuzuno.ios",
+  "build": {
+    "frontendDist": "connection"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "capabilities": [
+        "connection"
+      ],
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'; base-uri 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "../desktop/icons/icon.png"
+    ]
+  }
+}

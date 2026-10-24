@@ -1,0 +1,115 @@
+//! Yuzuno on iOS (T-170): an app that shows a Workspace Core's own web UI.
+//! Its local connection page takes the Core's HTTPS address and checks that
+//! a Yuzuno Core answers there; the window then opens that Core, as the
+//! desktop app does (desktop/README.md). Nothing but the window runs on the
+//! phone: Codex, the Workspace and its agents stay on the Core host.
+
+mod core_url;
+// The desktop app's rule for recognizing a Core, shared as is.
+#[path = "../../desktop/src/health.rs"]
+mod health;
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use url::Url;
+
+/// The Core the window may show: the one last connected from the page.
+struct Connection {
+    client: reqwest::Client,
+    selected: Arc<Mutex<Option<Url>>>,
+}
+
+fn saved_core_file(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|dir| dir.join("core.json"))
+}
+
+/// The Core last connected from the page, if this app would accept it now.
+#[tauri::command]
+fn saved_core(app: AppHandle) -> Option<String> {
+    let bytes = std::fs::read(saved_core_file(&app)?).ok()?;
+    let saved: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    core_url::parse(saved.get("coreUrl")?.as_str()?).ok().map(String::from)
+}
+
+/// Opens the Core at `url` once it answers as a Yuzuno Core: the window may
+/// then show that origin, and the page opens it. It is saved for the next
+/// launch.
+#[tauri::command]
+async fn connect_core(app: AppHandle, state: State<'_, Connection>, url: String) -> Result<String, String> {
+    let core = core_url::parse(&url)?;
+    check_health(&state.client, &core).await?;
+    *state.selected.lock().map_err(|_| "Connection state unavailable.".to_owned())? = Some(core.clone());
+    if let Some(file) = saved_core_file(&app) {
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(file, serde_json::json!({ "coreUrl": core.as_str() }).to_string());
+    }
+    Ok(core.into())
+}
+
+/// Whether `core` answers `/api/health` as a Yuzuno Core: no redirect, at
+/// most 64 KiB, as the desktop app reads it.
+async fn check_health(client: &reqwest::Client, core: &Url) -> Result<(), String> {
+    let url = core.join("api/health").map_err(|_| "This address is not valid.".to_owned())?;
+    let mut response = client.get(url).send().await.map_err(|_| {
+        "Your Workspace is not reachable. Check its address, and that this iPhone is connected to your private network.".to_owned()
+    })?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "The Workspace returned HTTP {}. Check its address and try again.",
+            response.status().as_u16()
+        ));
+    }
+    let not_core = || "This address did not answer as a Yuzuno Workspace.".to_owned();
+    if response.content_length().is_some_and(|length| length > 65_536) {
+        return Err(not_core());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "Could not read the Workspace's answer.".to_owned())?
+    {
+        if body.len() + chunk.len() > 65_536 {
+            return Err(not_core());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let health: serde_json::Value = serde_json::from_slice(&body).map_err(|_| not_core())?;
+    let product = health.get("product").and_then(serde_json::Value::as_str);
+    let application = health.get("application").and_then(serde_json::Value::as_str);
+    if !health::is_core(product, application) {
+        return Err("This address is reachable, but it is not a Yuzuno Workspace.".into());
+    }
+    Ok(())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let selected = Arc::new(Mutex::new(None::<Url>));
+    let navigation = selected.clone();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(4))
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .build()
+        .expect("Unable to create the Workspace connection client");
+    tauri::Builder::default()
+        .manage(Connection { client, selected })
+        .invoke_handler(tauri::generate_handler![saved_core, connect_core])
+        .setup(move |app| {
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                .on_navigation(move |url| {
+                    let selected = navigation.lock().ok().and_then(|selected| selected.clone());
+                    core_url::may_open(url, selected.as_ref())
+                })
+                .build()?;
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("Unable to run Yuzuno");
+}
