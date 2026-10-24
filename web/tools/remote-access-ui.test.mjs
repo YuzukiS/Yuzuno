@@ -239,7 +239,7 @@ test("check, then save and apply: progress by step, then the address with copy a
     await waitFor(() => !button(p, "Save and apply").disabled, "checked");
     assert.deepEqual(p.calls.find((c) => c.url.endsWith("/check")).body, {});
     assert.match(p.text(), /Windows · desk\.example\.ts\.net · running/);
-    assert.match(p.states()[2][1], /No Yuzuno entry · 1 other entry left as they are/);
+    assert.match(p.states()[2][1], /No Yuzuno entry · 1 other entry left as it is/);
     assert.equal(p.doc.querySelector(".remote-access-preview").textContent, "Your phone will open https://desk.example.ts.net:8444");
     type(p, "Serve port", "443");
     assert.equal(p.doc.querySelector(".remote-access-preview").textContent, "Your phone will open https://desk.example.ts.net", "no port for 443");

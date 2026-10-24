@@ -127,7 +127,10 @@ export function stateLines(view: RemoteAccessView): StateLine[] {
   const unready = verification?.steps.find((step) => readiness.includes(step.id) && step.state === "failed");
   const ready = readiness.every((id) => verification?.steps.some((step) => step.id === id && step.state === "ok"));
   const notYet = !!verification && !verification.ok && !setUp(view);
-  const others = serve.otherEntries > 0 ? ` · ${serve.otherEntries} other ${serve.otherEntries === 1 ? "entry" : "entries"} left as they are` : "";
+  const others =
+    serve.otherEntries > 0
+      ? ` · ${serve.otherEntries} other ${serve.otherEntries === 1 ? "entry left as it is" : "entries left as they are"}`
+      : "";
   return [
     {
       label: "Saved settings",
