@@ -2008,7 +2008,7 @@ fn a_claude_follow_up_is_written_without_copying_the_other_turns() {
     };
     // A Turn in progress, and the follow-ups' receipts.
     for store in [&generic, &scoped] {
-        store.record_event("a", "claude/turnRequested", &requested_data("s1"), requested("s1")).unwrap();
+        store.record_event("a", "claude/turnRequested", &requested_data("s1"), requested("s1", "m1")).unwrap();
         store.update_meta("a", "message/requested", &json!({}), |m| {
             for (client, status) in [("f1", "sending"), ("f2", "sending"), ("f3", "unknown"), ("f4", "sending")] {
                 let mut r = receipt(client, "also this");
