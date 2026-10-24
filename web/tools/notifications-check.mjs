@@ -9,6 +9,10 @@
 //   conversation; nothing is shown while the user is looking; nothing is
 //   written to Core but the reading handoff (T-170) and the read marker of a
 //   conversation shown, each counted apart.
+// - On a 320 px phone at 24 px text, with this device's storage refusing the
+//   choices: each refusal comes into view whole as it appears, the same one
+//   again after the user scrolled away from it, without the check scrolling;
+//   focus stays on the switch (whether it is in view is recorded).
 // The Notification constructor is wrapped to record what was asked of it; the
 // notification itself is Chromium's. The event stream is replaced so the check
 // can send one event; "looking elsewhere" is emulated (a hidden, unfocused page).
@@ -49,13 +53,14 @@ const usage = { revision: 1, status: "unknown", account: null, accountId: null, 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 
 /** A page of the app in its own context; `grant` grants notifications to the origin. */
-async function open(label, { grant = false, saved = null, viewport = { width: 1280, height: 800 } } = {}) {
-  const context = await browser.newContext({ viewport, reducedMotion: "reduce" });
+async function open(label, { grant = false, saved = null, viewport = { width: 1280, height: 800 }, phone = false, fontSize = null } = {}) {
+  const context = await browser.newContext({ viewport, reducedMotion: "reduce", ...(phone ? { hasTouch: true, isMobile: true } : {}) });
   if (grant) await context.grantPermissions(["notifications"], { origin: ORIGIN });
   const state = { list: "start" };
-  await context.addInitScript((prefs) => {
-    if (prefs && !sessionStorage.getItem("seeded")) {
-      localStorage.setItem("yuzuno.notifications", JSON.stringify(prefs));
+  await context.addInitScript(({ prefs, fontSize }) => {
+    if (!sessionStorage.getItem("seeded")) {
+      if (prefs) localStorage.setItem("yuzuno.notifications", JSON.stringify(prefs));
+      if (fontSize) localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize, palette: "garden" }));
       sessionStorage.setItem("seeded", "1");
     }
     localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
@@ -92,7 +97,7 @@ async function open(label, { grant = false, saved = null, viewport = { width: 12
     window.__away = false;
     Object.defineProperty(Document.prototype, "visibilityState", { get: () => (window.__away ? "hidden" : "visible"), configurable: true });
     Document.prototype.hasFocus = () => !window.__away;
-  }, saved);
+  }, { prefs: saved, fontSize });
   const page = await context.newPage();
   page.on("pageerror", (error) => report.pageErrors.push(`${label}: ${error.message}`));
   page.on("console", (message) => {
@@ -258,6 +263,76 @@ try {
     assert.deepEqual(shown.at(-1), { title: "Mori needs you", body: "Waiting for your response.", tag: "yuzuno:needsYou:a" });
     await shot(page, "app-after-notifications.png");
     check("app: nothing while the user is looking; a request while away is shown", { shown });
+    await context.close();
+  }
+
+  // 4. A phone at the largest text, storage that refuses this device's
+  // choices (one shared "blocked" outcome each time): each refusal comes into
+  // view as it appears, the second too after the user scrolled away; the
+  // check scrolls to neither. Focus stays on the switch.
+  {
+    const label = "phone 320×640, 24 px, the same refusal twice";
+    const { context, page } = await open(label, { grant: true, saved: { enabled: true }, viewport: { width: 320, height: 640 }, phone: true, fontSize: 24 });
+    const editor = await openNotifications(page);
+    const before = await page.evaluate(() => localStorage.getItem("yuzuno.notifications"));
+    await page.evaluate(() => {
+      const set = Storage.prototype.setItem, remove = Storage.prototype.removeItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key === "yuzuno.notifications") throw new DOMException("Refused here.", "SecurityError");
+        return set.call(this, key, value);
+      };
+      Storage.prototype.removeItem = function (key) {
+        if (key === "yuzuno.notifications") throw new DOMException("Refused here.", "SecurityError");
+        return remove.call(this, key);
+      };
+    });
+    // The refusal as shown, measured where it is: whole inside the pane as
+    // its scrolling ancestors clip it, and what a tap at its middle reaches.
+    const refusal = () =>
+      page.evaluate(() => {
+        const el = document.querySelector("#settings-notifications .save-status-failed");
+        if (!el) return null;
+        const pane = document.querySelector(".settings-pane");
+        let box = { top: 0, bottom: innerHeight };
+        for (let a = el.parentElement; a; a = a.parentElement) {
+          const style = getComputedStyle(a);
+          if (!/(auto|scroll|hidden|clip)/.test(`${style.overflowX} ${style.overflowY}`)) continue;
+          const r = a.getBoundingClientRect();
+          box = { top: Math.max(box.top, r.top), bottom: Math.min(box.bottom, r.bottom) };
+        }
+        const r = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, Math.max(box.top, Math.min(box.bottom - 1, r.top + r.height / 2)));
+        const focus = document.activeElement, f = focus.getBoundingClientRect(), p = pane.getBoundingClientRect();
+        return {
+          height: Math.round(r.height),
+          whole: r.top >= box.top - 1 && r.bottom <= box.bottom + 1,
+          reached: !!hit && el.contains(hit),
+          focus: focus.closest("label")?.textContent.includes("Mute on this device") ? "mute" : focus.tagName,
+          focusInView: f.top >= Math.max(p.top, 0) - 1 && f.bottom <= Math.min(p.bottom, innerHeight) + 1,
+        };
+      });
+    const mute = editor.getByRole("checkbox", { name: /Mute on this device/ });
+    await mute.focus();
+    await page.keyboard.press("Space");
+    await page.locator("#settings-notifications .save-status-failed").waitFor();
+    await page.waitForTimeout(300);
+    const first = await refusal();
+    // The user scrolls back up to the switch: the refusal leaves the view.
+    await mute.evaluate((el) => el.closest("label").scrollIntoView({ block: "start" }));
+    await page.waitForTimeout(150);
+    const away = await refusal();
+    await page.keyboard.press("Space");
+    await page.waitForTimeout(300);
+    const second = await refusal();
+    await shot(page, "phone-24-refused-twice.png");
+    const after = await page.evaluate(() => localStorage.getItem("yuzuno.notifications"));
+    report.observed.refusedTwice = { first, away, second, kept: after === before };
+    assert.equal(after, before, `${label}: nothing written over what was saved`);
+    assert.ok(first?.whole && first.reached, `${label}: the first refusal in view as it appears (${JSON.stringify(first)})`);
+    assert.ok(!away?.whole, `${label}: scrolled back up, the refusal is out of view (else this proves nothing): ${JSON.stringify(away)}`);
+    assert.ok(second?.whole && second.reached, `${label}: the second, same refusal in view as it appears (${JSON.stringify(second)})`);
+    assert.equal(second.focus, "mute", `${label}: focus stays on the switch`);
+    check(`${label}: each refusal in view whole as it appears, the second after scrolling away; focus stays on the switch (in view: ${second.focusInView})`, report.observed.refusedTwice);
     await context.close();
   }
 
