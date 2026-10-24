@@ -1,129 +1,147 @@
-// T-185: Settings → Phone & remote access. What Core says about the phone's
-// entry, as `GET /api/remote-access` answers, and the few rules the page
-// keeps itself. Saved settings, what Core listens on, Tailscale Serve and the
-// last check are four separate facts: the page never shows one for another.
+// T-185: Settings → Phone access. What Core says about the phone's entry,
+// as `GET /api/remote-access` answers (T-185 interface v1, comment 6798),
+// and the few rules the page keeps itself. Saved settings, what Core listens
+// on, Tailscale Serve and the last verification are four separate facts: the
+// page never shows one for another.
 
-export type RemoteAccessDraft = {
-  enabled: boolean;
-  httpsPort?: number;
-  remotePort?: number;
-  login?: string;
-};
-
-export type RemoteAccessStep = {
-  id: "check" | "save" | "listen" | "serve" | "verify";
-  state: "pending" | "running" | "done" | "failed" | "skipped";
-  detail?: string;
+export type VerificationStep = {
+  id: "host" | "tailscale" | "https" | "listener" | "hop" | "serve" | "endToEnd";
+  state: "ok" | "failed" | "skipped";
+  detail: string;
 };
 
 export type RemoteAccessOperation = {
   id: string;
   requestId: string;
   kind: "apply" | "disable";
-  phase: "pending" | "running" | "complete" | "failed" | "uncertain";
-  steps: RemoteAccessStep[];
-  error?: { step: string; message: string };
+  state: "running" | "succeeded" | "failed" | "rolledBack" | "uncertain" | "interrupted";
+  step: "validate" | "save" | "listen" | "serve" | "verify" | "done";
+  error?: string;
   startedAt: string;
-  updatedAt: string;
   finishedAt?: string;
+  url?: string;
 };
 
-export type RemoteAccessStatus = {
+export type RemoteAccessView = {
   support: {
     state: "supported" | "unsupported";
     reason?: string;
-    coreHost: { kind: "wsl"; distro: string; installDir?: string } | { kind: "other"; label: string };
-    tailscaleHost: { kind: "windows"; node: string; login?: string } | null;
+    coreHost: { kind: "wsl" | "linux" | "macos" | "other"; name: string; networking?: "mirrored" | "nat" | "unknown" };
+    tailscaleHost: { kind: "windows" | "none"; cli?: string; version?: string };
   };
   saved: null | {
     enabled: boolean;
-    httpsPort: number;
-    remotePort: number;
-    origin: string;
     login: string;
+    servePort: number;
+    localPort: number;
+    origin: string | null;
     savedAt: string;
+    /** false: saved, but its last apply failed or is still running. */
+    applied: boolean;
   };
-  listening: { state: "on" | "off" | "unknown"; port?: number; origin?: string; login?: string };
+  environment: null | { port: number; origin: string; login: string; ignored: boolean };
+  listening: null | { port: number; origin: string; login: string; since: string; source: "settings" | "environment" };
   serve: {
-    state: "ours" | "absent" | "foreign" | "changed" | "unknown";
-    httpsPort?: number;
+    state: "unchecked" | "absent" | "ours" | "sameTargetNotRecorded" | "conflict" | "error";
+    port?: number;
     target?: string;
+    otherEntries: number;
+    detail?: string;
+    observedAt?: string;
+  };
+  tailscale: null | {
+    state: "running" | "stopped" | "needsLogin" | "error";
+    dnsName?: string;
+    ownerLogin?: string;
+    https: boolean;
     detail?: string;
     observedAt: string;
   };
-  verified: null | { state: "ok" | "failed"; at: string; url: string; step?: string; detail?: string };
-  url: string | null;
-  qr: null | { size: number; rows: string[] };
+  verification: null | { ok: boolean; at: string; steps: VerificationStep[] };
   operation: RemoteAccessOperation | null;
+  /** Only when Core listens and the Serve entry is Yuzuno's. */
+  url: string | null;
+  /** The QR code's modules for `url`, '1' dark, when Core gives them. */
+  qr?: { size: number; rows: string[] } | null;
+  defaults: { servePort: number; localPort: number };
+  /** false on the phone entry itself: a phone cannot lock itself out. */
+  canChange: boolean;
 };
 
-export type RemoteAccessCheck = {
-  ok: boolean;
-  problems: { field?: "httpsPort" | "remotePort" | "login"; step: string; message: string }[];
-  preview: { url: string; origin: string; httpsPort: number; remotePort: number; login: string };
-};
-
-export const runningPhases: RemoteAccessOperation["phase"][] = ["pending", "running"];
+/** What Save and apply sends besides its request ID. */
+export type RemoteAccessDraft = { enabled: boolean; login?: string; servePort?: number; localPort?: number };
 
 export function running(operation: RemoteAccessOperation | null | undefined): boolean {
-  return !!operation && runningPhases.includes(operation.phase);
+  return operation?.state === "running";
 }
 
-export const stepLabels: Record<RemoteAccessStep["id"], string> = {
-  check: "Check the hosts and settings",
-  save: "Save the settings",
+export const operationSteps: RemoteAccessOperation["step"][] = ["validate", "save", "listen", "serve", "verify"];
+export const operationStepLabels: Record<RemoteAccessOperation["step"], string> = {
+  validate: "Check the settings",
+  save: "Save them",
   listen: "Core listens on the phone's port",
   serve: "Tailscale Serve points to it",
-  verify: "Check it from the tailnet",
+  verify: "Reach it from the tailnet",
+  done: "Done",
+};
+export const verificationStepLabels: Record<VerificationStep["id"], string> = {
+  host: "Core's host",
+  tailscale: "Tailscale on Windows",
+  https: "HTTPS certificates",
+  listener: "Core's phone port",
+  hop: "From Windows to Core",
+  serve: "Tailscale Serve",
+  endToEnd: "The whole way",
 };
 
 /** One line per fact, as the page shows it; `tone` says how it reads. */
 export type StateLine = { label: string; text: string; tone: "on" | "off" | "warn" | "unknown" };
 
-export function stateLines(status: RemoteAccessStatus): StateLine[] {
-  const saved = status.saved;
-  const listening = status.listening;
-  const serve = status.serve;
-  const verified = status.verified;
+export function stateLines(view: RemoteAccessView): StateLine[] {
+  const { saved, listening, serve, verification } = view;
+  const failed = verification?.steps.find((step) => step.state === "failed");
+  const others = serve.otherEntries > 0 ? ` · ${serve.otherEntries} other ${serve.otherEntries === 1 ? "entry" : "entries"} left as they are` : "";
   return [
     {
       label: "Saved settings",
       text: !saved
         ? "Nothing saved"
-        : saved.enabled
-          ? `On · ${saved.origin} · ${saved.login}`
-          : "Saved as off",
-      tone: !saved ? "off" : saved.enabled ? "on" : "off",
+        : !saved.enabled
+          ? "Saved as off"
+          : `On · ${saved.origin ?? "no address yet"} · ${saved.login}${saved.applied ? "" : " · not applied"}`,
+      tone: !saved || !saved.enabled ? "off" : saved.applied ? "on" : "warn",
     },
     {
       label: "Core listening",
-      text:
-        listening.state === "on"
-          ? `On, port ${listening.port ?? "?"}${listening.origin ? ` for ${listening.origin}` : ""}`
-          : listening.state === "off"
-            ? "Not listening for the phone"
-            : "Not known",
-      tone: listening.state === "on" ? "on" : listening.state === "off" ? "off" : "unknown",
+      text: listening
+        ? `On, port ${listening.port} for ${listening.origin}${listening.source === "environment" ? " · from Core's environment" : ""}`
+        : "Not listening for the phone",
+      tone: listening ? "on" : "off",
     },
     {
       label: "Tailscale Serve",
-      text: {
-        ours: `Yuzuno's entry on port ${serve.httpsPort ?? "?"}${serve.target ? ` → ${serve.target}` : ""}`,
-        absent: "No Yuzuno entry",
-        foreign: `Port ${serve.httpsPort ?? "?"} is used by another Serve entry; Yuzuno leaves it as it is`,
-        changed: "Yuzuno's entry was changed outside Yuzuno; it is left as it is",
-        unknown: "Not known",
-      }[serve.state] + (serve.detail ? ` (${serve.detail})` : ""),
-      tone: serve.state === "ours" ? "on" : serve.state === "absent" ? "off" : serve.state === "unknown" ? "unknown" : "warn",
+      text:
+        {
+          unchecked: "Not checked yet",
+          absent: "No Yuzuno entry",
+          ours: `Yuzuno's entry on port ${serve.port ?? "?"}${serve.target ? ` → ${serve.target}` : ""}`,
+          sameTargetNotRecorded: `An entry on port ${serve.port ?? "?"} points to Core, but Settings did not make it`,
+          conflict: `Port ${serve.port ?? "?"} is used by another Serve entry; Yuzuno leaves it as it is`,
+          error: "Could not be read",
+        }[serve.state] +
+        (serve.detail ? ` (${serve.detail})` : "") +
+        others,
+      tone:
+        serve.state === "ours" ? "on" : serve.state === "absent" ? "off" : serve.state === "unchecked" ? "unknown" : "warn",
     },
     {
-      label: "Last check",
-      text: !verified
+      label: "Verification",
+      text: !verification
         ? "Not checked yet"
-        : verified.state === "ok"
-          ? `Reached ${verified.url}`
-          : `Failed at “${verified.step ?? "a step"}”${verified.detail ? `: ${verified.detail}` : ""}`,
-      tone: !verified ? "unknown" : verified.state === "ok" ? "on" : "warn",
+        : verification.ok
+          ? "Reached from the tailnet"
+          : `Failed at “${failed ? verificationStepLabels[failed.id] ?? failed.id : "a step"}”${failed?.detail ? `: ${failed.detail}` : ""}`,
+      tone: !verification ? "unknown" : verification.ok ? "on" : "warn",
     },
   ];
 }
@@ -139,22 +157,15 @@ export function qrPath(qr: { size: number; rows: string[] }): string {
   return d;
 }
 
-/** Whether this page itself is open through the phone's entry: changing or
- * turning that entry off would cut this page off. */
-export function servedThroughEntry(status: RemoteAccessStatus, origin = window.location.origin): boolean {
-  const entry = status.listening.origin || status.saved?.origin;
-  return !!entry && entry.replace(/\/$/, "") === origin.replace(/\/$/, "");
-}
-
-/** What the page keeps across a reload or a Core restart: the draft being
- * applied and its request, so a retry is the same operation. */
+/** What the page keeps across a reload: the change it asked for and its
+ * request, so asking again after a lost answer is the same request. */
 const STORE = "yuzuno.remoteAccess.pending";
-export type Pending = { requestId: string; draft: RemoteAccessDraft; kind: "apply" | "disable" };
+export type Pending = { requestId: string; draft: RemoteAccessDraft };
 
 export function loadPending(): Pending | null {
   try {
     const value = JSON.parse(window.localStorage.getItem(STORE) || "null");
-    return value && typeof value.requestId === "string" ? value : null;
+    return value && typeof value.requestId === "string" && value.draft ? value : null;
   } catch {
     return null;
   }

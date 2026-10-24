@@ -1,9 +1,10 @@
 import "./jsdom-guard.mjs";
-// T-185: Settings → Phone & remote access, against a stub Core that answers
-// as the interface proposed to Dev 5 (T-185): status, check, apply/disable
-// operations. Loading only reads; the four states are shown apart; an
-// address is shown only when Core reports one; a failed step is named; a lost
-// answer is asked again as the same request.
+// T-185: Settings → Phone access, against a stub Core that answers as the
+// T-185 interface v1 (task comment 6798): the view, Check, apply (and
+// disable as apply with enabled:false) and an operation's progress.
+// Opening it only reads; the four states are shown apart; an address is
+// shown only when the view has one; how a change ended is said with its
+// step; a lost answer is asked again as the same request.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -41,15 +42,14 @@ window.renderSettings = props => root.render(<RemoteAccessSettings {...props}/>)
   await rm(fixture, { recursive: true, force: true });
 }
 const tick = () => new Promise((resolve) => setTimeout(resolve, 25));
-const ENTRY = "https://core.example.ts.net:8444";
+const ENTRY = "https://desk.example.ts.net:8444";
+const STORE = "yuzuno.remoteAccess.pending";
 
 /** `handler(url, method, body)` answers `{status, body}`, or throws a
  * TypeError for an answer that never arrives. */
 function mount(handler, { url = "http://isolated.test/", storage = {} } = {}) {
   const calls = [];
-  const errors = [];
   const vc = new VirtualConsole();
-  vc.on("jsdomError", (e) => errors.push(e.message));
   const dom = new JSDOM('<div id="root"></div>', { url, runScripts: "outside-only", pretendToBeVisual: true, virtualConsole: vc });
   for (const [key, value] of Object.entries(storage)) dom.window.localStorage.setItem(key, JSON.stringify(value));
   const copied = [];
@@ -73,17 +73,18 @@ function mount(handler, { url = "http://isolated.test/", storage = {} } = {}) {
   dom.window.renderSettings({ active: true });
   const doc = dom.window.document;
   return {
-    window: dom.window, doc, calls, errors, copied,
-    writes: () => calls.filter((c) => c.method !== "GET"),
+    window: dom.window, doc, calls, copied,
+    writes: () => calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/check")),
     text: () => doc.querySelector("#settings-remote")?.textContent ?? "",
     states: () => [...doc.querySelectorAll(".remote-access-states li")].map((li) => [li.dataset.tone, li.textContent]),
     alerts: () => [...doc.querySelectorAll('[role="alert"]')].map((a) => a.textContent),
+    applies: () => calls.filter((c) => c.url.endsWith("/api/remote-access/apply")),
     close: () => dom.window.close(),
   };
 }
 const button = (p, text) => [...p.doc.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
 async function waitFor(f, what) {
-  for (let i = 0; i < 160; i++) {
+  for (let i = 0; i < 200; i++) {
     if (f()) return;
     await tick();
   }
@@ -95,34 +96,36 @@ function type(p, label, value) {
   input.dispatchEvent(new p.window.Event("input", { bubbles: true }));
 }
 
-/** Core's status, from a supported WSL Core with Tailscale on Windows. */
-function status(over = {}) {
+/** Core's view: a supported WSL Core with Tailscale on Windows, entry off. */
+function view(over = {}) {
   return {
     support: {
       state: "supported",
-      coreHost: { kind: "wsl", distro: "Ubuntu", installDir: "/home/user/.local/share/yuzuno/managed-core" },
-      tailscaleHost: { kind: "windows", node: "desk.example.ts.net", login: "user@example.com" },
+      coreHost: { kind: "wsl", name: "Ubuntu", networking: "mirrored" },
+      tailscaleHost: { kind: "windows", cli: "/mnt/c/Program Files/Tailscale/tailscale.exe", version: "1.90.0" },
     },
     saved: null,
-    listening: { state: "off" },
-    serve: { state: "absent", observedAt: "2026-10-24T17:00:00Z" },
-    verified: null,
-    url: null,
-    qr: null,
+    environment: null,
+    listening: null,
+    serve: { state: "unchecked", otherEntries: 0 },
+    tailscale: null,
+    verification: null,
     operation: null,
+    url: null,
+    defaults: { servePort: 8444, localPort: 4318 },
+    canChange: true,
     ...over,
   };
 }
-const op = (phase, steps, extra = {}) => ({
-  id: "op-1", requestId: extra.requestId ?? "r", kind: "apply", phase,
-  steps: ["check", "save", "listen", "serve", "verify"].map((id, i) => ({ id, state: steps[i] })),
-  startedAt: "2026-10-24T17:00:00Z", updatedAt: "2026-10-24T17:00:01Z", ...extra,
-});
-const on = (over = {}) => status({
-  saved: { enabled: true, httpsPort: 8444, remotePort: 4318, origin: ENTRY, login: "user@example.com", savedAt: "2026-10-24T17:00:02Z" },
-  listening: { state: "on", port: 4318, origin: ENTRY, login: "user@example.com" },
-  serve: { state: "ours", httpsPort: 8444, target: "http://127.0.0.1:4318", observedAt: "2026-10-24T17:00:03Z" },
-  verified: { state: "ok", at: "2026-10-24T17:00:04Z", url: `${ENTRY}/` },
+const tailscale = { state: "running", dnsName: "desk.example.ts.net", ownerLogin: "user@example.com", https: true, observedAt: "2026-10-24T17:00:00Z" };
+const checkedView = (over = {}) => view({ tailscale, serve: { state: "absent", otherEntries: 1, observedAt: "2026-10-24T17:00:00Z" }, ...over });
+const op = (state, step, extra = {}) => ({ id: "op-1", requestId: "r", kind: "apply", state, step, startedAt: "2026-10-24T17:00:01Z", ...extra });
+const on = (over = {}) => view({
+  tailscale,
+  saved: { enabled: true, login: "user@example.com", servePort: 8444, localPort: 4318, origin: ENTRY, savedAt: "2026-10-24T17:00:02Z", applied: true },
+  listening: { port: 4318, origin: ENTRY, login: "user@example.com", since: "2026-10-24T17:00:03Z", source: "settings" },
+  serve: { state: "ours", port: 8444, target: "http://127.0.0.1:4318", otherEntries: 1, observedAt: "2026-10-24T17:00:04Z" },
+  verification: { ok: true, at: "2026-10-24T17:00:05Z", steps: [] },
   url: `${ENTRY}/`,
   qr: { size: 3, rows: ["101", "010", "111"] },
   ...over,
@@ -130,24 +133,23 @@ const on = (over = {}) => status({
 
 test("opening it only reads, and saved settings alone are not shown as reachable", async () => {
   const p = mount(() => ({
-    body: status({
-      saved: { enabled: true, httpsPort: 8444, remotePort: 4318, origin: ENTRY, login: "user@example.com", savedAt: "x" },
+    body: view({
+      saved: { enabled: true, login: "user@example.com", servePort: 8444, localPort: 4318, origin: ENTRY, savedAt: "x", applied: false },
     }),
   }));
   try {
     await waitFor(() => p.states().length === 4, "the four states");
-    assert.deepEqual(p.states().map(([tone]) => tone), ["on", "off", "off", "unknown"]);
-    assert.match(p.states()[0][1], /Saved settings.*On · https:\/\/core\.example\.ts\.net:8444/);
+    assert.deepEqual(p.states().map(([tone]) => tone), ["warn", "off", "unknown", "unknown"]);
+    assert.match(p.states()[0][1], /^Saved settingsOn · https:\/\/desk\.example\.ts\.net:8444 · user@example\.com · not applied$/);
     assert.match(p.states()[1][1], /Not listening/);
-    assert.match(p.states()[2][1], /No Yuzuno entry/);
+    assert.match(p.states()[2][1], /Not checked yet/);
     assert.match(p.states()[3][1], /Not checked yet/);
     assert.equal(p.doc.querySelector(".settings-current").textContent, "Incomplete");
-    assert.equal(!!p.doc.querySelector(".remote-access-result"), false, "no address without Core's verified one");
-    assert.equal(!!p.doc.querySelector(".remote-access-qr"), false);
-    assert.match(p.text(), /WSL · Ubuntu/);
-    assert.match(p.text(), /Windows · desk\.example\.ts\.net/);
+    assert.equal(!!p.doc.querySelector(".remote-access-result"), false, "no address without one in the view");
+    assert.match(p.text(), /WSL · Ubuntu · mirrored networking/);
+    assert.match(p.text(), /Windows · not checked yet/);
     await tick();
-    assert.deepEqual(p.writes(), [], "loading writes nothing");
+    assert.deepEqual(p.calls.map((c) => `${c.method} ${c.url}`), ["GET /api/remote-access"], "one read, nothing else");
   } finally {
     p.close();
   }
@@ -155,118 +157,116 @@ test("opening it only reads, and saved settings alone are not shown as reachable
 
 test("a Core it cannot set up says why and offers nothing to change", async () => {
   const p = mount(() => ({
-    body: status({
-      support: { state: "unsupported", reason: "this Core is not a managed WSL Core", coreHost: { kind: "other", label: "Linux · ubuntu-box" }, tailscaleHost: null },
+    body: view({
+      support: { state: "unsupported", reason: "Tailscale for Windows was not found", coreHost: { kind: "linux", name: "build-box" }, tailscaleHost: { kind: "none" } },
     }),
   }));
   try {
     await waitFor(() => p.doc.querySelector(".remote-access-note"), "the reason");
-    assert.match(p.doc.querySelector(".remote-access-note").textContent, /this Core is not a managed WSL Core/);
-    assert.match(p.text(), /Linux · ubuntu-box/);
+    assert.match(p.text(), /cannot be set up from here for this Core: Tailscale for Windows was not found/);
+    assert.match(p.text(), /Linux · build-box/);
     assert.match(p.text(), /Tailscale runs onNot found/);
     for (const label of ["Check", "Save and apply", "Turn off"]) assert.equal(!!button(p, label), false, label);
-    assert.deepEqual(p.writes(), []);
   } finally {
     p.close();
   }
 });
 
-test("check, then save and apply: problems keep the input, progress is shown by step, and the address comes with its code", async () => {
-  let current = status();
+test("check, then save and apply: progress by step, then the address with copy and code", async () => {
+  let current = view();
   let polls = 0;
   const p = mount((url, method, body) => {
-    if (method === "GET") {
-      if (current.operation?.phase === "running" && ++polls >= 2) {
-        current = on({ operation: op("complete", ["done", "done", "done", "done", "done"], { requestId: current.operation.requestId }) });
-      }
-      return { body: current };
-    }
-    if (url.endsWith("/check")) {
-      return body.draft.httpsPort === 443
-        ? { body: { ok: false, problems: [{ field: "httpsPort", step: "Tailscale Serve", message: "Port 443 is used by another Serve entry." }], preview: null } }
-        : { body: { ok: true, problems: [], preview: { url: `${ENTRY}/`, origin: ENTRY, httpsPort: 8444, remotePort: 4318, login: "user@example.com" } } };
-    }
+    if (url.endsWith("/api/remote-access") && method === "GET") return { body: current };
+    if (url.endsWith("/check")) return { body: (current = checkedView()) };
     if (url.endsWith("/apply")) {
-      current = status({ operation: op("running", ["done", "done", "running", "pending", "pending"], { requestId: body.requestId }) });
-      return { status: 202, body: current.operation };
+      current = checkedView({ operation: op("running", "listen", { requestId: body.requestId }) });
+      return { status: 202, body: { operation: current.operation } };
+    }
+    if (url.endsWith("/operations/op-1")) {
+      if (++polls < 2) return { body: op("running", "serve", { requestId: current.operation.requestId }) };
+      current = on({ operation: op("succeeded", "done", { requestId: current.operation.requestId, url: `${ENTRY}/` }) });
+      return { body: current.operation };
     }
     return { status: 404, body: { error: "no" } };
   });
   try {
     await waitFor(() => button(p, "Check"), "the form");
     assert.equal(button(p, "Save and apply").disabled, true, "applied only after a check");
-    type(p, "Serve port", "443");
     button(p, "Check").click();
-    await waitFor(() => /used by another Serve entry/.test(p.text()), "the problem");
-    assert.equal(p.doc.querySelector('input[aria-label="Serve port"]').value, "443", "the input stays");
-    assert.equal(button(p, "Save and apply").disabled, true);
-    type(p, "Serve port", "8444");
-    assert.equal(!!p.doc.querySelector(".remote-access-check"), false, "an edit drops the old check");
-    button(p, "Check").click();
-    await waitFor(() => /Ready: your phone would open/.test(p.text()), "the preview");
-    assert.deepEqual(p.calls.filter((c) => c.url.endsWith("/check")).at(-1).body, { draft: { enabled: true, httpsPort: 8444 } });
+    await waitFor(() => !button(p, "Save and apply").disabled, "checked");
+    assert.deepEqual(p.calls.find((c) => c.url.endsWith("/check")).body, {});
+    assert.match(p.text(), /Windows · desk\.example\.ts\.net · running/);
+    assert.match(p.states()[2][1], /No Yuzuno entry · 1 other entry left as they are/);
+    type(p, "Serve port", "9443");
     button(p, "Save and apply").click();
     await waitFor(() => p.doc.querySelector(".remote-access-steps"), "the steps");
-    const apply = p.calls.find((c) => c.url.endsWith("/apply"));
-    assert.match(apply.body.requestId, /^remote-[0-9a-f]{24}$/);
-    assert.deepEqual(apply.body.draft, { enabled: true, httpsPort: 8444 });
+    const apply = p.applies()[0].body;
+    assert.match(apply.requestId, /^remote-[0-9a-f]{24}$/);
+    assert.deepEqual({ ...apply, requestId: "" }, { requestId: "", enabled: true, servePort: 9443 });
     assert.equal(p.doc.querySelector('.remote-access-steps [data-state="running"]').textContent, "Core listens on the phone's port");
     assert.equal(button(p, "Check").disabled, true, "nothing else while it runs");
+    await waitFor(() => p.doc.querySelector('.remote-access-steps [data-state="running"]')?.textContent === "Tailscale Serve points to it", "the next step");
     await waitFor(() => p.doc.querySelector(".remote-access-result"), "the address");
     assert.equal(p.doc.querySelector(".remote-access-result a").getAttribute("href"), `${ENTRY}/`);
     assert.equal(p.doc.querySelector(".remote-access-qr path").getAttribute("d"), "M4,4h1v1h-1zM6,4h1v1h-1zM5,5h1v1h-1zM4,6h1v1h-1zM5,6h1v1h-1zM6,6h1v1h-1z");
     assert.equal(p.doc.querySelector(".settings-current").textContent, "On");
+    assert.match(p.text(), /Applied\./);
     button(p, "Copy").click();
     await waitFor(() => button(p, "Copied"), "copied");
     assert.deepEqual(p.copied, [`${ENTRY}/`]);
-    assert.equal(p.window.localStorage.getItem("yuzuno.remoteAccess.pending"), null, "the request ends with its operation");
-    assert.equal(p.writes().filter((c) => c.url.endsWith("/apply")).length, 1);
+    assert.equal(p.window.localStorage.getItem(STORE), null, "the request ends with its change");
+    assert.equal(p.applies().length, 1);
   } finally {
     p.close();
   }
 });
 
-test("a failed step is named, nothing is shown as reachable, and trying again is a new request", async () => {
-  let current = status();
+test("how a change ended is said with its step, the input stays, and trying again is a new request", async () => {
+  const endings = [
+    [op("failed", "listen", { error: "Port 4318 is already in use." }), /Applying stopped at “Core listens on the phone's port”: Port 4318 is already in use\./],
+    [op("rolledBack", "serve", { error: "Port 8444 is used by another Serve entry." }), /stopped at “Tailscale Serve points to it”: Port 8444 is used by another Serve entry\. What it had changed was undone/],
+    [op("failed", "verify", { error: "curl.exe could not reach it." }), /Set up, but not verified: reaching it from the tailnet failed: curl\.exe could not reach it\./],
+  ];
+  let current = checkedView();
+  let ending = 0;
   const p = mount((url, method, body) => {
     if (method === "GET") return { body: current };
-    if (url.endsWith("/check")) return { body: { ok: true, problems: [], preview: { url: `${ENTRY}/`, origin: ENTRY, httpsPort: 8444, remotePort: 4318, login: "user@example.com" } } };
-    current = status({
-      listening: { state: "on", port: 4318, origin: ENTRY },
-      operation: op("failed", ["done", "done", "done", "failed", "skipped"], { requestId: body.requestId, error: { step: "serve", message: "tailscale.exe serve exited with 1" } }),
-    });
-    return { status: 202, body: current.operation };
+    if (url.endsWith("/check")) return { body: current };
+    current = checkedView({ operation: { ...endings[ending][0], requestId: body.requestId } });
+    return { status: 202, body: { operation: current.operation } };
   });
   try {
     await waitFor(() => button(p, "Check"), "the form");
     button(p, "Check").click();
     await waitFor(() => !button(p, "Save and apply").disabled, "checked");
-    button(p, "Save and apply").click();
-    await waitFor(() => p.alerts().some((a) => /stopped at/.test(a)), "the failure");
-    assert.ok(p.alerts().some((a) => /Applying stopped at “Tailscale Serve points to it”: tailscale\.exe serve exited with 1\./.test(a)), p.alerts().join("|"));
-    assert.equal(!!p.doc.querySelector(".remote-access-result"), false);
-    assert.equal(p.doc.querySelector('.remote-access-steps [data-state="failed"]').textContent, "Tailscale Serve points to it");
-    const first = p.calls.find((c) => c.url.endsWith("/apply")).body.requestId;
-    button(p, "Save and apply").click();
-    await waitFor(() => p.calls.filter((c) => c.url.endsWith("/apply")).length === 2, "the second try");
-    assert.notEqual(p.calls.filter((c) => c.url.endsWith("/apply"))[1].body.requestId, first);
+    type(p, "Allowed login", "user@example.com");
+    for (ending = 0; ending < endings.length; ending++) {
+      const before = p.applies().length;
+      button(p, "Save and apply").click();
+      await waitFor(() => p.applies().length === before + 1, "applied");
+      await waitFor(() => p.alerts().some((a) => endings[ending][1].test(a)), `ending ${ending}`);
+      assert.equal(!!p.doc.querySelector(".remote-access-result"), false, "nothing shown as reachable");
+      assert.equal(p.doc.querySelector('input[aria-label="Allowed login"]').value, "user@example.com", "the input stays");
+    }
+    const ids = p.applies().map((c) => c.body.requestId);
+    assert.equal(new Set(ids).size, 3, "each try after an ending is a new request");
   } finally {
     p.close();
   }
 });
 
-test("a lost answer is shown as unknown, and asking again is the same request", async () => {
+test("a lost answer is shown as unknown, asking again is the same request, and uncertain says to check", async () => {
   let lose = true;
-  let current = status();
+  let current = checkedView();
   const p = mount((url, method, body) => {
     if (method === "GET") return { body: current };
-    if (url.endsWith("/check")) return { body: { ok: true, problems: [], preview: { url: `${ENTRY}/`, origin: ENTRY, httpsPort: 8444, remotePort: 4318, login: "user@example.com" } } };
+    if (url.endsWith("/check")) return { body: current };
     if (lose) {
       lose = false;
       throw new TypeError("Failed to fetch");
     }
-    current = status({ operation: op("uncertain", ["done", "done", "done", "running", "pending"], { requestId: body.requestId }) });
-    return { status: 202, body: current.operation };
+    current = checkedView({ operation: op("uncertain", "serve", { requestId: body.requestId, error: "tailscale.exe did not answer within 20 s." }) });
+    return { status: 202, body: { operation: current.operation } };
   });
   try {
     await waitFor(() => button(p, "Check"), "the form");
@@ -274,29 +274,26 @@ test("a lost answer is shown as unknown, and asking again is the same request", 
     await waitFor(() => !button(p, "Save and apply").disabled, "checked");
     button(p, "Save and apply").click();
     await waitFor(() => p.alerts().some((a) => /answer did not arrive/.test(a)), "the lost answer");
-    const kept = JSON.parse(p.window.localStorage.getItem("yuzuno.remoteAccess.pending"));
+    const kept = JSON.parse(p.window.localStorage.getItem(STORE));
     button(p, "Save and apply").click();
-    await waitFor(() => p.calls.filter((c) => c.url.endsWith("/apply")).length === 2, "asked again");
-    const [one, two] = p.calls.filter((c) => c.url.endsWith("/apply")).map((c) => c.body.requestId);
+    await waitFor(() => p.applies().length === 2, "asked again");
+    const [one, two] = p.applies().map((c) => c.body.requestId);
     assert.equal(one, two, "the same request");
     assert.equal(kept.requestId, one);
-    await waitFor(() => p.alerts().some((a) => /did not confirm how this change ended/.test(a)), "uncertain");
-    const gets = p.calls.filter((c) => c.method === "GET").length;
-    button(p, "Check again").click();
-    await waitFor(() => p.calls.filter((c) => c.method === "GET").length === gets + 1, "read again");
-    assert.equal(p.calls.filter((c) => c.url.endsWith("/apply")).length, 2, "Check again only reads");
+    await waitFor(() => p.alerts().some((a) => /could not confirm how “Tailscale Serve points to it” ended: tailscale\.exe did not answer within 20 s\. Check, or apply again/.test(a)), "uncertain");
   } finally {
     p.close();
   }
 });
 
 test("another change already running is shown, not started twice", async () => {
-  let current = status();
+  let current = checkedView();
   const p = mount((url, method) => {
-    if (method === "GET") return { body: current };
-    if (url.endsWith("/check")) return { body: { ok: true, problems: [], preview: { url: `${ENTRY}/`, origin: ENTRY, httpsPort: 8444, remotePort: 4318, login: "user@example.com" } } };
-    current = status({ operation: op("running", ["done", "running", "pending", "pending", "pending"], { requestId: "someone-else" }) });
-    return { status: 409, body: { error: "Another phone access change is running." } };
+    if (url.endsWith("/api/remote-access") && method === "GET") return { body: current };
+    if (url.endsWith("/check")) return { body: current };
+    if (url.includes("/operations/")) return { body: current.operation };
+    current = checkedView({ operation: op("running", "save", { requestId: "someone-else" }) });
+    return { status: 409, body: { error: "A phone access change is already running.", code: "remote_access_busy" } };
   });
   try {
     await waitFor(() => button(p, "Check"), "the form");
@@ -306,43 +303,51 @@ test("another change already running is shown, not started twice", async () => {
     await waitFor(() => p.alerts().some((a) => /already running/.test(a)), "the conflict");
     await waitFor(() => p.doc.querySelector('.remote-access-steps [data-state="running"]'), "its progress");
     assert.equal(button(p, "Save and apply").disabled, true);
+    assert.equal(p.applies().length, 1);
   } finally {
     p.close();
   }
 });
 
-test("from the phone entry itself, a change that would cut this page off asks first", async () => {
-  let current = on();
+test("on the phone entry itself the page only shows: the address, and no way to change it", async () => {
+  const p = mount(() => ({ body: on({ canChange: false }) }), { url: `${ENTRY}/` });
+  try {
+    await waitFor(() => p.doc.querySelector(".remote-access-result"), "the address");
+    assert.match(p.text(), /open through the phone entry, so it cannot change it/);
+    for (const label of ["Check", "Save and apply", "Turn off"]) assert.equal(!!button(p, label), false, label);
+    assert.deepEqual(p.states().map(([tone]) => tone), ["on", "on", "on", "on"]);
+    assert.deepEqual(p.writes(), []);
+  } finally {
+    p.close();
+  }
+});
+
+test("an entry set up from Core's environment says so, Turn off sends enabled:false, and a kept draft survives a reload", async () => {
+  const pending = { requestId: "remote-aaaaaaaaaaaaaaaaaaaaaaaa", draft: { enabled: true, servePort: 9443, login: "other@example.com" } };
+  let current = view({
+    tailscale,
+    environment: { port: 4318, origin: ENTRY, login: "user@example.com", ignored: false },
+    listening: { port: 4318, origin: ENTRY, login: "user@example.com", since: "x", source: "environment" },
+    serve: { state: "sameTargetNotRecorded", port: 8444, target: "http://127.0.0.1:4318", otherEntries: 0, observedAt: "x" },
+  });
   const p = mount((url, method, body) => {
     if (method === "GET") return { body: current };
-    current = status({ operation: { ...op("complete", ["done", "done", "done", "done", "done"], { requestId: body.requestId }), kind: "disable" } });
-    return { status: 202, body: current.operation };
-  }, { url: `${ENTRY}/` });
-  try {
-    await waitFor(() => button(p, "Turn off"), "Turn off");
-    button(p, "Turn off").click();
-    await waitFor(() => p.alerts().some((a) => /open through the phone entry/.test(a)), "the warning");
-    assert.deepEqual(p.writes(), [], "nothing sent yet");
-    button(p, "Turn off anyway").click();
-    await waitFor(() => p.writes().length === 1, "sent");
-    assert.match(p.writes()[0].url, /\/api\/remote-access\/disable$/);
-    assert.match(p.writes()[0].body.requestId, /^remote-/);
-  } finally {
-    p.close();
-  }
-});
-
-test("a Serve entry that is not Yuzuno's is said so, with a warning, and the saved draft survives a reload", async () => {
-  const pending = { requestId: "remote-aaaaaaaaaaaaaaaaaaaaaaaa", kind: "apply", draft: { enabled: true, httpsPort: 9443, login: "other@example.com" } };
-  const p = mount(() => ({
-    body: status({ serve: { state: "foreign", httpsPort: 8444, detail: "proxies http://127.0.0.1:3000", observedAt: "x" } }),
-  }), { storage: { "yuzuno.remoteAccess.pending": pending } });
+    current = view({ operation: op("succeeded", "done", { requestId: body.requestId, kind: "disable" }) });
+    return { status: 202, body: { operation: current.operation } };
+  }, { storage: { [STORE]: pending } });
   try {
     await waitFor(() => p.states().length === 4, "the states");
-    assert.deepEqual(p.states()[2], ["warn", "Tailscale ServePort 8444 is used by another Serve entry; Yuzuno leaves it as it is (proxies http://127.0.0.1:3000)"]);
+    assert.match(p.text(), /set up outside Settings, from Core's environment\. Save and apply with the same values takes it over/);
+    assert.deepEqual(p.states()[1], ["on", "Core listeningOn, port 4318 for https://desk.example.ts.net:8444 · from Core's environment"]);
+    assert.deepEqual(p.states()[2], ["warn", "Tailscale ServeAn entry on port 8444 points to Core, but Settings did not make it"]);
     assert.equal(p.doc.querySelector('input[aria-label="Serve port"]').value, "9443");
     assert.equal(p.doc.querySelector('input[aria-label="Allowed login"]').value, "other@example.com");
-    assert.deepEqual(p.writes(), []);
+    button(p, "Turn off").click();
+    await waitFor(() => p.applies().length === 1, "turned off");
+    const sent = p.applies()[0].body;
+    assert.deepEqual({ ...sent, requestId: "" }, { requestId: "", enabled: false });
+    assert.notEqual(sent.requestId, pending.requestId, "another change, another request");
+    await waitFor(() => /Turned off\./.test(p.text()), "turned off");
   } finally {
     p.close();
   }

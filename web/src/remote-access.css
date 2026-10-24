@@ -1,6 +1,7 @@
-/* Settings → Phone & remote access (T-185). Rows and buttons are the
+/* Settings → Phone access (T-185). Rows and buttons are the
    settings pane's own (updates.css); this adds the hosts, the four state
-   lines, the address with its code, and the change's steps. */
+   lines, the verification steps, the address with its code, and the
+   change's steps. */
 .remote-access-hosts {
   display: grid;
   margin: 0;
@@ -135,17 +136,22 @@
 .remote-access-advanced[open] > summary {
   border-bottom: 1px solid var(--line);
 }
-.remote-access-check {
-  padding: 10px 16px;
-  border-top: 1px solid var(--line);
+/* Each verification step, opened only when the last one failed. */
+.remote-access-verification > summary {
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.remote-access-verification ol {
+  display: grid;
+  gap: 3px;
+  margin: 6px 0 0;
+  padding-left: 20px;
+  color: var(--text-secondary);
   font-size: calc(10px + var(--font-adjust, 3px));
 }
-.remote-access-check p,
-.remote-access-check ul {
-  margin: 0;
-}
-.remote-access-form > .updates-error {
-  padding: 10px 16px 0;
+.remote-access-verification li[data-state="failed"] {
+  color: var(--danger, #b55d53);
 }
 @media (max-width: 640px) {
   .remote-access-states li {
