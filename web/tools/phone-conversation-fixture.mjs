@@ -1,11 +1,11 @@
 // T-170: a synthetic Workspace that crowds a phone's conversation, as the
-// user's did: an Agent with 1408 Turns (four-digit Turn numbers), a long
-// Chinese reply, a long link and a Turn's error, jobs, CI runs and a
-// sub-agent (three groups in the work dock), Codex in Plan mode (the
-// composer's mode) and the composer's notice to resume the session; a second
-// Agent waiting to be reconnected, with the recovery notice; a third asking
-// to run a long command. phone-conversation-check.mjs reads it in Chromium,
-// and phone-fixture-server.mjs serves it to Mobile Safari with
+// user's did: an Agent with 1408 Turns (four-digit Turn numbers), the latest
+// a long Chinese reply with a long link that failed with an error, jobs, CI
+// runs and a sub-agent (three groups in the work dock), Codex in Plan mode
+// (the composer's mode) and the composer's notice to resume the session; a
+// second Agent waiting to be reconnected, with the recovery notice; a third
+// asking to run a long command. phone-conversation-check.mjs reads it in
+// Chromium, and phone-fixture-server.mjs serves it to Mobile Safari with
 // YUZUNO_FIXTURE=conversation. The Workspace, its Agents and the Agent list
 // address are those of the server's default fixture (ws-phone, Mori is "a"),
 // so its checks find the same buttons. Synthetic content only.
@@ -35,9 +35,11 @@ export function conversationWorkspace(now = Date.now()) {
   const longLink = "https://example.com/a/very/long/path/that/does/not/break/on/its/own/" + "segment-".repeat(12) + "end";
   // Mori started a sub-agent three Turns before the last.
   const subAgent = (kind) => ({ type: "subAgentActivity", id: `${kind}-child`, kind, agentThreadId: child, agentPath: "/root/child-1", model: kind === "started" ? "gpt-6-astra" : null });
+  // Mori's latest Turn failed (its error shows under it, where the
+  // conversation opens); Hana's was still running when she was cut off.
   const turn = (who, n, last) => ({
     id: `${who}-t${n}`,
-    status: last && who === "Hana" ? "inProgress" : "completed",
+    status: last && who === "Hana" ? "inProgress" : last && who === "Mori" ? "failed" : "completed",
     startedAt: seconds(TURNS - n + 2),
     completedAt: last && who === "Hana" ? undefined : seconds(TURNS - n + 1),
     items: [
@@ -45,7 +47,7 @@ export function conversationWorkspace(now = Date.now()) {
       ...(who === "Mori" && n === TURNS - 3 ? [subAgent("started"), subAgent("completed")] : []),
       { id: `${who}-r${n}`, type: "agentMessage", text: last ? `${longChinese}\n\n打开：\n\n${longLink}\n\nThen check it again.` : `${who} reply ${n + 1}.` },
     ],
-    ...(n === TURNS - 2 ? { error: { message: errorText } } : {}),
+    ...(last && who === "Mori" ? { error: { message: errorText } } : {}),
   });
   const longCommand = "node tools/a-long-script-name-for-the-phone-check.mjs --output=/fixture/" + "nested/".repeat(10) + "report.json";
   const approval = {
