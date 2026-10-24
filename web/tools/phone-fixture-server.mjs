@@ -9,17 +9,23 @@
 // YUZUNO_EXTRA=/connection=<dir> also serves <dir> (the iOS app's connection
 // page) under /connection/, measured the same way. YUZUNO_INJECT=<file> adds
 // one more script to every page, after phone-measure.js (another probe).
+// YUZUNO_FIXTURE=conversation serves phone-conversation-fixture.mjs's
+// crowded conversations instead (the same Workspace, Mori among them), as
+// phone-conversation-probe.js measures them; conversation-quiet the same with
+// nothing running and a smaller window of Turns (see the fixture).
 // A path that is no file (and not /api/) gets the app's page, so the app's
 // own addresses open it: /#/message?w=ws-phone&a=a&t=t7 opens Mori's
 // conversation at its last turn.
 //   YUZUNO_UI_DIST=<build> YUZUNO_MEASURE_OUT=<file> [YUZUNO_PORT=4510] \
-//     [YUZUNO_EXTRA=/connection=<dir>] [YUZUNO_INJECT=<file>] node tools/phone-fixture-server.mjs
+//     [YUZUNO_EXTRA=/connection=<dir>] [YUZUNO_INJECT=<file>] [YUZUNO_FIXTURE=conversation[-quiet]] \
+//     node tools/phone-fixture-server.mjs
 // Synthetic data only; it listens on 127.0.0.1 and answers only that host.
 import assert from "node:assert/strict";
 import { appendFile, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { extname, resolve, sep } from "node:path";
 import { idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { childPath, conversationWorkspace } from "./phone-conversation-fixture.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "YUZUNO_UI_DIST: the web build to serve");
 assert.ok(process.env.YUZUNO_MEASURE_OUT, "YUZUNO_MEASURE_OUT: where the measurements go");
@@ -61,6 +67,14 @@ const reads = {
   "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs": noJobs,
   "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
 };
+const fixture = process.env.YUZUNO_FIXTURE || "";
+assert.ok(["", "conversation", "conversation-quiet"].includes(fixture), "YUZUNO_FIXTURE: conversation, conversation-quiet, or unset");
+const crowded = fixture ? conversationWorkspace(Date.now(), { quiet: fixture === "conversation-quiet" }) : null;
+if (crowded) {
+  delete reads["/api/agents/a"];
+  Object.assign(reads, crowded.reads);
+}
+const agentIds = crowded ? crowded.agents.map((agent) => agent.id) : ["a"];
 // Tasks & messages reads its lists by POST, as the Agents' tools do.
 const collaborationReads = {
   task_list: { tasks: [task], counts: { doing: 1 }, hasMore: false, nextAfterSeq: null },
@@ -113,7 +127,7 @@ const server = createServer(async (req, res) => {
   try {
     if (req.headers.host !== `127.0.0.1:${port}` && req.headers.host !== `localhost:${port}`)
       return json(res, { error: "this fixture answers 127.0.0.1 only" }, 421);
-    const { pathname: path } = new URL(req.url, `http://127.0.0.1:${port}`);
+    const { pathname: path, searchParams } = new URL(req.url, `http://127.0.0.1:${port}`);
     const method = req.method;
     if (path === "/__measure.js") {
       res.writeHead(200, { "Content-Type": "text/javascript", "Cache-Control": "no-store" });
@@ -136,8 +150,9 @@ const server = createServer(async (req, res) => {
       // fixture answers. Closed with the server.
       return;
     }
-    if (path === "/api/agents/a/reading") return json(res, method === "GET" ? { handoff: null } : { accepted: true, sourceSeq: 0 });
-    if (method === "POST" && path === "/api/agents/a/review") return json(res, {});
+    if (agentIds.some((id) => path === `/api/agents/${id}/reading`))
+      return json(res, method === "GET" ? { handoff: null } : { accepted: true, sourceSeq: 0 });
+    if (method === "POST" && agentIds.some((id) => path === `/api/agents/${id}/review`)) return json(res, {});
     if (method === "POST" && path.startsWith("/api/collaboration/")) {
       const request = JSON.parse((await body(req)) || "{}");
       const read = !request.action && collaborationReads[path.split("/").at(-1)];
@@ -147,6 +162,10 @@ const server = createServer(async (req, res) => {
       await record({ kind: "refused", method, path });
       return json(res, { error: `Unexpected ${method} ${path} in this fixture` }, 400);
     }
+    // A crowded conversation is read a window at a time.
+    const agent = crowded?.agents.find((a) => path === `/api/agents/${a.id}`);
+    if (agent) return json(res, crowded.detail(agent, searchParams));
+    if (crowded && path === childPath) return json(res, crowded.childDetail);
     if (reads[path]) return json(res, reads[path]);
     if (path.startsWith("/api/")) return json(res, {});
     return file(res, path);
