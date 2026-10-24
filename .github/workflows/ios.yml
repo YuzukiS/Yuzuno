@@ -153,33 +153,38 @@ jobs:
           echo "built from $source (parents: $parents)"
           { echo "### iOS Simulator app"; echo; echo "\`$identifier\`, $platform, arm64, built from \`$source\` (parents: \`$parents\`)."; echo; echo '```'; cat "$RUNNER_TEMP/out/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
-      # The app in a Simulator of its own, without a Core: it starts, its
-      # connection page shows in the app's WKWebView, and the app refuses a
-      # plain HTTP address itself (uitests/run.sh smoke). Turning, the
-      # keyboard, Mobile Safari beside the app and their measurements are for
-      # a Mac with Xcode (run.sh full; see ios/README.md), not this job.
-      - name: Simulator smoke
-        timeout-minutes: 20
+      # Temporary (T-170, Lead 8375): one "after" round for Dev 5's keyboard
+      # fix candidate (fix/t170-keyboard-viewport at b304bf8), as no Mac is
+      # available yet: run.sh full, with the web UI built from that commit;
+      # run 40061280002 is the "before". The next commit puts back
+      # run.sh smoke and its two screenshots.
+      - name: Simulator checks, full (temporary)
+        timeout-minutes: 30
         run: |
           app=$(find gen/apple/build/arm64-sim -maxdepth 1 -type d -name '*.app')
-          uitests/run.sh smoke "$app" "$RUNNER_TEMP/checks"
+          uitests/web-build.sh "$RUNNER_TEMP/web-dist" b304bf84446268a370ee331e261af4e9a2673a2b
+          YUZUNO_UI_DIST="$RUNNER_TEMP/web-dist" uitests/run.sh full "$app" "$RUNNER_TEMP/checks"
+          echo "--- what the pages in Safari measured (CSS px)"
+          cat "$RUNNER_TEMP/checks/phone-measure.jsonl"
 
       # When the smoke fails: what failed, from its result bundle (the
       # tests' own messages). Nothing is uploaded.
       - name: Simulator smoke failures
         if: failure()
         run: |
+          for f in page-server.log phone-measure.jsonl frames.txt; do [ ! -f "$RUNNER_TEMP/checks/$f" ] || cat "$RUNNER_TEMP/checks/$f"; done
           [ -d "$RUNNER_TEMP/checks/checks.xcresult" ] || { echo "no result bundle"; exit 0; }
           xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/checks/checks.xcresult"
           xcrun xcresulttool get test-results tests --path "$RUNNER_TEMP/checks/checks.xcresult"
 
-      # The connection page, made without a Core: no Workspace, account or
-      # address of the user's can be in these. Exactly these two PNG files are
-      # uploaded, kept for 3 days; the app itself is not.
+      # The connection page, and (for the temporary full round) the web UI on
+      # the fixture's synthetic Workspace, made without a Core: no Workspace,
+      # account or address of the user's can be in these. Exactly these PNG
+      # files are uploaded, kept for 3 days; the app itself is not.
       - name: Screenshots
         run: |
           dir="$RUNNER_TEMP/checks/screenshots"
-          expected="app-portrait.png app-refused.png"
+          expected="app-portrait.png app-refused.png app-rotated.png safari-connection-landscape.png safari-connection-portrait.png safari-web-dialog.png safari-web-keyboard-upright-again.png safari-web-keyboard.png safari-web-landscape.png safari-web-portrait.png"
           found=$(ls -A "$dir" | LC_ALL=C sort | paste -s -d ' ' -)
           [ "$found" = "$expected" ] || { echo "::error::expected $expected, found: $found"; exit 1; }
           for file in $expected; do

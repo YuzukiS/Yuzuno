@@ -253,7 +253,9 @@ IOS_UPLOAD = """      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b
           path: ${{ runner.temp }}/checks/screenshots/*.png
           if-no-files-found: error
           retention-days: 3"""
-IOS_SCREENSHOTS = 'expected="app-portrait.png app-refused.png"'
+IOS_SCREENSHOTS = ('expected="app-portrait.png app-refused.png app-rotated.png safari-connection-landscape.png '
+                   'safari-connection-portrait.png safari-web-dialog.png safari-web-keyboard-upright-again.png '
+                   'safari-web-keyboard.png safari-web-landscape.png safari-web-portrait.png"')
 
 
 def ios_problems(text):
