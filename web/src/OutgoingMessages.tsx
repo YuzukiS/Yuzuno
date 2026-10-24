@@ -2,7 +2,7 @@ import { useState } from "react";
 import { MessageContent } from "./MessageContent";
 import { ImageAttachments } from "./ImageAttachments";
 import { agentHarnessName } from "./machine-checks";
-import { compacting, deliveryNote, steered } from "./delivery-note";
+import { compacting, deliveryNote, sendingInTurn, steered } from "./delivery-note";
 import { memo } from "react";
 import type { AgentDetail } from "./types";
 import type { OutgoingMessage } from "./useConversationSend";
@@ -58,11 +58,14 @@ export const OutgoingMessages = memo(function OutgoingMessages({
     .filter(r => !r.binding && (r.status === "sending" || r.status === "uncertain" || r.status === "queued" || (r.status === "accepted" && r.input.textBlocks !== undefined)))
     .map(receipt => [receipt.input.clientMessageId, { agentId, receipt }]));
   for (const message of messages) if (message.agentId === agentId) pending.set(message.receipt.input.clientMessageId, message);
+  // A new Claude message still sending that its Turn shows is shown there.
+  const inTurn = sendingInTurn(detail, agentId, messages);
   return [...pending.values()]
     .filter(
       (message) =>
         message.agentId === agentId &&
         !nativeIds.has(message.receipt.input.clientMessageId) &&
+        !inTurn.has(message.receipt.input.clientMessageId) &&
         !hidden.includes(message.receipt.input.clientMessageId),
     )
     .map(({ receipt: local }) => {
