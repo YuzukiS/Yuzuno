@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type { SettingsEditor } from "./settings-catalog";
 import { SettingsCenter, type SettingsNavigation } from "./SettingsCenter";
+import { RuntimeSection } from "./RuntimeSection";
 import { AppearanceSection } from "./AppearanceSettings";
 import { InputPreferencesSection } from "./InputPreferences";
 import { ShortcutHelpSection } from "./ShortcutHelp";
@@ -980,6 +981,12 @@ export function WorkspaceUpdates({
           {tab === "updates" && <DesktopUpdate preserveDrafts={preserveDrafts} />}
           {tab === "diagnostics" && <DiagnosticsCopy />}
           {tab === "history" && <HistoryComposition />}
+          {tab === "runtime" && (
+            <RuntimeSection
+              active={open && visible}
+              onOpenMachines={navigation && !navigation.disabled ? () => navigation.onNavigate({ kind: "machines" }) : undefined}
+            />
+          )}
           {tab === "appearance" && <AppearanceSection />}
           {tab === "input" && <InputPreferencesSection />}
           {tab === "shortcuts" && <ShortcutHelpSection />}

@@ -10,7 +10,7 @@ export const settingsCategories = [
   { id: "updates", label: "Updates & about", description: "Versions and updates for the Workspace service and desktop client." },
 ] as const;
 export type SettingsCategory = typeof settingsCategories[number]["id"];
-export type SettingsEditor = "appearance" | "updates" | "home" | "review" | "diagnostics" | "history" | "input" | "shortcuts" | "notifications" | "remote";
+export type SettingsEditor = "appearance" | "updates" | "home" | "review" | "diagnostics" | "history" | "runtime" | "input" | "shortcuts" | "notifications" | "remote";
 export type SettingsDestination =
   | { kind: "agent"; section: "model" | "context" | "auto-continue"; agentId: string }
   | { kind: "project"; projectId: string }
@@ -55,6 +55,7 @@ export const settingsCatalog: readonly SettingEntry[] = [
   { id: "backup", category: "data", title: "Workspace backup & restore", keywords: "备份 恢复 导出 保留 清理 缓存 backup restore export retention", scope: "Workspace data · native sessions", source: "Update recovery keeps a database backup, not a complete Workspace backup.", effect: "Attachments and native sessions require their own recovery coverage.", target: { kind: "unavailable", reason: "Full Workspace backup, export and restore are not available in this settings center." } },
   { id: "drafts", category: "data", title: "Draft storage", keywords: "草稿 draft 缓存 设备 同步 origin", scope: "This device · this site", source: "Drafts are saved by this browser or WebView.", effect: "Changing the site address does not migrate drafts. Appearance resets do not clear drafts.", target: { kind: "unavailable", reason: "Cross-device draft sync is not available. A damaged draft has its own recovery controls in the conversation." } },
   { id: "updates", category: "updates", title: "Versions & updates", keywords: "更新 版本 关于 Core 客户端 桌面 client version about release", scope: "Workspace service · desktop client", source: "Installed Core and client versions, and available signed releases.", effect: "Checking installs nothing. Service updates and desktop updates have separate actions.", target: { kind: "editor", editor: "updates" } },
+  { id: "runtime", category: "updates", title: "Runtime & versions", keywords: "版本 运行环境 CLI 登录 账户 连接 机器 兼容 runtime version sign-in machine", scope: "Workspace service · each execution machine · this client", source: "Core's version, each machine's stored last check, Codex's connection on the Core host as Core holds it now, the Core host's Jobs budget and this client's own version.", effect: "Read-only. Checks run from Machines; nothing here signs in, reconnects or updates. Reading the Jobs budget may have Core sample the GPUs.", target: { kind: "editor", editor: "runtime" } },
 ];
 
 export function findSettings(query: string): readonly SettingEntry[] {
