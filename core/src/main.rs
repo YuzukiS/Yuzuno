@@ -44,6 +44,22 @@ struct Options {
     /// then exit. Core must not be running; see README, Data.
     #[arg(long)]
     move_workspace: bool,
+    /// Back up the Workspace into this new folder, then exit: its database,
+    /// image copies, Brief attachments, review records and Job folders, with a
+    /// manifest of what is in it and what is not. Core must not be running,
+    /// and no Job may be unfinished; see README, Data.
+    #[arg(long, value_name = "FOLDER")]
+    backup_to: Option<PathBuf>,
+    /// Check a Workspace backup folder, every file and the database, then exit.
+    #[arg(long, value_name = "FOLDER")]
+    verify_backup: Option<PathBuf>,
+    /// Restore a Workspace backup into the new or empty folder --restore-to
+    /// names, check it there, then exit. It never replaces a Workspace.
+    #[arg(long, value_name = "FOLDER", requires = "restore_to")]
+    restore_backup: Option<PathBuf>,
+    /// Where --restore-backup puts the Workspace.
+    #[arg(long, value_name = "FOLDER", requires = "restore_backup")]
+    restore_to: Option<PathBuf>,
 }
 
 /// Store work runs on Tokio's blocking pool (see `db`). It never needs more
@@ -56,6 +72,12 @@ fn main() -> anyhow::Result<()> {
     let mut options = Options::parse();
     if options.move_workspace {
         return move_workspace(&options);
+    }
+    if let Some(backup) = &options.verify_backup {
+        return report(&yuzuno_workspace::workspace_backup::verify(backup)?);
+    }
+    if let (Some(backup), Some(target)) = (&options.restore_backup, &options.restore_to) {
+        return report(&yuzuno_workspace::workspace_backup::restore(backup, target)?);
     }
     let (layout, bundle) = if let Some(root) = &options.install_dir {
         let layout = Layout::open(root)?;
@@ -89,6 +111,12 @@ fn main() -> anyhow::Result<()> {
         .max_blocking_threads(MAX_BLOCKING_THREADS)
         .build()?
         .block_on(run(options, layout, bundle))
+}
+
+/// Prints what a backup command did, as JSON.
+fn report(value: &impl serde::Serialize) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
 }
 
 /// glibc gives each new thread its own malloc arena (up to 8 per core), and
@@ -125,6 +153,9 @@ async fn run(
     };
     if options.revert_record_rows {
         return revert_record_rows(&data.join("workspace.sqlite"));
+    }
+    if let Some(out) = &options.backup_to {
+        return report(&yuzuno_workspace::workspace_backup::backup(&data, out)?);
     }
     let remote = remote_entry(options.port)?;
     // Bind before touching the database: another process must not mark a live
