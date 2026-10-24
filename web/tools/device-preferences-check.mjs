@@ -5,12 +5,15 @@
 //     keyboard and on a touch screen, it checks Return, Shift+Return and
 //     Ctrl+Return. It also checks Return while an input method composes, and
 //     that the composer's key hint says the same.
-//  2. Sending messages and Keyboard shortcuts fit a 320 px phone and a
-//     desktop at 16 and 24 px text, and work from the keyboard alone. A save
-//     the browser refuses is said there, with its buttons on screen. This is
-//     a harness, not the Settings centre: the two sections in the Settings
-//     dialog's pane, with a one-tab stub for its navigation, until Settings
-//     shows them.
+//  2. Sending messages and Keyboard shortcuts on their own, in a harness of
+//     the Settings dialog's pane: a 320 px phone and a desktop at 16 and 24
+//     px text, the keyboard alone, and a save the browser refuses.
+//  3. The path a user takes, in the production build's real Settings:
+//     search, open the section, choose; the conversation's composer and its
+//     hint follow it. Then a reload, a refused save (in effect in this
+//     window, said again when Settings is reopened, gone after a reload),
+//     Try again, Restore defaults, and the shortcuts help. From the keyboard
+//     alone, and on a 320 px phone at 24 px text.
 // Each composer case is checked, and each failure listed (FAIL <case>), before
 // the check fails: on a build without the preference exactly the cases it
 // changes fail. T189_PARTS=composer runs part 1 alone, as on such a build.
@@ -30,7 +33,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_CHECK_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_CHECK_OUTPUT);
 await mkdir(output, { recursive: true });
-const parts = (process.env.T189_PARTS || "composer,settings").split(",");
+const parts = (process.env.T189_PARTS || "composer,settings,path").split(",");
 const report = { task: "T-189", source: process.env.T189_HEAD || null, parts, checks: [], composer: [], composerFailures: [], layout: [], requests: [], unmodelledGets: {}, errors: [], consoleErrors: [] };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
@@ -62,13 +65,14 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 const devices = {
   keyboard: { viewport: { width: 1280, height: 800 }, reducedMotion: "reduce" },
   touch: { viewport: { width: 393, height: 852 }, hasTouch: true, isMobile: true, reducedMotion: "reduce" },
+  phone: { viewport: { width: 320, height: 640 }, hasTouch: true, isMobile: true, reducedMotion: "reduce" },
 };
 
-async function openApp(device, sendKey, label) {
+async function openApp(device, sendKey, label, fontSize = 16) {
   const context = await browser.newContext(devices[device]);
   const page = await context.newPage();
   const sends = [];
-  await page.addInitScript((sendKey) => {
+  await page.addInitScript(({ sendKey, fontSize }) => {
     // Core's event stream, open and quiet.
     window.EventSource = class {
       constructor() {
@@ -83,9 +87,12 @@ async function openApp(device, sendKey, label) {
         this.readyState = 2;
       }
     };
-    localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
+    // Once: a reload keeps what the page itself stored since.
+    if (sessionStorage.getItem("t189-seeded")) return;
+    sessionStorage.setItem("t189-seeded", "1");
+    localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize, palette: "garden" }));
     if (sendKey) localStorage.setItem("yuzuno.preferences", JSON.stringify({ sendKey }));
-  }, sendKey ?? null);
+  }, { sendKey: sendKey ?? null, fontSize });
   page.on("pageerror", (error) => report.errors.push(`${label}: ${error.message}`));
   // React reports an error its boundary caught here, not as a page error.
   page.on("console", (message) => {
@@ -140,7 +147,7 @@ async function openApp(device, sendKey, label) {
     await input.waitFor({ timeout: 10_000 });
     await page.waitForTimeout(250);
     const touch = await page.evaluate((media) => matchMedia(media).matches, TOUCH);
-    assert.equal(touch, device === "touch", `${label}: the browser is ${device === "touch" ? "" : "not "}a touch screen`);
+    assert.equal(touch, device !== "keyboard", `${label}: the browser is ${device === "keyboard" ? "not " : ""}a touch screen`);
   } catch (error) {
     await setupFailed(page, context, label, error);
   }
@@ -353,8 +360,8 @@ const measure = (page) => page.evaluate(() => {
     width: innerWidth,
     page: { scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth },
     pane: { scroll: pane.scrollWidth, client: pane.clientWidth, left: Math.round(box.left), right: Math.round(box.right) },
-    choices: [...pane.querySelectorAll(".input-send-choice")].map((el) => Math.round(el.getBoundingClientRect().height)),
-    columns: getComputedStyle(pane.querySelector(".shortcut-group dl")).gridTemplateColumns,
+    choices: [...pane.querySelectorAll(".input-send-choice")].map((el) => Math.round(el.getBoundingClientRect().height)).filter((height) => height > 0),
+    columns: [...pane.querySelectorAll(".shortcut-group dl")].map((dl) => getComputedStyle(dl).gridTemplateColumns).find((value) => value !== "none") ?? null,
     outside, overlaps, clipped,
   };
 });
@@ -489,9 +496,232 @@ async function settingsCases() {
   await refusedCase();
 }
 
+// ---- 3. The path a user takes: Settings, then the conversation ----
+
+// The two Settings entries, as the catalog names them and its search finds
+// them (settings-catalog.ts).
+const INPUT_ENTRY = { search: "发送键", title: "Sending messages", editor: "input" };
+const SHORTCUTS_ENTRY = { search: "快捷键", title: "Keyboard shortcuts", editor: "shortcuts" };
+
+/** Settings, opened from the bar, at an entry's editor as its search finds it. */
+async function openEditor(page, entry) {
+  if (!(await page.getByRole("searchbox", { name: "Search settings" }).isVisible())) {
+    await page.getByRole("button", { name: "Settings and updates" }).click({ timeout: 10_000 });
+    await page.getByRole("searchbox", { name: "Search settings" }).waitFor({ timeout: 10_000 });
+  }
+  await page.getByRole("searchbox", { name: "Search settings" }).fill(entry.search);
+  await page.getByRole("button", { name: `Open ${entry.title}`, exact: true }).click({ timeout: 10_000 });
+  const editor = page.locator(`#settings-editor-${entry.editor}`);
+  await editor.waitFor({ timeout: 10_000 });
+  return editor;
+}
+async function closeSettings(page) {
+  await page.getByRole("dialog").getByRole("button", { name: "Close dialog" }).click();
+  await page.getByRole("dialog").waitFor({ state: "detached", timeout: 10_000 });
+}
+/** What the send key's editor says and shows. */
+const editorState = (editor) => editor.evaluate((el) => ({
+  status: el.querySelector(".save-status [role=status]")?.textContent.trim() ?? null,
+  alert: el.querySelector(".save-status [role=alert]")?.textContent.trim() ?? null,
+  checked: el.querySelector('input[name="input-send-key"]:checked')?.value ?? null,
+}));
+/** The browser refusing (or again keeping) this device's preferences, from now on in this page. */
+const refuseWrites = (page, refuse) => page.evaluate((refuse) => {
+  const storage = Storage.prototype;
+  window.t189Storage ||= { setItem: storage.setItem, removeItem: storage.removeItem };
+  if (!refuse) return Object.assign(storage, window.t189Storage);
+  const full = function (key, ...rest) {
+    if (key === "yuzuno.preferences") throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+    return window.t189Storage.setItem.call(this, key, ...rest);
+  };
+  storage.setItem = full;
+  storage.removeItem = function (key) {
+    if (key === "yuzuno.preferences") throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+    return window.t189Storage.removeItem.call(this, key);
+  };
+}, refuse);
+const composerHint = async (page) => (await page.locator(".composer-keys").textContent()).replace(/\s+/g, " ").trim();
+/** A fresh "draft" and one press in the conversation: what it did. */
+async function pressInConversation(app, key) {
+  const before = app.sends.length;
+  await app.input.click({ timeout: 10_000 });
+  await app.page.keyboard.press("Control+a");
+  await app.page.keyboard.press("Backspace");
+  await app.page.keyboard.type("draft");
+  await app.page.keyboard.press(key);
+  await app.page.waitForTimeout(400);
+  const text = (await lines(app.input)).join("\n");
+  return app.sends.length > before ? "send" : text === "draft\n" ? "new line" : `nothing sent, ${JSON.stringify(text)}`;
+}
+const SENDS_HINT = "↵ Send ⇧ ↵ New line", NEW_LINE_HINT = "↵ New line Ctrl ↵ Send";
+
+async function desktopPath() {
+  const label = "path, desktop";
+  const app = await openApp("keyboard", undefined, label);
+  const { page } = app;
+  const step = (name, extra = {}) => report.path.push({ step: name, ...extra });
+  report.path = [];
+  try {
+    assert.equal(await composerHint(page), SENDS_HINT, "unset: Return sends");
+    // Chosen in Settings: the conversation follows it.
+    let editor = await openEditor(page, INPUT_ENTRY);
+    assert.deepEqual(await editorState(editor), { status: "Using the defaults; nothing is saved on this device yet", alert: null, checked: "auto" });
+    await editor.locator('input[name="input-send-key"][value="modEnter"]').check();
+    assert.deepEqual(await editorState(editor), { status: "Saved on this device", alert: null, checked: "modEnter" });
+    await page.screenshot({ path: resolve(output, "path-saved.png") });
+    await closeSettings(page);
+    assert.equal(await composerHint(page), NEW_LINE_HINT);
+    assert.equal(await pressInConversation(app, "Enter"), "new line");
+    assert.equal(await pressInConversation(app, "Control+Enter"), "send");
+    step("Ctrl+Return sends, chosen in Settings: the composer and its hint follow it");
+    // Kept on this device: after a reload too.
+    await page.reload();
+    await app.input.waitFor({ timeout: 10_000 });
+    assert.equal(await composerHint(page), NEW_LINE_HINT, "saved: after a reload");
+    editor = await openEditor(page, INPUT_ENTRY);
+    assert.deepEqual(await editorState(editor), { status: "Using the choice saved on this device", alert: null, checked: "modEnter" });
+    step("reloaded: the saved choice applies and Settings says it is the saved one");
+    // Refused: it applies in this window, Settings says so, also reopened.
+    await refuseWrites(page, true);
+    await editor.locator('input[name="input-send-key"][value="enter"]').check();
+    const refused = "Not saved on this device: this browser’s storage for Yuzuno is full. Your choice applies in this window until you close or reload it.";
+    assert.deepEqual(await editorState(editor), { status: null, alert: refused, checked: "enter" });
+    await page.screenshot({ path: resolve(output, "path-refused.png") });
+    await closeSettings(page);
+    assert.equal(await composerHint(page), SENDS_HINT, "refused: the choice applies in this window");
+    assert.equal(await pressInConversation(app, "Enter"), "send");
+    editor = await openEditor(page, INPUT_ENTRY);
+    assert.deepEqual(await editorState(editor), { status: null, alert: refused, checked: "enter" }, "reopened: still said");
+    step("refused: the choice applies in this window; Settings still says it was not saved when reopened");
+    // Reloaded: the refused choice is gone, the saved one applies.
+    await page.reload();
+    await app.input.waitFor({ timeout: 10_000 });
+    assert.equal(await composerHint(page), NEW_LINE_HINT, "reloaded: the saved choice, not the refused one");
+    assert.equal(await stored(page), '{"sendKey":"modEnter"}');
+    step("reloaded after a refusal: the saved choice applies again");
+    // Try again once the browser keeps it; then Restore defaults.
+    editor = await openEditor(page, INPUT_ENTRY);
+    await refuseWrites(page, true);
+    await editor.locator('input[name="input-send-key"][value="enter"]').check();
+    assert.equal((await editorState(editor)).alert, refused);
+    await refuseWrites(page, false);
+    await editor.getByRole("button", { name: "Try again" }).click();
+    await page.waitForTimeout(100);
+    assert.deepEqual(await editorState(editor), { status: "Saved on this device", alert: null, checked: "enter" });
+    assert.equal(await stored(page), '{"sendKey":"enter"}');
+    await editor.locator('input[name="input-send-key"][value="modEnter"]').check();
+    await editor.getByRole("button", { name: "Restore defaults" }).click();
+    await page.waitForTimeout(100);
+    assert.deepEqual(await editorState(editor), { status: "Defaults restored on this device", alert: null, checked: "auto" });
+    assert.equal(await stored(page), null);
+    await closeSettings(page);
+    assert.equal(await composerHint(page), SENDS_HINT, "defaults: Return sends from a keyboard");
+    step("Try again saves once the browser keeps it; Restore defaults removes it, and the composer follows");
+    // The shortcuts help, from Settings, as the choice in effect makes it.
+    editor = await openEditor(page, SHORTCUTS_ENTRY);
+    const first = await editor.locator(".shortcut-group").filter({ has: page.locator("h4", { hasText: "Writing a message" }) }).locator("dt, dd").allTextContents();
+    assert.deepEqual(first.slice(0, 2).map((t) => t.replace(/\s+/g, "")), ["Return", "Send"]);
+    await page.screenshot({ path: resolve(output, "path-shortcuts.png") });
+    step("Keyboard shortcuts, opened from Settings, lists Return as the choice in effect makes it");
+    check("path: Settings → the composer and its hint, saved, reloaded, refused, reopened, Try again, Restore defaults; the shortcuts help");
+  } finally {
+    await app.context.close();
+  }
+}
+
+/** The keyboard alone: from Settings' search to a choice saved. */
+async function keyboardPath() {
+  const label = "path, keyboard alone";
+  const app = await openApp("keyboard", undefined, label);
+  const { page } = app;
+  try {
+    await page.getByRole("button", { name: "Settings and updates" }).click({ timeout: 10_000 });
+    const search = page.getByRole("searchbox", { name: "Search settings" });
+    await search.waitFor({ timeout: 10_000 });
+    await search.focus();
+    await page.keyboard.type(INPUT_ENTRY.search);
+    const name = () => page.evaluate(() => document.activeElement?.textContent.trim() ?? "");
+    const tabs = [];
+    for (let n = 0; n < 15 && (await name()) !== `Open ${INPUT_ENTRY.title}`; n++) {
+      await page.keyboard.press("Tab");
+      tabs.push(await name());
+    }
+    assert.equal(await name(), `Open ${INPUT_ENTRY.title}`, `Tab reaches the entry's Open button (${tabs.join(" → ")})`);
+    await page.keyboard.press("Enter");
+    const editor = page.locator(`#settings-editor-${INPUT_ENTRY.editor}`);
+    await editor.waitFor({ timeout: 10_000 });
+    assert.equal(await page.evaluate((id) => document.activeElement?.id, `settings-editor-${INPUT_ENTRY.editor}`), `settings-editor-${INPUT_ENTRY.editor}`, "the opened section has the focus");
+    await page.keyboard.press("Tab");
+    const focusedChoice = () => page.evaluate(() => ({
+      value: document.activeElement?.value ?? null,
+      ring: getComputedStyle(document.activeElement?.closest(".input-send-choice") ?? document.body).outlineStyle,
+    }));
+    assert.deepEqual(await focusedChoice(), { value: "auto", ring: "solid" }, "Tab reaches the choice in effect, with a ring");
+    await page.keyboard.press("ArrowDown");
+    await page.waitForTimeout(100);
+    assert.deepEqual(await editorState(editor), { status: "Saved on this device", alert: null, checked: "enter" });
+    assert.equal(await stored(page), '{"sendKey":"enter"}');
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog").waitFor({ state: "detached", timeout: 10_000 });
+    check("path: keyboard alone, Settings' search → Open → the section → a choice saved; Escape closes", { tabs });
+  } finally {
+    await app.context.close();
+  }
+}
+
+/** A 320 px phone at the largest text: both sections in the real Settings, and a refusal. */
+async function phonePath() {
+  const label = "path, phone 320 px, 24 px";
+  const app = await openApp("phone", undefined, label, 24);
+  const { page } = app;
+  try {
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.fontSize), "24");
+    for (const entry of [INPUT_ENTRY, SHORTCUTS_ENTRY]) {
+      const editor = await openEditor(page, entry);
+      await editor.evaluate((el) => el.scrollIntoView({ block: "start" }));
+      await page.waitForTimeout(150);
+      const m = await measure(page);
+      report.layout.push({ screen: "phone, real Settings", fontSize: 24, editor: entry.editor, ...m });
+      await page.screenshot({ path: resolve(output, `path-phone-24-${entry.editor}.png`) });
+      assert.ok(m.page.scroll <= m.page.client, `${entry.editor}: the page doesn't scroll sideways`);
+      assert.ok(m.pane.scroll <= m.pane.client, `${entry.editor}: Settings' pane doesn't scroll sideways`);
+      assert.deepEqual(m.outside, [], `${entry.editor}: nothing sticks out of the pane`);
+      assert.deepEqual(m.overlaps, [], `${entry.editor}: no shortcut's keys on what it does`);
+      assert.deepEqual(m.clipped, [], `${entry.editor}: no text cut off`);
+      if (entry === INPUT_ENTRY) assert.ok(m.choices.length === 3 && m.choices.every((height) => height >= 44), `choices: ${m.choices}`);
+    }
+    // Refused, on the phone: said, with both buttons on screen.
+    const editor = await openEditor(page, INPUT_ENTRY);
+    await refuseWrites(page, true);
+    await editor.locator('input[name="input-send-key"][value="enter"]').check();
+    assert.match((await editorState(editor)).alert ?? "", /^Not saved on this device: /);
+    await editor.locator(".save-status").evaluate((el) => el.scrollIntoView({ block: "center" }));
+    await page.waitForTimeout(150);
+    const buttons = await editor.locator(".save-status button").evaluateAll((list) => list.map((b) => {
+      const r = b.getBoundingClientRect();
+      return { text: b.textContent.trim(), left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom) };
+    }));
+    const size = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+    await page.screenshot({ path: resolve(output, "path-phone-24-refused.png") });
+    assert.deepEqual(buttons.map((b) => b.text), ["Try again", "Restore defaults"]);
+    assert.ok(buttons.every((b) => b.left >= 0 && b.right <= size.width && b.top >= 0 && b.bottom <= size.height), `both buttons on screen ${JSON.stringify(buttons)}`);
+    await closeSettings(page);
+    assert.equal(await composerHint(page), SENDS_HINT, "the refused choice applies on the phone too");
+    check("path: 320 px phone at 24 px, both sections fit in the real Settings; a refusal is said with its buttons on screen and applies");
+  } finally {
+    await app.context.close();
+  }
+}
+
+async function pathCases() {
+  await desktopPath();
+  await keyboardPath();
+  await phonePath();
+}
+
 // Each part runs, and the report is written, also when one fails.
 report.failed = {};
-for (const [part, run] of [["composer", composerCases], ["settings", settingsCases]]) {
+for (const [part, run] of [["composer", composerCases], ["settings", settingsCases], ["path", pathCases]]) {
   if (!parts.includes(part)) continue;
   try {
     await run();

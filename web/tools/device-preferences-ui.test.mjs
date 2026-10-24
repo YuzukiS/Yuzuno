@@ -15,7 +15,8 @@ import { JSDOM } from "jsdom";
 // a refused save or reset, never "Saved", with Try again (of that write)
 // and Restore defaults. The keyboard shortcuts help lists the shortcuts as they
 // work here (Return as the preference says; the desktop app's own only
-// there), and every key it lists is handled where it says.
+// there), and every key it lists is handled where it says. Settings' search
+// finds both sections; language and time stay unavailable.
 const root = fileURLToPath(new URL("../", import.meta.url));
 await mkdir(path.join(root, "node_modules/.cache"), { recursive: true });
 const temp = await mkdtemp(path.join(root, "node_modules/.cache/device-preferences-ui-"));
@@ -30,8 +31,10 @@ import {readPreferences, savePreferences} from ${src("device-preferences.ts")};
 import {InputPreferencesSection} from ${src("InputPreferences.tsx")};
 import {ShortcutHelpSection} from ${src("ShortcutHelp.tsx")};
 import {shortcutGroups} from ${src("shortcuts.ts")};
+import {findSettings} from ${src("settings-catalog.ts")};
 window.store = {readPreferences, savePreferences};
 window.shortcutGroups = shortcutGroups;
+window.findSettings = findSettings;
 const root = createRoot(document.getElementById('root'));
 window.showEditor = () => flushSync(() => root.render(<InputPreferencesSection />));
 window.showHelp = () => flushSync(() => root.render(<ShortcutHelpSection />));`,
@@ -236,6 +239,20 @@ test("the help lists Return as the send key makes it, and the desktop app's shor
     const writing = [...w.document.querySelectorAll(".shortcut-group")].find((group) => group.querySelector("h4")?.textContent === "Writing a message");
     const keys = (dt) => [...dt.querySelectorAll("kbd")].map((kbd) => kbd.textContent).join("+");
     assert.deepEqual([keys(writing.querySelector("dt")), writing.querySelector("dd").textContent], ["Return", "New line"]);
+  } finally {
+    w.close();
+  }
+});
+
+test("Settings finds both sections by their words; language and time stay unavailable", () => {
+  const w = page();
+  try {
+    const found = (query) => Array.from(w.findSettings(query), (entry) => `${entry.title}: ${entry.target.kind}${entry.target.editor ? ` ${entry.target.editor}` : ""}`);
+    assert.deepEqual(found("发送键"), ["Sending messages: editor input"]);
+    assert.deepEqual(found("return send"), ["Sending messages: editor input"]);
+    assert.deepEqual(found("快捷键"), ["Keyboard shortcuts: editor shortcuts"]);
+    assert.deepEqual(found("时区"), ["Language & time: unavailable"]);
+    assert.deepEqual(found("12 24"), ["Language & time: unavailable"]);
   } finally {
     w.close();
   }
