@@ -201,8 +201,21 @@
 :root[data-keyboard] .app.phone .conversation-body[data-phone-dock] > :is(.work-dock, .turn-dock, .phone-dock-scrim) {
   display: none;
 }
-/* A phone held sideways keeps the buttons, a little lower. */
-@media (max-height: 500px) {
+/* A phone held sideways is short but wide: the buttons sit in margins of
+   their own beside the text, a little lower, so the text needs no room
+   below its last reply and the conversation keeps its little height for
+   reading. */
+@media (max-height: 500px) and (min-width: 521px) {
+  .app.phone .conversation-body[class] {
+    --gutter-left: 60px;
+    --gutter-right: 60px;
+  }
+  .app.phone
+    .conversation-body:is(:has(> .work-dock:not(:empty)), :has(> .turn-dock))
+    > .conversation-scroll
+    > .conversation-inner {
+    padding-bottom: 25px;
+  }
   .app.phone .phone-dock-button {
     bottom: 6px;
   }

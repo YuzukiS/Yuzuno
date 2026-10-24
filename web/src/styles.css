@@ -3221,20 +3221,23 @@ p {
   row-gap: 2px;
 }
 /* A notice in the composer (to resume a session, for example) is read in
-   full on a phone: it takes its own line above the tools and Send, and wraps,
-   where a narrow window otherwise cuts the hint to one short line. */
-.app.phone .composer-bottom {
-  flex-wrap: wrap;
-  row-gap: 4px;
-}
-.app.phone .composer-bottom > .composer-hint[data-notice] {
-  order: -1;
-  flex: 1 0 100%;
-  max-width: none;
-  white-space: normal;
-  overflow: visible;
-  text-overflow: clip;
-  overflow-wrap: anywhere;
+   full on a narrow phone: it takes its own line above the tools and Send, and
+   wraps, where a narrow window otherwise cuts the hint to one short line. A
+   phone held sideways has the width to keep it beside the tools. */
+@media (max-width: 520px) {
+  .app.phone .composer-bottom {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .app.phone .composer-bottom > .composer-hint[data-notice] {
+    order: -1;
+    flex: 1 0 100%;
+    max-width: none;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+  }
 }
 /* A phone held sideways: room for the conversation above the composer.
    The status bar, the composer's project and model line and the turn dock

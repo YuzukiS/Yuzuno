@@ -324,6 +324,11 @@ try {
         assert.equal(control.onTop, "self", `${who}: ${name} is not covered (${JSON.stringify(control)})`);
       assert.equal(seen.buttons.length, 2, `${who} has jobs and Turns: both buttons`);
       for (const button of seen.buttons) assert.ok(button.box[2] >= 44 && button.box[3] >= 44, `${button.label} is a 44px target`);
+      // Sideways the conversation is short: the buttons sit beside the text.
+      if (viewport.sideways)
+        for (const button of seen.buttons)
+          assert.ok(button.box[0] + button.box[2] <= seen.textColumn[0] || button.box[0] >= seen.textColumn[0] + seen.textColumn[2],
+            `${who}: sideways, ${button.label} sits beside the text: ${JSON.stringify({ button: button.box, text: seen.textColumn })}`);
     }
     for (const [who, seen] of [["Mori", mori], ["Hana", hana]])
       assert.ok(seen.notice && !seen.notice.clipped && seen.notice.whiteSpace !== "nowrap", `${who}: the composer's notice reads in full: ${JSON.stringify(seen.notice)}`);
