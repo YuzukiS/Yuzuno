@@ -121,3 +121,21 @@
     transition: none;
   }
 }
+/* A phone's short conversation (held sideways, or the on-screen keyboard up,
+   keyboard-viewport.ts): closed, the pin is one line, so what the latest
+   message asks for (an approval's buttons, for one) is not under it. The
+   request itself is one tap away, as the pin opens. */
+@media (max-height: 500px) {
+  .app.phone .current-turn-prompt:not([open]) {
+    padding-block: 6px;
+  }
+  .app.phone .current-turn-prompt:not([open]) .current-turn-excerpt {
+    display: none;
+  }
+}
+:root[data-keyboard] .app.phone .current-turn-prompt:not([open]) {
+  padding-block: 6px;
+}
+:root[data-keyboard] .app.phone .current-turn-prompt:not([open]) .current-turn-excerpt {
+  display: none;
+}
