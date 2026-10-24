@@ -152,7 +152,8 @@ pub(crate) struct Submit {
     /// Local NVIDIA GPUs the command needs, admitted with its CPU and RAM.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     gpu: Option<gpu::GpuRequest>,
-    /// A registered SSH machine (Linux) to run on instead of this host, or
+    /// A registered SSH machine (Linux, or macOS with its limits declared
+    /// only) to run on instead of this host, or
     /// `local` (this host) or `agent` (the submitting Agent's machine), which
     /// Core resolves at submit (T-162).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -882,7 +883,13 @@ pub async fn call(
                 let programs = remote::Programs { ssh: remote::SSH, windows: helper.as_ref(), mux: Some(&ws.jobs.ssh_mux) };
                 let snapshot = remote::remote_snapshot(&ws, &programs, &machine_id, &input.cwd, &input.inputs).await?;
                 let author = actor.clone();
-                let capabilities = if windows { remote::windows_capabilities() } else { remote::capabilities() };
+                let capabilities = if windows {
+                    remote::windows_capabilities()
+                } else {
+                    // As the machine last answered; corrected at its hello (T-186).
+                    let id = machine_id.clone();
+                    remote::capabilities_for(ws.stored(move |s| s.machine_platform(&id)).await?.as_deref())
+                };
                 // The machine is read in the Job's own insert transaction.
                 let job = ws
                     .stored(move |s| {
@@ -1320,7 +1327,7 @@ const REMOTE_ARTIFACTS: &str = "With machineId they are checked on that machine 
 /// machineId in short; how each kind of machine runs a job, holds its limits
 /// and checks its files is the guide's jobs topic (references/jobs.md).
 const MACHINE: &str = "Run on a registered machine from the Machines list instead of this Core's host: an SSH machine \
-    (Linux), or \"windows\", Windows on the PC this Core's WSL runs on (cwd a Windows drive path such as C:\\work). Without machineId \
+    (Linux, or macOS in limited mode, where limits are declared only), or \"windows\", Windows on the PC this Core's WSL runs on (cwd a Windows drive path such as C:\\work). Without machineId \
     the job runs on this Core's host, never on the machine your Agent itself runs on. \"agent\" is the machine your Agent runs on (its \
     registered SSH machine, or this host for an Agent here), resolved by Core from your Agent at submit and kept by the job; \"local\" \
     is this Core's host. The receipt's target names the machine. cwd and every path are on that machine; pass the \
