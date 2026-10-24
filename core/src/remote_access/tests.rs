@@ -192,6 +192,8 @@ async fn apply_serves_the_phone_entry_without_a_restart_and_a_new_core_serves_it
     assert_eq!(view["verification"]["ok"], true, "{}", view["verification"]);
     assert_eq!(view["serve"]["state"], "ours");
     assert_eq!(view["serve"]["otherEntries"], 1);
+    let size = view["qr"]["size"].as_u64().unwrap() as usize;
+    assert!(size >= 21 && view["qr"]["rows"].as_array().unwrap().iter().all(|r| r.as_str().unwrap().len() == size), "{}", view["qr"]);
     // Through the phone entry the page is read-only, and apply is not served there.
     let (code, body) = get(port, "/api/remote-access", Some(OWNER), &host).await;
     assert_eq!(code, 200, "{body}");

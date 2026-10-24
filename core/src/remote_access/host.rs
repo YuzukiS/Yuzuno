@@ -105,13 +105,14 @@ pub(super) async fn run(program: &PathBuf, args: &[&str], seconds: u64) -> Resul
         .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("Could not start {}", program.display()))?;
-    let (mut out, mut err) = (child.stdout.take().context("no stdout")?, child.stderr.take().context("no stderr")?);
+    let mut out = child.stdout.take().context("no stdout")?.take(1024 * 1024);
+    let mut err = child.stderr.take().context("no stderr")?.take(64 * 1024);
     let name = format!("{} {}", program.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), args.join(" "));
     let finished = async {
         let (mut o, mut e) = (Vec::new(), Vec::new());
         let (a, b, status) = tokio::join!(
-            (&mut out).take(1024 * 1024).read_to_end(&mut o),
-            (&mut err).take(64 * 1024).read_to_end(&mut e),
+            out.read_to_end(&mut o),
+            err.read_to_end(&mut e),
             child.wait()
         );
         a?;

@@ -133,7 +133,7 @@ struct Running {
     task: tokio::task::JoinHandle<()>,
 }
 
-struct Context {
+struct Started {
     assets: PathBuf,
     updates: Option<Arc<crate::updates::controller::Controller>>,
     core_port: u16,
@@ -147,7 +147,7 @@ pub(crate) struct State {
     listener: tokio::sync::Mutex<Option<Running>>,
     /// The listener as the page sees it, readable while an operation holds `listener`.
     current: Mutex<Option<(Entry, String, &'static str)>>,
-    context: OnceLock<Context>,
+    context: OnceLock<Started>,
     environment: OnceLock<Option<Entry>>,
     startup_error: OnceLock<String>,
     observed: Mutex<Value>,
@@ -256,7 +256,7 @@ impl Startup {
 /// unfinished as interrupted.
 pub fn run(ws: &Arc<Workspace>, bound: Bound, assets: PathBuf, updates: Option<Arc<crate::updates::controller::Controller>>, core_port: u16) {
     let state = &ws.remote_access;
-    let _ = state.context.set(Context { assets, updates, core_port });
+    let _ = state.context.set(Started { assets, updates, core_port });
     let _ = state.environment.set(bound.environment);
     if let Some(error) = bound.error {
         eprintln!("{error}");
@@ -577,11 +577,21 @@ async fn view(ws: &Arc<Workspace>, can_change: bool) -> Result<Value> {
         "tailscale": observed["tailscale"],
         "verification": observed["verification"],
         "operation": operation,
+        "qr": url.as_deref().and_then(qr),
         "url": url,
         "startupError": state.startup_error.get(),
         "defaults": {"servePort": DEFAULT_SERVE_PORT, "localPort": DEFAULT_LOCAL_PORT},
         "canChange": can_change,
+        "readOnlyReason": (!can_change).then_some("Phone access is changed from Yuzuno on the computer that runs Core, not through the phone entry."),
     }))
+}
+
+/// `url` as QR modules, one string per row, '1' dark, for the page to draw.
+fn qr(url: &str) -> Option<Value> {
+    let code = qrcodegen::QrCode::encode_text(url, qrcodegen::QrCodeEcc::Medium).ok()?;
+    let size = code.size();
+    let rows: Vec<String> = (0..size).map(|y| (0..size).map(|x| if code.get_module(x, y) { '1' } else { '0' }).collect()).collect();
+    Some(json!({"size": size, "rows": rows}))
 }
 
 // ---- apply and disable --------------------------------------------------
@@ -686,7 +696,7 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
     // listen
     at(ws, op, "listen");
     let mut slot = ws.remote_access.listener.lock().await;
-    let undo = if slot.as_ref().is_some_and(|r| r.entry == entry) {
+    let rollback = if slot.as_ref().is_some_and(|r| r.entry == entry) {
         // Already served as asked (the environment's entry, adopted): kept as it is.
         if let Some(running) = slot.as_mut() {
             running.source = "settings";
@@ -718,7 +728,7 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
     let config = match host::serve_status(host).await {
         Ok(config) => config,
         Err(error) => {
-            undo(ws, &mut slot, undo).await;
+            undo(ws, &mut slot, rollback).await;
             op.state = "rolledBack".into();
             return Err(error.context("Could not read Serve's configuration; the previous phone access is unchanged"));
         }
@@ -733,21 +743,21 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
                     let now = host::serve_status(host).await.ok().map(|c| host::serve_entry(&c, &dns, serve_port, &target).0);
                     if now != Some("match") {
                         // Kept as it is: the retry finds the listener and checks Serve again.
-                        if let Undo::Restore(previous) = undo {
+                        if let Undo::Restore(previous) = rollback {
                             close(previous).await;
                         }
                         op.state = "uncertain".into();
                         return Err(error.context("Serve did not confirm the entry; apply again to check and finish"));
                     }
                 } else {
-                    undo(ws, &mut slot, undo).await;
+                    undo(ws, &mut slot, rollback).await;
                     op.state = "rolledBack".into();
                     return Err(error.context("The previous phone access is unchanged"));
                 }
             }
         }
         _ => {
-            undo(ws, &mut slot, undo).await;
+            undo(ws, &mut slot, rollback).await;
             op.state = "rolledBack".into();
             bail!("{detail}. Choose another Serve port in the advanced settings; the previous phone access is unchanged");
         }
@@ -772,7 +782,7 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
         Ok(())
     })?;
     drop(slot);
-    if let Undo::Restore(previous) = undo {
+    if let Undo::Restore(previous) = rollback {
         close(previous).await;
     }
     op.url = Some(origin);
