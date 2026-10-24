@@ -1326,7 +1326,10 @@ export function App() {
     setSearch("");
     openMessageLink(searchLink);
   }
+  // From a dock or a sub-agent's card, which on a phone is a panel over the
+  // conversation (PhoneDocks.tsx): the panel closes on the Turn it goes to.
   function navigateToTurn(turnId: string) {
+    setPhoneDock(null);
     setHistoryReading(true);
     searchReading.current = true;
     setAtBottom(false);
@@ -1358,6 +1361,7 @@ export function App() {
     );
   }
   function backToLatest() {
+    setPhoneDock(null);
     setPageTarget(null);
     setPageSpace(null);
     savedPages.drop();
@@ -2577,15 +2581,9 @@ export function App() {
                 scrollRef={scroll}
                 readingTurnId={readingTurn}
                 onInteractionChange={setTurnDockEngaged}
-                onNavigate={(turnId) => {
-                  setPhoneDock(null);
-                  navigateToTurn(turnId);
-                }}
+                onNavigate={navigateToTurn}
                 atLatest={atBottom && !historyReading}
-                onLatest={() => {
-                  setPhoneDock(null);
-                  backToLatest();
-                }}
+                onLatest={backToLatest}
               />
               {phone && (
                 <PhoneDockButtons
