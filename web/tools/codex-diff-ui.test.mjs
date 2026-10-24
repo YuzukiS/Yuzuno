@@ -97,6 +97,15 @@ async function until(read, message) {
   }
   assert.fail(message);
 }
+/**
+ * The named button once it is drawn and can be pressed. A read's request is
+ * sent before React draws the phase it set (Cancel appears with "reading"),
+ * so a test presses a button only after it is there and enabled.
+ */
+const pressable = (page, name) => until(() => {
+  const button = page.button(name);
+  return button && !button.disabled ? button : null;
+}, `${name} drawn and enabled`);
 const asked = (page) => page.calls.map((c) => `${c.method} ${c.url.replace("/api/agents/agent-1/codex/diff", "")}`);
 
 test("it reads as soon as it opens: the target first, then one read bound to that connection and folder", async () => {
@@ -200,7 +209,7 @@ test("with nothing to read on, nothing is read or connected; each reason it cann
     await until(() => /isn't connected to Codex/.test(page.text()), "why");
     assert.match(page.text(), /doesn't connect by itself/);
     assert.deepEqual(asked(page), ["GET "], "no read without a connection");
-    page.button("Refresh").click();
+    (await pressable(page, "Refresh")).click();
     await tick();
     assert.deepEqual(asked(page), ["GET ", "GET "], "Refresh looks again, and still reads nothing");
     page.setTarget(ready);
@@ -233,7 +242,7 @@ test("Cancel and Close stop this read only, by its token; an answer after Close 
     await page.render();
     await until(() => page.calls.length === 2, "the read");
     const token = page.calls[1].body.token;
-    page.button("Cancel").click();
+    (await pressable(page, "Cancel")).click();
     await tick();
     assert.deepEqual(page.calls.at(-1), { url: `/api/agents/agent-1/codex/diff?token=${token}`, method: "DELETE", body: null });
     assert.ok(!page.aborted(1), "Cancel keeps waiting for what was read");
@@ -241,12 +250,12 @@ test("Cancel and Close stop this read only, by its token; an answer after Close 
     assert.match(page.text(), /You cancelled the read; what was read by then is shown\./);
     assert.match(page.text(), /Changes not staged · 1 file/);
     // Refresh: a new read, a new token.
-    page.button("Refresh").click();
+    (await pressable(page, "Refresh")).click();
     await until(() => page.calls.at(-1).method === "POST", "the next read");
     const second = page.calls.at(-1).body.token;
     assert.notEqual(second, token);
     const secondPost = page.calls.length - 1;
-    page.button("Close").click();
+    (await pressable(page, "Close")).click();
     await tick();
     assert.equal(page.calls.at(-1).url, `/api/agents/agent-1/codex/diff?token=${second}`, "Close cancels the read it started");
     assert.ok(page.aborted(secondPost), "and lets its request go, so Core ends a read the cancel came too early for");
@@ -268,7 +277,7 @@ test("Cancel and Close stop this read only, by its token; an answer after Close 
     await until(() => page.calls.at(-1).method === "POST", "a read");
     await page.answer(read());
     const before = page.calls.length;
-    page.button("Close").click();
+    (await pressable(page, "Close")).click();
     await page.render(null);
     assert.equal(page.calls.length, before, "nothing to stop");
     assert.deepEqual(page.errors, []);
