@@ -107,6 +107,17 @@ test("an iPhone's 24 MP photo is redrawn upright as a JPEG, its longer side 4096
   assert.equal(calls.closed, 1);
 });
 
+test("a JPEG whose frame is past the first MiB is still measured, from the whole file", async () => {
+  // Seventeen full-size APP1 segments of metadata before the frame.
+  const app = [0xff, 0xe1, 0xff, 0xff, ...new Array(65533).fill(0)];
+  const frame = jpeg(5712, 4284).slice(2);
+  const bytes = new Uint8Array([0xff, 0xd8, ...Array.from({ length: 17 }, () => app).flat(), ...frame]);
+  assert.ok(bytes.length > 1024 * 1024);
+  const { open, calls } = decoder({ width: 5712, height: 4284 });
+  await fitImage(file(bytes, "IMG_0099.JPG", "image/jpeg"), open);
+  assert.deepEqual(calls.jpeg.map((c) => c.size), [{ width: 4096, height: 3072 }]);
+});
+
 test("an image over 10 MiB but small in pixels is re-encoded at its own size", async () => {
   const { open, calls } = decoder({ width: 4000, height: 3000 });
   const sent = await fitImage(file(png(4000, 3000), "scan.png", "image/png", MAX_IMAGE_BYTES + 1), open);

@@ -9,6 +9,7 @@ export const MAX_IMAGE_PIXELS = 24_000_000;
  * (5712 × 4284) or 48 MP photos by default, both over Core's limit. */
 export const FIT_SIDE = 4096;
 const JPEG_QUALITY = 0.9;
+const HEADER_BYTES = 1024 * 1024;
 
 export type ImageSize = { width: number; height: number };
 
@@ -105,7 +106,11 @@ const jpegName = (name: string) => `${(name || "Photo").replace(/\.[^./\\]*$/, "
  * is redrawn upright as a JPEG at fittedSize. */
 export async function fitImage(file: File, open: (file: File) => Promise<DecodedImage> = decode): Promise<File> {
   if (!IMAGE_TYPES.includes(file.type)) return file;
-  const stored = imageSize(new Uint8Array(await file.arrayBuffer()));
+  // The header is near the start; the whole file is read only when it is not
+  // found there (a JPEG with unusually large metadata).
+  const head = file.size > HEADER_BYTES ? file.slice(0, HEADER_BYTES) : file;
+  const stored = imageSize(new Uint8Array(await head.arrayBuffer())) ??
+    (head === file ? null : imageSize(new Uint8Array(await file.arrayBuffer())));
   if (!stored || fitsCore(stored, file.size)) return file;
   const label = file.name || "Image";
   let image: DecodedImage;

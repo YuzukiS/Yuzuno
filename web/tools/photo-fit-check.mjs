@@ -39,6 +39,13 @@ const context = await browser.newContext({ viewport: { width: 393, height: 852 }
 const page = await context.newPage();
 await page.addInitScript(() => {
   window.EventSource = class { close() {} };
+  // Counts every decode the page asks for.
+  const decode = window.createImageBitmap;
+  window.__decodes = 0;
+  window.createImageBitmap = function (...args) {
+    window.__decodes++;
+    return decode.apply(this, args);
+  };
   localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
 });
 page.on("pageerror", (error) => report.errors.push(error.message));
@@ -149,6 +156,20 @@ try {
   assert.deepEqual(report.mutations, []);
   assert.equal(shown, 3, "the draft shows the three photos");
   check("the draft shows the three photos; no page errors, no image error and no other writes", { shown });
+
+  // Six more on top of the three: over the 8-image limit, refused before any
+  // of them is read or decoded, which on a phone would cost a full decode
+  // each.
+  const decodes = await page.evaluate(() => window.__decodes);
+  assert.equal(decodes, 2, "two photos needed decoding so far");
+  const uploads = report.uploads.length;
+  await page.locator('input[type="file"][aria-label="Choose images"]').setInputFiles(
+    Array.from({ length: 6 }, (_, n) => ({ name: `IMG_01${n}.JPG`, mimeType: "image/jpeg", buffer: big })));
+  await page.locator(".inline-error[role='alert']", { hasText: "Attach at most 8 images per message." }).waitFor({ timeout: 15000 });
+  assert.equal(await page.evaluate(() => window.__decodes), decodes, "too many photos are refused before any is decoded");
+  assert.equal(report.uploads.length, uploads, "nothing more is sent");
+  assert.equal(await page.locator(".input-images .input-image").count(), 3, "the draft keeps its three photos");
+  check("nine photos are refused at the 8-image limit before any is decoded or sent", { decodes });
 } finally {
   await writeFile(resolve(output, "report.json"), JSON.stringify({ ...report, uploads: report.uploads.map(({ body, ...u }) => u) }, null, 2));
   await browser.close();
