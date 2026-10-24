@@ -62,6 +62,7 @@ pub mod rewind;
 pub mod server;
 pub mod store;
 pub mod subagents;
+pub mod storage_overview;
 pub mod task_proposals;
 pub mod task_workspaces;
 pub mod updates;

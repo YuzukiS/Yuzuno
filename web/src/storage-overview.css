@@ -1,0 +1,27 @@
+/* Settings → Data & storage (T-193). Rows and notes follow the other
+   Settings sections; nothing here sets a width wider than the pane. */
+.storage-overview .storage-part { margin-top: 18px; min-width: 0; }
+.storage-overview .storage-part h4 { margin: 0 0 6px; font-size: 1em; }
+.storage-overview .storage-note { margin: 6px 0; color: var(--text-secondary); font-size: .9em; line-height: 1.5; overflow-wrap: anywhere; }
+.storage-overview code { font-size: .9em; overflow-wrap: anywhere; }
+.storage-rows { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 6px; }
+.storage-rows li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-width: 0;
+}
+.storage-rows .storage-name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.storage-rows .storage-size { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.storage-rows .storage-detail { grid-column: 1 / -1; color: var(--text-secondary); font-size: .88em; line-height: 1.45; overflow-wrap: anywhere; }
+.storage-list { margin: 6px 0; padding-left: 1.2em; color: var(--text-secondary); font-size: .9em; line-height: 1.5; }
+.storage-measure, .storage-copy { display: grid; gap: 8px; justify-items: start; margin-top: 12px; }
+.storage-measure p { margin: 0; }
+.storage-copy textarea { width: 100%; }
+@media (max-width: 480px) {
+  .storage-rows li { grid-template-columns: minmax(0, 1fr); }
+  .storage-rows .storage-size { text-align: left; white-space: normal; }
+}

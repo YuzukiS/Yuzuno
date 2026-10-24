@@ -1087,6 +1087,53 @@ test("a step Core refuses or fails ends the chain once, with its reason, and is 
   } finally { g.w.close(); }
 });
 
+// Data & storage is one of Settings' editors (T-193): its card under Data,
+// privacy & recovery opens it in place. It reads Core's overview only while
+// it is shown, again each time it is shown, and never measures by itself.
+test("data & storage opens from Data, privacy & recovery and reads Core's overview each time it is shown", async () => {
+  const f = await mount();
+  const view = {
+    format: 1, readAt: "2026-10-24T22:00:00Z", dataDir: "/fixture/data",
+    entries: [{ name: "jobs", what: "jobs", kind: "folder", backup: "copied", backupReason: null }],
+    unreadable: null, database: { pageSize: 4096, pages: 10, freePages: 0 }, jobs: { total: 0, unfinished: 0 },
+    native: [], notInBackup: [], measurement: null, bounds: { entries: 1000000, seconds: 30 },
+  };
+  const answer = f.w.fetch;
+  f.w.fetch = async (url, init = {}) => {
+    if (!url.includes("/api/storage")) return answer(url, init);
+    f.calls.push({ url, method: init.method || "GET" });
+    return { ok: true, status: 200, json: async () => structuredClone(view), text: async () => JSON.stringify(view) };
+  };
+  const reads = () => f.calls.filter((c) => c.url.includes("/api/storage")).length;
+  const editor = () => f.w.document.querySelector("#settings-editor-storage");
+  const openStorage = async () => {
+    f.w.document.querySelector("#settings-tab-data").click();
+    assert.ok(await f.press("Open Data & storage overview"), "Data, privacy & recovery offers it");
+    assert.ok(await until(() => editor() && !editor().hidden && /Job records and output logs/.test(editor().textContent)), "it shows Core's overview");
+  };
+  try {
+    await f.open();
+    f.w.document.querySelector("#settings-tab-data").click();
+    assert.ok(await until(() => !!f.button("Open Data & storage overview")));
+    assert.equal(reads(), 0, "finding the setting reads nothing");
+    await openStorage();
+    assert.equal(reads(), 1);
+    // The update status Settings already holds is passed in, not read again.
+    assert.match(editor().textContent, /This Core is not a managed install|Releases: /);
+    f.w.document.querySelector("#settings-tab-updates").click();
+    assert.ok(await until(() => editor()?.hidden === true), "another category hides it, still mounted");
+    await polls(f);
+    assert.equal(reads(), 1, "hidden, it reads nothing");
+    await openStorage();
+    assert.ok(await until(() => reads() === 2), "shown again, it reads Core's overview again");
+    await f.close();
+    await wait(300);
+    assert.equal(reads(), 2, "closed, it reads nothing");
+    assert.deepEqual(f.calls.filter((c) => c.url.includes("/api/storage") && c.method !== "GET"), [], "it never measures by itself");
+    assert.deepEqual(f.errors, []);
+  } finally { f.w.close(); }
+});
+
 // The desktop shell's own update state, as desktop/src/update.rs reports it.
 function desktopShell(overrides = {}) {
   const state = {

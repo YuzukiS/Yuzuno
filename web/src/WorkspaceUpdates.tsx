@@ -23,6 +23,7 @@ import { Modal } from "./components";
 import { DesktopUpdate } from "./DesktopUpdate";
 import { DiagnosticsCopy } from "./RecoveryPage";
 import { HistoryComposition } from "./HistoryComposition";
+import { StorageOverview } from "./StorageOverview";
 import { ReviewSettings } from "./ReviewSettings";
 import { HomePresentationSettings } from "./HomePresentationSettings";
 import { api, errorText, HttpError } from "./api";
@@ -761,7 +762,7 @@ export function WorkspaceUpdates({
         navigation={navigation}
         onEditorChange={setActiveEditor}
         attention={stage === "running" || stage === "reload" || stage === "prepared" || stage === "local" || stage === "published"}
-        renderEditor={(tab) => <>
+        renderEditor={(tab, visible) => <>
           {tab === "updates" && (
             <section
               className="settings-section"
@@ -978,6 +979,7 @@ export function WorkspaceUpdates({
           {tab === "updates" && <DesktopUpdate preserveDrafts={preserveDrafts} />}
           {tab === "diagnostics" && <DiagnosticsCopy />}
           {tab === "history" && <HistoryComposition />}
+          {tab === "storage" && <StorageOverview active={open && visible} updates={status ? { managed: status.managed, storage: status.storage } : null} />}
           {tab === "appearance" && <AppearanceSection />}
           {tab === "input" && <InputPreferencesSection />}
           {tab === "shortcuts" && <ShortcutHelpSection />}
