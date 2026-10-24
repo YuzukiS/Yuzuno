@@ -4,7 +4,8 @@ import XCTest
 /// connection page in the app's WKWebView, answered by the app's own
 /// commands. No Core is reached. On a Mac (run.sh full), also measured, and
 /// Mobile Safari beside it with the same page and the web UI on a synthetic
-/// Workspace. A passing check is a Simulator result, not an iPhone's.
+/// Workspace; run.sh safari opens only Mobile Safari's part. A passing check
+/// is a Simulator result, not an iPhone's.
 final class ConnectionPageChecks: XCTestCase {
     private let yuzuno = XCUIApplication(bundleIdentifier: "dev.yuzuno.ios")
     private let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
@@ -64,7 +65,7 @@ final class ConnectionPageChecks: XCTestCase {
     }
 
     /// Writes where the page's parts are, in points, as the accessibility
-    /// tree sees them, to the file ios.yml prints (YUZUNO_FRAMES).
+    /// tree sees them, to the file run.sh prints (YUZUNO_FRAMES).
     private func record(_ label: String, in app: XCUIApplication) {
         guard ProcessInfo.processInfo.environment["YUZUNO_FRAMES"] != nil else { return }
         let parts: [(String, XCUIElement)] = [
@@ -161,16 +162,17 @@ final class ConnectionPageChecks: XCTestCase {
         }
     }
 
-    /// Mobile Safari in the same Simulator, beside the app: the same
-    /// connection page, then the web UI on a synthetic Workspace, both served
-    /// on this Mac's 127.0.0.1 by web/tools/phone-fixture-server.mjs (no Core,
-    /// no account). Upright and sideways, the composer with the keyboard open,
-    /// and the Settings dialog. The pages measure themselves; ios.yml prints
-    /// what they measured. Outside the app the connection page offers nothing
-    /// to submit, so the keyboard is opened in the web UI only.
+    /// Mobile Safari in the same Simulator, beside the app (run.sh full) or
+    /// alone (run.sh safari): the same connection page, then the web UI on a
+    /// synthetic Workspace, both served on this Mac's 127.0.0.1 by
+    /// web/tools/phone-fixture-server.mjs (no Core, no account). Upright and
+    /// sideways, the composer with the keyboard open, and the Settings dialog.
+    /// The pages measure themselves, into run.sh's phone-measure.jsonl.
+    /// Outside the app the connection page offers nothing to submit, so the
+    /// keyboard is opened in the web UI only.
     func testThePagesInSafari() throws {
         guard let base = ProcessInfo.processInfo.environment["YUZUNO_SAFARI"], let root = URL(string: base) else {
-            throw XCTSkip("run.sh full only: it serves Safari's pages")
+            throw XCTSkip("run.sh full or safari only: they serve Safari's pages")
         }
         safari.open(URL(string: "connection/", relativeTo: root)!.absoluteURL)
         pastFirstRun()
@@ -201,8 +203,9 @@ final class ConnectionPageChecks: XCTestCase {
         screenshot("safari-web-keyboard")
         turn(.landscapeLeft)
         turn(.portrait)
-        // Upright again with the keyboard still open: run 40061280002 measured
-        // the composer below what can be seen here for about 6 s.
+        // Upright again with the keyboard still open: run 40061280002, with
+        // web/ from before #150, measured the composer below what could be
+        // seen here for about 6 s.
         screenshot("safari-web-keyboard-upright-again")
         // The keyboard bar's Done ends editing; the page measures the focus leaving.
         if safari.buttons["Done"].exists {

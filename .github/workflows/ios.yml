@@ -156,8 +156,8 @@ jobs:
       # The app in a Simulator of its own, without a Core: it starts, its
       # connection page shows in the app's WKWebView, and the app refuses a
       # plain HTTP address itself (uitests/run.sh smoke). Turning, the
-      # keyboard, Mobile Safari beside the app and their measurements are for
-      # a Mac with Xcode (run.sh full; see ios/README.md), not this job.
+      # keyboard, Mobile Safari and their measurements are for a Mac with
+      # Xcode (run.sh full and safari; see ios/README.md), not this job.
       - name: Simulator smoke
         timeout-minutes: 20
         run: |

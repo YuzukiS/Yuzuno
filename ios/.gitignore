@@ -1,5 +1,5 @@
 /target/
 # Made by `cargo tauri ios init` (see README.md); not kept yet.
 /gen/
-# Made by xcodegen in ios.yml from uitests/project.yml.
+# Made by xcodegen in uitests/run.sh from uitests/project.yml.
 /uitests/*.xcodeproj/
