@@ -1,5 +1,8 @@
+import { useRef } from "react";
 import { RequestSummary } from "./MessageContent";
 import { Bell } from "lucide-react";
+import type { AgentActionHandlers } from "./agent-actions";
+import { AgentActionsMenu, type AgentActionsMenuHandle, type MenuPoint } from "./AgentActionsMenu";
 import { Avatar } from "./components";
 import { MachineBadge } from "./RemoteControls";
 import type { Agent, WorkSummary } from "./types";
@@ -22,12 +25,65 @@ export function summaryOrigin(summary: WorkSummary): string {
         : "Runtime record · open source";
 }
 
+/** How long a touch is held before it opens the actions, and how far it may
+ * move first: a scroll moves further, and the browser cancels the pointer. */
+export const LONG_PRESS_MS = 500;
+const LONG_PRESS_SLOP = 10;
+
+/** A touch held still opens `onPress` at that point; a move, a cancel or an
+ * early lift does nothing. After a long-press (`fired`), the click that
+ * follows is swallowed, so the row does not also open; any next press clears
+ * it. `claim` takes a pending touch for the browser's own context menu, so
+ * the menu opens once. */
+function useLongPress(onPress: (point: MenuPoint) => void) {
+  const timer = useRef<number | undefined>(undefined);
+  const start = useRef<{ x: number; y: number; id: number } | null>(null);
+  const fired = useRef(false);
+  const cancel = () => {
+    window.clearTimeout(timer.current);
+    start.current = null;
+  };
+  return {
+    fired,
+    claim: () => {
+      if (!start.current) return false;
+      cancel();
+      fired.current = true;
+      return true;
+    },
+    handlers: {
+      onPointerDown: (event: React.PointerEvent) => {
+        cancel();
+        fired.current = false;
+        // The open menu's own entries (its events reach the row through React).
+        if ((event.target as Element).closest?.('[role="menu"]')) return;
+        if (event.pointerType !== "touch" || !event.isPrimary) return;
+        start.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
+        timer.current = window.setTimeout(() => {
+          const at = start.current;
+          if (!at) return;
+          start.current = null;
+          fired.current = true;
+          onPress({ x: at.x, y: at.y });
+        }, LONG_PRESS_MS);
+      },
+      onPointerMove: (event: React.PointerEvent) => {
+        const at = start.current;
+        if (at && at.id === event.pointerId && Math.hypot(event.clientX - at.x, event.clientY - at.y) > LONG_PRESS_SLOP) cancel();
+      },
+      onPointerUp: cancel,
+      onPointerCancel: cancel,
+    },
+  };
+}
+
 export function AgentRailRow({
   agent,
   selected,
   statusLabel,
   idle = false,
   onSelect,
+  actions,
 }: {
   agent: Agent;
   selected: boolean;
@@ -36,6 +92,8 @@ export function AgentRailRow({
    * other state (working, waiting for you, compacting, closed…) comes first. */
   idle?: boolean;
   onSelect: () => void;
+  /** Its actions (T-184): a "…" button, a right-click or a long-press. */
+  actions?: AgentActionHandlers;
 }) {
   const summary = agent.workSummary;
   const machine = agent.remote?.machine.name || "Core host";
@@ -48,13 +106,35 @@ export function AgentRailRow({
   const combined = !!waiting && (label.includes("/") || label.split(" · ").length > 2);
   // Something dragged with "Send to Agent" can be dropped here (T-152).
   const drop = useHandoffDrop(agent);
+  const menu = useRef<AgentActionsMenuHandle>(null);
+  const select = useRef<HTMLButtonElement>(null);
+  const press = useLongPress((point) => menu.current?.openAt(point, select.current));
   return (
     <article
       className={`agent-row${selected ? " selected" : ""}${drop.state ? ` handoff-${drop.state}` : ""}`}
       data-agent-id={agent.id}
       {...drop.handlers}
+      {...(actions && {
+        ...press.handlers,
+        onContextMenu: (event: React.MouseEvent) => {
+          event.preventDefault();
+          // After a long-press that opened it, a touch's own context menu
+          // opens nothing more; before one, it takes the press.
+          if (press.fired.current) return;
+          press.claim();
+          menu.current?.openAt({ x: event.clientX, y: event.clientY }, select.current);
+        },
+        onClickCapture: (event: React.MouseEvent) => {
+          if (!press.fired.current) return;
+          press.fired.current = false;
+          event.preventDefault();
+          event.stopPropagation();
+        },
+      })}
     >
+      {actions && <AgentActionsMenu ref={menu} agent={agent} handlers={actions} className="agent-row-menu" />}
       <button
+        ref={select}
         className="agent-select agent-row-top"
         onClick={onSelect}
         aria-label={`Open ${agent.name}`}

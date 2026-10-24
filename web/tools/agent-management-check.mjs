@@ -350,6 +350,7 @@ try {
   await page
     .getByRole("button", { name: "Conversation actions", exact: true })
     .click();
+  await page.getByRole("menuitem", { name: "Manage…", exact: true }).click();
   await dialog
     .getByRole("button", { name: "Delete agent…", exact: false })
     .click();
@@ -488,6 +489,7 @@ try {
       if (await direct.isVisible()) await direct.click();
       else {
         await page.getByRole("button", { name: "Conversation actions", exact: true }).click();
+        await page.getByRole("menuitem", { name: "Manage…", exact: true }).click();
         await dialog.getByRole("button", { name: /^Close agent/ }).click();
       }
       await dialog

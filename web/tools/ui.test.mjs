@@ -3222,7 +3222,10 @@ test("drafts follow their agent and reading the conversation never implicitly ac
       "Remember the small details",
     );
     assert.equal(page.calls.filter((c) => c.init.method === "POST").length, 0);
+    // The header's actions are a menu now; managing the Agent is one entry (T-184).
     page.document.querySelector('[aria-label="Conversation actions"]').click();
+    await pause();
+    page.document.querySelector('[role="menuitem"][data-action="manage"]').click();
     await pause();
     button(page, "Mark all as read").click();
     await pause();
@@ -3462,6 +3465,31 @@ test("Escape interrupts the current turn but not while the creation dialog is op
       1,
     );
     assert.match(page.document.body.textContent, /Interrupt requested/);
+  } finally {
+    page.close();
+  }
+});
+test("the Agent action menu takes Escape: it closes and the running turn is not interrupted (T-184)", async () => {
+  const page = await mount({ status: "working" });
+  try {
+    const trigger = page.document.querySelector('[aria-label="Conversation actions"]');
+    assert.equal(trigger.getAttribute("aria-haspopup"), "menu");
+    trigger.click();
+    await pause();
+    assert.ok(page.document.querySelector('[role="menu"]'), "the menu opened");
+    const first = page.document.activeElement;
+    assert.equal(first.getAttribute("role"), "menuitem", "focus is on its first entry");
+    assert.ok(page.document.querySelector('[role="menuitem"][data-action="interrupt"]'), "a working Agent offers Interrupt");
+    first.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await pause();
+    assert.ok(page.document.querySelector('[role="menu"]') === null, "Escape closed the menu");
+    assert.ok(page.document.activeElement === trigger, "focus is back on its button");
+    assert.equal(page.calls.filter((c) => c.url.endsWith("/interrupt")).length, 0, "Escape in the menu interrupted nothing");
+    // Outside the menu, Escape still interrupts the running turn.
+    page.window.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await pause();
+    assert.equal(page.calls.filter((c) => c.url.endsWith("/interrupt")).length, 1);
+    assert.equal(page.calls.filter((c) => c.url.includes("/messages")).length, 0);
   } finally {
     page.close();
   }
