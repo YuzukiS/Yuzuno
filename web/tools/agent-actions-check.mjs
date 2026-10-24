@@ -108,6 +108,10 @@ function watch(page) {
 const menu = (page) => page.locator('[role="menu"]');
 const row = (page, id) => page.locator(`.agent-row[data-agent-id="${id}"]`);
 const hint = (page) => page.locator(".composer-bottom > .composer-hint");
+// A row's machine and name, cut short to make room for its "…".
+const clipped = (page) =>
+  page.locator(".agent-row .remote-machine-badge > span, .agent-row .agent-name")
+    .evaluateAll((nodes) => nodes.filter((node) => node.scrollWidth > node.clientWidth).map((node) => node.textContent));
 
 try {
   // Desktop.
@@ -127,7 +131,8 @@ try {
       await page.locator(".recovery-notice button", { hasText: "Reconnect" }).waitFor();
       assert.equal(await hint(page).textContent(), "Reconnect above, or send a message to resume this session");
       await shot(page, "desktop-offline");
-      check("Offline Mori shows Reconnect in its notice, and the composer points to it");
+      assert.deepEqual(await clipped(page), []);
+      check("Offline Mori shows Reconnect in its notice, and the composer points to it; no machine or name in the list is cut");
       await row(page, "b").click({ button: "right", position: { x: 60, y: 18 } });
       await menu(page).waitFor();
       assert.deepEqual(await menu(page).locator('[role="menuitem"]').allTextContents(),
@@ -179,6 +184,7 @@ try {
     await page.waitForTimeout(300);
     await shot(page, `${width}-list`);
     if (!before) {
+      assert.deepEqual(await clipped(page), []);
       const coarse = await page.evaluate(() => matchMedia("(pointer: coarse)").matches);
       report[`coarse${width}`] = coarse;
       const box = await row(page, "b").boundingBox();

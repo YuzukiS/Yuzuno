@@ -48,17 +48,18 @@
 }
 
 /* In an Agent row: always visible at its top right, above the row's own
-   open-the-agent area, which keeps room for it. */
+   open-the-agent area, which keeps room for it. Mostly in the row's own
+   padding, so the machine and status beside the name keep their width. */
 .agent-row-menu {
   position: absolute;
-  top: 9px;
-  right: 7px;
+  top: 7px;
+  right: 5px;
   z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   border: 0;
   border-radius: 8px;
@@ -75,7 +76,7 @@
   outline-offset: 1px;
 }
 .agent-row:has(.agent-row-menu) .agent-row-top {
-  padding-right: 30px;
+  padding-right: 18px;
 }
 /* A long-press opens this menu, not the system's callout or a selection. */
 .agent-row {
