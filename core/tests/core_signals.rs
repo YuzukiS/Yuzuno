@@ -11,7 +11,7 @@ use rustix::process::{kill_process, Pid, Signal};
 use serde_json::{json, Value};
 use std::{
     os::unix::{fs::PermissionsExt, process::{CommandExt, ExitStatusExt}},
-    path::{Path, PathBuf},
+    path::Path,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
@@ -155,7 +155,9 @@ async fn stop_with(signal: Signal) -> Stop {
     let pid = |key: &str| seen[key].as_u64().unwrap();
     left.fixture = vec![pid("pid"), pid("child"), pid("tool")];
     let created = post("/api/projects", json!({"name":"Made while Core ran"})).await.unwrap();
-    assert!(created.status().is_success(), "{}", created.text().await.unwrap());
+    let made = created.status();
+    let text = created.text().await.unwrap();
+    assert!(made.is_success(), "{text}");
     let mut stream = client.get(format!("{base}/api/events")).send().await.unwrap();
     assert!(stream.status().is_success());
     let events = tokio::spawn(async move {
