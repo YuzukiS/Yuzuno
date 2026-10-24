@@ -57,15 +57,13 @@ const get = (path, host = `127.0.0.1:${port}`) => new Promise((done, fail) => {
   req.end();
 });
 
-const server = spawn(process.execPath, [new URL("./phone-fixture-server.mjs", import.meta.url).pathname], {
-  env: { ...process.env, YUZUNO_MEASURE_OUT: measured, YUZUNO_PORT: String(port), YUZUNO_EXTRA: `/connection=${extra}`, YUZUNO_INJECT: probe },
-  stdio: ["ignore", "pipe", "inherit"],
+/** Stops this run's server and waits for it to exit (TERM, then KILL after 5 s). */
+const stop = (child) => new Promise((done) => {
+  if (child.exitCode !== null || child.signalCode !== null) return done();
+  const kill = setTimeout(() => child.kill("SIGKILL"), 5000);
+  child.once("exit", () => { clearTimeout(kill); done(); });
+  child.kill("SIGTERM");
 });
-await new Promise((done, fail) => {
-  server.stdout.on("data", (chunk) => String(chunk).includes("phone fixture:") && done());
-  server.on("exit", (code) => fail(new Error(`the server exited ${code}`)));
-});
-const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 
 const phones = [
   { name: "portrait", width: 393, height: 852, insets: { top: 59, right: 0, bottom: 34, left: 0 } },
@@ -73,7 +71,22 @@ const phones = [
 ];
 const px = ({ top, right, bottom, left }) => [`${top}px`, `${right}px`, `${bottom}px`, `${left}px`];
 
+// Everything this run starts is inside one cleanup: a failure anywhere,
+// even in starting the browser, still writes the report, closes what was
+// opened and stops this run's server, and the first failure is what the
+// run ends with. A failure while cleaning up is printed, and ends the run
+// only when nothing failed before it.
+let server, browser, cleanupFailure;
 try {
+  server = spawn(process.execPath, [new URL("./phone-fixture-server.mjs", import.meta.url).pathname], {
+    env: { ...process.env, YUZUNO_MEASURE_OUT: measured, YUZUNO_PORT: String(port), YUZUNO_EXTRA: `/connection=${extra}`, YUZUNO_INJECT: probe },
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  await new Promise((done, fail) => {
+    server.stdout.on("data", (chunk) => String(chunk).includes("phone fixture:") && done());
+    server.on("exit", (code) => fail(new Error(`the server exited ${code}`)));
+  });
+  browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
   assert.equal((await get("/", "example.org")).status, 421, "another Host is refused");
   check("the fixture answers 127.0.0.1 only");
   const app = await get("/message/elsewhere");
@@ -137,7 +150,17 @@ try {
   assert.deepEqual(report.errors, [], "no page errors");
   check("no refused writes, server errors or page errors", { measurements: all.length });
 } finally {
-  await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
-  await browser.close();
-  server.kill("SIGTERM");
+  for (const [what, step] of [
+    ["writing the report", () => writeFile(join(output, "report.json"), JSON.stringify(report, null, 2))],
+    ["closing the browser", () => browser?.close()],
+    ["stopping the server", () => server && stop(server)],
+  ]) {
+    try {
+      await step();
+    } catch (error) {
+      console.error(`cleanup: ${what} failed: ${error.message}`);
+      cleanupFailure ??= error;
+    }
+  }
 }
+if (cleanupFailure) throw cleanupFailure;
