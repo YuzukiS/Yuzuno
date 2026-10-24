@@ -269,38 +269,12 @@ fn move_on_linux(base: &Path, install: Option<&Path>, step: &mut dyn FnMut(&str)
 /// What must hold before the folder moves, read under its lock.
 #[cfg(target_os = "linux")]
 fn preconditions(legacy: &Path, base: &Path, install: Option<&Path>) -> Result<()> {
-    use rusqlite::{Connection, OpenFlags};
-    // Read without writing anything there. With no write-ahead log content
-    // (no Core holds the lock, so none is being written), the database file
-    // is all there is and is opened immutable: SQLite then makes no -wal or
-    // -shm file. With content, a read-only connection still rebuilds SQLite's
-    // own shared-memory index (-shm) and changes nothing else.
-    let database = legacy.join(DATABASE);
-    let wal = std::fs::metadata(legacy.join(format!("{DATABASE}-wal"))).map_or(0, |meta| meta.len());
-    let mut uri = String::from("file:");
-    for c in database.to_string_lossy().chars() {
-        match c {
-            '%' => uri.push_str("%25"),
-            '?' => uri.push_str("%3f"),
-            '#' => uri.push_str("%23"),
-            ' ' => uri.push_str("%20"),
-            c => uri.push(c),
-        }
-    }
-    uri.push_str(if wal == 0 { "?mode=ro&immutable=1" } else { "?mode=ro" });
-    let db = Connection::open_with_flags(&uri, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI)?;
+    let db = read_only(&legacy.join(DATABASE))?;
     let check: String = db.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
     ensure!(check == "ok", "The Workspace database fails its quick check ({check}); nothing was moved");
     // A Job's folder, logs and supervisor name paths in the Workspace.
-    let has_jobs: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_jobs')", [], |r| r.get(0))?;
-    if has_jobs {
-        // As store.rs machine_jobs counts them: a run's stage that waits for
-        // its upstream stages has its folder and inputs named here too.
-        let unfinished: i64 = db.query_row(
-            "SELECT COUNT(*) FROM local_jobs WHERE reserved=1 OR status IN ('queued','waiting')", [], |r| r.get(0))?;
-        ensure!(unfinished == 0, "{unfinished} Job(s) have not ended; move the Workspace once they have. Nothing was moved");
-    }
+    let unfinished = unfinished_jobs(&db)?;
+    ensure!(unfinished == 0, "{unfinished} Job(s) have not ended; move the Workspace once they have. Nothing was moved");
     // A managed update records the Workspace path for its whole operation. Its
     // helper runs for all of it, wherever the install is; the journal also
     // covers a helper that stopped half-way.
@@ -316,6 +290,42 @@ fn preconditions(legacy: &Path, base: &Path, install: Option<&Path>) -> Result<(
             "A managed update is under way ({phase}, {}); move the Workspace once it has ended. Nothing was moved", root.display());
     }
     Ok(())
+}
+
+/// Opens a Workspace database no Core is writing, reading without writing
+/// anything there. With no write-ahead log content (none is being written),
+/// the database file is all there is and is opened immutable: SQLite then
+/// makes no -wal or -shm file. With content, a read-only connection still
+/// rebuilds SQLite's own shared-memory index (-shm) and changes nothing else.
+pub(crate) fn read_only(database: &Path) -> Result<rusqlite::Connection> {
+    use rusqlite::{Connection, OpenFlags};
+    let mut wal = database.as_os_str().to_owned();
+    wal.push("-wal");
+    let wal = std::fs::metadata(wal).map_or(0, |meta| meta.len());
+    let mut uri = String::from("file:");
+    for c in database.to_string_lossy().chars() {
+        match c {
+            '%' => uri.push_str("%25"),
+            '?' => uri.push_str("%3f"),
+            '#' => uri.push_str("%23"),
+            ' ' => uri.push_str("%20"),
+            c => uri.push(c),
+        }
+    }
+    uri.push_str(if wal == 0 { "?mode=ro&immutable=1" } else { "?mode=ro" });
+    Ok(Connection::open_with_flags(&uri, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI)?)
+}
+
+/// Jobs that have not ended, as store.rs machine_jobs counts them: a run's
+/// stage that waits for its upstream stages has its folder and inputs named
+/// in the Workspace too. A Workspace without the Jobs table has none.
+pub(crate) fn unfinished_jobs(db: &rusqlite::Connection) -> Result<i64> {
+    let has_jobs: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_jobs')", [], |r| r.get(0))?;
+    if !has_jobs {
+        return Ok(0);
+    }
+    Ok(db.query_row("SELECT COUNT(*) FROM local_jobs WHERE reserved=1 OR status IN ('queued','waiting')", [], |r| r.get(0))?)
 }
 
 /// A `yuzuno-update-helper` process of this account, if one runs.

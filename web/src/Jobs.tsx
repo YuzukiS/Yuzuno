@@ -466,6 +466,8 @@ export function Jobs({
     // Closing or leaving Local also cancels a request whose budget has not loaded yet.
     if (!open || source !== "local") clearBudgetRequest();
   }, [open, source, clearBudgetRequest]);
+  // Why this Core gave no budget, e.g. its host cannot run local Jobs.
+  const [budgetRefusal, setBudgetRefusal] = useState("");
   const [selected, setSelected] = useState("");
   const [detail, setDetail] = useState<Job | null>(null);
   const [log, setLog] = useState<Log | null>(null);
@@ -500,7 +502,12 @@ export function Jobs({
         if (before) query.set("before", String(before));
         const [next, capacity] = await Promise.all([
           api<Page>(`/jobs?${query}`),
-          api<Budget>("/jobs/budget"),
+          // A refused budget leaves the list: Jobs on registered machines and
+          // the history are still this Core's to show.
+          api<Budget>("/jobs/budget").catch((e: unknown) => {
+            if (e instanceof HttpError) return errorText(e);
+            throw e;
+          }),
         ]);
         if (stamp !== generation.current) return;
         if (!Array.isArray(next.jobs))
@@ -524,9 +531,15 @@ export function Jobs({
               before || !old.jobs.length ? next.nextBefore : old.nextBefore,
           };
         });
-        if (!validBudget(capacity))
-          throw new Error("Local jobs require an updated Core.");
-        setBudget(capacity);
+        if (typeof capacity === "string") {
+          setBudget(null);
+          setBudgetRefusal(capacity);
+        } else {
+          if (!validBudget(capacity))
+            throw new Error("Local jobs require an updated Core.");
+          setBudget(capacity);
+          setBudgetRefusal("");
+        }
         if (selected) {
           const [job, output] = await Promise.all([
             api<Job>(`/jobs/${selected}`),
@@ -971,6 +984,11 @@ export function Jobs({
                       }
                       onSaved={() => void load()}
                     />
+                  )}
+                  {!budget && budgetRefusal && (
+                    <p className="job-footnote" role="status">
+                      {budgetRefusal}
+                    </p>
                   )}
                   {error && (
                     <p className="inline-error" role="alert">

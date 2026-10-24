@@ -18,6 +18,8 @@ import type { SettingsEditor } from "./settings-catalog";
 import { SettingsCenter, type SettingsNavigation } from "./SettingsCenter";
 import { RuntimeSection } from "./RuntimeSection";
 import { AppearanceSection } from "./AppearanceSettings";
+import { InputPreferencesSection } from "./InputPreferences";
+import { ShortcutHelpSection } from "./ShortcutHelp";
 import { Modal } from "./components";
 import { DesktopUpdate } from "./DesktopUpdate";
 import { DiagnosticsCopy } from "./RecoveryPage";
@@ -984,6 +986,8 @@ export function WorkspaceUpdates({
             />
           )}
           {tab === "appearance" && <AppearanceSection />}
+          {tab === "input" && <InputPreferencesSection />}
+          {tab === "shortcuts" && <ShortcutHelpSection />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
         </>}

@@ -12,7 +12,26 @@ use tokio::{
 };
 
 const SCRIPT: &[u8] = include_bytes!("host.py");
+/// Test fault injection: Cores with these data folders run on macOS, as far
+/// as `local_host` can tell, while the test itself runs on Linux.
+#[cfg(test)]
+pub(super) static NOT_LINUX: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+/// Whether this Core's own host can run local Jobs. They need Linux with a
+/// systemd user manager (host.py); elsewhere, macOS for one, they are refused
+/// before the helper is written or run and before anything is queued.
+pub(super) fn local_host(data: &Path) -> Result<()> {
+    #[cfg(test)]
+    let os = if NOT_LINUX.lock().unwrap().iter().any(|d| data.starts_with(d)) { "macos" } else { std::env::consts::OS };
+    #[cfg(not(test))]
+    let (os, _) = (std::env::consts::OS, data);
+    ensure!(
+        os == "linux",
+        "Local Jobs need Linux with a systemd user manager, and this Core runs on {os}: nothing was written, run or queued on this host. A Job for a registered remote machine (machineId) is not affected by this."
+    );
+    Ok(())
+}
 pub(super) async fn helper(data: &Path) -> Result<PathBuf> {
+    local_host(data)?;
     let root = data.join("jobs");
     tokio::fs::create_dir_all(&root).await?;
     let path = root.join(format!("host-{:x}.py", Sha256::digest(SCRIPT)));

@@ -95,6 +95,12 @@ export interface NativeItem {
    */
   _yuzunoDelivery?: "queued" | "unknown";
   /**
+   * The message a new Claude Turn starts with, by its sender's client ID,
+   * set with the Turn before Claude's bridge answers. Unlike `clientId` it
+   * confirms nothing; see delivery-note's `sendingInTurn` (T-120).
+   */
+  _yuzunoClientMessageId?: string;
+  /**
    * Core record of when a message first appeared, in Unix ms: "codex" is the
    * Harness's own item time, "core" is when Core received it live, "claude"
    * is the time Claude saved it with (filled in from its saved history). Not

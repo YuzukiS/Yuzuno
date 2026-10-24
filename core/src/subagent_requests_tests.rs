@@ -252,7 +252,9 @@ async fn a_childs_events_find_it_without_reading_the_parents_whole_record() {
     let ws = workspace(&dir);
     let log = dir.path().join("sent.jsonl");
     let rpc = connect(&ws, 1, &log).await;
-    let reads = || crate::store::detail_reads_of("a");
+    // Tests beside this one read Agents "a" of their own: only this
+    // Workspace's reads are counted.
+    let reads = || ws.store.detail_reads("a");
     let held = |ws: &Workspace| ws.store.peek("a", |_| ()).is_some();
     // Inserted, the record is not held, and a file change commits nothing.
     assert!(!held(&ws));

@@ -29,6 +29,8 @@ pub(crate) mod store;
 #[cfg(test)]
 mod pause_tests;
 #[cfg(test)]
+mod platform_tests;
+#[cfg(test)]
 mod checkpoint_tests;
 #[cfg(test)]
 mod run_tests;
@@ -152,7 +154,8 @@ pub(crate) struct Submit {
     /// Local NVIDIA GPUs the command needs, admitted with its CPU and RAM.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     gpu: Option<gpu::GpuRequest>,
-    /// A registered SSH machine (Linux) to run on instead of this host, or
+    /// A registered SSH machine (Linux, or macOS with its limits declared
+    /// only) to run on instead of this host, or
     /// `local` (this host) or `agent` (the submitting Agent's machine), which
     /// Core resolves at submit (T-162).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -761,6 +764,7 @@ async fn set_budget(
 ) -> Result<Json<Value>, ApiError> {
     let _permit = ws.admission.enter_work()?;
     validate_budget(&input)?;
+    host::local_host(&ws.data_dir)?;
     let value = ws.stored(move |s| s.set_job_budget(input)).await?;
     ws.start_jobs();
     ws.jobs.wake.notify_one();
@@ -882,7 +886,13 @@ pub async fn call(
                 let programs = remote::Programs { ssh: remote::SSH, windows: helper.as_ref(), mux: Some(&ws.jobs.ssh_mux) };
                 let snapshot = remote::remote_snapshot(&ws, &programs, &machine_id, &input.cwd, &input.inputs).await?;
                 let author = actor.clone();
-                let capabilities = if windows { remote::windows_capabilities() } else { remote::capabilities() };
+                let capabilities = if windows {
+                    remote::windows_capabilities()
+                } else {
+                    // As the machine last answered; corrected at its hello (T-186).
+                    let id = machine_id.clone();
+                    remote::capabilities_for(ws.stored(move |s| s.machine_platform(&id)).await?.as_deref())
+                };
                 // The machine is read in the Job's own insert transaction.
                 let job = ws
                     .stored(move |s| {
@@ -896,6 +906,9 @@ pub async fn call(
                 ws.jobs.remote_wake.notify_one();
                 return Ok(job);
             }
+            // On a host that cannot run local Jobs, writing the helper is
+            // refused (host::local_host): after the retry and the alias above,
+            // before anything is written, run or queued here.
             let helper = host::helper(&ws.data_dir).await?;
             let capability = host::invoke(&helper, "capabilities", None, None).await?;
             let machine = host::machine_info().await?;
@@ -1070,6 +1083,9 @@ pub async fn call(
         }
         "job_run_decide" => {
             let decision = decision.context("Missing analysis decision")?;
+            if decision.continues() {
+                local_or_replay(&ws, &actor, "job_run_decide", &decision.request_id).await?;
+            }
             let value = ws.stored(move |s| s.decide_run(actor.as_deref(), &decision)).await?;
             changed(&ws);
             ws.jobs.wake.notify_one();
@@ -1077,6 +1093,7 @@ pub async fn call(
         }
         "job_run_retry" => {
             let q: RunRetry = serde_json::from_value(input)?;
+            local_or_replay(&ws, &actor, "job_run_retry", &q.request_id).await?;
             let run = ws
                 .stored(move |s| s.retry_stage(actor.as_deref(), &q.request_id, &q.run_id, &q.stage))
                 .await?;
@@ -1098,6 +1115,7 @@ pub async fn call(
                 input.as_object().is_some_and(|m| m.is_empty()),
                 "job_budget takes no arguments"
             );
+            host::local_host(&ws.data_dir)?;
             sample_gpus(&ws, false).await;
             let machine = host::machine_info().await?;
             let mut view = ws.stored(move |s| s.job_budget_view(machine)).await?;
@@ -1128,6 +1146,36 @@ fn changed(ws: &Workspace) {
     ws.changes
         .publish(&json!({"type":"workspace.changed","scope":"jobs"}));
     ws.collaboration_wakeup.notify_one();
+}
+
+/// A request that would queue a stage on a host that cannot run local Jobs
+/// is refused before anything is saved, unless it repeats one this caller
+/// made before: that is answered as it was, and queues nothing new.
+async fn local_or_replay(ws: &Arc<Workspace>, actor: &Option<String>, operation: &'static str, request_id: &str) -> Result<()> {
+    let Err(refusal) = host::local_host(&ws.data_dir) else {
+        return Ok(());
+    };
+    let (actor, request) = (actor.clone(), request_id.to_owned());
+    if ws.stored(move |s| s.requested(actor.as_deref(), operation, &request)).await? {
+        return Ok(());
+    }
+    Err(refusal)
+}
+
+impl crate::store::Store {
+    fn requested(&self, actor: Option<&str>, operation: &str, request_id: &str) -> Result<bool> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .db
+            .read()?
+            .query_row(
+                "SELECT 1 FROM collaboration_requests WHERE actor=?1 AND operation=?2 AND request_id=?3",
+                rusqlite::params![store::actor_key(actor), operation, request_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
 }
 
 impl Workspace {
@@ -1320,7 +1368,7 @@ const REMOTE_ARTIFACTS: &str = "With machineId they are checked on that machine 
 /// machineId in short; how each kind of machine runs a job, holds its limits
 /// and checks its files is the guide's jobs topic (references/jobs.md).
 const MACHINE: &str = "Run on a registered machine from the Machines list instead of this Core's host: an SSH machine \
-    (Linux), or \"windows\", Windows on the PC this Core's WSL runs on (cwd a Windows drive path such as C:\\work). Without machineId \
+    (Linux, or macOS in limited mode, where limits are declared only), or \"windows\", Windows on the PC this Core's WSL runs on (cwd a Windows drive path such as C:\\work). Without machineId \
     the job runs on this Core's host, never on the machine your Agent itself runs on. \"agent\" is the machine your Agent runs on (its \
     registered SSH machine, or this host for an Agent here), resolved by Core from your Agent at submit and kept by the job; \"local\" \
     is this Core's host. The receipt's target names the machine. cwd and every path are on that machine; pass the \

@@ -6,14 +6,15 @@ import type { AgentDetail } from "./types";
 import "./recovery.css";
 
 /**
- * Why an Agent's last result needs checking before it can go on:
- * "running" when its last Turn was still running when the connection ended
- * (a Core restart, for example), "uncertain" when the result is unknown.
- * Null when there is nothing to check, nothing to reconnect to, or another
- * notice already offers a reconnect (a writer conflict, an unconfirmed
- * message) or the remote controls do.
+ * Why an Agent offers a reconnect before it can go on: "running" when its
+ * last Turn was still running when the connection ended (a Core restart, for
+ * example), "uncertain" when the result is unknown, and "offline" when its
+ * session is simply not connected, its last Turn ended (T-184). Null when it
+ * is connected, there is nothing to reconnect to, or another notice already
+ * offers a reconnect (a writer conflict, an unconfirmed message) or the
+ * remote controls do.
  */
-export function recoveryReason(detail: AgentDetail): "running" | "uncertain" | "collaboration" | null {
+export function recoveryReason(detail: AgentDetail): "running" | "uncertain" | "offline" | "collaboration" | null {
   const agent = detail.agent;
   if (agent.closedAt) return null;
   if (detail.collaboration?.ready === false) return "collaboration";
@@ -26,11 +27,14 @@ export function recoveryReason(detail: AgentDetail): "running" | "uncertain" | "
   if (agent.status === "uncertain" || agent.connectionState === "unconfirmed") return "uncertain";
   if (agent.connectionState === "connected") return null;
   if ((detail.conversation?.index || detail.turns).some((turn) => turn.status === "inProgress")) return "running";
+  if (agent.connectionState === "disconnected" || agent.connectionState === "connecting" || agent.status === "offline")
+    return "offline";
   return null;
 }
 
 /** Reconnects to the same native session so Core can check what really
- * happened. Nothing is sent again and the draft stays where it is. */
+ * happened, or, offline, opens it again. Nothing is sent again and the draft
+ * stays where it is; what the Agent is then doing is what Core reports. */
 export function RecoveryNotice({
   detail,
   disabled,
@@ -82,12 +86,18 @@ export function RecoveryNotice({
     <div className="recovery-notice" role="status">
       <CircleAlert size={14} />
       <span>
-        {reason === "collaboration"
-          ? detail.collaboration?.error || "The workspace collaboration connection isn’t confirmed. New messages are paused; the current turn and approvals remain available."
-          : reason === "running"
-            ? "The last turn was still running when this agent’s connection ended, so its result isn’t confirmed."
-            : "The previous result isn’t confirmed yet."}{" "}
-        Reconnect to check it in the same session; nothing is sent again.
+        {reason === "offline" ? (
+          <>This agent’s session isn’t connected. Reconnect to open the same session; nothing is sent.</>
+        ) : (
+          <>
+            {reason === "collaboration"
+              ? detail.collaboration?.error || "The workspace collaboration connection isn’t confirmed. New messages are paused; the current turn and approvals remain available."
+              : reason === "running"
+                ? "The last turn was still running when this agent’s connection ended, so its result isn’t confirmed."
+                : "The previous result isn’t confirmed yet."}{" "}
+            Reconnect to check it in the same session; nothing is sent again.
+          </>
+        )}
         {hasDraft ? " Your draft is kept." : ""}
       </span>
       <button
@@ -97,7 +107,7 @@ export function RecoveryNotice({
         onClick={() => void reconnect()}
       >
         {connecting ? <LoaderCircle size={14} className="spin" /> : <RotateCw size={14} />}
-        {connecting ? "Reconnecting…" : error ? "Try again" : "Reconnect and check"}
+        {connecting ? "Reconnecting…" : error ? "Try again" : reason === "offline" ? "Reconnect" : "Reconnect and check"}
       </button>
       {error && (
         <p role="alert" className="recovery-error">

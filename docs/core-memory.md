@@ -485,9 +485,9 @@ besides that shared position. In the windows, the slowest call took 12.5–22.5
 ms before; after, 2.8–10.9 ms, except one window with the 37.9 MiB record in
 which one call took 46.2 ms and a delta 44.4 ms. None of that is attributed.
 Commits that still copy a held Codex record whole, which this lab does not
-make, include `error`, `thread/compacted` and an MCP server's start-up
-status; a status change or a request's resolution while a message is being
-sent no longer does (see below).
+make, include `error` and `thread/compacted`; a status change or a
+request's resolution while a message is being sent, and an MCP server's
+start-up status, no longer do (see below).
 These are synthetic allocator measurements in one process, not the daily
 Core's RSS.
 
@@ -612,6 +612,59 @@ text), but keeps no second copy to compare with and returns none. These are
 synthetic allocator measurements in one process, not the daily Core's RSS;
 how often a Codex Agent's thread starts was not measured.
 
+### A Codex connection's end
+
+When a Codex connection ends (`yuzuno/disconnected`), the Agent is marked
+disconnected: offline unless its status is uncertain, with the reason unless
+Core closed the connection itself (which keeps an error recorded before),
+and its context usage and pending requests stale. That changes no Turn, but
+it was committed with `update`, which copied a held record whole to compare
+and returned a second copy nobody read. It is now committed as the metadata
+(`Store::update_meta`), with the same change, and journaled the same
+(`runtime/disconnected`); `Meta` gains the context usage, which the
+metadata row already holds. A held record with a user message whose client
+ID `restore` gives back is still written by the commit that restores it,
+and a write that fails changes and publishes nothing, as before. By the
+source, this is the same change of commit as a thread's start above; it was
+not measured separately.
+
+### An MCP server's start-up status
+
+Codex reports each MCP server's start-up status
+(`mcpServer/startupStatus/updated`) as a connection starts, while it resumes
+the thread, by when attach's first commit has left the record held.
+`AgentDetail::apply` does not act on the event: applied to the whole record
+it only settled the status, set the update time and, as `apply`'s last step,
+accepted each receipt not yet accepted or rejected by its user message. It
+was committed through `Store::record_applied`, whose commit copied a held
+record whole (or loaded one not held). It is now committed as the metadata
+(`metadata_event`, as `thread/status/changed` is), changing no field, and
+always with that receipt step (`Store::update_meta_applied`), so a receipt
+in any state, an unknown one too, is left as the whole-record commit left
+it.
+
+T-140 run `d5ce8d56-4519-4853-801e-419f7ae70ed3`, 2026-10-24: release builds of `core_memory_paths` with a
+lab mode (on lab branches, not merged) that runs the Agent's own handler
+(`on_event`) on main `ecee0a8` and on this change, in the order before,
+after, after, before, one process each. One synthetic record of 64 MiB; one
+whole copy of it held (`detail`) is 69.9 MiB. Each run sent three servers'
+`starting` and `ready` and one `ready` beside a receipt still sending to the
+held record, then one `ready` to the record not held and one more to the
+record that load left held. Both runs of a side gave the same counts, and
+all four wrote the same journal and Agent:
+
+| One start-up status | Before: allocated | Before: peak above its start | After: allocated | After: peak |
+| --- | ---: | ---: | ---: | ---: |
+| Held (seven events) | 69.9 MiB | 69.9 MiB | 33.7–35.5 KiB | 12.9–14.7 KiB |
+| Not held | 89.1 MiB | 71.0 MiB | 89.1 MiB | 71.0 MiB |
+| Held again after that load | 69.9 MiB | 69.9 MiB | 0.03 MiB | 0.01 MiB |
+
+Held, an event took 12.7–26.7 ms before and 1.7–3.4 ms after. A record not
+held is still loaded from its rows and held, as `commit_meta` does for any
+metadata commit to one. These are synthetic allocator measurements in one
+process, not the daily Core's RSS; how many MCP servers a daily Agent has,
+and so how many such events a connection makes, was not measured.
+
 ### A Claude send
 
 An ordinary Claude send, one that steers no Turn, made two commits through
@@ -665,8 +718,34 @@ code, a held send made three whole copies before and none now; two of them
 were alive at once, the form's read and a commit's copy. That peak was not
 measured. A send on a record not held still loads it and compares, as before.
 These are synthetic allocator measurements in one process, not the daily
-Core's RSS. A Claude follow-up and a message delivery still copy the record
-once each.
+Core's RSS.
+
+A follow-up, a message sent while a Turn runs, read the record whole
+(`claude_steer_locked`, `detail`) and committed `claude/followUpQueued` with a
+copy to compare. Its change adds the message to the Turn it was sent to,
+unless some Turn already shows it: a delivery may have put it in this Turn or
+the next. The follow-up now reads the send view, and commits through
+`Store::record_send_unless`. That function makes the same check over the held
+Turns in place, under the record lock every write takes, and writes the
+change in place as a send's commits are. Otherwise the follow-up is compared
+as before. A follow-up through `send_message` on a held record commits once
+in place and reads no whole copy. It was not measured on its own: its commit
+copies the metadata and the one Turn, as `turnRequested`'s does.
+
+A message delivery, Claude naming a follow-up, copied the record to
+compare. It shows the message in the Turn Claude names: in place where that
+Turn shows it already, or moved there from the first Turn that does. That Turn
+may be one the record lacks, which the delivery appends. It then settles the
+Agent's status by every Turn. On a held record where some Turn shows the
+message, `Store::record_delivery` now copies only the Turn named and the one
+showing it, in record order, and writes them in place (`commit_turns`, beside
+`commit_turn`). Whether another Turn is in progress is read in place under
+the record lock, and the status settles as before. A message no Turn shows
+is built from its receipt and its images, and is compared as before, decided
+before the change runs, so its images are read once. A delivery from the
+bridge, on a held record where a Turn shows the message, commits in place and
+reads no whole copy. This was not measured on its own: the commit copies the
+metadata and at most two Turns.
 
 ### A Claude Turn's end
 
