@@ -415,9 +415,10 @@ fn harden(mut response: Response) -> Response {
 /// Who may use the remote entry (T-170): one Tailscale login, through one
 /// origin. Tailscale Serve keeps the browser's Host, removes any identity
 /// headers a client sent, and sets `Tailscale-User-Login` only for a node
-/// owned by a user: never for a tagged node, a request from the local machine
-/// or Funnel. A shared-in user from another tailnet gets their own login, so
-/// only the configured one is let in.
+/// owned by a user: never for a tagged node or Funnel. A request the machine
+/// running Serve sends to its own Serve address carries its owner's login. A
+/// shared-in user from another tailnet gets their own login, so only the
+/// configured one is let in.
 #[derive(Clone, Debug)]
 pub struct RemoteEntry {
     origin: String,

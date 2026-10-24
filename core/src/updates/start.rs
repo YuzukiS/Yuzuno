@@ -431,7 +431,8 @@ impl Default for StopBudget {
 /// installation, running the release it says it runs and holding the port;
 /// otherwise nothing is signalled. Nothing is ever killed: a Core that has
 /// not exited within the wait is said to be `stopping` (code `timeout`) and
-/// left as it is. The result's `state`: `stopped`, `notRunning`,
+/// left as it is. The result's `state`: `stopped` (with `portHeldBy` when
+/// something holds the port again by the time Core has gone), `notRunning`,
 /// `stopping`, `refused` or `failed`, with a `code` and `message`.
 pub fn stop(root: &Path, port: u16, workspace_id: &str, budget: StopBudget) -> Value {
     result_of(try_stop(root, port, workspace_id, budget))
@@ -467,8 +468,22 @@ fn try_stop(root: &Path, port: u16, workspace_id: &str, budget: StopBudget) -> R
     pidfd_send_signal(&held, Signal::INT).map_err(|error| failed("signal", format!("Cannot interrupt Core (process {}): {error}", core.pid)))?;
     let until = Instant::now() + budget.exit;
     loop {
-        if !core.alive() && matches!(probe(&client, port, workspace_id), Answer::Free) {
-            return Ok(json!({"state":"stopped","pid":core.pid,"releaseId":release,"workspaceId":workspace_id}));
+        if !core.alive() {
+            let mut outcome = json!({"state":"stopped","pid":core.pid,"releaseId":release,"workspaceId":workspace_id});
+            // Core has gone; something may hold its port again already (a
+            // start that started Core again, or another program).
+            let holder = match probe(&client, port, workspace_id) {
+                Answer::Free => None,
+                Answer::Ours { .. } => Some("thisWorkspace"),
+                Answer::Workspace => Some("otherWorkspace"),
+                Answer::Other => Some("otherProgram"),
+                Answer::Silent => Some("notAnswering"),
+            };
+            if let Some(holder) = holder {
+                outcome["portHeldBy"] = json!(holder);
+                outcome["message"] = json!(format!("Core (process {}) has exited; port {port} is held again ({holder}).", core.pid));
+            }
+            return Ok(outcome);
         }
         if Instant::now() >= until {
             return Err(Stop {
@@ -1288,6 +1303,34 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
         assert_eq!((stopped["state"].as_str(), stopped["code"].as_str()), (Some("stopping"), Some("timeout")), "{stopped}");
         assert!(alive(&core), "it was killed");
         assert!(matches!(probe(&client().unwrap(), port, WORKSPACE), Answer::Ours { .. }));
+    }
+
+    /// A Core that has exited while its port is held again (here by a process
+    /// it shared its socket with) is said to have stopped, with what holds the
+    /// port: not that it may still be finishing.
+    #[test]
+    fn a_core_gone_while_its_port_is_held_again_is_said_to_have_stopped() {
+        let install = install();
+        compiled(&install, "yuzuno-workspace");
+        compiled(&install, "port-keeper");
+        let port = free_port();
+        let launch = launch(&install, port);
+        record(&install.layout, &install.running, &launch, WORKSPACE, |_| None).unwrap();
+        fs::write(launch.data_dir.join("hand-over"), "").unwrap();
+        let outcome = start(&install.layout.root, port, WORKSPACE, QUICK);
+        let core = held(&outcome);
+        assert_eq!(outcome["state"], "started", "{outcome}");
+        let keeper_pid = launch.data_dir.join("keeper-pid");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !keeper_pid.exists() {
+            assert!(Instant::now() < deadline, "the port keeper did not start");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let keeper = Held(fs::read_to_string(&keeper_pid).unwrap().parse().ok().and_then(|pid| state::ProcessIdentity::read(pid).ok()));
+        let stopped = stop(&install.layout.root, port, WORKSPACE, StopBudget { lock: QUICK_STOP.lock, exit: Duration::from_secs(5) });
+        assert_eq!((stopped["state"].as_str(), stopped["portHeldBy"].as_str()), (Some("stopped"), Some("thisWorkspace")), "{stopped}");
+        assert!(!alive(&core));
+        assert!(alive(&keeper), "the port keeper was signalled");
     }
 
     #[test]
