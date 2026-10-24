@@ -107,6 +107,37 @@ jobs:
           node tests/connection.test.mjs
           node tests/new_window_links.test.mjs
 
+      # Temporary (T-170, Lead 8337): Dev 5's rename of the web modules whose
+      # names differed only in case (fix/t170-case-names at e3d5fb7), built
+      # on this Mac's own disk, which ignores case; main 22e1fae, before the
+      # rename, is the control and must fail with MISSING_EXPORT. Web only:
+      # nothing here builds the app. Removed once the rename is on main.
+      - name: Web build on the Mac's own disk (case names)
+        run: |
+          volume=$(df . | tail -1 | awk '{print $NF}')
+          echo "checkout: $PWD on $volume"
+          diskutil info "$volume" | grep -i 'File System Personality'
+          touch case-probe-a
+          if ls case-probe-A > /dev/null 2>&1; then echo "case-probe-A found: this disk ignores case"; else echo "::error::this disk is case-sensitive"; exit 1; fi
+          rm -f case-probe-a
+          for commit in e3d5fb7002a2a43b9575a41d5d5cb52b6442c65c 22e1faed36cf99b3f256fe7cea8bd67771de413f; do
+            git -C .. fetch -q --no-tags --depth 1 origin "$commit"
+            dir="$RUNNER_TEMP/case-$commit"
+            mkdir -p "$dir"
+            git -C .. archive "$commit" LICENSE web | tar -x -C "$dir"
+            echo "$commit in $dir on $(df "$dir" | tail -1 | awk '{print $NF}')"
+            set +e
+            (cd "$dir/web" && npm ci --ignore-scripts --no-audit --no-fund && npx vite build --outDir "$RUNNER_TEMP/web-dist-case-$commit" --emptyOutDir) > "$dir/build.log" 2>&1
+            echo $? > "$dir/build.exit"
+            set -e
+            echo "$commit: npm ci + vite build exit $(cat "$dir/build.exit"), MISSING_EXPORT lines $(grep -c MISSING_EXPORT "$dir/build.log")"
+          done
+          fix="$RUNNER_TEMP/case-e3d5fb7002a2a43b9575a41d5d5cb52b6442c65c"
+          control="$RUNNER_TEMP/case-22e1faed36cf99b3f256fe7cea8bd67771de413f"
+          if [ "$(cat "$fix/build.exit")" != 0 ] || grep -q MISSING_EXPORT "$fix/build.log"; then tail -40 "$fix/build.log"; echo "::error::the rename does not build on this disk"; exit 1; fi
+          if [ "$(cat "$control/build.exit")" = 0 ] || ! grep -q MISSING_EXPORT "$control/build.log"; then tail -40 "$control/build.log"; echo "::error::the control did not fail with MISSING_EXPORT"; exit 1; fi
+          grep MISSING_EXPORT "$control/build.log" | perl -pe 's/\e\[[0-9;]*m//g'
+
       # The pinned Tauri CLI, built fresh; nothing is cached.
       - name: Tauri CLI ${{ env.TAURI_CLI_VERSION }}
         run: |
