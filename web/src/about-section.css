@@ -1,0 +1,20 @@
+/* About & help (T-191): links in the help text, and license texts that open
+   in place. */
+.about-section .about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+.about-section .about-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.about-section .about-version code {
+  overflow-wrap: anywhere;
+}
+.about-section .about-license-text {
+  max-height: 16rem;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
