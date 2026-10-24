@@ -18,8 +18,8 @@ struct Lab {
 
 /// The fake tailscale.exe: status from the state file, `serve status`,
 /// `serve --bg --https=P target` and `serve --https=P off`, with faults the
-/// state names: `failAdd` (refused), `lostAdd` (added, then no answer) and
-/// `slow` (seconds before any answer).
+/// state names: `failAdd` and `failOff` (refused), `lostAdd` (added, then no
+/// answer) and `slow` (seconds before any answer).
 const TAILSCALE: &str = r#"#!/usr/bin/env python3
 import json, sys, time
 STATE, LOG = sys.argv[0] + ".json", sys.argv[0] + ".log"
@@ -44,6 +44,8 @@ if args[:2] == ["serve", "--bg"] and args[2].startswith("--https="):
         s.pop("lostAdd"); save(); time.sleep(30)
     sys.exit(0)
 if len(args) == 3 and args[0] == "serve" and args[1].startswith("--https=") and args[2] == "off":
+    if s.get("failOff"):
+        print(s["failOff"], file=sys.stderr); sys.exit(1)
     port = args[1].split("=")[1]
     serve.get("TCP", {}).pop(port, None)
     for key in [k for k in serve.get("Web", {}) if k.endswith(":" + port)]:
@@ -412,4 +414,77 @@ fn serve_entries_are_matched_exactly() {
     let mut extra = config;
     extra["Web"][format!("{DNS}:8444")]["Handlers"]["/admin"] = json!({"Proxy": "y"});
     assert_eq!(host::serve_entry(&extra, DNS, 8444, "http://127.0.0.1:4318").0, "conflict");
+}
+
+#[tokio::test]
+async fn a_new_login_on_the_same_port_ends_what_the_old_login_opened() {
+    let lab = lab("wsl");
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    let port = free_port();
+    lab.apply(json!({"requestId": "on", "enabled": true, "localPort": port})).await.unwrap();
+    let host = format!("{DNS}:8444");
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut stream = client.get(format!("http://127.0.0.1:{port}/api/events")).header("host", &host)
+        .header("tailscale-user-login", OWNER).send().await.unwrap();
+    assert_eq!(stream.status().as_u16(), 200);
+    let op = lab.apply(json!({"requestId": "other-login", "enabled": true, "localPort": port, "login": "partner@github"})).await.unwrap();
+    assert_eq!(op["state"].as_str(), Some("succeeded"), "{op}");
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Ok(Some(_)) = stream.chunk().await {}
+    }).await;
+    assert!(ended.is_ok(), "the old login's stream outlived the change");
+    assert_eq!(get(port, "/api/health", Some(OWNER), &host).await.0, 403, "the old login is refused now");
+    assert_eq!(get(port, "/api/health", Some("partner@github"), &host).await.0, 200);
+}
+
+#[tokio::test]
+async fn an_operation_a_stopped_core_left_running_is_marked_interrupted() {
+    let lab = lab("wsl");
+    let left = Operation {
+        id: "op-1".into(), request_id: "r-1".into(), kind: "apply".into(), state: "running".into(), step: "serve".into(),
+        error: None, notes: Vec::new(), started_at: "2026-10-24T00:00:00Z".into(), finished_at: None, url: None,
+        request: serde_json::from_value(json!({"requestId": "r-1", "enabled": true})).unwrap(),
+    };
+    update(&lab.ws, |saved| { saved.operations.push(left); Ok(()) }).unwrap();
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    let op = lab.view().await["operation"].clone();
+    assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("interrupted"), Some("serve")), "{op}");
+    assert!(op["error"].as_str().unwrap().contains("Core stopped during the serve step"), "{op}");
+    // Its request id answers with that record; a new request may run.
+    assert_eq!(start(&lab.ws, serde_json::from_value(json!({"requestId": "r-1", "enabled": true})).unwrap()).await.unwrap()["state"], "interrupted");
+}
+
+#[tokio::test]
+async fn a_taken_port_at_startup_stops_core_only_for_the_environment_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let taken = held.local_addr().unwrap().port();
+    let env = RemoteEntry::new(&format!("https://{DNS}:8444"), OWNER).unwrap();
+    let error = startup(dir.path(), Some((taken, env))).bind().await.err().expect("YUZUNO_REMOTE_PORT taken stops Core");
+    assert!(format!("{error:#}").contains("YUZUNO_REMOTE_PORT"), "{error:#}");
+    let saved = Saved { format: 1, effective: Some(Applied { listen: Some(Entry { port: taken, origin: format!("https://{DNS}:8444"), login: OWNER.into() }),
+        serve_port: Some(8444), applied_at: "2026-10-24T00:00:00Z".into() }), ..Default::default() };
+    crate::updates::package::atomic_json(&dir.path().join(FILE), &saved).unwrap();
+    let bound = startup(dir.path(), None).bind().await.expect("a Settings port taken leaves Core running");
+    assert!(bound.listener.is_none());
+    assert!(bound.error.unwrap().contains(&format!("could not listen on 127.0.0.1:{taken}")));
+}
+
+#[tokio::test]
+async fn a_refused_removal_turns_core_off_and_keeps_the_entry_recorded_as_its_own() {
+    let lab = lab("wsl");
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    let port = free_port();
+    lab.apply(json!({"requestId": "on", "enabled": true, "localPort": port})).await.unwrap();
+    lab.set_fake(|s| s["failOff"] = json!("serve config locked"));
+    let op = lab.apply(json!({"requestId": "off", "enabled": false})).await.unwrap();
+    assert_eq!(op["state"], "failed", "{op}");
+    assert!(op["error"].as_str().unwrap().contains("serve config locked"), "{op}");
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    assert!(client.get(format!("http://127.0.0.1:{port}/api/health")).send().await.is_err(), "Core stopped listening anyway");
+    assert_eq!(lab.saved().owned.map(|o| o.serve_port), Some(8444), "still recorded, so a later disable can remove it");
+    lab.set_fake(|s| s["failOff"] = Value::Null);
+    let again = lab.apply(json!({"requestId": "off-again", "enabled": false})).await.unwrap();
+    assert_eq!(again["state"], "succeeded", "{again}");
+    assert!(lab.fake()["serve"]["TCP"].get("8444").is_none());
 }
