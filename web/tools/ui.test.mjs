@@ -3921,8 +3921,9 @@ test("rail shows attributed current work as plain text; the inspector opens the 
       false,
     );
     assert.match(rail.textContent, /Reported/);
-    // One target per card; the machine is shown, the working folder is not.
-    assert.equal(rail.querySelectorAll("button").length, 1);
+    // One target opens the card, then its actions (T-184); the machine is
+    // shown, the working folder is not.
+    assert.deepEqual([...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")), ["Open Mori", "Actions for Mori"]);
     // The machine heads the name, beside the avatar, inside the one target.
     const identity = rail.querySelector(".agent-select .agent-identity");
     assert.deepEqual(

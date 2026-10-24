@@ -30,14 +30,14 @@ const fresh = () => [
 ];
 let agents = fresh();
 const calls = [];
-const report = { mode: before ? "before" : "after", checks: [], screenshots: [], errors: [], requests: {} };
+const report = { mode: before ? "before" : "after", checks: [], screenshots: [], errors: [], console: [], requests: {} };
 const check = (name) => {
   report.checks.push(name);
   console.log(name);
 };
 // Each window starts with fresh Agents and its own request list.
 let current = null;
-const keep = () => current && (report.requests[current] = calls.filter((c) => c.method !== "GET"));
+const keep = () => current && (report.requests[current] = [...calls]);
 function section(name) {
   keep();
   agents = fresh();
@@ -50,7 +50,7 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://fixture.test");
   if (url.pathname.startsWith("/api/")) {
     for await (const _ of req);
-    calls.push({ method: req.method, path: url.pathname });
+    calls.push({ method: req.method, path: url.pathname, ...(url.search ? { search: url.search } : {}) });
     if (url.pathname === "/api/events") {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       res.write(": fixture\n\n");
@@ -59,6 +59,8 @@ const server = createServer(async (req, res) => {
     const [, , kind, id, action] = url.pathname.split("/");
     const agent = kind === "agents" ? agents.find((a) => a.id === id) : undefined;
     let result = {};
+    // What this fixture doesn't serve, Core doesn't have here.
+    let missing = false;
     if (url.pathname === "/api/workspace") result = { agents, runtime: { connected: true }, defaultCwd: "/fixture/project" };
     else if (url.pathname === "/api/machines") result = { machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/fixture/project" }] };
     else if (url.pathname.endsWith("/models")) result = { models: [{ id: "codex-fixture", model: "codex-fixture", displayName: "Codex fixture", supportedReasoningEfforts: [{ reasoningEffort: "low" }], defaultReasoningEffort: "low" }] };
@@ -71,15 +73,16 @@ const server = createServer(async (req, res) => {
       Object.assign(agent, { connectionState: "connected", status: "idle" });
     } else if (agent && action === "interrupt" && req.method === "POST") {
       Object.assign(agent, { status: "idle" });
-    } else if (agent && !action)
+    } else if (agent && action) missing = true;
+    else if (agent)
       result = {
         agent, pending: [], artifacts: [],
         turns: [{ id: `${id}-turn`, status: agent.status === "working" ? "inProgress" : "completed",
           items: [{ id: `${id}-user`, type: "userMessage", content: [{ type: "text", text: "Please review the layout." }] },
             { id: `${id}-reply`, type: "agentMessage", text: `Saved reply from ${agent.name}` }] }],
       };
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(result));
+    res.writeHead(missing ? 404 : 200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(missing ? { error: "Not served by this fixture" } : result));
     return;
   }
   const path = resolve(dist, `.${url.pathname === "/" ? "/index.html" : url.pathname}`);
@@ -95,6 +98,12 @@ const browser = await chromium.launch({ headless: true, executablePath: process.
 async function shot(page, name) {
   await page.screenshot({ path: resolve(output, `${name}.png`) });
   report.screenshots.push(`${name}.png`);
+  // Never a passing step on the app's error screen.
+  assert.equal(await page.locator("#app-recovery-title").count(), 0, `${name}: the app fell to its error screen: ${JSON.stringify(report.console)}`);
+}
+function watch(page) {
+  page.on("pageerror", (error) => report.errors.push(String(error)));
+  page.on("console", (message) => message.type() === "error" && report.console.push(message.text()));
 }
 const menu = (page) => page.locator('[role="menu"]');
 const row = (page, id) => page.locator(`.agent-row[data-agent-id="${id}"]`);
@@ -106,7 +115,7 @@ try {
     section("desktop");
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     const page = await context.newPage();
-    page.on("pageerror", (error) => report.errors.push(String(error)));
+    watch(page);
     await page.goto(origin);
     await row(page, "a").waitFor();
     await row(page, "a").locator(".agent-select").click();
@@ -137,6 +146,9 @@ try {
       check("The header's Conversation actions is the same menu, for Mori");
       await page.locator(".recovery-notice button", { hasText: "Reconnect" }).click();
       await page.locator(".recovery-notice").waitFor({ state: "detached" });
+      // Still Mori's conversation, as Core now reports her: connected, idle.
+      await page.getByRole("textbox", { name: "Message Mori" }).waitFor();
+      assert.equal(await hint(page).getAttribute("data-notice"), null, "no offline hint once connected");
       assert.equal(posts("/api/agents/a/reconnect"), 1);
       assert.equal(calls.filter((c) => c.path.includes("/messages")).length, 0);
       await shot(page, "desktop-after-reconnect");
@@ -161,7 +173,7 @@ try {
     section(`${width}`);
     const context = await browser.newContext({ viewport: { width, height }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
     const page = await context.newPage();
-    page.on("pageerror", (error) => report.errors.push(String(error)));
+    watch(page);
     await page.goto(origin);
     await row(page, "b").waitFor();
     await page.waitForTimeout(300);
@@ -213,6 +225,7 @@ try {
       await shot(page, `${width}-header-menu`);
       await menu(page).getByRole("menuitem", { name: "Reconnect" }).tap();
       await page.locator(".recovery-notice").waitFor({ state: "detached" });
+      await page.getByRole("textbox", { name: "Message Mori" }).waitFor();
       assert.equal(posts("/api/agents/a/reconnect"), 1);
       assert.equal(calls.filter((c) => c.path.includes("/messages")).length, 0);
       await shot(page, `${width}-after-reconnect`);

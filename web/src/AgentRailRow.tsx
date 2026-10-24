@@ -132,7 +132,6 @@ export function AgentRailRow({
         },
       })}
     >
-      {actions && <AgentActionsMenu ref={menu} agent={agent} handlers={actions} className="agent-row-menu" />}
       <button
         ref={select}
         className="agent-select agent-row-top"
@@ -168,6 +167,8 @@ export function AgentRailRow({
           {label}
         </span>
       </button>
+      {/* After the card's own target in focus order; drawn at its top right. */}
+      {actions && <AgentActionsMenu ref={menu} agent={agent} handlers={actions} className="agent-row-menu" />}
       {/* The whole card opens the agent; nothing inside is a separate link. */}
       {summary && (
         <div
