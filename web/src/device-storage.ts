@@ -13,12 +13,18 @@ export type SaveOutcome =
   | { saved: true }
   | { saved: false; reason: "full" | "blocked" | "unknown"; detail: string };
 
+/** Storage this browser blocks: what a write, or a read, meets there. */
+export const STORAGE_BLOCKED: SaveOutcome = {
+  saved: false,
+  reason: "blocked",
+  detail: "this browser doesn’t let Yuzuno store settings here",
+};
+
 function refused(error: unknown): SaveOutcome {
   const name = typeof error === "object" && error && "name" in error ? String(error.name) : "";
   if (name === "QuotaExceededError" || name === "NS_ERROR_DOM_QUOTA_REACHED")
     return { saved: false, reason: "full", detail: "this browser’s storage for Yuzuno is full" };
-  if (name === "SecurityError")
-    return { saved: false, reason: "blocked", detail: "this browser doesn’t let Yuzuno store settings here" };
+  if (name === "SecurityError") return STORAGE_BLOCKED;
   const message = error instanceof Error && error.message ? error.message : String(error);
   return { saved: false, reason: "unknown", detail: `the browser refused it (${message})` };
 }
@@ -57,6 +63,27 @@ export function deviceStorageReadable(key: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** What this device holds under `key`, read before any save in this visit:
+ * a value ("saved"), nothing ("none"), one that isn't JSON ("invalid"), or
+ * storage it can't read ("unreadable"). A caller may also count a value of
+ * the wrong shape as invalid. Reads only. */
+export type DeviceValueState = "saved" | "none" | "invalid" | "unreadable";
+export function deviceValueState(key: string): DeviceValueState {
+  let text: string | null;
+  try {
+    text = localStorage.getItem(key);
+  } catch {
+    return "unreadable";
+  }
+  if (text === null) return "none";
+  try {
+    JSON.parse(text);
+    return "saved";
+  } catch {
+    return "invalid";
   }
 }
 

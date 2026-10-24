@@ -1,5 +1,13 @@
 import { useSyncExternalStore } from "react";
-import { clearDeviceValue, deviceStorageReadable, onDeviceValueChange, saveDeviceValue, type SaveOutcome } from "./device-storage.ts";
+import {
+  clearDeviceValue,
+  deviceValueState,
+  onDeviceValueChange,
+  readDeviceValue,
+  saveDeviceValue,
+  type DeviceValueState,
+  type SaveOutcome,
+} from "./device-storage.ts";
 
 export type ThemePreference = "light" | "dark" | "system";
 /** Text size in px, any whole number from MIN_FONT_SIZE to MAX_FONT_SIZE. */
@@ -164,8 +172,10 @@ export function applyAppearance(appearance: Appearance) {
 // still the one in effect here, until this window closes (T-187).
 const listeners = new Set<() => void>();
 let current: Appearance | null = null;
-// What this visit's last save or reset did; null before one.
-let lastSave: SaveOutcome | null = null;
+/** What this visit's last write of Appearance did: a save or a reset. */
+export type AppearanceWrite = { outcome: SaveOutcome; action: "save" | "reset" };
+// Null before one.
+let lastSave: AppearanceWrite | null = null;
 function changed() {
   current = null;
   // Another window saved: what is in effect here is what is saved now.
@@ -183,13 +193,18 @@ export function useAppearance(): Appearance {
 }
 
 /** What this visit's last save or reset of Appearance did, or null. */
-export function useAppearanceSave(): SaveOutcome | null {
+export function useAppearanceSave(): AppearanceWrite | null {
   return useSyncExternalStore(subscribe, () => lastSave);
 }
 
-/** Whether this device can read its saved Appearance at all. */
-export function appearanceReadable(): boolean {
-  return deviceStorageReadable(STORAGE_KEY);
+/** What this device holds for Appearance, read now: a saved choice, none
+ * (the defaults), one it can't read (not an object; the defaults apply), or
+ * storage it can't read at all. */
+export function appearanceStored(): DeviceValueState {
+  const state = deviceValueState(STORAGE_KEY);
+  if (state !== "saved") return state;
+  const value = readDeviceValue(STORAGE_KEY);
+  return value && typeof value === "object" && !Array.isArray(value) ? "saved" : "invalid";
 }
 
 /** Applies `appearance` and saves it on this device. A refused write is
@@ -198,7 +213,7 @@ export function saveAppearance(appearance: Appearance): SaveOutcome {
   applyAppearance(appearance);
   const outcome = saveDeviceValue(STORAGE_KEY, appearance);
   current = appearance;
-  lastSave = outcome;
+  lastSave = { outcome, action: "save" };
   listeners.forEach((listener) => listener());
   return outcome;
 }
@@ -208,7 +223,7 @@ export function restoreDefaultAppearance(): SaveOutcome {
   applyAppearance(defaultAppearance);
   const outcome = clearDeviceValue(STORAGE_KEY);
   current = defaultAppearance;
-  lastSave = outcome;
+  lastSave = { outcome, action: "reset" };
   listeners.forEach((listener) => listener());
   return outcome;
 }

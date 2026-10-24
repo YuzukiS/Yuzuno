@@ -22,7 +22,7 @@ globalThis.localStorage = {
   },
 };
 globalThis.window = new EventTarget();
-const { clearDeviceValue, deviceStorageReadable, onDeviceValueChange, readDeviceValue, saveDeviceValue } =
+const { clearDeviceValue, deviceStorageReadable, deviceValueState, onDeviceValueChange, readDeviceValue, saveDeviceValue } =
   await import("../src/device-storage.ts");
 
 test("a read is the saved JSON, or null: none, not JSON, or storage unreadable", () => {
@@ -74,4 +74,19 @@ test("another window's change is passed on for this key, or when all storage is 
   stop();
   storage("yuzuno.preferences");
   assert.equal(seen.length, 2, "no longer after it stops");
+});
+
+test("what this device holds under a key: a value, none, not JSON, or unreadable", () => {
+  store.clear();
+  assert.equal(deviceValueState("yuzuno.preferences"), "none");
+  store.set("yuzuno.preferences", JSON.stringify({ sendKey: "enter" }));
+  assert.equal(deviceValueState("yuzuno.preferences"), "saved");
+  store.set("yuzuno.preferences", "{not json");
+  assert.equal(deviceValueState("yuzuno.preferences"), "invalid");
+  refuseReads = new DOMException("The operation is insecure.", "SecurityError");
+  try {
+    assert.equal(deviceValueState("yuzuno.preferences"), "unreadable");
+  } finally {
+    refuseReads = null;
+  }
 });
