@@ -483,8 +483,15 @@
   --swatch-ink: #d9e2ce;
   --swatch-accent: #dbc57e;
 }
+/* A phone: as many palettes to a row as their names fit, at any text
+   size; at 24 px two no longer fit a 320 px phone (T-189). */
 @media (max-width: 520px) {
   .palette-options {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .palette-options > .palette-choice {
+    flex: 1 1 0;
+    min-width: min-content;
   }
 }

@@ -132,11 +132,23 @@ try {
   for (const width of [1360, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await open();
-    await page.getByRole('tab', { name: 'Updates & about' }).focus();
-    await page.keyboard.press('Home');
-    assert.equal(await page.getByRole('tab', { name: 'Appearance & interaction' }).getAttribute('aria-selected'), 'true');
-    await page.keyboard.press('ArrowDown');
-    assert.equal(await page.getByRole('tab', { name: 'Notifications & attention' }).getAttribute('aria-selected'), 'true');
+    if (width > 720) {
+      await page.getByRole('tab', { name: 'Updates & about' }).focus();
+      await page.keyboard.press('Home');
+      assert.equal(await page.getByRole('tab', { name: 'Appearance & interaction' }).getAttribute('aria-selected'), 'true');
+      await page.keyboard.press('ArrowDown');
+      assert.equal(await page.getByRole('tab', { name: 'Notifications & attention' }).getAttribute('aria-selected'), 'true');
+    } else {
+      // A phone: the categories are the picker (T-189), from the keyboard too.
+      assert.equal(await page.getByRole('tab', { name: 'Updates & about' }).isVisible(), false);
+      const picker = page.getByRole('combobox', { name: 'Settings category', exact: true });
+      await picker.focus();
+      await page.keyboard.press('ArrowUp');
+      assert.equal(await picker.inputValue(), 'data');
+      assert.equal(await page.locator('.settings-catalog-heading h3').innerText(), 'Data, privacy & recovery');
+      await page.keyboard.press('ArrowUp');
+      assert.equal(await picker.inputValue(), 'jobs');
+    }
     await search('手机访问');
     await page.getByText('Unavailable here.', { exact: false }).waitFor();
     assert.equal(await page.locator('.settings-catalog-card button').count(), 0);
@@ -164,7 +176,8 @@ try {
   await closeDialog();
   await page.setViewportSize({ width: 320, height: 900 });
   await open();
-  await page.getByRole('tab', { name: 'Appearance & interaction' }).click();
+  // A phone's categories are the picker (T-189).
+  await page.getByRole('combobox', { name: 'Settings category', exact: true }).selectOption('appearance');
   const appearance = page.locator('.appearance-settings');
   assert.match(await appearance.getByRole('status').innerText(), /Using the defaults/);
   const protectedKeys = await page.evaluate(() => ({
@@ -188,7 +201,7 @@ try {
   assert.equal(await page.evaluate(() => localStorage.getItem('yuzuno.appearance')), null);
   await closeDialog();
   await open();
-  await page.getByRole('tab', { name: 'Appearance & interaction' }).click();
+  await page.getByRole('combobox', { name: 'Settings category', exact: true }).selectOption('appearance');
   assert.equal(await appearance.getByRole('radio', { name: 'Dark Low light' }).isChecked(), true);
   await appearance.getByRole('alert').scrollIntoViewIfNeeded();
   await page.screenshot({ path: resolve(output, 'appearance-save-refused-320.png') });
