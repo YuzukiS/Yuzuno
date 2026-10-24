@@ -430,6 +430,9 @@ export function App() {
     top: number;
   } | null>(null);
   currentSelected.current = selected;
+  // The Agent whose conversation is on screen now, for a reply that comes later.
+  const shownConversation = useRef<string | null>(null);
+  shownConversation.current = homeOpen || listShown ? null : selected;
   const scopeWorkspace = useRef("");
   const scopeRef = useRef<ProjectScope>(ALL_PROJECTS);
   const workspaceRef = useRef(workspace);
@@ -1170,9 +1173,12 @@ export function App() {
   // Each entry acts on the Agent the menu was opened on, never on whichever
   // is selected by then; a reconnect or interrupt already running for that
   // Agent is not sent again.
+  // Said where it is seen when the reply comes: in that Agent's conversation
+  // if it is on screen, otherwise naming the Agent.
+  const agentName = (id: string) => workspace?.agents.find((a) => a.id === id)?.name || "the agent";
   const menuFailed = (id: string, what: string) => (error: unknown) => {
-    if (id === selected && !homeOpen) setActionError(errorText(error));
-    else setMenuError(`Couldn’t ${what} ${workspace?.agents.find((a) => a.id === id)?.name || "the agent"}: ${errorText(error)}`);
+    if (shownConversation.current === id) setActionError(errorText(error));
+    else setMenuError(`Couldn’t ${what} ${agentName(id)}: ${errorText(error)}`);
   };
   // Shown already (its own header's menu): nothing to navigate.
   const showAgent = (id: string) => {
@@ -1187,7 +1193,11 @@ export function App() {
       }),
     interrupt: (id) =>
       once(id, "interrupt", () => post(`/agents/${encodeURIComponent(id)}/interrupt`)).then(() => {
-        setNotice("Interrupt requested. Your conversation is preserved.");
+        setNotice(
+          shownConversation.current === id
+            ? "Interrupt requested. Your conversation is preserved."
+            : `Interrupt requested for ${agentName(id)}. The conversation is preserved.`,
+        );
         refresh();
       }, menuFailed(id, "interrupt")),
     settings: (id) => {

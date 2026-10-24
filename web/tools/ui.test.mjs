@@ -110,6 +110,7 @@ async function mount({
   settingsResponse,
   compactResponse,
   skillsResponse,
+  interruptResponse,
 } = {}) {
   const calls = [];
   const eventUrls = [];
@@ -156,6 +157,7 @@ async function mount({
     if (url.endsWith("/messages") && messageResponse) return messageResponse(url, init);
     if (url.endsWith("/settings") && settingsResponse) return settingsResponse(url, init);
     if (url.endsWith("/compact") && compactResponse) return compactResponse(url, init);
+    if (url.endsWith("/interrupt") && interruptResponse) return interruptResponse(url, init);
     if (url.endsWith("/codex/skills") && skillsResponse) return skillsResponse(url, init);
     if (url.endsWith("/models") && modelsResponse) return modelsResponse(url, init);
     if (url.includes("/api/artifact?") && artifactResponse)
@@ -3497,6 +3499,30 @@ test("the Agent action menu takes Escape: it closes and the running turn is not 
     await pause();
     assert.equal(page.calls.filter((c) => c.url.endsWith("/interrupt")).length, 1);
     assert.equal(page.calls.filter((c) => c.url.includes("/messages")).length, 0);
+  } finally {
+    page.close();
+  }
+});
+test("a menu action that fails after another Agent is opened is reported for its own Agent, not in the one shown (T-184)", async () => {
+  let release;
+  const page = await mount({
+    status: "working",
+    interruptResponse: () => new Promise((resolve) => (release = resolve)),
+  });
+  try {
+    page.document.querySelector('[aria-label="Conversation actions"]').click();
+    await pause();
+    page.document.querySelector('[role="menuitem"][data-action="interrupt"]').click();
+    await until(() => release, "Mori's interrupt was sent");
+    page.document.querySelector('[aria-label="Open Hana"]').click();
+    await until(() => page.document.querySelector('[aria-label="Message Hana"]'), "Hana is shown");
+    const error = JSON.stringify({ error: "No running turn" });
+    release({ ok: false, status: 409, json: async () => JSON.parse(error), text: async () => error });
+    await until(() => page.document.querySelector(".toast-error[role=alert]"), "the failure is reported");
+    assert.equal(page.document.querySelector(".toast-error").textContent, "Couldn’t interrupt Mori: No running turn");
+    assert.equal(page.document.querySelector(".inline-error"), null, "Hana's conversation shows no error of Mori's");
+    assert.equal(page.calls.filter((c) => c.url.endsWith("/interrupt")).length, 1);
+    assert.ok(page.calls.find((c) => c.url.endsWith("/interrupt")).url.endsWith("/api/agents/a/interrupt"));
   } finally {
     page.close();
   }
