@@ -1,0 +1,99 @@
+/* This device's preferences (T-189): sending messages and the keyboard
+   shortcuts, two sections of Settings (InputPreferences.tsx,
+   ShortcutHelp.tsx). */
+.input-send-key {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.input-send-key legend {
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.input-send-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.input-send-choice:has(input:checked) {
+  border-color: color-mix(in srgb, var(--focus) 50%, transparent);
+  background: var(--accent-wash);
+}
+.input-send-choice input {
+  margin-top: 3px;
+}
+.input-send-choice span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.input-send-choice small,
+.input-preferences-fixed,
+.shortcut-note {
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.settings-saved,
+.settings-save-failed {
+  margin: 8px 0 0;
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.settings-save-failed {
+  color: var(--error-ink, var(--coral));
+}
+
+.shortcut-group h4 {
+  margin: 0 0 6px;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.shortcut-group dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 14px;
+  row-gap: 6px;
+  margin: 0;
+}
+.shortcut-group dt {
+  white-space: nowrap;
+}
+.shortcut-group dd {
+  margin: 0;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.shortcut-group kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--surface-raised);
+  font: inherit;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  text-align: center;
+}
+.shortcut-group dt > span {
+  color: var(--text-quiet);
+}
+/* A phone's narrow screen: each shortcut above what it does. */
+@media (max-width: 520px) {
+  .shortcut-group dl {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 2px;
+  }
+  .shortcut-group dd {
+    margin-bottom: 6px;
+  }
+}
