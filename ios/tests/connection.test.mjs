@@ -12,11 +12,12 @@ const html = await readFile(new URL('../connection/index.html', import.meta.url)
 const script = await readFile(new URL('../connection/connection.js', import.meta.url), 'utf8');
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-async function mount(invoke) {
+async function mount(invoke, prepare) {
   // JSDOM cannot navigate; opening the Workspace is checked by its message.
   const virtualConsole = new VirtualConsole();
   const dom = new JSDOM(html, { url: 'tauri://localhost/index.html', runScripts: 'outside-only', virtualConsole });
   if (invoke) dom.window.__TAURI__ = { core: { invoke } };
+  prepare?.(dom.window);
   dom.window.eval(script);
   await settle();
   return dom;
@@ -99,5 +100,27 @@ test('outside the app the page says so and offers nothing to submit', async () =
     const document = dom.window.document;
     assert.match(document.querySelector('[role="status"]').textContent, /inside the Yuzuno app/);
     assert.equal(document.querySelector('#connect-button').disabled, true);
+  } finally { dom.window.close(); }
+});
+
+test('the status bar backdrop follows the visual viewport the keyboard scrolls', async () => {
+  // JSDOM has no visual viewport: this one moves as iOS's did with the
+  // keyboard open, where the page went up 223 pt (runs 40061280002 and
+  // 40064169256) while fixed elements stayed at the top.
+  let visual;
+  const dom = await mount(async () => null, (window) => {
+    visual = new window.EventTarget();
+    visual.offsetTop = 0;
+    window.visualViewport = visual;
+  });
+  try {
+    const root = dom.window.document.documentElement;
+    assert.equal(root.style.getPropertyValue('--visual-top'), '0px');
+    visual.offsetTop = 223;
+    visual.dispatchEvent(new dom.window.Event('scroll'));
+    assert.equal(root.style.getPropertyValue('--visual-top'), '223px');
+    visual.offsetTop = 0;
+    visual.dispatchEvent(new dom.window.Event('resize'));
+    assert.equal(root.style.getPropertyValue('--visual-top'), '0px');
   } finally { dom.window.close(); }
 });
