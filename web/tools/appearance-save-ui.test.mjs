@@ -59,10 +59,10 @@ function mount() {
     window, document,
     storage: window.localStorage,
     // The browser refuses writes, as when its storage is full or blocked.
-    refuse(name) {
+    refuse(name, only) {
       const error = () => { throw new window.DOMException("refused", name); };
-      storage.setItem = error;
-      storage.removeItem = error;
+      if (only !== "remove") storage.setItem = error;
+      if (only !== "save") storage.removeItem = error;
     },
     unreadable() {
       storage.getItem = () => { throw new window.DOMException("refused", "SecurityError"); };
@@ -174,4 +174,30 @@ test("before a save in this visit it says what this device holds, and never that
   const unreadable = "The choice saved on this device couldn’t be read, so the defaults apply. Choosing again saves a new one.";
   for (const stored of ["{not json", "[1,2]", "null", "\"pine\""])
     assert.deepEqual(await opened(stored), { status: unreadable, palette: "garden" }, `saved as ${stored}`);
+});
+
+test("Try again after a refused reset retries the reset: the choice is removed, not the defaults saved; nothing else changes", async () => {
+  const page = mount();
+  page.storage.setItem("yuzuno.selected", JSON.stringify("a"));
+  page.storage.setItem("yuzuno.requestDrafts.w", JSON.stringify({ q: "draft" }));
+  page.window.show(true);
+  await tick();
+  page.choose("appearance-palette", "pine");
+  await tick();
+  page.refuse("SecurityError", "remove");
+  page.button("Restore defaults").click();
+  await tick();
+  assert.match(page.alert(), /^Not saved on this device: this browser doesn’t let Yuzuno store settings here\./);
+  page.button("Try again").click();
+  await tick();
+  assert.equal(JSON.parse(page.storage.getItem(KEY)).palette, "pine", "still refused: the saved choice is there");
+  page.allow();
+  page.button("Try again").click();
+  await tick();
+  assert.equal(page.storage.getItem(KEY), null, "the reset was tried again: no choice saved, not the defaults");
+  assert.equal(page.status(), "Defaults restored on this device");
+  assert.equal(page.checked("appearance-palette"), "garden");
+  assert.equal(page.storage.getItem("yuzuno.selected"), JSON.stringify("a"));
+  assert.equal(page.storage.getItem("yuzuno.requestDrafts.w"), JSON.stringify({ q: "draft" }), "drafts are untouched");
+  page.close();
 });

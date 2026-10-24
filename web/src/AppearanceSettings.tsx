@@ -2,6 +2,7 @@ import { Check, Monitor, Moon, Rows2, Rows4, Sun, Type } from "lucide-react";
 import {
   appearanceStored,
   restoreDefaultAppearance,
+  retryAppearanceWrite,
   saveAppearance,
   useAppearance,
   useAppearanceSave,
@@ -390,7 +391,7 @@ export function AppearanceSection() {
         action={save?.action}
         stored={appearanceStored()}
         scope="this device"
-        onRetry={() => saveAppearance(appearance)}
+        onRetry={retryAppearanceWrite}
         onRestoreDefaults={restoreDefaultAppearance}
       />
     </section>

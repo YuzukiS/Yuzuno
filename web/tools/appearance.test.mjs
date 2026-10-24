@@ -29,7 +29,7 @@ const osTheme = (dark) => {
 };
 globalThis.window = Object.assign(new EventTarget(), { matchMedia: () => system });
 globalThis.getComputedStyle = () => ({ getPropertyValue: () => "" });
-const { applyAppearance, defaultAppearance, initializeAppearance, readAppearance, restoreDefaultAppearance, saveAppearance } =
+const { applyAppearance, defaultAppearance, initializeAppearance, readAppearance, restoreDefaultAppearance, retryAppearanceWrite, saveAppearance } =
   await import("../src/appearance.ts");
 const KEY = "yuzuno.appearance";
 
@@ -194,4 +194,28 @@ test("a choice this device refused to save stays in effect when the system theme
     refuse = null;
   }
   assert.equal(JSON.parse(store.get(KEY)).theme, "dark", "what is saved is unchanged");
+});
+
+test("trying again repeats the last write as it was: a refused reset is retried as a reset (T-187)", () => {
+  store.clear();
+  store.set("yuzuno.selected", JSON.stringify("a"));
+  saveAppearance({ ...readAppearance(), palette: "pine" });
+  refuse = new DOMException("The operation is insecure.", "SecurityError");
+  try {
+    assert.equal(restoreDefaultAppearance().reason, "blocked");
+  } finally {
+    refuse = null;
+  }
+  assert.deepEqual(retryAppearanceWrite(), { saved: true });
+  assert.equal(store.has(KEY), false, "removed, not the defaults saved");
+  assert.equal(store.get("yuzuno.selected"), JSON.stringify("a"));
+  // A refused save is retried as a save of the choice in effect.
+  refuse = new DOMException("The quota has been exceeded.", "QuotaExceededError");
+  try {
+    saveAppearance({ ...readAppearance(), palette: "yuzu" });
+  } finally {
+    refuse = null;
+  }
+  assert.deepEqual(retryAppearanceWrite(), { saved: true });
+  assert.equal(JSON.parse(store.get(KEY)).palette, "yuzu");
 });
