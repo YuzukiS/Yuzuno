@@ -49,7 +49,9 @@ function fieldsOf(draft: RemoteAccessDraft | undefined, view: RemoteAccessView):
   };
 }
 
-const busyCode = (e: unknown) => e instanceof HttpError && (e.status === 409 || e.code === "remote_access_busy");
+/** Core refuses a change with `<code>: <sentence>`; the page shows the sentence. */
+const refusal = (e: unknown) => (e instanceof HttpError ? /^([a-z_]+): /.exec(e.message)?.[1] : undefined);
+const readable = (e: unknown) => (refusal(e) ? (e as Error).message.replace(/^[a-z_]+: /, "") : errorText(e));
 
 /** How the latest change ended, in a sentence; null while it runs. */
 function outcome(op: RemoteAccessOperation): string | null {
@@ -62,11 +64,12 @@ function outcome(op: RemoteAccessOperation): string | null {
     case "succeeded":
       return op.kind === "apply" ? "Applied. The status above is what Core reports now." : "Turned off.";
     case "failed":
+      // Core's own sentence says what is set up and what was not verified.
       return op.step === "verify"
-        ? `Set up, but not verified: reaching it from the tailnet failed${why}.`
+        ? op.error ? `${op.error.replace(/[.。]\s*$/, "")}.` : "Set up, but not verified."
         : `${what} stopped at ${at}${why}.`;
     case "rolledBack":
-      return `${what} stopped at ${at}${why}. What it had changed was undone; the earlier setting is in place.`;
+      return `${what} stopped at ${at} and was undone${why}.`;
     case "uncertain":
       return `Core could not confirm how ${at} ended${why}. Check, or apply again: Core compares with what is there first.`;
     case "interrupted":
@@ -162,7 +165,7 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
       accept(await post<RemoteAccessView>("/remote-access/check", {}));
       setChecked(true);
     } catch (e) {
-      setError(`Check failed: ${errorText(e)}`);
+      setError(`Check failed: ${readable(e)}`);
     } finally {
       setChecking(false);
     }
@@ -193,10 +196,16 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
         savePending(null);
       }
     } catch (e) {
-      if (busyCode(e)) setError("Another phone access change is already running; its progress is shown below.");
-      else if (e instanceof NetworkError)
+      if (refusal(e) === "remote_access_busy" || (e instanceof HttpError && e.status === 409)) {
+        setError("Another phone access change is already running; its progress is shown below.");
+      } else if (refusal(e) === "idempotency_conflict") {
+        // This request ID names another change in Core: the next try is new.
+        pending.current = null;
+        savePending(null);
+        setError(`${readable(e)}. Press again to send it as a new change.`);
+      } else if (e instanceof NetworkError) {
         setError("Core's answer did not arrive, so whether it started is not known. What Core recorded is shown below.");
-      else setError(errorText(e));
+      } else setError(readable(e));
       await refresh();
     } finally {
       setSending(false);
@@ -218,6 +227,7 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
   const tailscale = view?.tailscale;
   const enabledNow = !!view && (!!view.saved?.enabled || !!view.listening || view.serve.state === "ours");
   const done = operation ? outcome(operation) : null;
+  const unverified = !!view?.url && !!view.verification && !view.verification.ok;
   const stepIndex = operation ? operationSteps.indexOf(operation.step) : -1;
   return (
     <section id="settings-remote" className="settings-section remote-access" aria-label="Phone access settings">
@@ -231,7 +241,7 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
         </div>
         {view && (
           <span className="settings-current" title="As Core reports it now">
-            {view.url ? "On" : enabledNow ? "Incomplete" : "Off"}
+            {view.url ? (unverified ? "Not verified" : "On") : enabledNow ? "Incomplete" : "Off"}
           </span>
         )}
       </header>
@@ -241,6 +251,11 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
           <button type="button" className="inline-link" onClick={() => void refresh()}>
             Try again
           </button>
+        </p>
+      )}
+      {view?.startupError && (
+        <p className="updates-error" role="alert">
+          When Core started, it could not serve the phone entry: {view.startupError}
         </p>
       )}
       {view && (
@@ -323,7 +338,11 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
                   {copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
                   {copied ? "Copied" : "Copy"}
                 </button>
-                <p className="settings-row-help">Open it, or scan the code, on a phone signed in to the same tailnet.</p>
+                <p className="settings-row-help">
+                  {unverified
+                    ? "Set up, but not verified: it may not open on your phone yet. The failed step is shown above."
+                    : "Open it, or scan the code, on a phone signed in to the same tailnet."}
+                </p>
               </div>
               {view.qr && (
                 <svg

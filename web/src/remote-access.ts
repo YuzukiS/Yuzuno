@@ -25,7 +25,7 @@ export type RemoteAccessOperation = {
 export type RemoteAccessView = {
   support: {
     state: "supported" | "unsupported";
-    reason?: string;
+    reason?: string | null;
     coreHost: { kind: "wsl" | "linux" | "macos" | "other"; name: string; networking?: "mirrored" | "nat" | "unknown" };
     tailscaleHost: { kind: "windows" | "none"; cli?: string; version?: string };
   };
@@ -61,6 +61,8 @@ export type RemoteAccessView = {
   operation: RemoteAccessOperation | null;
   /** Only when Core listens and the Serve entry is Yuzuno's. */
   url: string | null;
+  /** Why Core could not serve the applied entry when it started, if so. */
+  startupError?: string | null;
   /** The QR code's modules for `url`, '1' dark, when Core gives them. */
   qr?: { size: number; rows: string[] } | null;
   defaults: { servePort: number; localPort: number };
@@ -129,7 +131,9 @@ export function stateLines(view: RemoteAccessView): StateLine[] {
           conflict: `Port ${serve.port ?? "?"} is used by another Serve entry; Yuzuno leaves it as it is`,
           error: "Could not be read",
         }[serve.state] +
-        (serve.detail ? ` (${serve.detail})` : "") +
+        // For Yuzuno's own entry the detail repeats the line; for a conflict
+        // or an error it is the reason.
+        (serve.detail && (serve.state === "conflict" || serve.state === "error") ? ` (${serve.detail})` : "") +
         others,
       tone:
         serve.state === "ours" ? "on" : serve.state === "absent" ? "off" : serve.state === "unchecked" ? "unknown" : "warn",

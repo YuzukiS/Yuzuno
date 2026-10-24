@@ -1,13 +1,15 @@
 import "./jsdom-guard.mjs";
 // T-185: Settings → Phone access, against a stub Core that answers as the
 // T-185 interface v1 (task comment 6798): the view, Check, apply (and
-// disable as apply with enabled:false) and an operation's progress.
+// disable as apply with enabled:false) and an operation's progress. The
+// backend's own example views (fixtures/remote-access-views.json, Dev 5)
+// are read as they are.
 // Opening it only reads; the four states are shown apart; an address is
 // shown only when the view has one; how a change ended is said with its
 // step; a lost answer is asked again as the same request.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "vite";
@@ -43,6 +45,18 @@ window.renderSettings = props => root.render(<RemoteAccessSettings {...props}/>)
 }
 const tick = () => new Promise((resolve) => setTimeout(resolve, 25));
 const ENTRY = "https://desk.example.ts.net:8444";
+const examples = JSON.parse(await readFile(new URL("./fixtures/remote-access-views.json", import.meta.url), "utf8"));
+/** One of the backend's example views; the two partial ones are said to be
+ * appliedVerified with their own fields. */
+function example(name) {
+  const { _note, ...own } = structuredClone(examples[name]);
+  return name === "appliedNotVerified" || name === "remoteEntryReadOnly" ? { ...structuredClone(examples.appliedVerified), ...own } : own;
+}
+/** An error from the examples, `"<status> <json>"`, as the stub answers it. */
+function exampleError(name) {
+  const [, status, body] = /^(\d+) (.*)$/.exec(examples.errors[name]);
+  return { status: Number(status), body: JSON.parse(body) };
+}
 const STORE = "yuzuno.remoteAccess.pending";
 
 /** `handler(url, method, body)` answers `{status, body}`, or throws a
@@ -156,15 +170,11 @@ test("opening it only reads, and saved settings alone are not shown as reachable
 });
 
 test("a Core it cannot set up says why and offers nothing to change", async () => {
-  const p = mount(() => ({
-    body: view({
-      support: { state: "unsupported", reason: "Tailscale for Windows was not found", coreHost: { kind: "linux", name: "build-box" }, tailscaleHost: { kind: "none" } },
-    }),
-  }));
+  const p = mount(() => ({ body: example("unsupported") }));
   try {
     await waitFor(() => p.doc.querySelector(".remote-access-note"), "the reason");
-    assert.match(p.text(), /cannot be set up from here for this Core: Tailscale for Windows was not found/);
-    assert.match(p.text(), /Linux · build-box/);
+    assert.match(p.text(), /cannot be set up from here for this Core: This Core runs on Linux, not WSL\./);
+    assert.match(p.text(), /Linux · lab-host/);
     assert.match(p.text(), /Tailscale runs onNot found/);
     for (const label of ["Check", "Save and apply", "Turn off"]) assert.equal(!!button(p, label), false, label);
   } finally {
@@ -224,8 +234,8 @@ test("check, then save and apply: progress by step, then the address with copy a
 test("how a change ended is said with its step, the input stays, and trying again is a new request", async () => {
   const endings = [
     [op("failed", "listen", { error: "Port 4318 is already in use." }), /Applying stopped at “Core listens on the phone's port”: Port 4318 is already in use\./],
-    [op("rolledBack", "serve", { error: "Port 8444 is used by another Serve entry." }), /stopped at “Tailscale Serve points to it”: Port 8444 is used by another Serve entry\. What it had changed was undone/],
-    [op("failed", "verify", { error: "curl.exe could not reach it." }), /Set up, but not verified: reaching it from the tailnet failed: curl\.exe could not reach it\./],
+    [op("rolledBack", "serve", { error: "Port 8444 is used by another Serve entry." }), /Applying stopped at “Tailscale Serve points to it” and was undone: Port 8444 is used by another Serve entry\./],
+    [op("failed", "verify", { error: "Applied, but not verified: Windows could not reach Core on 127.0.0.1:4318" }), /^Applied, but not verified: Windows could not reach Core on 127\.0\.0\.1:4318\.$/],
   ];
   let current = checkedView();
   let ending = 0;
@@ -293,7 +303,7 @@ test("another change already running is shown, not started twice", async () => {
     if (url.endsWith("/check")) return { body: current };
     if (url.includes("/operations/")) return { body: current.operation };
     current = checkedView({ operation: op("running", "save", { requestId: "someone-else" }) });
-    return { status: 409, body: { error: "A phone access change is already running.", code: "remote_access_busy" } };
+    return exampleError("busy");
   });
   try {
     await waitFor(() => button(p, "Check"), "the form");
@@ -310,7 +320,7 @@ test("another change already running is shown, not started twice", async () => {
 });
 
 test("on the phone entry itself the page only shows: the address, and no way to change it", async () => {
-  const p = mount(() => ({ body: on({ canChange: false }) }), { url: `${ENTRY}/` });
+  const p = mount(() => ({ body: example("remoteEntryReadOnly") }), { url: "https://pc.tail0.ts.net:8444/" });
   try {
     await waitFor(() => p.doc.querySelector(".remote-access-result"), "the address");
     assert.match(p.text(), /open through the phone entry, so it cannot change it/);
@@ -324,12 +334,7 @@ test("on the phone entry itself the page only shows: the address, and no way to 
 
 test("an entry set up from Core's environment says so, Turn off sends enabled:false, and a kept draft survives a reload", async () => {
   const pending = { requestId: "remote-aaaaaaaaaaaaaaaaaaaaaaaa", draft: { enabled: true, servePort: 9443, login: "other@example.com" } };
-  let current = view({
-    tailscale,
-    environment: { port: 4318, origin: ENTRY, login: "user@example.com", ignored: false },
-    listening: { port: 4318, origin: ENTRY, login: "user@example.com", since: "x", source: "environment" },
-    serve: { state: "sameTargetNotRecorded", port: 8444, target: "http://127.0.0.1:4318", otherEntries: 0, observedAt: "x" },
-  });
+  let current = example("environmentNotRecorded");
   const p = mount((url, method, body) => {
     if (method === "GET") return { body: current };
     current = view({ operation: op("succeeded", "done", { requestId: body.requestId, kind: "disable" }) });
@@ -338,8 +343,8 @@ test("an entry set up from Core's environment says so, Turn off sends enabled:fa
   try {
     await waitFor(() => p.states().length === 4, "the states");
     assert.match(p.text(), /set up outside Settings, from Core's environment\. Save and apply with the same values takes it over/);
-    assert.deepEqual(p.states()[1], ["on", "Core listeningOn, port 4318 for https://desk.example.ts.net:8444 · from Core's environment"]);
-    assert.deepEqual(p.states()[2], ["warn", "Tailscale ServeAn entry on port 8444 points to Core, but Settings did not make it"]);
+    assert.deepEqual(p.states()[1], ["on", "Core listeningOn, port 4318 for https://pc.tail0.ts.net:8444 · from Core's environment"]);
+    assert.deepEqual(p.states()[2], ["warn", "Tailscale ServeAn entry on port 8444 points to Core, but Settings did not make it · 2 other entries left as they are"]);
     assert.equal(p.doc.querySelector('input[aria-label="Serve port"]').value, "9443");
     assert.equal(p.doc.querySelector('input[aria-label="Allowed login"]').value, "other@example.com");
     button(p, "Turn off").click();
@@ -348,6 +353,76 @@ test("an entry set up from Core's environment says so, Turn off sends enabled:fa
     assert.deepEqual({ ...sent, requestId: "" }, { requestId: "", enabled: false });
     assert.notEqual(sent.requestId, pending.requestId, "another change, another request");
     await waitFor(() => /Turned off\./.test(p.text()), "turned off");
+  } finally {
+    p.close();
+  }
+});
+
+test("the backend's example views read as they should, and none of them is written to", async () => {
+  const cases = {
+    appliedVerified: (p) => {
+      assert.equal(p.doc.querySelector(".settings-current").textContent, "On");
+      assert.match(p.text(), /Core's environment also sets an entry; the saved settings decide, so it is ignored/);
+      assert.match(p.text(), /Applied\. The status above is what Core reports now\./);
+      assert.equal(p.doc.querySelector(".remote-access-result a").getAttribute("href"), "https://pc.tail0.ts.net:8444");
+      assert.deepEqual(p.states().map(([tone]) => tone), ["on", "on", "on", "on"]);
+    },
+    rolledBackAtServe: (p) => {
+      assert.deepEqual(p.states()[0], ["warn", "Saved settingsOn · https://pc.tail0.ts.net:8445 · owner@github · not applied"]);
+      assert.match(p.states()[1][1], /On, port 4318 for https:\/\/pc\.tail0\.ts\.net:8444$/);
+      assert.equal(p.doc.querySelector(".remote-access-result a").getAttribute("href"), "https://pc.tail0.ts.net:8444", "the entry that still applies");
+      assert.ok(p.alerts().some((a) => /^Applying stopped at “Tailscale Serve points to it” and was undone: Port 8445 is already used by another Serve configuration .*the previous phone access is unchanged\.$/.test(a)), p.alerts().join("|"));
+    },
+    appliedNotVerified: (p) => {
+      assert.equal(p.doc.querySelector(".settings-current").textContent, "Not verified");
+      assert.deepEqual(p.states()[3], ["warn", "VerificationFailed at “From Windows to Core”: Windows could not reach Core on 127.0.0.1:4318 (…); WSL networking is nat"]);
+      assert.ok(p.alerts().some((a) => /^Applied, but not verified: Windows could not reach Core on 127\.0\.0\.1:4318 \(…\); WSL networking is nat \(hop\)\.$/.test(a)), p.alerts().join("|"));
+      assert.match(p.doc.querySelector(".remote-access-result").textContent, /Set up, but not verified: it may not open on your phone yet/);
+    },
+    startupError: (p) => {
+      assert.ok(p.alerts().some((a) => a === "When Core started, it could not serve the phone entry: Port 4318 is used by another program."), p.alerts().join("|"));
+    },
+  };
+  for (const [name, expect] of Object.entries(cases)) {
+    const body = name === "startupError"
+      ? { ...example("appliedVerified"), startupError: "Port 4318 is used by another program." }
+      : example(name);
+    const p = mount(() => ({ body }));
+    try {
+      await waitFor(() => p.states().length === 4, `${name}: the states`);
+      expect(p);
+      await tick();
+      assert.deepEqual(p.writes(), [], name);
+    } finally {
+      p.close();
+    }
+  }
+});
+
+test("a request ID Core already used for another change is dropped, and the next try is new", async () => {
+  let refuse = true;
+  let current = checkedView();
+  const p = mount((url, method, body) => {
+    if (method === "GET") return { body: current };
+    if (url.endsWith("/check")) return { body: current };
+    if (refuse) {
+      refuse = false;
+      return exampleError("idempotency");
+    }
+    current = checkedView({ operation: op("succeeded", "done", { requestId: body.requestId }) });
+    return { status: 202, body: { operation: current.operation } };
+  }, { storage: { [STORE]: { requestId: "remote-bbbbbbbbbbbbbbbbbbbbbbbb", draft: { enabled: true } } } });
+  try {
+    await waitFor(() => button(p, "Check"), "the form");
+    button(p, "Check").click();
+    await waitFor(() => !button(p, "Save and apply").disabled, "checked");
+    button(p, "Save and apply").click();
+    await waitFor(() => p.alerts().some((a) => /requestId already names a different phone access change\. Press again/.test(a)), "the refusal, without its code");
+    assert.equal(p.applies()[0].body.requestId, "remote-bbbbbbbbbbbbbbbbbbbbbbbb", "the kept request was asked first");
+    assert.equal(p.window.localStorage.getItem(STORE), null);
+    button(p, "Save and apply").click();
+    await waitFor(() => p.applies().length === 2, "the next try");
+    assert.notEqual(p.applies()[1].body.requestId, "remote-bbbbbbbbbbbbbbbbbbbbbbbb");
   } finally {
     p.close();
   }
