@@ -1,0 +1,206 @@
+/* Phones (T-170, PhoneDocks.tsx): the work dock (jobs, CI, sub-agents) and
+   the turn dock take no width of their own. They are hidden until one of the
+   buttons at the foot of the conversation opens it as a panel over the
+   conversation, above that button; the text column meanwhile keeps only a
+   small margin on each side. Wider windows are unchanged. The selectors are
+   a little heavier than those of work-dock.css and turn-dock.css, which they
+   override whatever order the styles load in. */
+.phone-dock-button,
+.phone-dock-scrim {
+  display: none;
+}
+.app.phone .conversation-body[class] {
+  --gutter-left: 8px;
+  --gutter-right: 8px;
+}
+.app.phone .conversation-body[class] > .current-turn-prompt[class] {
+  left: 0;
+  right: var(--conversation-scrollbar);
+}
+.app.phone .conversation-body:not([data-phone-dock="work"]) > .work-dock,
+.app.phone .conversation-body:not([data-phone-dock="turns"]) > .turn-dock {
+  display: none;
+}
+
+/* The buttons sit in the conversation's bottom corners, either side of Back
+   to latest, never over the composer or Send. The column ends far enough
+   below the last reply that they cover none of it. */
+.app.phone .conversation-body:has(> .work-dock:not(:empty)) > .phone-dock-work,
+.app.phone .conversation-body:has(> .turn-dock) > .phone-dock-turns {
+  display: inline-flex;
+}
+.app.phone
+  .conversation-body:is(:has(> .work-dock:not(:empty)), :has(> .turn-dock))
+  > .conversation-scroll
+  > .conversation-inner {
+  padding-bottom: 64px;
+}
+.app.phone .phone-dock-button {
+  position: absolute;
+  z-index: 4;
+  bottom: 10px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  box-shadow: 0 4px 14px var(--palette-shadow, #00000018);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.app.phone .phone-dock-work {
+  left: 8px;
+}
+.app.phone .phone-dock-turns {
+  right: calc(var(--conversation-scrollbar) + 6px);
+}
+.app.phone .phone-dock-button[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--focus) 50%, transparent);
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+}
+.app.phone .phone-dock-button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+/* What the closed work dock would show at a glance: something running, or
+   something that failed. */
+.app.phone .phone-dock-signal {
+  display: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.app.phone
+  .conversation-body:has(> .work-dock :is(.state-running, .state-starting, .state-cancelling))
+  .phone-dock-signal {
+  display: block;
+  background: var(--state-working, var(--accent-ink));
+}
+.app.phone
+  .conversation-body:has(> .work-dock :is(.state-failed, .state-rejected, .state-interrupted, .state-unknown))
+  .phone-dock-signal {
+  display: block;
+  background: var(--error-ink, var(--coral));
+}
+
+/* Tapping anywhere else in the conversation closes the open panel. */
+.app.phone .conversation-body[data-phone-dock] > .phone-dock-scrim {
+  display: block;
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  cursor: default;
+}
+
+/* The open dock: a panel above its button that scrolls on its own. */
+.app.phone .conversation-body[data-phone-dock="work"] > .work-dock,
+.app.phone .conversation-body[data-phone-dock="turns"] > .turn-dock {
+  display: flex;
+  z-index: 6;
+  top: auto;
+  bottom: 62px;
+  translate: none;
+  max-height: calc(100% - 72px);
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  box-shadow: 0 12px 32px var(--palette-shadow, #00000030);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.app.phone .conversation-body[data-phone-dock="work"] > .work-dock {
+  --node-hole: var(--surface-raised);
+  --node-x: 14px;
+  --node-y: 22px;
+  left: 8px;
+  width: min(320px, calc(100% - 16px));
+  align-items: stretch;
+}
+/* As in a wide conversation, each run reads its name, status and time
+   beside its node; each is a whole-row touch target. */
+.app.phone .conversation-body[data-phone-dock="work"] > .work-dock .work-dock-group {
+  align-items: stretch;
+}
+.app.phone
+  .conversation-body[data-phone-dock="work"]
+  > .work-dock
+  :is(.work-dock-heading, .work-dock-item, .work-dock-more) {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  column-gap: 8px;
+  align-items: center;
+  width: 100%;
+  height: auto;
+  min-height: 44px;
+  padding: 4px 6px 4px 4px;
+}
+.app.phone .conversation-body[data-phone-dock="work"] > .work-dock .work-dock-node {
+  justify-self: center;
+}
+.app.phone .conversation-body[data-phone-dock="work"] > .work-dock .work-dock-label {
+  display: grid;
+  opacity: 1;
+}
+.app.phone .conversation-body[data-phone-dock="work"] > .work-dock .work-dock-label :is(strong, small) {
+  opacity: 1;
+}
+.app.phone .conversation-body[data-phone-dock="work"] > .work-dock .work-dock-heading .work-dock-label strong {
+  color: var(--text-secondary);
+}
+.app.phone .conversation-body[data-phone-dock="work"] > .work-dock .work-dock-tip {
+  display: none;
+}
+.app.phone .conversation-body[data-phone-dock="work"] > .work-dock .work-dock-more .work-dock-node {
+  min-width: 5px;
+  width: 5px;
+  height: 5px;
+  padding: 0;
+  background: var(--track);
+  font-size: 0;
+}
+
+.app.phone .conversation-body[data-phone-dock="turns"] > .turn-dock {
+  right: calc(var(--conversation-scrollbar) + 6px);
+  width: 92px;
+}
+/* Turn numbers of four digits keep their width. */
+.app.phone .conversation-body[data-phone-dock="turns"] > .turn-dock .turn-dock-chip {
+  min-width: 44px;
+}
+/* Back to latest needs no pointer to show: it is always in the open panel,
+   at a finger's size. */
+.app.phone .conversation-body[data-phone-dock="turns"] > .turn-dock .turn-dock-latest {
+  width: 44px;
+  height: 44px;
+  opacity: 1;
+  pointer-events: auto;
+}
+.app.phone .conversation-body[data-phone-dock="turns"] > .turn-dock .turn-dock-preview {
+  display: none;
+}
+
+/* With the on-screen keyboard up the conversation is short: the buttons, and
+   a panel left open, wait until the keyboard goes (keyboard-viewport.ts), as
+   the turn dock always has. */
+:root[data-keyboard] .app.phone .phone-dock-button,
+:root[data-keyboard] .app.phone .conversation-body[data-phone-dock] > :is(.work-dock, .turn-dock, .phone-dock-scrim) {
+  display: none;
+}
+/* A phone held sideways keeps the buttons, a little lower. */
+@media (max-height: 500px) {
+  .app.phone .phone-dock-button {
+    bottom: 6px;
+  }
+}
