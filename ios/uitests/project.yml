@@ -1,7 +1,9 @@
 # The iOS app's Simulator check (T-170): a UI test that drives the Yuzuno
 # app installed in a Simulator by its bundle identifier. Host is only the
 # test bundle's required target application; it does nothing. ios.yml
-# generates the Xcode project with xcodegen and runs it unsigned.
+# generates the Xcode project with xcodegen and runs it. Signed ad hoc
+# ("Sign to Run Locally", no identity or team): arm64 code on Apple
+# silicon runs only signed, in a Simulator too.
 name: YuzunoChecks
 options:
   bundleIdPrefix: dev.yuzuno.checks
@@ -11,6 +13,9 @@ settings:
   base:
     GENERATE_INFOPLIST_FILE: YES
     SWIFT_VERSION: "5.0"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
 targets:
   Host:
     type: application

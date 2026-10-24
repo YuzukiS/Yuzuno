@@ -164,8 +164,17 @@ jobs:
           xcrun simctl install "$device" "$app"
           (cd uitests && xcodegen generate)
           xcodebuild test -quiet -project uitests/YuzunoChecks.xcodeproj -scheme Checks \
-            -destination "platform=iOS Simulator,id=$device" CODE_SIGNING_ALLOWED=NO
+            -destination "platform=iOS Simulator,id=$device" -resultBundlePath "$RUNNER_TEMP/checks.xcresult"
           xcrun simctl shutdown "$device"
+
+      # When the check fails: what failed, from its result bundle (the
+      # tests' own messages). Nothing is uploaded.
+      - name: Simulator check failures
+        if: failure()
+        run: |
+          [ -d "$RUNNER_TEMP/checks.xcresult" ] || { echo "no result bundle"; exit 0; }
+          xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/checks.xcresult"
+          xcrun xcresulttool get test-results tests --path "$RUNNER_TEMP/checks.xcresult"
 
       # Only the connection page, made without a Core: no Workspace, account
       # or address of the user's can be in these. Exactly these three PNG
