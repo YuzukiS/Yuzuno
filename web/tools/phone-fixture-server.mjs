@@ -7,9 +7,13 @@
 // /__measure; each post becomes one JSON line in YUZUNO_MEASURE_OUT. A write
 // the page tries is answered 400 and written there too, as a "refused" line.
 // YUZUNO_EXTRA=/connection=<dir> also serves <dir> (the iOS app's connection
-// page) under /connection/, measured the same way.
+// page) under /connection/, measured the same way. YUZUNO_INJECT=<file> adds
+// one more script to every page, after phone-measure.js (another probe).
+// A path that is no file (and not /api/) gets the app's page, so the app's
+// own addresses open it: /#/message?w=ws-phone&a=a&t=t7 opens Mori's
+// conversation at its last turn.
 //   YUZUNO_UI_DIST=<build> YUZUNO_MEASURE_OUT=<file> [YUZUNO_PORT=4510] \
-//     [YUZUNO_EXTRA=/connection=<dir>] node tools/phone-fixture-server.mjs
+//     [YUZUNO_EXTRA=/connection=<dir>] [YUZUNO_INJECT=<file>] node tools/phone-fixture-server.mjs
 // Synthetic data only; it listens on 127.0.0.1 and answers only that host.
 import assert from "node:assert/strict";
 import { appendFile, readFile } from "node:fs/promises";
@@ -29,6 +33,8 @@ if (process.env.YUZUNO_EXTRA) {
   mounts.unshift([`${prefix}/`, resolve(dir)]);
 }
 const measureScript = await readFile(new URL("./phone-measure.js", import.meta.url));
+const injected = process.env.YUZUNO_INJECT ? await readFile(resolve(process.env.YUZUNO_INJECT)) : null;
+const scripts = '<script src="/__measure.js" defer></script>' + (injected ? '<script src="/__inject.js" defer></script>' : "");
 
 const base = { color: "sage", createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, goal: "" };
 const agents = [{ ...base, id: "a", name: "Mori", status: "idle", harness: "codex", cwd: "/fixture", model: "gpt-6", projectId: "p1", connectionState: "connected", threadId: "thread-a" }];
@@ -90,12 +96,14 @@ async function file(res, path) {
   try {
     content = await readFile(target);
   } catch {
+    // An address of the app's own (no file extension) opens its page.
+    if (prefix === "/" && !extname(relative)) return file(res, "/");
     return json(res, { error: `no ${path}` }, 404);
   }
   if (extname(target) === ".html") {
     const html = content.toString("utf8");
     assert.ok(html.includes("</head>"), `${path} has no </head>`);
-    content = html.replace("</head>", '<script src="/__measure.js" defer></script></head>');
+    content = html.replace("</head>", `${scripts}</head>`);
   }
   res.writeHead(200, { "Content-Type": types[extname(target)] || "application/octet-stream", "Cache-Control": "no-store" });
   res.end(content);
@@ -111,6 +119,10 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "text/javascript", "Cache-Control": "no-store" });
       return res.end(measureScript);
     }
+    if (path === "/__inject.js" && injected) {
+      res.writeHead(200, { "Content-Type": "text/javascript", "Cache-Control": "no-store" });
+      return res.end(injected);
+    }
     if (path === "/__measure" && method === "POST") {
       const line = JSON.parse(await body(req));
       await record({ kind: "measure", ...line });
@@ -118,11 +130,10 @@ const server = createServer(async (req, res) => {
       return res.end();
     }
     if (path === "/api/events") {
-      // Live updates stay open with nothing to say, as an idle Core's do.
-      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store" });
-      res.write(": fixture\n\n");
-      const keep = setInterval(() => res.write(": idle\n\n"), 15000);
-      req.on("close", () => clearInterval(keep));
+      // Live updates never open: the request is held unanswered, so the page
+      // stays as safe-area-check.mjs's stubbed EventSource leaves it. An open
+      // stream makes the page read more (the backlog, usage) than this
+      // fixture answers. Closed with the server.
       return;
     }
     if (path === "/api/agents/a/reading") return json(res, method === "GET" ? { handoff: null } : { accepted: true, sourceSeq: 0 });
