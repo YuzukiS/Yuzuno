@@ -23,14 +23,44 @@ final class ConnectionPageChecks: XCTestCase {
         self.text(containing: text, in: yuzuno)
     }
 
-    /// What the connection page shows, for a failure's message: its text
-    /// and the address field's value (nothing but this app's own page).
+    /// What the page shows, for a failure's message.
+    ///
+    /// One snapshot, and nothing resolved by position in it. Reading every
+    /// static text by index (allElementsBoundByIndex) asks for element N of a
+    /// collection that a long conversation changes between the snapshot and
+    /// the read: the read then fails with "No matches found for Element at
+    /// index N". Because this runs only to describe an assertion that has
+    /// already failed, that second failure replaced the first one and hid
+    /// which assertion broke.
     private func page(in app: XCUIApplication? = nil) -> String {
         let app = app ?? yuzuno
-        let texts = app.staticTexts.allElementsBoundByIndex.map(\.label).filter { !$0.isEmpty }
-        let field = app.textFields.firstMatch
-        let value = field.exists ? String(describing: field.value ?? "") : "(no field)"
-        return "page: \(texts.joined(separator: " | ")); field: \(value)"
+        let tree = app.debugDescription
+        // The whole tree beside the screenshots, since a page of this size is
+        // longer than a failure message can carry and the part that explains a
+        // failure is often past any prefix of it.
+        if let directory = ProcessInfo.processInfo.environment["YUZUNO_SCREENSHOTS"] {
+            let stamp = ISO8601DateFormatter().string(from: Date())
+                .replacingOccurrences(of: ":", with: "")
+            let file = URL(fileURLWithPath: directory)
+                .appendingPathComponent("tree-\(stamp).txt")
+            try? tree.write(to: file, atomically: true, encoding: .utf8)
+        }
+        return "page: " + tree.prefix(4000)
+    }
+
+    /// Safari's composer: the text view the page gives the label
+    /// "Message Mori".
+    ///
+    /// Read from the accessibility tree of this page on a Mac, not assumed:
+    /// `TextView, label: 'Message Mori', placeholderValue: 'A task, a
+    /// question, a new idea for Mori…'`. Matching every descendant of the
+    /// tree instead (`descendants(matching: .any)`) did not resolve within
+    /// 30 s on a conversation of 1408 turns. The label matters as much as the
+    /// type: the only other text element of the window is Safari's own
+    /// address bar (`TextField, label: 'Address'`), which a query by type
+    /// alone would take instead.
+    private func composer(in app: XCUIApplication) -> XCUIElement {
+        app.textViews["Message Mori"]
     }
 
     /// The app launched afresh: its page with an empty field, as no address
@@ -198,11 +228,20 @@ final class ConnectionPageChecks: XCTestCase {
         turn(.portrait)
 
         safari.open(root)
+        // The agent list's "Open Mori" is there when the app opens on the
+        // list, and not when it opens in that conversation already, as it
+        // does on the conversation fixtures: this page answered with Mori's
+        // turns and its composer and no such button, and waiting 60 s for one
+        // failed the check before anything of the conversation was looked at.
+        // Take the button when it is there; otherwise the conversation that
+        // is open is the one to measure.
         let mori = safari.buttons["Open Mori"]
-        XCTAssertTrue(mori.waitForExistence(timeout: 60), page(in: safari))
-        mori.tap()
-        let composer = safari.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Message Mori")).firstMatch
-        XCTAssertTrue(composer.waitForExistence(timeout: 30), page(in: safari))
+        if mori.waitForExistence(timeout: 20) {
+            mori.tap()
+        }
+        let composer = composer(in: safari)
+        XCTAssertTrue(composer.waitForExistence(timeout: 30),
+                      "no composer in the conversation; \(page(in: safari))")
         settle()
         screenshot("safari-web-portrait")
         turn(.landscapeLeft)
@@ -213,17 +252,53 @@ final class ConnectionPageChecks: XCTestCase {
         XCTAssertTrue(safari.keyboards.firstMatch.waitForExistence(timeout: 10), "no keyboard; \(page(in: safari))")
         settle()
         screenshot("safari-web-keyboard")
+        // Sideways with the keyboard still open. The turn used to be followed
+        // straight away by the turn back, so this state was never on a
+        // screenshot, and nothing measured it while it was on screen.
         turn(.landscapeLeft)
+        screenshot("safari-web-keyboard-landscape")
         turn(.portrait)
         // Upright again with the keyboard still open: run 40061280002, with
         // web/ from before #150, measured the composer below what could be
         // seen here for about 6 s.
         screenshot("safari-web-keyboard-upright-again")
-        // The keyboard bar's Done ends editing; the page measures the focus leaving.
-        if safari.buttons["Done"].exists {
-            safari.buttons["Done"].tap()
-            settle()
-        }
+        // What that screenshot's name claims, read here and asserted at the
+        // end. setUp keeps continueAfterFailure false, so an assertion here
+        // would end the test before the states after it were ever reached or
+        // photographed; reading now and asserting last keeps each observation
+        // at its own moment and still collects the rest.
+        let send = safari.buttons["Send message"]
+        let keys = safari.keyboards.firstMatch
+        // isHittable is not the check to make here: XCUITest reported Send
+        // hittable in the same round in which the page measured it below the
+        // visual viewport, so it would pass while Send sat under the
+        // keyboard. What the keyboard covers is asked of the frames instead.
+        // Not the keyboard's frame on its own: measured upright again, Send
+        // was 86 points above it and still under Safari's own bar over the
+        // keyboard, the one Done sits in, which is what the page sees as the
+        // bottom of its visual viewport. Both are asked about.
+        let keyboardFrame = keys.exists ? keys.frame : .null
+        let bar = safari.buttons["Done"]
+        let barFrame = bar.exists ? bar.frame : .null
+        let sendFrame = send.exists ? send.frame : .null
+        let covered = sendFrame.intersects(keyboardFrame) || sendFrame.intersects(barFrame)
+            || (barFrame != .null && sendFrame.maxY > barFrame.minY)
+        let upright = (
+            keyboard: keys.exists,
+            composer: composer.isHittable,
+            send: send.exists,
+            sendClear: send.exists && keys.exists && !covered,
+            frames: "Send \(sendFrame), keyboard \(keyboardFrame), Done \(barFrame)"
+        )
+        note("safari keyboard upright again: \(upright.frames)")
+        // The keyboard bar's Done ends editing; the page measures the focus
+        // leaving. It has to be there: passing over it silently left the
+        // keyboard up for everything after it.
+        let done = safari.buttons["Done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 10),
+                      "no Done on the keyboard's bar; \(page(in: safari))")
+        done.tap()
+        settle()
 
         let settings = safari.buttons["Settings and updates"]
         XCTAssertTrue(settings.waitForExistence(timeout: 10), page(in: safari))
@@ -232,5 +307,30 @@ final class ConnectionPageChecks: XCTestCase {
         screenshot("safari-web-dialog")
         turn(.landscapeLeft)
         turn(.portrait)
+        // Closed again: the dialog used to stay open to the end, so every
+        // measurement after it opened read the dialog over the composer, and
+        // none read the conversation it goes back to. Closed by the dialog's
+        // own close button: Escape needs a hardware keyboard, which a
+        // Simulator's Safari has none of here.
+        let close = safari.buttons["Close dialog"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10),
+                      "no Close dialog in the Settings dialog; \(page(in: safari))")
+        close.tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 20),
+                      "no composer after the dialog closed; \(page(in: safari))")
+        settle()
+        screenshot("safari-web-dialog-closed")
+
+        // Upright again with the keyboard open, asserted now that every state
+        // has been reached and photographed. The probe measures Send below
+        // the visual viewport there (T-170, a layout defect of the composer
+        // when a recovery notice makes it taller): these are expected to fail
+        // until that is fixed, and failing is the point — the screenshot on
+        // its own asserted nothing.
+        XCTAssertTrue(upright.keyboard, "the keyboard closed on the way back to upright")
+        XCTAssertTrue(upright.composer, "no composer to reach with the keyboard up, upright again")
+        XCTAssertTrue(upright.send, "no Send with the keyboard up, upright again")
+        XCTAssertTrue(upright.sendClear,
+                      "Send is under what the keyboard puts over the page, upright again: \(upright.frames)")
     }
 }
