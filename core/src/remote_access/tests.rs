@@ -548,7 +548,8 @@ async fn a_refused_replacement_points_serve_back_at_the_previous_entry() {
     lab.set_fake(|s| s["failAddTarget"] = json!(format!("http://127.0.0.1:{second}")));
     let op = lab.apply(json!({"requestId": "move", "enabled": true, "localPort": second})).await.unwrap();
     assert_eq!(op["state"], "rolledBack", "{op}");
-    assert!(op["error"].as_str().unwrap().ends_with("The previous phone access is unchanged"), "{op}");
+    // The context comes first: "The previous phone access is unchanged: Tailscale Serve refused …".
+    assert!(op["error"].as_str().unwrap().starts_with("The previous phone access is unchanged: Tailscale Serve refused"), "{op}");
     assert!(op.get("notes").is_none(), "pointed back: {op}");
     assert_eq!(lab.fake()["serve"]["Web"][format!("{DNS}:8444")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{first}").as_str());
     assert_eq!(get(first, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200);
