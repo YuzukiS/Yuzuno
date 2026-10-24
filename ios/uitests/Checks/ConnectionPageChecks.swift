@@ -40,18 +40,33 @@ final class ConnectionPageChecks: XCTestCase {
         XCTAssertTrue(message(containing: "Enter your workspace address").waitForExistence(timeout: 60), page())
     }
 
-    /// Saves the screen as <name>.png where ios.yml asks (YUZUNO_SCREENSHOTS);
-    /// nothing elsewhere. Only the connection page is ever on screen here.
+    /// Saves the screen as <name>.png where run.sh asks (YUZUNO_SCREENSHOTS);
+    /// nothing elsewhere. Its time goes in the frames file, to set it beside
+    /// the pages' own measurements (their "at").
     private func screenshot(_ name: String) {
         guard let directory = ProcessInfo.processInfo.environment["YUZUNO_SCREENSHOTS"] else { return }
         let file = URL(fileURLWithPath: directory).appendingPathComponent("\(name).png")
         XCTAssertNoThrow(try XCUIScreen.main.screenshot().pngRepresentation.write(to: file))
+        note("screenshot \(name).png at \(ISO8601DateFormatter().string(from: Date()))")
+    }
+
+    /// One line in the frames file run.sh prints (YUZUNO_FRAMES).
+    private func note(_ line: String) {
+        guard let path = ProcessInfo.processInfo.environment["YUZUNO_FRAMES"] else { return }
+        let data = Data((line + "\n").utf8)
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            handle.closeFile()
+        } else {
+            XCTAssertNoThrow(try data.write(to: URL(fileURLWithPath: path)))
+        }
     }
 
     /// Writes where the page's parts are, in points, as the accessibility
     /// tree sees them, to the file ios.yml prints (YUZUNO_FRAMES).
     private func record(_ label: String, in app: XCUIApplication) {
-        guard let path = ProcessInfo.processInfo.environment["YUZUNO_FRAMES"] else { return }
+        guard ProcessInfo.processInfo.environment["YUZUNO_FRAMES"] != nil else { return }
         let parts: [(String, XCUIElement)] = [
             ("window", app.windows.firstMatch),
             // Left-aligned at the body's padding, unlike the centred main column.
@@ -60,14 +75,8 @@ final class ConnectionPageChecks: XCTestCase {
             ("heading", text(containing: "Your workspace", in: app)),
             ("field", app.textFields.firstMatch),
         ]
-        let lines = parts.map { name, element in "\(label) \(name): \(element.exists ? "\(element.frame)" : "missing")" }
-        let report = lines.joined(separator: "\n") + "\n"
-        if let handle = FileHandle(forWritingAtPath: path) {
-            handle.seekToEndOfFile()
-            handle.write(Data(report.utf8))
-            handle.closeFile()
-        } else {
-            XCTAssertNoThrow(try report.write(toFile: path, atomically: true, encoding: .utf8))
+        for (name, element) in parts {
+            note("\(label) \(name): \(element.exists ? "\(element.frame)" : "missing")")
         }
     }
 
@@ -192,6 +201,9 @@ final class ConnectionPageChecks: XCTestCase {
         screenshot("safari-web-keyboard")
         turn(.landscapeLeft)
         turn(.portrait)
+        // Upright again with the keyboard still open: run 40061280002 measured
+        // the composer below what can be seen here for about 6 s.
+        screenshot("safari-web-keyboard-upright-again")
         // The keyboard bar's Done ends editing; the page measures the focus leaving.
         if safari.buttons["Done"].exists {
             safari.buttons["Done"].tap()
