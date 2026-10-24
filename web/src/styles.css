@@ -3270,57 +3270,31 @@ p {
   display: none;
 }
 /* When the keyboard or a phone held sideways leaves the panel less room
-   than the composer area needs, the notices above the composer give way and
-   scroll within what is left, so the composer and its Send row stay on
+   than the composer area needs, the composer and its Send row stay on
    screen whole (T-170: Safari showed them cut off below the keyboard and
-   below a sideways screen). Flex items keep apart the margins that
-   neighbouring blocks let collapse: an error's top margin after a notice is
-   set so the spacing stays as it was. */
+   below a sideways screen). The notices above the composer give way and
+   scroll within what is left, down to nothing (Reconnect is also in the
+   conversation's menu); a long draft scrolls inside the editor, kept to a
+   part of the short screen but never below its one empty line (64px). */
 .app.phone .composer-area {
   display: flex;
   flex-direction: column;
   flex-shrink: 1;
   min-height: 0;
 }
-.app.phone .composer-area > :not(.composer, .composer-footnote) {
+.app.phone .composer-area > .composer-notices {
   flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
 }
-.app.phone .composer-area > .composer-footnote {
+.app.phone .composer-area > :is(.composer, .composer-footnote) {
   flex: none;
 }
-/* The composer gives way too, through its editor alone: a long draft
-   scrolls inside it, down to one line's height (the editor's own minimum),
-   and the Send row, the tools and what is attached keep their size. */
-.app.phone .composer-area > .composer {
-  display: flex;
-  flex-direction: column;
-  flex: 0 1 auto;
-  min-height: 0;
+:root[data-keyboard] .app.phone .pasted-text-composer .cm-scroller {
+  max-height: max(64px, calc(var(--visual-height, 100dvh) * 0.3));
 }
-.app.phone .composer > * {
-  flex: none;
-}
-/* Two errors in a row (an image's, then the draft's) kept one gap as blocks. */
-.app.phone .composer > .inline-error + .inline-error {
-  margin-top: 0;
-}
-.app.phone .composer > .pasted-text-composer {
-  display: flex;
-  flex-direction: column;
-  flex: 0 1 auto;
-  min-height: 64px;
-}
-.app.phone .composer > .pasted-text-composer > .cm-editor,
-.app.phone .composer > .pasted-text-composer .cm-scroller {
-  flex: 0 1 auto;
-  min-height: 0;
-}
-.app.phone .composer-area > * + .inline-error {
-  margin-top: 0;
-}
-/* The delivery notice's margin is 9px, the error's 10px: the larger stood. */
-.app.phone .composer-area > .message-delivery-notice + .inline-error {
-  margin-top: 1px;
+@media (max-height: 500px) {
+  .app.phone .pasted-text-composer .cm-scroller {
+    max-height: max(64px, 20dvh);
+  }
 }

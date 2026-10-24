@@ -11,9 +11,10 @@
 //     left 62) on --safe-*;
 // the composer is whole inside the panel and above what is covered, a tap
 // reaches the input and Send, nothing runs off the side, the notices that
-// gave way can be scrolled to their end and each of their buttons (Reconnect)
-// scrolled to and reached; and with a long draft (30 lines) as well, the
-// editor scrolls inside while Send stays on screen. The taller sizes (402×874
+// gave way can be scrolled to their end, and Reconnect is reached: in its
+// notice, scrolled to, or where the notice has given way to nothing, in the
+// conversation's menu; and with a long draft (30 lines) as well, the editor
+// scrolls inside while Send stays on screen. The taller sizes (402×874
 // upright, 844×390 sideways) are only measured, for comparing with a build
 // from before. An emulated phone is not Safari: no on-screen keyboard here.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/phone-short-screen-check.mjs [--baseline]
@@ -146,7 +147,20 @@ try {
           return el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
         }));
       await page.screenshot({ path: resolve(output, `${report.mode}-${shape.name.replace(/[^a-z0-9]+/gi, "-")}.png`) });
-      report.cases.push({ name: shape.name, short: short.includes(shape), ...seen, buttons, scrolledToEnd: scrolled });
+      // Where a notice's button is out of reach, Reconnect from the conversation's menu.
+      let menu = null;
+      if (!buttons.every((b) => b.reached)) {
+        await page.getByRole("button", { name: "Conversation actions" }).click();
+        const item = page.getByRole("menuitem", { name: /Reconnect/ });
+        menu = { offered: (await item.count()) > 0 };
+        if (menu.offered)
+          menu.reached = await item.first().evaluate((el) => {
+            const r = el.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            return !!hit && (hit === el || el.contains(hit));
+          });
+        await page.keyboard.press("Escape");
+      }
+      report.cases.push({ name: shape.name, short: short.includes(shape), ...seen, buttons, menu, scrolledToEnd: scrolled });
       if (baseline || !short.includes(shape)) continue;
       const limit = Math.min(bottom, seen.panel.bottom);
       try {
@@ -155,9 +169,10 @@ try {
         assert.deepEqual(seen.reached, { input: true, send: true }, "a tap reaches the input and Send");
         assert.equal(seen.sideways, false, "nothing runs off the side");
         assert.ok(scrolled.every(Boolean), "each notice that gave way can be scrolled to its end");
-        assert.ok(buttons.every((b) => b.reached), `each button in a notice takes a tap: ${JSON.stringify(buttons)}`);
+        const reconnect = buttons.filter((b) => /Reconnect/.test(b.text));
+        assert.ok(reconnect.every((b) => b.reached) || (menu?.offered && menu.reached), `Reconnect is reached, in its notice or the conversation's menu: ${JSON.stringify({ buttons, menu })}`);
         if (shape.draft) assert.ok(seen.editor && seen.editor.scroll > seen.editor.client + 1, `the long draft scrolls inside the editor: ${JSON.stringify(seen.editor)}`);
-        check(`${shape.name}: the composer and Send whole above what is covered, reached by a tap; nothing off the side; the notices scroll`, { composer: seen.composer, send: seen.send, notices: seen.notices });
+        check(`${shape.name}: the composer and Send whole above what is covered, reached by a tap; nothing off the side; the notices scroll; Reconnect reached ${menu ? "in the menu" : "in its notice"}`, { composer: seen.composer, send: seen.send, notices: seen.notices, buttons, menu });
       } catch (error) {
         report.failures.push({ case: shape.name, message: String(error.message).split("\n")[0] });
         console.log(`FAIL ${shape.name}: ${String(error.message).split("\n")[0]}`);
