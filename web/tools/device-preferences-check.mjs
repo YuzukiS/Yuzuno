@@ -31,7 +31,7 @@ assert.ok(process.env.YUZUNO_CHECK_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_CHECK_OUTPUT);
 await mkdir(output, { recursive: true });
 const parts = (process.env.T189_PARTS || "composer,settings").split(",");
-const report = { task: "T-189", source: process.env.T189_HEAD || null, parts, checks: [], composer: [], composerFailures: [], layout: [], requests: [], unmodelledGets: {}, errors: [] };
+const report = { task: "T-189", source: process.env.T189_HEAD || null, parts, checks: [], composer: [], composerFailures: [], layout: [], requests: [], unmodelledGets: {}, errors: [], consoleErrors: [] };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -52,6 +52,12 @@ const turns = [{ id: "t0", status: "completed", items: [
   { id: "u0", type: "userMessage", content: [{ type: "text", text: "Check the composer." }] },
   { id: "r0", type: "agentMessage", text: "The composer is ready." },
 ] }];
+// Codex's plan usage, read once the event stream is open: not known yet.
+const usage = {
+  revision: 1, status: "unknown", account: null, accountId: null,
+  source: { generation: "fixture", label: "Codex", machineId: null, runtimeId: null },
+  checkedAt: null, observedAt: null, ordinaryUsageAllowed: null, error: null, buckets: [],
+};
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const devices = {
   keyboard: { viewport: { width: 1280, height: 800 }, reducedMotion: "reduce" },
@@ -81,6 +87,10 @@ async function openApp(device, sendKey, label) {
     if (sendKey) localStorage.setItem("yuzuno.preferences", JSON.stringify({ sendKey }));
   }, sendKey ?? null);
   page.on("pageerror", (error) => report.errors.push(`${label}: ${error.message}`));
+  // React reports an error its boundary caught here, not as a page error.
+  page.on("console", (message) => {
+    if (message.type() === "error" && report.consoleErrors.length < 50) report.consoleErrors.push(`${label}: ${message.text().slice(0, 300)}`);
+  });
   await page.route("**/*", async (route) => {
     const request = route.request(), url = new URL(request.url()), method = request.method();
     if (url.protocol !== "http:") return route.continue();
@@ -111,6 +121,7 @@ async function openApp(device, sendKey, label) {
       "/api/machines": { machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/fixture", lastCheck: null }] },
       "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs": noJobs,
       "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
+      "/api/agents/a/codex/usage": usage,
     }[path];
     if (json) return route.fulfill({ json });
     if (path.startsWith("/api/")) {
@@ -121,15 +132,32 @@ async function openApp(device, sendKey, label) {
     assert.ok(file.startsWith(dist + "/"));
     await route.fulfill({ body: await readFile(file), contentType: types[extname(file)] });
   });
-  await page.goto(`${ORIGIN}/`);
-  await page.locator(".agent-row").first().waitFor();
-  await page.locator('.agent-row .agent-select[aria-label="Open Mori"]').click();
   const input = page.locator('[data-composer-input][aria-label="Message Mori"]');
-  await input.waitFor();
-  await page.waitForTimeout(250);
-  const touch = await page.evaluate((media) => matchMedia(media).matches, TOUCH);
-  assert.equal(touch, device === "touch", `${label}: the browser is ${device === "touch" ? "" : "not "}a touch screen`);
+  try {
+    await page.goto(`${ORIGIN}/`);
+    await page.locator(".agent-row").first().waitFor({ timeout: 10_000 });
+    await page.locator('.agent-row .agent-select[aria-label="Open Mori"]').click({ timeout: 10_000 });
+    await input.waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(250);
+    const touch = await page.evaluate((media) => matchMedia(media).matches, TOUCH);
+    assert.equal(touch, device === "touch", `${label}: the browser is ${device === "touch" ? "" : "not "}a touch screen`);
+  } catch (error) {
+    await setupFailed(page, context, label, error);
+  }
   return { context, page, input, sends };
+}
+
+/** A page that didn't open as its case needs: its picture, what it said and
+ * Playwright's call log are kept, its browser closed, and the part stopped
+ * (not each case after it waiting out the same failure). */
+async function setupFailed(page, context, label, error) {
+  const screenshot = `setup-${label.replace(/[^a-z0-9]+/gi, "-")}.png`;
+  await page.screenshot({ path: resolve(output, screenshot) }).catch(() => {});
+  const shown = await page.locator('[role="alert"], [role="dialog"], h1, h2').allTextContents().catch(() => []);
+  report.setupFailures = [...(report.setupFailures || []), { case: label, screenshot, shown, message: String(error?.message || error).slice(0, 4000) }];
+  await context.close();
+  error.setup = true;
+  throw error;
 }
 
 const lines = (input) => input.evaluate((el) => [...el.querySelectorAll(".cm-line")].map((line) => line.textContent));
@@ -141,8 +169,9 @@ async function attempt(label, run) {
     await run();
     return true;
   } catch (error) {
+    if (error?.setup) throw error;
     const message = String(error?.message || error).split("\n")[0];
-    report.composerFailures.push({ case: label, message });
+    report.composerFailures.push({ case: label, message, detail: String(error?.message || error).slice(0, 2000) });
     console.log(`FAIL ${label}: ${message}`);
     return false;
   }
@@ -155,7 +184,7 @@ async function pressCase(device, sendKey, press, outcome, label) {
   try {
     // The hint before anything is sent: a refused send may show a notice in its place.
     const hint = (await app.page.locator(".composer-keys").textContent()).replace(/\s+/g, " ").trim();
-    await app.input.click();
+    await app.input.click({ timeout: 10_000 });
     await app.page.keyboard.type("draft");
     await app.page.keyboard.press(press);
     await app.page.waitForTimeout(400);
@@ -178,7 +207,7 @@ async function pressCase(device, sendKey, press, outcome, label) {
 async function imeCase(device, sendKey, label) {
   const app = await openApp(device, sendKey, label);
   try {
-    await app.input.click();
+    await app.input.click({ timeout: 10_000 });
     const cdp = await app.context.newCDPSession(app.page);
     await cdp.send("Input.imeSetComposition", { text: "ni", selectionStart: 2, selectionEnd: 2 });
     await cdp.send("Input.imeSetComposition", { text: "你", selectionStart: 1, selectionEnd: 1 });
@@ -287,11 +316,15 @@ async function openHarness(screen, fontSize, label, { refuse = false } = {}) {
     }
     await route.fulfill({ body, contentType: types[extname(url.pathname) || ".html"] });
   });
-  await page.goto(`${ORIGIN}/`);
-  await page.locator(".input-preferences").waitFor();
-  await page.locator(".shortcut-help").waitFor();
-  await page.waitForTimeout(200);
-  assert.equal(await page.evaluate(() => document.documentElement.dataset.fontSize), String(fontSize), `${label}: text size`);
+  try {
+    await page.goto(`${ORIGIN}/`);
+    await page.locator(".input-preferences").waitFor({ timeout: 10_000 });
+    await page.locator(".shortcut-help").waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(200);
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.fontSize), String(fontSize), `${label}: text size`);
+  } catch (error) {
+    await setupFailed(page, context, label, error);
+  }
   return { context, page };
 }
 
@@ -445,22 +478,27 @@ async function refusedCase() {
   }
 }
 
-// The report is written also when a check fails, with what it saw.
-try {
-  if (parts.includes("composer")) await composerCases();
-  if (parts.includes("settings")) {
-    await buildHarness();
-    await layoutCases();
-    await keyboardCases();
-    await refusedCase();
-  }
-} catch (error) {
-  report.failed = String(error?.stack || error);
-  throw error;
-} finally {
-  await browser.close();
-  await writeFile(resolve(output, "report.json"), JSON.stringify(report, null, 1));
+async function settingsCases() {
+  await buildHarness();
+  await layoutCases();
+  await keyboardCases();
+  await refusedCase();
 }
+
+// Each part runs, and the report is written, also when one fails.
+report.failed = {};
+for (const [part, run] of [["composer", composerCases], ["settings", settingsCases]]) {
+  if (!parts.includes(part)) continue;
+  try {
+    await run();
+  } catch (error) {
+    report.failed[part] = String(error?.stack || error).slice(0, 4000);
+    console.log(`FAILED ${part}: ${String(error?.message || error).split("\n")[0]}`);
+  }
+}
+await browser.close();
+await writeFile(resolve(output, "report.json"), JSON.stringify(report, null, 1));
+assert.deepEqual(Object.keys(report.failed), [], "every part");
 assert.deepEqual(report.errors, [], "no page errors");
 assert.deepEqual(report.requests.filter((r) => r.unexpected), [], "no request this check doesn't answer by design");
 console.log(`checks ${report.checks.length}; sends answered 400: ${report.requests.filter((r) => r.path === "/api/agents/a/messages").length}; unmodelled GETs ${Object.values(report.unmodelledGets).reduce((a, b) => a + b, 0)}`);
