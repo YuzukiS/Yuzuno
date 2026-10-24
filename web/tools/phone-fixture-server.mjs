@@ -1,7 +1,7 @@
 // T-170: the production web build with every API answered here (no Core),
 // on 127.0.0.1, for a browser that Playwright does not drive: Mobile Safari in
-// an iOS Simulator, run on the same Mac (ios.yml). It serves the synthetic
-// Workspace of safe-area-check.mjs: one Agent, Mori, with a finished
+// an iOS Simulator, run on the same Mac (ios/uitests/run.sh). It serves the
+// synthetic Workspace of safe-area-check.mjs: one Agent, Mori, with a finished
 // conversation, and the Jobs, Tasks and Settings dialogs. Every HTML page it
 // serves gets phone-measure.js, which posts what the page measured to
 // /__measure; each post becomes one JSON line in YUZUNO_MEASURE_OUT. A write

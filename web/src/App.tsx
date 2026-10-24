@@ -155,6 +155,7 @@ import { useRefreshTrigger } from "./refresh-trigger";
 import { coreConnection } from "./connection-status";
 import "./connection-status.css";
 import { OutgoingMessages } from "./OutgoingMessages";
+import { sendingInTurn } from "./delivery-note";
 import { CurrentTurnPrompt } from "./CurrentTurnPrompt";
 import { Jobs, ConversationJobs } from "./Jobs";
 import { ConversationSubAgentDock } from "./ClaudeSubAgentDock";
@@ -207,6 +208,7 @@ const LiveTurn = memo(Turn, (a: TurnProps, b: TurnProps) =>
   a.pendingToolIds === b.pendingToolIds &&
   a.highlightSource === b.highlightSource &&
   a.receipts === b.receipts &&
+  a.sendingInTurn === b.sendingInTurn &&
   a.agent.id === b.agent.id &&
   a.agent.name === b.agent.name &&
   a.agent.color === b.agent.color &&
@@ -734,8 +736,17 @@ export function App() {
     agent?.harness,
     currentDetail,
   );
+  // New Claude messages still sending that their own Turn shows: once, there,
+  // with the delivery note (T-120). The same set while its members stay the
+  // same, so a streamed change does not draw every Turn again.
+  const inTurnKey = [...sendingInTurn(currentDetail, selected, outgoing)].sort().join("\n");
+  const inTurn = useMemo<ReadonlySet<string>>(() => new Set(inTurnKey ? inTurnKey.split("\n") : []), [inTurnKey]);
+  // A message this tab is still sending is on its way, not unconfirmed: Core
+  // records its receipt before the harness answers, and a read in between
+  // shows it sending (T-120). Only that same message, while its request runs.
   const unconfirmedMessage = currentDetail?.messageReceipts?.some(
-    (r) => r.status === "sending" || r.status === "uncertain",
+    (r) => r.status === "uncertain" || (r.status === "sending" && !(sending && outgoing.some((m) =>
+      m.agentId === selected && m.receipt.status === "sending" && m.receipt.input.clientMessageId === r.input.clientMessageId))),
   );
   // The Home tab counts what Needs you lists: requests and open Asks. Unread
   // turns stay with their conversations: Home does not list them, so its
@@ -2479,6 +2490,7 @@ export function App() {
                         onFile={turnFile}
                         onRewindDraft={previewMode || closed ? undefined : rewindDraft}
                         receipts={currentDetail?.messageReceipts}
+                        sendingInTurn={inTurn}
                         onResultInteract={turnInteract}
                         onOpenQuestion={openQuestion}
                         questionSources={questionSources}

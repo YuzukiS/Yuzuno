@@ -3,10 +3,11 @@
 # with Xcode (Tauri's CLI reference); a Simulator build needs no signing.
 # A pull request that changes ios/, or what it uses from desktop/ and web/
 # (the Core rule, jsdom's lock and guard, the icon), runs the iOS app's tests
-# and builds it. Nothing is uploaded; the app's checksum is in the run's
-# summary, as for desktop-macos.yml's pull requests. Never an installable
-# build for an iPhone, which would need the user's own Apple signing. No
-# secret is used. See ios/README.md.
+# and builds it. The app is not uploaded; its checksum is in the run's
+# summary, as for desktop-macos.yml's pull requests. The one upload is the
+# Simulator smoke's two connection-page screenshots, for 3 days. Never an
+# installable build for an iPhone, which would need the user's own Apple
+# signing. No secret is used. See ios/README.md.
 name: iOS
 
 on:
@@ -134,7 +135,60 @@ jobs:
           [ "$platform" = iPhoneSimulator ] || { echo "::error::platform is $platform"; exit 1; }
           lipo -archs "$app/$executable" | grep -qx arm64 || { echo "::error::not an arm64 executable: $(lipo -archs "$app/$executable")"; exit 1; }
           xcrun vtool -show-build "$app/$executable" | grep -E 'platform|minos'
+          # The devices and orientations the app declares, as packaged. On an
+          # iPhone it is portrait only for now (Info.ios.plist); the iPad list
+          # is Tauri's own, unchanged and unchecked here.
+          for key in UIDeviceFamily UISupportedInterfaceOrientations 'UISupportedInterfaceOrientations~ipad' UIRequiresFullScreen; do
+            echo "$key: $(plutil -extract "$key" json -o - "$app/Info.plist" 2>&1)"
+          done
+          iphone=$(plutil -extract UISupportedInterfaceOrientations json -o - "$app/Info.plist")
+          [ "$iphone" = '["UIInterfaceOrientationPortrait"]' ] || { echo "::error::iPhone orientations are $iphone"; exit 1; }
           mkdir -p "$RUNNER_TEMP/out"
           ditto -c -k --keepParent "$app" "$RUNNER_TEMP/out/Yuzuno-iOS-Simulator.zip"
           (cd "$RUNNER_TEMP/out" && shasum -a 256 Yuzuno-iOS-Simulator.zip | tee SHA256SUMS)
-          { echo "### iOS Simulator app"; echo; echo "\`$identifier\`, $platform, arm64."; echo; echo '```'; cat "$RUNNER_TEMP/out/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          # A pull request's run builds its merge with main: name that commit.
+          # The checkout is shallow, so its parents come from the commit itself.
+          source=$(git rev-parse HEAD)
+          parents=$(git cat-file -p HEAD | sed -n 's/^parent //p' | paste -s -d ' ' -)
+          echo "built from $source (parents: $parents)"
+          { echo "### iOS Simulator app"; echo; echo "\`$identifier\`, $platform, arm64, built from \`$source\` (parents: \`$parents\`)."; echo; echo '```'; cat "$RUNNER_TEMP/out/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      # The app in a Simulator of its own, without a Core: it starts, its
+      # connection page shows in the app's WKWebView, and the app refuses a
+      # plain HTTP address itself (uitests/run.sh smoke). Turning, the
+      # keyboard, Mobile Safari and their measurements are for a Mac with
+      # Xcode (run.sh full and safari; see ios/README.md), not this job.
+      - name: Simulator smoke
+        timeout-minutes: 20
+        run: |
+          app=$(find gen/apple/build/arm64-sim -maxdepth 1 -type d -name '*.app')
+          uitests/run.sh smoke "$app" "$RUNNER_TEMP/checks"
+
+      # When the smoke fails: what failed, from its result bundle (the
+      # tests' own messages). Nothing is uploaded.
+      - name: Simulator smoke failures
+        if: failure()
+        run: |
+          [ -d "$RUNNER_TEMP/checks/checks.xcresult" ] || { echo "no result bundle"; exit 0; }
+          xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/checks/checks.xcresult"
+          xcrun xcresulttool get test-results tests --path "$RUNNER_TEMP/checks/checks.xcresult"
+
+      # The connection page, made without a Core: no Workspace, account or
+      # address of the user's can be in these. Exactly these two PNG files are
+      # uploaded, kept for 3 days; the app itself is not.
+      - name: Screenshots
+        run: |
+          dir="$RUNNER_TEMP/checks/screenshots"
+          expected="app-portrait.png app-refused.png"
+          found=$(ls -A "$dir" | LC_ALL=C sort | paste -s -d ' ' -)
+          [ "$found" = "$expected" ] || { echo "::error::expected $expected, found: $found"; exit 1; }
+          for file in $expected; do
+            [ "$(head -c 8 "$dir/$file" | xxd -p)" = 89504e470d0a1a0a ] || { echo "::error::$file is not a PNG"; exit 1; }
+          done
+          (cd "$dir" && shasum -a 256 $expected)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-simulator-screenshots-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/checks/screenshots/*.png
+          if-no-files-found: error
+          retention-days: 3
