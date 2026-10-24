@@ -135,10 +135,14 @@ jobs:
           [ "$platform" = iPhoneSimulator ] || { echo "::error::platform is $platform"; exit 1; }
           lipo -archs "$app/$executable" | grep -qx arm64 || { echo "::error::not an arm64 executable: $(lipo -archs "$app/$executable")"; exit 1; }
           xcrun vtool -show-build "$app/$executable" | grep -E 'platform|minos'
-          # The devices and orientations the app declares, as packaged.
+          # The devices and orientations the app declares, as packaged. On an
+          # iPhone it is portrait only for now (Info.ios.plist); the iPad list
+          # is Tauri's own, unchanged and unchecked here.
           for key in UIDeviceFamily UISupportedInterfaceOrientations 'UISupportedInterfaceOrientations~ipad' UIRequiresFullScreen; do
-            echo "$key: $(/usr/libexec/PlistBuddy -c "Print :$key" "$app/Info.plist" 2>&1 | tr -s ' \n' ' ')"
+            echo "$key: $(plutil -extract "$key" json -o - "$app/Info.plist" 2>&1)"
           done
+          iphone=$(plutil -extract UISupportedInterfaceOrientations json -o - "$app/Info.plist")
+          [ "$iphone" = '["UIInterfaceOrientationPortrait"]' ] || { echo "::error::iPhone orientations are $iphone"; exit 1; }
           mkdir -p "$RUNNER_TEMP/out"
           ditto -c -k --keepParent "$app" "$RUNNER_TEMP/out/Yuzuno-iOS-Simulator.zip"
           (cd "$RUNNER_TEMP/out" && shasum -a 256 Yuzuno-iOS-Simulator.zip | tee SHA256SUMS)
@@ -151,8 +155,10 @@ jobs:
 
       # The app in a Simulator, without a Core: it starts, its connection
       # page shows in the app's WKWebView, and the app's own commands answer
-      # there (uitests/). Unsigned. The check saves three screenshots of the
-      # connection page, the only files that leave the runner (below).
+      # there (uitests/). Then the same page in Mobile Safari, served on
+      # 127.0.0.1 by uitests/safari/serve.py with a measuring probe added, to
+      # compare what WebKit gives a page there. The check saves five
+      # screenshots of that page, the only files that leave the runner (below).
       - name: Simulator check
         timeout-minutes: 20
         env:
@@ -160,6 +166,7 @@ jobs:
           TEST_RUNNER_YUZUNO_SCREENSHOTS: ${{ runner.temp }}/ios-screenshots
           # Where the page's parts are, in points; printed below, not uploaded.
           TEST_RUNNER_YUZUNO_FRAMES: ${{ runner.temp }}/ios-frames.txt
+          TEST_RUNNER_YUZUNO_SAFARI: http://127.0.0.1:8765/index.html
         run: |
           mkdir "$TEST_RUNNER_YUZUNO_SCREENSHOTS"
           app=$(find gen/apple/build/arm64-sim -maxdepth 1 -type d -name '*.app')
@@ -168,10 +175,15 @@ jobs:
           xcrun simctl boot "$device"
           xcrun simctl bootstatus "$device" -b
           xcrun simctl install "$device" "$app"
+          python3 uitests/safari/serve.py --root connection --probe uitests/safari/probe.js --port 8765 > "$RUNNER_TEMP/page-server.log" 2>&1 &
+          server=$!
+          for attempt in $(seq 1 20); do curl -sf -o /dev/null "$TEST_RUNNER_YUZUNO_SAFARI" && break; sleep 0.5; done
+          xcrun simctl openurl "$device" "$TEST_RUNNER_YUZUNO_SAFARI"
           (cd uitests && xcodegen generate)
           xcodebuild test -quiet -project uitests/YuzunoChecks.xcodeproj -scheme Checks \
             -destination "platform=iOS Simulator,id=$device" -resultBundlePath "$RUNNER_TEMP/checks.xcresult"
           cat "$TEST_RUNNER_YUZUNO_FRAMES"
+          kill "$server"
           xcrun simctl shutdown "$device"
 
       # When the check fails: what failed, from its result bundle (the
@@ -179,17 +191,19 @@ jobs:
       - name: Simulator check failures
         if: failure()
         run: |
+          [ ! -f "$RUNNER_TEMP/page-server.log" ] || cat "$RUNNER_TEMP/page-server.log"
           [ -d "$RUNNER_TEMP/checks.xcresult" ] || { echo "no result bundle"; exit 0; }
           xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/checks.xcresult"
           xcrun xcresulttool get test-results tests --path "$RUNNER_TEMP/checks.xcresult"
 
-      # Only the connection page, made without a Core: no Workspace, account
-      # or address of the user's can be in these. Exactly these three PNG
-      # files are uploaded, kept for 3 days; the app itself is not.
+      # Only the connection page, in the app and in Safari, made without a
+      # Core: no Workspace, account or address of the user's can be in these.
+      # Exactly these five PNG files are uploaded, kept for 3 days; the app
+      # itself is not.
       - name: Screenshots
         run: |
           dir="$RUNNER_TEMP/ios-screenshots"
-          expected="connection-landscape.png connection-portrait.png connection-refused.png"
+          expected="app-portrait.png app-refused.png app-rotated.png safari-landscape.png safari-portrait.png"
           found=$(ls -A "$dir" | LC_ALL=C sort | paste -s -d ' ' -)
           [ "$found" = "$expected" ] || { echo "::error::expected $expected, found: $found"; exit 1; }
           for file in $expected; do
@@ -199,6 +213,6 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ios-simulator-screenshots-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ios-screenshots/connection-*.png
+          path: ${{ runner.temp }}/ios-screenshots/*.png
           if-no-files-found: error
           retention-days: 3

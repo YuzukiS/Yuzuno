@@ -2,23 +2,31 @@ import XCTest
 
 /// The Yuzuno app as ios.yml installs it in this Simulator: its connection
 /// page in the app's WKWebView, answered by the app's own commands. No Core
-/// is reached. A passing check is a Simulator result, not an iPhone's.
+/// is reached. Then the same page in Mobile Safari, for comparison. A passing
+/// check is a Simulator result, not an iPhone's.
 final class ConnectionPageChecks: XCTestCase {
     private let yuzuno = XCUIApplication(bundleIdentifier: "dev.yuzuno.ios")
+    private let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
 
     override func setUp() {
         continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    private func text(containing text: String, in app: XCUIApplication) -> XCUIElement {
+        app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
     }
 
     private func message(containing text: String) -> XCUIElement {
-        yuzuno.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
+        self.text(containing: text, in: yuzuno)
     }
 
     /// What the connection page shows, for a failure's message: its text
     /// and the address field's value (nothing but this app's own page).
-    private func page() -> String {
-        let texts = yuzuno.staticTexts.allElementsBoundByIndex.map(\.label).filter { !$0.isEmpty }
-        let field = yuzuno.textFields.firstMatch
+    private func page(in app: XCUIApplication? = nil) -> String {
+        let app = app ?? yuzuno
+        let texts = app.staticTexts.allElementsBoundByIndex.map(\.label).filter { !$0.isEmpty }
+        let field = app.textFields.firstMatch
         let value = field.exists ? String(describing: field.value ?? "") : "(no field)"
         return "page: \(texts.joined(separator: " | ")); field: \(value)"
     }
@@ -40,31 +48,33 @@ final class ConnectionPageChecks: XCTestCase {
     }
 
     /// Writes where the page's parts are, in points, to the file ios.yml
-    /// prints (YUZUNO_FRAMES): how the safe area is applied, as numbers.
-    private func frames(_ orientation: String) {
+    /// prints (YUZUNO_FRAMES), with Safari's probe line when there is one.
+    private func record(_ label: String, in app: XCUIApplication) {
         guard let path = ProcessInfo.processInfo.environment["YUZUNO_FRAMES"] else { return }
         let parts: [(String, XCUIElement)] = [
-            ("window", yuzuno.windows.firstMatch),
+            ("window", app.windows.firstMatch),
             // Left-aligned at the body's padding, unlike the centred main column.
-            ("wordmark", message(containing: "yuzuno")),
-            ("eyebrow", message(containing: "A little room")),
-            ("heading", message(containing: "Your workspace")),
-            ("field", yuzuno.textFields.firstMatch),
+            ("wordmark", text(containing: "yuzuno", in: app)),
+            ("eyebrow", text(containing: "A little room", in: app)),
+            ("heading", text(containing: "Your workspace", in: app)),
+            ("field", app.textFields.firstMatch),
         ]
-        let lines = parts.map { name, element in "\(orientation) \(name): \(element.exists ? "\(element.frame)" : "missing")" }
-        let text = lines.joined(separator: "\n") + "\n"
+        var lines = parts.map { name, element in "\(label) \(name): \(element.exists ? "\(element.frame)" : "missing")" }
+        let probe = text(containing: "probe:", in: app)
+        if probe.exists { lines.append("\(label) \(probe.label)") }
+        let report = lines.joined(separator: "\n") + "\n"
         if let handle = FileHandle(forWritingAtPath: path) {
             handle.seekToEndOfFile()
-            handle.write(Data(text.utf8))
+            handle.write(Data(report.utf8))
             handle.closeFile()
         } else {
-            XCTAssertNoThrow(try text.write(toFile: path, atomically: true, encoding: .utf8))
+            XCTAssertNoThrow(try report.write(toFile: path, atomically: true, encoding: .utf8))
         }
     }
 
     /// Waits until the page is drawn, not only in the accessibility tree.
-    private func drawn() {
-        XCTAssertTrue(message(containing: "Your workspace").waitForExistence(timeout: 10), page())
+    private func drawn(in app: XCUIApplication) {
+        XCTAssertTrue(text(containing: "Your workspace", in: app).waitForExistence(timeout: 10), page(in: app))
         sleep(2)
     }
 
@@ -80,26 +90,26 @@ final class ConnectionPageChecks: XCTestCase {
         // A fresh install has no saved Workspace, and the page found the app's bridge.
         freshPage()
         XCTAssertTrue(yuzuno.textFields.firstMatch.exists, page())
-        drawn()
-        frames("portrait")
-        screenshot("connection-portrait")
+        drawn(in: yuzuno)
+        record("app portrait", in: yuzuno)
+        screenshot("app-portrait")
 
-        // The safe area in landscape: the notch is then at a side.
+        // The iPhone app is portrait only for now (Info.ios.plist, Lead 8305):
+        // turning the phone leaves the window as it was.
         XCUIDevice.shared.orientation = .landscapeLeft
-        XCTAssertTrue(yuzuno.textFields.firstMatch.waitForExistence(timeout: 10), page())
-        drawn()
-        frames("landscape+2s")
-        screenshot("connection-landscape")
-        // Again later: does the page's safe area follow the rotation late, or not at all?
-        sleep(4)
-        frames("landscape+6s")
+        sleep(2)
+        drawn(in: yuzuno)
+        record("app rotated", in: yuzuno)
+        screenshot("app-rotated")
+        let window = yuzuno.windows.firstMatch.frame
+        XCTAssertLessThan(window.width, window.height, "the window turned: \(window)")
         XCUIDevice.shared.orientation = .portrait
         sleep(2)
 
         // The refusal is the app's own (core_url.rs), through connect_core.
         enter("http://core.example.ts.net")
         XCTAssertTrue(message(containing: "HTTPS address").waitForExistence(timeout: 20), page())
-        screenshot("connection-refused")
+        screenshot("app-refused")
 
         // An HTTPS address nothing answers: 192.0.2.1 is a documentation
         // address (RFC 5737). The health check gives up within its 4 s, and
@@ -109,5 +119,27 @@ final class ConnectionPageChecks: XCTestCase {
         enter("https://192.0.2.1")
         XCTAssertTrue(message(containing: "not reachable").waitForExistence(timeout: 30), page())
         XCTAssertTrue(yuzuno.buttons["Connect"].isEnabled, page())
+    }
+
+    /// The same page in Mobile Safari, served on this Mac's 127.0.0.1 and
+    /// opened by ios.yml before the tests: what WebKit gives a page there,
+    /// upright and sideways, beside what the app gives it. Outside the app
+    /// the page offers nothing to submit, so the keyboard is not opened here.
+    func testTheSamePageInSafari() throws {
+        guard ProcessInfo.processInfo.environment["YUZUNO_SAFARI"] != nil else {
+            throw XCTSkip("ios.yml opens the page in Safari; not set here")
+        }
+        safari.activate()
+        XCTAssertTrue(text(containing: "probe:", in: safari).waitForExistence(timeout: 60), page(in: safari))
+        drawn(in: safari)
+        record("safari portrait", in: safari)
+        screenshot("safari-portrait")
+
+        XCUIDevice.shared.orientation = .landscapeLeft
+        sleep(2)
+        drawn(in: safari)
+        record("safari landscape", in: safari)
+        screenshot("safari-landscape")
+        XCUIDevice.shared.orientation = .portrait
     }
 }

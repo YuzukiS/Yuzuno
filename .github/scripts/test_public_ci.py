@@ -26,9 +26,10 @@ passed.
 .github/workflows/ios.yml (T-170) builds the iOS app for the Simulator,
 unsigned, on the standard GitHub-hosted macos-26 runner. Only pull_request
 triggers it; its token reads contents only; no secret, cache or other
-runner. Its one upload is the Simulator check's three connection-page
-screenshots, exactly as IOS_UPLOAD names them and kept for 3 days, after a
-step that checks there are only those three PNG files.
+runner. Its one upload is the Simulator check's five screenshots of the
+connection page (in the app and in Safari), exactly as IOS_UPLOAD names
+them and kept for 3 days, after a step that checks there are only those
+five PNG files.
 """
 from pathlib import Path
 import os
@@ -250,10 +251,10 @@ def desktop_macos_problems(text):
 IOS_UPLOAD = """      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ios-simulator-screenshots-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ios-screenshots/connection-*.png
+          path: ${{ runner.temp }}/ios-screenshots/*.png
           if-no-files-found: error
           retention-days: 3"""
-IOS_SCREENSHOTS = 'expected="connection-landscape.png connection-portrait.png connection-refused.png"'
+IOS_SCREENSHOTS = 'expected="app-portrait.png app-refused.png app-rotated.png safari-landscape.png safari-portrait.png"'
 
 
 def ios_problems(text):
@@ -397,9 +398,9 @@ class PublicCi(unittest.TestCase):
             'a Rust cache': (good.replace('      - name: Runner details', '      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6\n      - name: Runner details', 1), 'cache'),
             'a pages upload': (good.replace('      - name: Runner details', '      - uses: actions/upload-pages-artifact@0000000000000000000000000000000000000000\n      - name: Runner details', 1), 'a pages upload'),
             'a second upload': (good.replace('      - name: Runner details', '      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n      - name: Runner details', 1), 'exactly the Simulator screenshots'),
-            'the app uploaded': (good.replace('path: ${{ runner.temp }}/ios-screenshots/connection-*.png', 'path: ${{ runner.temp }}/out/Yuzuno-iOS-Simulator.zip', 1), 'exactly the Simulator screenshots'),
-            'the whole directory': (good.replace('path: ${{ runner.temp }}/ios-screenshots/connection-*.png', 'path: ${{ runner.temp }}/ios-screenshots', 1), 'exactly the Simulator screenshots'),
-            'a second path': (good.replace('path: ${{ runner.temp }}/ios-screenshots/connection-*.png', 'path: |\n            ${{ runner.temp }}/ios-screenshots/connection-*.png\n            gen/apple', 1), 'exactly the Simulator screenshots'),
+            'the app uploaded': (good.replace('path: ${{ runner.temp }}/ios-screenshots/*.png', 'path: ${{ runner.temp }}/out/Yuzuno-iOS-Simulator.zip', 1), 'exactly the Simulator screenshots'),
+            'the whole directory': (good.replace('path: ${{ runner.temp }}/ios-screenshots/*.png', 'path: ${{ runner.temp }}/ios-screenshots', 1), 'exactly the Simulator screenshots'),
+            'a second path': (good.replace('path: ${{ runner.temp }}/ios-screenshots/*.png', 'path: |\n            ${{ runner.temp }}/ios-screenshots/*.png\n            gen/apple', 1), 'exactly the Simulator screenshots'),
             'kept longer': (good.replace('retention-days: 3', 'retention-days: 30', 1), 'exactly the Simulator screenshots'),
             'kept by default': (good.replace('          retention-days: 3\n', '', 1), 'exactly the Simulator screenshots'),
             'missing files allowed': (good.replace('if-no-files-found: error', 'if-no-files-found: warn', 1), 'exactly the Simulator screenshots'),
