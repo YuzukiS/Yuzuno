@@ -113,7 +113,8 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 async function shot(page, name) {
-  await page.screenshot({ path: resolve(output, `${name}.png`) });
+  // Animations finished: a dialog is shown as it settles, not mid-fade.
+  await page.screenshot({ path: resolve(output, `${name}.png`), animations: "disabled" });
   report.screenshots.push(`${name}.png`);
   // Never a passing step on the app's error screen.
   assert.equal(await page.locator("#app-recovery-title").count(), 0, `${name}: the app fell to its error screen: ${JSON.stringify(report.console)}`);
