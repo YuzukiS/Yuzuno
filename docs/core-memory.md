@@ -485,9 +485,9 @@ besides that shared position. In the windows, the slowest call took 12.5–22.5
 ms before; after, 2.8–10.9 ms, except one window with the 37.9 MiB record in
 which one call took 46.2 ms and a delta 44.4 ms. None of that is attributed.
 Commits that still copy a held Codex record whole, which this lab does not
-make, include `error`, `thread/compacted` and an MCP server's start-up
-status; a status change or a request's resolution while a message is being
-sent no longer does (see below).
+make, include `error` and `thread/compacted`; a status change or a
+request's resolution while a message is being sent, and an MCP server's
+start-up status, no longer do (see below).
 These are synthetic allocator measurements in one process, not the daily
 Core's RSS.
 
@@ -627,6 +627,43 @@ ID `restore` gives back is still written by the commit that restores it,
 and a write that fails changes and publishes nothing, as before. By the
 source, this is the same change of commit as a thread's start above; it was
 not measured separately.
+
+### An MCP server's start-up status
+
+Codex reports each MCP server's start-up status
+(`mcpServer/startupStatus/updated`) as a connection starts, while it resumes
+the thread, by when attach's first commit has left the record held.
+`AgentDetail::apply` does not act on the event: applied to the whole record
+it only settled the status, set the update time and, as `apply`'s last step,
+accepted each receipt not yet accepted or rejected by its user message. It
+was committed through `Store::record_applied`, whose commit copied a held
+record whole (or loaded one not held). It is now committed as the metadata
+(`metadata_event`, as `thread/status/changed` is), changing no field, and
+always with that receipt step (`Store::update_meta_applied`), so a receipt
+in any state, an unknown one too, is left as the whole-record commit left
+it.
+
+T-140 run `d5ce8d56-4519-4853-801e-419f7ae70ed3`, 2026-10-24: release builds of `core_memory_paths` with a
+lab mode (on lab branches, not merged) that runs the Agent's own handler
+(`on_event`) on main `ecee0a8` and on this change, in the order before,
+after, after, before, one process each. One synthetic record of 64 MiB; one
+whole copy of it held (`detail`) is 69.9 MiB. Each run sent three servers'
+`starting` and `ready` and one `ready` beside a receipt still sending to the
+held record, then one `ready` to the record not held and one more to the
+record that load left held. Both runs of a side gave the same counts, and
+all four wrote the same journal and Agent:
+
+| One start-up status | Before: allocated | Before: peak above its start | After: allocated | After: peak |
+| --- | ---: | ---: | ---: | ---: |
+| Held (seven events) | 69.9 MiB | 69.9 MiB | 33.7–35.5 KiB | 12.9–14.7 KiB |
+| Not held | 89.1 MiB | 71.0 MiB | 89.1 MiB | 71.0 MiB |
+| Held again after that load | 69.9 MiB | 69.9 MiB | 0.03 MiB | 0.01 MiB |
+
+Held, an event took 12.7–26.7 ms before and 1.7–3.4 ms after. A record not
+held is still loaded from its rows and held, as `commit_meta` does for any
+metadata commit to one. These are synthetic allocator measurements in one
+process, not the daily Core's RSS; how many MCP servers a daily Agent has,
+and so how many such events a connection makes, was not measured.
 
 ### A Claude send
 
