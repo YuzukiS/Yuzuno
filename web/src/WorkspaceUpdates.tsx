@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type { SettingsEditor } from "./settings-catalog";
 import { SettingsCenter, type SettingsNavigation } from "./SettingsCenter";
+import { RuntimeSection } from "./RuntimeSection";
 import { AppearanceSection } from "./AppearanceSettings";
 import { Modal } from "./components";
 import { DesktopUpdate } from "./DesktopUpdate";
@@ -759,7 +760,7 @@ export function WorkspaceUpdates({
         navigation={navigation}
         onEditorChange={setActiveEditor}
         attention={stage === "running" || stage === "reload" || stage === "prepared" || stage === "local" || stage === "published"}
-        renderEditor={(tab) => <>
+        renderEditor={(tab, visible) => <>
           {tab === "updates" && (
             <section
               className="settings-section"
@@ -976,6 +977,12 @@ export function WorkspaceUpdates({
           {tab === "updates" && <DesktopUpdate preserveDrafts={preserveDrafts} />}
           {tab === "diagnostics" && <DiagnosticsCopy />}
           {tab === "history" && <HistoryComposition />}
+          {tab === "runtime" && (
+            <RuntimeSection
+              active={open && visible}
+              onOpenMachines={navigation && !navigation.disabled ? () => navigation.onNavigate({ kind: "machines" }) : undefined}
+            />
+          )}
           {tab === "appearance" && <AppearanceSection />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
