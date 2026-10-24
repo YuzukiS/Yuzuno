@@ -82,6 +82,10 @@ struct Failure {
     correction_scope: Option<Value>,
     resolved_by: Option<usize>,
     recovery_source: Option<Value>,
+    /// The blob of the source a read failure is bound to, and the receipts
+    /// whose delivered ranges of that blob count toward its recovery.
+    recovery_blob: Option<String>,
+    recovery_receipts: Vec<usize>,
     search_recovery: Option<search_recovery::Recovery>,
 }
 
@@ -559,10 +563,11 @@ impl ContextStore {
             "endLine",
             "endLine must be at least startLine",
         )?;
-        ensure!(
+        arguments::check(
             request.end_line - request.start_line < MAX_LINES,
-            "Request an inclusive 1-based range of at most 500 lines; split larger ranges"
-        );
+            "endLine",
+            "Request an inclusive 1-based range of at most 500 lines; split larger ranges",
+        )?;
         let rev = revision(run, &request.revision)?.to_owned();
         let entry = self.entry(&rev, &request.path).await?;
         let text = self.text(&entry).await?;
@@ -832,6 +837,8 @@ impl ContextStore {
                     correction_scope,
                     resolved_by: None,
                     recovery_source: None,
+                    recovery_blob: None,
+                    recovery_receipts: Vec::new(),
                     search_recovery: None,
                 });
                 let schema = context_tools().into_iter().find(|s| s["name"] == tool);
@@ -913,10 +920,35 @@ impl ContextStore {
                     .recovery_source
                     .as_ref()
                     .is_some_and(|bound| *bound != source)
+                    || failure
+                        .recovery_blob
+                        .as_deref()
+                        .is_some_and(|blob| value["blobSha"] != blob)
                 {
                     continue;
                 }
+                if failure.recovery_source.is_none() {
+                    // What this same blob delivered before the failure counts
+                    // as well: only successful receipts, by their own ranges.
+                    for receipt in self.receipts.iter().take(failure.receipt - 1) {
+                        let delivered = receipt["tool"] == "source_read"
+                            && receipt["error"].is_null()
+                            && receipt["path"] == value["path"]
+                            && receipt["revision"] == value["revision"]
+                            && receipt["blobSha"] == value["blobSha"];
+                        if let (true, Some(a), Some(b), Some(n)) = (
+                            delivered,
+                            receipt["startLine"].as_u64(),
+                            receipt["endLine"].as_u64(),
+                            receipt["number"].as_u64(),
+                        ) {
+                            failure.ranges.push((a as usize, b as usize + 1));
+                            failure.recovery_receipts.push(n as usize);
+                        }
+                    }
+                }
                 failure.recovery_source = Some(source);
+                failure.recovery_blob = value["blobSha"].as_str().map(str::to_owned);
                 let (Some(start), Some(end)) = (
                     failure.input["startLine"].as_u64(),
                     failure.input["endLine"].as_u64(),
@@ -930,6 +962,7 @@ impl ContextStore {
                     value["startLine"].as_u64().unwrap() as usize,
                     value["endLine"].as_u64().unwrap() as usize + 1,
                 ));
+                failure.recovery_receipts.push(self.receipts.len() + 1);
                 let target_end = end.min(value["totalLines"].as_u64().unwrap());
                 failure.resolved =
                     (start == 1 && value["totalLines"] == 0 && value["sourceBytes"] == 0)
@@ -987,7 +1020,7 @@ impl ContextStore {
                 );
             }
         }
-        let mut failures: Vec<_> = self.failures.iter().map(|f|json!({"receipt":f.receipt,"kind":f.kind,"tool":f.tool,"requested":f.input,"revision":f.revision,"resolved":f.resolved,"resolvedByReceipt":f.resolved_by,"correctionScope":f.correction_scope,"recoverySource":f.recovery_source,"searchRecovery":f.search_recovery})).collect();
+        let mut failures: Vec<_> = self.failures.iter().map(|f|json!({"receipt":f.receipt,"kind":f.kind,"tool":f.tool,"requested":f.input,"revision":f.revision,"resolved":f.resolved,"resolvedByReceipt":f.resolved_by,"correctionScope":f.correction_scope,"recoverySource":f.recovery_source,"recoveryReceipts":f.recovery_receipts,"searchRecovery":f.search_recovery})).collect();
         // A continuation's union, or an incremental round relying on
         // another's proofs, names the review behind every proof.
         if self.reserved || !self.inherited.is_empty() {
