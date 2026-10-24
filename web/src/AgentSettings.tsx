@@ -37,14 +37,16 @@ export function AgentSettings({
   observedEffort?: { level: string; latest: boolean } | null;
   observedContextUsage?: ContextUsage | null;
   /** The composer's `/model [name]`: open, preselecting that model. */
-  request?: { model: string; nonce: number } | null;
+  request?: { model: string; nonce: number; agentId?: string; section?: "model" | "context" } | null;
   /** Called once the dialog has actually opened for `request`. */
   onRequestOpened?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const requested = useRef("");
   // A request made before this mount (for another Agent) is not this one's.
-  const seen = useRef(request?.nonce);
+  const seen = useRef(request?.agentId === agent.id ? undefined : request?.nonce);
+  const form = useRef<HTMLFormElement>(null);
+  const focusContext = useRef(false);
   const claude = agent.harness === "claude";
   const [reload, setReload] = useState(0);
   const [models, setModels] = useState<Model[]>([]);
@@ -126,9 +128,10 @@ export function AgentSettings({
     onOpenChange?.(next);
   }
   useEffect(() => {
-    if (!request || request.nonce === seen.current || disabled) return;
+    if (!request || (request.agentId && request.agentId !== agent.id) || request.nonce === seen.current || disabled) return;
     seen.current = request.nonce;
     requested.current = request.model;
+    focusContext.current = request.section === "context";
     // Already open: read the catalog again so the requested model is chosen.
     if (open) setReload((n) => n + 1);
     else if (saving) return;
@@ -136,6 +139,16 @@ export function AgentSettings({
     onRequestOpened?.();
     // Only a new request opens it; nothing else here reopens the dialog.
   }, [request?.nonce]);
+  useEffect(() => {
+    if (!open || loading || !focusContext.current) return;
+    const fieldset = form.current?.querySelector<HTMLElement>(".codex-context-settings");
+    if (fieldset) {
+      focusContext.current = false;
+      fieldset.tabIndex = -1;
+      fieldset.focus();
+      fieldset.scrollIntoView?.({ block: "start" });
+    }
+  }, [open, loading, request?.nonce]);
   const selected = models.find((m) => (m.model || m.id) === model);
   const efforts = selected?.supportedReasoningEfforts || [];
   // Claude's levels come from the chosen model's catalog row; no model is
@@ -278,6 +291,7 @@ export function AgentSettings({
         }
       >
         <form
+          ref={form}
           className="agent-settings-form"
           onSubmit={(event) => {
             event.preventDefault();
