@@ -3,6 +3,7 @@ import argparse
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -459,21 +460,24 @@ class ReleaseTests(unittest.TestCase):
         for path in paths:
             path.write_text(path.name)
         self.flow.report['stages']['smoke'] = {'status': 'passed'}
-        remote = {'id': 10, 'draft': True, 'assets': [], 'html_url': 'https://github.com/owner/repo/releases/tag/core-test'}
+        remote = {'id': 10, 'draft': True, 'assets': [], 'html_url': 'https://github.com/owner/repo/releases/tag/core-test',
+                  'upload_url': 'https://uploads.github.com/repos/owner/repo/releases/10/assets{?name,label}'}
         uploads = []
         def mutate(argv):
-            if argv[:3] == ['gh', 'release', 'upload']:
-                path = Path(argv[4])
+            if '--input' in argv:
+                path = Path(argv[argv.index('--input') + 1])
+                self.assertEqual(argv[4], f'https://uploads.github.com/repos/owner/repo/releases/10/assets?name={path.name}')
                 uploads.append(path.name)
                 remote['assets'].append({'name': path.name, 'size': path.stat().st_size, 'digest': 'sha256:' + digest(path)})
                 if len(uploads) == 1:
                     raise RuntimeError('reply lost after accepted upload')
-            elif argv[:3] == ['gh', 'release', 'edit']:
+            elif argv == ['--method', 'PATCH', 'repos/owner/repo/releases/10', '-F', 'draft=false']:
                 remote['draft'] = False
             else:
                 self.fail(f'Unexpected mutation: {argv}')
         with patch.object(self.flow, 'signed', return_value=paths), \
-             patch.object(self.flow, 'tag'), patch.object(self.flow, 'execute', side_effect=mutate), \
+             patch.object(self.flow, 'tag'), patch.object(self.flow, 'api', side_effect=mutate), \
+             patch.object(self.flow, 'execute', side_effect=AssertionError('no other write')), \
              patch.object(self.flow, 'remote_release', side_effect=lambda **kwargs: remote), \
              patch.object(release, 'optional_gh_json', return_value=remote):
             with self.assertRaisesRegex(RuntimeError, 'reply lost'):
@@ -517,29 +521,35 @@ class ReleaseTests(unittest.TestCase):
                     self.fail(f'Unexpected API read: {url}')
                 def mutate(argv):
                     nonlocal remote, lost
-                    if argv[:3] == ['gh', 'release', 'create']:
+                    if argv[:3] == ['--method', 'POST', endpoint]:
+                        operation = 'create'
                         creates.append(argv)
-                        self.assertIn('--draft', argv)
-                        self.assertEqual(argv[argv.index('--target') + 1], self.sha)
+                        self.assertIn('draft=true', argv)
+                        self.assertIn(f'target_commitish={self.sha}', argv)
                         remote = {'id': 10, 'tag_name': 'core-test', 'target_commitish': self.sha,
-                                  'draft': True, 'assets': [], 'html_url': 'https://github.com/owner/repo/releases/tag/core-test'}
-                    elif argv[:3] == ['gh', 'release', 'upload']:
-                        path = Path(argv[4])
+                                  'draft': True, 'assets': [], 'html_url': 'https://github.com/owner/repo/releases/tag/core-test',
+                                  'upload_url': 'https://uploads.github.com/repos/owner/repo/releases/10/assets{?name,label}'}
+                    elif '--input' in argv:
+                        operation = 'upload'
+                        path = Path(argv[argv.index('--input') + 1])
                         uploads.append(path.name)
                         remote['assets'].append({'name': path.name, 'size': path.stat().st_size,
                                                  'digest': 'sha256:' + digest(path)})
-                    elif argv[:3] == ['gh', 'release', 'edit']:
+                    elif argv[:3] == ['--method', 'PATCH', endpoint + '/10']:
+                        operation = 'edit'
                         edits.append(argv)
                         remote['draft'] = False
                     else:
                         self.fail(f'Unexpected mutation: {argv}')
-                    if argv[2] == lost_at and not lost:
+                    if operation == lost_at and not lost:
                         lost = True
                         raise RuntimeError('reply lost after accepted mutation')
+                    return remote
                 with patch.object(release, 'optional_gh_json', side_effect=optional_api), \
                      patch.object(release, 'gh_json', side_effect=api), \
                      patch.object(release.Flow, 'signed', return_value=paths), \
-                     patch.object(release.Flow, 'execute', side_effect=mutate):
+                     patch.object(release.Flow, 'api', side_effect=mutate), \
+                     patch.object(release.Flow, 'execute', side_effect=AssertionError('no other write')):
                     with self.assertRaisesRegex(RuntimeError, 'reply lost'):
                         flow.run('publish', flow.publish)
                     recovered = release.Flow(root)
@@ -603,10 +613,12 @@ class ReleaseTests(unittest.TestCase):
             return {'object': {'type': 'commit', 'sha': self.sha}} if '/git/ref/' in url else None
         with patch.object(release, 'optional_gh_json', side_effect=lookup), \
              patch.object(release, 'gh_json', return_value=[]), patch.object(self.flow, 'tag'), \
-             patch.object(self.flow, 'signed', return_value=[]), patch.object(self.flow, 'execute') as mutations:
+             patch.object(self.flow, 'signed', return_value=[]), patch.object(self.flow, 'execute') as mutations, \
+             patch.object(self.flow, 'api') as writes:
             with self.assertRaisesRegex(ValueError, 'already attempted'):
                 self.flow.publish()
         mutations.assert_not_called()
+        writes.assert_not_called()
 
     def test_existing_draft_assets_are_not_overwritten(self):
         path = self.base / 'asset.json'
@@ -622,10 +634,12 @@ class ReleaseTests(unittest.TestCase):
                 return [value] if '?per_page=' in url else value
             with self.subTest(asset=asset), patch.object(release, 'optional_gh_json', side_effect=optional_api), \
                  patch.object(release, 'gh_json', side_effect=api), patch.object(self.flow, 'tag'), \
-                 patch.object(self.flow, 'signed', return_value=[path]), patch.object(self.flow, 'execute') as mutations:
+                 patch.object(self.flow, 'signed', return_value=[path]), patch.object(self.flow, 'execute') as mutations, \
+                 patch.object(self.flow, 'api') as writes:
                 with self.assertRaisesRegex(ValueError, 'Unexpected remote|Remote asset differs'):
                     self.flow.publish()
             mutations.assert_not_called()
+            writes.assert_not_called()
 
     def test_ambiguous_or_truncated_discovery_does_not_report_absence(self):
         for entries, error in (([{'tag_name': 'core-test'}] * 2, 'Multiple releases'),
@@ -641,6 +655,231 @@ class ReleaseTests(unittest.TestCase):
             self.flow.run('health', lambda: (_ for _ in ()).throw(RuntimeError('Core not reachable')), fresh=True)
         self.assertEqual(self.flow.report['stages']['health']['status'], 'failed')
         self.assertEqual(self.flow.report['stages']['health']['previous']['status'], 'passed')
+
+    # Publication against tools/fixtures/fake-gh.py, run as `gh`: the real subprocess calls, with
+    # GitHub's tags and releases in a JSON file. T-183: core.17's first publish created the draft,
+    # then found no release for the tag and stopped with "Remote release not found".
+
+    def fake_github(self, releases=(), refs=None, **faults):
+        bin_dir = self.base / 'bin'
+        bin_dir.mkdir()
+        (bin_dir / 'gh').symlink_to(Path(__file__).resolve().with_name('fixtures') / 'fake-gh.py')
+        state = self.base / 'github.json'
+        write(state, {'repository': 'owner/repo', 'refs': {'core-test': self.sha} if refs is None else refs,
+                      'releases': list(releases), 'nextId': 10, 'nextAsset': 100, 'faults': faults, 'calls': [],
+                      'writes': {'tag': 0, 'create': [], 'upload': [], 'publish': 0}})
+        for patcher in (patch.dict(os.environ, {'PATH': f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                                                'FAKE_GH_STATE': str(state)}),
+                        patch.object(release.Flow, 'signed', return_value=self.signed_files())):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.flow.report['stages']['smoke'] = {'status': 'passed'}
+        write(self.flow.report_path, self.flow.report)
+        return lambda: read(state)
+
+    def signed_files(self):
+        signed = self.root / 'signed'
+        signed.mkdir()
+        self.paths = [signed / ('yuzuno-core-linux-x86_64' + suffix) for suffix in ('.json', '.json.minisig', '.tar.gz')]
+        for path in self.paths:
+            path.write_text(f'signed fixture {path.name}')
+        return self.paths
+
+    def publish(self):
+        """One publish attempt, as a new process would make it; returns its error or None."""
+        flow = release.Flow(self.root)
+        try:
+            flow.run('publish', flow.publish)
+        except (Exception, KeyboardInterrupt) as error:
+            return f'{type(error).__name__}: {error}'
+
+    def lists(self, state):
+        return [i for i, call in enumerate(state['calls']) if '?per_page=' in call[-1]]
+
+    def creates(self, state):
+        return [i for i, call in enumerate(state['calls'])
+                if call[:4] == ['api', '--method', 'POST', 'repos/owner/repo/releases'] or call[:2] == ['release', 'create']]
+
+    def assert_published_once(self, state, release_id, creates=1):
+        self.assertEqual(len(state['writes']['create']), creates)
+        self.assertEqual(sorted(state['writes']['upload']), sorted(p.name for p in self.paths), 'each asset uploaded once')
+        self.assertEqual(state['writes']['publish'], 1)
+        self.assertEqual(state['writes']['tag'], 0)
+        [remote] = [r for r in state['releases'] if r['tag_name'] == 'core-test']
+        self.assertEqual((remote['id'], remote['target_commitish'], remote['draft']), (release_id, self.sha, False))
+        self.assertEqual({a['name']: (a['size'], a['digest']) for a in remote['assets']},
+                         {p.name: (p.stat().st_size, 'sha256:' + digest(p)) for p in self.paths})
+        self.assertEqual(state['refs'], {'core-test': self.sha})
+        self.assertEqual(read(self.root / 'remote-release.json'),
+                         {'repository': 'owner/repo', 'tag': 'core-test', 'source': self.sha, 'id': release_id})
+        self.assertEqual(read(self.root / 'publication.json')['id'], release_id)
+        self.assertEqual(read(self.root / 'report.json')['stages']['publish']['releaseId'], release_id)
+
+    def receipt_id(self):
+        return read(self.root / 'remote-release.json')['id']
+
+    def test_a_listing_that_misses_the_new_draft_does_not_stop_publication(self):
+        github = self.fake_github(listHides=1)
+        self.assertIsNone(self.publish())
+        state = github()
+        self.assert_published_once(state, 10)
+        self.assertEqual(state['writes']['create'], [{'tag_name': 'core-test', 'target_commitish': self.sha, 'name': 'test.1',
+                                                      'body': 'Reviewed changes', 'draft': True, 'prerelease': False}])
+        # Only the lookup before creation listed releases; the miss it would have hit was never used.
+        [listed], [created] = self.lists(state), self.creates(state)
+        self.assertLess(listed, created)
+        self.assertEqual(state['faults']['listHides'], 1)
+        [remote] = state['releases']
+        self.assertEqual([a['content_type'] for a in remote['assets']],
+                         ['application/json', 'application/octet-stream', 'application/x-gtar'])
+
+    def test_a_draft_not_yet_readable_by_id_is_resumed_by_that_id(self):
+        github = self.fake_github(listHides=99, idHides=1)
+        first = self.publish()
+        self.assertEqual(first, 'RuntimeError: GitHub read failed: gh: Not Found (HTTP 404)')
+        self.assertEqual(self.receipt_id(), 10)
+        self.assertEqual(github()['writes']['upload'], [])
+        self.assertIsNone(self.publish())
+        state = github()
+        self.assert_published_once(state, 10)
+        self.assertEqual(len(self.lists(state)), 1, 'the draft was never looked up by tag')
+        attempts = read(self.root / 'report.json')['attempts']
+        self.assertEqual([(a['status'], a.get('error')) for a in attempts], [('failed', first), ('passed', None)])
+
+    def test_a_lost_create_reply_adopts_the_one_listed_draft_and_never_creates_again(self):
+        github = self.fake_github(loseReply=['create'], listHides=1)
+        first = self.publish()
+        self.assertRegex(first, r"^CalledProcessError: Command '\['gh', 'api', '--method', 'POST', 'repos/owner/repo/releases'")
+        self.assertIsNone(self.receipt_id())
+        log = (self.root / read(self.root / 'report.json')['attempts'][0]['log']).read_text()
+        self.assertIn('error connecting to api.github.com', log)
+        # Until the draft is listed, resuming stops rather than creating another.
+        self.assertEqual(self.publish(), 'ValueError: Draft creation was already attempted; reconcile before creating another release')
+        self.assertEqual((len(github()['writes']['create']), github()['writes']['upload']), (1, []))
+        self.assertIsNone(self.publish())
+        state = github()
+        self.assert_published_once(state, 10)
+        self.assertEqual(len(self.creates(state)), 1)
+        attempts = read(self.root / 'report.json')['attempts']
+        self.assertEqual([a['status'] for a in attempts], ['failed', 'failed', 'passed'])
+        self.assertEqual(attempts[0]['error'], first)
+
+    def test_an_interruption_between_reply_and_receipt_adopts_the_listed_draft(self):
+        github = self.fake_github()
+        written = release.write
+        def interrupted(path, value):
+            if Path(path).name == 'remote-release.json' and value['id'] is not None:
+                raise KeyboardInterrupt
+            written(path, value)
+        with patch.object(release, 'write', side_effect=interrupted):
+            self.assertEqual(self.publish(), 'KeyboardInterrupt: ')
+        self.assertIsNone(self.receipt_id())
+        self.assertEqual(len(github()['writes']['create']), 1)
+        self.assertIsNone(self.publish())
+        self.assert_published_once(github(), 10)
+
+    def test_an_interruption_before_the_create_request_never_creates(self):
+        github = self.fake_github()
+        with patch.object(release.Flow, 'api', side_effect=KeyboardInterrupt):
+            self.assertEqual(self.publish(), 'KeyboardInterrupt: ')
+        self.assertIsNone(self.receipt_id())
+        # No release exists and none is created: the stop is left for inspection.
+        self.assertEqual(self.publish(), 'ValueError: Draft creation was already attempted; reconcile before creating another release')
+        state = github()
+        self.assertEqual((state['releases'], self.creates(state), state['writes']['upload']), ([], [], []))
+
+    def test_two_listed_drafts_after_a_lost_reply_stop_before_any_upload(self):
+        github = self.fake_github(loseReply=['create'])
+        self.assertRegex(self.publish(), '^CalledProcessError')
+        state = github()
+        state['releases'].append({**state['releases'][0], 'id': 11, '_new': False})
+        write(self.base / 'github.json', state)
+        for _ in range(2):
+            self.assertEqual(self.publish(), 'ValueError: Multiple releases match the frozen tag; reconcile before continuing')
+        state = github()
+        self.assertIsNone(self.receipt_id())
+        self.assertEqual((len(state['writes']['create']), state['writes']['upload'], state['writes']['publish']), (1, [], 0))
+
+    def test_a_created_release_with_another_source_is_neither_pinned_nor_used(self):
+        github = self.fake_github(createSource='b' * 40)
+        for _ in range(2):  # the reply, then the listed release on resume
+            self.assertEqual(self.publish(), 'ValueError: Remote release tag/source differs from frozen release')
+            self.assertIsNone(self.receipt_id())
+        state = github()
+        self.assertEqual((len(state['writes']['create']), state['writes']['upload'], state['writes']['publish']), (1, [], 0))
+
+    def test_a_pinned_release_whose_tag_changed_stops(self):
+        github = self.fake_github(listHides=99, idHides=1)
+        self.assertRegex(self.publish(), 'HTTP 404')
+        state = github()
+        state['releases'][0]['tag_name'] = 'core-other'
+        write(self.base / 'github.json', state)
+        self.assertEqual(self.publish(), 'ValueError: Remote release tag/source differs from frozen release')
+        self.assertEqual(self.receipt_id(), 10)
+        self.assertEqual((github()['writes']['upload'], github()['writes']['publish']), ([], 0))
+
+    def test_a_tag_on_another_commit_stops_before_creation(self):
+        github = self.fake_github(refs={'core-test': 'c' * 40})
+        self.assertEqual(self.publish(), 'ValueError: Release tag points at another commit')
+        state = github()
+        self.assertEqual((state['releases'], state['writes']['tag'], state['refs']), ([], 0, {'core-test': 'c' * 40}))
+        self.assertFalse((self.root / 'remote-release.json').exists())
+
+    def test_an_upload_url_for_another_release_stops_before_uploading(self):
+        github = self.fake_github(uploadUrlId=999)
+        self.assertEqual(self.publish(), 'ValueError: Upload URL names another release')
+        state = github()
+        self.assertEqual((len(state['writes']['create']), state['writes']['upload'], state['writes']['publish']), (1, [], 0))
+        self.assertTrue(state['releases'][0]['draft'])
+
+    def test_a_lost_upload_reply_reuses_the_uploaded_asset(self):
+        github = self.fake_github(loseReply=['upload'])
+        self.assertRegex(self.publish(), "^CalledProcessError: Command '\\['gh', 'api', '--method', 'POST', '-H'")
+        self.assertEqual(github()['writes']['upload'], [self.paths[0].name])
+        self.assertIsNone(self.publish())
+        self.assert_published_once(github(), 10)
+
+    def test_a_pinned_draft_with_some_assets_gets_only_the_missing_ones(self):
+        path = self.base / 'existing.json'
+        path.write_text('signed fixture yuzuno-core-linux-x86_64.json')
+        asset = {'id': 1, 'name': 'yuzuno-core-linux-x86_64.json', 'size': path.stat().st_size,
+                 'digest': 'sha256:' + digest(path), 'content_type': 'application/json'}
+        github = self.fake_github(releases=[{'id': 7, 'tag_name': 'core-test', 'target_commitish': self.sha, 'name': 'test.1',
+                                             'body': 'Reviewed changes', 'draft': True, 'prerelease': False,
+                                             'assets': [asset], '_untagged': '7'}])
+        write(self.root / 'remote-release.json', {'repository': 'owner/repo', 'tag': 'core-test', 'source': self.sha, 'id': 7})
+        self.assertIsNone(self.publish())
+        state = github()
+        self.assertEqual(state['writes']['upload'], [p.name for p in self.paths[1:]])
+        self.assertEqual((state['writes']['create'], state['writes']['publish']), ([], 1))
+        self.assertEqual(read(self.root / 'publication.json')['id'], 7)
+
+    def test_a_remote_asset_with_another_digest_stops_without_changes(self):
+        asset = {'id': 1, 'name': 'yuzuno-core-linux-x86_64.json', 'size': len('signed fixture yuzuno-core-linux-x86_64.json'),
+                 'digest': 'sha256:' + '0' * 64, 'content_type': 'application/json'}
+        github = self.fake_github(releases=[{'id': 7, 'tag_name': 'core-test', 'target_commitish': self.sha, 'name': 'test.1',
+                                             'body': 'Reviewed changes', 'draft': True, 'prerelease': False,
+                                             'assets': [asset], '_untagged': '7'}])
+        before = github()['releases']
+        for _ in range(2):
+            self.assertEqual(self.publish(), 'ValueError: Remote asset differs; do not clobber or sign again')
+        state = github()
+        self.assertEqual((state['releases'], state['writes']), (before, {'tag': 0, 'create': [], 'upload': [], 'publish': 0}))
+        self.assertEqual(self.receipt_id(), 7)
+
+    def test_an_uploaded_asset_with_another_digest_is_not_published(self):
+        github = self.fake_github(uploadDigest='sha256:' + '0' * 64)
+        self.assertEqual(self.publish(), 'ValueError: Uploaded asset digest differs')
+        state = github()
+        self.assertEqual((len(state['writes']['upload']), state['writes']['publish']), (3, 0))
+        self.assertTrue(state['releases'][0]['draft'])
+
+    def test_a_lost_publish_reply_is_confirmed_without_another_write(self):
+        github = self.fake_github(loseReply=['publish'])
+        self.assertRegex(self.publish(), "^CalledProcessError: Command '\\['gh', 'api', '--method', 'PATCH'")
+        self.assertFalse(github()['releases'][0]['draft'])
+        self.assertIsNone(self.publish())
+        self.assert_published_once(github(), 10)
 
 
 class ArchiveTests(unittest.TestCase):

@@ -1096,6 +1096,11 @@ impl Workspace {
         let turn_id = uuid::Uuid::new_v4().to_string();
         let (requested, content) = (turn_id.clone(), user_content(&text, shown));
         let blocks = input.and_then(|input| input.text_blocks.clone());
+        // The message this start sends, named by its client ID on the Turn's
+        // user message until Claude confirms it (T-120): the web shows the
+        // two once. Not `clientId`, which binds the receipt; an unacknowledged
+        // start must never confirm its own receipt.
+        let client = input.map(|input| input.client_message_id.clone());
         // The new Turn and the Agent's status, written without copying the
         // other Turns of a held record (T-140); the change may run twice
         // (`Store::record_send`).
@@ -1106,6 +1111,7 @@ impl Workspace {
             // first: Claude's saved history names it (claude_history).
             turn["items"] = json!([{"id":format!("{requested}:input"),"type":"userMessage","content":content,"nativeUuid":requested}]);
             if let Some(blocks) = &blocks { turn["items"][0][crate::message_content::BLOCKS] = serde_json::to_value(blocks).expect("text boundaries"); }
+            if let Some(client) = &client { turn["items"][0]["_yuzunoClientMessageId"] = client.as_str().into(); }
             // The prompt is sent as the Turn starts, at the same moment.
             let started = turn["_yuzunoStartedAt"].as_i64();
             conversation_time::stamp_message(&mut turn["items"][0], started, "core");
@@ -5430,7 +5436,9 @@ mod tests {
         assert_eq!(started.status, "accepted");
         assert_eq!(ws.send_message("a", input).await.unwrap().status, "accepted");
         let turn = started.turn_id.unwrap();
-        assert!(ws.store.detail("a").unwrap().turns.iter().find(|t| t["id"] == turn).unwrap()["items"].as_array().unwrap().iter().any(|i| i["clientId"] == "form-start"));
+        assert!(ws.store.detail("a").unwrap().turns.iter().find(|t| t["id"] == turn).unwrap()["items"].as_array().unwrap().iter()
+            .any(|i| i["clientId"] == "form-start" && i["_yuzunoClientMessageId"] == "form-start"),
+            "the accepted start's message carries its client ID both ways");
         let second = ws.result_publish("a", publish(&turn, "second")).await.unwrap().unwrap();
         let result = second["resultId"].as_str().unwrap();
         let answer = json!({"resultId":result,"formId":"setup","answers":{"directory":"test"}});
@@ -5447,6 +5455,14 @@ mod tests {
         assert_eq!(ws.send_message("a", input).await.unwrap().status, "uncertain");
         let detail = ws.store.detail("a").unwrap();
         assert!(detail.turns.iter().flat_map(|t| t["items"].as_array().unwrap()).all(|i| i["clientId"] != "form-lost"));
+        // The lost start's message is named by its client ID for the web
+        // (T-120), which binds and confirms nothing: its receipt stays
+        // uncertain and unbound.
+        let lost = detail.turns.iter().flat_map(|t| t["items"].as_array().unwrap())
+            .find(|i| i["_yuzunoClientMessageId"] == "form-lost").expect("the lost start's message");
+        assert!(lost["clientId"].is_null(), "{lost}");
+        let receipt = detail.message_receipts.iter().find(|r| r.input.client_message_id == "form-lost").unwrap();
+        assert_eq!((receipt.status.as_str(), receipt.binding.is_none()), ("uncertain", true));
         assert_eq!(seen.lock().unwrap().iter().filter(|c| c["op"] == "send").count(), 2);
         // Each start configures effort, then model, then sends (T-23).
         let ops: Vec<String> = seen.lock().unwrap().iter().map(|c| c["op"].as_str().unwrap().to_owned()).collect();
