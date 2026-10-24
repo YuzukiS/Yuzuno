@@ -38,6 +38,8 @@ const check = (name, extra = {}) => {
 const TURNS = 1408;
 const now = Date.now();
 const at = (minutesAgo) => new Date(now - minutesAgo * 60_000).toISOString();
+// A Turn's times are Unix seconds, as Codex reports them.
+const seconds = (minutesAgo) => Math.floor((now - minutesAgo * 60_000) / 1000);
 const base = { color: "sage", createdAt: at(9000), updatedAt: at(1), unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, goal: "", cwd: "/fixture", model: "gpt-6", projectId: "p1" };
 // Mori is offline: the composer asks for a message to resume the session.
 // Hana was cut off mid-Turn: Reconnect above, and the composer says so.
@@ -57,8 +59,8 @@ const subAgent = (kind) => ({ type: "subAgentActivity", id: `${kind}-child`, kin
 const turn = (who, n, last) => ({
   id: `${who}-t${n}`,
   status: last && who === "Hana" ? "inProgress" : "completed",
-  startedAt: at(TURNS - n + 2),
-  completedAt: last && who === "Hana" ? undefined : at(TURNS - n + 1),
+  startedAt: seconds(TURNS - n + 2),
+  completedAt: last && who === "Hana" ? undefined : seconds(TURNS - n + 1),
   items: [
     { id: `${who}-u${n}`, type: "userMessage", content: [{ type: "text", text: `${who} step ${n + 1}: check the next part.` }] },
     ...(who === "Mori" && n === TURNS - 3 ? [subAgent("started"), subAgent("completed")] : []),
@@ -71,12 +73,34 @@ const approval = {
   id: "req-1", agentId: "c", method: "item/commandExecution/requestApproval", createdAt: at(3),
   params: { command: longCommand, cwd: "/fixture", reason: "Run the check that writes its report", itemId: "cmd-1", turnId: "Sora-t11", availableDecisions: ["accept", "decline", "cancel"] },
 };
-const detail = (agent) => ({
-  agent, pending: agent.id === "c" ? [approval] : [], messageReceipts: [], artifacts: [],
-  turns: agent.id === "c"
-    ? Array.from({ length: 12 }, (_, n) => ({ ...turn(agent.name, n, false), ...(n === 11 ? { status: "inProgress", completedAt: undefined } : {}) }))
-    : Array.from({ length: TURNS }, (_, n) => turn(agent.name, n, n === TURNS - 1)),
-});
+const allTurns = Object.fromEntries(agents.map((agent) => [agent.id, agent.id === "c"
+  ? Array.from({ length: 12 }, (_, n) => ({ ...turn(agent.name, n, false), ...(n === 11 ? { status: "inProgress", completedAt: undefined } : {}) }))
+  : Array.from({ length: TURNS }, (_, n) => turn(agent.name, n, n === TURNS - 1))]));
+// As Core sends a long conversation: a window of Turns, the latest unless a
+// Turn or a page before or after a cursor is asked for, and an index of all.
+const WINDOW = 12;
+const detail = (agent, query) => {
+  const all = allTurns[agent.id];
+  const cursor = (name) => all.findIndex((t) => t.id === JSON.parse(query.get(name))[0]);
+  const start = query.has("turnId") ? Math.max(0, all.findIndex((t) => t.id === query.get("turnId")))
+    : query.has("before") ? Math.max(0, cursor("before") - WINDOW)
+    : query.has("after") ? Math.min(all.length - 1, cursor("after") + 1)
+    : Math.max(0, all.length - WINDOW);
+  const turns = all.slice(start, start + WINDOW);
+  return {
+    agent, pending: agent.id === "c" ? [approval] : [], messageReceipts: [], artifacts: [], turns,
+    // Codex reports Plan mode: the composer shows its mode.
+    codexPlan: { generation: 1, reported: { mode: "plan", source: "settings", observedAt: at(5) }, switch: null },
+    conversation: {
+      index: all.map((t, i) => ({ ...t, number: i + 1, itemCount: t.items.length, items: [t.items[0]] })),
+      questions: [], nativeClientIds: [],
+      start: JSON.stringify([turns[0].id, turns[0].items[0].id]),
+      end: JSON.stringify([turns.at(-1).id, turns.at(-1).items.at(-1).id]),
+      hasBefore: start > 0, hasAfter: start + WINDOW < all.length,
+      totalItems: all.reduce((sum, t) => sum + t.items.length, 0),
+    },
+  };
+};
 const childDetail = {
   threadId: child, parentThreadId: "thread-a", nickname: null, role: null, path: "/root/child-1", depth: 1, model: "gpt-6-astra", status: "idle",
   turn: { id: "child-turn", status: "completed", error: null },
@@ -129,7 +153,7 @@ async function open(viewport) {
     }
     if (path === `/api/agents/a/subagents/${child}`) return route.fulfill({ json: childDetail });
     const agent = agents.find((a) => path === `/api/agents/${a.id}`);
-    const json = agent ? detail(agent) : {
+    const json = agent ? detail(agent, url.searchParams) : {
       "/api/workspace": { workspace: { id: "ws-phone" }, agents, projects, runtime: { connected: true }, defaultCwd: "/fixture" },
       "/api/home": home,
       "/api/machines": { machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/fixture", lastCheck: null }] },
@@ -152,10 +176,11 @@ async function open(viewport) {
 }
 const composer = (page, name) => page.locator(`[data-composer-input][aria-label="Message ${name}"]`);
 async function openAgent(page, name, phone) {
-  // On a phone the Agent list is a screen of its own: back to it first.
-  if (phone && !(await page.locator(".app.phone-list").count())) await page.locator(".phone-back").click();
-  if (!(await composer(page, name).isVisible().catch(() => false)))
+  if (!(await composer(page, name).isVisible().catch(() => false))) {
+    // On a phone the Agent list is a screen of its own: back to it first.
+    if (phone && !(await page.locator(".app.phone-list").count())) await page.locator(".phone-back").click();
     await page.locator(`.agent-row .agent-select[aria-label="Open ${name}"]`).click();
+  }
   await composer(page, name).waitFor();
   await page.locator(".main-panel .conversation-scroll .turn").last().waitFor();
   await page.waitForTimeout(500);
