@@ -111,4 +111,9 @@
   .shortcut-group dd {
     margin-bottom: 6px;
   }
+  /* Keys may wrap between them (each key whole): "↑ or ↓ or ← or →" at
+     the largest text is wider than a phone. */
+  .shortcut-group dt {
+    white-space: normal;
+  }
 }

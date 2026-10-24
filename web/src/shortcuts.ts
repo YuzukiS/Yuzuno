@@ -77,6 +77,8 @@ export function shortcutGroups({ modifier, sendKey, touch, desktopApp }: {
       shortcuts: [
         { keys: ["↑", "↓"], either: true, action: "Send to Agent: move through the Agents", source: "SendToAgent.tsx" },
         { keys: ["Home", "End"], either: true, action: "Send to Agent: the first or the last Agent", source: "SendToAgent.tsx" },
+        { keys: ["↑", "↓", "←", "→"], either: true, action: "Settings: the next or the previous category", source: "SettingsCenter.tsx" },
+        { keys: ["Home", "End"], either: true, action: "Settings: the first or the last category", source: "SettingsCenter.tsx" },
         { keys: ["Esc"], action: "Close a dialog, menu or card", source: "dialogs and menus", native: true },
         { keys: [modifier, "Z"], action: "Point & Fix: undo the last mark", source: "PointFix.tsx" },
       ],

@@ -246,6 +246,7 @@ test("the help lists Return as the send key makes it, and the desktop app's shor
 const tokens = {
   Ctrl: ["ctrlKey", "metaKey"], K: ['"k"'], N: ['"n"'], ",": ['","'], F: ['"f"'], Z: ['"z"'], Esc: ['"Escape"'],
   Return: ['"Enter"'], Shift: ["shiftKey", "Shift-Enter"], Tab: ['"Tab"'], "↑": ['"ArrowUp"'], "↓": ['"ArrowDown"'],
+  "←": ['"ArrowLeft"'], "→": ['"ArrowRight"'],
   Home: ['"Home"'], End: ['"End"'], "/": ["export function slashToken"], $: ["export function skillToken"],
 };
 test("every key the help lists is handled in the file it names", async () => {
