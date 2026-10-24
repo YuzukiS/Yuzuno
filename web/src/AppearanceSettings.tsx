@@ -1,8 +1,10 @@
-import { useState } from "react";
 import { Check, Monitor, Moon, Rows2, Rows4, Sun, Type } from "lucide-react";
 import {
-  readAppearance,
+  appearanceReadable,
+  restoreDefaultAppearance,
   saveAppearance,
+  useAppearance,
+  useAppearanceSave,
   type AgentListDensity,
   type Appearance,
   type DockLimits,
@@ -16,6 +18,8 @@ import {
   palettes,
   type Palette,
 } from "./appearance";
+import type { SaveOutcome } from "./preference-save";
+import { SaveStatus } from "./SaveStatus";
 
 const themes: {
   value: ThemePreference;
@@ -114,15 +118,22 @@ const paletteLabels: Record<Palette, string> = {
   sunroom: "Sunroom",
 };
 
+/** Storage this browser won't even read: nothing shown is a saved choice. */
+const UNREADABLE: SaveOutcome = {
+  saved: false,
+  reason: "blocked",
+  detail: "this browser doesn’t let Yuzuno store settings here",
+};
+
 /** Appearance, one category of Settings: how Yuzuno looks on this device.
- * It mounts only while its category is shown, so it reads the saved choice
- * each time it opens. */
+ * It shows the choice in effect, which is the saved one unless this device
+ * refused to save it (T-187); then it says so, keeps the choice, and offers
+ * to try again or restore the defaults. */
 export function AppearanceSection() {
-  const [appearance, setAppearance] = useState(readAppearance);
+  const appearance = useAppearance();
+  const save = useAppearanceSave();
   function update(next: Partial<Appearance>) {
-    const value = { ...appearance, ...next };
-    setAppearance(value);
-    saveAppearance(value);
+    saveAppearance({ ...appearance, ...next });
   }
   const theme = themes.find((t) => t.value === appearance.theme)?.label;
   return (
@@ -381,9 +392,12 @@ export function AppearanceSection() {
           <code>const next = "something good";</code>
         </div>
       </div>
-      <p className="settings-footnote">
-        <Check size={13} aria-hidden="true" /> Saved on this device
-      </p>
+      <SaveStatus
+        outcome={save ?? (appearanceReadable() ? null : UNREADABLE)}
+        scope="this device"
+        onRetry={() => saveAppearance(appearance)}
+        onRestoreDefaults={restoreDefaultAppearance}
+      />
     </section>
   );
 }
