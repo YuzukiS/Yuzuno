@@ -46,15 +46,23 @@ export function clipboardImages(data: DataTransfer | null): File[] {
     file.type.startsWith("image/"),
   );
 }
-export function validateImageFiles(
+/** What can be checked before any image is read: how many, and their types. */
+export function validateImageChoice(
   files: readonly File[],
   current: readonly DraftImage[],
 ) {
   if (files.length + current.length > MAX_IMAGES)
     throw new Error("Attach at most 8 images per message.");
-  for (const file of files) {
+  for (const file of files)
     if (!IMAGE_TYPES.includes(file.type))
       throw new Error(`${file.name || "Image"}: choose PNG, JPEG or WebP.`);
+}
+export function validateImageFiles(
+  files: readonly File[],
+  current: readonly DraftImage[],
+) {
+  validateImageChoice(files, current);
+  for (const file of files) {
     if (!file.size || file.size > MAX_IMAGE_BYTES)
       throw new Error(
         `${file.name || "Image"}: each image must be between 1 byte and 10 MiB.`,

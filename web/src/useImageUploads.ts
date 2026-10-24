@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { api, errorText } from "./api";
 import {
   appendImage,
+  validateImageChoice,
   validateImageFiles,
   type DraftImage,
 } from "./image-input";
+import { fitImage } from "./image-fit";
 import type { ComposerDraft } from "./composer-draft";
 
 export function useImageUploads(
@@ -41,13 +43,20 @@ export function useImageUploads(
         throw new Error(
           "Please wait for these images to finish saving before attaching more.",
         );
-      validateImageFiles(files, getDraft(target).images || []);
+      // How many and which types, before any image is read or made smaller.
+      validateImageChoice(files, getDraft(target).images || []);
       active.current.add(target);
       setPending([...active.current]);
       setErrors((previous) => ({ ...previous, [target]: "" }));
       try {
+        // A photo too large for Core, as a phone takes them, is made smaller
+        // here first; anything Core takes as it is goes unchanged (image-fit).
+        // The bytes are checked on what will be sent.
+        const ready: File[] = [];
+        for (const file of files) ready.push(await fitImage(file));
+        validateImageFiles(ready, getDraft(target).images || []);
         // Upload sequentially; only the small durable references enter draft storage.
-        for (const file of files) {
+        for (const file of ready) {
           const saved = await api<Omit<DraftImage, "agentId" | "name">>(
             `/agents/${encodeURIComponent(target)}/images`,
             {
