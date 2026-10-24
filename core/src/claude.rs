@@ -1192,7 +1192,9 @@ impl Workspace {
         client_id: &str,
         images: &[String],
     ) -> Result<Value> {
-        let d = self.detail(id).await?;
+        // Only the Agent and the Turns' IDs and statuses are read: the send
+        // view, not a copy of every Item (T-140).
+        let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         if d.agent.connection_state != "connected" {
             bail!("Claude 连接已结束；补充消息未发送，草稿保留");
@@ -1252,15 +1254,18 @@ impl Workspace {
     /// receipt is then already unknown, and the item says the same.
     async fn show_follow_up(self: &Arc<Self>, id: &str, turn: &str, client_id: &str, content: Value) -> Result<()> {
         let (turn, client, at) = (turn.to_owned(), client_id.to_owned(), Utc::now());
-        // The same commit; the record it leaves is not copied back (T-140).
-        self.record_update(id, "claude/followUpQueued", json!({"clientMessageId":client_id,"turnId":turn}), move |d| {
-            if !d.turns.iter().any(|t| t["items"].as_array().is_some_and(|items| items.iter().any(|i| i["clientId"] == client.as_str()))) {
+        let seen = client.clone();
+        // A delivery may have shown it already, in this Turn or the next:
+        // every Turn is read for it, in place, and only this Turn copied and
+        // changed (T-140); the change may run twice (`Store::record_send_unless`).
+        self.record_send_unless(id, "claude/followUpQueued", json!({"clientMessageId":client_id,"turnId":turn}),
+            move |turns| turns.iter().any(|t| t["items"].as_array().is_some_and(|items| items.iter().any(|i| i["clientId"] == seen.as_str()))),
+            move |d| {
                 let unknown = d.message_receipts.iter().any(|r| r.input.client_message_id == client && r.status == "unknown");
-                let mut item = follow_up_item(&turn, &client, content, at);
+                let mut item = follow_up_item(&turn, &client, content.clone(), at);
                 item["_yuzunoDelivery"] = if unknown { "unknown" } else { "queued" }.into();
                 d.turn_at(&turn, at)["items"].as_array_mut().expect("turn items").push(item);
-            }
-        }).await?;
+            }).await?;
         self.changed(id);
         Ok(())
     }
@@ -5772,6 +5777,69 @@ mod tests {
             .prepare("SELECT kind FROM journal WHERE agent_id=?1 AND kind IN ('claude/turnRequested','message/bound') ORDER BY seq").unwrap()
             .query_map([ID], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
         assert_eq!(kinds, ["claude/turnRequested", "message/bound"]);
+        let held = serde_json::to_value(&d).unwrap();
+        assert!(ws.store.flush().failed.is_empty());
+        assert!(ws.store.release_for_test(ID));
+        let reread = serde_json::to_value(ws.store.detail(ID).unwrap()).unwrap();
+        let same = |v: &Value| { let mut v = v.clone(); v["agent"]["rev"] = Value::Null; v };
+        assert_eq!(same(&held), same(&reread), "the record read back from its rows differs from the one held");
+    }
+
+    /// A follow-up sent while a Turn runs, on a held record: Claude queues
+    /// it, and it is shown in that Turn without a whole read of the record or
+    /// a copy of it to compare (T-140), with what a follow-up showed before.
+    #[tokio::test]
+    async fn a_follow_up_on_a_held_record_copies_none_of_it() {
+        const ID: &str = "claude-follow-up-held";
+        let temp = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(temp.path().join("data"), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
+        let mut d = detail();
+        d.agent.id = ID.into();
+        d.agent.claude_session_id = Some("s".into());
+        d.turns.insert(0, json!({"id":"t0","status":"completed","items":[{"id":"t0:input","type":"userMessage","content":[{"type":"text","text":"earlier"}]}]}));
+        ws.store.insert(&d).unwrap();
+        ws.store.record_event(ID, "test/hold", &json!({}), |_| {}).unwrap();
+        let (tx, mut commands) = mpsc::channel::<Value>(8);
+        let (shutdown, _shutdown_rx) = watch::channel(false);
+        let (_stopped_tx, stopped) = watch::channel(None);
+        let bridge = Arc::new(Bridge {
+            tx,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            next: AtomicU64::new(1),
+            shutdown,
+            stopped,
+            diagnostics: Default::default(),
+            stderr_closed: watch::channel(true).1, pid: None,
+        });
+        ws.claudes.lock().unwrap().insert(ID.into(), Connection { remote_instance: None, generation: 7, bridge: bridge.clone(), events: None });
+        let answering = bridge.clone();
+        tokio::spawn(async move {
+            while let Some(command) = commands.recv().await {
+                assert_eq!(command["op"], "append");
+                let id: u64 = command["id"].as_str().unwrap().parse().unwrap();
+                answering.pending.lock().await.remove(&id).unwrap()
+                    .send(Ok(json!({"queued":true,"uuid":"u","turnId":"t"}))).unwrap();
+            }
+        });
+        let sent = || crate::store::SENT_IN_PLACE_FOR.lock().unwrap().iter().filter(|id| id.as_str() == ID).count();
+        let (written, read) = (sent(), crate::store::detail_reads_of(ID));
+        let input: crate::model::MessageInput = serde_json::from_value(json!({"clientMessageId":"f1","text":"also this","expectedTurnId":"t"})).unwrap();
+        let receipt = ws.send_message(ID, input).await.unwrap();
+        assert_eq!((receipt.status.as_str(), receipt.turn_id.as_deref()), ("queued", Some("t")), "{:?}", receipt.error);
+        assert_eq!(sent() - written, 1, "followUpQueued was not written in place");
+        assert_eq!(crate::store::detail_reads_of(ID), read, "the follow-up read a whole copy of the record");
+        let d = ws.store.detail(ID).unwrap();
+        let t = d.turns.iter().find(|t| t["id"] == "t").unwrap();
+        let item = t["items"].as_array().unwrap().iter().find(|i| i["clientId"] == "f1").unwrap();
+        assert_eq!((item["type"].clone(), item["content"][0]["text"].clone(), item["_yuzunoDelivery"].clone()),
+            (json!("userMessage"), json!("also this"), json!("queued")));
+        assert_eq!(d.turns.iter().flat_map(|t| t["items"].as_array().unwrap()).filter(|i| i["clientId"] == "f1").count(), 1);
+        let r = d.message_receipts.iter().find(|r| r.input.client_message_id == "f1").unwrap();
+        assert_eq!((r.status.as_str(), r.binding.as_ref().map(|b| b.turn_id.as_str())), ("queued", Some("t")));
+        let kinds: Vec<String> = ws.store.db.read().unwrap()
+            .prepare("SELECT kind FROM journal WHERE agent_id=?1 AND kind='claude/followUpQueued' ORDER BY seq").unwrap()
+            .query_map([ID], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(kinds, ["claude/followUpQueued"]);
         let held = serde_json::to_value(&d).unwrap();
         assert!(ws.store.flush().failed.is_empty());
         assert!(ws.store.release_for_test(ID));
