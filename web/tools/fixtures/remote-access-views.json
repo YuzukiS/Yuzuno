@@ -1,0 +1,68 @@
+{
+  "_about": "T-185 example GET /api/remote-access views for the frontend (Dev 5, contract in T-185 comment 6798; field 'startupError' added: a startup that could not serve the applied entry). Synthetic names only. Added by Dev 3 for the contract test (Dev 5 8683): 'qr' in appliedVerified is a placeholder 25-module pattern with three finder patterns, not a scannable code; 'readOnlyReason' in remoteEntryReadOnly.",
+  "unsupported": {
+    "support": {"state": "unsupported", "reason": "This Core runs on Linux, not WSL. Phone access from Settings supports one setup for now: Core in WSL with Tailscale for Windows on the same PC. Any other host, a Tailscale inside WSL included, is not configured from here.",
+      "coreHost": {"kind": "linux", "name": "lab-host", "networking": "unknown"}, "tailscaleHost": {"kind": "none"}},
+    "saved": null, "environment": null, "listening": null,
+    "serve": {"state": "unchecked", "otherEntries": 0}, "tailscale": null, "verification": null, "operation": null,
+    "url": null, "startupError": null, "defaults": {"servePort": 8444, "localPort": 4318}, "canChange": true
+  },
+  "environmentNotRecorded": {
+    "support": {"state": "supported", "reason": null, "coreHost": {"kind": "wsl", "name": "Ubuntu", "networking": "mirrored"},
+      "tailscaleHost": {"kind": "windows", "cli": "/mnt/c/Program Files/Tailscale/tailscale.exe"}},
+    "saved": null,
+    "environment": {"port": 4318, "origin": "https://pc.tail0.ts.net:8444", "login": "owner@github", "ignored": false},
+    "listening": {"port": 4318, "origin": "https://pc.tail0.ts.net:8444", "login": "owner@github", "since": "2026-10-24T15:57:00Z", "source": "environment"},
+    "serve": {"state": "sameTargetNotRecorded", "port": 8444, "target": "http://127.0.0.1:4318", "otherEntries": 2, "detail": "https://pc.tail0.ts.net:8444 serves http://127.0.0.1:4318", "observedAt": "2026-10-24T17:30:00Z"},
+    "tailscale": {"state": "running", "backend": "Running", "dnsName": "pc.tail0.ts.net", "ownerLogin": "owner@github", "https": true, "observedAt": "2026-10-24T17:30:00Z"},
+    "verification": {"ok": true, "at": "2026-10-24T17:30:01Z", "steps": [
+      {"id": "host", "state": "ok", "detail": "Core runs in WSL (Ubuntu, mirrored networking); Tailscale for Windows is at /mnt/c/Program Files/Tailscale/tailscale.exe"},
+      {"id": "tailscale", "state": "ok", "detail": "Tailscale is running on pc.tail0.ts.net as owner@github"},
+      {"id": "https", "state": "ok", "detail": "HTTPS certificates are on for pc.tail0.ts.net"},
+      {"id": "listener", "state": "ok", "detail": "Core answers on 127.0.0.1:4318 and refuses a request without the allowed Tailscale login"},
+      {"id": "hop", "state": "ok", "detail": "Windows reaches Core on 127.0.0.1:4318"},
+      {"id": "serve", "state": "ok", "detail": "https://pc.tail0.ts.net:8444 serves http://127.0.0.1:4318"},
+      {"id": "endToEnd", "state": "ok", "detail": "https://pc.tail0.ts.net:8444 reached Core through Serve as this PC's Tailscale login"}]},
+    "operation": null, "url": "https://pc.tail0.ts.net:8444", "startupError": null,
+    "defaults": {"servePort": 8444, "localPort": 4318}, "canChange": true
+  },
+  "appliedVerified": {
+    "support": {"state": "supported", "reason": null, "coreHost": {"kind": "wsl", "name": "Ubuntu", "networking": "mirrored"},
+      "tailscaleHost": {"kind": "windows", "cli": "/mnt/c/Program Files/Tailscale/tailscale.exe"}},
+    "saved": {"enabled": true, "login": "owner@github", "servePort": 8444, "localPort": 4318, "origin": "https://pc.tail0.ts.net:8444", "savedAt": "2026-10-24T17:31:00Z", "applied": true},
+    "environment": {"port": 4318, "origin": "https://pc.tail0.ts.net:8444", "login": "owner@github", "ignored": true},
+    "listening": {"port": 4318, "origin": "https://pc.tail0.ts.net:8444", "login": "owner@github", "since": "2026-10-24T15:57:00Z", "source": "settings"},
+    "serve": {"state": "ours", "port": 8444, "target": "http://127.0.0.1:4318", "otherEntries": 2, "detail": "https://pc.tail0.ts.net:8444 serves http://127.0.0.1:4318", "observedAt": "2026-10-24T17:31:02Z"},
+    "tailscale": {"state": "running", "backend": "Running", "dnsName": "pc.tail0.ts.net", "ownerLogin": "owner@github", "https": true, "observedAt": "2026-10-24T17:31:01Z"},
+    "verification": {"ok": true, "at": "2026-10-24T17:31:03Z", "steps": [{"id": "host", "state": "ok", "detail": "…"}, {"id": "tailscale", "state": "ok", "detail": "…"}, {"id": "https", "state": "ok", "detail": "…"}, {"id": "listener", "state": "ok", "detail": "…"}, {"id": "hop", "state": "ok", "detail": "…"}, {"id": "serve", "state": "ok", "detail": "…"}, {"id": "endToEnd", "state": "ok", "detail": "…"}]},
+    "operation": {"id": "0f6c…", "requestId": "page-1", "kind": "apply", "state": "succeeded", "step": "done", "startedAt": "2026-10-24T17:31:00Z", "finishedAt": "2026-10-24T17:31:03Z", "url": "https://pc.tail0.ts.net:8444",
+      "request": {"requestId": "page-1", "enabled": true, "login": null, "servePort": null, "localPort": null}},
+    "url": "https://pc.tail0.ts.net:8444", "qr": {"size": 25, "rows": ["1111111100101010011111111", "1000001010100101011000001", "1011101001010100101011101", "1011101101001010101011101", "1011101010101001011011101", "1000001010010101001000001", "1111111101010010101111111", "1001010100101010010101001", "0101001010100101010010101", "0010101001010100101010010", "1010010101001010100101010", "0101010010101001010100101", "0100101010010101001010100", "1010100101010010101001010", "1001010100101010010101001", "0101001010100101010010101", "0010101001010100101010010", "1010010101001010100101010", "1111111010101001010100101", "1000001010010101001010100", "1011101101010010101001010", "1011101100101010010101001", "1011101010100101010010101", "1000001001010100101010010", "1111111101001010100101010"]}, "startupError": null, "defaults": {"servePort": 8444, "localPort": 4318}, "canChange": true
+  },
+  "rolledBackAtServe": {
+    "_note": "Saved 8445 is not applied; the previous entry on 8444 still applies and url stays the previous one.",
+    "support": {"state": "supported", "reason": null, "coreHost": {"kind": "wsl", "name": "Ubuntu", "networking": "mirrored"}, "tailscaleHost": {"kind": "windows", "cli": "/mnt/c/Program Files/Tailscale/tailscale.exe"}},
+    "saved": {"enabled": true, "login": "owner@github", "servePort": 8445, "localPort": 4318, "origin": "https://pc.tail0.ts.net:8445", "savedAt": "2026-10-24T17:40:00Z", "applied": false},
+    "environment": null,
+    "listening": {"port": 4318, "origin": "https://pc.tail0.ts.net:8444", "login": "owner@github", "since": "2026-10-24T17:40:02Z", "source": "settings"},
+    "serve": {"state": "ours", "port": 8444, "target": "http://127.0.0.1:4318", "otherEntries": 3, "detail": "https://pc.tail0.ts.net:8444 serves http://127.0.0.1:4318", "observedAt": "2026-10-24T17:31:02Z"},
+    "tailscale": {"state": "running", "backend": "Running", "dnsName": "pc.tail0.ts.net", "ownerLogin": "owner@github", "https": true, "observedAt": "2026-10-24T17:31:01Z"},
+    "verification": null,
+    "operation": {"id": "7a1d…", "requestId": "page-2", "kind": "apply", "state": "rolledBack", "step": "serve", "startedAt": "2026-10-24T17:40:00Z", "finishedAt": "2026-10-24T17:40:02Z",
+      "error": "Port 8445 is already used by another Serve configuration (pc.tail0.ts.net:8445 is {\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:9999\"}}}); it is left as it is. Choose another Serve port in the advanced settings; the previous phone access is unchanged",
+      "request": {"requestId": "page-2", "enabled": true, "login": null, "servePort": 8445, "localPort": null}},
+    "url": "https://pc.tail0.ts.net:8444", "startupError": null, "defaults": {"servePort": 8444, "localPort": 4318}, "canChange": true
+  },
+  "appliedNotVerified": {
+    "_note": "Applied (saved.applied true, url set) but verification failed at hop: show 'configured, not verified' with the failed step.",
+    "operation": {"id": "c3e0…", "requestId": "page-3", "kind": "apply", "state": "failed", "step": "verify", "startedAt": "…", "finishedAt": "…", "url": "https://pc.tail0.ts.net:8444",
+      "error": "Applied, but not verified: Windows could not reach Core on 127.0.0.1:4318 (…); WSL networking is nat (hop)", "request": {"requestId": "page-3", "enabled": true}},
+    "verification": {"ok": false, "at": "…", "steps": [{"id": "host", "state": "ok", "detail": "…"}, {"id": "tailscale", "state": "ok", "detail": "…"}, {"id": "https", "state": "ok", "detail": "…"}, {"id": "listener", "state": "ok", "detail": "…"},
+      {"id": "hop", "state": "failed", "detail": "Windows could not reach Core on 127.0.0.1:4318 (…); WSL networking is nat"}, {"id": "serve", "state": "ok", "detail": "…"}, {"id": "endToEnd", "state": "skipped", "detail": "Needs the Serve entry and the Windows hop"}]}
+  },
+  "remoteEntryReadOnly": {"_note": "Same view through the phone entry: canChange false; POST /api/remote-access/apply is not served there.", "canChange": false, "readOnlyReason": "This page is open through the phone entry. Change phone access from Yuzuno on the computer, so this phone cannot lock itself out."},
+  "operationStates": ["running", "succeeded", "failed", "rolledBack", "uncertain", "interrupted"],
+  "operationSteps": ["validate", "save", "listen", "serve", "verify", "done"],
+  "serveStates": ["unchecked", "absent", "ours", "sameTargetNotRecorded", "conflict", "error"],
+  "errors": {"busy": "400 {\"error\":\"remote_access_busy: another phone access change is running; wait for it to finish\"}", "idempotency": "400 {\"error\":\"idempotency_conflict: requestId already names a different phone access change\"}"}
+}
