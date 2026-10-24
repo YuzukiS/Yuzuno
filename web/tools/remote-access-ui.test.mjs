@@ -211,6 +211,35 @@ test("before it is set up, a check says what is ready, not that the entry failed
   }
 });
 
+test("a port out of range is said where it can be seen, every time, and nothing is sent", async () => {
+  const p = mount((url) => {
+    if (url.endsWith("/check")) return { body: checkedView() };
+    return { body: view() };
+  });
+  // jsdom has no layout: record what the page asks to bring into view.
+  const shown = [];
+  p.window.HTMLElement.prototype.scrollIntoView = function (options) {
+    shown.push([this.textContent, options]);
+  };
+  try {
+    await waitFor(() => button(p, "Check"), "the form");
+    button(p, "Check").click();
+    await waitFor(() => !button(p, "Save and apply").disabled, "checked");
+    type(p, "Serve port", "70000");
+    const refusal = "The Serve port must be a port from 1 to 65535.";
+    button(p, "Save and apply").click();
+    await waitFor(() => p.alerts().includes(refusal), "the refusal");
+    assert.deepEqual(shown, [[refusal, { block: "nearest" }]]);
+    // Pressed again after scrolling away: brought into view again.
+    button(p, "Save and apply").click();
+    await waitFor(() => shown.length === 2, "shown again");
+    assert.deepEqual(shown[1], [refusal, { block: "nearest" }]);
+    assert.equal(p.applies().length, 0, "nothing sent");
+  } finally {
+    p.close();
+  }
+});
+
 test("a Core it cannot set up says why and offers nothing to change", async () => {
   const p = mount(() => ({ body: example("unsupported") }));
   try {
