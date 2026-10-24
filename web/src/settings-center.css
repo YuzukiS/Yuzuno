@@ -24,3 +24,18 @@
   .settings-center .settings-nav [role="tab"] { width: 100%; font-size: .8em; padding: 8px; }
   .settings-catalog-card { padding: 10px; }
 }
+
+.settings-category-picker { display: none; }
+/* A software keyboard can leave only a short viewport. Give the content
+   the remaining space; all eight categories stay reachable in the picker. */
+@media (max-height: 500px) {
+  .modal.settings-modal { height: calc(var(--safe-dvh) - 16px); max-height: calc(var(--safe-dvh) - 16px); padding: 12px; }
+  .settings-modal .modal-heading p { display: none; }
+  .settings-center .settings-search { margin-top: 6px; }
+  .settings-center .settings-search input { padding-block: 5px; }
+  .settings-center .settings-nav { display: none; }
+  .settings-category-picker { display: block; min-width: 0; }
+  .settings-category-picker select { width: 100%; min-width: 0; font: inherit; padding: 5px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; }
+  .settings-center .settings-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 6px; margin-top: 6px; }
+}
+

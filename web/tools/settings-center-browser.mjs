@@ -26,6 +26,7 @@ const browser = await chromium.launch({ headless: true, executablePath: process.
 const context = await browser.newContext({ viewport: { width: 1360, height: 960 } });
 const page = await context.newPage();
 page.on('pageerror', (error) => errors.push(error.message));
+page.on('console', (message) => { if (message.type() === 'error' && /TypeError|ReferenceError|Minified React error/.test(message.text())) errors.push(message.text()); });
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png' };
 await context.addInitScript(() => {
   localStorage.setItem('yuzuno.selected', JSON.stringify('cedar'));
@@ -45,6 +46,9 @@ await context.route('**/*', async (route) => {
   const agent = agents.find((a) => url.pathname === `/api/agents/${a.id}`);
   if (agent) return respond({ agent, turns: [{ id: `turn-${agent.id}`, status: 'completed', items: [{ id: `reply-${agent.id}`, type: 'agentMessage', text: 'Synthetic conversation' }] }], pending: [], artifacts: [], messageReceipts: [] });
   if (/\/agents\/[^/]+\/models$/.test(url.pathname)) return respond({ models: [{ id: 'fixture-model', model: 'fixture-model', displayName: 'Fixture model', supportedReasoningEfforts: [] }], context: { supported: true, settingsSubmitted: false, canApply: false, observedWindowTokens: null } });
+  if (/\/projects\/[^/]+\/services$/.test(url.pathname)) return respond({ services: [] });
+  if (/\/projects\/[^/]+\/home-editors$/.test(url.pathname)) return respond({ version: 0, editorAgentIds: null });
+  if (url.pathname === '/api/collaboration/github_repositories') return respond({ links: [], repositories: [], refreshing: false });
   if (/\/claude\/auto-continue$/.test(url.pathname)) return respond({ workspace: true, agent: null, enabled: true, intent: null, stopped: null });
   switch (url.pathname) {
     case '/api/health': return respond({ product: 'yuzuno', application: 'yuzuno-next', workspaceId: 'settings-fixture', releaseId: 'fixture' });
@@ -121,6 +125,22 @@ try {
     await closeDialog();
     check(`${width}px: keyboard category navigation, honest unavailable phone access and no dialog overflow`);
   }
+  await page.setViewportSize({ width: 320, height: 300 });
+  await open();
+  await page.getByRole('combobox', { name: 'Settings category', exact: true }).selectOption('agents');
+  await search('上下文');
+  const shortSelect = page.getByLabel('Context window & compaction agent');
+  await shortSelect.scrollIntoViewIfNeeded();
+  await shortSelect.selectOption('pine');
+  await shortSelect.focus();
+  assert.equal(await shortSelect.evaluate((el) => document.activeElement === el), true);
+  const shortAction = page.getByRole('button', { name: 'Open Context window & compaction' });
+  await shortAction.scrollIntoViewIfNeeded();
+  assert.equal(await shortAction.evaluate((el) => { const r = el.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!hit && (hit === el || el.contains(hit)); }), true);
+  assert.ok(await page.locator('.settings-pane').evaluate((el) => el.clientHeight >= 100), 'Short viewport retains at least 100px of scrollable content');
+  await page.screenshot({ path: resolve(output, 'settings-320x300.png') });
+  check('320x300 software-keyboard viewport: all categories in picker, editable object choice, focused control and hit-tested action');
+  await closeDialog();
   assert.ok(!calls.some((call) => call.method !== 'GET' && /\/(settings|context\/apply|claude\/auto-continue|jobs\/budget|remote-access)(\/|$)/.test(call.path)), 'Navigation never saves, applies or connects');
   assert.deepEqual(errors, []);
   check('no setting writes, native Apply, remote-access changes or page errors');

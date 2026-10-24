@@ -98,7 +98,7 @@ test("object routes never default to the first Agent or project and reject a rem
   await until(() => p.doc.querySelector('[type="search"]'));
   const query = p.doc.querySelector('[type="search"]');
   p.type(query, "上下文");
-  let select = await until(() => p.doc.querySelector('select'));
+  let select = await until(() => p.doc.querySelector('.settings-catalog select'));
   assert.deepEqual([...select.options].map((o) => o.value), ["", "codex-one", "codex-two"]);
   const open = () => p.button("Open Context window & compaction");
   assert.equal(open().disabled, true);

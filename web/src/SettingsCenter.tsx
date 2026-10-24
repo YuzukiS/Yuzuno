@@ -59,6 +59,12 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
       <input type="search" value={query} placeholder="Search settings…" onChange={(event) => setQuery(event.target.value)} />
     </label>
     <div className="settings-layout">
+      <label className="settings-category-picker">
+        <span className="sr-only">Settings category</span>
+        <select value={category} onChange={(event) => chooseCategory(event.target.value as SettingsCategory)}>
+          {settingsCategories.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}
+        </select>
+      </label>
       <div className="settings-nav" role="tablist" aria-label="Settings" aria-orientation="vertical" onKeyDown={(event) => {
         const keys = ["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft", "Home", "End"];
         if (!keys.includes(event.key)) return;
