@@ -103,14 +103,18 @@ async function openAgent(page, name, phone) {
   await page.locator(".main-panel .conversation-scroll .turn").last().waitFor();
   await page.waitForTimeout(500);
 }
-/** Opened, a conversation shows its latest message; when one opens elsewhere
- * (seen on main's build and this one alike, now and then), Back to latest
- * takes it there before measuring, and the report says so. */
+/** Opened, a conversation shows its latest message. One open at page load
+ * sometimes shows the top of its window instead, with no Back to latest
+ * (main's build and this one alike): as a reader would, Back to latest when
+ * it is offered, else a scroll down, before measuring; the report says so. */
 async function atLatest(page, viewport, name) {
-  const away = await page.locator(".main-panel .conversation-scroll").evaluate((el) => Math.round(el.scrollHeight - el.scrollTop - el.clientHeight));
+  const scroll = page.locator(".main-panel .conversation-scroll");
+  const away = await scroll.evaluate((el) => Math.round(el.scrollHeight - el.scrollTop - el.clientHeight));
   if (away <= 2) return;
-  report.openedAway.push({ viewport: viewport.name, agent: name, away });
-  await page.locator(".jump-latest").click();
+  const offered = await page.locator(".jump-latest").isVisible();
+  report.openedAway.push({ viewport: viewport.name, agent: name, away, backToLatestOffered: offered });
+  if (offered) await page.locator(".jump-latest").click();
+  else await scroll.evaluate((el) => { el.scrollTop = el.scrollHeight; });
   await page.waitForTimeout(800);
 }
 const shot = (page, viewport, what) => page.screenshot({ path: resolve(output, `${report.mode}-${viewport.name}-${what}.png`) });
@@ -140,8 +144,14 @@ const measure = (page) => page.evaluate(() => {
     .slice(0, 6)
     .map((el) => {
       const style = getComputedStyle(el);
-      return { el: `${el.tagName.toLowerCase()}.${String(el.className).trim().replace(/\s+/g, ".")}`, box: box(el), position: style.position,
-        width: style.width, minWidth: style.minWidth, whiteSpace: style.whiteSpace, text: el.textContent.trim().slice(0, 40) };
+      const name = (node) => `${node.tagName.toLowerCase()}.${String(node.className).trim().replace(/\s+/g, ".")}`;
+      const chain = [];
+      for (let up = el.parentElement; up && up !== inner && chain.length < 5; up = up.parentElement) {
+        const s = getComputedStyle(up);
+        chain.push(`${name(up)} [${s.display} ${s.flexWrap} ${s.whiteSpace} ${Math.round(up.getBoundingClientRect().width)}px]`);
+      }
+      return { el: name(el), box: box(el), position: style.position, display: style.display,
+        whiteSpace: style.whiteSpace, text: el.textContent.trim().slice(0, 40), turn: el.closest("[data-turn-id]")?.dataset.turnId ?? null, chain };
     }) : [];
   const hint = main.querySelector(".composer-hint[data-notice]");
   const error = [...main.querySelectorAll(".turn .inline-error")].filter(shown).at(-1);
