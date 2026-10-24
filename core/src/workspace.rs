@@ -339,6 +339,22 @@ impl Workspace {
         self.stored(move |store| store.record_send(&id, &kind, &data, mutate).map(drop)).await
     }
 
+    /// `record_update` of a Claude follow-up's `followUpQueued`
+    /// (`Store::record_send_unless`): `mutate` is made unless `shown` finds the
+    /// follow-up in some Turn, and on a held record written without copying
+    /// the other Turns. Either may run twice (see there).
+    pub(crate) async fn record_send_unless(
+        &self,
+        id: &str,
+        kind: &str,
+        data: Value,
+        shown: impl Fn(&[Value]) -> bool + Send + 'static,
+        mutate: impl Fn(&mut AgentDetail) + Send + 'static,
+    ) -> Result<()> {
+        let (id, kind) = (id.to_owned(), kind.to_owned());
+        self.stored(move |store| store.record_send_unless(&id, &kind, &data, shown, mutate).map(drop)).await
+    }
+
     /// `record_update` for a change to the metadata only (`Store::update_meta`):
     /// the send path's own changes, written without comparing a large record.
     pub(crate) async fn record_meta(
