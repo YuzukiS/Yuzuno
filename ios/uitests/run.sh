@@ -9,9 +9,16 @@
 #                                             Mobile Safari beside the app
 # full needs a web build in YUZUNO_UI_DIST (web-build.sh) and node; Safari's
 # pages come from web/tools/phone-fixture-server.mjs on 127.0.0.1 only.
-# <out> gets screenshots/, frames.txt, checks.xcresult and DerivedData/; full
-# also phone-measure.jsonl and page-server.log. Needs Xcode and xcodegen;
-# installs nothing.
+# <out> gets screenshots/, frames.txt and checks.xcresult (give each run its
+# own <out>); full also phone-measure.jsonl and page-server.log. Needs Xcode
+# and xcodegen; installs nothing.
+# Repeated runs on a Mac may share, for the length of one round of checks:
+#   YUZUNO_DEVICE=<udid>       a Simulator kept for the round: not created,
+#                              shut down or deleted here
+#   YUZUNO_DERIVED_DATA=<dir>  the tests' build, built incrementally
+# Otherwise each run creates a Simulator of type YUZUNO_DEVICE_TYPE (default
+# "iPhone 17", on the newest runtime installed) and deletes it when it ends,
+# and builds the tests in <out>/DerivedData.
 set -euo pipefail
 [ $# = 3 ] && { [ "$1" = smoke ] || [ "$1" = full ]; } || { echo "usage: run.sh smoke|full <app> <out>" >&2; exit 64; }
 mode=$1
@@ -21,16 +28,26 @@ out=$(cd "$3" && pwd)
 here=$(cd "$(dirname "$0")" && pwd)
 ios=$(dirname "$here")
 
-device=$(xcrun simctl create "yuzuno-check-$mode-$$" "iPhone 17")
+derived=${YUZUNO_DERIVED_DATA:-$out/DerivedData}
+if [ -n "${YUZUNO_DEVICE:-}" ]; then
+  device=$YUZUNO_DEVICE
+  kept=1
+else
+  device=$(xcrun simctl create "yuzuno-check-$mode-$$" "${YUZUNO_DEVICE_TYPE:-iPhone 17}")
+  kept=
+fi
 server=
 finish() {
   [ -z "$server" ] || kill "$server" 2> /dev/null || true
-  xcrun simctl shutdown "$device" 2> /dev/null || true
-  xcrun simctl delete "$device" 2> /dev/null || true
+  if [ -z "$kept" ]; then
+    xcrun simctl shutdown "$device" 2> /dev/null || true
+    xcrun simctl delete "$device" 2> /dev/null || true
+  fi
 }
 trap finish EXIT
 xcrun simctl list devices | awk -v device="$device" '/^-- /{runtime=$0} index($0, device){print runtime; print}'
-xcrun simctl boot "$device"
+# A kept Simulator may already be running.
+xcrun simctl boot "$device" 2> /dev/null || true
 xcrun simctl bootstatus "$device" -b
 xcrun simctl install "$device" "$app"
 
@@ -48,6 +65,6 @@ if [ "$mode" = full ]; then
 fi
 (cd "$here" && xcodegen generate --quiet)
 xcodebuild test -quiet -project "$here/YuzunoChecks.xcodeproj" -scheme Checks \
-  -destination "platform=iOS Simulator,id=$device" -derivedDataPath "$out/DerivedData" \
+  -destination "platform=iOS Simulator,id=$device" -derivedDataPath "$derived" \
   -resultBundlePath "$out/checks.xcresult" ${only[@]+"${only[@]}"}
 [ ! -f "$out/frames.txt" ] || cat "$out/frames.txt"
