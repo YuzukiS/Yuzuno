@@ -178,6 +178,7 @@ async fn a_taken_serve_port_rolls_back_to_the_previous_entry_and_saves_the_reque
     let view = lab.view().await;
     assert_eq!((view["saved"]["servePort"].as_u64(), view["saved"]["applied"].as_bool()), (Some(8445), Some(false)), "{view}");
     assert_eq!(view["url"], format!("https://{DNS}:8444").as_str(), "what applies is still the previous entry");
+    assert_eq!(view["serve"]["state"], "ours", "read again after the rollback: the entry that applies");
 }
 
 #[tokio::test]
@@ -210,6 +211,7 @@ async fn disable_removes_only_its_own_entry_and_ends_streams_that_began_under_it
     assert!(lab.calls().contains(&"serve --https=8444 off".to_owned()), "{:?}", lab.calls());
     let saved = lab.saved();
     assert_eq!((saved.effective.as_ref().map(|e| e.listen.is_none()), saved.owned.is_none()), (Some(true), true));
+    assert_eq!(lab.view().await["serve"]["state"], "absent", "read again after the disable");
     // Off from Settings stays off for a new Core, whatever the environment says.
     let env = RemoteEntry::new(&format!("https://{DNS}:8444"), OWNER).unwrap();
     assert_eq!(startup(&lab.ws.data_dir, Some((free_port(), env))).listen, None);
@@ -480,4 +482,23 @@ async fn real_views_keep_the_shape_the_page_is_built_on() {
     let remote = view(&lab.ws, false).await.unwrap();
     assert_eq!(remote["canChange"], false);
     assert!(remote["readOnlyReason"].is_string());
+}
+
+#[tokio::test]
+async fn a_check_before_setup_reads_serve_for_the_planned_port() {
+    let lab = lab("wsl");
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    let step = |view: &Value, id: &str| view["verification"]["steps"].as_array().unwrap().iter().find(|s| s["id"] == id).unwrap().clone();
+    let free = lab.check().await;
+    assert_eq!(free["serve"]["state"], "absent", "{}", free["serve"]);
+    assert_eq!(step(&free, "serve")["state"], "skipped");
+    assert!(step(&free, "serve")["detail"].as_str().unwrap().contains("Port 8444 is free"), "{free}");
+    lab.set_fake(|s| {
+        s["serve"]["TCP"]["8444"] = json!({"HTTPS": true});
+        s["serve"]["Web"][format!("{DNS}:8444")] = json!({"Handlers": {"/": {"Proxy": "http://127.0.0.1:9999"}}});
+    });
+    let taken = lab.check().await;
+    assert_eq!(taken["serve"]["state"], "conflict", "{}", taken["serve"]);
+    assert_eq!(step(&taken, "serve")["state"], "failed");
+    assert!(lab.calls().iter().all(|c| c.ends_with("--json")), "read only: {:?}", lab.calls());
 }

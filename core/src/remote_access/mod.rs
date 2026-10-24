@@ -392,10 +392,23 @@ fn step(id: &str, state: &str, detail: impl Into<String>) -> Value {
     json!({"id": id, "state": state, "detail": detail.into()})
 }
 
+/// The Serve and local ports a check looks at: what applies, else what was
+/// last saved, else the defaults.
+fn planned(saved: &Saved) -> (u16, u16) {
+    match (&saved.effective, &saved.desired) {
+        (Some(Applied { listen: Some(entry), serve_port: Some(port), .. }), _) => (*port, entry.port),
+        (_, Some(desired)) => (desired.serve_port, desired.local_port),
+        _ => (DEFAULT_SERVE_PORT, DEFAULT_LOCAL_PORT),
+    }
+}
+
 /// What the page's Check shows, read only: the host pair, Tailscale, HTTPS,
 /// Core's listener, the Windows-to-WSL hop, the Serve entry and a request
 /// through it from Windows. A step that needs a failed one is skipped.
-async fn check(ws: &Arc<Workspace>, host: &Host, listen: Option<Entry>, serve_port: u16) -> Value {
+/// Before setup (nothing listening) Serve is still read for the planned
+/// port, so a port someone else uses shows before an apply.
+async fn check(ws: &Arc<Workspace>, host: &Host, listen: Option<Entry>, planned: (u16, u16)) -> Value {
+    let serve_port = planned.0;
     let mut steps = Vec::new();
     let mut tailscale = Value::Null;
     let mut serve = json!({"state": "unchecked", "otherEntries": 0});
@@ -476,28 +489,34 @@ async fn check(ws: &Arc<Workspace>, host: &Host, listen: Option<Entry>, serve_po
     } else {
         steps.push(skip("hop", "Needs Core listening"));
     }
-    let target = listen.as_ref().map(|e| format!("http://127.0.0.1:{}", e.port));
+    let target = format!("http://127.0.0.1:{}", listen.as_ref().map_or(planned.1, |e| e.port));
     let mut served = false;
-    match (&dns, &target) {
-        (Some(dns), Some(target)) => match host::serve_status(host).await {
+    match &dns {
+        Some(dns) => match host::serve_status(host).await {
             Ok(config) => {
-                let (found, detail) = host::serve_entry(&config, dns, serve_port, target);
+                let (found, detail) = host::serve_entry(&config, dns, serve_port, &target);
                 let owned = read(&path(ws)).ok().and_then(|s| s.owned);
-                let ours = owned.as_ref().is_some_and(|o| o.serve_port == serve_port && &o.host == dns && &o.target == target);
+                let ours = owned.as_ref().is_some_and(|o| o.serve_port == serve_port && &o.host == dns && o.target == target);
                 serve = json!({
                     "state": match found { "match" if ours => "ours", "match" => "sameTargetNotRecorded", other => other },
                     "port": serve_port, "target": target, "otherEntries": host::other_entries(&config, serve_port),
                     "detail": detail, "observedAt": crate::model::now(),
                 });
-                served = found == "match";
-                steps.push(step("serve", if served { "ok" } else { "failed" }, detail));
+                served = found == "match" && listen.is_some();
+                let (state, detail) = match (listen.is_some(), found) {
+                    (true, "match") => ("ok", detail),
+                    (false, "absent") => ("skipped", format!("Port {serve_port} is free for phone access; Save and apply sets it")),
+                    (false, "match") => ("skipped", format!("{detail}, where Core is not listening; Save and apply takes it over")),
+                    _ => ("failed", detail),
+                };
+                steps.push(step("serve", state, detail));
             }
             Err(error) => {
                 serve = json!({"state": "error", "port": serve_port, "otherEntries": 0, "detail": format!("{error:#}"), "observedAt": crate::model::now()});
                 steps.push(step("serve", "failed", format!("Could not read Serve's configuration: {error:#}")));
             }
         },
-        _ => steps.push(skip("serve", "Needs Tailscale running and Core listening")),
+        None => steps.push(skip("serve", "Needs Tailscale running")),
     }
     match (served && hop, &listen) {
         (true, Some(entry)) => match host::windows_get(host, &format!("{}/api/health", entry.origin)).await {
@@ -627,7 +646,6 @@ async fn start(ws: &Arc<Workspace>, request: ApplyRequest) -> Result<Value> {
     let ws = ws.clone();
     let mut running = op.clone();
     tokio::spawn(async move {
-        let _busy = busy;
         let host = ws.remote_access.host(true);
         let outcome = if running.request.enabled {
             enable(&ws, &host, &mut running).await
@@ -643,7 +661,15 @@ async fn start(ws: &Arc<Workspace>, request: ApplyRequest) -> Result<Value> {
                 running.error = Some(format!("{error:#}"));
             }
         }
+        // A successful apply checked itself; anything else is read again now,
+        // so the page never shows Serve as it was before the change.
+        if !(running.kind == "apply" && matches!(running.step.as_str(), "verify" | "done")) {
+            let planned = read(&path(&ws)).map(|saved| planned(&saved)).unwrap_or((DEFAULT_SERVE_PORT, DEFAULT_LOCAL_PORT));
+            let result = check(&ws, &host, current(&ws), planned).await;
+            observe(&ws, &result);
+        }
         running.finished_at = Some(crate::model::now());
+        drop(busy);
         record(&ws, &running);
     });
     Ok(serde_json::to_value(op)?)
@@ -788,7 +814,7 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
     op.url = Some(origin);
     // verify
     at(ws, op, "verify");
-    let result = check(ws, host, current(ws), serve_port).await;
+    let result = check(ws, host, current(ws), (serve_port, local_port)).await;
     observe(ws, &result);
     op.step = "done".into();
     if let Some(failed) = result["steps"].as_array().and_then(|s| s.iter().find(|s| s["state"] != "ok")) {
@@ -880,11 +906,7 @@ async fn post_check(AppState(ws): AppState<Arc<Workspace>>, request: Request) ->
     let can_change = request.extensions().get::<RemoteRequest>().is_none();
     let host = ws.remote_access.host(true);
     let saved = read(&path(&ws))?;
-    let listen = current(&ws);
-    let serve_port = saved.effective.as_ref().and_then(|a| a.serve_port)
-        .or(saved.desired.as_ref().map(|d| d.serve_port))
-        .unwrap_or(DEFAULT_SERVE_PORT);
-    let result = check(&ws, &host, listen, serve_port).await;
+    let result = check(&ws, &host, current(&ws), planned(&saved)).await;
     observe(&ws, &result);
     changed(&ws);
     Ok(Json(view(&ws, can_change).await?))
