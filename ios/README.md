@@ -46,7 +46,7 @@ uitests/web-build.sh /tmp/yuzuno-web
 YUZUNO_UI_DIST=/tmp/yuzuno-web uitests/run.sh full gen/apple/build/arm64-sim/Yuzuno.app /tmp/yuzuno-checks
 ```
 
-`smoke` is what CI runs. `full` also turns the phone, opens the keyboard, tries an address nothing answers, and opens Mobile Safari beside the app with the same page and the web UI on a synthetic Workspace (`web/tools/phone-fixture-server.mjs`, on the Mac's 127.0.0.1 only). Each page measures itself after every change; the lines are in `phone-measure.jsonl`. `web-build.sh` builds `web/` on a case-sensitive disk image, since `web/src` has had modules whose names differ only in case. Its `npm ci` runs on that image. These are Simulator results, not an iPhone's.
+`smoke` is what CI runs. `full` also turns the phone, opens the keyboard, tries an address nothing answers, and opens Mobile Safari beside the app with the same page and the web UI on a synthetic Workspace (`web/tools/phone-fixture-server.mjs`, on the Mac's 127.0.0.1 only). Each page measures itself after every change; the lines are in `phone-measure.jsonl`. `web-build.sh` builds `web/` on a case-sensitive disk image, since `web/src` has had modules whose names differ only in case. Its `npm ci` runs on that image. Given a commit as a second argument, it builds `web/` from that commit instead, for example a web fix to measure. These are Simulator results, not an iPhone's.
 
 ### Your own iPhone
 
