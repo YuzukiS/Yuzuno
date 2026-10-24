@@ -353,7 +353,9 @@ try {
     assert.ok(workItems.length >= 4, `jobs and CI runs are listed: ${JSON.stringify(workItems)}`);
     for (const item of workItems) assert.ok(item.height >= 44 && item.within, `a whole-row target on screen: ${JSON.stringify(item)}`);
     assert.ok(work.workDock.box[1] + work.workDock.box[3] <= work.buttons[0].box[1], "the panel opens above its button");
-    await page.locator(".phone-dock-scrim").click({ position: { x: viewport.width - 30, y: 20 } });
+    // Outside the panel: the strip between the two buttons, under the panel.
+    const scrim = await page.locator(".phone-dock-scrim").boundingBox();
+    await page.locator(".phone-dock-scrim").click({ position: { x: scrim.width / 2, y: scrim.height - 30 } });
     await page.waitForTimeout(200);
     assert.ok(!(await measure(page)).workDock.shown, "tapping outside closes it");
     await page.locator(".phone-dock-work").click();
