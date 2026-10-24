@@ -306,7 +306,7 @@ export function ClaudeSubAgentDetail({ agentId, entry, live, item, onNavigate }:
     )}
     {!item && view.error && <p className="claude-subagent-error" role="alert">{view.error}</p>}
     {onNavigate && (
-      // As the dock card's Codex details do (SubAgents.tsx).
+      // As the dock card's Codex details do (SubAgentPanels.tsx).
       <div className="subagent-card-actions">
         <button type="button" className="quiet-button" onClick={() => onNavigate(entry.turnId)}>
           <ArrowUpRight size={12} aria-hidden /> Go to its Turn
