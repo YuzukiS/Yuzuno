@@ -302,7 +302,7 @@ class Lab:
         self.check('the Home Ask is replied to through the remote entry', status == 200, (status, text[:200]))
 
         refused = {
-            'no login (a tagged node, the host itself)': self.remote('GET', '/api/health', **{'Tailscale-User-Login': None})[0],
+            'no login (as Serve sends for a tagged node)': self.remote('GET', '/api/health', **{'Tailscale-User-Login': None})[0],
             'another login': self.remote('GET', '/api/health', **{'Tailscale-User-Login': 'visitor@example.org'})[0],
             'another host': self.remote('GET', '/api/health', Host=f'127.0.0.1:{a.remote_port}')[0],
             'Funnel': self.remote('GET', '/api/health', **{'Tailscale-Funnel-Request': '?1'})[0],
