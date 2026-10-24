@@ -7,11 +7,13 @@
 #   uitests/run.sh full  <Yuzuno.app> <out>   also turned, the keyboard open,
 #                                             an address nothing answers, and
 #                                             Mobile Safari beside the app
-# full needs a web build in YUZUNO_UI_DIST (web-build.sh) and node; Safari's
-# pages come from web/tools/phone-fixture-server.mjs on 127.0.0.1 only.
-# <out> gets screenshots/, frames.txt and checks.xcresult (give each run its
-# own <out>); full also phone-measure.jsonl and page-server.log. Needs Xcode
-# and xcodegen; installs nothing.
+#   uitests/run.sh safari <out>               Mobile Safari only: no app is
+#                                             built or installed
+# full and safari need a web build in YUZUNO_UI_DIST (web-build.sh) and
+# node; Safari's pages come from web/tools/phone-fixture-server.mjs on
+# 127.0.0.1 only. <out> gets screenshots/, frames.txt and checks.xcresult
+# (give each run its own <out>); full and safari also phone-measure.jsonl and
+# page-server.log. Needs Xcode and xcodegen; installs nothing.
 # Repeated runs on a Mac may share, for the length of one round of checks:
 #   YUZUNO_DEVICE=<udid>       a Simulator kept for the round: not created,
 #                              shut down or deleted here
@@ -22,11 +24,13 @@
 # that matches the active Xcode's Simulator SDK (DEVELOPER_DIR picks another
 # Xcode); with none, or a kept Simulator on another runtime, it stops.
 set -euo pipefail
-[ $# = 3 ] && { [ "$1" = smoke ] || [ "$1" = full ]; } || { echo "usage: run.sh smoke|full <app> <out>" >&2; exit 64; }
-mode=$1
-app=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
-mkdir -p "$3/screenshots"
-out=$(cd "$3" && pwd)
+case "${1:-}:$#" in
+  smoke:3 | full:3) mode=$1 app=$(cd "$(dirname "$2")" && pwd)/$(basename "$2") target=$3 ;;
+  safari:2) mode=$1 app= target=$2 ;;
+  *) echo "usage: run.sh smoke|full <app> <out>, or run.sh safari <out>" >&2; exit 64 ;;
+esac
+mkdir -p "$target/screenshots"
+out=$(cd "$target" && pwd)
 here=$(cd "$(dirname "$0")" && pwd)
 ios=$(dirname "$here")
 
@@ -72,19 +76,23 @@ xcrun simctl list devices | awk -v device="$device" '/^-- /{runtime=$0} index($0
 # A kept Simulator may already be running.
 xcrun simctl boot "$device" 2> /dev/null || true
 xcrun simctl bootstatus "$device" -b
-xcrun simctl install "$device" "$app"
+[ -z "$app" ] || xcrun simctl install "$device" "$app"
 
 # xcodebuild hands TEST_RUNNER_<name> to the tests as <name>.
 export TEST_RUNNER_YUZUNO_SCREENSHOTS="$out/screenshots" TEST_RUNNER_YUZUNO_FRAMES="$out/frames.txt"
-only=(-only-testing:Checks/ConnectionPageChecks/testLaunchAndTheAppsOwnRefusal)
-if [ "$mode" = full ]; then
+case "$mode" in
+  smoke) only=(-only-testing:Checks/ConnectionPageChecks/testLaunchAndTheAppsOwnRefusal) ;;
+  safari) only=(-only-testing:Checks/ConnectionPageChecks/testThePagesInSafari) ;;
+  full) only=() ;;
+esac
+[ "$mode" != full ] || export TEST_RUNNER_YUZUNO_EXPLORE=1
+if [ "$mode" != smoke ]; then
   : "${YUZUNO_UI_DIST:?the web build for the Safari pages, from uitests/web-build.sh}"
-  export TEST_RUNNER_YUZUNO_EXPLORE=1 TEST_RUNNER_YUZUNO_SAFARI=http://127.0.0.1:4510/
+  export TEST_RUNNER_YUZUNO_SAFARI=http://127.0.0.1:4510/
   YUZUNO_MEASURE_OUT="$out/phone-measure.jsonl" YUZUNO_PORT=4510 YUZUNO_EXTRA="/connection=$ios/connection" \
     node "$ios/../web/tools/phone-fixture-server.mjs" > "$out/page-server.log" 2>&1 &
   server=$!
   for attempt in $(seq 1 30); do curl -sf -o /dev/null "${TEST_RUNNER_YUZUNO_SAFARI}connection/" && break; sleep 0.5; done
-  only=()
 fi
 (cd "$here" && xcodegen generate --quiet)
 xcodebuild test -quiet -project "$here/YuzunoChecks.xcodeproj" -scheme Checks \
