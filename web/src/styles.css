@@ -3229,3 +3229,17 @@ p {
     display: none;
   }
 }
+/* With the on-screen keyboard up (keyboard-viewport.ts) the phone shell is
+   as short as a phone held sideways, though the window is not: the same
+   short layout, so the turn dock is not drawn over the composer and Send. */
+:root[data-keyboard] .app.phone {
+  grid-template-rows: 57px minmax(0, 1fr) 0;
+}
+:root[data-keyboard] .app.phone:has(.preview-strip) {
+  grid-template-rows: 28px 57px minmax(0, 1fr) 0;
+}
+:root[data-keyboard] .app.phone .statusbar,
+:root[data-keyboard] .app.phone .composer-footnote,
+:root[data-keyboard] .app.phone .turn-dock {
+  display: none;
+}

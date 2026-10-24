@@ -179,11 +179,15 @@ test("without a visual viewport nothing happens", () => {
   assert.equal(dom.window.document.documentElement.getAttribute("style"), null);
 });
 
-test("the phone shell uses it, and only the phone shell", async () => {
+test("the phone shell uses it, and only the phone shell, with the short layout while the keyboard is up", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
   assert.match(app, /useEffect\(\(\) => \(phone \? followVisualViewport\(\) : undefined\), \[phone\]\);/);
   const css = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
   const shell = css.match(/\.app\.phone,\s*\.app\.phone\.rail-hidden \{[^}]*\}/)?.[0] ?? "";
   assert.match(shell, /height:\s*min\(100dvh,\s*var\(--visual-height,\s*100dvh\)\)/, shell);
   assert.match(css, /:root\[data-keyboard\] \.app\.phone \{\s*padding-bottom:\s*0;\s*\}/);
+  // With the keyboard up, the short layout of a phone held sideways (the max-height: 500px block):
+  // Simulator Safari showed the turn dock drawn over the composer and Send at 377 px.
+  assert.match(css, /:root\[data-keyboard\] \.app\.phone \{\s*grid-template-rows:\s*57px minmax\(0, 1fr\) 0;\s*\}/);
+  assert.match(css, /:root\[data-keyboard\] \.app\.phone \.statusbar,\s*:root\[data-keyboard\] \.app\.phone \.composer-footnote,\s*:root\[data-keyboard\] \.app\.phone \.turn-dock \{\s*display:\s*none;\s*\}/);
 });
