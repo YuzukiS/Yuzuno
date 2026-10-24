@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { post, errorText } from "./api";
 import { readMachineLoad } from "./home/home-api";
 import type { MachineLoad } from "./home/types";
@@ -115,6 +115,8 @@ export type BudgetHost = {
 };
 
 export function BudgetSettings({
+  openRequest,
+  onOpenRequestHandled,
   budget,
   bounds,
   host,
@@ -122,6 +124,8 @@ export function BudgetSettings({
   collector,
   onSaved,
 }: {
+  openRequest?: number;
+  onOpenRequestHandled?: () => void;
   budget: Resources;
   bounds?: BudgetBounds;
   host?: BudgetHost;
@@ -130,11 +134,20 @@ export function BudgetSettings({
   onSaved: () => void;
 }) {
   const [editing, setEditing] = useState(false);
+  const container = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (!openRequest) return;
+    setEditing(true);
+    container.current?.querySelector("summary")?.focus();
+    container.current?.scrollIntoView?.({ block: "start" });
+    onOpenRequestHandled?.();
+  }, [openRequest, onOpenRequestHandled]);
   const [value, setValue] = useState(budget);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   return (
     <details
+      ref={container}
       className="job-budget-settings"
       open={editing}
       onToggle={(e) => setEditing(e.currentTarget.open)}
