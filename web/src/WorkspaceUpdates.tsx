@@ -26,6 +26,7 @@ import { HistoryComposition } from "./HistoryComposition";
 import { ReviewSettings } from "./ReviewSettings";
 import { AgentDefaults } from "./AgentDefaults";
 import { HomePresentationSettings } from "./HomePresentationSettings";
+import { NotificationSettings } from "./NotificationSettings";
 import { api, errorText, HttpError } from "./api";
 import {
   loadedRelease,
@@ -985,6 +986,7 @@ export function WorkspaceUpdates({
           {tab === "agent-defaults" && <AgentDefaults active={open} />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
+          {tab === "notifications" && <NotificationSettings />}
         </>}
       />
     </Modal>
