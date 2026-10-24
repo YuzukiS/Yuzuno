@@ -234,14 +234,19 @@ final class ConnectionPageChecks: XCTestCase {
         // turns and its composer and no such button, and waiting 60 s for one
         // failed the check before anything of the conversation was looked at.
         // Take the button when it is there; otherwise the conversation that
-        // is open is the one to measure.
+        // is open is the one to measure. Which of those happened is carried
+        // into the failure below: a list too slow to draw the button within
+        // the wait leaves the same "no composer" as a page that never had
+        // one, and that reads as the wrong cause.
         let mori = safari.buttons["Open Mori"]
-        if mori.waitForExistence(timeout: 20) {
+        let listed = mori.waitForExistence(timeout: 20)
+        if listed {
             mori.tap()
         }
+        let opened = listed ? "tapped Open Mori" : "no Open Mori within 20 s: a conversation was expected to be open already, or the list was slower than that"
         let composer = composer(in: safari)
         XCTAssertTrue(composer.waitForExistence(timeout: 30),
-                      "no composer in the conversation; \(page(in: safari))")
+                      "no composer in the conversation (\(opened)); \(page(in: safari))")
         settle()
         screenshot("safari-web-portrait")
         turn(.landscapeLeft)
@@ -322,11 +327,14 @@ final class ConnectionPageChecks: XCTestCase {
         screenshot("safari-web-dialog-closed")
 
         // Upright again with the keyboard open, asserted now that every state
-        // has been reached and photographed. The probe measures Send below
-        // the visual viewport there (T-170, a layout defect of the composer
-        // when a recovery notice makes it taller): these are expected to fail
-        // until that is fixed, and failing is the point — the screenshot on
-        // its own asserted nothing.
+        // has been reached and photographed; the screenshot on its own
+        // asserted nothing. These failed when they were written, on web/
+        // before #187 (3b5fc72): the composer grew taller than the short
+        // shell left room for and Send went under the bar the keyboard puts
+        // over the page. Since #187 they pass, measured on an iOS Simulator
+        // as Send (333, 372, 44, 44), clear of Done (343, 488, 38, 38). They
+        // stay plain assertions, with no expected failure around them: that
+        // defect coming back is a failure, not something to record as known.
         XCTAssertTrue(upright.keyboard, "the keyboard closed on the way back to upright")
         XCTAssertTrue(upright.composer, "no composer to reach with the keyboard up, upright again")
         XCTAssertTrue(upright.send, "no Send with the keyboard up, upright again")
