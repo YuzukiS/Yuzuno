@@ -1,8 +1,8 @@
 // T-170: a phone's safe area, in Chromium on a production build with every API
 // answered here (no Core). DevTools gives the page the insets of a notched
 // phone (Emulation.setSafeAreaInsetsOverride); the app, a conversation's
-// composer and the Jobs, Tasks and Settings dialogs must then stay inside
-// them, held upright and sideways, and nothing may move on a screen without
+// composer, the handoff strip and the Jobs, Tasks and Settings dialogs must
+// then stay inside them, held upright and sideways, and nothing may move on a screen without
 // insets. Emulated insets are not an iPhone: Safari's own bars, the Home
 // Screen app's status bar and the on-screen keyboard are not here.
 //   YUZUNO_UI_DIST=<isolated build> node tools/safe-area-check.mjs
@@ -155,6 +155,19 @@ try {
     assert.ok(inside(safe.composer, viewport), `the composer is inside the safe area ${viewport.name}: ${JSON.stringify(safe.composer)}`);
     assert.ok(inside(safe.send, viewport), `Send is inside the safe area ${viewport.name}: ${JSON.stringify(safe.send)}`);
     check(`${viewport.name}: the toolbar, the composer and Send stay inside the insets`, { toolbar: safe.toolbar, send: safe.send });
+    // The handoff strip, fixed to the window's edges while a handoff is
+    // dragged out of a dialog, here placed by hand.
+    const strip = await page.evaluate(() => {
+      const el = document.createElement("div");
+      el.className = "handoff-strip";
+      el.textContent = "Drop on an Agent";
+      document.body.append(el);
+      const r = el.getBoundingClientRect();
+      el.remove();
+      return { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) };
+    });
+    report.measured.push({ viewport: viewport.name, handoffStrip: strip });
+    assert.ok(inside(strip, viewport), `the handoff strip stays inside the safe area ${viewport.name}: ${JSON.stringify(strip)}`);
 
     await dialog(page, viewport, ".jobs-nav", ".modal.jobs-dialog", "Jobs");
     await dialog(page, viewport, ".collab-nav", ".modal:has(.collaboration)", "Tasks");
