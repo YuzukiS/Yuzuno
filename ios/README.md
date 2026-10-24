@@ -38,15 +38,15 @@ The [iOS workflow](../.github/workflows/ios.yml) makes this same Simulator build
 
 #### The UI checks on a Mac
 
-`uitests/run.sh` runs the UI checks in a Simulator of their own, which it deletes afterwards, so a Mac's other Simulators are left alone. It needs Xcode and xcodegen, and Node.js for `full` and `safari`; it installs nothing.
+`uitests/run.sh` runs the UI checks in a Simulator of their own, on the installed iOS runtime that matches the active Xcode's Simulator SDK (it stops if there is none), and deletes that Simulator afterwards, so a Mac's other Simulators are left alone. It needs Xcode and xcodegen, and Node.js for `full` and `safari`; it installs nothing. For repeated runs in one round of checks, `YUZUNO_DEVICE=<udid>` uses a Simulator kept for the round instead, which must run that same runtime and which it does not create, shut down or delete, and `YUZUNO_DERIVED_DATA=<dir>` keeps the tests' build between runs.
 
 ```sh
-uitests/run.sh smoke gen/apple/build/arm64-sim/Yuzuno.app /tmp/yuzuno-checks
+uitests/run.sh smoke gen/apple/build/arm64-sim/Yuzuno.app /tmp/yuzuno-smoke
 uitests/web-build.sh /tmp/yuzuno-web
-YUZUNO_UI_DIST=/tmp/yuzuno-web uitests/run.sh full gen/apple/build/arm64-sim/Yuzuno.app /tmp/yuzuno-checks
+YUZUNO_UI_DIST=/tmp/yuzuno-web uitests/run.sh full gen/apple/build/arm64-sim/Yuzuno.app /tmp/yuzuno-full
 ```
 
-`smoke` is what CI runs. `uitests/run.sh safari <out>` (with `YUZUNO_UI_DIST`) runs only the Mobile Safari part, without building or installing the app. `full` also turns the phone, opens the keyboard, tries an address nothing answers, and opens Mobile Safari beside the app with the same page and the web UI on a synthetic Workspace (`web/tools/phone-fixture-server.mjs`, on the Mac's 127.0.0.1 only). Each page measures itself after every change; the lines are in `phone-measure.jsonl`. `web-build.sh` builds `web/` from this checkout's committed files in a temporary directory, which it removes, so the checkout gets no `node_modules`. npm's cache is in that directory too, so each build downloads the packages again. These are Simulator results, not an iPhone's.
+Give each run its own output directory: it gets `screenshots/`, `frames.txt` and `checks.xcresult`, and in `full` and `safari` also `phone-measure.jsonl` and `page-server.log`. `smoke` is what CI runs. `full` also turns the phone, opens the keyboard, tries an address nothing answers, and opens Mobile Safari beside the app with the same page and the web UI on a synthetic Workspace (`web/tools/phone-fixture-server.mjs`, on the Mac's 127.0.0.1 only). `uitests/run.sh safari <out>` (with `YUZUNO_UI_DIST`) runs only the Mobile Safari part, without building or installing the app, so it shows nothing about the app itself. In Mobile Safari each page measures itself after every change, into `phone-measure.jsonl`. `web-build.sh` builds `web/` from this checkout's committed files in a temporary directory, which it removes, so the checkout gets no `node_modules`. npm's cache is in that directory too, so each build downloads the packages again. These are Simulator results, not an iPhone's.
 
 ### Your own iPhone
 
