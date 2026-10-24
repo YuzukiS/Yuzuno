@@ -855,12 +855,13 @@ async fn shared_harness_entry_stops_on_third_failure_after_persisting_its_receip
 
 #[tokio::test]
 async fn parameter_failures_with_valid_ranges_recover_from_split_reads_of_one_source() {
-    let (_dir, mut context, mut run) = fixture().await;
-    all_diffs(&mut context, &mut run).await;
     for bad in [
         json!({"path":"large.rs","revision":"head","startLine":1,"endLine":1000,"extra":true}),
         json!({"path":"large.rs","startLine":1,"endLine":1000}),
     ] {
+        // A review of its own: reads delivered before a failure count toward it.
+        let (_dir, mut context, mut run) = fixture().await;
+        all_diffs(&mut context, &mut run).await;
         let failed = context.response(&mut run, "source_read", bad.clone()).await;
         assert_eq!(failed["kind"], "invalid_arguments");
         context
@@ -1109,6 +1110,170 @@ async fn added_source_counts_only_delivered_ranges_and_recovers_scoped_failures(
     assert!(rejected["error"].is_string());
     assert!(uncovered(&run, "empty.rs"));
     assert_eq!(run["contextIncomplete"], true);
+}
+
+/// T-185's R2 in a synthetic repository: one added 976-line file, an
+/// unchanged 976-line file (same blob at both revisions) and an unchanged
+/// binary that no read can deliver.
+async fn read_recovery_fixture(line: &str) -> (tempfile::TempDir, ContextStore, Value) {
+    let dir = tempfile::tempdir().unwrap();
+    let text = |name: &str| -> String { (1..=976).map(|n| format!("{line} // {name} {n}\n")).collect() };
+    command(dir.path(), &["init", "-q"]);
+    fs::write(dir.path().join("same.rs"), text("same")).unwrap();
+    fs::write(dir.path().join("blob.bin"), b"not\0text").unwrap();
+    command(dir.path(), &["add", "."]);
+    command(dir.path(), &["commit", "-qm", "base"]);
+    let base = command(dir.path(), &["rev-parse", "HEAD"]);
+    fs::write(dir.path().join("mod.rs"), text("mod")).unwrap();
+    command(dir.path(), &["add", "."]);
+    command(dir.path(), &["commit", "-qm", "head"]);
+    let head = command(dir.path(), &["rev-parse", "HEAD"]);
+    let mut context = ContextStore::new(git::Git { path: dir.path().join(".git") });
+    let mut run = json!({"headSha":head,"baseSha":base,"mergeBaseSha":base,"coveragePolicyVersion":COVERAGE_VERSION});
+    context.prepare(&mut run).await.unwrap();
+    (dir, context, run)
+}
+
+const NARROW: &str = "let value = 1;";
+
+fn failure_at(run: &Value, receipt: usize) -> Value {
+    run["coverage"]["failedRequests"].as_array().unwrap().iter().find(|f| f["receipt"] == receipt).unwrap().clone()
+}
+
+#[tokio::test]
+async fn a_failed_range_recovers_from_reads_of_its_blob_before_and_after_it() {
+    let (_dir, mut context, mut run) = read_recovery_fixture(NARROW).await;
+    let before = context.response(&mut run, "source_read", range("mod.rs", "head", 1, 450)).await;
+    assert!(before["error"].is_null(), "{before}");
+    // 527 lines: a parameter error the reviewer can correct, with its scope.
+    let failed = context.response(&mut run, "source_read", range("mod.rs", "head", 450, 976)).await;
+    assert_eq!(failed["kind"], "invalid_arguments", "{failed}");
+    assert_eq!(failed["error"], "Request an inclusive 1-based range of at most 500 lines; split larger ranges");
+    assert_eq!(failure_at(&run, 2)["correctionScope"], json!({"path":"mod.rs","revision":"head","startLine":450}));
+    assert_eq!(conclusion(&run), "unknown");
+    context.response(&mut run, "source_read", range("mod.rs", "head", 451, 750)).await;
+    assert_eq!(run["coverage"]["unresolvedRequests"], 1, "751-976 are still missing");
+    context.response(&mut run, "source_read", range("mod.rs", "head", 751, 976)).await;
+    let failure = failure_at(&run, 2);
+    assert_eq!(failure["resolved"], true, "{failure}");
+    assert_eq!(failure["resolvedByReceipt"], 4);
+    assert_eq!(failure["recoveryReceipts"], json!([1, 3, 4]));
+    assert_eq!(failure["recoverySource"], json!({"path":"mod.rs","revision":run["headSha"]}));
+    assert_eq!(failure["requested"], range("mod.rs", "head", 450, 976));
+    // The failed attempt stays in the ledger and still used one call.
+    assert_eq!(run["contextReads"][1]["error"], failed["error"]);
+    assert_eq!(context.receipts.len(), 4);
+    assert_eq!(run["coverage"]["coveredFiles"][0]["receipts"], json!([1, 3, 4]));
+    assert_eq!(scoped(&run, "mod.rs")["facts"], json!([{"kind":"covered","evidenceKind":"full_added_source"}]));
+    assert_eq!(run["contextIncomplete"], false);
+    assert_eq!(conclusion(&run), "no_findings");
+}
+
+/// T-185's sequence with `before` instead of the read of lines 1-450.
+async fn recovery_after(path: &str, before: Vec<(&str, Value)>) -> (Value, usize) {
+    let (_dir, mut context, mut run) = read_recovery_fixture(NARROW).await;
+    for (tool, input) in before {
+        context.response(&mut run, tool, input).await;
+    }
+    let failed = context.response(&mut run, "source_read", range(path, "head", 450, 976)).await;
+    assert_eq!(failed["kind"], "invalid_arguments", "{failed}");
+    let receipt = context.receipts.len();
+    for (start, end) in [(451, 750), (751, 976)] {
+        let read = context.response(&mut run, "source_read", range(path, "head", start, end)).await;
+        assert!(read["error"].is_null(), "{read}");
+    }
+    (run, receipt)
+}
+
+#[tokio::test]
+async fn reads_of_another_line_path_revision_or_an_undelivered_request_never_recover_it() {
+    for (case, path, before, counted) in [
+        ("line 450 never read", "mod.rs", vec![("source_read", range("mod.rs", "head", 1, 449))], json!([1, 3, 4])),
+        ("another path", "mod.rs", vec![("source_read", range("same.rs", "head", 1, 450))], json!([3, 4])),
+        // Same path and identical blob, but at the other fixed revision.
+        ("another revision", "same.rs", vec![("source_read", range("same.rs", "mergeBase", 1, 450))], json!([3, 4])),
+        ("requested, not delivered", "mod.rs", vec![("source_read", json!({"path":"mod.rs","revision":"head","startLine":450,"endLine":450,"extra":true}))], json!([3, 4])),
+        ("a search is not a read", "mod.rs", vec![("source_search", json!({"revision":"head","query":"mod 450","pathPrefix":"mod.rs"}))], json!([3, 4])),
+    ] {
+        let (run, receipt) = recovery_after(path, before).await;
+        assert_eq!(receipt, 2, "{case}");
+        let failure = failure_at(&run, receipt);
+        assert_eq!(failure["resolved"], false, "{case}: {failure}");
+        assert_eq!(failure["recoveryReceipts"], counted, "{case}");
+        assert!(failure["resolvedByReceipt"].is_null(), "{case}");
+        assert_eq!(conclusion(&run), "unknown", "{case}");
+    }
+}
+
+#[tokio::test]
+async fn a_receipt_of_another_blob_or_a_response_too_large_to_deliver_never_counts() {
+    // Not reachable through the tools at one fixed revision: a successful
+    // receipt for the same path and revision that names another blob.
+    let (_dir, mut context, mut run) = read_recovery_fixture(NARROW).await;
+    context.response(&mut run, "source_read", range("mod.rs", "head", 1, 450)).await;
+    context.receipts[0]["blobSha"] = json!("e".repeat(40));
+    context.response(&mut run, "source_read", range("mod.rs", "head", 450, 976)).await;
+    for (start, end) in [(451, 750), (751, 976)] {
+        context.response(&mut run, "source_read", range("mod.rs", "head", start, end)).await;
+    }
+    let failure = failure_at(&run, 2);
+    assert_eq!(failure["resolved"], false, "{failure}");
+    assert_eq!(failure["recoveryReceipts"], json!([3, 4]));
+
+    // A read Core computed but did not deliver (over 64 KB) is no receipt of
+    // delivered lines.
+    let wide = "x".repeat(240);
+    let (_dir, mut context, mut run) = read_recovery_fixture(&wide).await;
+    let rejected = context.response(&mut run, "source_read", range("mod.rs", "head", 1, 450)).await;
+    assert!(rejected["error"].as_str().unwrap().contains("64 KB"), "{rejected}");
+    context.response(&mut run, "source_read", range("mod.rs", "head", 450, 976)).await;
+    for (start, end) in [(451, 650), (651, 850), (851, 976)] {
+        let read = context.response(&mut run, "source_read", range("mod.rs", "head", start, end)).await;
+        assert!(read["error"].is_null(), "{read}");
+    }
+    let failure = failure_at(&run, 2);
+    assert_eq!(failure["resolved"], false, "{failure}");
+    assert_eq!(failure["recoveryReceipts"], json!([3, 4, 5]));
+    assert_eq!(conclusion(&run), "unknown");
+}
+
+#[tokio::test]
+async fn a_recovered_range_does_not_clear_missing_source_searches_or_terminal_limits() {
+    let (_dir, mut context, mut run) = read_recovery_fixture(NARROW).await;
+    for input in [
+        range("mod.rs", "head", 1, 450),
+        range("mod.rs", "head", 450, 976),
+        range("mod.rs", "head", 451, 750),
+        range("mod.rs", "head", 751, 976),
+    ] {
+        context.response(&mut run, "source_read", input).await;
+    }
+    assert_eq!(conclusion(&run), "no_findings");
+    let missing = context.response(&mut run, "source_read", range("missing.rs", "head", 450, 450)).await;
+    assert_eq!(missing["kind"], "source_unavailable", "{missing}");
+    let binary = context.response(&mut run, "source_read", range("blob.bin", "head", 1, 1)).await;
+    assert_eq!(binary["kind"], "unsupported_source", "{binary}");
+    let search = context.response(&mut run, "source_search", json!({"revision":"head","query":"","pathPrefix":"mod.rs"})).await;
+    assert_eq!(search["kind"], "invalid_arguments", "{search}");
+    // Reads of the same lines afterwards prove nothing about these requests.
+    context.response(&mut run, "source_read", range("mod.rs", "head", 1, 450)).await;
+    assert_eq!(run["coverage"]["unresolvedRequests"], 3);
+    assert_eq!(failure_at(&run, 2)["resolved"], true);
+    assert_eq!(conclusion(&run), "unknown");
+
+    let (_dir, mut context, mut run) = read_recovery_fixture(NARROW).await;
+    context.response(&mut run, "source_read", range("mod.rs", "head", 1, 450)).await;
+    context.response(&mut run, "source_read", range("mod.rs", "head", 450, 976)).await;
+    context.response(&mut run, "source_read", range("mod.rs", "head", 451, 750)).await;
+    context.bytes = MAX_CONTEXT;
+    let stopped = context.response(&mut run, "source_read", range("mod.rs", "head", 751, 976)).await;
+    assert!(stopped["error"].as_str().unwrap().contains("budget"), "{stopped}");
+    let after = context.response(&mut run, "source_read", range("mod.rs", "head", 751, 976)).await;
+    assert!(after["error"].is_string(), "the limit is not lifted: {after}");
+    assert_eq!(failure_at(&run, 2)["resolved"], false);
+    assert!(run["coverage"]["terminalLimit"].is_string());
+    assert_eq!(context.receipts.len(), 5, "failed calls are not refunded");
+    assert_eq!(conclusion(&run), "unknown");
 }
 
 #[tokio::test]
