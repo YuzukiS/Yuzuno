@@ -24,9 +24,11 @@
 
 /* The buttons sit in the conversation's bottom corners, either side of Back
    to latest, never over the composer or Send. The column ends far enough
-   below the last reply that they cover none of it. */
-.app.phone .conversation-body:has(> .work-dock:not(:empty)) > .phone-dock-work,
-.app.phone .conversation-body:has(> .turn-dock) > .phone-dock-turns {
+   below the last reply that they cover none of it. With the on-screen
+   keyboard up (keyboard-viewport.ts) they wait, as the turn dock always has:
+   the conversation is short then. */
+:root:not([data-keyboard]) .app.phone .conversation-body:has(> .work-dock:not(:empty)) > .phone-dock-work,
+:root:not([data-keyboard]) .app.phone .conversation-body:has(> .turn-dock) > .phone-dock-turns {
   display: inline-flex;
 }
 .app.phone
@@ -195,10 +197,7 @@
   display: none;
 }
 
-/* With the on-screen keyboard up the conversation is short: the buttons, and
-   a panel left open, wait until the keyboard goes (keyboard-viewport.ts), as
-   the turn dock always has. */
-:root[data-keyboard] .app.phone .phone-dock-button,
+/* A panel left open waits for the keyboard to go too. */
 :root[data-keyboard] .app.phone .conversation-body[data-phone-dock] > :is(.work-dock, .turn-dock, .phone-dock-scrim) {
   display: none;
 }
