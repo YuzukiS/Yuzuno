@@ -69,9 +69,12 @@ function mount(seed = {}) {
   const text = () => doc.querySelector("#settings-storage")?.textContent ?? "";
   const row = (name) => doc.querySelector(`[data-entry="${name}"]`)?.textContent ?? "";
   const button = (label) => [...doc.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
+  // Each size and note on its own: a row's parts run together in its textContent.
+  const zeros = () => [...doc.querySelectorAll("#settings-storage .storage-size, #settings-storage .storage-note")]
+    .map((el) => el.textContent).filter((text) => /(^|[^\d.,])0 B\b/.test(text));
   const reads = () => calls.filter((c) => c.url.endsWith("/api/storage") && c.method === "GET").length;
   const posts = () => calls.filter((c) => c.method !== "GET");
-  return { w, doc, calls, errors, text, row, button, reads, posts, close: () => w.close() };
+  return { w, doc, calls, errors, text, row, button, zeros, reads, posts, close: () => w.close() };
 }
 
 const managed = { managed: true, storage: { releaseBytes: 314572800, backupBytes: 20971520, retainedReleases: 3, keepReleases: 3 } };
@@ -101,7 +104,7 @@ test("opening it only reads: this device by group and Core's overview once, with
   for (const secret of ["secret draft text", "secret pasted body", "secret outbox text", "agent-a"]) assert.ok(!p.text().includes(secret), `${secret} is not shown`);
   // The browser here reports nothing: said so, never a size of 0.
   assert.match(p.text(), /This browser does not report how much it keeps for this site\./);
-  assert.doesNotMatch(p.text(), /\b0 B\b/, "nothing unknown is shown as 0");
+  assert.deepEqual(p.zeros(), [], "nothing unknown is shown as 0");
   assert.match(p.row("input-images"), /^Images sent to Agentssize unknown.*A Workspace backup copies files from here; its manifest lists which/);
   assert.match(p.row("workspace.sqlite"), /In a Workspace backup, as a consistent copy/);
   assert.match(p.row("my-private-notes"), /^Not made by this Coresize unknown.*Not in a backup/);
@@ -136,5 +139,5 @@ test("an install that isn't managed says so instead of showing 0", async (t) => 
   p.w.renderStorage({ active: true, updates: { managed: false, storage: { releaseBytes: 0, backupBytes: 0, retainedReleases: 0, keepReleases: 3 } } });
   await until(() => p.text().includes("Workspace database"));
   assert.match(p.text(), /This Core is not a managed install, so Yuzuno keeps no releases or update copies for it\./);
-  assert.doesNotMatch(p.text(), /\b0 B\b/, "no 0 for releases it does not keep");
+  assert.deepEqual(p.zeros(), [], "no 0 for releases it does not keep, or for any size not known");
 });
