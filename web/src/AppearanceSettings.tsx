@@ -18,7 +18,7 @@ import {
   palettes,
   type Palette,
 } from "./appearance";
-import type { SaveOutcome } from "./preference-save";
+import type { SaveOutcome } from "./device-storage";
 import { SaveStatus } from "./SaveStatus";
 
 const themes: {
