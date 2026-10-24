@@ -2,6 +2,11 @@
   flex-wrap: wrap;
   gap: 8px;
 }
+/* The row's words keep a width of their own: with a large font they move
+   above the folder field instead of shrinking to a word per line. */
+.workspace-backup .workspace-backup-row .settings-row-main {
+  flex: 1 1 220px;
+}
 .workspace-backup .settings-input {
   flex: 1 1 220px;
   min-width: 0;
