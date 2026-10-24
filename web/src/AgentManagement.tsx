@@ -22,6 +22,8 @@ export function AgentManagement({
   onChanged,
   onRead,
   requestReopen = null,
+  requestActions = null,
+  actionsButton = true,
   projectControl,
 }: {
   agent: Agent;
@@ -30,6 +32,10 @@ export function AgentManagement({
   onChanged: (action: AgentAction, agent?: Agent) => void;
   onRead: () => Promise<void>;
   requestReopen?: { agentId: string; sequence: number } | null;
+  /** Opens these actions, from the Agent's action menu ("Manage…", T-184). */
+  requestActions?: { agentId: string; sequence: number } | null;
+  /** Its own "…" button; off where the Agent's action menu takes its place. */
+  actionsButton?: boolean;
   /** Where this agent is listed; offered for open and closed agents alike. */
   projectControl?: React.ReactNode;
 }) {
@@ -47,6 +53,9 @@ export function AgentManagement({
   useEffect(() => {
     if (requestReopen?.agentId === agent.id) void act("reopen");
   }, [requestReopen]);
+  useEffect(() => {
+    if (requestActions?.agentId === agent.id) show("actions");
+  }, [requestActions]);
   async function act(action: AgentAction) {
     if (busy || disabled) return;
     setBusy(action);
@@ -91,18 +100,20 @@ export function AgentManagement({
           <Archive size={16} />
         )}
       </button>
-      <button
-        type="button"
-        className="conversation-action"
-        aria-label="Conversation actions"
-        title="Conversation actions"
-        aria-haspopup="dialog"
-        aria-expanded={!!mode}
-        disabled={!!busy}
-        onClick={() => show("actions")}
-      >
-        <MoreHorizontal size={16} />
-      </button>
+      {actionsButton && (
+        <button
+          type="button"
+          className="conversation-action"
+          aria-label="Conversation actions"
+          title="Conversation actions"
+          aria-haspopup="dialog"
+          aria-expanded={!!mode}
+          disabled={!!busy}
+          onClick={() => show("actions")}
+        >
+          <MoreHorizontal size={16} />
+        </button>
+      )}
       <Modal
         open={!!mode}
         onOpenChange={(open) => !open && show(null)}
