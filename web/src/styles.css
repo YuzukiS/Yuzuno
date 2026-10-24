@@ -3287,8 +3287,35 @@ p {
   min-height: 0;
   overflow-y: auto;
 }
-.app.phone .composer-area > :is(.composer, .composer-footnote) {
+.app.phone .composer-area > .composer-footnote {
   flex: none;
+}
+/* The composer gives way too, through its editor alone: a long draft
+   scrolls inside it, down to one line's height (the editor's own minimum),
+   and the Send row, the tools and what is attached keep their size. */
+.app.phone .composer-area > .composer {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+}
+.app.phone .composer > * {
+  flex: none;
+}
+/* Two errors in a row (an image's, then the draft's) kept one gap as blocks. */
+.app.phone .composer > .inline-error + .inline-error {
+  margin-top: 0;
+}
+.app.phone .composer > .pasted-text-composer {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 64px;
+}
+.app.phone .composer > .pasted-text-composer > .cm-editor,
+.app.phone .composer > .pasted-text-composer .cm-scroller {
+  flex: 0 1 auto;
+  min-height: 0;
 }
 .app.phone .composer-area > * + .inline-error {
   margin-top: 0;

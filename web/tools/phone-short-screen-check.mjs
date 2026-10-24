@@ -10,8 +10,10 @@
 //   - sideways: 874×292 with Safari's insets (top 0, right 62, bottom 20,
 //     left 62) on --safe-*;
 // the composer is whole inside the panel and above what is covered, a tap
-// reaches the input and Send, nothing runs off the side, and the notices
-// that gave way can be scrolled to their end. The taller sizes (402×874
+// reaches the input and Send, nothing runs off the side, the notices that
+// gave way can be scrolled to their end and each of their buttons (Reconnect)
+// scrolled to and reached; and with a long draft (30 lines) as well, the
+// editor scrolls inside while Send stays on screen. The taller sizes (402×874
 // upright, 844×390 sideways) are only measured, for comparing with a build
 // from before. An emulated phone is not Safari: no on-screen keyboard here.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/phone-short-screen-check.mjs [--baseline]
@@ -71,12 +73,15 @@ const measure = (bottom) => {
     send: box(panel.querySelector(".send-button")),
     reached: { input: reached(panel.querySelector("[data-composer-input]")), send: reached(panel.querySelector(".send-button")) },
     composerWide: composer ? { scroll: composer.scrollWidth, client: composer.clientWidth } : null,
+    editor: (() => { const el = panel.querySelector(".pasted-text-composer .cm-scroller"); return el ? { box: box(el), scroll: el.scrollHeight, client: el.clientHeight } : null; })(),
     sideways: document.documentElement.scrollWidth > innerWidth,
     notices: notices.map((el) => ({ el: `${el.tagName.toLowerCase()}.${String(el.className).trim().split(/\s+/).join(".")}`, box: box(el), scroll: el.scrollHeight, client: el.clientHeight })),
   };
 };
 
-async function open(name, { viewport, keyboard, safe }) {
+const LONG_DRAFT = Array.from({ length: 30 }, (_, i) => `Line ${i + 1} of a long draft`).join("\n");
+
+async function open(name, { viewport, keyboard, safe, draft }) {
   const context = await browser.newContext({ viewport, hasTouch: true, isMobile: true, reducedMotion: "reduce" });
   const page = await context.newPage();
   page.on("pageerror", (error) => report.errors.push(`${name}: ${error.message}`));
@@ -92,6 +97,10 @@ async function open(name, { viewport, keyboard, safe }) {
   await page.waitForTimeout(600);
   if (safe) await page.evaluate((s) => { for (const [k, v] of Object.entries(s)) document.documentElement.style.setProperty(`--safe-${k}`, v); }, safe);
   let bottom = viewport.height;
+  if (draft) {
+    await input.click();
+    await page.keyboard.insertText(LONG_DRAFT);
+  }
   if (keyboard) {
     await input.click();
     // As keyboard-viewport.ts sets them for a visual viewport this tall.
@@ -109,6 +118,8 @@ const short = [
   { name: "keyboard 402×874, 377 px left", viewport: { width: 402, height: 874 }, keyboard: 377 },
   { name: "keyboard 375×667, 300 px left", viewport: { width: 375, height: 667 }, keyboard: 300 },
   { name: "sideways 874×292, Safari's insets", viewport: { width: 874, height: 292 }, safe: { top: "0px", right: "62px", bottom: "20px", left: "62px" } },
+  { name: "keyboard 402×874, 377 px left, a long draft", viewport: { width: 402, height: 874 }, keyboard: 377, draft: true },
+  { name: "sideways 874×292, Safari's insets, a long draft", viewport: { width: 874, height: 292 }, safe: { top: "0px", right: "62px", bottom: "20px", left: "62px" }, draft: true },
 ];
 const tall = [
   { name: "upright 402×874", viewport: { width: 402, height: 874 } },
@@ -120,6 +131,14 @@ try {
     const { context, page, bottom } = await open(shape.name, shape);
     try {
       const seen = await page.evaluate(measure, bottom);
+      // Each button in a notice (Reconnect), scrolled to inside it, takes a tap.
+      const buttons = await page.evaluate(() =>
+        [...document.querySelectorAll(".main-panel .composer-area > :not(.composer, .composer-footnote) button")].filter((b) => b.getClientRects().length).map((b) => {
+          b.scrollIntoView({ block: "nearest" });
+          const r = b.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return { text: b.textContent.trim().slice(0, 30), reached: !!hit && (hit === b || b.contains(hit)) };
+        }));
       // The notices that gave way, scrolled to their end: every one can be read.
       const scrolled = await page.evaluate(() =>
         [...document.querySelectorAll(".main-panel .composer-area > :not(.composer, .composer-footnote)")].filter((el) => el.getClientRects().length).map((el) => {
@@ -127,7 +146,7 @@ try {
           return el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
         }));
       await page.screenshot({ path: resolve(output, `${report.mode}-${shape.name.replace(/[^a-z0-9]+/gi, "-")}.png`) });
-      report.cases.push({ name: shape.name, short: short.includes(shape), ...seen, scrolledToEnd: scrolled });
+      report.cases.push({ name: shape.name, short: short.includes(shape), ...seen, buttons, scrolledToEnd: scrolled });
       if (baseline || !short.includes(shape)) continue;
       const limit = Math.min(bottom, seen.panel.bottom);
       try {
@@ -136,6 +155,8 @@ try {
         assert.deepEqual(seen.reached, { input: true, send: true }, "a tap reaches the input and Send");
         assert.equal(seen.sideways, false, "nothing runs off the side");
         assert.ok(scrolled.every(Boolean), "each notice that gave way can be scrolled to its end");
+        assert.ok(buttons.every((b) => b.reached), `each button in a notice takes a tap: ${JSON.stringify(buttons)}`);
+        if (shape.draft) assert.ok(seen.editor && seen.editor.scroll > seen.editor.client + 1, `the long draft scrolls inside the editor: ${JSON.stringify(seen.editor)}`);
         check(`${shape.name}: the composer and Send whole above what is covered, reached by a tap; nothing off the side; the notices scroll`, { composer: seen.composer, send: seen.send, notices: seen.notices });
       } catch (error) {
         report.failures.push({ case: shape.name, message: String(error.message).split("\n")[0] });
