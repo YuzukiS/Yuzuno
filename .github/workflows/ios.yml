@@ -20,6 +20,9 @@ on:
       - web/package-lock.json
       - web/tools/jsdom-guard.mjs
       - web/tools/jsdom-limits.mjs
+      - web/tools/phone-fixture-server.mjs
+      - web/tools/phone-measure.js
+      - web/tools/browser-fixtures.mjs
       - web/src/assets/yuzu-character.png
       - .github/workflows/ios.yml
       - .github/scripts/hosted-guard.sh
@@ -153,12 +156,19 @@ jobs:
           echo "built from $source (parents: $parents)"
           { echo "### iOS Simulator app"; echo; echo "\`$identifier\`, $platform, arm64, built from \`$source\` (parents: \`$parents\`)."; echo; echo '```'; cat "$RUNNER_TEMP/out/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
+      # The web UI for the Safari comparison below, from this checkout.
+      # Other web changes do not run this job: it compares WebKit in the app
+      # and in Safari, it does not check each web change.
+      - name: Web build for Safari
+        run: (cd ../web && npx vite build --outDir "$RUNNER_TEMP/web-dist" --emptyOutDir)
+
       # The app in a Simulator, without a Core: it starts, its connection
       # page shows in the app's WKWebView, and the app's own commands answer
-      # there (uitests/). Then the same page in Mobile Safari, served on
-      # 127.0.0.1 by uitests/safari/serve.py with a measuring probe added, to
-      # compare what WebKit gives a page there. The check saves five
-      # screenshots of that page, the only files that leave the runner (below).
+      # there (uitests/). Then Mobile Safari in the same Simulator, with the
+      # same page and the web UI on a synthetic Workspace, both served on
+      # 127.0.0.1 by web/tools/phone-fixture-server.mjs; the pages measure
+      # themselves (phone-measure.js) and the lines are printed here. The
+      # check saves nine screenshots, the only files that leave the runner.
       - name: Simulator check
         timeout-minutes: 20
         env:
@@ -166,7 +176,10 @@ jobs:
           TEST_RUNNER_YUZUNO_SCREENSHOTS: ${{ runner.temp }}/ios-screenshots
           # Where the page's parts are, in points; printed below, not uploaded.
           TEST_RUNNER_YUZUNO_FRAMES: ${{ runner.temp }}/ios-frames.txt
-          TEST_RUNNER_YUZUNO_SAFARI: http://127.0.0.1:8765/index.html
+          TEST_RUNNER_YUZUNO_SAFARI: http://127.0.0.1:4510/
+          YUZUNO_UI_DIST: ${{ runner.temp }}/web-dist
+          YUZUNO_MEASURE_OUT: ${{ runner.temp }}/phone-measure.jsonl
+          YUZUNO_PORT: "4510"
         run: |
           mkdir "$TEST_RUNNER_YUZUNO_SCREENSHOTS"
           app=$(find gen/apple/build/arm64-sim -maxdepth 1 -type d -name '*.app')
@@ -175,14 +188,15 @@ jobs:
           xcrun simctl boot "$device"
           xcrun simctl bootstatus "$device" -b
           xcrun simctl install "$device" "$app"
-          python3 uitests/safari/serve.py --root connection --probe uitests/safari/probe.js --port 8765 > "$RUNNER_TEMP/page-server.log" 2>&1 &
+          YUZUNO_EXTRA="/connection=$PWD/connection" node ../web/tools/phone-fixture-server.mjs > "$RUNNER_TEMP/page-server.log" 2>&1 &
           server=$!
-          for attempt in $(seq 1 20); do curl -sf -o /dev/null "$TEST_RUNNER_YUZUNO_SAFARI" && break; sleep 0.5; done
-          xcrun simctl openurl "$device" "$TEST_RUNNER_YUZUNO_SAFARI"
+          for attempt in $(seq 1 30); do curl -sf -o /dev/null "${TEST_RUNNER_YUZUNO_SAFARI}connection/" && break; sleep 0.5; done
           (cd uitests && xcodegen generate)
           xcodebuild test -quiet -project uitests/YuzunoChecks.xcodeproj -scheme Checks \
             -destination "platform=iOS Simulator,id=$device" -resultBundlePath "$RUNNER_TEMP/checks.xcresult"
           cat "$TEST_RUNNER_YUZUNO_FRAMES"
+          echo "--- what the pages in Safari measured (CSS px)"
+          cat "$YUZUNO_MEASURE_OUT"
           kill "$server"
           xcrun simctl shutdown "$device"
 
@@ -192,18 +206,19 @@ jobs:
         if: failure()
         run: |
           [ ! -f "$RUNNER_TEMP/page-server.log" ] || cat "$RUNNER_TEMP/page-server.log"
+          [ ! -f "$RUNNER_TEMP/phone-measure.jsonl" ] || cat "$RUNNER_TEMP/phone-measure.jsonl"
           [ -d "$RUNNER_TEMP/checks.xcresult" ] || { echo "no result bundle"; exit 0; }
           xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/checks.xcresult"
           xcrun xcresulttool get test-results tests --path "$RUNNER_TEMP/checks.xcresult"
 
-      # Only the connection page, in the app and in Safari, made without a
-      # Core: no Workspace, account or address of the user's can be in these.
-      # Exactly these five PNG files are uploaded, kept for 3 days; the app
-      # itself is not.
+      # The connection page in the app and in Safari, and the web UI on the
+      # fixture's synthetic Workspace, all made without a Core: no Workspace,
+      # account or address of the user's can be in these. Exactly these nine
+      # PNG files are uploaded, kept for 3 days; the app itself is not.
       - name: Screenshots
         run: |
           dir="$RUNNER_TEMP/ios-screenshots"
-          expected="app-portrait.png app-refused.png app-rotated.png safari-landscape.png safari-portrait.png"
+          expected="app-portrait.png app-refused.png app-rotated.png safari-connection-landscape.png safari-connection-portrait.png safari-web-dialog.png safari-web-keyboard.png safari-web-landscape.png safari-web-portrait.png"
           found=$(ls -A "$dir" | LC_ALL=C sort | paste -s -d ' ' -)
           [ "$found" = "$expected" ] || { echo "::error::expected $expected, found: $found"; exit 1; }
           for file in $expected; do

@@ -8,7 +8,8 @@ name: YuzunoChecks
 options:
   bundleIdPrefix: dev.yuzuno.checks
   deploymentTarget:
-    iOS: "16.0"
+    # XCUIApplication.open(_:) opens a page in Safari from the test: iOS 16.4.
+    iOS: "16.4"
 settings:
   base:
     GENERATE_INFOPLIST_FILE: YES

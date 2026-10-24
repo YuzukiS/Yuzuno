@@ -26,10 +26,10 @@ passed.
 .github/workflows/ios.yml (T-170) builds the iOS app for the Simulator,
 unsigned, on the standard GitHub-hosted macos-26 runner. Only pull_request
 triggers it; its token reads contents only; no secret, cache or other
-runner. Its one upload is the Simulator check's five screenshots of the
-connection page (in the app and in Safari), exactly as IOS_UPLOAD names
-them and kept for 3 days, after a step that checks there are only those
-five PNG files.
+runner. Its one upload is the Simulator check's nine screenshots (the
+connection page in the app and in Safari, the web UI on a synthetic
+Workspace in Safari), exactly as IOS_UPLOAD names them and kept for 3 days,
+after a step that checks there are only those nine PNG files.
 """
 from pathlib import Path
 import os
@@ -254,7 +254,9 @@ IOS_UPLOAD = """      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b
           path: ${{ runner.temp }}/ios-screenshots/*.png
           if-no-files-found: error
           retention-days: 3"""
-IOS_SCREENSHOTS = 'expected="app-portrait.png app-refused.png app-rotated.png safari-landscape.png safari-portrait.png"'
+IOS_SCREENSHOTS = ('expected="app-portrait.png app-refused.png app-rotated.png safari-connection-landscape.png '
+                   'safari-connection-portrait.png safari-web-dialog.png safari-web-keyboard.png safari-web-landscape.png '
+                   'safari-web-portrait.png"')
 
 
 def ios_problems(text):

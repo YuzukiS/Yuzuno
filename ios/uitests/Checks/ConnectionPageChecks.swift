@@ -2,8 +2,9 @@ import XCTest
 
 /// The Yuzuno app as ios.yml installs it in this Simulator: its connection
 /// page in the app's WKWebView, answered by the app's own commands. No Core
-/// is reached. Then the same page in Mobile Safari, for comparison. A passing
-/// check is a Simulator result, not an iPhone's.
+/// is reached. Then Mobile Safari in the same Simulator, with the same page
+/// and the web UI on a synthetic Workspace, for comparison. A passing check
+/// is a Simulator result, not an iPhone's.
 final class ConnectionPageChecks: XCTestCase {
     private let yuzuno = XCUIApplication(bundleIdentifier: "dev.yuzuno.ios")
     private let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
@@ -47,8 +48,8 @@ final class ConnectionPageChecks: XCTestCase {
         XCTAssertNoThrow(try XCUIScreen.main.screenshot().pngRepresentation.write(to: file))
     }
 
-    /// Writes where the page's parts are, in points, to the file ios.yml
-    /// prints (YUZUNO_FRAMES), with Safari's probe line when there is one.
+    /// Writes where the page's parts are, in points, as the accessibility
+    /// tree sees them, to the file ios.yml prints (YUZUNO_FRAMES).
     private func record(_ label: String, in app: XCUIApplication) {
         guard let path = ProcessInfo.processInfo.environment["YUZUNO_FRAMES"] else { return }
         let parts: [(String, XCUIElement)] = [
@@ -59,9 +60,7 @@ final class ConnectionPageChecks: XCTestCase {
             ("heading", text(containing: "Your workspace", in: app)),
             ("field", app.textFields.firstMatch),
         ]
-        var lines = parts.map { name, element in "\(label) \(name): \(element.exists ? "\(element.frame)" : "missing")" }
-        let probe = text(containing: "probe:", in: app)
-        if probe.exists { lines.append("\(label) \(probe.label)") }
+        let lines = parts.map { name, element in "\(label) \(name): \(element.exists ? "\(element.frame)" : "missing")" }
         let report = lines.joined(separator: "\n") + "\n"
         if let handle = FileHandle(forWritingAtPath: path) {
             handle.seekToEndOfFile()
@@ -109,6 +108,7 @@ final class ConnectionPageChecks: XCTestCase {
         // The refusal is the app's own (core_url.rs), through connect_core.
         enter("http://core.example.ts.net")
         XCTAssertTrue(message(containing: "HTTPS address").waitForExistence(timeout: 20), page())
+        record("app keyboard", in: yuzuno)
         screenshot("app-refused")
 
         // An HTTPS address nothing answers: 192.0.2.1 is a documentation
@@ -121,25 +121,76 @@ final class ConnectionPageChecks: XCTestCase {
         XCTAssertTrue(yuzuno.buttons["Connect"].isEnabled, page())
     }
 
-    /// The same page in Mobile Safari, served on this Mac's 127.0.0.1 and
-    /// opened by ios.yml before the tests: what WebKit gives a page there,
-    /// upright and sideways, beside what the app gives it. Outside the app
-    /// the page offers nothing to submit, so the keyboard is not opened here.
-    func testTheSamePageInSafari() throws {
-        guard ProcessInfo.processInfo.environment["YUZUNO_SAFARI"] != nil else {
-            throw XCTSkip("ios.yml opens the page in Safari; not set here")
-        }
-        safari.activate()
-        XCTAssertTrue(text(containing: "probe:", in: safari).waitForExistence(timeout: 60), page(in: safari))
-        drawn(in: safari)
-        record("safari portrait", in: safari)
-        screenshot("safari-portrait")
+    /// The pages measure themselves after each change, and again 2 s and 6 s
+    /// later (web/tools/phone-measure.js): wait past that.
+    private func settle() {
+        sleep(7)
+    }
 
-        XCUIDevice.shared.orientation = .landscapeLeft
-        sleep(2)
-        drawn(in: safari)
-        record("safari landscape", in: safari)
-        screenshot("safari-landscape")
-        XCUIDevice.shared.orientation = .portrait
+    private func turn(_ orientation: UIDeviceOrientation) {
+        XCUIDevice.shared.orientation = orientation
+        settle()
+    }
+
+    /// A first-run sheet a fresh Simulator's Safari may show.
+    private func pastFirstRun() {
+        for label in ["Continue", "Not Now"] where safari.buttons[label].exists {
+            safari.buttons[label].tap()
+        }
+    }
+
+    /// Mobile Safari in the same Simulator, beside the app: the same
+    /// connection page, then the web UI on a synthetic Workspace, both served
+    /// on this Mac's 127.0.0.1 by web/tools/phone-fixture-server.mjs (no Core,
+    /// no account). Upright and sideways, the composer with the keyboard open,
+    /// and the Settings dialog. The pages measure themselves; ios.yml prints
+    /// what they measured. Outside the app the connection page offers nothing
+    /// to submit, so the keyboard is opened in the web UI only.
+    func testThePagesInSafari() throws {
+        guard let base = ProcessInfo.processInfo.environment["YUZUNO_SAFARI"], let root = URL(string: base) else {
+            throw XCTSkip("ios.yml serves the pages for Safari; not set here")
+        }
+        safari.open(URL(string: "connection/", relativeTo: root)!.absoluteURL)
+        pastFirstRun()
+        XCTAssertTrue(text(containing: "Your workspace", in: safari).waitForExistence(timeout: 60), page(in: safari))
+        settle()
+        record("safari connection portrait", in: safari)
+        screenshot("safari-connection-portrait")
+        turn(.landscapeLeft)
+        record("safari connection landscape", in: safari)
+        screenshot("safari-connection-landscape")
+        turn(.portrait)
+
+        safari.open(root)
+        let mori = safari.buttons["Open Mori"]
+        XCTAssertTrue(mori.waitForExistence(timeout: 60), page(in: safari))
+        mori.tap()
+        let composer = safari.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Message Mori")).firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 30), page(in: safari))
+        settle()
+        screenshot("safari-web-portrait")
+        turn(.landscapeLeft)
+        screenshot("safari-web-landscape")
+        turn(.portrait)
+
+        composer.tap()
+        XCTAssertTrue(safari.keyboards.firstMatch.waitForExistence(timeout: 10), "no keyboard; \(page(in: safari))")
+        settle()
+        screenshot("safari-web-keyboard")
+        turn(.landscapeLeft)
+        turn(.portrait)
+        // The keyboard bar's Done ends editing; the page measures the focus leaving.
+        if safari.buttons["Done"].exists {
+            safari.buttons["Done"].tap()
+            settle()
+        }
+
+        let settings = safari.buttons["Settings and updates"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 10), page(in: safari))
+        settings.tap()
+        settle()
+        screenshot("safari-web-dialog")
+        turn(.landscapeLeft)
+        turn(.portrait)
     }
 }
