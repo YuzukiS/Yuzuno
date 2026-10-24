@@ -177,6 +177,24 @@ test("a harness picked in a cancelled dialog does not stick: the next opening st
   assert.equal(picked(page, "Permissions"), "", "the cancelled permission choice does not stick either");
 });
 
+test("when the default switches the harness back, a model chosen for the other harness is not kept", async () => {
+  const page = mount(view({ harness: "claude" }));
+  await page.open();
+  await until(() => picked(page, "Harness") === "claude", "the Workspace's default harness");
+  await pick(page, "Harness", "codex");
+  await until(() => group(page, "Model")?.querySelector('input[value="gpt"]'), "the Codex models");
+  await pick(page, "Model", "gpt");
+  page.window.renderCreate({ open: false, close() {}, defaultCwd: "/workspace", disabled: false, onCreated() {} });
+  await tick();
+  await page.open();
+  await until(() => picked(page, "Harness") === "claude", "the default harness after cancelling");
+  await until(() => group(page, "Model")?.querySelector('input[value="sonnet"]'), "the Claude models");
+  assert.equal(picked(page, "Model"), "", "the Codex model is not carried over to Claude Code");
+  await type(page, "Name", "Nashi");
+  const body = await submit(page);
+  assert.deepEqual([body.harness, "model" in body], ["claude", false]);
+});
+
 test("a Core that doesn't report defaults: the dialog works as before and says the default isn't known", async () => {
   const page = mount(null);
   await page.open();

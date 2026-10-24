@@ -113,6 +113,9 @@ export function RemoteCreateAgent({
   // Agent's own harness is chosen; a permission is sent only when chosen.
   const [defaults, setDefaults] = useState<AgentDefaultsView | "unknown" | null>(null);
   const harnessChosen = useRef(false);
+  // The harness as last rendered, for the defaults' answer that arrives later.
+  const harnessNow = useRef(harness);
+  harnessNow.current = harness;
   const [permission, setPermission] = useState("");
   const [projectId, setProjectId] = useState(initialProjectId);
   const [saveDefault, setSaveDefault] = useState(false);
@@ -255,13 +258,20 @@ export function RemoteCreateAgent({
     void readAgentDefaults(controller.signal)
       .then((view) => {
         if (controller.signal.aborted) return;
-        const harness = view?.effective?.harness?.value;
-        if (harness !== "codex" && harness !== "claude") {
+        const fallback = view?.effective?.harness?.value;
+        if (fallback !== "codex" && fallback !== "claude") {
           setDefaults("unknown");
           return;
         }
         setDefaults(view);
-        if (!harnessChosen.current) setHarness(harness);
+        // As choosing a harness does: a model or permission chosen for the
+        // other harness (in a cancelled opening, or before this answer) is
+        // not this one's.
+        if (!harnessChosen.current && harnessNow.current !== fallback) {
+          setHarness(fallback);
+          setModel("");
+          setPermission("");
+        }
       })
       .catch(() => {
         if (!controller.signal.aborted) setDefaults("unknown");
