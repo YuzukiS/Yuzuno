@@ -36,7 +36,5 @@ footer { display: flex; align-items: center; justify-content: space-between; col
 @media (max-width: 600px) { body { padding: 25px; } main { padding: 50px 0; } .address-row { flex-wrap: wrap; } input { flex-basis: 100%; } button { height: 42px; } }
 /* iOS: keep content clear of the notch and the home indicator (viewport-fit=cover). */
 body { padding-top: max(25px, env(safe-area-inset-top)); padding-bottom: max(25px, env(safe-area-inset-bottom)); padding-left: max(25px, env(safe-area-inset-left)); padding-right: max(25px, env(safe-area-inset-right)); }
-/* The page scrolls (with the keyboard open, say): the status bar keeps the page's background behind it. */
-body::before { content: ""; position: fixed; z-index: 1; top: 0; left: 0; right: 0; height: env(safe-area-inset-top, 0px); background: #faf8f4; }
 /* iOS zooms into a field whose text is under 16px when it is focused, and stays zoomed. */
 input { font-size: 16px; }

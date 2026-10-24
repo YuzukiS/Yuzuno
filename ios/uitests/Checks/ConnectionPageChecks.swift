@@ -45,6 +45,8 @@ final class ConnectionPageChecks: XCTestCase {
         guard let path = ProcessInfo.processInfo.environment["YUZUNO_FRAMES"] else { return }
         let parts: [(String, XCUIElement)] = [
             ("window", yuzuno.windows.firstMatch),
+            // Left-aligned at the body's padding, unlike the centred main column.
+            ("wordmark", message(containing: "yuzuno")),
             ("eyebrow", message(containing: "A little room")),
             ("heading", message(containing: "Your workspace")),
             ("field", yuzuno.textFields.firstMatch),
@@ -86,8 +88,11 @@ final class ConnectionPageChecks: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         XCTAssertTrue(yuzuno.textFields.firstMatch.waitForExistence(timeout: 10), page())
         drawn()
-        frames("landscape")
+        frames("landscape+2s")
         screenshot("connection-landscape")
+        // Again later: does the page's safe area follow the rotation late, or not at all?
+        sleep(4)
+        frames("landscape+6s")
         XCUIDevice.shared.orientation = .portrait
         sleep(2)
 
