@@ -206,9 +206,10 @@
    below its last reply and the conversation keeps its little height for
    reading. */
 @media (max-height: 500px) and (min-width: 521px) {
+  /* Wide enough for the Turns button with a five-digit number. */
   .app.phone .conversation-body[class] {
-    --gutter-left: 60px;
-    --gutter-right: 60px;
+    --gutter-left: 84px;
+    --gutter-right: 84px;
   }
   .app.phone
     .conversation-body:is(:has(> .work-dock:not(:empty)), :has(> .turn-dock))
