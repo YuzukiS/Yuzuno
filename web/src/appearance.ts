@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { clearLocal, saveLocal, storageReadable, type SaveOutcome } from "./preference-save.ts";
+import { clearDeviceValue, deviceStorageReadable, onDeviceValueChange, saveDeviceValue, type SaveOutcome } from "./device-storage.ts";
 
 export type ThemePreference = "light" | "dark" | "system";
 /** Text size in px, any whole number from MIN_FONT_SIZE to MAX_FONT_SIZE. */
@@ -189,14 +189,14 @@ export function useAppearanceSave(): SaveOutcome | null {
 
 /** Whether this device can read its saved Appearance at all. */
 export function appearanceReadable(): boolean {
-  return storageReadable(STORAGE_KEY);
+  return deviceStorageReadable(STORAGE_KEY);
 }
 
 /** Applies `appearance` and saves it on this device. A refused write is
  * reported, not hidden: the choice still applies in this window. */
 export function saveAppearance(appearance: Appearance): SaveOutcome {
   applyAppearance(appearance);
-  const outcome = saveLocal(STORAGE_KEY, appearance);
+  const outcome = saveDeviceValue(STORAGE_KEY, appearance);
   current = appearance;
   lastSave = outcome;
   listeners.forEach((listener) => listener());
@@ -206,7 +206,7 @@ export function saveAppearance(appearance: Appearance): SaveOutcome {
 /** Back to the defaults on this device: its saved choice is removed. */
 export function restoreDefaultAppearance(): SaveOutcome {
   applyAppearance(defaultAppearance);
-  const outcome = clearLocal(STORAGE_KEY);
+  const outcome = clearDeviceValue(STORAGE_KEY);
   current = defaultAppearance;
   lastSave = outcome;
   listeners.forEach((listener) => listener());
@@ -221,10 +221,8 @@ export function initializeAppearance() {
     const appearance = readAppearance();
     if (appearance.theme === "system") applyAppearance(appearance);
   });
-  window.addEventListener("storage", (event) => {
-    if (event.key === STORAGE_KEY || event.key === null) {
-      applyAppearance(readAppearance());
-      changed();
-    }
+  onDeviceValueChange(STORAGE_KEY, () => {
+    applyAppearance(readAppearance());
+    changed();
   });
 }

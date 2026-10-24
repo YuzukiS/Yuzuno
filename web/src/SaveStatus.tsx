@@ -1,5 +1,5 @@
 import { Check, CircleAlert, RotateCcw } from "lucide-react";
-import type { SaveOutcome } from "./preference-save";
+import type { SaveOutcome } from "./device-storage";
 import "./save-status.css";
 
 /**
