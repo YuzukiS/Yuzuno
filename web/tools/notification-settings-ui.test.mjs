@@ -98,6 +98,10 @@ async function mount({ permission = "default", answer = "granted", shows = "show
   page.text = () => page.doc.querySelector("#settings-notifications").textContent;
   page.box = (name) => [...page.doc.querySelectorAll("label.settings-row")].find((row) => row.textContent.includes(name))?.querySelector("input");
   page.button = (name) => [...page.doc.querySelectorAll("button")].find((b) => b.textContent.trim() === name);
+  // Asserted as booleans: a failed assertion on an element itself would make
+  // the reporter print the whole page (run tn2 ran out of memory on one).
+  page.hasBox = (name) => !!page.box(name);
+  page.hasButton = (name) => !!page.button(name);
   page.saved = () => JSON.parse(window.localStorage.getItem("yuzuno.notifications"));
   page.close = () => {
     assert.deepEqual(errors, []);
@@ -128,8 +132,8 @@ test("a no from the browser leaves it off, unsaved, with no switch and the way t
   await until(() => /Blocked/.test(page.text()), "blocked");
   assert.equal(page.asked, 1);
   assert.equal(page.window.localStorage.getItem("yuzuno.notifications"), null, "nothing saved");
-  assert.equal(page.box("Notify me on this device"), undefined, "no switch");
-  assert.equal(page.button("Send a test"), undefined, "no test");
+  assert.equal(page.hasBox("Notify me on this device"), false, "no switch");
+  assert.equal(page.hasButton("Send a test"), false, "no test");
   assert.match(page.text(), /site settings/);
   assert.match(page.text(), /Needs you and unread updates always show/);
   page.close();
@@ -143,9 +147,9 @@ test("blocked or not available: said why, with nothing to switch on", async () =
   ]) {
     const page = await mount(options);
     assert.match(page.text(), label, JSON.stringify(options));
-    assert.equal(page.box("Notify me on this device"), undefined);
-    assert.equal(page.box("A Turn failed"), undefined);
-    assert.equal(page.button("Send a test"), undefined);
+    assert.equal(page.hasBox("Notify me on this device"), false);
+    assert.equal(page.hasBox("A Turn failed"), false);
+    assert.equal(page.hasButton("Send a test"), false);
     assert.equal(page.asked, 0);
     page.close();
   }
@@ -176,7 +180,7 @@ test("a test notification reports what the browser said, and a browser that refu
   const pageOnly = await mount({ permission: "granted", shows: "page-only" });
   pageOnly.button("Send a test").click();
   await until(() => /service worker/.test(pageOnly.text()), "page-only");
-  assert.equal(pageOnly.button("Send a test"), undefined);
+  assert.equal(pageOnly.hasButton("Send a test"), false);
   pageOnly.close();
 });
 
