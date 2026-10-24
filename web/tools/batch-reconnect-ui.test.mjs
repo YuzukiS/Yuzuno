@@ -36,7 +36,7 @@ window.interrupts = 0;
 window.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !event.defaultPrevented && !document.querySelector('[role="dialog"]')) window.interrupts++;
 });
-window.render = (agents, scope = 'all') => root.render(<div className="rail-heading"><BatchReconnect workspaceId="w"
+window.render = (agents, scope = 'all', workspace = 'w') => root.render(<div className="rail-heading"><BatchReconnect workspaceId={workspace}
   agents={agents} scope={scope} onSettled={() => window.settled++}/></div>);`,
   );
   const result = await build({
@@ -95,6 +95,7 @@ function mount() {
     retry: (name) => [...row(name).querySelectorAll("button")].find((b) => b.textContent === "Retry").click(),
     primary: () => document.querySelector(".modal-actions .primary-button"),
     summary: () => document.querySelector(".batch-summary[role=status]").textContent,
+    note: () => document.querySelector(".batch-note")?.textContent ?? null,
     secondary: () => document.querySelector(".modal-actions .secondary-button"),
     dialog: () => document.querySelector('[role="dialog"]'),
     // Only the existing reconnect, never a message, a reopen or an interrupt.
@@ -287,5 +288,102 @@ test("a failure reconnected elsewhere since is not shown again, and its choice i
   await tick();
   assert.deepEqual(page.rows(), ["A [ ] Offline", "B [ ] Offline"]);
   assert.equal(page.calls.length, 1);
+  page.close();
+});
+
+test("each queued Agent is checked again before it is sent: closed, on another session or connected since, it is skipped and said so", async () => {
+  const page = mount();
+  const six = ["a", "b", "c", "d", "e", "f"].map((id) => agent(id));
+  page.window.render(six);
+  await tick();
+  page.trigger().click();
+  await tick();
+  page.secondary().click();
+  await tick();
+  page.primary().click();
+  await tick();
+  assert.deepEqual(page.sent(), ["a", "b", "c"].map(reconnectUrl));
+  // While D, E and F wait their turn: D is closed, E is on a new session,
+  // F is connected from its own menu.
+  page.window.render([
+    ...six.slice(0, 3),
+    agent("d", { closedAt: "2026-10-24" }),
+    agent("e", { threadId: "thread-e-2" }),
+    agent("f", { status: "idle", connectionState: "connected" }),
+  ]);
+  await tick();
+  for (const call of page.calls.slice(0, 3)) call.answer({ body: connected(six[page.calls.indexOf(call)]) });
+  await tick();
+  assert.deepEqual(page.sent(), ["a", "b", "c"].map(reconnectUrl), "nothing sent for D, E or F");
+  assert.deepEqual(page.rows().slice(3), [
+    "D - Skipped: closed since, and not reopened here",
+    "E [ ] Skipped: its session changed; choose it again",
+    "F - Skipped: already connected",
+  ], "skipped, said so, and not chosen again");
+  assert.equal(page.summary(), "3 reconnected · 3 skipped");
+  assert.equal(page.window.settled, 3, "read again after each request only");
+  page.close();
+});
+
+test("while a batch runs its button and results stay, even with nothing else to reconnect; closing says it cancels nothing", async () => {
+  const page = mount();
+  const a = agent("a");
+  page.window.render([a]);
+  await tick();
+  page.trigger().click();
+  await tick();
+  assert.equal(page.note(), null, "nothing running, nothing to say");
+  page.toggle("A");
+  await tick();
+  page.primary().click();
+  await tick();
+  assert.equal(page.note(), "Closing this doesn’t cancel anything: reconnects already started or queued go on, and their results stay here.");
+  page.document.querySelector('[aria-label="Close dialog"]').click();
+  await tick();
+  // Core already lists it as connecting: none left to choose, the batch runs on.
+  page.window.render([agent("a", { connectionState: "connecting" })]);
+  await tick();
+  assert.equal(page.trigger()?.getAttribute("aria-label"), "Reconnect agents: reconnecting", "the button stays while it runs");
+  page.trigger().click();
+  await tick();
+  assert.deepEqual(page.rows(), ["A - Reconnecting…"]);
+  page.calls[0].answer({ body: connected(a) });
+  await tick();
+  page.window.render([agent("a", { status: "idle", connectionState: "connected" })]);
+  await tick();
+  assert.deepEqual(page.rows(), ["A - Connected · Ready"], "its result stays while the dialog is open");
+  page.document.querySelector('[aria-label="Close dialog"]').click();
+  await tick();
+  assert.equal(page.trigger(), null, "done, and nothing left: no button");
+  page.close();
+});
+
+test("each Workspace keeps its own batch", async () => {
+  const page = mount();
+  page.window.render([agent("a")], "all", "w");
+  await tick();
+  page.trigger().click();
+  await tick();
+  page.toggle("A");
+  await tick();
+  page.primary().click();
+  await tick();
+  page.calls[0].answer({ status: 503, body: { error: "Runtime not ready" } });
+  await tick();
+  page.document.querySelector('[aria-label="Close dialog"]').click();
+  await tick();
+  // Another Workspace, whose Agent "a" is another Agent with the same ID.
+  page.window.render([agent("a", { name: "Elsewhere" })], "all", "v");
+  await tick();
+  page.trigger().click();
+  await tick();
+  assert.deepEqual(page.rows(), ["Elsewhere [ ] Offline"], "no choice or failure from the other Workspace");
+  page.document.querySelector('[aria-label="Close dialog"]').click();
+  await tick();
+  page.window.render([agent("a")], "all", "w");
+  await tick();
+  page.trigger().click();
+  await tick();
+  assert.deepEqual(page.rows(), ["A [x] Couldn’t reconnect: Runtime not ready"], "its own are still there");
   page.close();
 });

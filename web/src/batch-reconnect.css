@@ -76,6 +76,13 @@
   color: var(--muted);
   font-size: calc(10px + var(--font-adjust, 3px));
 }
+.batch-note {
+  margin: -4px 0 12px;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.batch-row[data-state="skipped"] .batch-state {
+  white-space: normal;
+}
 .batch-empty {
   margin: 4px 0 14px;
   color: var(--muted);

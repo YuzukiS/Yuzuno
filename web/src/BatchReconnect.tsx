@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { LoaderCircle, RotateCw } from "lucide-react";
 import { reconnectOffer } from "./agent-actions";
 import {
@@ -9,6 +9,7 @@ import {
   forgetSettled,
   forgetStale,
   reconnectBatch,
+  remember,
   useBatch,
   type BatchOutcome,
 } from "./batch-reconnect";
@@ -35,6 +36,8 @@ function stateText(agent: Agent, outcome: BatchOutcome | undefined): string {
       return "Reconnecting…";
     case "failed":
       return `Couldn’t reconnect: ${outcome.error}`;
+    case "skipped":
+      return `Skipped: ${outcome.reason}`;
     case "done": {
       const after = outcome.agent;
       if (!after) return "Reconnected";
@@ -73,9 +76,13 @@ export function BatchReconnect({
   const [open, setOpen] = useState(false);
   const [everywhere, setEverywhere] = useState(false);
   const batch = useBatch(workspaceId);
+  // What a queued reconnect is checked against before it is sent.
+  useEffect(() => remember(workspaceId, agents), [workspaceId, agents]);
   const candidates = batchCandidates(agents);
   const count = candidates.filter(choosable).length;
-  if (!count && !open) return null;
+  const running = busy(batch);
+  // Kept while a batch runs, so its results can be opened again.
+  if (!count && !open && !running) return null;
 
   const wide = everywhere || scope === ALL_PROJECTS;
   // A failure stays listed while the Agent still needs a reconnect; one
@@ -93,13 +100,13 @@ export function BatchReconnect({
   // Only what the dialog shows runs: a choice hidden by the scope does not.
   const ready = rows.filter((agent) => batch.selected.has(agent.id) && choosable(agent) && !pending(agent.id));
   const offered = rows.filter((agent) => choosable(agent) && !pending(agent.id));
-  const running = busy(batch);
   // Said again for a screen reader as answers come in.
-  const counts = { reconnected: 0, notYet: 0, failed: 0, going: 0 };
+  const counts = { reconnected: 0, notYet: 0, failed: 0, skipped: 0, going: 0 };
   for (const agent of rows) {
     const outcome = batch.outcomes.get(agent.id);
     if (outcome?.state === "waiting" || outcome?.state === "running") counts.going++;
     else if (outcome?.state === "failed") counts.failed++;
+    else if (outcome?.state === "skipped") counts.skipped++;
     else if (outcome?.state === "done") {
       if (outcome.agent && reconnectOffer(outcome.agent) === null) counts.reconnected++;
       else counts.notYet++;
@@ -109,6 +116,7 @@ export function BatchReconnect({
     counts.reconnected ? `${counts.reconnected} reconnected` : "",
     counts.notYet ? `${counts.notYet} not connected yet` : "",
     counts.failed ? `${counts.failed} couldn’t reconnect` : "",
+    counts.skipped ? `${counts.skipped} skipped` : "",
     counts.going ? `${counts.going} on the way` : "",
   ].filter(Boolean).join(" · ");
 
@@ -117,15 +125,21 @@ export function BatchReconnect({
       <button
         type="button"
         className="icon-button rail-reconnect"
-        aria-label={`Reconnect agents: ${count} not connected`}
+        aria-label={count ? `Reconnect agents: ${count} not connected` : "Reconnect agents: reconnecting"}
         title="Reconnect agents"
         onClick={() => {
           forgetStale(workspaceId, new Set(candidates.filter(choosable).map((agent) => agent.id)));
           setOpen(true);
         }}
       >
-        <RotateCw size={13} />
-        <span>{count}</span>
+        {count ? (
+          <>
+            <RotateCw size={13} />
+            <span>{count}</span>
+          </>
+        ) : (
+          <LoaderCircle size={13} className="spin" />
+        )}
       </button>
       <Modal
         open={open}
@@ -172,7 +186,7 @@ export function BatchReconnect({
                     <button
                       type="button"
                       className="quiet-button"
-                      onClick={() => reconnectBatch(workspaceId, [agent.id], onSettled)}
+                      onClick={() => reconnectBatch(workspaceId, [agent], onSettled)}
                     >
                       Retry
                     </button>
@@ -185,6 +199,11 @@ export function BatchReconnect({
         <p className="batch-summary" role="status">
           {summary}
         </p>
+        {running && (
+          <p className="batch-note">
+            Closing this doesn’t cancel anything: reconnects already started or queued go on, and their results stay here.
+          </p>
+        )}
         <div className="modal-actions">
           <button
             type="button"
@@ -198,7 +217,7 @@ export function BatchReconnect({
             type="button"
             className="primary-button"
             disabled={!ready.length}
-            onClick={() => reconnectBatch(workspaceId, ready.map((agent) => agent.id), onSettled)}
+            onClick={() => reconnectBatch(workspaceId, ready, onSettled)}
           >
             {running && <LoaderCircle size={15} className="spin" />}
             {ready.length ? `Reconnect ${ready.length}` : running ? "Reconnecting…" : "Reconnect"}
