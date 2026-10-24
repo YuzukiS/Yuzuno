@@ -24,9 +24,19 @@
   border-radius: 8px;
   cursor: pointer;
 }
+/* Chosen and focused as Appearance's choices are: an input's own focus
+   style is all but transparent, so the ring is on the choice. */
+.input-send-choice:hover {
+  border-color: var(--focus);
+}
 .input-send-choice:has(input:checked) {
-  border-color: color-mix(in srgb, var(--focus) 50%, transparent);
-  background: var(--accent-wash);
+  border-color: var(--focus);
+  background: var(--surface-soft);
+  box-shadow: 0 0 0 1px var(--focus);
+}
+.input-send-choice:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
 }
 .input-send-choice input {
   margin-top: 3px;
