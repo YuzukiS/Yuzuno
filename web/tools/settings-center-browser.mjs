@@ -71,7 +71,7 @@ async function open() {
   await page.getByRole('searchbox', { name: 'Search settings' }).waitFor();
 }
 async function search(term) { await page.getByRole('searchbox', { name: 'Search settings' }).fill(term); }
-async function closeDialog() { await page.getByRole('dialog').getByRole('button', { name: 'Close dialog' }).click(); }
+async function closeDialog() { await page.getByRole('dialog').getByRole('button', { name: /^Close (dialog|jobs)$/ }).click(); }
 try {
   await page.goto(origin);
   await open();
