@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { clearLocal, saveLocal, storageReadable, type SaveOutcome } from "./preference-save";
+import { clearLocal, saveLocal, storageReadable, type SaveOutcome } from "./preference-save.ts";
 
 export type ThemePreference = "light" | "dark" | "system";
 /** Text size in px, any whole number from MIN_FONT_SIZE to MAX_FONT_SIZE. */
