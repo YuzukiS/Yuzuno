@@ -8,7 +8,10 @@ is unknown. A definite refusal adds nothing. Edit it and send when ready;
 nothing is sent automatically. Reattach any original images.
 
 Finish the current turn and pending answers first. A changed conversation,
-restarted connection or expired preview requires a new preview. Rewind does not
+restarted connection or expired preview requires a new preview. A preview
+lasts 10 minutes. Core keeps the native history it read for the preview until
+then, and frees it on its own once the preview expires: no further request or
+preview is needed. Rewind does not
 undo files, shell commands, submitted Jobs, PRs, approvals or other external
 effects. Their execution records remain, as does an archive of the removed
 native history and Core's prior view, linked by the rewind attempt ID.

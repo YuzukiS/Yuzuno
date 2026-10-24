@@ -195,7 +195,8 @@ impl Workspace {
     }
 
     /// Streamed deltas are announced and written on this cadence instead of
-    /// once per delta. Started with the first stream; holds only a Weak owner.
+    /// once per delta, and expired rewind previews freed. Started with the
+    /// first stream or rewind preview; holds only a Weak owner.
     pub(crate) fn start_stream_ticker(self: &Arc<Self>) {
         if self.stream_ticker.set(()).is_err() { return; }
         let weak = Arc::downgrade(self);
@@ -213,6 +214,9 @@ impl Workspace {
                     let _permit = permit;
                     let done = tick.store.stream_tick(crate::store::STREAM_WRITE_AFTER);
                     for id in &done.announce { tick.progressed(id); }
+                    // Rewind previews no one can confirm any more keep a
+                    // whole history each; freed here, before any reclaim.
+                    crate::rewind::expire_previews();
                     // Large record copies may be freed yet stay resident in
                     // glibc. Reclaim outside Store locks and async workers,
                     // only once recent records are idle, with a process-wide
@@ -2191,9 +2195,11 @@ impl Workspace {
             });
         } else if method == "thread/started" {
             // Retain a recovery handle even if the thread/start response times out.
-            let _ = self.store.update(id, method, p, |d| {
-                if d.agent.thread_id.is_none() && p["thread"]["parentThreadId"].is_null() {
-                    d.agent.thread_id = p["thread"]["id"].as_str().map(str::to_owned);
+            // The Agent's thread is metadata: written without copying the
+            // record (T-140).
+            let _ = self.store.update_meta(id, method, p, |m| {
+                if m.agent.thread_id.is_none() && p["thread"]["parentThreadId"].is_null() {
+                    m.agent.thread_id = p["thread"]["id"].as_str().map(str::to_owned);
                 }
             });
         } else if method == "command/exec/outputDelta" {
