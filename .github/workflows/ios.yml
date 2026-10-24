@@ -3,10 +3,11 @@
 # with Xcode (Tauri's CLI reference); a Simulator build needs no signing.
 # A pull request that changes ios/, or what it uses from desktop/ and web/
 # (the Core rule, jsdom's lock and guard, the icon), runs the iOS app's tests
-# and builds it. Nothing is uploaded; the app's checksum is in the run's
-# summary, as for desktop-macos.yml's pull requests. Never an installable
-# build for an iPhone, which would need the user's own Apple signing. No
-# secret is used. See ios/README.md.
+# and builds it. The app is not uploaded; its checksum is in the run's
+# summary, as for desktop-macos.yml's pull requests. The one upload is the
+# Simulator check's three connection-page screenshots, for 3 days. Never an
+# installable build for an iPhone, which would need the user's own Apple
+# signing. No secret is used. See ios/README.md.
 name: iOS
 
 on:
@@ -146,10 +147,15 @@ jobs:
 
       # The app in a Simulator, without a Core: it starts, its connection
       # page shows in the app's WKWebView, and the app's own commands answer
-      # there (uitests/). Unsigned, and nothing leaves the runner.
+      # there (uitests/). Unsigned. The check saves three screenshots of the
+      # connection page, the only files that leave the runner (below).
       - name: Simulator check
         timeout-minutes: 20
+        env:
+          # xcodebuild hands TEST_RUNNER_<name> to the test as <name>.
+          TEST_RUNNER_YUZUNO_SCREENSHOTS: ${{ runner.temp }}/ios-screenshots
         run: |
+          mkdir "$TEST_RUNNER_YUZUNO_SCREENSHOTS"
           app=$(find gen/apple/build/arm64-sim -maxdepth 1 -type d -name '*.app')
           device=$(xcrun simctl create yuzuno-check "iPhone 17")
           xcrun simctl list devices | awk -v device="$device" '/^-- /{runtime=$0} index($0, device){print runtime; print}'
@@ -160,3 +166,23 @@ jobs:
           xcodebuild test -quiet -project uitests/YuzunoChecks.xcodeproj -scheme Checks \
             -destination "platform=iOS Simulator,id=$device" CODE_SIGNING_ALLOWED=NO
           xcrun simctl shutdown "$device"
+
+      # Only the connection page, made without a Core: no Workspace, account
+      # or address of the user's can be in these. Exactly these three PNG
+      # files are uploaded, kept for 3 days; the app itself is not.
+      - name: Screenshots
+        run: |
+          dir="$RUNNER_TEMP/ios-screenshots"
+          expected="connection-landscape.png connection-portrait.png connection-refused.png"
+          found=$(ls -A "$dir" | LC_ALL=C sort | paste -s -d ' ' -)
+          [ "$found" = "$expected" ] || { echo "::error::expected $expected, found: $found"; exit 1; }
+          for file in $expected; do
+            [ "$(head -c 8 "$dir/$file" | xxd -p)" = 89504e470d0a1a0a ] || { echo "::error::$file is not a PNG"; exit 1; }
+          done
+          (cd "$dir" && shasum -a 256 $expected)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-simulator-screenshots-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ios-screenshots/connection-*.png
+          if-no-files-found: error
+          retention-days: 3

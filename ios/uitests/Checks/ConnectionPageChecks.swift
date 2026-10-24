@@ -14,6 +14,14 @@ final class ConnectionPageChecks: XCTestCase {
         yuzuno.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
     }
 
+    /// Saves the screen as <name>.png where ios.yml asks (YUZUNO_SCREENSHOTS);
+    /// nothing elsewhere. Only the connection page is ever on screen here.
+    private func screenshot(_ name: String) {
+        guard let directory = ProcessInfo.processInfo.environment["YUZUNO_SCREENSHOTS"] else { return }
+        let file = URL(fileURLWithPath: directory).appendingPathComponent("\(name).png")
+        XCTAssertNoThrow(try XCUIScreen.main.screenshot().pngRepresentation.write(to: file))
+    }
+
     private func enter(_ address: String) {
         let field = yuzuno.textFields.firstMatch
         field.tap()
@@ -26,10 +34,20 @@ final class ConnectionPageChecks: XCTestCase {
         // A fresh install has no saved Workspace, and the page found the app's bridge.
         XCTAssertTrue(message(containing: "Enter your workspace address").waitForExistence(timeout: 60))
         XCTAssertTrue(yuzuno.textFields.firstMatch.exists, "the address field")
+        screenshot("connection-portrait")
+
+        // The safe area in landscape: the notch is then at a side.
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(yuzuno.textFields.firstMatch.waitForExistence(timeout: 10))
+        sleep(2)
+        screenshot("connection-landscape")
+        XCUIDevice.shared.orientation = .portrait
+        sleep(2)
 
         // The refusal is the app's own (core_url.rs), through connect_core.
         enter("http://core.example.ts.net")
         XCTAssertTrue(message(containing: "HTTPS address").waitForExistence(timeout: 20))
+        screenshot("connection-refused")
 
         // An HTTPS address nothing answers: 192.0.2.1 is a documentation
         // address (RFC 5737). The health check gives up within its 4 s, and
