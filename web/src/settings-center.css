@@ -26,6 +26,16 @@
 }
 
 .settings-category-picker { display: none; }
+/* A phone: the categories are the picker, as on a short screen, and the
+   dialog's description is left to assistive technology (it stays the
+   dialog's description), so an editor gets the height. A 320×640 phone at
+   24 px text kept 89 px for the editor under the eight-tab grid (T-189). */
+@media (max-width: 720px) {
+  .settings-modal .modal-heading p { display: none; }
+  .settings-center .settings-nav { display: none; }
+  .settings-category-picker { display: block; min-width: 0; }
+  .settings-category-picker select { width: 100%; min-width: 0; min-height: 44px; font: inherit; padding: 8px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; }
+}
 /* A software keyboard can leave only a short viewport. Give the content
    the remaining space; all eight categories stay reachable in the picker. */
 @media (max-height: 500px) {
@@ -35,7 +45,7 @@
   .settings-center .settings-search input { padding-block: 5px; }
   .settings-center .settings-nav { display: none; }
   .settings-category-picker { display: block; min-width: 0; }
-  .settings-category-picker select { width: 100%; min-width: 0; font: inherit; padding: 5px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; }
+  .settings-category-picker select { width: 100%; min-width: 0; min-height: 0; font: inherit; padding: 5px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; }
   .settings-center .settings-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 6px; margin-top: 6px; }
 }
 

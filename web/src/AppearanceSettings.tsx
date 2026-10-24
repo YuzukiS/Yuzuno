@@ -389,6 +389,7 @@ export function AppearanceSection() {
       <SaveStatus
         outcome={save?.outcome ?? null}
         action={save?.action}
+        attempt={save?.attempt}
         stored={appearanceStored()}
         scope="this device"
         onRetry={retryAppearanceWrite}

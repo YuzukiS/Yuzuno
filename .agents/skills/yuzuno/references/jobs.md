@@ -67,7 +67,7 @@ The wrapper then checks the exit code, that the manifest names this attempt and 
 - Only the user resumes it. That makes a new Job with the same submission, linked by `checkpointFrom` (and `resumeOf` in lists). Its command gets `$YUZUNO_RESUME_FROM`, the path of that manifest, and has to load from it. The wrapper checks the files again before the command starts; a changed checkpoint rejects the attempt instead of starting it from scratch. A Core from before checkpoints that picks up a queued resumed Job rejects it the same way, saying its guarded inputs changed; it never starts it without the checkpoint.
 - How much continues exactly is the command's: save the model, optimizer, scheduler, step counters and random or data positions it needs. acceptance/t109-checkpoint is a small Lightning example.
 
-## On a remote Linux machine
+## On a remote Linux or macOS machine
 
 `job_submit` with `machineId` (a registered SSH machine from the Machines list) runs the command on that machine instead of this Core's host. Use it only when the user or the project asks for that machine.
 
@@ -87,6 +87,7 @@ The wrapper then checks the exit code, that the manifest names this attempt and 
   - **They stay there.** The result names the machine (`result.artifactsOn`) and each file's path there. Nothing is copied or offered for download, so read them on that machine.
   - **Files from before.** `preExisting` and `unchangedSinceStart` record whether a file was already there before the command ran. They do not decide pass or fail: give an output only this attempt may write a path of its own.
 - On Cores newer than 2026.10.19-core.12 (older ones refuse it), the user can pause a job there only while its attempt runs in a scope of its own on that machine (its limits are held: strict, or limited on an account that lingers); it is frozen there as a local job is, and the pause rules above apply. Otherwise a pause is refused with the reason, and nothing is stopped instead.
+- A Mac reached over SSH runs jobs in `limited` mode only. macOS has no cgroup, so nothing there holds a declared CPU, RAM or swap limit: they are reserved for this Core's admission and recorded, and the running reason says so. A Mac in `strict` mode starts nothing, and pause is refused. Its jobs get the same `PATH` as on Linux (`/usr/local/bin:/usr/bin:/bin`); pass your own in `env` for Homebrew's `/opt/homebrew/bin`.
 - `gpu`, `exclusive`, `outputs` (declare `artifacts`) and runs of stages are refused, and so is pause on Windows.
 - Cancel and timeouts stop the attempt's process group. A process that starts its own session or group leaves it and is not stopped, so do not daemonize from the command.
 - A lost connection, a supervisor that died or a name that now reaches another machine leaves the job `unknown`, its slot held. Core checks the same attempt again and never starts it twice. A command still running past its timeout after its supervisor died is stopped by the first check that reaches the machine after the deadline, and the job fails with that timeout. Do not resubmit to "retry" an unknown job; report it as unknown, and cancel it only if the work should stop.
