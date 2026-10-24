@@ -104,14 +104,22 @@ export interface RuntimeView {
 }
 
 const HARNESSES = ["codex", "claude"] as const;
-const NOT_CHECKED = "Not checked on this machine.";
-
 function cliFact(check: HarnessCheck | undefined, machineCheck: MachineCheck | null | undefined): Fact {
   if (!machineCheck) return fact("unknown", "Not checked yet", "Check the machine on the Machines page.");
-  if (!check) return fact("unknown", "Not part of the last check", NOT_CHECKED);
+  if (!check) {
+    return machineCheck.reachable
+      ? fact("unknown", "Not part of the last check", "The last check didn't look for it.")
+      : fact("unknown", "Not known", "The last check didn't reach this machine.");
+  }
   if (!check.supported) return fact("no", "Not supported on this machine", check.error);
-  if (!check.found) return fact("no", "Not found", check.error);
-  return fact("yes", check.version ? `Found · ${check.version}` : "Found", check.executable);
+  const found = check.version ? `Found · ${check.version}` : "Found";
+  if (check.found) return fact("yes", found, check.executable);
+  // Core counts a signed-out CLI as not usable; its sign-in says why, so the
+  // CLI itself is found.
+  if (check.signIn?.state === "signedOut") return fact("yes", found, check.executable);
+  // Found where it looked, but Core can't use it: its own reason.
+  if (check.executable) return fact("no", check.version ? `Not usable · ${check.version}` : "Not usable", check.error);
+  return fact("no", "Not found", check.error);
 }
 
 function signInFact(
@@ -122,7 +130,12 @@ function signInFact(
 ): Fact {
   if (harness === "claude") {
     const signIn = check?.signIn;
-    if (!signIn) return fact("unknown", "Not known", machine.kind === "local" ? "Sign-in is checked with the CLI on the Machines page." : NOT_CHECKED);
+    if (!signIn) {
+      if (machine.kind !== "local") return fact("unknown", "Not known", "Checks of SSH machines don't report sign-in by itself; a sign-in problem shows on the CLI line.");
+      return machine.lastCheck
+        ? fact("unknown", "Not known", "Sign-in is read only when the CLI can run.")
+        : fact("unknown", "Not known", "Sign-in is checked with the CLI on the Machines page.");
+    }
     if (signIn.state === "signedIn") return fact("yes", "Signed in", signIn.method);
     if (signIn.state === "signedOut") return fact("no", "Signed out", check?.error ?? signIn.detail);
     return fact("unknown", "Could not be checked", signIn.detail);
@@ -134,7 +147,7 @@ function signInFact(
       ? fact("yes", "Signed in", runtime.value.account)
       : fact("unknown", "No account reported", "Codex answered without naming an account.");
   }
-  return fact("unknown", "Not known", NOT_CHECKED);
+  return fact("unknown", "Not known", "Machine checks don't read Codex's sign-in; Core knows it only on its own host.");
 }
 
 function jobsFact(machine: WorkspaceMachine, budget: RuntimeRead["budget"]): Fact {
