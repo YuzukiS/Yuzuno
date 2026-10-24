@@ -407,8 +407,8 @@ fn planned(saved: &Saved) -> (u16, u16) {
 /// through it from Windows. A step that needs a failed one is skipped.
 /// Before setup (nothing listening) Serve is still read for the planned
 /// port, so a port someone else uses shows before an apply.
-async fn check(ws: &Arc<Workspace>, host: &Host, listen: Option<Entry>, planned: (u16, u16)) -> Value {
-    let serve_port = planned.0;
+async fn check(ws: &Arc<Workspace>, host: &Host, listen: Option<Entry>, ports: (u16, u16)) -> Value {
+    let serve_port = ports.0;
     let mut steps = Vec::new();
     let mut tailscale = Value::Null;
     let mut serve = json!({"state": "unchecked", "otherEntries": 0});
@@ -489,7 +489,7 @@ async fn check(ws: &Arc<Workspace>, host: &Host, listen: Option<Entry>, planned:
     } else {
         steps.push(skip("hop", "Needs Core listening"));
     }
-    let target = format!("http://127.0.0.1:{}", listen.as_ref().map_or(planned.1, |e| e.port));
+    let target = format!("http://127.0.0.1:{}", listen.as_ref().map_or(ports.1, |e| e.port));
     let mut served = false;
     match &dns {
         Some(dns) => match host::serve_status(host).await {
@@ -664,8 +664,8 @@ async fn start(ws: &Arc<Workspace>, request: ApplyRequest) -> Result<Value> {
         // A successful apply checked itself; anything else is read again now,
         // so the page never shows Serve as it was before the change.
         if !(running.kind == "apply" && matches!(running.step.as_str(), "verify" | "done")) {
-            let planned = read(&path(&ws)).map(|saved| planned(&saved)).unwrap_or((DEFAULT_SERVE_PORT, DEFAULT_LOCAL_PORT));
-            let result = check(&ws, &host, current(&ws), planned).await;
+            let ports = read(&path(&ws)).map(|saved| planned(&saved)).unwrap_or((DEFAULT_SERVE_PORT, DEFAULT_LOCAL_PORT));
+            let result = check(&ws, &host, current(&ws), ports).await;
             observe(&ws, &result);
         }
         running.finished_at = Some(crate::model::now());

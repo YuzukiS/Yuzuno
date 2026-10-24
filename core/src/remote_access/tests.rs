@@ -488,17 +488,17 @@ async fn real_views_keep_the_shape_the_page_is_built_on() {
 async fn a_check_before_setup_reads_serve_for_the_planned_port() {
     let lab = lab("wsl");
     lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
-    let step = |view: &Value, id: &str| view["verification"]["steps"].as_array().unwrap().iter().find(|s| s["id"] == id).unwrap().clone();
+    let serve_step = |view: &Value, id: &str| view["verification"]["steps"].as_array().unwrap().iter().find(|s| s["id"] == id).unwrap().clone();
     let free = lab.check().await;
     assert_eq!(free["serve"]["state"], "absent", "{}", free["serve"]);
-    assert_eq!(step(&free, "serve")["state"], "skipped");
-    assert!(step(&free, "serve")["detail"].as_str().unwrap().contains("Port 8444 is free"), "{free}");
+    assert_eq!(serve_step(&free, "serve")["state"], "skipped");
+    assert!(serve_step(&free, "serve")["detail"].as_str().unwrap().contains("Port 8444 is free"), "{free}");
     lab.set_fake(|s| {
         s["serve"]["TCP"]["8444"] = json!({"HTTPS": true});
         s["serve"]["Web"][format!("{DNS}:8444")] = json!({"Handlers": {"/": {"Proxy": "http://127.0.0.1:9999"}}});
     });
     let taken = lab.check().await;
     assert_eq!(taken["serve"]["state"], "conflict", "{}", taken["serve"]);
-    assert_eq!(step(&taken, "serve")["state"], "failed");
+    assert_eq!(serve_step(&taken, "serve")["state"], "failed");
     assert!(lab.calls().iter().all(|c| c.ends_with("--json")), "read only: {:?}", lab.calls());
 }
