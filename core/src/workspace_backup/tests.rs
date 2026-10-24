@@ -236,6 +236,11 @@ fn a_backup_is_refused_while_a_core_or_a_job_uses_the_workspace_and_leaves_nothi
     let full = error(backup(&data, &out));
     AVAILABLE.with(|a| a.set(None));
     assert!(full.contains("Not enough space") && full.contains("Nothing was written"), "{full}");
+    // A Workspace at an older schema: the advice is one this Core can follow.
+    Connection::open(data.join(DATABASE)).unwrap().execute_batch("PRAGMA user_version=1").unwrap();
+    let older = error(backup(&data, &out));
+    assert!(older.contains("older than this Core reads") && older.contains("Start this Core on it once"), "{older}");
+    Connection::open(data.join(DATABASE)).unwrap().execute_batch(&format!("PRAGMA user_version={STORAGE}")).unwrap();
     // Never into an existing folder, or inside the Workspace.
     assert!(error(backup(&data, &data.join("jobs"))).contains("exists"));
     assert!(error(backup(&data, &data.join("inside"))).contains("inside the Workspace"));

@@ -129,6 +129,15 @@ pub struct Restored {
     pub notes: Vec<String>,
 }
 
+/// Whose database is read: the Workspace being backed up, or a backup.
+/// They differ only in what a user can do about a schema this Core does not
+/// read.
+#[derive(Clone, Copy)]
+enum Role {
+    Workspace,
+    Backup,
+}
+
 /// What a database copy holds, read from the copy itself.
 #[derive(Debug, PartialEq)]
 struct Facts {
@@ -231,7 +240,7 @@ pub fn verify(dir: &Path) -> Result<Manifest> {
         let (actual, digest) = hash_file(&dir.join(path))?;
         ensure!(actual == *bytes && digest == *sha256, "{path} differs from its manifest entry: {actual} bytes, SHA-256 {digest}");
     }
-    let facts = read_only_facts(&dir.join(DATABASE))?;
+    let facts = read_only_facts(&dir.join(DATABASE), Role::Backup)?;
     agrees(&facts, &manifest)?;
     Ok(manifest)
 }
@@ -259,7 +268,7 @@ pub fn restore(backup: &Path, target: &Path) -> Result<Restored> {
             let (written, digest) = hash_file(&to)?;
             ensure!(written == *bytes && digest == *sha256, "{} was not written intact", path.display());
         }
-        let facts = read_only_facts(&staging.join(DATABASE))?;
+        let facts = read_only_facts(&staging.join(DATABASE), Role::Backup)?;
         agrees(&facts, &manifest)?;
         sync_dir(&staging)?;
         if existing {
@@ -394,18 +403,28 @@ fn read_manifest(dir: &Path) -> Result<Manifest> {
 }
 
 /// The facts of a database copy no Core is using, read without writing.
-fn read_only_facts(database: &Path) -> Result<Facts> {
+fn read_only_facts(database: &Path, role: Role) -> Result<Facts> {
     let db = crate::data_dir::read_only(database)?;
-    facts(&db)
+    facts(&db, role)
 }
 
-fn facts(db: &Connection) -> Result<Facts> {
+fn facts(db: &Connection, role: Role) -> Result<Facts> {
     let checks = db.prepare("PRAGMA integrity_check")?.query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     ensure!(checks == ["ok"], "The database fails its integrity check: {}", checks.join("; "));
     let storage = Storage::read(db)?;
-    ensure!(storage.schema == STORAGE,
-        "The database has schema {}; this Core reads schema {STORAGE}. Use the Core that wrote it", storage.schema);
+    match (storage.schema.cmp(&STORAGE), role) {
+        (std::cmp::Ordering::Equal, _) => {}
+        (std::cmp::Ordering::Greater, _) => bail!(
+            "The database has schema {}, newer than this Core reads ({STORAGE}); use a Core release that reads it", storage.schema),
+        // Opening it upgrades the database (Store::open).
+        (std::cmp::Ordering::Less, Role::Workspace) => bail!(
+            "The Workspace has schema {}, older than this Core reads ({STORAGE}). Start this Core on it once, which upgrades it, then back it up",
+            storage.schema),
+        (std::cmp::Ordering::Less, Role::Backup) => bail!(
+            "The backup has schema {}, older than this Core reads ({STORAGE}); restore it with the Core release that made it (createdBy in its manifest)",
+            storage.schema),
+    }
     ensure!(storage.record_layouts.iter().all(|layout| *layout <= RECORD_LAYOUT),
         "The database has record layouts {:?}; this Core reads up to {RECORD_LAYOUT}. Use the Core that wrote it",
         storage.record_layouts);
@@ -452,7 +471,7 @@ fn copy_database(source: &Connection, path: &Path) -> Result<(Database, usize, S
     target.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA secure_delete=ON;")?;
     let removed = target.execute("DELETE FROM workspace_meta WHERE key GLOB ?1", [CREDENTIALS])?;
     target.execute_batch("VACUUM")?;
-    let facts = facts(&target)?;
+    let facts = facts(&target, Role::Workspace)?;
     target.close().map_err(|(_, error)| error)?;
     File::open(path)?.sync_all()?;
     let (bytes, sha256) = hash_file(path)?;
