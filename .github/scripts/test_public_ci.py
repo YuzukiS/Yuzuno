@@ -22,6 +22,11 @@ workflow_dispatch trigger it; its token reads contents and actions only; no
 secret, cache or other runner. Only a run on request uploads, one macOS
 artifact per architecture, and such a run builds only main whose push CI
 passed.
+
+.github/workflows/ios.yml (T-170) builds the iOS app for the Simulator,
+unsigned, on the standard GitHub-hosted macos-26 runner. Only pull_request
+triggers it; its token reads contents only; no secret, cache or other
+runner, and it uploads nothing.
 """
 from pathlib import Path
 import os
@@ -38,6 +43,7 @@ FREE_DISK = ROOT / '.github/scripts/free-disk.sh'
 DISK_PRECHECK = ROOT / '.github/scripts/disk-precheck.sh'
 RELEASE_INPUTS = ROOT / '.github/workflows/release-inputs.yml'
 DESKTOP_MACOS = ROOT / '.github/workflows/desktop-macos.yml'
+IOS = ROOT / '.github/workflows/ios.yml'
 JOB = re.compile(r'^  ([A-Za-z0-9_-]+):\s*$')
 
 
@@ -237,6 +243,36 @@ def desktop_macos_problems(text):
     return found
 
 
+def ios_problems(text):
+    lines = code_lines(text)
+    found = []
+    body = '\n'.join(lines)
+    top = lines[:lines.index('jobs:')]
+    triggers = [key for key, _ in section(top, 'on')]
+    if triggers != ['pull_request']:
+        found.append(f'triggers are {triggers}, not pull_request only')
+    if sorted(section(top, 'permissions')) != [('contents', 'read')]:
+        found.append('the top-level permissions are not contents: read only')
+    for pattern, what in [(r'pull_request_target|workflow_run', 'a privileged trigger'),
+                          (r'secrets\.', 'a secret'),
+                          (r':\s*write\b', 'a write permission'),
+                          (r'self-hosted', 'a self-hosted label'),
+                          (r'upload-artifact|upload-pages-artifact', 'an upload'),
+                          (r'actions/cache|rust-cache@', 'a cache')]:
+        if re.search(pattern, body):
+            found.append(f'it uses {what}')
+    found += unpinned(lines)
+    all_jobs = jobs(lines)
+    if len(all_jobs) != 1:
+        found.append(f'{len(all_jobs)} jobs, not one')
+    for name, job in all_jobs.items():
+        found += runner_problems(name, job, 'macos-26')
+        checkout = next((step for step in steps_of(job) if 'actions/checkout@' in step), None)
+        if checkout is None or 'persist-credentials: false' not in checkout:
+            found.append(f'job {name} keeps the checkout credentials')
+    return found
+
+
 class PublicCi(unittest.TestCase):
     def test_the_public_workflow_keeps_the_rules(self):
         self.assertEqual(problems(workflow().read_text()), [])
@@ -323,6 +359,30 @@ class PublicCi(unittest.TestCase):
             with self.subTest(label):
                 self.assertNotEqual(text, good, 'the fixture edit did not apply')
                 self.assertTrue(any(message in problem for problem in desktop_macos_problems(text)), desktop_macos_problems(text))
+
+    def test_the_ios_workflow_keeps_its_rules(self):
+        self.assertEqual(ios_problems(IOS.read_text()), [])
+
+    def test_each_broken_ios_rule_is_reported(self):
+        good = IOS.read_text()
+        cases = {
+            'a request trigger': (good.replace('  pull_request:\n', '  workflow_dispatch:\n  pull_request:\n', 1), 'triggers'),
+            'pull_request_target': (good.replace('  pull_request:\n', '  pull_request_target:\n', 1), 'triggers'),
+            'a write permission': (good.replace('  contents: read', '  contents: write', 1), 'permissions'),
+            'a wider token': (good.replace('  contents: read\n', '  contents: read\n  actions: read\n', 1), 'permissions'),
+            'a secret': (good.replace('          persist-credentials: false\n', '          persist-credentials: false\n          token: ${{ secrets.X }}\n', 1), 'a secret'),
+            'a larger runner': (good.replace('runs-on: macos-26\n', 'runs-on: macos-26-xlarge\n', 1), 'not macos-26'),
+            'a self-hosted runner': (good.replace('runs-on: macos-26\n', 'runs-on: [self-hosted, macOS, ARM64]\n', 1), 'self-hosted'),
+            'a Rust cache': (good.replace('      - name: Runner details', '      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6\n      - name: Runner details', 1), 'cache'),
+            'an upload': (good.replace('      - name: Runner details', '      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n      - name: Runner details', 1), 'an upload'),
+            'an unpinned action': (good.replace('@3d3c42e5aac5ba805825da76410c181273ba90b1', '@v7', 1), 'not pinned'),
+            'no first-step runner check': (good.replace('[ "$RUNNER_ENVIRONMENT" = github-hosted ] ||', 'true ||', 1), 'first step'),
+            'checkout credentials kept': (good.replace('          persist-credentials: false\n', '', 1), 'credentials'),
+        }
+        for label, (text, message) in cases.items():
+            with self.subTest(label):
+                self.assertNotEqual(text, good, 'the fixture edit did not apply')
+                self.assertTrue(any(message in problem for problem in ios_problems(text)), ios_problems(text))
 
     def test_the_guard_refuses_any_runner_but_a_github_hosted_one(self):
         for environment, code in [('self-hosted', 1), ('', 1), ('github-hosted', 0)]:

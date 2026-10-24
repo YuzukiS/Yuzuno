@@ -1,0 +1,12 @@
+{
+  "identifier": "connection",
+  "description": "Only the embedded connection page may read the saved Workspace address, and choose and check one. A Core's own pages are granted nothing.",
+  "local": true,
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-saved-core",
+    "allow-connect-core"
+  ]
+}

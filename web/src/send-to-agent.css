@@ -74,9 +74,10 @@
 .handoff-strip {
   position: fixed;
   z-index: 60;
-  right: 24px;
-  bottom: 24px;
-  left: 24px;
+  /* Clear of a phone's notch and home indicator (--safe-*, styles.css). */
+  right: calc(24px + var(--safe-right));
+  bottom: calc(24px + var(--safe-bottom));
+  left: calc(24px + var(--safe-left));
   display: flex;
   flex-wrap: wrap;
   align-items: center;

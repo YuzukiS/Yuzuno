@@ -116,7 +116,7 @@ setsid nohup "$ROOT/releases/$RELEASE/bin/yuzuno-workspace" --install-dir "$ROOT
 - **Working directory:** `--cwd` is the default folder new Agents start in.
 - **Codex location:** add `--codex /path/to/codex` if Codex is not on `PATH`.
 - **Check it:** `curl -s http://127.0.0.1:4317/api/health` shows the release and Workspace.
-- **Stop:** `pkill -INT -f "$ROOT/releases/"`. Core shuts down cleanly on an interrupt.
+- **Stop:** `"$ROOT/updates/start" stop --install-dir "$ROOT" --port 4317 --workspace-id <Workspace>` (the Workspace ID is in `curl -s http://127.0.0.1:4317/api/health`). It interrupts this installation's Core, on which Core shuts down cleanly, and waits up to a minute for it to exit. It does so only when that Core is the one process of this installation, runs the release it says it runs and holds the port; otherwise it says why and signals nothing. It never kills: a Core still running after the wait is reported as `stopping`. Releases whose `updates/start --help` lists no `stop` don't have it: there, `pkill -INT -f "$ROOT/releases/"`.
 - **After a reboot:** run the start command again; it picks up the release an update left in `current.json`.
 - **From the Windows desktop app:** each Core records how it started (`$ROOT/updates/launch.json`). After a reboot, the desktop app's connection page can then start it again with the same settings; see [Start Core from the app](../desktop/README.md#start-core-from-the-app-windows-wsl). Releases up to core.15 do not record this.
 
@@ -240,7 +240,7 @@ The Projects dialog offers a service's address only after the page has proved th
 A phone's browser has no SSH tunnel. Instead, Core can open a **second loopback port** that only [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) is pointed at. Serve gives it an HTTPS address on your tailnet (not the internet: that would be Funnel, which Core refuses), and tells Core which tailnet login each request comes from. Core lets in exactly one login. This is off unless all three settings below are made, and it has not yet been checked with a real phone.
 
 **What Core checks on that port**, for every page, API call, live update and artifact:
-- `Tailscale-User-Login` appears once and is exactly the configured login. Serve removes any copy a client sent and sets it only for a device owned by a tailnet user, so a tagged device, a request from the host itself or one through Funnel is refused. A user from another tailnet the device was shared with has their own login and is refused too.
+- `Tailscale-User-Login` appears once and is exactly the configured login. Serve removes any copy a client sent and sets it only for a tailnet user's request ([identity headers](https://tailscale.com/docs/features/tailscale-serve#identity-headers)), so a request from a tagged device or through Funnel has none and is refused, as is any request without it. A user from another tailnet the device was shared with has their own login and is refused too. Tailscale does not say that the machine running Serve gets no login: in one check (T-170, Tailscale 1.102.4 on Windows), a request that machine sent to its own Serve address carried its owner's login and was let in. Programs on that machine can reach Core's ports directly anyway.
 - `Host` is the configured address, as Serve passes the browser's own.
 - A change also needs the page's own `Origin` and Yuzuno's client header, so another site open on the phone cannot make one.
 - Nothing falls back to the loopback rules, and `X-Forwarded-*` headers are not read. The Agents' MCP endpoints are not served there.
@@ -250,19 +250,26 @@ Core's own port is unchanged, except that it refuses a request carrying Tailscal
 **Set it up** (the names here are examples; use your node's name from `tailscale status`):
 1. **Tailnet:** MagicDNS and [HTTPS certificates](https://tailscale.com/docs/how-to/set-up-https-certificates) must be on. Turning certificates on publishes your machine names and tailnet name in public Certificate Transparency logs, and turning them off later does not revoke issued certificates.
 2. **Choose a free HTTPS port.** `tailscale serve status` lists what Serve already uses on this node; never reuse or reset another entry. Funnel's port limits do not apply to Serve.
-3. **Core's environment** (not options, so that a Core update, which keeps the environment, keeps the entry):
+3. **Core's settings.** For an installed Core, stop it and start it again with the entry, through its own start entry (`$ROOT` and `<Workspace>` as in [Start, stop and restart](#start-stop-and-restart)):
+   ```sh
+   "$ROOT/updates/start" stop --install-dir "$ROOT" --port 4317 --workspace-id <Workspace>
+   "$ROOT/updates/start" start --install-dir "$ROOT" --port 4317 --workspace-id <Workspace> \
+     --remote-port 4318 --remote-origin https://core.example-tailnet.ts.net:8444 --remote-login person@example.com
+   ```
+   The port is Core's second loopback port; the origin is exactly what the phone's browser shows, `https://<node>:<Serve port>` (no port for 443); the login is your tailnet login as Tailscale shows it. `start` checks them as Core does, and refuses to change a Core that is running. It prints one line, which says what the started Core recorded (`"remote":{"entry":"on",…,"recorded":true}`), and then stays while Core runs, so that WSL keeps running; Ctrl-C ends only it. Core records these settings with the rest of how it started, so the desktop app's starts and Core updates keep the entry. Core says `Remote entry: http://127.0.0.1:4318 …` in `$ROOT/core.log` when it starts.
+
+   A Core run from a source build, or a release without `--remote-port` in `updates/start start --help`, reads them from its environment instead (not options, so that a Core update, which keeps the environment, keeps the entry), all three or none:
    ```sh
    YUZUNO_REMOTE_PORT=4318
    YUZUNO_REMOTE_ORIGIN=https://core.example-tailnet.ts.net:8444
    YUZUNO_REMOTE_LOGIN=person@example.com
    ```
-   All three or none. The port is Core's second loopback port; the origin is exactly what the phone's browser shows, `https://<node>:<Serve port>` (no port for 443); the login is your tailnet login as Tailscale shows it. Core says `Remote entry: http://127.0.0.1:4318 …` when it starts.
 4. **On the machine where Tailscale runs** (on Windows with WSL, Windows; it reaches WSL's loopback port as the Windows app reaches Core's): `tailscale serve --bg --https=8444 http://127.0.0.1:4318`.
 5. On the phone, signed in to the same tailnet, open `https://core.example-tailnet.ts.net:8444`.
 
 **On the Home Screen.** The page has a web app manifest and an apple-touch-icon (the Yuzuno character, 128 px), so a phone's browser can add it to the Home Screen; it then opens on its own, without the browser's bars, at the same address and through the same entry. It is the same page: it needs the connection as before (there is no offline copy), and drafts stay in the phone's browser storage; adding it to the Home Screen does not make them safe from loss. This has not been checked on a real phone.
 
-**To undo:** `tailscale serve --https=8444 off`, which removes only that entry, then unset the three variables and restart Core: its second port closes. Never use `tailscale serve reset`, which would also remove other services' entries. The certificate logs keep any name already published.
+**To undo:** `tailscale serve --https=8444 off`, which removes only that entry. Then stop Core and start it again with `--no-remote` instead of the three `--remote-…` options (or, without the start entry, unset the three variables and restart Core): its second port closes, and Core records that it has none. Never use `tailscale serve reset`, which would also remove other services' entries. The certificate logs keep any name already published.
 
 ## Update
 
