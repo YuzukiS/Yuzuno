@@ -349,7 +349,8 @@ export function WorkspaceBackup({ active }: { active: boolean }) {
         </p>
       )}
 
-      {watched && <OperationView op={watched} canStop={canChange && running} />}
+      {/* Keyed by operation: the next one starts with its own Stop. */}
+      {watched && <OperationView key={watched.id} op={watched} canStop={canChange && running} />}
 
       {view && view.recent.filter((op) => op.id !== watched?.id).length > 0 && (
         <div className="workspace-backup-recent">
@@ -374,6 +375,7 @@ export function WorkspaceBackup({ active }: { active: boolean }) {
 
 function OperationView({ op, canStop }: { op: Operation; canStop: boolean }) {
   const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState("");
   const label = `${kinds[op.kind]} ${op.state === "running" ? "running" : op.state}`;
   return (
     <div className="workspace-backup-operation" data-state={op.state} aria-label={label}>
@@ -394,15 +396,27 @@ function OperationView({ op, canStop }: { op: Operation; canStop: boolean }) {
           disabled={stopping}
           onClick={async () => {
             setStopping(true);
+            setStopError("");
             try {
               await api(`/workspace/backup/operations/${op.id}/stop`, { method: "POST", body: "{}" });
-            } catch {
+            } catch (e) {
               setStopping(false);
+              // Stopping a running operation twice is harmless, so Stop asks again as is.
+              setStopError(
+                e instanceof NetworkError
+                  ? "No answer from Core to Stop. It may have arrived; Stop asks again."
+                  : errorText(e),
+              );
             }
           }}
         >
           {stopping ? "Stopping…" : "Stop"}
         </button>
+      )}
+      {stopError && (
+        <p className="workspace-backup-error" role="alert">
+          {stopError}
+        </p>
       )}
       {op.error && op.state !== "running" && <p className="workspace-backup-error">{op.error}</p>}
       {op.state === "succeeded" && op.result && <Result op={op} />}

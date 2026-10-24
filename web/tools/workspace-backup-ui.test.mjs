@@ -2,9 +2,10 @@ import "./jsdom-guard.mjs";
 // T-192: Settings → Backup, against a stub Core answering as
 // core/src/workspace_backup/online.rs does. Opening only reads; a refusal
 // names its Jobs; a backup is followed step by step to its result and can be
-// stopped; restore is offered only after its precheck passes for the same
-// folders, and nothing offers to switch to or start the restored copy; the
-// phone entry only reads; a lost answer is sent again as the same request.
+// stopped, and so can the next one; a Stop that fails is said; restore is
+// offered only after its precheck passes for the same folders, and nothing
+// offers to switch to or start the restored copy; the phone entry only reads;
+// a lost answer is sent again as the same request.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -171,6 +172,79 @@ test("a backup is followed step by step to its result, and can be stopped", asyn
     assert.ok(p.text().includes("2 Agents, 6 files"), p.text());
     assert.ok(p.text().includes("Left out (1)"));
     assert.equal(p.posts().filter((c) => c.url.endsWith("/api/workspace/backups")).length, 1);
+  } finally {
+    p.close();
+  }
+});
+
+test("after a backup is stopped, the next one on the same page can be stopped too", async () => {
+  const started = [];
+  const stops = [];
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/workspace/backup")) return { body: view() };
+    if (url.endsWith("/api/workspace/backups")) {
+      const id = `op${started.length + 1}`;
+      started.push(id);
+      return { status: 202, body: { operation: op({ id, requestId: body.requestId }) } };
+    }
+    const stop = url.match(/\/operations\/(op\d)\/stop$/);
+    if (stop) {
+      stops.push(stop[1]);
+      return { status: 202, body: { stopping: true } };
+    }
+    const read = url.match(/\/operations\/(op\d)$/);
+    if (read) {
+      const id = read[1];
+      return { body: stops.includes(id) ? op({ id, state: "stopped", finishedAt: "2026-10-24T20:01:00Z" }) : op({ id }) };
+    }
+    assert.fail(`unexpected ${method} ${url}`);
+  });
+  try {
+    await waitFor(() => button(p, "Back up"), "the backup control");
+    type(p, "Backup folder", "/backups/new");
+    await waitFor(() => !button(p, "Back up").disabled, "Back up offered");
+    button(p, "Back up").click();
+    await waitFor(() => button(p, "Stop"), "Stop for the first backup");
+    button(p, "Stop").click();
+    await waitFor(() => p.text().includes("Backup stopped"), "the first backup stopped");
+    await waitFor(() => !button(p, "Back up").disabled, "Back up offered again");
+    button(p, "Back up").click();
+    await waitFor(() => started.length === 2 && p.text().includes("Copying the database"), "the second backup running");
+    await waitFor(() => button(p, "Stop") && !button(p, "Stop").disabled, "an enabled Stop for the second backup");
+    button(p, "Stop").click();
+    await waitFor(() => p.text().includes("Backup stopped"), "the second backup stopped");
+    assert.deepEqual(stops, ["op1", "op2"], "each Stop is sent for the operation it shows");
+  } finally {
+    p.close();
+  }
+});
+
+test("a refused or unanswered Stop is said, and Stop can be sent again", async () => {
+  const stops = [];
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/workspace/backup")) return { body: view({ current: stops.length < 2 ? op() : null }) };
+    if (url.endsWith("/operations/op1/stop")) {
+      stops.push(body);
+      if (stops.length === 1) throw new TypeError("Failed to fetch");
+      return { status: 409, body: { error: "That operation is not running", code: "not_running" } };
+    }
+    if (url.endsWith("/operations/op1")) {
+      // It finished before the second Stop reached it.
+      return { body: stops.length < 2 ? op() : op({ state: "succeeded", step: "verify", finishedAt: "2026-10-24T20:01:00Z", result: summary }) };
+    }
+    assert.fail(`unexpected ${method} ${url}`);
+  });
+  try {
+    await waitFor(() => button(p, "Stop"), "Stop for the running backup");
+    button(p, "Stop").click();
+    await waitFor(() => p.text().includes("No answer from Core to Stop"), "the unanswered Stop");
+    assert.ok(!p.text().includes("Backup stopped"), "an unanswered Stop is not said to have stopped it");
+    await waitFor(() => button(p, "Stop") && !button(p, "Stop").disabled, "Stop offered again");
+    button(p, "Stop").click();
+    await waitFor(() => p.text().includes("That operation is not running"), "the refused Stop");
+    await waitFor(() => p.text().includes("Backup finished"), "the backup as it ended");
+    assert.equal(stops.length, 2);
+    assert.deepEqual(stops[0], stops[1], "the second Stop is the same request");
   } finally {
     p.close();
   }
