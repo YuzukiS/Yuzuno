@@ -243,6 +243,7 @@ async function probeRun() {
     await page.goto(`http://127.0.0.1:${port}/`);
     await page.locator(".app").waitFor();
     await openAgent(page, "Mori", true);
+    await atLatest(page, { name: "probe" }, "Mori");
     const lines = async () => (await readFile(measured, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
     const probed = async () => (await lines()).filter((line) => line.probe === "phone-conversation");
     // The drive starts 1.9 s after the conversation is on screen.
@@ -394,6 +395,9 @@ try {
     assert.ok(turns.turnDock.shown && !turns.workDock.shown, "the turn panel opens alone");
     const chips = await page.locator(".turn-dock .turn-dock-chip").allInnerTexts();
     assert.ok(chips.includes(String(TURNS)), `four-digit Turn numbers show: ${chips}`);
+    const stops = await page.locator('.turn-dock li[data-kind="number"] .turn-dock-stop').evaluateAll((els) =>
+      els.map((el) => [Math.round(el.getBoundingClientRect().width), Math.round(el.getBoundingClientRect().height)]));
+    assert.ok(stops.length && stops.every(([width, height]) => width >= 44 && height >= 44), `numbered Turns are 44px targets: ${JSON.stringify(stops)}`);
     const target = chips.find((chip) => chip !== String(TURNS));
     await page.locator(".turn-dock .turn-dock-stop", { has: page.locator(".turn-dock-chip", { hasText: new RegExp(`^${target}$`) }) }).click();
     await page.waitForTimeout(600);
@@ -442,6 +446,7 @@ try {
     for (const state of ["closed", "work-open", "closed-again", "turns-open", "keyboard"])
       assert.ok(states.includes(state), `the probe measured ${state}: ${states}`);
     assert.deepEqual(report.probe.lines.filter((line) => line.failed.length), [], "every probe measurement meets its criteria");
+    assert.deepEqual(report.probe.lines.filter((line) => line.unmeasured?.length), [], "and measures them all, at the latest");
     assert.deepEqual(report.probe.refused, [], "the fixture server refused no write");
     check("the Safari probe meets its criteria here, on the fixture server's crowded conversations", { states, measurements: report.probe.lines.length });
   }

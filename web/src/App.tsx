@@ -2584,6 +2584,7 @@ export function App() {
                 onNavigate={navigateToTurn}
                 atLatest={atBottom && !historyReading}
                 onLatest={backToLatest}
+                touch={phone}
               />
               {phone && (
                 <PhoneDockButtons

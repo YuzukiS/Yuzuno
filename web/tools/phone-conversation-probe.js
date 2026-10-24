@@ -7,8 +7,9 @@
 // each rotation, resize or keyboard change, and again 2 s later. Each
 // measurement is one line of phone-measure.jsonl: probe "phone-conversation",
 // the Agent, the state ("closed", "keyboard", "work-open", "turns-open",
-// "closed-again"), the numbers, and `failed`: the criteria that state did not
-// meet (none, []). Once, when a conversation is first on screen without the
+// "closed-again"), the numbers, `failed`: the criteria that state did not
+// meet (none, []), and `unmeasured`: those it could not measure there (the
+// latest reply's, when the conversation is not at its latest). Once, when a conversation is first on screen without the
 // keyboard, it opens the work panel and then the turn panel with their
 // buttons, and closes each by a click outside it: scripted clicks, not
 // touches, done in about a second, well before the next screenshot. Otherwise
@@ -52,8 +53,11 @@
     const who = agent();
     if (!who) return;
     const panel = main();
-    const failed = [];
+    const failed = [], unmeasured = [];
     const need = (criterion, ok) => { if (!ok) failed.push(criterion); };
+    // How far the conversation is from its latest, where the latest reply is.
+    const scroll = panel.querySelector(".conversation-scroll");
+    const away = scroll ? Math.round(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) : null;
     const overflow = [".conversation-inner", ".composer", ".composer-bottom", ".reply-actions", ".recovery-notice", ".inline-error", ".composer-hint", ".message-content", ".pending-card"]
       .flatMap((selector) => [...panel.querySelectorAll(selector)].filter(shown)
         .filter((el) => el.scrollWidth > el.clientWidth + 1 && !["auto", "scroll"].includes(getComputedStyle(el).overflowX))
@@ -98,8 +102,10 @@
       if (innerWidth <= 520) need("text has the width", !!text && text[2] >= innerWidth - 34);
       if (who === "Mori") {
         need("notice reads in full", !!notice && !notice.clipped && notice.whiteSpace !== "nowrap");
-        need("reply's actions above its time", !!replyRows?.separate);
-        need("Turn's error reads in full", !!error && !error.clipped);
+        if (away !== null && away <= 72) {
+          need("reply's actions above its time", !!replyRows?.separate);
+          need("Turn's error reads in full", !!error && !error.clipped);
+        } else unmeasured.push("reply's actions above its time", "Turn's error reads in full");
       }
     }
     const opened = state === "work-open" ? work : state === "turns-open" ? turns : null;
@@ -115,14 +121,17 @@
         need("jobs, runs and the sub-agent listed", items.length >= 5);
         need("each a 44px row on screen", items.every(([, height, within]) => height >= 44 && within));
       } else {
+        // Back to latest shows only away from the latest.
         const latest = turns.querySelector(".turn-dock-latest");
-        items = [...turns.querySelectorAll(".turn-dock-chip")].map((el) => el.textContent.trim());
-        need("four-digit Turns", items.includes("1408"));
-        need("Back to latest is 44px", !!latest && latest.offsetWidth >= 44 && latest.offsetHeight >= 44);
+        const stops = [...turns.querySelectorAll('li[data-kind="number"] .turn-dock-stop')];
+        items = stops.map((el) => [el.textContent.trim(), el.offsetWidth, el.offsetHeight]);
+        need("four-digit Turns", items.some(([number]) => number.length >= 4));
+        need("numbered Turns are 44px", stops.length > 0 && stops.every((el) => el.offsetWidth >= 44 && el.offsetHeight >= 44));
+        need("Back to latest is 44px", !latest || (latest.offsetWidth >= 44 && latest.offsetHeight >= 44));
       }
     }
     post({
-      n: ++n, agent: who, state, why, failed,
+      n: ++n, agent: who, state, why, failed, unmeasured, away,
       window: [innerWidth, innerHeight],
       visual: vv ? [vv.width, vv.height, vv.offsetTop].map(Math.round) : null,
       overflow, text, buttons: buttons.map(box), controls, notice, replyRows, error,

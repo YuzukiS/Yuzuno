@@ -175,6 +175,10 @@
   right: calc(var(--conversation-scrollbar) + 6px);
   width: 92px;
 }
+/* A short phone's panel scrolls rather than squeezing its parts. */
+.app.phone .conversation-body[data-phone-dock="turns"] > .turn-dock > * {
+  flex-shrink: 0;
+}
 /* Turn numbers of four digits keep their width. */
 .app.phone .conversation-body[data-phone-dock="turns"] > .turn-dock .turn-dock-chip {
   min-width: 44px;
