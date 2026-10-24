@@ -122,13 +122,23 @@ try {
         return { left: r.left, right: r.right, inside: r.left >= 0 && r.right <= width, overflow, page: document.documentElement.scrollWidth <= innerWidth };
       }, width);
       assert.ok(fit.inside && fit.page && fit.overflow.length === 0, `the section fits ${width} px: ${JSON.stringify(fit)}`);
-      // Settings scrolls in its own pane: a tall window shows the whole section
-      // for the screenshot (the fit above is at the real size).
-      await page.setViewportSize({ width, height: 2600 });
-      await page.waitForTimeout(200);
-      await section.screenshot({ path: resolve(output, `${label}-runtime.png`), animations: "disabled" });
-      report.screenshots.push(`${label}-runtime.png`);
-      await page.setViewportSize({ width, height });
+      // The dialog is at most 720 px tall and only its pane scrolls: the
+      // section is shot screen by screen as the pane scrolls through it.
+      const pane = page.locator(".settings-pane");
+      const steps = await pane.evaluate((el) => {
+        const r = el.querySelector("#settings-runtime").getBoundingClientRect();
+        const top = el.scrollTop + r.top - el.getBoundingClientRect().top - 8;
+        const bottom = top + r.height + 8;
+        const stops = [];
+        for (let y = top; y < bottom; y += Math.max(1, el.clientHeight - 40)) stops.push(y);
+        return stops;
+      });
+      assert.ok(steps.length <= 12, `the section takes ${steps.length} screens at ${width} px`);
+      for (const [i, y] of steps.entries()) {
+        await pane.evaluate((el, y) => (el.scrollTop = y), y);
+        await page.waitForTimeout(80);
+        await shot(page, `${label}-runtime-${i + 1}`);
+      }
       const box = section.locator(".runtime-machine", { hasText: "Build box" });
       assert.match(await box.locator(".runtime-checked").textContent(), /older than an hour$/);
       // Keyboard: Read again and Check machines take focus.
