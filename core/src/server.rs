@@ -112,6 +112,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::claude_checkpoints::router())
         .merge(crate::rewind::router())
         .merge(crate::claude_quota::router())
+        .merge(crate::agent_defaults::router())
         .merge(crate::task_proposals::router())
         .merge(crate::task_workspaces::router())
         .merge(crate::codex_usage::router())
@@ -547,6 +548,13 @@ struct Create {
     /// Remember this Agent's folder as the project's default on its machine.
     #[serde(default)]
     save_project_default: bool,
+    /// This Agent's own Codex permission preset; left out, the Workspace's
+    /// default for new Agents, else the built-in behaviour (T-190).
+    #[serde(default)]
+    permission_preset: Option<String>,
+    /// This Agent's own Claude Code permission mode, likewise.
+    #[serde(default)]
+    permission_mode: Option<String>,
 }
 
 #[cfg(test)]
@@ -560,16 +568,81 @@ mod create_tests {
         assert_eq!(legacy.goal,"historical purpose");
     }
 }
+#[cfg(test)]
+mod defaults_create_tests {
+    use super::*;
+    use crate::agent_defaults::AgentDefaults;
+
+    async fn create_with(ws: &Arc<Workspace>, body: Value) -> Result<Value, String> {
+        let input: Create = serde_json::from_value(body).unwrap();
+        create(State(ws.clone()), Json(input)).await.map(|Json(v)| v).map_err(|e| e.0.to_string())
+    }
+
+    /// T-190: the Workspace's defaults reach only the Agents created after
+    /// they are set; an Agent's own choice wins; existing Agents keep theirs.
+    /// Codex Agents only: their runtime here is a program that does not
+    /// exist, so nothing starts. A Claude Agent would start the real Claude
+    /// Code of this host; its resolution is tested in agent_defaults.
+    #[tokio::test]
+    async fn defaults_reach_only_new_agents_and_say_where_each_value_came_from() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().into_owned();
+        let ws = Workspace::new(temp.path().join("data"), cwd.clone(), "unused".into()).unwrap();
+        let before = create_with(&ws, json!({"name":"Before","cwd":cwd})).await.unwrap();
+        assert_eq!(before["harness"], "codex");
+        assert_eq!(before["settings"], serde_json::to_value(crate::model::AgentSettings::default()).unwrap());
+        assert_eq!(before["defaultSources"], json!({"harness":"builtin","permission":"builtin"}));
+
+        ws.store.save_agent_defaults(&AgentDefaults { harness: None,
+            codex_permission_preset: Some("config".into()), claude_permission_mode: Some("auto".into()) }).unwrap();
+        let codex = create_with(&ws, json!({"name":"Codex","cwd":cwd})).await.unwrap();
+        assert_eq!(codex["settings"]["permissionPreset"], "config");
+        assert!(codex["settings"].get("permissionMode").is_none(), "a Claude default does not reach a Codex Agent");
+        assert_eq!(codex["defaultSources"], json!({"harness":"builtin","permission":"workspace"}));
+        let own = create_with(&ws, json!({"name":"Own","cwd":cwd,"harness":"codex","permissionPreset":"ask"})).await.unwrap();
+        assert_eq!((own["settings"]["permissionPreset"].as_str(), own["defaultSources"]["permission"].as_str()), (Some("ask"), Some("request")));
+        assert_eq!(own["defaultSources"]["harness"], "request");
+        let refused = create_with(&ws, json!({"name":"Wrong","cwd":cwd,"harness":"codex","permissionMode":"auto"})).await.unwrap_err();
+        assert!(refused.contains("does not apply to a Codex Agent"), "{refused}");
+        let unknown = create_with(&ws, json!({"name":"Unknown","cwd":cwd,"permissionPreset":"yolo"})).await.unwrap_err();
+        assert!(unknown.contains("Unknown Codex permission mode"), "{unknown}");
+
+        let kept = ws.store.agent(before["id"].as_str().unwrap()).unwrap();
+        assert_eq!(kept.settings, crate::model::AgentSettings::default(), "an existing Agent keeps its settings");
+        assert_eq!(ws.store.agents().unwrap().len(), 3, "refused requests created nothing");
+    }
+
+    /// A Claude Agent never carries a Codex preset or an unknown mode; the
+    /// check comes before anything is written or started.
+    #[tokio::test]
+    async fn a_claude_agent_with_settings_it_cannot_have_is_refused_before_it_exists() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().to_string_lossy().into_owned();
+        let ws = Workspace::new(temp.path().join("data"), cwd.clone(), "unused".into()).unwrap();
+        for settings in [
+            crate::model::AgentSettings { permission_preset: Some("full".into()), ..Default::default() },
+            crate::model::AgentSettings { permission_mode: Some("bypassPermissions".into()), ..Default::default() },
+        ] {
+            let refused = ws.claude_create_on_with("C".into(), String::new(), cwd.clone(), String::new(), None, None, settings).await;
+            assert!(refused.is_err());
+        }
+        assert!(ws.store.agents().unwrap().is_empty());
+    }
+}
 async fn create(State(ws): State<Arc<Workspace>>, Json(p): Json<Create>) -> ApiResult<Json<Value>> {
     let project = p.project_id.clone();
-    let agent = match p.harness.as_deref().unwrap_or("codex") {
-        "codex" => ws.create_on(p.name, p.goal, p.cwd, p.model, p.machine_id, p.project_id).await?,
-        "claude" => ws.claude_create_on(p.name, p.goal, p.cwd, p.model, p.machine_id, p.project_id).await?,
+    // Defaults apply only here, to the Agent being created (T-190).
+    let defaults = ws.stored(|store| store.agent_defaults()).await?;
+    let new = crate::agent_defaults::resolve(&defaults, p.harness.as_deref(), p.permission_preset.as_deref(), p.permission_mode.as_deref())?;
+    let agent = match new.harness.as_str() {
+        "codex" => ws.create_on_with(p.name, p.goal, p.cwd, p.model, p.machine_id, p.project_id, new.settings).await?,
+        "claude" => ws.claude_create_on_with(p.name, p.goal, p.cwd, p.model, p.machine_id, p.project_id, new.settings).await?,
         "opencode" if crate::opencode_agent::enabled() => ws.opencode_create_on(p.name, p.cwd, p.model, p.machine_id, p.project_id).await?,
         _ => return Err(anyhow::anyhow!("未知 Harness").into()),
     };
     // The Agent already exists; a failed default update must not hide it.
     let mut response = serde_json::to_value(&agent)?;
+    response["defaultSources"] = new.sources;
     if let (true, Some(project)) = (p.save_project_default, project) {
         let machine = agent.remote.as_ref().map_or("local", |r| r.machine.id.as_str()).to_owned();
         let cwd = agent.cwd.clone();

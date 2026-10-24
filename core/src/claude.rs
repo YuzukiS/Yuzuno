@@ -608,12 +608,34 @@ impl Workspace {
     pub async fn claude_create_on(
         self: &Arc<Self>,
         name: String,
-        _legacy_goal: String,
+        legacy_goal: String,
         cwd: String,
         model: String,
         machine_id: Option<String>,
         project_id: Option<String>,
     ) -> Result<Agent> {
+        self.claude_create_on_with(name, legacy_goal, cwd, model, machine_id, project_id, Default::default()).await
+    }
+
+    /// A new Claude Agent starting with `settings` (the defaults for new
+    /// Agents resolved by the caller, T-190): only its permission mode, which
+    /// sessions start in; what the session reports is shown beside it.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn claude_create_on_with(
+        self: &Arc<Self>,
+        name: String,
+        _legacy_goal: String,
+        cwd: String,
+        model: String,
+        machine_id: Option<String>,
+        project_id: Option<String>,
+        settings: crate::model::AgentSettings,
+    ) -> Result<Agent> {
+        anyhow::ensure!(
+            settings.permission_preset.is_none()
+                && settings.permission_mode.as_deref().is_none_or(|mode| SELECTABLE_PERMISSION_MODES.contains(&mode)),
+            "Claude 权限模式无效"
+        );
         let permit = self.admission.enter_work()?;
         if name.trim().is_empty() || name.len() > 100 {
             bail!("请填写名称（最多 100 字节）");
@@ -644,7 +666,7 @@ impl Workspace {
             project_id,
             cwd,
             model,
-            settings: Default::default(),
+            settings,
             color: colors[count % colors.len()].into(),
             harness: "claude".into(),
             claude_session_id: None,
