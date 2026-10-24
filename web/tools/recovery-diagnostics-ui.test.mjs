@@ -142,9 +142,10 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
 const recovery = (p) => p.doc.querySelector(".app-recovery");
 const railShows = (p, name) => new RegExp(name).test(p.doc.querySelector(".agent-list")?.textContent || "");
 // Settings opens on its categories (T-187): Diagnostics and the stored
-// history are editors under Data, privacy & recovery, opened from their cards.
+// history are editors under Data, privacy & recovery, opened from their cards;
+// one opened before stays mounted when the other is opened.
 async function openSettingsEditor(p, title, selector) {
-  p.doc.querySelector('[aria-label="Settings and updates"]').click();
+  if (!p.doc.querySelector("#settings-tab-data")) p.doc.querySelector('[aria-label="Settings and updates"]').click();
   await waitFor(() => p.doc.querySelector("#settings-tab-data"), "Settings shows its categories");
   p.doc.querySelector("#settings-tab-data").click();
   await waitFor(() => p.button(`Open ${title}`), `Data, privacy & recovery offers ${title}`);
@@ -457,10 +458,12 @@ test("the held Agents' stored history is read only when Measure is pressed: a ch
     assert.equal(historyCalls(p), 0, "opening Settings does not read it");
     assert.match(section.textContent, /stored bytes, not the memory Core uses/);
     assert.ok(!section.querySelector("table"), "nothing is shown before it is read");
+    await openDiagnostics(p);
     p.button("Copy diagnostics", p.doc.querySelector("#settings-diagnostics")).click();
     await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
     assert.equal(historyCalls(p), 0, "the diagnostics text does not read it");
     assert.ok(!p.copied[0].includes("Stored history"), "nor include it");
+    assert.equal(await openHistory(p), section, "the same History editor, kept while Diagnostics was open");
     p.button("Measure", section).click();
     await waitFor(() => section.querySelector("table"), "the table shows");
     assert.equal(historyCalls(p), 1, "read once, for this press");
