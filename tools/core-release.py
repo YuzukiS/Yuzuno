@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from release_common import claude_sdk_files, command, digest, extract, inventory, read, verify_tree, write
+from release_common import claude_sdk_files, digest, extract, inventory, read, verify_tree, write
 
 TOOLS = Path(__file__).resolve().parent
 
@@ -27,7 +27,10 @@ def require(condition, message):
 
 
 def gh_json(endpoint):
-    return json.loads(command(['gh', 'api', endpoint]))
+    result = subprocess.run(['gh', 'api', endpoint], text=True, capture_output=True)
+    if result.returncode:
+        raise RuntimeError(f'GitHub read failed: {result.stderr.strip()}')
+    return json.loads(result.stdout)
 
 
 def optional_gh_json(endpoint):
@@ -141,6 +144,16 @@ class Flow:
         path.parent.mkdir(exist_ok=True)
         with path.open('ab') as log:
             subprocess.run(list(map(str, argv)), stdout=log, stderr=log, check=True)
+
+    def api(self, argv):
+        """A GitHub API write whose reply is needed. The reply and any error stay in the attempt log."""
+        path = self.root / self.report['attempts'][-1]['log']
+        path.parent.mkdir(exist_ok=True)
+        with path.open('ab') as log:
+            result = subprocess.run(['gh', 'api', *map(str, argv)], stdout=subprocess.PIPE, stderr=log)
+            log.write(result.stdout + b'\n')
+        result.check_returncode()
+        return json.loads(result.stdout)
 
     def outputs(self, paths):
         return {str(p.relative_to(self.root)): digest(p) for p in paths}
@@ -270,6 +283,12 @@ class Flow:
         self.report['resumeAt'] = 'publish (only with release authorization)'
         write(self.report_path, self.report)
 
+    def frozen_release(self, value):
+        require(type(value.get('id')) is int and value['id'] > 0, 'Invalid remote release ID')
+        require(value.get('tag_name') == self.config['releaseId'] and value.get('target_commitish') == self.config['source'],
+                'Remote release tag/source differs from frozen release')
+        return value
+
     def remote_release(self, missing_ok=False):
         c = self.config
         endpoint = f"repos/{c['repository']}/releases"
@@ -279,13 +298,6 @@ class Flow:
         if saved is not None:
             require({k: saved.get(k) for k in identity} == identity, 'Saved remote release identity changed')
         release_id = saved.get('id') if saved is not None else None
-
-        def validate(value):
-            require(type(value.get('id')) is int and value['id'] > 0, 'Invalid remote release ID')
-            require(value.get('tag_name') == c['releaseId'] and value.get('target_commitish') == c['source'],
-                    'Remote release tag/source differs from frozen release')
-            return value
-
         if release_id is None:
             # The tag endpoint excludes drafts. Only its explicit 404 permits discovery.
             value = optional_gh_json(f"{endpoint}/tags/{c['releaseId']}")
@@ -303,10 +315,10 @@ class Flow:
             if value is None:
                 require(missing_ok, 'Remote release not found; preserve any prior creation attempt and reconcile')
                 return None
-            release_id = validate(value)['id']
+            release_id = self.frozen_release(value)['id']
             write(receipt, {**identity, 'id': release_id})
         require(type(release_id) is int and release_id > 0, 'Invalid saved remote release ID')
-        value = validate(gh_json(f'{endpoint}/{release_id}'))
+        value = self.frozen_release(gh_json(f'{endpoint}/{release_id}'))
         require(value['id'] == release_id, 'Remote release ID changed')
         return value
 
@@ -334,9 +346,17 @@ class Flow:
         if release is None:
             receipt = self.root / 'remote-release.json'
             require(not receipt.exists(), 'Draft creation was already attempted; reconcile before creating another release')
-            write(receipt, {'repository': c['repository'], 'tag': c['releaseId'], 'source': c['source'], 'id': None})
-            self.execute(['gh', 'release', 'create', c['releaseId'], '--repo', c['repository'], '--draft',
-                          '--target', c['source'], '--title', c['version'], '--notes-file', self.root / 'notes.txt'])
+            identity = {'repository': c['repository'], 'tag': c['releaseId'], 'source': c['source']}
+            write(receipt, {**identity, 'id': None})
+            # The request `gh release create --draft` sends, whose reply carries the ID it does not print.
+            created = self.api(['--method', 'POST', f"repos/{c['repository']}/releases",
+                                '-f', f"tag_name={c['releaseId']}", '-f', f"target_commitish={c['source']}",
+                                '-f', f"name={c['version']}", '-F', f"body=@{self.root / 'notes.txt'}",
+                                '-F', 'draft=true', '-F', 'prerelease=false'])
+            require(self.frozen_release(created).get('draft') is True, 'Created release is not a draft')
+            # Pinned before any read, so nothing after creation depends on finding the draft by tag. A
+            # lost or refused reply leaves id null: resume may only adopt the one listed release.
+            write(receipt, {**identity, 'id': created['id']})
             release = self.remote_release()
         self.tag()
         expected = {p.name: p for p in paths}
@@ -346,15 +366,21 @@ class Flow:
             require(asset.get('digest') == 'sha256:' + digest(path) and asset['size'] == path.stat().st_size,
                     'Remote asset differs; do not clobber or sign again')
         require(release['draft'] or not expected, 'Published release is incomplete; inspect instead of modifying it')
+        # Uploads and publication address the pinned release, not whichever release the tag resolves to.
+        upload = release['upload_url'].split('{', 1)[0]
+        require(upload.endswith(f"/releases/{release['id']}/assets"), 'Upload URL names another release')
         for path in expected.values():
-            self.execute(['gh', 'release', 'upload', c['releaseId'], path, '--repo', c['repository']])
+            # The content types `gh release upload` gives these three files.
+            kind = {'.json': 'application/json', '.minisig': 'application/octet-stream', '.gz': 'application/x-gtar'}[path.suffix]
+            self.api(['--method', 'POST', '-H', f'Content-Type: {kind}',
+                      f'{upload}?name={urllib.parse.quote(path.name)}', '--input', path])
         release = self.remote_release()
         require(len(release['assets']) == 3, 'Remote upload is incomplete')
         for asset in release['assets']:
             path = self.root / 'signed' / asset['name']
             require(asset.get('digest') == 'sha256:' + digest(path), 'Uploaded asset digest differs')
         if release['draft']:
-            self.execute(['gh', 'release', 'edit', c['releaseId'], '--repo', c['repository'], '--draft=false'])
+            self.api(['--method', 'PATCH', f"repos/{c['repository']}/releases/{release['id']}", '-F', 'draft=false'])
         release = self.remote_release()
         require(not release['draft'], 'Publication remains unconfirmed; resume to reconcile')
         write(self.root / 'publication.json', release)
