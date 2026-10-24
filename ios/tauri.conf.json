@@ -19,7 +19,7 @@
   "bundle": {
     "active": true,
     "icon": [
-      "../desktop/icons/icon.png"
+      "../web/src/assets/yuzu-character.png"
     ]
   }
 }

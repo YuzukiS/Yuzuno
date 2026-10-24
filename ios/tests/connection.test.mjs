@@ -39,7 +39,9 @@ test('the last Workspace is filled in, not opened, until Connect', async () => {
     assert.deepEqual(calls.map((call) => call.command), ['saved_core'], 'nothing is connected by itself');
     submit(dom);
     await settle();
-    assert.deepEqual(calls.at(-1), { command: 'connect_core', args: { url: 'https://core.example.ts.net/' } });
+    // The arguments are made in JSDOM's own realm: compare their fields.
+    assert.equal(calls.at(-1).command, 'connect_core');
+    assert.equal(calls.at(-1).args.url, 'https://core.example.ts.net/');
     assert.match(document.querySelector('[role="status"]').textContent, /Opening your workspace/);
   } finally { dom.window.close(); }
 });

@@ -52,6 +52,13 @@ pub fn may_open(url: &Url, selected: Option<&Url>) -> bool {
     }
 }
 
+/// A link the window does not open itself that is handed to the system
+/// instead (Safari, Mail), as the desktop app hands it on: web pages and
+/// mail only, never other schemes.
+pub fn opens_outside(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https" | "mailto")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +106,20 @@ mod tests {
         assert!(!open("tauri://elsewhere/", Some(&core)));
         assert!(!open("about:srcdoc", Some(&core)));
         assert!(!open("file:///etc/hosts", Some(&core)));
+    }
+
+    #[test]
+    fn only_web_pages_and_mail_are_handed_to_the_system() {
+        for (url, outside) in [
+            ("https://github.com/YuzukiS/Yuzuno", true),
+            ("http://example.com/", true),
+            ("mailto:someone@example.com", true),
+            ("file:///etc/hosts", false),
+            ("javascript:alert(1)", false),
+            ("tel:+15555550100", false),
+            ("shortcuts://run-shortcut", false),
+        ] {
+            assert_eq!(opens_outside(&Url::parse(url).unwrap()), outside, "{url}");
+        }
     }
 }

@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_opener::OpenerExt;
 use url::Url;
 
 /// The Core the window may show: the one last connected from the page.
@@ -99,13 +100,26 @@ pub fn run() {
         .build()
         .expect("Unable to create the Workspace connection client");
     tauri::Builder::default()
+        // Used from here only: no page is granted the opener's commands, and
+        // its page script does not take over link clicks (as in the desktop
+        // app, T-104).
+        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         .manage(Connection { client, selected })
         .invoke_handler(tauri::generate_handler![saved_core, connect_core])
         .setup(move |app| {
+            let outside = app.handle().clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .on_navigation(move |url| {
                     let selected = navigation.lock().ok().and_then(|selected| selected.clone());
-                    core_url::may_open(url, selected.as_ref())
+                    let permitted = core_url::may_open(url, selected.as_ref());
+                    // A web page or mail link the window does not open itself
+                    // opens in Safari or Mail; anything else stays unopened.
+                    if !permitted && core_url::opens_outside(url) {
+                        if let Err(error) = outside.opener().open_url(url.as_str(), None::<&str>) {
+                            eprintln!("Unable to open {} outside Yuzuno: {error}", url.scheme());
+                        }
+                    }
+                    permitted
                 })
                 .build()?;
             Ok(())
