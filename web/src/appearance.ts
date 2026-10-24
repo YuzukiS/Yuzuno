@@ -233,7 +233,9 @@ export function initializeAppearance() {
   applyAppearance(readAppearance());
   const system = window.matchMedia("(prefers-color-scheme: dark)");
   system.addEventListener("change", () => {
-    const appearance = readAppearance();
+    // The choice in effect in this window, which may be one this device
+    // refused to save; not what is stored (T-187).
+    const appearance = current ?? readAppearance();
     if (appearance.theme === "system") applyAppearance(appearance);
   });
   onDeviceValueChange(STORAGE_KEY, () => {

@@ -21,9 +21,16 @@ globalThis.localStorage = {
 const styles = new Map();
 const root = { dataset: {}, style: { setProperty: (name, value) => styles.set(name, value) } };
 globalThis.document = { documentElement: root, querySelector: () => null };
-globalThis.window = { matchMedia: () => ({ matches: false }) };
+// The system's light or dark, which the test changes as the OS does.
+const system = { matches: false, listeners: [], addEventListener(type, listener) { this.listeners.push(listener); } };
+const osTheme = (dark) => {
+  system.matches = dark;
+  system.listeners.forEach((listener) => listener());
+};
+globalThis.window = Object.assign(new EventTarget(), { matchMedia: () => system });
 globalThis.getComputedStyle = () => ({ getPropertyValue: () => "" });
-const { applyAppearance, defaultAppearance, readAppearance, restoreDefaultAppearance, saveAppearance } = await import("../src/appearance.ts");
+const { applyAppearance, defaultAppearance, initializeAppearance, readAppearance, restoreDefaultAppearance, saveAppearance } =
+  await import("../src/appearance.ts");
 const KEY = "yuzuno.appearance";
 
 test("the Agent list is detailed until chosen; earlier saved choices keep theirs", () => {
@@ -156,4 +163,35 @@ test("restore defaults removes this device's choice only, and says whether it co
   } finally {
     refuse = null;
   }
+});
+
+test("a choice this device refused to save stays in effect when the system theme changes (T-187)", () => {
+  store.clear();
+  osTheme(false);
+  initializeAppearance();
+  // Saved: follow the system. Chosen, not saved: dark.
+  saveAppearance({ ...readAppearance(), theme: "system" });
+  refuse = new DOMException("The quota has been exceeded.", "QuotaExceededError");
+  try {
+    saveAppearance({ ...readAppearance(), theme: "dark" });
+    assert.equal(root.dataset.theme, "dark");
+    osTheme(false);
+    assert.equal(root.dataset.theme, "dark", "the system's light does not undo the dark chosen here");
+  } finally {
+    refuse = null;
+  }
+  // Saved: dark. Chosen, not saved: follow the system.
+  saveAppearance({ ...readAppearance(), theme: "dark" });
+  refuse = new DOMException("The quota has been exceeded.", "QuotaExceededError");
+  try {
+    saveAppearance({ ...readAppearance(), theme: "system" });
+    assert.equal(root.dataset.theme, "light");
+    osTheme(true);
+    assert.equal(root.dataset.theme, "dark", "it follows the system, as chosen here");
+    osTheme(false);
+    assert.equal(root.dataset.theme, "light");
+  } finally {
+    refuse = null;
+  }
+  assert.equal(JSON.parse(store.get(KEY)).theme, "dark", "what is saved is unchanged");
 });
