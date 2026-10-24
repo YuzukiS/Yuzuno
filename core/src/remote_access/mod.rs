@@ -749,6 +749,8 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
         }
     };
     mirror(ws, &slot);
+    // What a rollback leaves, in words.
+    let unchanged = if matches!(rollback, Undo::Remove) { "phone access stays off" } else { "the previous phone access is unchanged" };
     // serve
     at(ws, op, "serve");
     let config = match host::serve_status(host).await {
@@ -756,7 +758,7 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
         Err(error) => {
             undo(ws, &mut slot, rollback).await;
             op.state = "rolledBack".into();
-            return Err(error.context("Could not read Serve's configuration; the previous phone access is unchanged"));
+            return Err(error.context(format!("Could not read Serve's configuration; {unchanged}")));
         }
     };
     let (found, detail) = host::serve_entry(&config, &dns, serve_port, &target);
@@ -778,14 +780,14 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
                 } else {
                     undo(ws, &mut slot, rollback).await;
                     op.state = "rolledBack".into();
-                    return Err(error.context("The previous phone access is unchanged"));
+                    return Err(error.context(format!("{}{}", unchanged[..1].to_uppercase(), &unchanged[1..])));
                 }
             }
         }
         _ => {
             undo(ws, &mut slot, rollback).await;
             op.state = "rolledBack".into();
-            bail!("{detail}. Choose another Serve port in the advanced settings; the previous phone access is unchanged");
+            bail!("{detail}. Choose another Serve port in the advanced settings; {unchanged}");
         }
     }
     // The previous entry Core owned, on another port: removed only while it is still exactly that.

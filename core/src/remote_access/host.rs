@@ -183,11 +183,28 @@ pub(super) fn serve_entry(config: &Value, dns: &str, port: u16, target: &str) ->
     if exact {
         return ("match", format!("https://{name} serves {target}"));
     }
-    let what = match &web {
-        Some((key, value)) => format!("{key} is {value}"),
-        None => format!("TCP {port} is {tcp}"),
-    };
-    ("conflict", format!("Port {port} is already used by another Serve configuration ({what}{}); it is left as it is", if funnel { ", with Funnel" } else { "" }))
+    ("conflict", format!("Port {port} is already used by another Serve configuration ({}{}); it is left as it is",
+        describe(web.as_ref(), tcp, port), if funnel { ", with Funnel" } else { "" }))
+}
+
+/// Someone else's use of a Serve port, in words: where it sends requests.
+fn describe(web: Option<&(String, Value)>, tcp: &Value, port: u16) -> String {
+    match web.map(|(key, value)| (key, value["Handlers"].as_object())) {
+        Some((key, Some(handlers))) if handlers.len() == 1 => {
+            let (path, handler) = handlers.iter().next().unwrap();
+            match handler["Proxy"].as_str() {
+                Some(proxy) => format!("https://{key}{path} → {proxy}"),
+                None if handler["Path"].is_string() => format!("https://{key}{path} serves files"),
+                None => format!("https://{key}{path} serves something else"),
+            }
+        }
+        Some((key, Some(handlers))) => format!("https://{key} with {} paths", handlers.len()),
+        Some((key, None)) => format!("https://{key}"),
+        None => match tcp["TCPForward"].as_str() {
+            Some(target) => format!("TCP {port} → {target}"),
+            None => format!("TCP {port}"),
+        },
+    }
 }
 
 /// Every Serve port other than `port`, for the page's "other services kept".

@@ -169,7 +169,8 @@ async fn a_taken_serve_port_rolls_back_to_the_previous_entry_and_saves_the_reque
     // The same local port, another Serve port: the old listener closes first, so the rollback binds it again.
     let op = lab.apply(json!({"requestId": "move", "enabled": true, "localPort": port, "servePort": 8445})).await.unwrap();
     assert_eq!((op["state"].as_str(), op["step"].as_str()), (Some("rolledBack"), Some("serve")), "{op}");
-    assert!(op["error"].as_str().unwrap().contains("already used by another Serve configuration"), "{op}");
+    assert!(op["error"].as_str().unwrap().contains(&format!("already used by another Serve configuration (https://{DNS}:8445/ → http://127.0.0.1:9999)")), "{op}");
+    assert!(op["error"].as_str().unwrap().ends_with("the previous phone access is unchanged"), "{op}");
     let host = format!("{DNS}:8444");
     assert_eq!(get(port, "/api/health", Some(OWNER), &host).await.0, 200, "the previous entry serves again");
     let serve = &lab.fake()["serve"];
@@ -501,4 +502,18 @@ async fn a_check_before_setup_reads_serve_for_the_planned_port() {
     assert_eq!(taken["serve"]["state"], "conflict", "{}", taken["serve"]);
     assert_eq!(serve_step(&taken, "serve")["state"], "failed");
     assert!(lab.calls().iter().all(|c| c.ends_with("--json")), "read only: {:?}", lab.calls());
+}
+
+#[tokio::test]
+async fn a_first_apply_rolled_back_says_phone_access_stays_off() {
+    let lab = lab("wsl");
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    lab.set_fake(|s| {
+        s["serve"]["TCP"]["8444"] = json!({"HTTPS": true, "TCPForward": "127.0.0.1:22"});
+    });
+    let op = lab.apply(json!({"requestId": "on", "enabled": true, "localPort": free_port()})).await.unwrap();
+    assert_eq!(op["state"], "rolledBack", "{op}");
+    let error = op["error"].as_str().unwrap();
+    assert!(error.contains("(TCP 8444 → 127.0.0.1:22)") && error.ends_with("phone access stays off"), "{error}");
+    assert!(lab.view().await["listening"].is_null());
 }
