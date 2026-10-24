@@ -38,3 +38,7 @@ footer { display: flex; align-items: center; justify-content: space-between; col
 body { padding-top: max(25px, env(safe-area-inset-top)); padding-bottom: max(25px, env(safe-area-inset-bottom)); padding-left: max(25px, env(safe-area-inset-left)); padding-right: max(25px, env(safe-area-inset-right)); }
 /* iOS zooms into a field whose text is under 16px when it is focused, and stays zoomed. */
 input { font-size: 16px; }
+/* iOS draws the status bar over the page (viewport-fit=cover): this backdrop keeps what scrolls from showing
+   under it. With the keyboard open, iOS scrolls the visual viewport but leaves the layout viewport, which a
+   fixed element belongs to, at the top: connection.js moves the backdrop down by that offset. */
+body::before { content: ""; position: fixed; z-index: 1; top: 0; left: 0; right: 0; height: env(safe-area-inset-top, 0px); background: #faf8f4; pointer-events: none; transform: translateY(var(--visual-top, 0px)); }

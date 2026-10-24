@@ -54,3 +54,16 @@ async function start() {
 }
 
 start();
+
+// The status bar's backdrop (connection.css) stays at the top of what is
+// seen. With the keyboard open, iOS scrolls the visual viewport and leaves
+// the layout viewport, which the backdrop is fixed to, behind.
+const visual = window.visualViewport;
+function followVisualViewport() {
+  document.documentElement.style.setProperty('--visual-top', `${visual.offsetTop}px`);
+}
+if (visual) {
+  visual.addEventListener('resize', followVisualViewport);
+  visual.addEventListener('scroll', followVisualViewport);
+  followVisualViewport();
+}
