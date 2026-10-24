@@ -679,9 +679,20 @@ as before. A follow-up through `send_message` on a held record commits once
 in place and reads no whole copy. It was not measured on its own: its commit
 copies the metadata and the one Turn, as `turnRequested`'s does.
 
-A message delivery still copies the record once. It can move the message
-from the Turn it was shown in to the Turn Claude runs it in, and it settles
-the Agent's status by every Turn, so it changes more than one Turn.
+A message delivery, Claude naming a follow-up, copied the record to
+compare. It shows the message in the Turn Claude names: in place where that
+Turn shows it already, or moved there from the first Turn that does. That Turn
+may be one the record lacks, which the delivery appends. It then settles the
+Agent's status by every Turn. On a held record where some Turn shows the
+message, `Store::record_delivery` now copies only the Turn named and the one
+showing it, in record order, and writes them in place (`commit_turns`, beside
+`commit_turn`). Whether another Turn is in progress is read in place under
+the record lock, and the status settles as before. A message no Turn shows
+is built from its receipt and its images, and is compared as before, decided
+before the change runs, so its images are read once. A delivery from the
+bridge, on a held record where a Turn shows the message, commits in place and
+reads no whole copy. This was not measured on its own: the commit copies the
+metadata and at most two Turns.
 
 ### A Claude Turn's end
 
