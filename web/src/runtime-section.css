@@ -64,7 +64,10 @@ dl.runtime-group {
   border-style: dashed;
   color: var(--text-quiet);
 }
+/* Beside its Yes / No / Unknown, wrapping there, unless too little is left. */
 .runtime-text {
+  flex: 1 1 8em;
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 .runtime-detail {

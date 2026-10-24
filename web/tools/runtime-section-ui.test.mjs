@@ -160,8 +160,8 @@ test("it shows Core, this device and each machine's last check, each fact with w
     "Managed Jobs": "Yes · Managed · limits enforced · Whether the machine can hold them is checked when a Job starts.",
   });
   assert.deepEqual(page.facts(page.harness("Build box", "Codex")), {
-    CLI: "Unknown · Not part of the last check · Not checked on this machine.",
-    "Signed in": "Unknown · Not known · Not checked on this machine.",
+    CLI: "Unknown · Not known · The last check didn't reach this machine.",
+    "Signed in": "Unknown · Not known · Machine checks don't read Codex's sign-in; Core knows it only on its own host.",
     Models: "Unknown · Not checked here · Models are listed when you choose one for an Agent.",
   });
   assert.equal(page.facts().Compatibility,
@@ -170,7 +170,7 @@ test("it shows Core, this device and each machine's last check, each fact with w
   page.close();
 });
 
-test("what can't be read or was never checked is Unknown, not guessed; a signed-out CLI says so", async () => {
+test("what can't be read or was never checked is Unknown, not guessed; a CLI Core can't use says why", async () => {
   const answers = core({
     "/api/health": () => ({ status: 503, body: { error: "Core is starting" } }),
     "/api/workspace": { agents: [], defaultCwd: "/work", runtime: { connected: false, error: "codex app-server exited" } },
@@ -185,7 +185,8 @@ test("what can't be read or was never checked is Unknown, not guessed; a signed-
           machineId: "mac", startedAt: hoursAgo(0.1), checkedAt: hoursAgo(0.1), durationMs: 3000, reachable: true,
           harnesses: [
             { harness: "codex", supported: true, found: false, error: "codex: command not found" },
-            { harness: "claude", supported: true, found: false, error: "Claude Code is signed out: run claude login", signIn: { state: "signedOut" } },
+            // As an SSH check reports it: not usable, with Core's reason, and no sign-in of its own.
+            { harness: "claude", supported: true, found: false, executable: "/opt/homebrew/bin/claude", version: "2.1.296 (Claude Code)", error: "Claude Code there is not logged in: run claude login on it" },
           ],
         },
       },
@@ -211,14 +212,39 @@ test("what can't be read or was never checked is Unknown, not guessed; a signed-
   assert.equal(page.facts(page.harness("Core host", "Claude Code")).CLI, "Unknown · Not checked yet · Check the machine on the Machines page.");
   assert.deepEqual(page.facts(page.harness("Studio", "Codex")), {
     CLI: "No · Not found · codex: command not found",
-    "Signed in": "Unknown · Not known · Not checked on this machine.",
+    "Signed in": "Unknown · Not known · Machine checks don't read Codex's sign-in; Core knows it only on its own host.",
     Models: "Unknown · Not checked here · Models are listed when you choose one for an Agent.",
   });
-  assert.equal(page.facts(page.harness("Studio", "Claude Code"))["Signed in"], "No · Signed out · Claude Code is signed out: run claude login");
+  assert.deepEqual(page.facts(page.harness("Studio", "Claude Code")), {
+    CLI: "No · Not usable · 2.1.296 (Claude Code) · Claude Code there is not logged in: run claude login on it",
+    "Signed in": "Unknown · Not known · Checks of SSH machines don't report sign-in by itself; a sign-in problem shows on the CLI line.",
+    Models: "Unknown · Not checked here · Models are listed when you choose one for an Agent.",
+  });
   assert.equal(page.facts(page.machine("Studio").querySelector("dl"))["Managed Jobs"],
     "Yes · Record only · Saved before Job limits: nothing is held there.");
   assert.deepEqual([...page.calls].sort(), [...READS].sort());
   page.close();
+});
+
+test("on the Core host a signed-out Claude Code is found and signed out; one that can't run is found but not usable", async () => {
+  // Core's check counts both as not found; its sign-in is what tells them apart.
+  const hint = "Claude Code on host-a is not logged in: run claude login";
+  const bridge = "Claude Code was found, but node (needed by Yuzuno's Claude bridge) was not";
+  for (const [claude, cli, signedIn] of [
+    [{ error: hint, signIn: { state: "signedOut", method: "none" } }, "Yes · Found · 2.1.296 (Claude Code) · /usr/bin/claude", `No · Signed out · ${hint}`],
+    [{ error: bridge }, `No · Not usable · 2.1.296 (Claude Code) · ${bridge}`, "Unknown · Not known · Sign-in is read only when the CLI can run."],
+  ]) {
+    const answers = core();
+    const local = answers["/api/machines"].machines[0];
+    local.lastCheck.harnesses[1] = { harness: "claude", supported: true, found: false, executable: "/usr/bin/claude", version: "2.1.296 (Claude Code)", ...claude };
+    const page = mount(answers);
+    page.window.show();
+    await tick();
+    const facts = page.facts(page.harness("Core host", "Claude Code"));
+    assert.equal(facts.CLI, cli);
+    assert.equal(facts["Signed in"], signedIn);
+    page.close();
+  }
 });
 
 test("a development Core and a page from another release are said plainly", async () => {
