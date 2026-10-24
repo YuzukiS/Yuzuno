@@ -37,6 +37,10 @@ const check = (name, extra = {}) => {
   console.log(`PASS ${name}`);
 };
 const TOUCH = "(hover: none) and (pointer: coarse)";
+// Every request is answered here; nothing listens there. A loopback address
+// is a secure context, as Core's own is, so the app can name a message
+// (crypto.randomUUID) and send it.
+const ORIGIN = "http://127.0.0.1:4399";
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 
 // ---- 1. The composer, in the app ----
@@ -59,7 +63,20 @@ async function openApp(device, sendKey, label) {
   const page = await context.newPage();
   const sends = [];
   await page.addInitScript((sendKey) => {
-    window.EventSource = class { close() {} };
+    // Core's event stream, open and quiet.
+    window.EventSource = class {
+      constructor() {
+        this.readyState = 0;
+        setTimeout(() => {
+          if (this.readyState === 2) return;
+          this.readyState = 1;
+          this.onopen?.({});
+        }, 0);
+      }
+      close() {
+        this.readyState = 2;
+      }
+    };
     localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
     if (sendKey) localStorage.setItem("yuzuno.preferences", JSON.stringify({ sendKey }));
   }, sendKey ?? null);
@@ -67,7 +84,7 @@ async function openApp(device, sendKey, label) {
   await page.route("**/*", async (route) => {
     const request = route.request(), url = new URL(request.url()), method = request.method();
     if (url.protocol !== "http:") return route.continue();
-    assert.equal(url.hostname, "yuzuno-prefs.test");
+    assert.equal(url.origin, ORIGIN);
     const path = url.pathname;
     // A message sent: counted, and answered as refused, so nothing changes.
     if (method === "POST" && path === "/api/agents/a/messages") {
@@ -104,7 +121,7 @@ async function openApp(device, sendKey, label) {
     assert.ok(file.startsWith(dist + "/"));
     await route.fulfill({ body: await readFile(file), contentType: types[extname(file)] });
   });
-  await page.goto("http://yuzuno-prefs.test/");
+  await page.goto(`${ORIGIN}/`);
   await page.locator(".agent-row").first().waitFor();
   await page.locator('.agent-row .agent-select[aria-label="Open Mori"]').click();
   const input = page.locator('[data-composer-input][aria-label="Message Mori"]');
@@ -146,7 +163,9 @@ async function pressCase(device, sendKey, press, outcome, label) {
     // Sent: one message and no new line (the draft may be kept or cleared).
     const newLine = text.join("\n") === "draft\n";
     const seen = app.sends.length === 1 && !newLine ? "send" : app.sends.length === 0 && newLine ? "new line" : `${app.sends.length} sent, ${JSON.stringify(text)}`;
-    report.composer.push({ device, sendKey: sendKey ?? null, press, expected: outcome, seen, text, hint });
+    // What the app said after it (the refused send's error, for one), to read a failure by.
+    const alerts = await app.page.locator('[role="alert"]').allTextContents();
+    report.composer.push({ device, sendKey: sendKey ?? null, press, expected: outcome, seen, text, hint, alerts });
     assert.equal(seen, outcome, label);
     assert.deepEqual(app.sends.map((body) => body.text), outcome === "send" ? ["draft"] : [], `${label}: what was sent`);
     assert.equal(hint, sends ? "↵ Send ⇧ ↵ New line" : "↵ New line Ctrl ↵ Send", `${label}: the composer's hint`);
@@ -258,7 +277,7 @@ async function openHarness(screen, fontSize, label, { refuse = false } = {}) {
   await page.route("**/*", async (route) => {
     const request = route.request(), url = new URL(request.url());
     if (url.protocol !== "http:") return route.continue();
-    assert.equal(url.hostname, "yuzuno-prefs.test");
+    assert.equal(url.origin, ORIGIN);
     const body = { "/": '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/harness.css"></head><body><div id="root"></div><script src="/harness.js"></script></body></html>',
       "/harness.js": harness.js, "/harness.css": harness.css }[url.pathname];
     if (url.pathname === "/favicon.ico") return route.fulfill({ status: 404, body: "" });
@@ -268,7 +287,7 @@ async function openHarness(screen, fontSize, label, { refuse = false } = {}) {
     }
     await route.fulfill({ body, contentType: types[extname(url.pathname) || ".html"] });
   });
-  await page.goto("http://yuzuno-prefs.test/");
+  await page.goto(`${ORIGIN}/`);
   await page.locator(".input-preferences").waitFor();
   await page.locator(".shortcut-help").waitFor();
   await page.waitForTimeout(200);
