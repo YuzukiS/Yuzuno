@@ -483,6 +483,10 @@ try {
         theme,
       );
       await page.reload();
+      // A phone opens on the Agent list (T-170): open the selected Agent.
+      await page.locator(".agent-row.selected").waitFor();
+      if (await page.locator(".app.phone-list").count())
+        await page.locator(".agent-row.selected .agent-select").click();
       // A narrow header keeps Close under Conversation actions.
       const direct = page.getByRole("button", { name: "Close agent", exact: true });
       await page.getByRole("button", { name: "Conversation actions", exact: true }).waitFor();
