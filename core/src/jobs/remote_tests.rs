@@ -2320,12 +2320,12 @@ async fn a_mac_is_told_its_limits_are_declared_only_and_that_it_cannot_pause() {
 }
 
 /// What a Mac's attempt can be told it gets: the Linux statement's inputs,
-/// artifacts and processes, with its own limits and no pause; Linux when the
-/// platform is not known (T-186).
+/// artifacts and processes, with its own limits and no pause; nothing held
+/// promised when the platform is not known (T-186).
 #[test]
 fn a_mac_is_described_as_holding_no_limits_and_no_pause() {
     let (linux, mac) = (remote::capabilities(), remote::darwin_capabilities());
-    assert_eq!(remote::capabilities_for(None), linux);
+    assert_eq!(remote::capabilities_for(None), remote::unknown_capabilities());
     assert_eq!(remote::capabilities_for(Some("Linux")), linux);
     assert_eq!(remote::capabilities_for(Some("Darwin")), mac);
     assert_eq!(mac["platform"], "macOS");
@@ -2353,4 +2353,36 @@ fn apples_stand_in_for_python3_is_not_a_python3() {
     }
     // Any other failure there is not this: it may pass.
     assert!(matches!(remote::parse_reply(Some(1), b"", "Traceback: KeyError", "n"), remote::Reply::Broken(_)));
+}
+
+/// The first job a machine gets, before Core has reached it, is not told the
+/// machine is Linux: what can be held there is not known yet, so no limit is
+/// promised (T-186, Lead 9134). Through job_submit itself: a machine never
+/// reached is unknown, one whose last attempt answered as a Mac is a Mac.
+#[tokio::test]
+async fn a_first_submit_to_a_machine_not_reached_yet_promises_no_limits() {
+    let lab = lab();
+    let path = |name: &str| lab.dir.path().join(name);
+    let at = format!("HOME={} YUZUNO_JOBS_MACHINE_ID_FILE={} YUZUNO_JOBS_CAPABILITIES_FILE={}",
+        path("home").display(), path("machine-a").display(), path("capabilities.json").display());
+    let mac = script(path("ssh-mac"), format!(
+        "#!/bin/sh\n{ARGS}request=$(cat)\nreply=$(printf '%s' \"$request\" | {at} /bin/sh -c \"$1\")\ncode=$?\nprintf '%s\\n' \"$reply\" | sed 's/\"platform\": \"Linux\"/\"platform\": \"Darwin\"/'\nexit $code\n"));
+    // m1 answers once as a Mac (driven here, before job_submit starts the executor's own loop).
+    let earlier = submit(&lab, "earlier", "true");
+    let done = until(&lab, &mac, &earlier, |j| j["reserved"] == false).await;
+    assert_eq!((done["status"].as_str(), done["remote"]["platform"].as_str()), (Some("succeeded"), Some("Darwin")), "{done}");
+    // m2 was never reached.
+    lab.ws.store.add_machine(&RemoteMachine {
+        id: "m2".into(), name: "new box".into(), target: "new-box".into(), codex: "codex".into(),
+        default_cwd: lab.work.to_string_lossy().into_owned(), limit_mode: Some("limited".into()), ..Default::default()
+    }).unwrap();
+    let request = |id: &str, machine: &str| json!({"requestId":id,"taskId":"T-1","name":id,"cwd":lab.work,"argv":["/bin/sh","-c","true"],
+        "env":{"PATH":"/usr/bin:/bin"},"resources":{"cpuMillis":500,"memoryMiB":128,"swapMiB":0},"timeoutSeconds":120,
+        "guardGit":false,"machineId":machine});
+    let first = super::call(lab.ws.clone(), Some("a".into()), "job_submit".into(), request("first-on-new", "m2")).await.unwrap();
+    assert_eq!(first["capabilities"], remote::unknown_capabilities(), "{first}");
+    let limits = first["capabilities"]["limits"].as_str().unwrap();
+    assert!(limits.starts_with("Not known yet") && limits.contains("not as held"), "{limits}");
+    let on_mac = super::call(lab.ws.clone(), Some("a".into()), "job_submit".into(), request("next-on-mac", "m1")).await.unwrap();
+    assert_eq!(on_mac["capabilities"], remote::darwin_capabilities(), "{on_mac}");
 }

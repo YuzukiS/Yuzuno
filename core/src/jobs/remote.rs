@@ -1234,8 +1234,8 @@ async fn launch(ws: &Arc<Workspace>, job: Value, programs: &Programs<'_>) -> Res
                 let mut facts = json!({"hostId": reply["hostId"], "helloBootId": reply["bootId"], "digest": digest(&spec(&job))});
                 // What it runs on decides what the attempt is told it gets
                 // (T-186); a helper that does not say is a Linux one.
-                if let (Machine::Ssh(_), Some(platform)) = (&machine, reply["platform"].as_str()) {
-                    facts["platform"] = json!(platform);
+                if let Machine::Ssh(_) = &machine {
+                    facts["platform"] = json!(reply["platform"].as_str().unwrap_or("Linux"));
                 }
                 if let Some(root) = pinned_root(&machine, &reply) {
                     facts["root"] = json!(root);
@@ -1453,12 +1453,23 @@ pub(super) fn darwin_capabilities() -> Value {
     value
 }
 
+/// What a job is told before its machine has named its platform (T-186):
+/// what is held there depends on it, so nothing is promised yet.
+pub(super) fn unknown_capabilities() -> Value {
+    let mut value = capabilities();
+    value["platform"] = json!("unknown");
+    value["limits"] = json!("Not known yet: what can be held depends on the machine's platform, which Core learns when it first reaches the machine for an attempt; these capabilities are then replaced by that platform's. On Linux the account's systemd may hold memory and CPU in the attempt's own scope (strict starts nothing it cannot hold); on macOS nothing is held, and strict starts nothing. Until then, read the declared CPU, RAM and swap as reserved for this Core's admission and recorded, not as held");
+    value["pause"] = json!("Not known yet: decided by the machine's platform and what it holds there, once it has answered");
+    value
+}
+
 /// What a remote attempt is told it gets, by the platform its machine's
-/// helper named at hello (T-186); Linux when not known yet.
+/// helper named at hello (T-186); not known before any attempt reached it.
 pub(super) fn capabilities_for(platform: Option<&str>) -> Value {
     match platform {
         Some("Darwin") => darwin_capabilities(),
-        _ => capabilities(),
+        Some("Linux") => capabilities(),
+        _ => unknown_capabilities(),
     }
 }
 
