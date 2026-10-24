@@ -14,7 +14,11 @@
 // conversation on purpose). `unmeasured` is not `failed` and is not passing
 // either: neither counts as the criterion met. A dialog excuses only "on
 // top", and only for the control it actually covers; the overflow criteria
-// are never waived with it. Each line also carries `dialog` and `keyboard`,
+// are never waived with it. The composer's focus glow is excused the same
+// way, "(composer focus glow (4px))", and listed as `glow`: it is drawn
+// outside the composer on purpose and reaches into scrollWidth without the
+// page scrolling. Only the composer, only while it has the focus, only 4px.
+// Each line also carries `dialog` and `keyboard`,
 // so which of those was true is read off the record rather than inferred from
 // a state's name or a screenshot's, and `vvRaw`/`visualHeight`/`clientHeight`
 // beside the rounded `visual`. Once, when a conversation is first on screen without the
@@ -80,10 +84,21 @@
     // How far the conversation is from its latest, where the latest reply is.
     const scroll = panel.querySelector(".conversation-scroll");
     const away = scroll ? Math.round(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) : null;
-    const overflow = [".conversation-inner", ".composer", ".composer-bottom", ".reply-actions", ".recovery-notice", ".inline-error", ".composer-hint", ".message-content", ".pending-card"]
+    const wider = [".conversation-inner", ".composer", ".composer-bottom", ".reply-actions", ".recovery-notice", ".inline-error", ".composer-hint", ".message-content", ".pending-card"]
       .flatMap((selector) => [...panel.querySelectorAll(selector)].filter(shown)
         .filter((el) => el.scrollWidth > el.clientWidth + 1 && !["auto", "scroll"].includes(getComputedStyle(el).overflowX))
-        .map((el) => `${selector} ${el.scrollWidth}>${el.clientWidth}`));
+        .map((el) => ({ selector, el, over: el.scrollWidth - el.clientWidth, as: `${selector} ${el.scrollWidth}>${el.clientWidth}` })));
+    // The composer's focus glow is drawn outside it on purpose
+    // (styles.css's `.composer::before`, `inset: -3px -4px`, scale(0.98)
+    // until `:focus-within` makes it scale(1)). It reaches into scrollWidth
+    // without the page scrolling: 4px, at the inline end, only while the
+    // composer has the focus. Measured on an iOS Simulator it was those 4px
+    // in exactly the rows whose `focus` is the composer and in no other row.
+    // Nothing wider than that is excused, no other selector is, and an
+    // unfocused composer is not: the glow is not there to reach into.
+    const isGlow = (each) => each.selector === ".composer" && each.el.matches(":focus-within") && each.over <= 4;
+    const overflow = wider.filter((each) => !isGlow(each)).map((each) => each.as);
+    const glow = wider.filter(isGlow).map((each) => each.as);
     const buttons = [...panel.querySelectorAll(".phone-dock-button")].filter(shown);
     const controls = Object.fromEntries([
       ["input", "[data-composer-input]"], ["send", ".send-button"],
@@ -121,6 +136,7 @@
     need("phone layout", /\bphone\b/.test(document.querySelector(".app")?.className || ""));
     need("no page overflow", document.documentElement.scrollWidth <= innerWidth);
     need("nothing runs off the side", overflow.length === 0);
+    if (glow.length) unmeasured.push("nothing runs off the side (composer focus glow (4px))");
     if (state === "keyboard") {
       need("no dock button with the keyboard", buttons.length === 0);
       needControl("input on top", controls.input);
@@ -182,7 +198,7 @@
       dialog: open,
       keyboard: document.documentElement.hasAttribute("data-keyboard"),
       focus: document.activeElement ? (document.activeElement.getAttribute("aria-label") || document.activeElement.tagName) : null,
-      overflow, text, buttons: buttons.map(box), controls, notice, replyRows, error,
+      overflow, glow, text, buttons: buttons.map(box), controls, notice, replyRows, error,
       panel: opened ? box(opened) : null, items,
     });
   }
