@@ -23,11 +23,14 @@ export function PhoneDockButtons({
   turn: number;
   turns: number;
 }) {
-  // Escape closes the open panel, as tapping outside it does.
+  // Escape closes the open panel, as tapping outside it does, and only that:
+  // handled here, it does not also interrupt a working Agent (App's Escape).
   useEffect(() => {
     if (!open) return;
     const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onOpen(null);
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      onOpen(null);
     };
     document.addEventListener("keydown", close);
     return () => document.removeEventListener("keydown", close);

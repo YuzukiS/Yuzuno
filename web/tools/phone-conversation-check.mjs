@@ -433,6 +433,17 @@ try {
     assert.equal((await measure(page)).buttons.length, 2, "the buttons are back once the keyboard goes");
     check(`${viewport.name}: with the keyboard up the dock buttons wait and Send stays clear; they are back after it`);
 
+    // Escape closes an open panel and only that: Sora, working, is not
+    // interrupted (App's own Escape would ask Core to).
+    await openAgent(page, "Sora", phone);
+    await page.locator(".phone-dock-work").click();
+    await page.locator(".conversation-body[data-phone-dock]").waitFor();
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(400);
+    assert.equal(await page.locator(".conversation-body[data-phone-dock]").count(), 0, "Escape closes the panel");
+    assert.deepEqual(report.mutations.filter((m) => m.viewport === viewport.name), [], "and asks Core for nothing, no interrupt");
+    check(`${viewport.name}: Escape closes an open panel without interrupting a working Agent`);
+
     // A conversation opened again keeps its draft and where it was read.
     const returned = await leaveAndReturn(page, phone);
     report.viewports.at(-1).returned = returned;
