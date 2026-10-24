@@ -1,6 +1,6 @@
 /* Point & Fix (T-167): the image with its marked areas, and their notes. */
 .point-fix-dialog.modal {
-  width: min(1180px, calc(100vw - 32px));
+  width: min(1180px, calc(var(--safe-vw) - 32px));
 }
 .point-fix {
   display: grid;

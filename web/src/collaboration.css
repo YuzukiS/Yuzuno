@@ -1,7 +1,7 @@
 .modal:has(.collaboration) {
-  width: min(1280px, calc(100vw - 40px));
+  width: min(1280px, calc(var(--safe-vw) - 40px));
   max-width: none;
-  max-height: calc(100dvh - 48px);
+  max-height: calc(var(--safe-dvh) - 48px);
   padding: 25px 28px 0;
   overflow: hidden;
 }
@@ -33,7 +33,7 @@
    the detail itself slides in from that side (see .collab-detail). */
 .collab-task-layout {
   display: grid;
-  height: min(680px, calc(100dvh - 235px));
+  height: min(680px, calc(var(--safe-dvh) - 235px));
   grid-template-columns: minmax(0, 1fr) minmax(0, 0fr);
   transition: grid-template-columns 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
@@ -787,7 +787,7 @@
 .collab-messages {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  height: min(680px, calc(100dvh - 235px));
+  height: min(680px, calc(var(--safe-dvh) - 235px));
 }
 .collab-mailbox {
   min-width: 0;
@@ -1056,7 +1056,7 @@
 @media (max-width: 850px) {
   .modal:has(.collaboration) {
     padding: 20px 20px 0;
-    width: calc(100vw - 24px);
+    width: calc(var(--safe-vw) - 24px);
   }
   .collab-task-layout,
   .collab-task-layout.with-detail {
@@ -1102,13 +1102,13 @@
 }
 @media (max-width: 540px) {
   .modal:has(.collaboration) {
-    width: calc(100vw - 12px);
+    width: calc(var(--safe-vw) - 12px);
     padding: 18px 15px 0;
-    max-height: calc(100dvh - 12px);
+    max-height: calc(var(--safe-dvh) - 12px);
   }
   .collab-task-layout,
   .collab-messages {
-    height: calc(100dvh - 235px);
+    height: calc(var(--safe-dvh) - 235px);
   }
   .collab-list-heading {
     align-items: start;
