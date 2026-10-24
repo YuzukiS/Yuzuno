@@ -403,7 +403,7 @@ async fn start_restore(State(ws): State<Arc<Workspace>>, Json(body): Json<Restor
 fn next_steps(folder: &Path) -> Vec<String> {
     vec![
         format!("Stop the Core that uses the original Workspace, then start a Core with --data-dir {}", folder.display()),
-        "The restored Workspace keeps the original's identity and native sessions; never run Cores on both at once.".into(),
+        "The restored Workspace keeps the original's Workspace ID and the IDs of its Agents' native sessions; the native histories those IDs refer to were not backed up. Never run Cores on both at once.".into(),
         "This page does not switch to the restored Workspace or start a Core on it.".into(),
     ]
 }
@@ -439,7 +439,7 @@ async fn precheck(State(ws): State<Arc<Workspace>>, Json(body): Json<PrecheckReq
         let same = manifest.workspace_id == running;
         let mut notes = vec!["The restore reads and checks every file again before anything is put in place.".to_owned()];
         if same {
-            notes.push("This backup is of the Workspace this Core uses: the restored copy keeps its identity and native sessions, so it must never run alongside this Core.".into());
+            notes.push("This backup is of the Workspace this Core uses: the restored copy keeps its Workspace ID and the IDs of its Agents' native sessions (not the native histories, which are not backed up), so it must never run alongside this Core.".into());
         }
         Ok(json!({"ok":true,"workspaceId":manifest.workspace_id,"createdAt":manifest.created_at,"createdBy":manifest.created_by,
             "agents":manifest.database.agents,"files":manifest.files.len(),"bytes":bytes,

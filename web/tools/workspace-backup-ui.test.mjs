@@ -257,7 +257,7 @@ test("restore is offered only after its precheck passes for the same folders", a
     if (url.endsWith("/restore/precheck")) {
       if (body.to === "/workspaces/taken") return { status: 400, body: { error: "This backup cannot be restored there; nothing was changed: /workspaces/taken is not empty" } };
       return { body: { ok: true, workspaceId: "ws-synthetic", createdAt: "2026-10-24T20:00:00Z", agents: 2, files: 6, bytes: 4096,
-        target: "new", sameIdentity: true, notes: ["This backup is of the Workspace this Core uses: the restored copy keeps its identity and native sessions, so it must never run alongside this Core."] } };
+        target: "new", sameIdentity: true, notes: ["This backup is of the Workspace this Core uses: the restored copy keeps its Workspace ID and the IDs of its Agents' native sessions (not the native histories, which are not backed up), so it must never run alongside this Core."] } };
     }
     if (url.endsWith("/api/workspace/restores")) {
       restores.push(body);

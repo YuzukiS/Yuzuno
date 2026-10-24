@@ -376,6 +376,13 @@ export function WorkspaceBackup({ active }: { active: boolean }) {
 function OperationView({ op, canStop }: { op: Operation; canStop: boolean }) {
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState("");
+  const [said, setSaid] = useState(0);
+  const stopLine = useRef<HTMLParagraphElement>(null);
+  // On a phone's screen the line saying why Stop did not happen can be below
+  // the button that was pressed: it is brought into view each time.
+  useEffect(() => {
+    if (said) stopLine.current?.scrollIntoView?.({ block: "nearest" });
+  }, [said]);
   const label = `${kinds[op.kind]} ${op.state === "running" ? "running" : op.state}`;
   return (
     <div className="workspace-backup-operation" data-state={op.state} aria-label={label}>
@@ -407,6 +414,7 @@ function OperationView({ op, canStop }: { op: Operation; canStop: boolean }) {
                   ? "No answer from Core to Stop. It may have arrived; Stop asks again."
                   : errorText(e),
               );
+              setSaid((n) => n + 1);
             }
           }}
         >
@@ -414,7 +422,7 @@ function OperationView({ op, canStop }: { op: Operation; canStop: boolean }) {
         </button>
       )}
       {stopError && (
-        <p className="workspace-backup-error" role="alert">
+        <p className="workspace-backup-error" role="alert" ref={stopLine}>
           {stopError}
         </p>
       )}
