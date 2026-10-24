@@ -16,8 +16,12 @@ const child = "01a1418f-0000-7000-8000-000000000001";
 /** Where the app reads Mori's sub-agent. */
 export const childPath = `/api/agents/a/subagents/${child}`;
 
-/** The Workspace, with its times counted back from `now` (ms). */
-export function conversationWorkspace(now = Date.now()) {
+/** The Workspace, with its times counted back from `now` (ms). `quiet`
+ * leaves nothing running (no job or CI run counting up its time) and sends
+ * a window of 6 Turns, not 12: the same crowding with a page that holds
+ * still and is smaller, for Mobile Safari's UI checks, which read the page's
+ * accessibility tree (YUZUNO_FIXTURE=conversation-quiet). */
+export function conversationWorkspace(now = Date.now(), { quiet = false } = {}) {
   const at = (minutesAgo) => new Date(now - minutesAgo * 60_000).toISOString();
   // A Turn's times are Unix seconds, as Codex reports them.
   const seconds = (minutesAgo) => Math.floor((now - minutesAgo * 60_000) / 1000);
@@ -59,7 +63,7 @@ export function conversationWorkspace(now = Date.now()) {
     : Array.from({ length: TURNS }, (_, n) => turn(agent.name, n, n === TURNS - 1))]));
   // As Core sends a long conversation: a window of Turns, the latest unless a
   // Turn or a page before or after a cursor is asked for, and an index of all.
-  const WINDOW = 12;
+  const WINDOW = quiet ? 6 : 12;
   /** An Agent's conversation, for its address's query (URLSearchParams). */
   const detail = (agent, query) => {
     const all = allTurns[agent.id];
@@ -95,12 +99,12 @@ export function conversationWorkspace(now = Date.now()) {
     cursor: minutes, createdAt: at(minutes + 2), startedAt: at(minutes + 1), finishedAt: status === "running" ? null : at(minutes),
     argv: ["/usr/bin/true"], cwd: "/fixture", env: {}, outputs: [],
   });
-  const jobs = { jobs: [job("j1", "a build with a long name for the phone check", "running", 1), job("j2", "the layout check", "failed", 5), job("j3", "unit tests", "succeeded", 9)], liveJobs: [], hasMore: false, nextBefore: null };
+  const jobs = { jobs: [job("j1", "a build with a long name for the phone check", quiet ? "succeeded" : "running", 1), job("j2", "the layout check", "failed", 5), job("j3", "unit tests", "succeeded", 9)], liveJobs: [], hasMore: false, nextBefore: null };
   const run = (n, status, conclusion) => ({
     id: `github:1:4${n}:1`, name: `CI ${n}`, repository: "o/r", runId: `4${n}`, attempt: "1", headSha: "a".repeat(40), status,
     rawStatus: status === "running" ? "in_progress" : "completed", conclusion, url: `https://github.com/o/r/actions/runs/4${n}`, observedAt: at(n), cursor: n,
   });
-  const ci = { runs: [run(1, "running", null), run(2, "passed", "success")], subscriptions: [], hasMore: false, nextBefore: null };
+  const ci = { runs: [quiet ? run(1, "passed", "success") : run(1, "running", null), run(2, "passed", "success")], subscriptions: [], hasMore: false, nextBefore: null };
   return {
     agents, detail, childDetail,
     /** The rest of what the app reads, by path. */

@@ -218,17 +218,17 @@ async function leaveAndReturn(page, phone) {
 }
 
 /** The probe Mobile Safari runs, on what phone-fixture-server.mjs serves it
- * with YUZUNO_FIXTURE=conversation, here in an emulated 402 px phone as the
+ * with YUZUNO_FIXTURE (`fixture`), here in an emulated 402 px phone as the
  * Safari check opens it: Mori from the Agent list, then the keyboard (set as
  * keyboard-viewport.ts sets it). Its measurements and the writes the server
  * refused, from the server's file. */
-async function probeRun() {
+async function probeRun(fixture) {
   const port = 20000 + (process.pid % 20000);
-  const measured = resolve(output, `${report.mode}-probe-measure.jsonl`);
+  const measured = resolve(output, `${report.mode}-probe-${fixture}.jsonl`);
   await writeFile(measured, "");
   const server = spawn(process.execPath, [resolve(tools, "phone-fixture-server.mjs")], {
     env: { ...process.env, YUZUNO_UI_DIST: dist, YUZUNO_MEASURE_OUT: measured, YUZUNO_PORT: String(port),
-      YUZUNO_FIXTURE: "conversation", YUZUNO_INJECT: resolve(tools, "phone-conversation-probe.js") },
+      YUZUNO_FIXTURE: fixture, YUZUNO_INJECT: resolve(tools, "phone-conversation-probe.js") },
     stdio: ["ignore", "pipe", "inherit"],
   });
   const exited = new Promise((done) => server.once("exit", done));
@@ -254,7 +254,7 @@ async function probeRun() {
     await page.waitForTimeout(2800);
     await page.evaluate(() => { delete document.documentElement.dataset.keyboard; });
     await page.waitForTimeout(800);
-    await page.screenshot({ path: resolve(output, `${report.mode}-probe-mori.png`) });
+    await page.screenshot({ path: resolve(output, `${report.mode}-probe-${fixture}-mori.png`) });
     await context.close();
     const all = await lines();
     return { lines: all.filter((line) => line.probe === "phone-conversation"), refused: all.filter((line) => line.kind === "refused") };
@@ -458,18 +458,21 @@ try {
     check(`${viewport.name}: opened again, the conversation keeps its draft and where it was read`, returned);
     await context.close();
   }
-  // The probe for Mobile Safari, run here: before, what it finds; now, that
-  // its every measurement meets its criteria, in each state it reaches.
-  report.probe = await probeRun();
-  const states = [...new Set(report.probe.lines.map((line) => line.state))];
-  console.log(`probe: ${report.probe.lines.length} measurements, states ${states}, failed ${JSON.stringify([...new Set(report.probe.lines.flatMap((line) => line.failed))])}`);
-  if (!baseline) {
+  // The probe for Mobile Safari, run here on both fixtures it is served
+  // with: before, what it finds; now, that its every measurement meets its
+  // criteria, in each state it reaches.
+  report.probe = {};
+  for (const fixture of ["conversation", "conversation-quiet"]) {
+    const probe = report.probe[fixture] = await probeRun(fixture);
+    const states = [...new Set(probe.lines.map((line) => line.state))];
+    console.log(`probe ${fixture}: ${probe.lines.length} measurements, states ${states}, failed ${JSON.stringify([...new Set(probe.lines.flatMap((line) => line.failed))])}`);
+    if (baseline) continue;
     for (const state of ["closed", "work-open", "closed-again", "turns-open", "keyboard"])
-      assert.ok(states.includes(state), `the probe measured ${state}: ${states}`);
-    assert.deepEqual(report.probe.lines.filter((line) => line.failed.length), [], "every probe measurement meets its criteria");
-    assert.deepEqual(report.probe.lines.filter((line) => line.unmeasured?.length), [], "and measures them all, at the latest");
-    assert.deepEqual(report.probe.refused, [], "the fixture server refused no write");
-    check("the Safari probe meets its criteria here, on the fixture server's crowded conversations", { states, measurements: report.probe.lines.length });
+      assert.ok(states.includes(state), `the probe measured ${state} on ${fixture}: ${states}`);
+    assert.deepEqual(probe.lines.filter((line) => line.failed.length), [], `every probe measurement meets its criteria on ${fixture}`);
+    assert.deepEqual(probe.lines.filter((line) => line.unmeasured?.length), [], "and measures them all, at the latest");
+    assert.deepEqual(probe.refused, [], "the fixture server refused no write");
+    check(`the Safari probe meets its criteria here, on the fixture server's ${fixture}`, { states, measurements: probe.lines.length });
   }
   if (!baseline) {
     assert.deepEqual(report.errors, [], "no page errors");

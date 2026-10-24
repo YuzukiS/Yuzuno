@@ -11,12 +11,13 @@
 // one more script to every page, after phone-measure.js (another probe).
 // YUZUNO_FIXTURE=conversation serves phone-conversation-fixture.mjs's
 // crowded conversations instead (the same Workspace, Mori among them), as
-// phone-conversation-probe.js measures them.
+// phone-conversation-probe.js measures them; conversation-quiet the same with
+// nothing running and a smaller window of Turns (see the fixture).
 // A path that is no file (and not /api/) gets the app's page, so the app's
 // own addresses open it: /#/message?w=ws-phone&a=a&t=t7 opens Mori's
 // conversation at its last turn.
 //   YUZUNO_UI_DIST=<build> YUZUNO_MEASURE_OUT=<file> [YUZUNO_PORT=4510] \
-//     [YUZUNO_EXTRA=/connection=<dir>] [YUZUNO_INJECT=<file>] [YUZUNO_FIXTURE=conversation] \
+//     [YUZUNO_EXTRA=/connection=<dir>] [YUZUNO_INJECT=<file>] [YUZUNO_FIXTURE=conversation[-quiet]] \
 //     node tools/phone-fixture-server.mjs
 // Synthetic data only; it listens on 127.0.0.1 and answers only that host.
 import assert from "node:assert/strict";
@@ -66,8 +67,9 @@ const reads = {
   "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs": noJobs,
   "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
 };
-assert.ok(["", "conversation"].includes(process.env.YUZUNO_FIXTURE || ""), "YUZUNO_FIXTURE: conversation, or unset");
-const crowded = process.env.YUZUNO_FIXTURE === "conversation" ? conversationWorkspace() : null;
+const fixture = process.env.YUZUNO_FIXTURE || "";
+assert.ok(["", "conversation", "conversation-quiet"].includes(fixture), "YUZUNO_FIXTURE: conversation, conversation-quiet, or unset");
+const crowded = fixture ? conversationWorkspace(Date.now(), { quiet: fixture === "conversation-quiet" }) : null;
 if (crowded) {
   delete reads["/api/agents/a"];
   Object.assign(reads, crowded.reads);
