@@ -29,8 +29,8 @@ test('the last Workspace is filled in, not opened, until Connect', async () => {
   const calls = [];
   const dom = await mount(async (command, args) => {
     calls.push({ command, args });
-    if (command === 'saved_core') return 'https://core.example.ts.net/';
-    if (command === 'connect_core') return args.url.trim();
+    if (command === 'saved_core') return { state: 'saved', url: 'https://core.example.ts.net/' };
+    if (command === 'connect_core') return { url: args.url.trim(), saved: true };
   });
   try {
     const document = dom.window.document;
@@ -50,7 +50,7 @@ test('a refused address keeps the field to correct, and the next try sends what 
   const calls = [];
   const dom = await mount(async (command, args) => {
     calls.push({ command, args });
-    if (command === 'saved_core') return null;
+    if (command === 'saved_core') return { state: 'never' };
     throw "Use your Workspace's HTTPS address. This app does not connect over plain HTTP.";
   });
   try {
@@ -79,7 +79,7 @@ test('a second Connect while one is checking sends nothing more', async () => {
   const calls = [];
   const dom = await mount(async (command, args) => {
     calls.push({ command, args });
-    if (command === 'saved_core') return 'https://core.example.ts.net/';
+    if (command === 'saved_core') return { state: 'saved', url: 'https://core.example.ts.net/' };
     return new Promise((resolve) => { finish = resolve; });
   });
   try {
@@ -88,7 +88,7 @@ test('a second Connect while one is checking sends nothing more', async () => {
     await settle();
     assert.equal(calls.filter((call) => call.command === 'connect_core').length, 1);
     assert.equal(dom.window.document.querySelector('#connect-button').disabled, true);
-    finish('https://core.example.ts.net/');
+    finish({ url: 'https://core.example.ts.net/', saved: true });
     await settle();
   } finally { dom.window.close(); }
 });
@@ -99,5 +99,76 @@ test('outside the app the page says so and offers nothing to submit', async () =
     const document = dom.window.document;
     assert.match(document.querySelector('[role="status"]').textContent, /inside the Yuzuno app/);
     assert.equal(document.querySelector('#connect-button').disabled, true);
+  } finally { dom.window.close(); }
+});
+
+test('a saved address that cannot be used is said so, not taken for a first launch', async () => {
+  for (const answer of [
+    async (command) => { if (command === 'saved_core') return { state: 'unreadable', reason: 'it is not a saved Workspace address' }; },
+    async (command) => { if (command === 'saved_core') throw 'the app did not answer'; },
+  ]) {
+    const calls = [];
+    const dom = await mount(async (command, args) => { calls.push({ command, args }); return answer(command); });
+    try {
+      const document = dom.window.document;
+      const status = document.querySelector('[role="status"]');
+      assert.equal(document.querySelector('#core-url').value, '', 'nothing is filled in');
+      assert.match(status.textContent, /saved on this iPhone could not be used \((it is not a saved Workspace address|the app did not answer)\)/);
+      assert.doesNotMatch(status.textContent, /to begin/);
+      assert.equal(status.dataset.error, 'true');
+      assert.deepEqual(calls.map((call) => call.command), ['saved_core'], 'nothing is connected by itself');
+    } finally { dom.window.close(); }
+  }
+});
+
+test('a Workspace that answered but could not be saved says so, keeps its address and opens only when asked', async () => {
+  const calls = [];
+  let save = false;
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'saved_core') return { state: 'never' };
+    return save ? { url: args.url.trim(), saved: true }
+      : { url: args.url.trim(), saved: false, saveError: 'No space left on device (os error 28)' };
+  });
+  try {
+    const document = dom.window.document;
+    const field = document.querySelector('#core-url');
+    const status = document.querySelector('[role="status"]');
+    const unsaved = document.querySelector('#open-unsaved');
+    assert.equal(unsaved.hidden, true, 'nothing to open yet');
+    field.value = 'https://core.example.ts.net/';
+    submit(dom);
+    await settle();
+    assert.match(status.textContent, /answered, but this iPhone could not save its address \(No space left on device \(os error 28\)\)/);
+    assert.doesNotMatch(status.textContent, /not reachable|Opening your workspace/, 'neither offline nor saved');
+    assert.equal(status.dataset.error, 'true');
+    assert.equal(field.value, 'https://core.example.ts.net/', 'the address stays');
+    assert.equal(field.disabled, false);
+    assert.equal(document.querySelector('#connect-button').disabled, false);
+    assert.equal(unsaved.hidden, false);
+
+    // Another address is not the Workspace that answered.
+    field.value = 'https://other.example.ts.net/';
+    field.dispatchEvent(new dom.window.Event('input'));
+    assert.equal(unsaved.hidden, true);
+    field.value = 'https://core.example.ts.net/';
+    submit(dom);
+    await settle();
+    assert.equal(unsaved.hidden, false);
+
+    // Open without saving opens what answered, and connects nothing more.
+    const connects = calls.filter((call) => call.command === 'connect_core').length;
+    unsaved.click();
+    assert.match(status.textContent, /Opening your workspace without saving/);
+    assert.equal(calls.filter((call) => call.command === 'connect_core').length, connects);
+
+    // Connect tries again, and opens once it is saved.
+    save = true;
+    submit(dom);
+    await settle();
+    assert.equal(calls.filter((call) => call.command === 'connect_core').length, connects + 1);
+    assert.equal(calls.at(-1).args.url, 'https://core.example.ts.net/');
+    assert.match(status.textContent, /Found it. Opening your workspace/);
+    assert.equal(unsaved.hidden, true);
   } finally { dom.window.close(); }
 });
