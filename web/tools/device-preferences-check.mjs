@@ -359,7 +359,9 @@ const measure = (page) => page.evaluate(() => {
   return {
     width: innerWidth,
     page: { scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth },
-    pane: { scroll: pane.scrollWidth, client: pane.clientWidth, left: Math.round(box.left), right: Math.round(box.right) },
+    pane: { scroll: pane.scrollWidth, client: pane.clientWidth, left: Math.round(box.left), right: Math.round(box.right),
+      // How much of the pane shows at once, as the dialog leaves it.
+      shown: Math.round(Math.max(0, Math.min(box.bottom, innerHeight) - Math.max(box.top, 0))) },
     choices: [...pane.querySelectorAll(".input-send-choice")].map((el) => Math.round(el.getBoundingClientRect().height)).filter((height) => height > 0),
     columns: [...pane.querySelectorAll(".shortcut-group dl")].map((dl) => getComputedStyle(dl).gridTemplateColumns).find((value) => value !== "none") ?? null,
     outside, overlaps, clipped,
@@ -690,24 +692,32 @@ async function phonePath() {
       assert.deepEqual(m.clipped, [], `${entry.editor}: no text cut off`);
       if (entry === INPUT_ENTRY) assert.ok(m.choices.length === 3 && m.choices.every((height) => height >= 44), `choices: ${m.choices}`);
     }
-    // Refused, on the phone: said, with both buttons on screen.
+    // Refused, on the phone: said, and each button reachable. Settings' own
+    // header, search and categories leave the pane a small window at this
+    // size (measured as pane.shown), so each is scrolled to, then must be
+    // wholly on screen and the element a tap there reaches.
     const editor = await openEditor(page, INPUT_ENTRY);
     await refuseWrites(page, true);
     await editor.locator('input[name="input-send-key"][value="enter"]').check();
     assert.match((await editorState(editor)).alert ?? "", /^Not saved on this device: /);
-    await editor.locator(".save-status").evaluate((el) => el.scrollIntoView({ block: "center" }));
-    await page.waitForTimeout(150);
-    const buttons = await editor.locator(".save-status button").evaluateAll((list) => list.map((b) => {
-      const r = b.getBoundingClientRect();
-      return { text: b.textContent.trim(), left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom) };
-    }));
-    const size = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
-    await page.screenshot({ path: resolve(output, "path-phone-24-refused.png") });
-    assert.deepEqual(buttons.map((b) => b.text), ["Try again", "Restore defaults"]);
-    assert.ok(buttons.every((b) => b.left >= 0 && b.right <= size.width && b.top >= 0 && b.bottom <= size.height), `both buttons on screen ${JSON.stringify(buttons)}`);
+    const buttons = [];
+    for (const name of ["Try again", "Restore defaults"]) {
+      const button = editor.getByRole("button", { name, exact: true });
+      await button.evaluate((el) => el.scrollIntoView({ block: "center" }));
+      await page.waitForTimeout(150);
+      buttons.push(await button.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return { text: el.textContent.trim(), left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom),
+          onScreen: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, hit: !!hit && (hit === el || el.contains(hit)) };
+      }));
+      await page.screenshot({ path: resolve(output, `path-phone-24-refused-${name === "Try again" ? "retry" : "reset"}.png`) });
+    }
+    report.layout.push({ screen: "phone, real Settings", fontSize: 24, refused: true, buttons, ...(await measure(page)) });
+    assert.ok(buttons.every((b) => b.onScreen && b.hit), `each button reachable ${JSON.stringify(buttons)}`);
     await closeSettings(page);
     assert.equal(await composerHint(page), SENDS_HINT, "the refused choice applies on the phone too");
-    check("path: 320 px phone at 24 px, both sections fit in the real Settings; a refusal is said with its buttons on screen and applies");
+    check("path: 320 px phone at 24 px, both sections fit in the real Settings; a refusal is said, each button reachable, and it applies");
   } finally {
     await app.context.close();
   }
