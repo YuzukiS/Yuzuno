@@ -3,9 +3,11 @@
 // phone's insets, reaching the server over HTTP like Mobile Safari in an iOS
 // Simulator will (no Playwright routing). Held upright and sideways, the
 // page's own measurements must arrive: the insets env() resolves to, the
-// conversation's composer, focus in it, and a dialog open. A second folder
-// is served and measured under /connection/. Chromium is not Safari; this
-// checks the fixture, not iOS.
+// conversation's composer, focus in it, and a dialog open. Upright the
+// conversation is opened from the Agent list, sideways from a message link.
+// A second folder is served and measured under /connection/, and a second
+// probe (YUZUNO_INJECT) is on every page. Chromium is not Safari; this checks
+// the fixture, not iOS.
 //   YUZUNO_UI_DIST=<isolated build> node tools/phone-fixture-check.mjs
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -27,6 +29,8 @@ await mkdir(extra);
 await writeFile(join(extra, "index.html"), `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>Connection</title>
 <style>body{margin:0;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}</style></head>
 <body><header class="wordmark">yuzuno.</header><main><h1>Your workspace</h1><input id="core-url" aria-label="Workspace address"></main></body></html>`);
+const probe = join(work, "probe.js");
+await writeFile(probe, 'document.documentElement.dataset.probe = "on";\n');
 
 const report = { checks: [], errors: [] };
 const check = (name, detail = {}) => {
@@ -43,14 +47,18 @@ const until = async (test, what, ms = 10000) => {
     await new Promise((done) => setTimeout(done, 200));
   }
 };
-const status = (host) => new Promise((done, fail) => {
-  const req = request({ host: "127.0.0.1", port, path: "/", headers: { Host: host } }, (res) => { res.resume(); done(res.statusCode); });
+const get = (path, host = `127.0.0.1:${port}`) => new Promise((done, fail) => {
+  const req = request({ host: "127.0.0.1", port, path, headers: { Host: host } }, (res) => {
+    let text = "";
+    res.on("data", (chunk) => { text += chunk; });
+    res.on("end", () => done({ status: res.statusCode, text }));
+  });
   req.on("error", fail);
   req.end();
 });
 
 const server = spawn(process.execPath, [new URL("./phone-fixture-server.mjs", import.meta.url).pathname], {
-  env: { ...process.env, YUZUNO_MEASURE_OUT: measured, YUZUNO_PORT: String(port), YUZUNO_EXTRA: `/connection=${extra}` },
+  env: { ...process.env, YUZUNO_MEASURE_OUT: measured, YUZUNO_PORT: String(port), YUZUNO_EXTRA: `/connection=${extra}`, YUZUNO_INJECT: probe },
   stdio: ["ignore", "pipe", "inherit"],
 });
 await new Promise((done, fail) => {
@@ -66,12 +74,19 @@ const phones = [
 const px = ({ top, right, bottom, left }) => [`${top}px`, `${right}px`, `${bottom}px`, `${left}px`];
 
 try {
-  assert.equal(await status("example.org"), 421, "another Host is refused");
+  assert.equal((await get("/", "example.org")).status, 421, "another Host is refused");
   check("the fixture answers 127.0.0.1 only");
+  const app = await get("/message/elsewhere");
+  assert.equal(app.status, 200);
+  assert.ok(app.text.includes('<script src="/__measure.js" defer></script><script src="/__inject.js" defer></script></head>'), "the page, with both scripts");
+  check("a path that is no file gets the app's page, with both scripts");
   for (const phone of phones) {
     const context = await browser.newContext({ viewport: { width: phone.width, height: phone.height }, hasTouch: true, isMobile: true, reducedMotion: "reduce" });
     const page = await context.newPage();
     page.on("pageerror", (error) => report.errors.push(`${phone.name}: ${error.message}`));
+    // The app's own error screen logs its error; a missing file (a favicon) does not count.
+    page.on("console", (message) => message.type() === "error" && !message.text().startsWith("Failed to load resource")
+      && report.errors.push(`${phone.name}: console: ${message.text().slice(0, 300)}`));
     await page.addInitScript(() => {
       if (!localStorage.getItem("yuzuno.appearance"))
         localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
@@ -82,10 +97,18 @@ try {
     const started = Date.now();
     const after = (test, what) => until((line) => line.kind === "measure" && Date.parse(line.at) >= started
       && line.window[0] === phone.width && test(line), `${phone.name}: ${what}`);
-    await page.goto(`http://127.0.0.1:${port}/`);
-    await page.locator('.agent-row .agent-select[aria-label="Open Mori"]').click();
     const input = page.locator('[data-composer-input][aria-label="Message Mori"]');
-    await input.waitFor();
+    if (phone.name === "portrait") {
+      await page.goto(`http://127.0.0.1:${port}/`);
+      await page.locator('.agent-row .agent-select[aria-label="Open Mori"]').click();
+      await input.waitFor();
+    } else {
+      await page.goto(`http://127.0.0.1:${port}/#/message?w=ws-phone&a=a&t=t7`);
+      await input.waitFor();
+      check(`${phone.name}: a message link opens Mori's conversation`);
+    }
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.probe), "on", `${phone.name}: the second probe ran`);
+    check(`${phone.name}: the second probe is on the page`);
     const load = await after((l) => l.why.startsWith("load") && l.page === "/", "load");
     assert.deepEqual(load.insets, px(phone.insets), `${phone.name}: the insets env() resolves to`);
     assert.ok(load.visual && load.visual[0] === phone.width, `${phone.name}: the visual viewport`);
@@ -101,6 +124,7 @@ try {
     check(`${phone.name}: an open dialog is measured with its box`, { modal: dialog.boxes.modal });
     await page.keyboard.press("Escape");
     await after((l) => l.why === "dialog-closed" && !l.boxes.modal, "the dialog closed");
+    assert.equal(await page.getByText("couldn't show this screen").count(), 0, `${phone.name}: the app's error screen`);
 
     await page.goto(`http://127.0.0.1:${port}/connection/`);
     const connection = await after((l) => l.page === "/connection/" && l.boxes.wordmark && l.boxes.heading && l.boxes.field, "the connection page");
