@@ -14,6 +14,23 @@ final class ConnectionPageChecks: XCTestCase {
         yuzuno.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
     }
 
+    /// What the connection page shows, for a failure's message: its text
+    /// and the address field's value (nothing but this app's own page).
+    private func page() -> String {
+        let texts = yuzuno.staticTexts.allElementsBoundByIndex.map(\.label).filter { !$0.isEmpty }
+        let field = yuzuno.textFields.firstMatch
+        let value = field.exists ? String(describing: field.value ?? "") : "(no field)"
+        return "page: \(texts.joined(separator: " | ")); field: \(value)"
+    }
+
+    /// The app launched afresh: its page with an empty field, as no address
+    /// was ever connected here.
+    private func freshPage() {
+        yuzuno.terminate()
+        yuzuno.launch()
+        XCTAssertTrue(message(containing: "Enter your workspace address").waitForExistence(timeout: 60), page())
+    }
+
     /// Saves the screen as <name>.png where ios.yml asks (YUZUNO_SCREENSHOTS);
     /// nothing elsewhere. Only the connection page is ever on screen here.
     private func screenshot(_ name: String) {
@@ -22,23 +39,23 @@ final class ConnectionPageChecks: XCTestCase {
         XCTAssertNoThrow(try XCUIScreen.main.screenshot().pngRepresentation.write(to: file))
     }
 
+    /// Types into the empty field and connects.
     private func enter(_ address: String) {
         let field = yuzuno.textFields.firstMatch
         field.tap()
-        field.clearAndType(address)
+        field.typeText(address)
         yuzuno.buttons["Connect"].tap()
     }
 
     func testTheConnectionPageAnswersThroughTheApp() {
-        yuzuno.launch()
         // A fresh install has no saved Workspace, and the page found the app's bridge.
-        XCTAssertTrue(message(containing: "Enter your workspace address").waitForExistence(timeout: 60))
-        XCTAssertTrue(yuzuno.textFields.firstMatch.exists, "the address field")
+        freshPage()
+        XCTAssertTrue(yuzuno.textFields.firstMatch.exists, page())
         screenshot("connection-portrait")
 
         // The safe area in landscape: the notch is then at a side.
         XCUIDevice.shared.orientation = .landscapeLeft
-        XCTAssertTrue(yuzuno.textFields.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(yuzuno.textFields.firstMatch.waitForExistence(timeout: 10), page())
         sleep(2)
         screenshot("connection-landscape")
         XCUIDevice.shared.orientation = .portrait
@@ -46,23 +63,16 @@ final class ConnectionPageChecks: XCTestCase {
 
         // The refusal is the app's own (core_url.rs), through connect_core.
         enter("http://core.example.ts.net")
-        XCTAssertTrue(message(containing: "HTTPS address").waitForExistence(timeout: 20))
+        XCTAssertTrue(message(containing: "HTTPS address").waitForExistence(timeout: 20), page())
         screenshot("connection-refused")
 
         // An HTTPS address nothing answers: 192.0.2.1 is a documentation
         // address (RFC 5737). The health check gives up within its 4 s, and
-        // the address can be corrected.
+        // the address can be corrected. From a fresh page: a tap puts the
+        // cursor where it lands, so the last address is not cleared by keys.
+        freshPage()
         enter("https://192.0.2.1")
-        XCTAssertTrue(message(containing: "not reachable").waitForExistence(timeout: 30))
-        XCTAssertTrue(yuzuno.buttons["Connect"].isEnabled)
-    }
-}
-
-private extension XCUIElement {
-    func clearAndType(_ text: String) {
-        if let value = value as? String, !value.isEmpty, value != placeholderValue {
-            typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: value.count))
-        }
-        typeText(text)
+        XCTAssertTrue(message(containing: "not reachable").waitForExistence(timeout: 30), page())
+        XCTAssertTrue(yuzuno.buttons["Connect"].isEnabled, page())
     }
 }
