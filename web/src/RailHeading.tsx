@@ -17,6 +17,7 @@ export function RailHeading({
   onScope,
   onSearch,
   onCreate,
+  extra,
 }: {
   scope: AgentScope;
   active: number;
@@ -26,6 +27,8 @@ export function RailHeading({
   onScope: (scope: AgentScope) => void;
   onSearch: () => void;
   onCreate: () => void;
+  /** Another action before search, such as reconnecting Agents (T-184). */
+  extra?: React.ReactNode;
 }) {
   const heading = useRef<HTMLDivElement>(null);
   const [stacked, setStacked] = useState(false);
@@ -74,6 +77,7 @@ export function RailHeading({
         </button>
       </div>
       <div className="rail-actions">
+        {extra}
         <button
           className="icon-button"
           aria-label="Search agents"

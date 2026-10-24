@@ -112,6 +112,7 @@ async function mount({
   skillsResponse,
   interruptResponse,
   reconnectResponse,
+  otherAgentFields,
 } = {}) {
   const calls = [];
   const eventUrls = [];
@@ -181,7 +182,7 @@ async function mount({
                 error: agentError,
                 ...agentFields,
               }
-            : a,
+            : { ...a, ...otherAgentFields },
         ),
         runtime: { connected: true },
         defaultCwd: "/workspace",
@@ -3501,6 +3502,43 @@ test("the Agent action menu takes Escape: it closes and the running turn is not 
     await pause();
     assert.equal(page.calls.filter((c) => c.url.endsWith("/interrupt")).length, 1);
     assert.equal(page.calls.filter((c) => c.url.includes("/messages")).length, 0);
+  } finally {
+    page.close();
+  }
+});
+test("the rail offers reconnecting several Agents; its dialog takes Escape and sends only the chosen reconnect (T-184)", async () => {
+  let release;
+  const page = await mount({
+    status: "working",
+    otherAgentFields: { threadId: "thread-b", status: "offline", connectionState: "disconnected" },
+    reconnectResponse: () => new Promise((resolve) => (release = resolve)),
+  });
+  try {
+    const trigger = await until(() => page.document.querySelector(".rail-reconnect"), "the rail offers it while Hana is offline");
+    assert.equal(trigger.getAttribute("aria-label"), "Reconnect agents: 1 not connected");
+    trigger.click();
+    await pause();
+    const names = () => [...page.document.querySelectorAll(".batch-row .batch-name")].map((n) => n.textContent);
+    assert.deepEqual(names(), ["Hana"], "Mori is working: only Hana is listed");
+    const box = page.document.querySelector(".batch-row input");
+    assert.equal(box.checked, false, "nothing is chosen for the user");
+    // Escape in the dialog closes it; Mori's running turn is not interrupted.
+    page.document.activeElement.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await pause();
+    assert.equal(page.document.querySelector(".batch-reconnect"), null, "Escape closed the dialog");
+    assert.equal(page.calls.filter((c) => c.url.endsWith("/interrupt")).length, 0, "Escape interrupted nothing");
+    page.document.querySelector(".rail-reconnect").click();
+    await pause();
+    page.document.querySelector(".batch-row input").click();
+    await pause();
+    const reads = page.calls.filter((c) => c.url.endsWith("/api/workspace")).length;
+    page.document.querySelector(".batch-reconnect .primary-button").click();
+    await until(() => release, "Hana's reconnect was sent");
+    release({ ok: true, status: 200, json: async () => ({}), text: async () => "{}" });
+    await until(() => page.calls.filter((c) => c.url.endsWith("/api/workspace")).length > reads, "the Workspace is read again");
+    const posts = page.calls.filter((c) => c.init?.method === "POST").map((c) => c.url);
+    assert.deepEqual(posts.filter((url) => url.includes("/reconnect")), ["/api/agents/b/reconnect?view=summary"], "Hana's reconnect, once");
+    assert.deepEqual(posts.filter((url) => /\/(messages|turns|reopen|interrupt)$/.test(url)), [], "no message, turn, reopen or interrupt");
   } finally {
     page.close();
   }

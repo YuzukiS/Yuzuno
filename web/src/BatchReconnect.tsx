@@ -1,0 +1,182 @@
+import { useState } from "react";
+import { LoaderCircle, RotateCw } from "lucide-react";
+import { reconnectOffer } from "./agent-actions";
+import {
+  batchCandidates,
+  busy,
+  choose,
+  choosable,
+  forgetSettled,
+  reconnectBatch,
+  useBatch,
+  type BatchOutcome,
+} from "./batch-reconnect";
+import { Modal } from "./components";
+import { ALL_PROJECTS, inScope, type ProjectScope } from "./projects";
+import type { Agent } from "./types";
+import "./batch-reconnect.css";
+
+const reported: Record<Agent["status"], string> = {
+  idle: "Ready",
+  working: "Working",
+  waiting: "Waiting for you",
+  offline: "Offline",
+  error: "Needs a look",
+  uncertain: "Result unconfirmed",
+};
+
+/** What a row says: what its reconnect answered, or how Core lists it now. */
+function stateText(agent: Agent, outcome: BatchOutcome | undefined): string {
+  switch (outcome?.state) {
+    case "waiting":
+      return "Waiting…";
+    case "running":
+      return "Reconnecting…";
+    case "failed":
+      return `Couldn’t reconnect: ${outcome.error}`;
+    case "done": {
+      const after = outcome.agent;
+      if (!after) return "Reconnected";
+      const offer = reconnectOffer(after);
+      if (offer === "connecting") return "Core is still connecting";
+      if (offer === "check") return "Result unconfirmed";
+      if (offer === "reconnect") return "Still offline";
+      return `Connected · ${reported[after.status]}`;
+    }
+  }
+  const offer = reconnectOffer(agent);
+  return offer === "connecting" ? "Reconnecting…" : offer === "check" ? "Result unconfirmed" : "Offline";
+}
+
+/**
+ * Reconnecting several Agents at once, for example after Core restarted
+ * (T-184): a rail button, shown while any Agent can be reconnected, opens a
+ * list of them. Nothing is chosen for the user. Each chosen Agent goes
+ * through the same reconnect as its own menu, a few at a time; nothing is
+ * sent, closed Agents are not listed, and each row says what Core answered.
+ */
+export function BatchReconnect({
+  workspaceId,
+  agents,
+  scope,
+  onSettled,
+}: {
+  workspaceId: string;
+  /** The Workspace's Agents, closed ones included (they are left out). */
+  agents: Agent[];
+  /** The list's project scope: the dialog's default view. */
+  scope: ProjectScope;
+  /** After each reconnect, to read the Workspace again. */
+  onSettled: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [everywhere, setEverywhere] = useState(false);
+  const batch = useBatch(workspaceId);
+  const candidates = batchCandidates(agents);
+  const count = candidates.filter(choosable).length;
+  if (!count && !open) return null;
+
+  const wide = everywhere || scope === ALL_PROJECTS;
+  const rows = agents.filter(
+    (agent) => (candidates.includes(agent) || batch.outcomes.has(agent.id)) && (wide || inScope(agent, scope)),
+  );
+  const elsewhere = scope === ALL_PROJECTS ? 0 : candidates.filter((agent) => !inScope(agent, scope)).length;
+  const pending = (id: string) => {
+    const state = batch.outcomes.get(id)?.state;
+    return state === "waiting" || state === "running";
+  };
+  // Only what the dialog shows runs: a choice hidden by the scope does not.
+  const ready = rows.filter((agent) => batch.selected.has(agent.id) && choosable(agent) && !pending(agent.id));
+  const offered = rows.filter((agent) => choosable(agent) && !pending(agent.id));
+  const running = busy(batch);
+
+  return (
+    <>
+      <button
+        type="button"
+        className="icon-button rail-reconnect"
+        aria-label={`Reconnect agents: ${count} not connected`}
+        title="Reconnect agents"
+        onClick={() => setOpen(true)}
+      >
+        <RotateCw size={13} />
+        <span>{count}</span>
+      </button>
+      <Modal
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) forgetSettled(workspaceId);
+        }}
+        title="Reconnect agents"
+        description="Agents whose session isn’t connected, for example after Core restarted. Reconnecting opens the same session; nothing is sent and drafts stay."
+        className="batch-reconnect"
+      >
+        {elsewhere > 0 && (
+          <label className="batch-scope">
+            <input type="checkbox" checked={everywhere} onChange={(e) => setEverywhere(e.target.checked)} />
+            Include other projects ({elsewhere})
+          </label>
+        )}
+        {rows.length === 0 ? (
+          <p className="batch-empty">Every agent here is connected.</p>
+        ) : (
+          <ul className="batch-list" aria-label="Agents to reconnect">
+            {rows.map((agent) => {
+              const outcome = batch.outcomes.get(agent.id);
+              const can = choosable(agent) && !pending(agent.id);
+              return (
+                <li key={agent.id} className="batch-row" data-state={outcome?.state ?? (can ? "idle" : "busy")}>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={can && batch.selected.has(agent.id)}
+                      disabled={!can}
+                      onChange={(e) => choose(workspaceId, [agent.id], e.target.checked)}
+                    />
+                    <span className="batch-name">{agent.name}</span>
+                    <span className="batch-machine">{agent.remote?.machine.name || "Core host"}</span>
+                  </label>
+                  <span className="batch-state">
+                    {(outcome?.state === "running" || outcome?.state === "waiting") && (
+                      <LoaderCircle size={13} className="spin" aria-hidden="true" />
+                    )}
+                    {stateText(agent, outcome)}
+                  </span>
+                  {outcome?.state === "failed" && can && (
+                    <button
+                      type="button"
+                      className="quiet-button"
+                      onClick={() => reconnectBatch(workspaceId, [agent.id], onSettled)}
+                    >
+                      Retry
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        <div className="modal-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={!offered.length}
+            onClick={() => choose(workspaceId, offered.map((agent) => agent.id), ready.length < offered.length)}
+          >
+            {ready.length < offered.length ? "Select all" : "Clear"}
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={!ready.length}
+            onClick={() => reconnectBatch(workspaceId, ready.map((agent) => agent.id), onSettled)}
+          >
+            {running && <LoaderCircle size={15} className="spin" />}
+            {ready.length ? `Reconnect ${ready.length}` : running ? "Reconnecting…" : "Reconnect"}
+          </button>
+        </div>
+      </Modal>
+    </>
+  );
+}

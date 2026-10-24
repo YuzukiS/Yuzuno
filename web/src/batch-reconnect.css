@@ -1,0 +1,99 @@
+/* Reconnecting several Agents (T-184): the rail button with how many are
+   not connected, and its dialog's list. */
+.rail-heading .icon-button.rail-reconnect {
+  width: auto;
+  min-width: 23px;
+  gap: 3px;
+  padding: 0 5px;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+}
+.batch-reconnect .batch-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 10px;
+  font-size: calc(11px + var(--font-adjust, 3px));
+}
+.batch-list {
+  display: grid;
+  gap: 2px;
+  max-height: min(52vh, 420px);
+  margin: 0 0 14px;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.batch-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 4px 10px;
+  min-height: 40px;
+  padding: 4px 6px;
+  border-radius: 8px;
+}
+.batch-row:nth-child(odd) {
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+.batch-row > label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  cursor: pointer;
+}
+.batch-row > label:has(input:disabled) {
+  cursor: default;
+}
+.batch-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.batch-machine,
+.batch-state {
+  color: var(--muted);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.batch-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.batch-row[data-state="failed"] .batch-state {
+  color: var(--coral);
+  white-space: normal;
+}
+.batch-row[data-state="done"] .batch-state {
+  color: var(--ink);
+}
+.batch-empty {
+  margin: 4px 0 14px;
+  color: var(--muted);
+}
+/* A phone: the state goes under the name. */
+@media (max-width: 520px) {
+  .batch-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .batch-row > .batch-state {
+    grid-column: 1;
+    padding-left: 26px;
+    white-space: normal;
+  }
+  .batch-machine {
+    display: none;
+  }
+}
+@media (pointer: coarse) {
+  .batch-row {
+    min-height: 44px;
+  }
+  .batch-row > label input {
+    width: 20px;
+    height: 20px;
+  }
+}

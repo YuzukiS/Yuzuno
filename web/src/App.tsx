@@ -117,6 +117,7 @@ import { latestTurnWithEdits } from "./changes";
 import { CodexPlanUsage } from "./CodexPlanUsage";
 import { AgentManagement, type AgentAction } from "./AgentManagement";
 import { AgentActionsMenu } from "./AgentActionsMenu";
+import { BatchReconnect } from "./BatchReconnect";
 import type { AgentActionHandlers } from "./agent-actions";
 import { useConversationSend } from "./useConversationSend";
 import { ClarificationHost } from "./intelligent-ui/ClarificationHost";
@@ -2037,6 +2038,11 @@ export function App() {
             onScope={setAgentScope}
             onSearch={() => setSearchOpen((v) => !v)}
             onCreate={() => setCreateOpen(true)}
+            extra={
+              !previewMode && workspace ? (
+                <BatchReconnect workspaceId={workspaceId} agents={workspace.agents} scope={scope} onSettled={refresh} />
+              ) : null
+            }
           />
           {searchOpen && (
             <div className="agent-search">
