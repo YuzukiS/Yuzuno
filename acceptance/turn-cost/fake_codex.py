@@ -143,6 +143,12 @@ def script(thread, turn, text):
     notify("turn/completed", {"turn": {"id": turn, "status": "completed", "items": []}}, thread)
 
 
+def text_of(parts):
+    """A message's text, wherever it is among its parts: a message with a photo
+    may begin with the image (T-170 trial A). Empty when there is none."""
+    return next((part.get("text", "") for part in parts if part.get("type") == "text"), "")
+
+
 def handle(request):
     method, params = request.get("method"), request.get("params", {})
     result = {}
@@ -160,12 +166,12 @@ def handle(request):
         result = {"requirements": None}
     elif method == "turn/steer":
         # A mailbox doorbell for a running Turn; logged for its delay.
-        note("received/steer", params["threadId"], 0, text=params["input"][0]["text"][:80])
+        note("received/steer", params["threadId"], 0, text=text_of(params["input"])[:80])
         result = {"turnId": params.get("expectedTurnId")}
     elif method == "turn/start":
         thread = params["threadId"]
         turn = f"turn-{uuid.uuid4()}"
-        text = params["input"][0]["text"]
+        text = text_of(params["input"])
         note("received/start", thread, 0, text=text[:80])
         # Codex echoes the client message ID on its user message as clientId.
         user = {"id": f"{turn}:input", "type": "userMessage", "clientId": params.get("clientUserMessageId"),
