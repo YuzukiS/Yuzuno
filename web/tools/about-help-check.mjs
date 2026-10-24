@@ -2,7 +2,7 @@
 // server (no Core) that serves the real build, its licenses/ included: opened
 // from Updates & about at 1280, 390 and 320 px, it fits, the three license
 // texts this build ships open in place, its links leave for GitHub, and
-// nothing is sent.
+// it sends nothing.
 //   YUZUNO_UI_DIST=<build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/about-help-check.mjs
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -130,9 +130,11 @@ try {
     await issues.focus();
     assert.equal(await issues.evaluate((el) => el === document.activeElement), true, "the link takes focus");
     report.requests[label] = [...calls];
-    assert.deepEqual(calls.filter((c) => !c.startsWith("GET ")), [], "only reads: nothing is sent");
+    // Updates' own check when Settings opens on a managed install is the one
+    // write; About & help sends nothing.
+    assert.deepEqual(calls.filter((c) => !c.startsWith("GET ")), ["POST /api/updates/check"], "nothing sent but Updates' own check");
     assert.deepEqual(popups, [], "nothing opened by itself");
-    check(`${label}: links take focus and open outside; only GETs, including the three /licenses/ files`);
+    check(`${label}: links take focus and open outside; About & help only GETs, the three /licenses/ files among them`);
     for (const file of ["LICENSE", "LICENSE-NotoSansSC.txt", "THIRD_PARTY_NOTICES.txt"])
       assert.ok(calls.includes(`GET /licenses/${file}`), `read ${file}`);
     await context.close();

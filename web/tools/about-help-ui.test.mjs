@@ -68,7 +68,7 @@ function mount(t, answers) {
     const where = new URL(url, "http://isolated.test").pathname;
     calls.push(`${init.method ?? "GET"} ${where}`);
     const value = answers[where];
-    if (typeof value === "function") return value();
+    if (typeof value === "function") return value(window);
     if (value === undefined) return { ok: false, status: 404, headers: { get: () => null }, json: async () => ({}), text: async () => '{"error":"not in this fixture"}' };
     return text(JSON.stringify(value), "application/json");
   };
@@ -119,7 +119,9 @@ test("About & help shows the version and notes the Workspace service runs, and t
     assert.deepEqual([link.href, link.target, link.rel], [href, "_blank", "noreferrer"], label);
   }
   assert.ok(!page.calls.some((c) => c.includes("/licenses/")), "no license text is read before it is opened");
-  assert.ok(page.calls.every((c) => c.startsWith("GET ")), `only reads: ${page.calls.join(", ")}`);
+  // The one write is Updates' own: opening Settings on a managed install
+  // looks for a newer release. About & help sends nothing.
+  assert.deepEqual(page.calls.filter((c) => !c.startsWith("GET ")), ["POST /api/updates/check"]);
   // Help it points to is the editors Settings already has.
   page.button("Keyboard shortcuts").click();
   await until(() => page.document.querySelector('#settings-editor-shortcuts:not([hidden]) #settings-shortcuts-title'), "the shortcuts editor");
@@ -139,8 +141,9 @@ test("a license text is read from this page's build only when opened, once; the 
     "/licenses/LICENSE": () => text("                                 Apache License\n                           Version 2.0, January 2004\n"),
     // A file the build lacks: Core answers with index.html.
     "/licenses/THIRD_PARTY_NOTICES.txt": () => text("<!doctype html><title>Yuzuno</title>", "text/html; charset=utf-8"),
-    "/licenses/LICENSE-NotoSansSC.txt": () => {
-      if (noto++ === 0) throw new TypeError("Failed to fetch");
+    // As a browser's fetch fails: a TypeError of the page's own.
+    "/licenses/LICENSE-NotoSansSC.txt": (window) => {
+      if (noto++ === 0) throw new window.TypeError("Failed to fetch");
       return text("SIL OPEN FONT LICENSE Version 1.1\n");
     },
   });
@@ -169,6 +172,7 @@ test("a license text is read from this page's build only when opened, once; the 
   await until(() => font.querySelector("pre"), "opening it again reads again");
   assert.equal(font.querySelector('[role="alert"]'), null);
   assert.equal(reads("LICENSE-NotoSansSC.txt"), 2);
+  assert.deepEqual(page.calls.filter((c) => !c.startsWith("GET ")), ["POST /api/updates/check"], "Updates' own check, nothing of About's");
   assert.deepEqual(page.errors, []);
 });
 
