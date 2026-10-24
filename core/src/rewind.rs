@@ -31,11 +31,30 @@ struct Preview {
     thread: String,
     target: String,
     generation: u64,
-    baseline: Vec<Value>,
+    /// The whole native history read for the preview, compared again on
+    /// confirm. It can be large; see `expire_previews`.
+    baseline: Arc<Vec<Value>>,
     draft: String,
     at: Instant,
 }
 static PREVIEWS: LazyLock<Mutex<HashMap<String, Preview>>> = LazyLock::new(Default::default);
+
+/// Takes out of the map every preview past its TTL or whose Workspace is
+/// gone, and those `also` names. They are returned rather than dropped, so
+/// the caller frees their histories after the map's lock is released.
+fn take_previews(previews: &mut HashMap<String, Preview>, also: impl Fn(&Preview) -> bool) -> Vec<Preview> {
+    previews.extract_if(|_, p| p.at.elapsed() >= TTL || p.owner.strong_count() == 0 || also(p)).map(|(_, p)| p).collect()
+}
+
+/// Frees the histories of previews no one can confirm any more: past their
+/// TTL, or of a Workspace that is gone. The Workspace's ticker calls this on
+/// a blocking thread (`Workspace::start_stream_ticker`, started by every
+/// preview), so a preview that is cancelled or left alone is released
+/// without another request. Returns how many it freed.
+pub(crate) fn expire_previews() -> usize {
+    let expired = take_previews(&mut PREVIEWS.lock().unwrap(), |_| false);
+    expired.len()
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Attempt {
@@ -285,26 +304,30 @@ impl Workspace {
             .unwrap_or_else(|| crate::message_content::text(user));
         let key = uuid::Uuid::new_v4().to_string();
         let response = json!({"available":true,"previewId":key,"beforeTurnId":target,"removedTurns":baseline.len()-index,"keptTurns":index,"draft":draft,"expiresInSeconds":TTL.as_secs()});
-        let mut previews = PREVIEWS.lock().unwrap();
         let owner = Arc::downgrade(self);
-        previews.retain(|_, p| {
-            p.at.elapsed() < TTL
-                && p.owner.strong_count() > 0
-                && (p.agent != id || !p.owner.ptr_eq(&owner))
-        });
-        previews.insert(
-            key,
-            Preview {
-                owner,
-                agent: id.into(),
-                thread,
-                target: target.into(),
-                generation: c.generation,
-                baseline,
-                draft,
-                at: Instant::now(),
-            },
-        );
+        let replaced = {
+            let mut previews = PREVIEWS.lock().unwrap();
+            // This Agent's earlier preview is replaced; expired ones go too.
+            let replaced = take_previews(&mut previews, |p| p.agent == id && p.owner.ptr_eq(&owner));
+            previews.insert(
+                key,
+                Preview {
+                    owner,
+                    agent: id.into(),
+                    thread,
+                    target: target.into(),
+                    generation: c.generation,
+                    baseline: Arc::new(baseline),
+                    draft,
+                    at: Instant::now(),
+                },
+            );
+            replaced
+        };
+        // Their histories are freed here, with the lock released.
+        drop(replaced);
+        // Without another request, this preview is freed once it expires.
+        self.start_stream_ticker();
         Ok(response)
     }
 
@@ -320,10 +343,10 @@ impl Workspace {
             return Ok(attempt.outcome());
         }
         self.ensure_rewind_settled(id).await?;
-        let p = PREVIEWS
-            .lock()
-            .unwrap()
-            .remove(key)
+        // Taken out under the lock, checked after it: one that is not this
+        // Agent's is freed without the lock held.
+        let taken = PREVIEWS.lock().unwrap().remove(key);
+        let p = taken
             .filter(|p| p.agent == id && p.owner.ptr_eq(&Arc::downgrade(self)))
             .context("This preview was used or expired; nothing was sent")?;
         ensure!(p.at.elapsed() < TTL, "This preview expired; preview again");
@@ -651,6 +674,10 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Every test here makes or sweeps previews, and PREVIEWS is one map for
+    /// the whole process: run one at a time, so a test sees only its own
+    /// sweeps (a preview made by another sweeps expired ones too).
+    static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     fn turn(id: &str) -> Value {
         json!({"id":id,"status":"completed","itemsView":"full","items":[{"id":format!("u-{id}"),"type":"userMessage","content":[{"type":"text","text":format!("original {id}")}]},{"id":format!("a-{id}"),"type":"agentMessage","text":format!("reply {id}")} ]})
     }
@@ -718,6 +745,7 @@ mod tests {
     }
     #[tokio::test]
     async fn rewind_paged_boundary_is_durable_archived_and_sent_once() {
+        let _serial = SERIAL.lock().await;
         let (dir, ws) = fixture().await;
         let p = ws.rewind_preview("a", "2").await.unwrap();
         assert_eq!(
@@ -774,6 +802,7 @@ mod tests {
     }
     #[tokio::test]
     async fn rewind_refuses_busy_stale_legacy_and_missing_identity_without_writes() {
+        let _serial = SERIAL.lock().await;
         let (dir, ws) = fixture().await;
         ws.update_record("a", "test", json!({}), |d| {
             d.turns[3]["status"] = "inProgress".into()
@@ -822,6 +851,7 @@ mod tests {
     }
     #[tokio::test]
     async fn rewind_lost_reply_blocks_input_and_reconnect_checks_without_repeating() {
+        let _serial = SERIAL.lock().await;
         let (dir, ws) = fixture().await;
         let p = ws.rewind_preview("a", "1").await.unwrap();
         let key = p["previewId"].as_str().unwrap();
@@ -850,6 +880,7 @@ mod tests {
     }
     #[tokio::test]
     async fn rewind_native_refusal_preserves_history() {
+        let _serial = SERIAL.lock().await;
         let (dir, ws) = fixture().await;
         let p = ws.rewind_preview("a", "3").await.unwrap();
         std::fs::write(dir.path().join("refuse"), "").unwrap();
@@ -865,6 +896,7 @@ mod tests {
 
     #[tokio::test]
     async fn rewind_unknown_can_keep_unchanged_or_externally_extended_history_without_resend() {
+        let _serial = SERIAL.lock().await;
         for changed in [false, true] {
             let (dir, ws) = fixture().await;
             ws.update_record("a", "test/context", json!({}), |d| {
@@ -938,6 +970,7 @@ mod tests {
     }
     #[tokio::test]
     async fn rewind_recovery_continues_normal_reconciliation() {
+        let _serial = SERIAL.lock().await;
         let (dir, ws) = fixture().await;
         let p = ws.rewind_preview("a", "2").await.unwrap();
         std::fs::write(dir.path().join("disconnect"), "").unwrap();
@@ -962,6 +995,7 @@ mod tests {
     }
     #[tokio::test]
     async fn rewind_http_admission_failure_is_definite_without_a_draft() {
+        let _serial = SERIAL.lock().await;
         let (_dir, ws) = fixture().await;
         let result = confirm(
             State(ws.clone()),
@@ -981,6 +1015,7 @@ mod tests {
 
     #[tokio::test]
     async fn rewind_target_can_be_older_than_the_cached_window() {
+        let _serial = SERIAL.lock().await;
         let (_dir, ws) = fixture().await;
         ws.update_record("a", "test/window", json!({}), |d| {
             d.turns.drain(..2);
@@ -999,5 +1034,92 @@ mod tests {
         assert!(ws.detail("a").await.unwrap().turns.is_empty());
         assert!(ws.detail("a").await.unwrap().agent.last_message.is_none());
         stop(&ws).await;
+    }
+
+    /// The history a preview holds, to see when it is freed.
+    fn held(key: &str) -> Option<Weak<Vec<Value>>> {
+        PREVIEWS.lock().unwrap().get(key).map(|p| Arc::downgrade(&p.baseline))
+    }
+    /// Makes a preview as old as `by`.
+    fn age(key: &str, by: Duration) {
+        let mut previews = PREVIEWS.lock().unwrap();
+        previews.get_mut(key).unwrap().at = Instant::now().checked_sub(by).expect("the monotonic clock is older than the TTL");
+    }
+    /// Whether nothing holds that history any more, within two seconds
+    /// (the ticker runs every 250 ms).
+    async fn freed(baseline: &Weak<Vec<Value>>) -> bool {
+        for _ in 0..40 {
+            if baseline.strong_count() == 0 {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+    fn preview_id(p: &Value) -> String {
+        p["previewId"].as_str().unwrap().to_owned()
+    }
+
+    #[tokio::test]
+    async fn an_expired_preview_is_freed_on_its_own_and_cannot_be_confirmed() {
+        let _serial = SERIAL.lock().await;
+        let (dir, ws) = fixture().await;
+        let key = preview_id(&ws.rewind_preview("a", "2").await.unwrap());
+        let baseline = held(&key).unwrap();
+        assert!(ws.stream_ticker_started(), "a preview starts the ticker that frees it");
+        // Unexpired, it outlasts the ticker's runs.
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(baseline.strong_count() == 1 && held(&key).is_some(), "an unexpired preview is kept");
+        // Past its TTL, its history is freed with no request made.
+        age(&key, TTL + Duration::from_secs(1));
+        assert!(freed(&baseline).await, "the expired preview's history is freed without another request");
+        assert!(held(&key).is_none());
+        let error = ws.rewind_confirm("a", &key).await.unwrap_err().to_string();
+        assert!(error.contains("used or expired"), "{error}");
+        assert!(calls(&dir, "thread/revert").is_empty(), "nothing was sent");
+        stop(&ws).await;
+    }
+
+    #[tokio::test]
+    async fn an_unexpired_preview_is_confirmed_after_the_ticker_ran_and_another_workspace_cannot_use_it() {
+        let _serial = SERIAL.lock().await;
+        let (dir, ws) = fixture().await;
+        let (other_dir, other) = fixture().await;
+        let key = preview_id(&ws.rewind_preview("a", "2").await.unwrap());
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        // The same Agent ID in another Workspace cannot confirm it.
+        let error = other.rewind_confirm("a", &key).await.unwrap_err().to_string();
+        assert!(error.contains("used or expired"), "{error}");
+        assert!(calls(&other_dir, "thread/revert").is_empty() && calls(&dir, "thread/revert").is_empty(), "nothing was sent");
+        // Its own Workspace confirms a fresh preview the ticker has run past.
+        let key = preview_id(&ws.rewind_preview("a", "2").await.unwrap());
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(held(&key).is_some(), "an unexpired preview is kept");
+        assert_eq!(ws.rewind_confirm("a", &key).await.unwrap()["status"], "completed");
+        assert_eq!(calls(&dir, "thread/revert").len(), 1);
+        stop(&ws).await;
+        stop(&other).await;
+    }
+
+    #[tokio::test]
+    async fn a_preview_keeps_no_workspace_alive_and_is_freed_once_its_workspace_is_gone() {
+        let _serial = SERIAL.lock().await;
+        let (_dir, ws) = fixture().await;
+        let key = preview_id(&ws.rewind_preview("a", "2").await.unwrap());
+        let baseline = held(&key).unwrap();
+        stop(&ws).await;
+        let workspace = Arc::downgrade(&ws);
+        drop(ws);
+        // A tick may hold it for the moment it runs; nothing holds it after.
+        for _ in 0..40 {
+            if workspace.strong_count() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(workspace.strong_count(), 0, "neither the preview nor its ticker keeps the Workspace");
+        // Unexpired, but no one can confirm it now: the next sweep frees it.
+        expire_previews();
+        assert!(freed(&baseline).await, "the preview of a Workspace that is gone is freed");
     }
 }
