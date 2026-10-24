@@ -25,6 +25,7 @@ import { DiagnosticsCopy } from "./RecoveryPage";
 import { HistoryComposition } from "./HistoryComposition";
 import { ReviewSettings } from "./ReviewSettings";
 import { HomePresentationSettings } from "./HomePresentationSettings";
+import { NotificationSettings } from "./NotificationSettings";
 import { RemoteAccessSettings } from "./RemoteAccessSettings";
 import { api, errorText, HttpError } from "./api";
 import {
@@ -984,6 +985,7 @@ export function WorkspaceUpdates({
           {tab === "shortcuts" && <ShortcutHelpSection />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
+          {tab === "notifications" && <NotificationSettings />}
           {tab === "remote" && <RemoteAccessSettings active={open && visible} />}
         </>}
       />

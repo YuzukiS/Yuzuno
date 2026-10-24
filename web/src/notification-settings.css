@@ -1,0 +1,33 @@
+/* Notifications in Settings (T-188). */
+.notification-settings input[type="checkbox"] {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--accent-ink);
+}
+/* A touch screen gets a target its own size. */
+@media (pointer: coarse) {
+  .notification-settings input[type="checkbox"] {
+    width: 22px;
+    height: 22px;
+  }
+}
+.notification-access {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 500;
+}
+.notification-access[data-state="allowed"] {
+  color: var(--ink);
+}
+.notification-access[data-state="denied"],
+.notification-access[data-state="unsupported"] {
+  border-style: dashed;
+}
+.notification-test-result {
+  color: var(--ink);
+}
