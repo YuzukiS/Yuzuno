@@ -1,32 +1,10 @@
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useRef } from "react";
 import { isNative } from "./api";
 import type { NeedsYouItem } from "./home/types";
 import { browserHost, notificationAccess, showSystemNotification } from "./notification-access";
 import { agentNotices, askNotices, merged, type AgentState, type Notice } from "./notification-events";
-import { NOTIFICATION_PREFS_KEY, notifies, parseNotificationPrefs, type NotificationPrefs } from "./notification-prefs";
-
-// This device's choices, read once, then again when another window saves them.
-const listeners = new Set<() => void>();
-let current: NotificationPrefs | null = null;
-function readPrefs(): NotificationPrefs {
-  try {
-    return parseNotificationPrefs(JSON.parse(localStorage.getItem(NOTIFICATION_PREFS_KEY) ?? "null"));
-  } catch {
-    return parseNotificationPrefs(null);
-  }
-}
-window.addEventListener("storage", (event) => {
-  if (event.key !== NOTIFICATION_PREFS_KEY && event.key !== null) return;
-  current = null;
-  listeners.forEach((listener) => listener());
-});
-const subscribe = (listener: () => void) => {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-};
-export const useNotificationPrefs = () => useSyncExternalStore(subscribe, () => (current ??= readPrefs()));
+import { notifies } from "./notification-prefs";
+import { useNotificationPrefs } from "./notification-store";
 
 /** Only while the user is looking elsewhere: in view, the Workspace shows it itself. */
 const away = () => document.visibilityState === "hidden" || !document.hasFocus();
