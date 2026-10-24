@@ -137,4 +137,26 @@ jobs:
           mkdir -p "$RUNNER_TEMP/out"
           ditto -c -k --keepParent "$app" "$RUNNER_TEMP/out/Yuzuno-iOS-Simulator.zip"
           (cd "$RUNNER_TEMP/out" && shasum -a 256 Yuzuno-iOS-Simulator.zip | tee SHA256SUMS)
-          { echo "### iOS Simulator app"; echo; echo "\`$identifier\`, $platform, arm64."; echo; echo '```'; cat "$RUNNER_TEMP/out/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          # A pull request's run builds its merge with main: name that commit.
+          # The checkout is shallow, so its parents come from the commit itself.
+          source=$(git rev-parse HEAD)
+          parents=$(git cat-file -p HEAD | sed -n 's/^parent //p' | paste -s -d ' ' -)
+          echo "built from $source (parents: $parents)"
+          { echo "### iOS Simulator app"; echo; echo "\`$identifier\`, $platform, arm64, built from \`$source\` (parents: \`$parents\`)."; echo; echo '```'; cat "$RUNNER_TEMP/out/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      # The app in a Simulator, without a Core: it starts, its connection
+      # page shows in the app's WKWebView, and the app's own commands answer
+      # there (uitests/). Unsigned, and nothing leaves the runner.
+      - name: Simulator check
+        timeout-minutes: 20
+        run: |
+          app=$(find gen/apple/build/arm64-sim -maxdepth 1 -type d -name '*.app')
+          device=$(xcrun simctl create yuzuno-check "iPhone 17")
+          xcrun simctl list devices | awk -v device="$device" '/^-- /{runtime=$0} index($0, device){print runtime; print}'
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+          xcrun simctl install "$device" "$app"
+          (cd uitests && xcodegen generate)
+          xcodebuild test -quiet -project uitests/YuzunoChecks.xcodeproj -scheme Checks \
+            -destination "platform=iOS Simulator,id=$device" CODE_SIGNING_ALLOWED=NO
+          xcrun simctl shutdown "$device"

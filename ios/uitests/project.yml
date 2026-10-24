@@ -1,0 +1,37 @@
+# The iOS app's Simulator check (T-170): a UI test that drives the Yuzuno
+# app installed in a Simulator by its bundle identifier. Host is only the
+# test bundle's required target application; it does nothing. ios.yml
+# generates the Xcode project with xcodegen and runs it unsigned.
+name: YuzunoChecks
+options:
+  bundleIdPrefix: dev.yuzuno.checks
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_VERSION: "5.0"
+targets:
+  Host:
+    type: application
+    platform: iOS
+    sources: [Host]
+    settings:
+      base:
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+  Checks:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [Checks]
+    dependencies:
+      - target: Host
+    settings:
+      base:
+        TEST_TARGET_NAME: Host
+schemes:
+  Checks:
+    build:
+      targets:
+        Checks: [test]
+    test:
+      targets: [Checks]
