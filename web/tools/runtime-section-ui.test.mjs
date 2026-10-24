@@ -247,6 +247,21 @@ test("on the Core host a signed-out Claude Code is found and signed out; one tha
   }
 });
 
+test("an SSH machine the last check didn't reach: its CLIs are Unknown, even with Core's placeholder Claude entry", async () => {
+  // As Core stores a failed SSH probe (machines.rs): unreachable, with a
+  // placeholder {harness: "claude", supported: true, found: false}.
+  const answers = core();
+  answers["/api/machines"].machines[1].lastCheck.harnesses = [{ harness: "claude", supported: true, found: false }];
+  const page = mount(answers);
+  page.window.show();
+  await tick();
+  const reach = "Unknown · Not known · The last check didn't reach this machine.";
+  assert.equal(page.facts(page.machine("Build box").querySelector("dl")).Reached, "No · Not reached · ssh: connect to host box.test port 22: Connection timed out");
+  assert.equal(page.facts(page.harness("Build box", "Claude Code")).CLI, reach, "not 'No · Not found'");
+  assert.equal(page.facts(page.harness("Build box", "Codex")).CLI, reach);
+  page.close();
+});
+
 test("a development Core and a page from another release are said plainly", async () => {
   const page = mount(core({ "/api/health": { version: "0.1.0", releaseId: "development", apiReady: true, storageReady: false } }), { release: "core-20261020-aaaaaaa" });
   page.window.show();

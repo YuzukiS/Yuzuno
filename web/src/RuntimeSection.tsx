@@ -104,6 +104,7 @@ export function RuntimeSection({
             {view ? (
               <>
                 Read <time dateTime={view.at}>{timeText(view.at)}</time>
+                <span className="runtime-read-note"> · each source answered on its own</span>
               </>
             ) : reading ? (
               "Reading…"
@@ -139,8 +140,9 @@ export function RuntimeSection({
           <section className="runtime-group" aria-labelledby="runtime-machines">
             <h4 id="runtime-machines">Machines</h4>
             <p className="runtime-note">
-              Each machine's facts are from its last check, not live. Its CLIs and their sign-in belong to that machine
-              and are updated with its own tools.
+              Reached and each CLI are from the machine's last check, not live. On the Core host, Codex's connection
+              and sign-in are as Core holds them now, and Managed Jobs as Core reads its budget. A machine's CLIs and
+              their sign-in belong to that machine and are updated with its own tools.
               {onOpenMachines ? " " : " Checks run from the Machines page."}
               {onOpenMachines && (
                 <button type="button" className="quiet-button runtime-machines-link" onClick={onOpenMachines}>
