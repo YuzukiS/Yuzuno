@@ -26,6 +26,7 @@ import { DiagnosticsCopy } from "./RecoveryPage";
 import { HistoryComposition } from "./HistoryComposition";
 import { ReviewSettings } from "./ReviewSettings";
 import { HomePresentationSettings } from "./HomePresentationSettings";
+import { NotificationSettings } from "./NotificationSettings";
 import { api, errorText, HttpError } from "./api";
 import {
   loadedRelease,
@@ -990,6 +991,7 @@ export function WorkspaceUpdates({
           {tab === "shortcuts" && <ShortcutHelpSection />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
+          {tab === "notifications" && <NotificationSettings />}
         </>}
       />
     </Modal>
