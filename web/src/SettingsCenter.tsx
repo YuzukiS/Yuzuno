@@ -35,7 +35,8 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
   function chooseCategory(next: SettingsCategory) {
     setCategory(next);
     setQuery("");
-    if (next === "updates" || next === "appearance") showEditor(next);
+    // A category with one editor of its own opens it (T-188: Notifications).
+    if (next === "updates" || next === "appearance" || next === "notifications") showEditor(next);
     else setEditor(null);
     content.current?.scrollTo?.({ top: 0 });
   }

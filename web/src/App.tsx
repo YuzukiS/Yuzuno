@@ -189,6 +189,7 @@ import { followVisualViewport } from "./keyboard-viewport";
 import type { QuestionSource } from "./types";
 import { Home, type HomeTarget } from "./home/Home";
 import { useOpenAsks } from "./home/open-asks";
+import { useSystemNotifications } from "./useSystemNotifications";
 
 // Core fits a large image to Yuzuno's Claude budget (core/src/input_images.rs).
 const CLAUDE_IMAGE_NOTE = "Large images are scaled or compressed when sent to Claude · originals are kept";
@@ -819,7 +820,15 @@ export function App() {
   // turns stay with their conversations: Home does not list them, so its
   // badge does not count them.
   const totalPending = activeAgents.reduce((n, a) => n + a.pendingCount, 0);
-  const [openAsks, reportNeedsYou] = useOpenAsks(workspaceId, !homeOpen && !previewMode, asksRevision);
+  const [openAsks, reportNeedsYou, needsYouItems] = useOpenAsks(workspaceId, !homeOpen && !previewMode, asksRevision);
+  // This device's system notifications, where it chose them and its system
+  // allows them (T-188). A preview's sample Workspace has none.
+  useSystemNotifications(workspaceId, previewMode ? undefined : workspace?.agents, previewMode ? null : needsYouItems, (notice) => {
+    if (notice.home) {
+      setHomeOpen(true);
+      setPhoneList(false);
+    } else if (notice.agentId) selectAgent(notice.agentId);
+  });
   const needsYou = totalPending + openAsks;
   const reviewDisplayed = useCallback(
     async (id: string, throughSeq: number) => {
