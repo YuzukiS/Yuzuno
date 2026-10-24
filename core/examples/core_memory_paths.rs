@@ -133,7 +133,8 @@ mod supported {
             }
         }
         let turn = turn.to_owned();
-        store.record_event(id, "claude/turnRequested", &json!({"turnId":turn}), move |d| {
+        // As claude.rs commits it: in place on a held record (T-140).
+        store.record_send(id, "claude/turnRequested", &json!({"turnId":turn}), move |d| {
             let t = d.turn_mut(&turn);
             t["status"] = "inProgress".into();
             t["items"] = json!([{"id":format!("{turn}:input"),"type":"userMessage","content":[{"type":"text","text":"synthetic"}]}]);
