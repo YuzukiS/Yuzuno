@@ -25,7 +25,7 @@ These facts come from the installed CLI. The App Server schema was generated bot
 
 ## What Yuzuno does
 
-- **List** (`web/src/subagents.ts`, `SubAgents.tsx`): one row per `agentThreadId`, in start order, de-duplicated by Item id. The state is the last activity kind:
+- **List** (`web/src/subagents.ts`, `SubAgentPanels.tsx`): one row per `agentThreadId`, in start order, de-duplicated by Item id. The state is the last activity kind:
   - started (status to confirm), ended, or interrupted;
   - `interacted` never changes it;
   - a parent Turn that ended without an ending leaves the child **unknown**.

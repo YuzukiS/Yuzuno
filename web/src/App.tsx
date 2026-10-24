@@ -178,6 +178,7 @@ import { PendingQuestions, type PendingQuestionsHandle } from "./PendingQuestion
 import { QuestionIndex, questionKey } from "./pending-questions";
 import { pruneRequestDrafts } from "./request-draft";
 import { usePhone } from "./phone-layout";
+import { followVisualViewport } from "./keyboard-viewport";
 import type { QuestionSource } from "./types";
 import { Home, type HomeTarget } from "./home/Home";
 import { useOpenAsks } from "./home/open-asks";
@@ -314,6 +315,8 @@ export function App() {
   // The list covers the open view instead of replacing it, so its drafts,
   // reading place and any annotation stay as they were.
   const phone = usePhone();
+  // On a phone the shell fits what the on-screen keyboard leaves.
+  useEffect(() => (phone ? followVisualViewport() : undefined), [phone]);
   const [phoneList, setPhoneList] = useState(true);
   const [phoneInspector, setPhoneInspector] = useState(false);
   const phoneBack = useRef<HTMLButtonElement>(null);
@@ -2739,7 +2742,7 @@ export function App() {
                         disabled={previewMode || draftBlocked || imageUploads.busy}
                         title={
                           imageSupported
-                            ? `Add images · paste or choose PNG, JPEG or WebP, up to 8 images of 10 MiB each${agent?.harness === "claude" ? ` · ${CLAUDE_IMAGE_NOTE}` : ""}`
+                            ? `Add images · paste or choose PNG, JPEG or WebP, up to 8 per message; a photo over 10 MiB or 24 megapixels is made smaller here first${agent?.harness === "claude" ? ` · ${CLAUDE_IMAGE_NOTE}` : ""}`
                             : "Images are available for Codex and Claude Agents"
                         }
                         onClick={() => { if (imageSupported) imagePicker.current?.click(); }}
