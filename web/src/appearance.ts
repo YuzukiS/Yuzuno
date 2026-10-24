@@ -1,4 +1,13 @@
 import { useSyncExternalStore } from "react";
+import {
+  clearDeviceValue,
+  deviceValueState,
+  onDeviceValueChange,
+  readDeviceValue,
+  saveDeviceValue,
+  type DeviceValueState,
+  type SaveOutcome,
+} from "./device-storage.ts";
 
 export type ThemePreference = "light" | "dark" | "system";
 /** Text size in px, any whole number from MIN_FONT_SIZE to MAX_FONT_SIZE. */
@@ -157,13 +166,20 @@ export function applyAppearance(appearance: Appearance) {
     });
 }
 
-// The saved choice for React views that change what they render with it,
-// not only how it looks: read once, then again whenever it is saved here or
-// in another window.
+// The choice in effect for React views that change what they render with
+// it, not only how it looks: read once, then again whenever it is chosen
+// here or saved in another window. A choice this device refused to save is
+// still the one in effect here, until this window closes (T-187).
 const listeners = new Set<() => void>();
 let current: Appearance | null = null;
+/** What this visit's last write of Appearance did: a save or a reset. */
+export type AppearanceWrite = { outcome: SaveOutcome; action: "save" | "reset" };
+// Null before one.
+let lastSave: AppearanceWrite | null = null;
 function changed() {
   current = null;
+  // Another window saved: what is in effect here is what is saved now.
+  lastSave = null;
   listeners.forEach((listener) => listener());
 }
 const subscribe = (listener: () => void) => {
@@ -176,15 +192,49 @@ export function useAppearance(): Appearance {
   return useSyncExternalStore(subscribe, () => (current ??= readAppearance()));
 }
 
-export function saveAppearance(appearance: Appearance) {
+/** What this visit's last save or reset of Appearance did, or null. */
+export function useAppearanceSave(): AppearanceWrite | null {
+  return useSyncExternalStore(subscribe, () => lastSave);
+}
+
+/** What this device holds for Appearance, read now: a saved choice, none
+ * (the defaults), one it can't read (not an object; the defaults apply), or
+ * storage it can't read at all. */
+export function appearanceStored(): DeviceValueState {
+  const state = deviceValueState(STORAGE_KEY);
+  if (state !== "saved") return state;
+  const value = readDeviceValue(STORAGE_KEY);
+  return value && typeof value === "object" && !Array.isArray(value) ? "saved" : "invalid";
+}
+
+/** Applies `appearance` and saves it on this device. A refused write is
+ * reported, not hidden: the choice still applies in this window. */
+export function saveAppearance(appearance: Appearance): SaveOutcome {
   applyAppearance(appearance);
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(appearance));
-  } catch {
-    // A browser with unavailable storage can still apply the setting this visit.
-  }
+  const outcome = saveDeviceValue(STORAGE_KEY, appearance);
   current = appearance;
+  lastSave = { outcome, action: "save" };
   listeners.forEach((listener) => listener());
+  return outcome;
+}
+
+/** Tries this visit's last write of Appearance again, as it was: a save of
+ * the choice in effect, or a reset that removes this device's choice (not a
+ * save of the defaults). */
+export function retryAppearanceWrite(): SaveOutcome {
+  return lastSave?.action === "reset"
+    ? restoreDefaultAppearance()
+    : saveAppearance(current ?? readAppearance());
+}
+
+/** Back to the defaults on this device: its saved choice is removed. */
+export function restoreDefaultAppearance(): SaveOutcome {
+  applyAppearance(defaultAppearance);
+  const outcome = clearDeviceValue(STORAGE_KEY);
+  current = defaultAppearance;
+  lastSave = { outcome, action: "reset" };
+  listeners.forEach((listener) => listener());
+  return outcome;
 }
 
 /** Runs before React mounts, so the workspace appears with its saved settings. */
@@ -192,13 +242,13 @@ export function initializeAppearance() {
   applyAppearance(readAppearance());
   const system = window.matchMedia("(prefers-color-scheme: dark)");
   system.addEventListener("change", () => {
-    const appearance = readAppearance();
+    // The choice in effect in this window, which may be one this device
+    // refused to save; not what is stored (T-187).
+    const appearance = current ?? readAppearance();
     if (appearance.theme === "system") applyAppearance(appearance);
   });
-  window.addEventListener("storage", (event) => {
-    if (event.key === STORAGE_KEY || event.key === null) {
-      applyAppearance(readAppearance());
-      changed();
-    }
+  onDeviceValueChange(STORAGE_KEY, () => {
+    applyAppearance(readAppearance());
+    changed();
   });
 }

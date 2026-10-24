@@ -1,8 +1,11 @@
-import { useState } from "react";
 import { Check, Monitor, Moon, Rows2, Rows4, Sun, Type } from "lucide-react";
 import {
-  readAppearance,
+  appearanceStored,
+  restoreDefaultAppearance,
+  retryAppearanceWrite,
   saveAppearance,
+  useAppearance,
+  useAppearanceSave,
   type AgentListDensity,
   type Appearance,
   type DockLimits,
@@ -16,6 +19,7 @@ import {
   palettes,
   type Palette,
 } from "./appearance";
+import { SaveStatus } from "./SaveStatus";
 
 const themes: {
   value: ThemePreference;
@@ -115,14 +119,15 @@ const paletteLabels: Record<Palette, string> = {
 };
 
 /** Appearance, one category of Settings: how Yuzuno looks on this device.
- * It mounts only while its category is shown, so it reads the saved choice
- * each time it opens. */
+ * It shows the choice in effect, which is the saved one unless this device
+ * refused to save it (T-187); then it says so, keeps the choice, and offers
+ * to try again or restore the defaults. Before a save in this visit it says
+ * what this device holds: a saved choice, the defaults, or one it can't read. */
 export function AppearanceSection() {
-  const [appearance, setAppearance] = useState(readAppearance);
+  const appearance = useAppearance();
+  const save = useAppearanceSave();
   function update(next: Partial<Appearance>) {
-    const value = { ...appearance, ...next };
-    setAppearance(value);
-    saveAppearance(value);
+    saveAppearance({ ...appearance, ...next });
   }
   const theme = themes.find((t) => t.value === appearance.theme)?.label;
   return (
@@ -381,9 +386,14 @@ export function AppearanceSection() {
           <code>const next = "something good";</code>
         </div>
       </div>
-      <p className="settings-footnote">
-        <Check size={13} aria-hidden="true" /> Saved on this device
-      </p>
+      <SaveStatus
+        outcome={save?.outcome ?? null}
+        action={save?.action}
+        stored={appearanceStored()}
+        scope="this device"
+        onRetry={retryAppearanceWrite}
+        onRestoreDefaults={restoreDefaultAppearance}
+      />
     </section>
   );
 }

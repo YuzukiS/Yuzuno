@@ -320,7 +320,7 @@ type JobScope = { agentId?: string; taskId?: string };
 type JobSource = "local" | "github_actions" | "reviews";
 type JobOpen = JobScope &
   Omit<CiOpen, "source"> &
-  ReviewOpen & { source?: JobSource; jobId?: string };
+  ReviewOpen & { source?: JobSource; jobId?: string; settings?: "budget" };
 export const openJobs = (detail: JobOpen = {}) =>
   window.dispatchEvent(new CustomEvent("yuzuno:open-job", { detail }));
 
@@ -460,6 +460,12 @@ export function Jobs({
     nextBefore: null,
   });
   const [budget, setBudget] = useState<Budget | null>(null);
+  const [budgetRequest, setBudgetRequest] = useState(0);
+  const clearBudgetRequest = useCallback(() => setBudgetRequest(0), []);
+  useEffect(() => {
+    // Closing or leaving Local also cancels a request whose budget has not loaded yet.
+    if (!open || source !== "local") clearBudgetRequest();
+  }, [open, source, clearBudgetRequest]);
   const [selected, setSelected] = useState("");
   const [detail, setDetail] = useState<Job | null>(null);
   const [log, setLog] = useState<Log | null>(null);
@@ -559,6 +565,7 @@ export function Jobs({
           : {},
       );
       setSelected(detail.jobId || "");
+      setBudgetRequest(detail.settings === "budget" ? (value) => value + 1 : 0);
       setCreating(false);
       setOpen(true);
     };
@@ -951,6 +958,8 @@ export function Jobs({
                   </JobsSourceHeading>
                   {budget && (
                     <JobsBudget
+                      openRequest={budgetRequest}
+                      onOpenRequestHandled={clearBudgetRequest}
                       budget={budget}
                       // GPUs on which the user paused a running job (T-107).
                       pausedGpus={
@@ -1069,10 +1078,14 @@ const jobSources: { id: JobSource; label: string; Icon: typeof BriefcaseBusiness
  * setting beneath. The fine print sits in tips.
  */
 function JobsBudget({
+  openRequest,
+  onOpenRequestHandled,
   budget,
   pausedGpus,
   onSaved,
 }: {
+  openRequest?: number;
+  onOpenRequestHandled?: () => void;
   budget: Budget;
   pausedGpus: Set<string>;
   onSaved: () => void;
@@ -1120,6 +1133,8 @@ function JobsBudget({
               {cpu(budget.reserved.cpuMillis)} / {cpu(budget.budget.cpuMillis)} reserved
             </span>
             <BudgetSettings
+              openRequest={openRequest}
+              onOpenRequestHandled={onOpenRequestHandled}
               budget={budget.budget}
               bounds={budget.budgetBounds}
               host={budget.machine}
