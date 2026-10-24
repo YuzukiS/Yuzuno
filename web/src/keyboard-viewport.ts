@@ -1,43 +1,61 @@
 /**
  * A phone's on-screen keyboard (T-170). The phone shell is 100dvh tall, and
  * the keyboard does not change that. Measured in Mobile Safari (iOS 26.5
- * Simulator, run 40061280002; T-170 comment 6610), focusing the composer
- * scrolled the whole document by 337 px, so the toolbar went above the
- * screen. After a rotation with the keyboard still open, the focused
- * composer stayed under the keyboard.
+ * Simulator, run 40061280002; T-170 comments 6605 and 6610), focusing the
+ * composer scrolled the whole document by 337 px, so the toolbar left the
+ * screen. After a rotation sideways and back with the keyboard still open,
+ * the focused composer stayed below the 377 px the keyboard leaves.
  *
- * While the phone layout is shown, and the visual viewport is shorter than
- * 100dvh (the keyboard, or anything else covering the bottom), this sets
- * --visual-height on the root to the visual viewport's height and marks the
- * root data-keyboard. The shell's CSS then fits what is left. It also
- * scrolls the document back to its top, where the shell is, at most once per
- * change of the visual viewport's size, so a scroll Safari makes again to
- * keep the caret in view is not fought. Otherwise neither is set, and the
- * shell is 100dvh as before. A pinch zoom shrinks the visual viewport too;
- * then nothing is changed.
+ * While the phone layout is shown, this sets --visual-height on the root to
+ * the visual viewport's height and marks the root data-keyboard; the shell's
+ * CSS then fits what is left. It does that only while the keyboard is
+ * plainly up:
+ * - a text field has focus;
+ * - the page is not zoomed;
+ * - the visual viewport is shorter than 100dvh by more than a browser's own
+ *   bars take.
+ * Heights that are not finite and positive (sideways Safari reported -12)
+ * are ignored, and the last valid one is kept. In that state it also scrolls
+ * the document back to its top, where the shell is, at most once per change
+ * of the visual viewport's size, so a scroll Safari makes again to keep the
+ * caret in view is not fought. Otherwise nothing is set and the shell is
+ * 100dvh as before.
  */
+const EDITABLE = "input, textarea, select, [contenteditable]:not([contenteditable='false'])";
+// A keyboard takes far more than this; Safari's bars take less.
+const KEYBOARD_MIN = 120;
+
 export function followVisualViewport(win: Window = window): () => void {
   const viewport = win.visualViewport;
   if (!viewport) return () => {};
-  const root = win.document.documentElement;
+  const doc = win.document;
+  const root = doc.documentElement;
   // 100dvh in pixels, as the shell would be without a keyboard.
-  const probe = win.document.createElement("div");
+  const probe = doc.createElement("div");
   probe.setAttribute("aria-hidden", "true");
   probe.style.cssText = "position:fixed;left:0;top:0;width:0;height:100dvh;visibility:hidden;pointer-events:none";
-  win.document.body.append(probe);
+  doc.body.append(probe);
+  let visible = 0;
   let frame = 0;
+  let stopped = false;
   // Visual viewport size changes seen, and the one the last scroll back was for.
   let resizes = 0;
   let scrolledFor = -1;
+  const editing = () => {
+    const active = doc.activeElement;
+    return !!active && active !== doc.body && active.matches(EDITABLE);
+  };
   const clear = () => {
     root.style.removeProperty("--visual-height");
     root.removeAttribute("data-keyboard");
   };
   const update = () => {
-    if (Math.abs(viewport.scale - 1) > 0.01) return;
+    if (stopped) return;
+    const height = viewport.height;
+    if (Number.isFinite(height) && height > 0) visible = Math.round(height);
     const full = probe.getBoundingClientRect().height;
-    const visible = Math.max(0, Math.round(viewport.height));
-    if (visible >= full - 1) return clear();
+    const keyboard = visible > 0 && editing() && Math.abs(viewport.scale - 1) <= 0.01 && full - visible > KEYBOARD_MIN;
+    if (!keyboard) return clear();
     root.style.setProperty("--visual-height", `${visible}px`);
     root.setAttribute("data-keyboard", "");
     if ((win.scrollY > 0 || viewport.offsetTop > 0) && scrolledFor !== resizes) {
@@ -50,12 +68,19 @@ export function followVisualViewport(win: Window = window): () => void {
     resizes += 1;
     update();
   };
+  // Focus has moved by the time a microtask runs.
+  const focusMoved = () => queueMicrotask(update);
   viewport.addEventListener("resize", resized);
   viewport.addEventListener("scroll", update);
+  doc.addEventListener("focusin", focusMoved);
+  doc.addEventListener("focusout", focusMoved);
   update();
   return () => {
+    stopped = true;
     viewport.removeEventListener("resize", resized);
     viewport.removeEventListener("scroll", update);
+    doc.removeEventListener("focusin", focusMoved);
+    doc.removeEventListener("focusout", focusMoved);
     win.cancelAnimationFrame(frame);
     probe.remove();
     clear();
