@@ -28,11 +28,13 @@ impl Lab {
             .filter(|name| name.starts_with("host-"))
             .collect()
     }
-    /// Local Jobs, runs and saved budgets in the Store.
-    fn saved(&self) -> (i64, i64, i64) {
+    /// Local Jobs and runs in the Store, and its saved budget.
+    fn saved(&self) -> (i64, i64, Option<String>) {
+        use rusqlite::OptionalExtension;
         let db = self.ws.store.db.read().unwrap();
         let count = |table: &str| db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get::<_, i64>(0)).unwrap();
-        (count("local_jobs"), count("local_job_runs"), count("local_job_settings"))
+        let budget = db.query_row("SELECT data FROM local_job_settings WHERE id=1", [], |r| r.get(0)).optional().unwrap();
+        (count("local_jobs"), count("local_job_runs"), budget)
     }
     async fn call(&self, actor: Option<&str>, operation: &str, input: Value) -> Result<Value> {
         call(self.ws.clone(), actor.map(str::to_owned), operation.into(), input).await
@@ -162,7 +164,9 @@ async fn local_work_on_a_host_that_is_not_linux_is_refused_before_anything_is_wr
     assert_eq!(lab.helpers(), Vec::<String>::new());
     assert!(lab.ws.jobs.gpu_sampled.lock().unwrap().is_none(), "no GPU sample through the helper");
     assert_eq!(lab.saved(), before);
-    assert_eq!(before, (1, 0, 0), "only the checkpointed Job made before");
+    // Only the checkpointed Job made before, with the budget its machine suggested then.
+    assert_eq!((before.0, before.1), (1, 0));
+    assert_eq!(serde_json::from_str::<Value>(before.2.as_deref().unwrap()).unwrap(), machine()["suggestedBudget"]);
     assert!(lab.ws.store.job(&stopped).unwrap()["checkpointStop"]["resumedAs"].is_null());
 }
 
@@ -172,7 +176,7 @@ async fn on_such_a_host_a_registered_machine_the_history_and_answers_already_giv
     let s = &lab.ws.store;
     // Answers given before, by a Linux Core with the same data: the submit
     // as job_submit saved it.
-    let mut submitted: Submit = serde_json::from_value(job("kept", json!({}))).unwrap();
+    let mut submitted: Submit = serde_json::from_value(job("kept", json!({"agentId":"a"}))).unwrap();
     submitted.validate().unwrap();
     submitted.default_env();
     let kept = s.create_job(None, submitted, json!({"cwd":"/tmp"}), machine(), json!({"bootId":"boot"})).unwrap();
@@ -181,7 +185,7 @@ async fn on_such_a_host_a_registered_machine_the_history_and_answers_already_giv
     lab.on_macos();
     let before = lab.saved();
     // A repeated submit and a repeated retry get their earlier answers.
-    assert_eq!(lab.call(None, "job_submit", job("kept", json!({}))).await.unwrap()["id"], kept["id"]);
+    assert_eq!(lab.call(None, "job_submit", job("kept", json!({"agentId":"a"}))).await.unwrap()["id"], kept["id"]);
     let again = lab.call(Some("a"), "job_run_retry", json!({"requestId":"retried","runId":run,"stage":"prep"})).await.unwrap();
     assert_eq!((again["id"].clone(), again["stages"][0]["attempts"].as_array().map(Vec::len)),
         (retried["id"].clone(), retried["stages"][0]["attempts"].as_array().map(Vec::len)));
