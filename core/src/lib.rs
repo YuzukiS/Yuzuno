@@ -54,6 +54,7 @@ pub mod rail;
 pub mod reading_handoff;
 pub mod record_rows;
 pub mod remote;
+pub mod remote_access;
 pub mod services;
 mod remote_images;
 pub mod results;

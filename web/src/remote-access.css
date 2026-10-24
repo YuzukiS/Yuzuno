@@ -1,0 +1,178 @@
+/* Settings → Phone access (T-185). Rows and buttons are the
+   settings pane's own (updates.css); this adds the hosts, the four state
+   lines, the verification steps, the address with its code, and the
+   change's steps. */
+.remote-access-hosts {
+  display: grid;
+  margin: 0;
+}
+.remote-access-hosts > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 16px;
+  padding: 10px 16px;
+}
+.remote-access-hosts > div + div {
+  border-top: 1px solid var(--line);
+}
+.remote-access-hosts dt {
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.remote-access-hosts dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  overflow-wrap: anywhere;
+}
+.remote-access-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.55;
+}
+/* Saved, listening, Serve and the last check: one fact per line. */
+.remote-access-states {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.remote-access-states li {
+  display: grid;
+  grid-template-columns: 8px 9.5rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.remote-access-states li::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line);
+}
+.remote-access-states li[data-tone="on"]::before {
+  background: var(--green, #587552);
+}
+.remote-access-states li[data-tone="warn"]::before {
+  background: var(--danger, #b55d53);
+}
+.remote-access-states li[data-tone="unknown"]::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--text-quiet, var(--line));
+}
+.remote-access-state-label {
+  color: var(--text-secondary);
+}
+.remote-access-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.remote-access-result > div {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  justify-items: start;
+}
+.remote-access-result a {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  overflow-wrap: anywhere;
+}
+.remote-access-result button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Light on dark themes too: a phone camera reads dark on light. */
+.remote-access-qr {
+  flex: none;
+  width: 132px;
+  height: 132px;
+  border-radius: 6px;
+}
+.remote-access-operation {
+  display: grid;
+  gap: 8px;
+}
+.remote-access-steps {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.remote-access-steps li[data-state="done"] {
+  color: var(--ink);
+}
+.remote-access-steps li[data-state="running"] {
+  color: var(--ink);
+  font-weight: 550;
+}
+.remote-access-steps li[data-state="failed"] {
+  color: var(--danger, #b55d53);
+}
+.remote-access-steps li[data-state="skipped"] {
+  text-decoration: line-through;
+}
+.remote-access-advanced > summary {
+  padding: 10px 16px;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.remote-access-advanced[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+/* Each verification step, opened only when the last one failed. */
+.remote-access-verification > summary {
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.remote-access-verification ol {
+  display: grid;
+  gap: 3px;
+  margin: 6px 0 0;
+  padding-left: 20px;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.remote-access-verification li[data-state="failed"] {
+  color: var(--danger, #b55d53);
+}
+.remote-access-notes {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.remote-access-preview {
+  margin: 0;
+  padding: 10px 16px 0;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .remote-access-states li {
+    grid-template-columns: 8px minmax(0, 1fr);
+  }
+  .remote-access-states li > span:last-child {
+    grid-column: 2;
+  }
+}
