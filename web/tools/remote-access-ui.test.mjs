@@ -181,25 +181,29 @@ test("before it is set up, a check says what is ready, not that the entry failed
     { id: "endToEnd", state: "skipped", detail: "" },
   ];
   const ready = { id: "tailscale", state: "ok", detail: "running" };
+  const taken = "Port 8444 is already used by another Serve configuration (https://pc.tail0.ts.net:8444/ → http://127.0.0.1:9999); it is left as it is";
   const views = [
     [checkedView({ verification: { ok: false, at: "x", steps: steps(ready) } }), ["off", "VerificationNot set up; Core's host, Tailscale and HTTPS are ready"], "Off"],
     [checkedView({ verification: { ok: false, at: "x", steps: steps({ id: "tailscale", state: "failed", detail: "Tailscale is stopped" }) } }),
       ["warn", "VerificationNot ready: “Tailscale on Windows”: Tailscale is stopped"], "Off"],
-    // Another entry holds the Serve port: a Check before setup says so.
-    [checkedView({ serve: { state: "conflict", port: 8444, otherEntries: 1, detail: "proxy to http://127.0.0.1:9999" },
-      verification: { ok: false, at: "x", steps: steps(ready, { id: "serve", state: "failed", detail: "Port 8444 is already used by another Serve configuration" }) } }),
-      ["warn", "VerificationNot ready: “Tailscale Serve”: Port 8444 is already used by another Serve configuration"], "Off"],
+    // Another entry holds the Serve port: a Check before setup says so, and
+    // what to do; the Serve line has Core's sentence once.
+    [checkedView({ serve: { state: "conflict", port: 8444, otherEntries: 1, detail: taken },
+      verification: { ok: false, at: "x", steps: steps(ready, { id: "serve", state: "failed", detail: taken }) } }),
+      ["warn", "VerificationNot ready: port 8444 is taken; choose another Serve port under Advanced"], "Off",
+      ["warn", `Tailscale Serve${taken}`]],
     // Core listening for it: the same failure is the entry's own.
     [checkedView({ listening: { port: 4318, origin: ENTRY, login: "user@example.com", since: "x", source: "environment" }, verification: { ok: false, at: "x", steps: steps(ready) } }),
       ["warn", "VerificationFailed at “Core's phone port”: Core is not listening for phone access"], "Incomplete"],
     // Listening from the environment, Serve not looked at yet.
     [view({ listening: { port: 4318, origin: ENTRY, login: "user@example.com", since: "x", source: "environment" } }), ["unknown", "VerificationNot checked yet"], "Not checked"],
   ];
-  for (const [body, line, badge] of views) {
+  for (const [body, line, badge, serveLine] of views) {
     const p = mount(() => ({ body }));
     try {
       await waitFor(() => p.states().length === 4, "the four states");
       assert.deepEqual(p.states()[3], line);
+      if (serveLine) assert.deepEqual(p.states()[2], serveLine);
       assert.equal(p.doc.querySelector(".settings-current").textContent, badge);
     } finally {
       p.close();
