@@ -61,6 +61,8 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
     let router = browser_routes(assets, updates.clone())
         // Only on Core's own port: the desktop app on this computer asks.
         .route("/api/desktop/start-profile", get(start_profile))
+        // Backups and restores start only from Core's own port (T-192).
+        .merge(crate::workspace_backup::online::changes())
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
         .with_state(ws)
         .merge(mcp);
@@ -119,6 +121,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::project_brief::router())
         .merge(crate::machine_load::router())
         .merge(crate::github::router())
+        .merge(crate::workspace_backup::online::router())
         .route("/api/health",get(health))
         .route("/api/workspace",get(workspace))
         .route("/api/backlog",get(backlog))
