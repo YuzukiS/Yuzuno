@@ -105,7 +105,7 @@ def run(core):
     ok = submit("ok", f"echo begin; echo {tag} > ok-{tag}.txt; sleep 3; echo end")
     first_told = dig(ok, "capabilities", "platform")
     running = status(ok["id"], "running")
-    assert running["remote"]["platform"] == "Darwin", running["remote"]
+    assert dig(running, "remote", "platform") == "Darwin", running.get("remote")
     assert running["capabilities"]["platform"] == "macOS", running["capabilities"]
     assert "macOS holds no CPU or RAM limit (it has no cgroup)" in running["reason"], running["reason"]
     budget = request("/jobs/budget")
@@ -124,7 +124,7 @@ def run(core):
     (LAB / "down").touch()
     second = submit("told", "true")
     waiting = status(second["id"], "starting", "queued", seconds=30)
-    assert waiting["remote"].get("hostId") is None, waiting
+    assert dig(waiting, "remote", "hostId") is None, waiting
     told = waiting["capabilities"]["platform"]
     assert told == "macOS", told
     (LAB / "down").unlink()
@@ -218,7 +218,7 @@ def run(core):
     (LAB / "lose-start-reply").touch()
     lost = submit("lost", f"echo run >> lost-{tag}.txt; sleep 4", mcp_client=mcp)
     unacked = status(lost["id"], "unknown", seconds=60)
-    assert unacked["reserved"] is True and "No acknowledgement" in unacked["reason"], unacked
+    assert unacked["reserved"] is True and "No acknowledgement" in (unacked.get("reason") or ""), unacked
     assert not (LAB / "lose-start-reply").exists(), "the start was sent"
     found = status(lost["id"], "succeeded", "failed", seconds=90)
     assert found["status"] == "succeeded" and found["attempt"] == lost["attempt"], found
