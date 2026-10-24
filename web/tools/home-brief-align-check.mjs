@@ -9,7 +9,8 @@
 //   and stays folded;
 // - on a sub-card, its controls are where a tap reaches them, an Ask's draft
 //   outlives a fold, and Reply opens;
-// - Seen is the only write;
+// - Seen is the only write Home makes (the app's reading handoff for a
+//   conversation is answered and counted apart);
 // - a pinned sub-card's widget is not drawn as a sub-card.
 // Each alignment case is checked and each failure listed (FAIL <case>), so on
 // a build with the old indent exactly its offsets show.
@@ -26,7 +27,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "T-197", source: process.env.T197_HEAD || null, checks: [], cases: [], alignFailures: [], writes: [], unexpected: [], errors: [] };
+const report = { task: "T-197", source: process.env.T197_HEAD || null, checks: [], cases: [], alignFailures: [], writes: [], readingHandoff: [], unexpected: [], errors: [] };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -89,6 +90,12 @@ async function open(viewport, fontSize, label) {
       return route.abort();
     }
     if (method === "POST" && path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
+    // The app's reading handoff for a conversation (T-170): answered, and
+    // counted apart from Home's own writes.
+    if (path === "/api/agents/a/reading") {
+      if (method !== "GET") report.readingHandoff.push({ case: label, method });
+      return route.fulfill({ json: method === "GET" ? { handoff: null } : { accepted: true, sourceSeq: 0 } });
+    }
     if (method !== "GET") {
       report.writes.push({ case: label, method, path });
       return route.fulfill({ json: {} });
