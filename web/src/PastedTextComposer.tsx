@@ -1,6 +1,7 @@
 import { textLabel } from "./message-content";
 import { clipboardImages } from "./image-input";
 import { touchKeyboard } from "./touch-input";
+import { returnSends, type SendKey } from "./device-preferences";
 import {
   forwardRef,
   useEffect,
@@ -69,6 +70,8 @@ type Props = {
   onSkill?: (skill: SlashCommand) => void;
   onSubmit: () => void;
   onImages?: (files: File[]) => void;
+  /** Which key sends (device-preferences.ts); unset, as `auto`. */
+  sendKey?: SendKey;
 };
 
 class PasteWidget extends WidgetType {
@@ -264,10 +267,12 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
                   event.target === v.contentDOM
                 ) {
                   event.preventDefault();
-                  // Ctrl/Cmd+Enter still sends from a keyboard attached to one.
-                  if (touchKeyboard() && !event.ctrlKey && !event.metaKey)
-                    insertNewline(v);
-                  else callbacks.current.onSubmit();
+                  // Ctrl/Cmd+Enter always sends, from a keyboard attached to
+                  // a touch screen too; Return alone as this device's
+                  // preference says.
+                  if (event.ctrlKey || event.metaKey || returnSends(callbacks.current.sendKey ?? "auto", touchKeyboard()))
+                    callbacks.current.onSubmit();
+                  else insertNewline(v);
                   return true;
                 }
                 return false;

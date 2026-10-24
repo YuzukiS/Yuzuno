@@ -719,6 +719,14 @@
   .settings-section-heading {
     flex-wrap: wrap;
   }
+  /* What is in effect wraps at its spaces rather than widen its section:
+     Appearance's "Garden · Light · 24 px" was 275 px wide on a 320 px phone
+     at 24 px text, and Settings scrolled sideways (T-189). */
+  .settings-current {
+    flex: 0 1 auto;
+    max-width: 100%;
+    white-space: normal;
+  }
   .settings-row-main {
     flex-basis: calc(100% - 40px);
   }

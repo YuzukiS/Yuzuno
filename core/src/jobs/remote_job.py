@@ -85,11 +85,13 @@ import subprocess
 import sys
 
 COMMON = r'''
+import ctypes
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import signal
 import stat
 import subprocess
@@ -98,6 +100,10 @@ import uuid
 
 SEGMENT = 1024 * 1024
 PIDFD = hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")
+# macOS keeps none of /proc, and has no pidfd. The few facts this helper needs
+# about a process come from libproc instead, in the same shapes; everything
+# cgroup is simply absent there and is refused rather than imitated.
+DARWIN = platform.system() == "Darwin"
 # As for local jobs: inputs are small files; artifacts are hashed up to 1 GiB
 # and parsed as JSON up to 16 MiB.
 INPUT_LIMIT = 2 * 1024 * 1024
@@ -140,14 +146,92 @@ def atomic(path, value):
         os.close(directory)
 
 
+DARWIN_PROC_PIDTBSDINFO = 3
+DARWIN_PROC_ALL_PIDS = 1
+
+
+class DarwinBSDInfo(ctypes.Structure):
+    """struct proc_bsdinfo, sys/proc_info.h. proc_pidinfo answers the whole
+    structure or nothing: a shorter answer is not read as a process."""
+
+    _fields_ = [
+        ("pbi_flags", ctypes.c_uint32), ("pbi_status", ctypes.c_uint32),
+        ("pbi_xstatus", ctypes.c_uint32), ("pbi_pid", ctypes.c_uint32),
+        ("pbi_ppid", ctypes.c_uint32), ("pbi_uid", ctypes.c_uint32),
+        ("pbi_gid", ctypes.c_uint32), ("pbi_ruid", ctypes.c_uint32),
+        ("pbi_rgid", ctypes.c_uint32), ("pbi_svuid", ctypes.c_uint32),
+        ("pbi_svgid", ctypes.c_uint32), ("rfu_1", ctypes.c_uint32),
+        ("pbi_comm", ctypes.c_char * 16), ("pbi_name", ctypes.c_char * 32),
+        ("pbi_nfiles", ctypes.c_uint32), ("pbi_pgid", ctypes.c_uint32),
+        ("pbi_pjobc", ctypes.c_uint32), ("e_tdev", ctypes.c_uint32),
+        ("e_tpgid", ctypes.c_uint32), ("pbi_nice", ctypes.c_int32),
+        ("pbi_start_tvsec", ctypes.c_uint64), ("pbi_start_tvusec", ctypes.c_uint64),
+    ]
+
+
+LIBPROC = ctypes.CDLL("/usr/lib/libproc.dylib") if DARWIN else None
+
+
+def darwin_boot_id():
+    """kern.bootsessionuuid: a UUID of this boot, as Linux's boot_id is."""
+    out = subprocess.run(["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"],
+                         capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def darwin_proc(pid):
+    """proc()'s fields on macOS. starttime is microseconds of the clock
+    kern.boottime is on and never changes for a PID's lifetime, so boot + PID
+    + starttime names one process, as it does on Linux; two processes started
+    in the same second differ here, which a second-resolution start time
+    cannot show. A process that is gone and an unreaped zombie both answer
+    None, as reading /proc/<pid>/stat does for Z and X."""
+    if pid <= 0:
+        return None
+    info = DarwinBSDInfo()
+    read = LIBPROC.proc_pidinfo(int(pid), DARWIN_PROC_PIDTBSDINFO, 0,
+                                ctypes.byref(info), ctypes.sizeof(info))
+    if read != ctypes.sizeof(info):
+        return None
+    try:
+        session = os.getsid(int(pid))
+    except OSError:
+        return None
+    return {"ppid": int(info.pbi_ppid), "pgrp": int(info.pbi_pgid), "session": session,
+            "starttime": int(info.pbi_start_tvsec) * 1000000 + int(info.pbi_start_tvusec)}
+
+
+def all_pids():
+    """Every PID on the machine: /proc on Linux, proc_listpids on macOS."""
+    if not DARWIN:
+        return [int(name) for name in os.listdir("/proc") if name.isdigit()]
+    size = LIBPROC.proc_listpids(DARWIN_PROC_ALL_PIDS, 0, None, 0)
+    if size <= 0:
+        return []
+    # Room for processes that start between the two calls.
+    buf = (ctypes.c_int32 * (size // ctypes.sizeof(ctypes.c_int32) + 64))()
+    got = LIBPROC.proc_listpids(DARWIN_PROC_ALL_PIDS, 0, ctypes.byref(buf), ctypes.sizeof(buf))
+    if got <= 0:
+        return []
+    return [int(each) for each in buf[:got // ctypes.sizeof(ctypes.c_int32)] if each > 0]
+
+
 def boot_id():
-    return read_text(os.environ.get("YUZUNO_JOBS_BOOT_ID_FILE") or "/proc/sys/kernel/random/boot_id").strip()
+    override = os.environ.get("YUZUNO_JOBS_BOOT_ID_FILE")
+    if override:
+        return read_text(override).strip()
+    if DARWIN:
+        return darwin_boot_id()
+    return read_text("/proc/sys/kernel/random/boot_id").strip()
 
 
 def proc(pid):
     """A live process's fields from /proc/<pid>/stat, or None if it is gone
     or a zombie. starttime (clock ticks after boot) never changes for a PID's
-    lifetime, so boot + PID + starttime names one process."""
+    lifetime, so boot + PID + starttime names one process. On macOS the same
+    fields come from libproc (darwin_proc), where starttime is microseconds."""
+    if DARWIN:
+        return darwin_proc(pid)
     try:
         data = read_text("/proc/%d/stat" % pid)
     except (OSError, ValueError):
@@ -181,7 +265,7 @@ def members(group):
         # The number belongs to another process: Linux reuses it only once
         # nothing of the attempt's session is left.
         return []
-    return [int(name) for name in os.listdir("/proc") if name.isdigit() and member(proc(int(name)), group)]
+    return [pid for pid in all_pids() if member(proc(pid), group)]
 
 
 def send(pid, signum, group):
@@ -682,7 +766,13 @@ if pid == 0:
         os.dup2(null, 0)
         os.dup2(out_w, 1)
         os.dup2(out_w, 2)
-        for name in os.listdir("/proc/self/fd"):
+        # The process's own open files: /proc/self/fd on Linux, /dev/fd on
+        # macOS, which has no /proc. Reading the wrong one raises here, and
+        # this is the command's process: it would die before the go byte and
+        # the supervisor's write would find no reader.
+        for name in os.listdir("/dev/fd" if DARWIN else "/proc/self/fd"):
+            if not name.isdigit():
+                continue
             if int(name) > 2:
                 try:
                     os.set_inheritable(int(name), False)
@@ -886,6 +976,22 @@ def host_id():
     """This machine, as an app-specific hash of its machine-id (the raw ID is
     meant to stay on the machine), or None if it has none."""
     override = os.environ.get("YUZUNO_JOBS_MACHINE_ID_FILE")
+    if DARWIN and not override:
+        # macOS has no machine-id. IOPlatformUUID names the machine the same
+        # way: hashed here as the Linux one is, and written in its shape
+        # (32 hex digits) so that nothing downstream tells the two apart.
+        try:
+            out = subprocess.run(["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                                 capture_output=True, text=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            return None
+        found = re.search(r'"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f-]{36})"', out)
+        if not found:
+            return None
+        value = found.group(1).replace("-", "").lower()
+        if HOST.fullmatch(value):
+            return hashlib.sha256(b"yuzuno-jobs-host-v1:" + value.encode()).hexdigest()[:32]
+        return None
     for path in [override] if override else ["/etc/machine-id", "/var/lib/dbus/machine-id"]:
         try:
             value = read_text(path).strip()
@@ -989,7 +1095,16 @@ def limit_plan(limits, facts):
             and all(type(limits.get(key)) is int for key in ("cpuMillis", "memoryMiB", "swapMiB"))
             and limits["cpuMillis"] >= 1 and limits["memoryMiB"] >= 1 and limits["swapMiB"] >= 0):
         raise Refused("limits must name mode strict or limited, and cpuMillis, memoryMiB and swapMiB")
-    if facts.get("manager") is not True:
+    if DARWIN:
+        # Not "systemd did not answer": macOS has no systemd and no cgroup at
+        # all, so no hard limit exists to be held here. Saying it the Linux
+        # way would read as a machine that could hold limits once something
+        # answered.
+        why = ("macOS has no cgroup: this platform holds no hard CPU or RAM limit, so a declared limit is "
+               "reserved for admission and recorded, never enforced (RLIMIT_RSS is not enforced there, "
+               "RLIMIT_AS bounds one process's address space without holding its children, RLIMIT_CPU bounds "
+               "CPU seconds rather than a share, and taskpolicy lowers quality of service without bounding)")
+    elif facts.get("manager") is not True:
         why = "this account's systemd user manager does not answer"
     elif facts.get("busctl") is not True:
         why = "busctl is missing"
@@ -1617,8 +1732,8 @@ def main():
         nonce = request.get("replyNonce")
         if isinstance(nonce, str) and NONCE.fullmatch(nonce):
             mark = f"{MARK}{nonce} "
-        if platform.system() != "Linux":
-            raise Refused(f"This executor runs jobs on Linux machines; this one is {platform.system()}")
+        if platform.system() not in ("Linux", "Darwin"):
+            raise Refused(f"This executor runs jobs on Linux and macOS machines; this one is {platform.system()}")
         host = host_id()
         if host is None:
             raise Refused("This machine has no machine-id, so Core cannot tell it apart from another machine "
