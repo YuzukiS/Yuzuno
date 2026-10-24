@@ -7,7 +7,7 @@
 .modal.settings-modal {
   display: flex;
   flex-direction: column;
-  height: min(720px, calc(100dvh - 52px));
+  height: min(720px, calc(var(--safe-dvh) - 52px));
   overflow: hidden;
 }
 .settings-layout {

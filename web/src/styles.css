@@ -20,6 +20,16 @@
   --green: #587552;
   --yellow: #efd180;
   --coral: #ac745e;
+  /* A phone's safe area (T-170): the edges a notch, the status bar or the
+     home indicator cover, once the page reaches them (viewport-fit=cover in
+     index.html). Zero on every other screen. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  /* The window's width and height inside that area, for dialogs. */
+  --safe-vw: calc(100vw - var(--safe-left) - var(--safe-right));
+  --safe-dvh: calc(100dvh - var(--safe-top) - var(--safe-bottom));
 }
 * {
   box-sizing: border-box;
@@ -114,6 +124,8 @@ p {
 .app {
   height: 100dvh;
   min-height: 500px;
+  /* Only the background reaches under a notch or the home indicator. */
+  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
   display: grid;
   grid-template-columns: var(--rail-width, 244px) minmax(0, 1fr);
   grid-template-rows: 57px minmax(0, 1fr) 27px;
@@ -1907,7 +1919,7 @@ p {
 }
 .toast {
   position: fixed;
-  bottom: 44px;
+  bottom: calc(44px + var(--safe-bottom));
   left: 50%;
   transform: translateX(-50%);
   z-index: 20;
@@ -1946,11 +1958,12 @@ p {
 .modal {
   position: fixed;
   z-index: 51;
-  left: 50%;
-  top: 50%;
+  /* Centred in the safe area, and no larger than it. */
+  left: calc(50% + (var(--safe-left) - var(--safe-right)) / 2);
+  top: calc(50% + (var(--safe-top) - var(--safe-bottom)) / 2);
   transform: translate(-50%, -50%);
-  width: min(470px, calc(100vw - 32px));
-  max-height: calc(100dvh - 52px);
+  width: min(470px, calc(var(--safe-vw) - 32px));
+  max-height: calc(var(--safe-dvh) - 52px);
   overflow: auto;
   background: #fcfcf7;
   border: 1px solid #dce4ce;
@@ -2138,7 +2151,7 @@ p {
   border-top: 1px solid #e9edde;
 }
 .modal-wide {
-  width: min(860px, calc(100vw - 44px));
+  width: min(860px, calc(var(--safe-vw) - 44px));
 }
 .artifact-content {
   margin-top: 23px;
@@ -2964,7 +2977,7 @@ p {
   }
   .modal {
     padding: 21px;
-    width: calc(100vw - 22px);
+    width: calc(var(--safe-vw) - 22px);
   }
   .create-location > span:last-child {
     font-size: calc(7px + var(--font-adjust, 3px));
