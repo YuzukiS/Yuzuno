@@ -139,3 +139,15 @@
 :root[data-keyboard] .app.phone .current-turn-prompt:not([open]) .current-turn-excerpt {
   display: none;
 }
+/* With it, a pending approval ends a little nearer the bottom there, so its
+   buttons show whole below the pin on a small phone held sideways too. */
+@media (max-height: 500px) {
+  .app.phone .pending-card {
+    margin-bottom: 0;
+    padding-bottom: 10px;
+  }
+}
+:root[data-keyboard] .app.phone .pending-card {
+  margin-bottom: 0;
+  padding-bottom: 10px;
+}
