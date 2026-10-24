@@ -54,13 +54,16 @@ def main():
     state['calls'].append(args)
     save()
 
-    def reply(value, operation=None):
-        save()
+    def lose(operation):
         if operation in faults.get('loseReply', []):
             faults['loseReply'].remove(operation)
             save()
             print('error connecting to api.github.com', file=sys.stderr)
             sys.exit(1)
+
+    def reply(value, operation=None):
+        save()
+        lose(operation)
         print(json.dumps(value))
         sys.exit(0)
 
@@ -119,18 +122,21 @@ def main():
         release = create({'tag_name': args[2], 'target_commitish': flags['--target'], 'name': flags['--title'],
                           'body': Path(flags['--notes-file']).read_text(), 'draft': '--draft' in args, 'prerelease': False})
         save()
+        lose('create')
         print(shown(release)['html_url'])
         return
     if args[:2] == ['release', 'upload']:
         release, data = by_tag(args[2]), Path(args[3]).read_bytes()
         upload(release, Path(args[3]).name, data, 'application/octet-stream')
         save()
+        lose('upload')
         return
     if args[:2] == ['release', 'edit']:
         release = by_tag(args[2])
         release['draft'] = False
         state['writes']['publish'] += 1
         save()
+        lose('publish')
         print(shown(release)['html_url'])
         return
     if args[0] != 'api':
