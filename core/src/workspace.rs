@@ -128,6 +128,8 @@ pub struct Workspace {
     pub(crate) services: crate::services::Runtime,
     /// Backups and restores made from Settings (T-192); see `workspace_backup::online`.
     pub(crate) backups: Arc<crate::workspace_backup::online::Backups>,
+    /// The phone entry's listener and its last check (T-185); see `remote_access`.
+    pub(crate) remote_access: crate::remote_access::State,
 }
 
 impl Workspace {
@@ -189,6 +191,7 @@ impl Workspace {
             brief_turns: Default::default(),
             machine_load: Default::default(),
             services: Default::default(),
+            remote_access: Default::default(),
         }))
     }
 

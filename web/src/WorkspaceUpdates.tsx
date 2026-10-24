@@ -28,6 +28,7 @@ import { ReviewSettings } from "./ReviewSettings";
 import { HomePresentationSettings } from "./HomePresentationSettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { WorkspaceBackup } from "./WorkspaceBackup";
+import { RemoteAccessSettings } from "./RemoteAccessSettings";
 import { api, errorText, HttpError } from "./api";
 import {
   loadedRelease,
@@ -994,6 +995,7 @@ export function WorkspaceUpdates({
           {tab === "home" && <HomePresentationSettings active={open} />}
           {tab === "notifications" && <NotificationSettings />}
           {tab === "backup" && <WorkspaceBackup active={open && visible} />}
+          {tab === "remote" && <RemoteAccessSettings active={open && visible} />}
         </>}
       />
     </Modal>

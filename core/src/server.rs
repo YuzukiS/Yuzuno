@@ -63,6 +63,8 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         .route("/api/desktop/start-profile", get(start_profile))
         // Backups and restores start only from Core's own port (T-192).
         .merge(crate::workspace_backup::online::changes())
+        // Only on Core's own port: a phone cannot change its own access.
+        .merge(crate::remote_access::changes())
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
         .with_state(ws)
         .merge(mcp);
@@ -100,6 +102,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::pr_review::router())
         .merge(crate::pr_operations::router())
         .merge(crate::jobs::router())
+        .merge(crate::remote_access::router())
         .merge(crate::ci_monitor::router())
         .merge(crate::claude_mcp::router())
         .merge(crate::claude_commands::router())
@@ -472,6 +475,10 @@ impl RemoteEntry {
         &self.origin
     }
 
+    pub fn login(&self) -> &str {
+        &self.login
+    }
+
     /// Whether a request may enter: the configured login, this host and, for
     /// a change, this origin and the client header. Each header counts only
     /// if it appears once; nothing else is read, X-Forwarded-* included.
@@ -510,10 +517,12 @@ impl RemoteEntry {
     }
 }
 
-async fn remote_browser_boundary(State(entry): State<Arc<RemoteEntry>>, req: Request, next: Next) -> Response {
+async fn remote_browser_boundary(State(entry): State<Arc<RemoteEntry>>, mut req: Request, next: Next) -> Response {
     if let Err(reason) = entry.admit(req.method(), req.headers()) {
         return (StatusCode::FORBIDDEN, reason).into_response();
     }
+    // Pages that change phone access read this to stay read-only here.
+    req.extensions_mut().insert(crate::remote_access::RemoteRequest);
     harden(next.run(req).await)
 }
 
