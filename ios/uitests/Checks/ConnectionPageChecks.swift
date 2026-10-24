@@ -110,8 +110,8 @@ final class ConnectionPageChecks: XCTestCase {
     }
 
     /// On a Mac with Xcode (run.sh full): where the page's parts are upright,
-    /// with the phone turned (the iPhone app stays upright, Info.ios.plist)
-    /// and with the keyboard open, and an address nothing answers.
+    /// with the phone turned (the iPhone app stays upright, Info.ios.plist),
+    /// with the keyboard open and closed again, and an address nothing answers.
     func testTheAppMeasured() throws {
         guard ProcessInfo.processInfo.environment["YUZUNO_EXPLORE"] != nil else {
             throw XCTSkip("run.sh full only")
@@ -133,6 +133,18 @@ final class ConnectionPageChecks: XCTestCase {
         enter("http://core.example.ts.net")
         XCTAssertTrue(message(containing: "HTTPS address").waitForExistence(timeout: 20), page())
         record("app keyboard", in: yuzuno)
+        screenshot("app-keyboard")
+        // The keyboard closed again with its bar's Done: the status bar's
+        // backdrop follows the visual viewport back (connection.js) and
+        // covers nothing of the page.
+        let done = yuzuno.buttons["Done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 5), "no Done on the keyboard's bar; \(page())")
+        done.tap()
+        let closed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: yuzuno.keyboards.firstMatch)
+        wait(for: [closed], timeout: 10)
+        sleep(2)
+        record("app keyboard closed", in: yuzuno)
+        screenshot("app-keyboard-closed")
 
         // An HTTPS address nothing answers: 192.0.2.1 is a documentation
         // address (RFC 5737). The health check gives up within its 4 s, and
