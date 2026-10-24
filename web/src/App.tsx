@@ -2819,66 +2819,70 @@ export function App() {
               </>
             ) : (
               <div className="composer-area">
-                {currentDetail && !isClaude && !previewMode && (
-                  <CodexWriterNotice
-                    detail={currentDetail}
-                    agents={workspace?.agents || []}
-                    disabled={closed}
-                    onReconnect={() =>
-                      reconnectAgent(selected)
-                        .then(refresh)
-                        .catch((e) => {
-                          refresh();
-                          setActionError(errorText(e));
-                        })
-                    }
-                    onFork={() => setForkOpen(true)}
-                    onOpen={(id) => selectAgent(id)}
-                  />
-                )}
-                {currentDetail && recovery && (
-                  <RecoveryNotice
-                    key={selected}
-                    detail={currentDetail}
-                    disabled={closed || !!workspaceError}
-                    hasDraft={hasDraft}
-                    onRecovered={refresh}
-                  />
-                )}
-                {currentDetail?.agent.harness === "claude" && !currentDetail.agent.remote && (
-                  <QuotaResumeNotice key={selected} detail={currentDetail} disabled={closed || !!workspaceError} />
-                )}
-                {unconfirmedMessage && (
-                  <div className="message-delivery-notice" role="status">
-                    Message delivery is not confirmed. Your text is kept; it
-                    will not be sent twice.
-                    <button
-                      type="button"
-                      className="inline-link"
-                      disabled={sending}
-                      onClick={() =>
-                        void reconnectAgent(selected)
+                {/* What the conversation asks of you before you write; on a short
+                    phone screen it gives way to the composer (T-170). */}
+                <div className="composer-notices">
+                  {currentDetail && !isClaude && !previewMode && (
+                    <CodexWriterNotice
+                      detail={currentDetail}
+                      agents={workspace?.agents || []}
+                      disabled={closed}
+                      onReconnect={() =>
+                        reconnectAgent(selected)
                           .then(refresh)
-                          .catch((e) => setActionError(errorText(e)))
+                          .catch((e) => {
+                            refresh();
+                            setActionError(errorText(e));
+                          })
                       }
-                    >
-                      Check delivery
-                    </button>
-                  </div>
-                )}
-                {actionError && (
-                  <div role="alert" className="inline-error">
-                    <CircleAlert size={14} />
-                    {actionError}
-                    <button
-                      className="icon-button"
-                      aria-label="Dismiss error"
-                      onClick={() => setActionError("")}
-                    >
-                      <X size={13} />
-                    </button>
-                  </div>
-                )}
+                      onFork={() => setForkOpen(true)}
+                      onOpen={(id) => selectAgent(id)}
+                    />
+                  )}
+                  {currentDetail && recovery && (
+                    <RecoveryNotice
+                      key={selected}
+                      detail={currentDetail}
+                      disabled={closed || !!workspaceError}
+                      hasDraft={hasDraft}
+                      onRecovered={refresh}
+                    />
+                  )}
+                  {currentDetail?.agent.harness === "claude" && !currentDetail.agent.remote && (
+                    <QuotaResumeNotice key={selected} detail={currentDetail} disabled={closed || !!workspaceError} />
+                  )}
+                  {unconfirmedMessage && (
+                    <div className="message-delivery-notice" role="status">
+                      Message delivery is not confirmed. Your text is kept; it
+                      will not be sent twice.
+                      <button
+                        type="button"
+                        className="inline-link"
+                        disabled={sending}
+                        onClick={() =>
+                          void reconnectAgent(selected)
+                            .then(refresh)
+                            .catch((e) => setActionError(errorText(e)))
+                        }
+                      >
+                        Check delivery
+                      </button>
+                    </div>
+                  )}
+                  {actionError && (
+                    <div role="alert" className="inline-error">
+                      <CircleAlert size={14} />
+                      {actionError}
+                      <button
+                        className="icon-button"
+                        aria-label="Dismiss error"
+                        onClick={() => setActionError("")}
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <form
                   className={`composer ${busy ? "is-working" : ""}`}
                   onSubmit={(e) => {

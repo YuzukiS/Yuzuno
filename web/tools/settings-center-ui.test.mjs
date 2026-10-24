@@ -100,6 +100,19 @@ test("eight categories and bilingual search expose real scope, without fake cont
   assert.deepEqual(p.errors, []);
 });
 
+test("Workspace backup & restore opens its editor from search, not a fake control (T-192)", async (t) => {
+  const p = mount(); t.after(p.close); p.w.renderSettings(p.props);
+  await until(() => p.doc.querySelector('[type="search"]'));
+  p.type(p.doc.querySelector('[type="search"]'), "备份");
+  const card = await until(() => [...p.doc.querySelectorAll('.settings-catalog-card')].find((item) => item.querySelector('h4')?.textContent === "Workspace backup & restore"));
+  assert.doesNotMatch(card.textContent, /Unavailable here/);
+  assert.match(card.textContent, /never in a backup/);
+  p.button("Open Workspace backup & restore").click();
+  await until(() => p.doc.body.textContent.includes("Existing backup editor"));
+  assert.equal(p.calls.length, 0, "opening the entry reads or writes nothing by itself");
+  assert.deepEqual(p.errors, []);
+});
+
 test("object routes never default to the first Agent or project and reject a removed object", async (t) => {
   const p = mount(); t.after(p.close); p.w.renderSettings(p.props);
   await until(() => p.doc.querySelector('[type="search"]'));

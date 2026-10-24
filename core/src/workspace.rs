@@ -126,6 +126,8 @@ pub struct Workspace {
     pub(crate) machine_load: crate::machine_load::State,
     /// Project services opened in this Core (T-151); see `services`.
     pub(crate) services: crate::services::Runtime,
+    /// Backups and restores made from Settings (T-192); see `workspace_backup::online`.
+    pub(crate) backups: Arc<crate::workspace_backup::online::Backups>,
     /// The phone entry's listener and its last check (T-185); see `remote_access`.
     pub(crate) remote_access: crate::remote_access::State,
 }
@@ -161,6 +163,7 @@ impl Workspace {
             store,
             changes: Arc::new(crate::events::Events::new()),
             default_cwd: cwd,
+            backups: Arc::new(crate::workspace_backup::online::Backups::open(&data_dir)),
             data_dir,
             program,
             session_reads: tokio::sync::Semaphore::new(1),
