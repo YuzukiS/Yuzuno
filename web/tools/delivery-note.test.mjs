@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compacting, deliveryNote, steered } from "../src/delivery-note.ts";
+import { compacting, deliveryNote, sendingInTurn, steered } from "../src/delivery-note.ts";
 
 const receipt = (fields = {}, input = {}) => ({
   input: { clientMessageId: "c", text: "More", expectedTurnId: "live", question: null, ...input },
@@ -86,6 +86,41 @@ test("only the receipt's own loaded Turn decides; anything unproven keeps the no
   for (const [status, note] of [["sending", "Sending…"], ["queued", "Sent · waiting for Codex to confirm"], ["rejected", "Not sent · draft kept"],
     ["uncertain", "Delivery unconfirmed · draft kept"], ["unknown", "Not confirmed by Codex · not sent again"]])
     assert.equal(deliveryNote(status, "Codex", null, true), note, status);
+});
+
+// A Claude start as Core opens its Turn before Claude's bridge answers.
+const startDetail = ({ agent = "a", status = "sending", clientId, field = "c1", loaded = true } = {}) => ({
+  agent: { id: agent, harness: "claude" },
+  turns: loaded ? [{ id: "t-new", status: "inProgress", items: [{ id: "t-new:input", type: "userMessage", content: [],
+    ...(field ? { _yuzunoClientMessageId: field } : {}), ...(clientId ? { clientId } : {}) }] }] : [],
+  messageReceipts: status ? [{ input: { clientMessageId: "c1", text: "Same text" }, status, turnId: null, error: null }] : [],
+  pending: [], artifacts: [],
+});
+const local = (status, id = "c1", agentId = "a") => ({ agentId, receipt: { input: { clientMessageId: id, text: "Same text" }, status, turnId: null, error: null } });
+
+test("a new Claude message still sending is shown once, in its Turn, only while sending (T-120)", () => {
+  assert.deepEqual([...sendingInTurn(startDetail(), "a", [local("sending")])], ["c1"]);
+  // After a reload, Core's receipt alone.
+  assert.deepEqual([...sendingInTurn(startDetail(), "a", [])], ["c1"]);
+  // Confirmed: its client ID shows it, as before.
+  assert.equal(sendingInTurn(startDetail({ clientId: "c1" }), "a", [local("sending")]).size, 0);
+  // Past sending, by Core's receipt or this tab's own answer: the preview says so.
+  for (const status of ["accepted", "queued", "rejected", "uncertain", "unknown"]) {
+    assert.equal(sendingInTurn(startDetail({ status }), "a", [local("sending")]).size, 0, `saved ${status}`);
+    assert.equal(sendingInTurn(startDetail(), "a", [local(status)]).size, 0, `local ${status}`);
+  }
+});
+
+test("only the message's own ID links it; anything unproven keeps the preview", () => {
+  // No association, another message's ID (the same text), not loaded here.
+  assert.equal(sendingInTurn(startDetail({ field: null }), "a", [local("sending")]).size, 0);
+  assert.equal(sendingInTurn(startDetail({ field: "c2" }), "a", [local("sending")]).size, 0);
+  assert.equal(sendingInTurn(startDetail({ loaded: false }), "a", [local("sending")]).size, 0);
+  // Another Agent's detail, or this tab's copy for another Agent.
+  assert.equal(sendingInTurn(startDetail({ agent: "b" }), "a", [local("sending")]).size, 0);
+  assert.equal(sendingInTurn(startDetail({ status: null }), "a", [local("sending", "c1", "b")]).size, 0);
+  assert.equal(sendingInTurn(null, "a", [local("sending")]).size, 0);
+  assert.equal(sendingInTurn(startDetail(), null, [local("sending")]).size, 0);
 });
 
 test("every other note is unchanged", () => {

@@ -26,7 +26,9 @@ passed.
 .github/workflows/ios.yml (T-170) builds the iOS app for the Simulator,
 unsigned, on the standard GitHub-hosted macos-26 runner. Only pull_request
 triggers it; its token reads contents only; no secret, cache or other
-runner, and it uploads nothing.
+runner. Its one upload is the Simulator smoke's two screenshots of the
+connection page, exactly as IOS_UPLOAD names them and kept for 3 days, after
+a step that checks there are only those two PNG files.
 """
 from pathlib import Path
 import os
@@ -243,6 +245,17 @@ def desktop_macos_problems(text):
     return found
 
 
+# The iOS workflow's only upload, as its step reads without comments: the
+# connection page's screenshots, never the app, logs or a Core's pages.
+IOS_UPLOAD = """      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ios-simulator-screenshots-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/checks/screenshots/*.png
+          if-no-files-found: error
+          retention-days: 3"""
+IOS_SCREENSHOTS = 'expected="app-portrait.png app-refused.png"'
+
+
 def ios_problems(text):
     lines = code_lines(text)
     found = []
@@ -257,7 +270,7 @@ def ios_problems(text):
                           (r'secrets\.', 'a secret'),
                           (r':\s*write\b', 'a write permission'),
                           (r'self-hosted', 'a self-hosted label'),
-                          (r'upload-artifact|upload-pages-artifact', 'an upload'),
+                          (r'upload-pages-artifact', 'a pages upload'),
                           (r'actions/cache|rust-cache@', 'a cache')]:
         if re.search(pattern, body):
             found.append(f'it uses {what}')
@@ -267,9 +280,17 @@ def ios_problems(text):
         found.append(f'{len(all_jobs)} jobs, not one')
     for name, job in all_jobs.items():
         found += runner_problems(name, job, 'macos-26')
-        checkout = next((step for step in steps_of(job) if 'actions/checkout@' in step), None)
+        steps = steps_of(job)
+        checkout = next((step for step in steps if 'actions/checkout@' in step), None)
         if checkout is None or 'persist-credentials: false' not in checkout:
             found.append(f'job {name} keeps the checkout credentials')
+        uploads = [i for i, step in enumerate(steps) if 'upload-artifact' in step]
+        check = next((i for i, step in enumerate(steps)
+                      if IOS_SCREENSHOTS in step and '= 89504e470d0a1a0a ]' in step), None)
+        if len(uploads) != 1 or steps[uploads[0]].rstrip() != IOS_UPLOAD:
+            found.append(f'job {name} does not upload exactly the Simulator screenshots')
+        elif check is None or check > uploads[0]:
+            found.append(f'job {name} does not check the screenshots before uploading them')
     return found
 
 
@@ -374,7 +395,18 @@ class PublicCi(unittest.TestCase):
             'a larger runner': (good.replace('runs-on: macos-26\n', 'runs-on: macos-26-xlarge\n', 1), 'not macos-26'),
             'a self-hosted runner': (good.replace('runs-on: macos-26\n', 'runs-on: [self-hosted, macOS, ARM64]\n', 1), 'self-hosted'),
             'a Rust cache': (good.replace('      - name: Runner details', '      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6\n      - name: Runner details', 1), 'cache'),
-            'an upload': (good.replace('      - name: Runner details', '      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n      - name: Runner details', 1), 'an upload'),
+            'a pages upload': (good.replace('      - name: Runner details', '      - uses: actions/upload-pages-artifact@0000000000000000000000000000000000000000\n      - name: Runner details', 1), 'a pages upload'),
+            'a second upload': (good.replace('      - name: Runner details', '      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02\n      - name: Runner details', 1), 'exactly the Simulator screenshots'),
+            'the app uploaded': (good.replace('path: ${{ runner.temp }}/checks/screenshots/*.png', 'path: ${{ runner.temp }}/out/Yuzuno-iOS-Simulator.zip', 1), 'exactly the Simulator screenshots'),
+            'the whole directory': (good.replace('path: ${{ runner.temp }}/checks/screenshots/*.png', 'path: ${{ runner.temp }}/checks/screenshots', 1), 'exactly the Simulator screenshots'),
+            'a second path': (good.replace('path: ${{ runner.temp }}/checks/screenshots/*.png', 'path: |\n            ${{ runner.temp }}/checks/screenshots/*.png\n            gen/apple', 1), 'exactly the Simulator screenshots'),
+            'kept longer': (good.replace('retention-days: 3', 'retention-days: 30', 1), 'exactly the Simulator screenshots'),
+            'kept by default': (good.replace('          retention-days: 3\n', '', 1), 'exactly the Simulator screenshots'),
+            'missing files allowed': (good.replace('if-no-files-found: error', 'if-no-files-found: warn', 1), 'exactly the Simulator screenshots'),
+            'an upload after a failure': (good.replace('      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n',
+                                                      '      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n        if: always()\n', 1), 'exactly the Simulator screenshots'),
+            'no screenshot check': (good.replace('= 89504e470d0a1a0a ]', '!= x ]', 1), 'check the screenshots'),
+            'other screenshots allowed': (good.replace(IOS_SCREENSHOTS, 'expected="$(ls -A "$dir")"', 1), 'check the screenshots'),
             'an unpinned action': (good.replace('@3d3c42e5aac5ba805825da76410c181273ba90b1', '@v7', 1), 'not pinned'),
             'no first-step runner check': (good.replace('[ "$RUNNER_ENVIRONMENT" = github-hosted ] ||', 'true ||', 1), 'first step'),
             'checkout credentials kept': (good.replace('          persist-credentials: false\n', '', 1), 'credentials'),

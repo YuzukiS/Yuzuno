@@ -21,6 +21,34 @@ export function steered(receipt: MessageReceipt, detail: AgentDetail | null): "w
   return status === "completed" || status === "interrupted" || status === "failed" ? "endedUnconfirmed" : null;
 }
 
+/** The new Claude messages still sending that their own Turn already shows
+ * (T-120). Core names a start's user message by its client ID
+ * (`_yuzunoClientMessageId`) as it opens the Turn, before Claude's bridge
+ * answers: such a message is shown once, in its Turn, with its delivery
+ * note, not again as a preview. Only while that delivery is "sending" as
+ * the preview would show it (Core's receipt once past sending, else this
+ * tab's own copy); any other state, a message already confirmed
+ * (`clientId`), a Turn not loaded here or another Agent's detail keeps the
+ * preview as it was. */
+export function sendingInTurn(
+  detail: AgentDetail | null,
+  agentId: string | null,
+  messages: readonly { agentId: string; receipt: MessageReceipt }[],
+): Set<string> {
+  const ids = new Set<string>();
+  if (!detail || !agentId || detail.agent.id !== agentId) return ids;
+  for (const turn of detail.turns)
+    for (const item of turn.items) {
+      const id = item._yuzunoClientMessageId;
+      if (item.type !== "userMessage" || typeof id !== "string" || item.clientId != null) continue;
+      const saved = detail.messageReceipts?.find((r) => r.input.clientMessageId === id);
+      const local = messages.find((m) => m.agentId === agentId && m.receipt.input.clientMessageId === id)?.receipt;
+      const receipt = saved && saved.status !== "sending" ? saved : local ?? saved;
+      if (receipt?.status === "sending") ids.add(id);
+    }
+  return ids;
+}
+
 /** Whether the Turn a new Codex message started (turn/start) is compacting
  * the conversation: when an automatic compaction begins that Turn, Codex
  * 0.162.1 adds the message only after it (T-120). Only the receipt's own

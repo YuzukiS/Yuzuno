@@ -29,6 +29,8 @@ pub(crate) mod store;
 #[cfg(test)]
 mod pause_tests;
 #[cfg(test)]
+mod platform_tests;
+#[cfg(test)]
 mod checkpoint_tests;
 #[cfg(test)]
 mod run_tests;
@@ -761,6 +763,7 @@ async fn set_budget(
 ) -> Result<Json<Value>, ApiError> {
     let _permit = ws.admission.enter_work()?;
     validate_budget(&input)?;
+    host::local_host(&ws.data_dir)?;
     let value = ws.stored(move |s| s.set_job_budget(input)).await?;
     ws.start_jobs();
     ws.jobs.wake.notify_one();
@@ -896,6 +899,9 @@ pub async fn call(
                 ws.jobs.remote_wake.notify_one();
                 return Ok(job);
             }
+            // On a host that cannot run local Jobs, writing the helper is
+            // refused (host::local_host): after the retry and the alias above,
+            // before anything is written, run or queued here.
             let helper = host::helper(&ws.data_dir).await?;
             let capability = host::invoke(&helper, "capabilities", None, None).await?;
             let machine = host::machine_info().await?;
@@ -1070,6 +1076,9 @@ pub async fn call(
         }
         "job_run_decide" => {
             let decision = decision.context("Missing analysis decision")?;
+            if decision.continues() {
+                local_or_replay(&ws, &actor, "job_run_decide", &decision.request_id).await?;
+            }
             let value = ws.stored(move |s| s.decide_run(actor.as_deref(), &decision)).await?;
             changed(&ws);
             ws.jobs.wake.notify_one();
@@ -1077,6 +1086,7 @@ pub async fn call(
         }
         "job_run_retry" => {
             let q: RunRetry = serde_json::from_value(input)?;
+            local_or_replay(&ws, &actor, "job_run_retry", &q.request_id).await?;
             let run = ws
                 .stored(move |s| s.retry_stage(actor.as_deref(), &q.request_id, &q.run_id, &q.stage))
                 .await?;
@@ -1098,6 +1108,7 @@ pub async fn call(
                 input.as_object().is_some_and(|m| m.is_empty()),
                 "job_budget takes no arguments"
             );
+            host::local_host(&ws.data_dir)?;
             sample_gpus(&ws, false).await;
             let machine = host::machine_info().await?;
             let mut view = ws.stored(move |s| s.job_budget_view(machine)).await?;
@@ -1128,6 +1139,36 @@ fn changed(ws: &Workspace) {
     ws.changes
         .publish(&json!({"type":"workspace.changed","scope":"jobs"}));
     ws.collaboration_wakeup.notify_one();
+}
+
+/// A request that would queue a stage on a host that cannot run local Jobs
+/// is refused before anything is saved, unless it repeats one this caller
+/// made before: that is answered as it was, and queues nothing new.
+async fn local_or_replay(ws: &Arc<Workspace>, actor: &Option<String>, operation: &'static str, request_id: &str) -> Result<()> {
+    let Err(refusal) = host::local_host(&ws.data_dir) else {
+        return Ok(());
+    };
+    let (actor, request) = (actor.clone(), request_id.to_owned());
+    if ws.stored(move |s| s.requested(actor.as_deref(), operation, &request)).await? {
+        return Ok(());
+    }
+    Err(refusal)
+}
+
+impl crate::store::Store {
+    fn requested(&self, actor: Option<&str>, operation: &str, request_id: &str) -> Result<bool> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .db
+            .read()?
+            .query_row(
+                "SELECT 1 FROM collaboration_requests WHERE actor=?1 AND operation=?2 AND request_id=?3",
+                rusqlite::params![store::actor_key(actor), operation, request_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
 }
 
 impl Workspace {
