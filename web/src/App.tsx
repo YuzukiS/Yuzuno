@@ -2739,7 +2739,7 @@ export function App() {
                         disabled={previewMode || draftBlocked || imageUploads.busy}
                         title={
                           imageSupported
-                            ? `Add images · paste or choose PNG, JPEG or WebP, up to 8 images of 10 MiB each${agent?.harness === "claude" ? ` · ${CLAUDE_IMAGE_NOTE}` : ""}`
+                            ? `Add images · paste or choose PNG, JPEG or WebP, up to 8 per message; a photo over 10 MiB or 24 megapixels is made smaller here first${agent?.harness === "claude" ? ` · ${CLAUDE_IMAGE_NOTE}` : ""}`
                             : "Images are available for Codex and Claude Agents"
                         }
                         onClick={() => { if (imageSupported) imagePicker.current?.click(); }}
