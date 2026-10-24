@@ -57,6 +57,7 @@ import {
   openDesktopConnection,
   post,
   reconnectAgent,
+  interruptAgent,
   shortcutModifier,
 } from "./api";
 import { nativeControl } from "./slash-commands";
@@ -117,6 +118,9 @@ import { CodexTerminalsDialog } from "./CodexTerminals";
 import { latestTurnWithEdits } from "./changes";
 import { CodexPlanUsage } from "./CodexPlanUsage";
 import { AgentManagement, type AgentAction } from "./AgentManagement";
+import { AgentActionsMenu } from "./AgentActionsMenu";
+import { BatchReconnect } from "./BatchReconnect";
+import type { AgentActionHandlers } from "./agent-actions";
 import { useConversationSend } from "./useConversationSend";
 import { ClarificationHost } from "./intelligent-ui/ClarificationHost";
 import { AgentRailRow, summaryOrigin, workingFolder } from "./AgentRailRow";
@@ -157,6 +161,7 @@ import { useRefreshTrigger } from "./refresh-trigger";
 import { coreConnection } from "./connection-status";
 import "./connection-status.css";
 import { OutgoingMessages } from "./OutgoingMessages";
+import { sendingInTurn } from "./delivery-note";
 import { CurrentTurnPrompt } from "./CurrentTurnPrompt";
 import { Jobs, ConversationJobs, openJobs } from "./Jobs";
 import { ConversationSubAgentDock } from "./ClaudeSubAgentDock";
@@ -180,6 +185,7 @@ import { PendingQuestions, type PendingQuestionsHandle } from "./PendingQuestion
 import { QuestionIndex, questionKey } from "./pending-questions";
 import { pruneRequestDrafts } from "./request-draft";
 import { usePhone } from "./phone-layout";
+import { PhoneDockButtons, type PhoneDock } from "./PhoneDocks";
 import { followVisualViewport } from "./keyboard-viewport";
 import type { QuestionSource } from "./types";
 import { Home, type HomeTarget } from "./home/Home";
@@ -209,6 +215,7 @@ const LiveTurn = memo(Turn, (a: TurnProps, b: TurnProps) =>
   a.pendingToolIds === b.pendingToolIds &&
   a.highlightSource === b.highlightSource &&
   a.receipts === b.receipts &&
+  a.sendingInTurn === b.sendingInTurn &&
   a.agent.id === b.agent.id &&
   a.agent.name === b.agent.name &&
   a.agent.color === b.agent.color &&
@@ -318,6 +325,9 @@ export function App() {
     setPlanRequest((request) => request && request.agentId !== selected ? null : request);
   }, [selected]);
   const [turnDockEngaged, setTurnDockEngaged] = useState(false);
+  // On a phone the work and turn docks open one at a time over the
+  // conversation (PhoneDocks.tsx); closed, they take no width.
+  const [phoneDock, setPhoneDock] = useState<PhoneDock>(null);
   const [inspector, setInspector] = useState(true);
   // A wide window's choice; on a phone the list is a screen of its own.
   const [railOpen, setRailOpen] = useState(true);
@@ -357,6 +367,16 @@ export function App() {
     agentId: string;
     sequence: number;
   } | null>(null);
+  // An Agent action menu's "Manage…" and "Agent settings…" (T-184), held
+  // until that Agent's conversation is shown: its settings dialog takes only
+  // a request made after it appeared.
+  const [requestActions, setRequestActions] = useState<{
+    agentId: string;
+    sequence: number;
+  } | null>(null);
+  const [settingsFor, setSettingsFor] = useState<string | null>(null);
+  // A menu action that failed for an Agent other than the one shown.
+  const [menuError, setMenuError] = useState("");
   const [historyReading, setHistoryReading] = useState(false);
   // Where a source was opened from: Home leads back to Home.
   const [sourceOrigin, setSourceOrigin] = useState<"home" | "rail">(
@@ -378,9 +398,25 @@ export function App() {
   const readingFrame = useRef(0);
   const initialReading = useRef(false);
   const scroll = useRef<HTMLDivElement>(null);
+  // The conversation's scroller, as state too: its end is put in view when
+  // the scroller is first drawn, not only when the detail arrives. The detail
+  // can come before the Workspace that draws it (T-170): the conversation
+  // then opened at the top of its window, with no Back to latest.
+  const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
+  const attachScroll = useCallback((element: HTMLDivElement | null) => {
+    scroll.current = element;
+    setScroller(element);
+  }, []);
   const readEnd = useRef<HTMLDivElement>(null);
   const composer = useRef<ComposerHandle>(null);
   const stickToBottom = useRef(true);
+  // Back to latest shows when the conversation's end is out of view, as
+  // measured, never only because it was assumed to open there. It says only
+  // that (a scroll says the rest) and moves nothing.
+  const measureLatest = useCallback(() => {
+    const el = scroll.current;
+    if (el && el.clientHeight > 0 && el.scrollHeight - el.scrollTop - el.clientHeight >= 72) setAtBottom(false);
+  }, []);
   const searchReading = useRef(false);
   const draggingScrollbar = useRef(false);
   // What grows after it is drawn (a tool row unfolding, a chart laying out),
@@ -410,11 +446,14 @@ export function App() {
         performance.now() - readerToggled.current > 600
       )
         el.scrollTop = el.scrollHeight;
+      // Following, but not moved to the end: said once the frame is done
+      // (by then a conversation that has just opened has been put there).
+      else if (stickToBottom.current) requestAnimationFrame(measureLatest);
     });
     observer.observe(inner);
     if (inner.parentElement) observer.observe(inner.parentElement);
     return () => observer.disconnect();
-  }, []);
+  }, [measureLatest]);
   const fileReturn = useRef<{
     agentId: string;
     scrollTop: number;
@@ -428,6 +467,9 @@ export function App() {
     top: number;
   } | null>(null);
   currentSelected.current = selected;
+  // The Agent whose conversation is on screen now, for a reply that comes later.
+  const shownConversation = useRef<string | null>(null);
+  shownConversation.current = homeOpen || listShown ? null : selected;
   const scopeWorkspace = useRef("");
   const scopeRef = useRef<ProjectScope>(ALL_PROJECTS);
   const workspaceRef = useRef(workspace);
@@ -517,8 +559,12 @@ export function App() {
     const refreshJobs = () => jobsRefresh.now();
     // Jobs open as a dialog above Home (whose own Jobs widget sends this),
     // so Home stays: closing it would put a conversation on screen behind
-    // the dialog and start its read dwell.
-    const openJobs = () => setCollaborationOpen(false);
+    // the dialog and start its read dwell. On a phone the work panel a job
+    // was opened from closes, so the conversation is whole on return.
+    const openJobs = () => {
+      setCollaborationOpen(false);
+      setPhoneDock(null);
+    };
     window.addEventListener("yuzuno:open-job", openJobs);
     window.addEventListener("yuzuno:jobs-refresh", refreshJobs);
     return () => { window.removeEventListener("yuzuno:jobs-refresh", refreshJobs); window.removeEventListener("yuzuno:open-job", openJobs); };
@@ -564,6 +610,11 @@ export function App() {
   const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode, browserOffline);
   const agent = workspace?.agents.find((a) => a.id === selected);
   const inspectorShown = (phone ? phoneInspector : inspector) && !!agent && !homeOpen;
+  // An open dock panel closes when something covers the conversation (the
+  // Agent list, or the context panel a job opens) or the window widens.
+  useEffect(() => {
+    if (!phone || listShown || inspectorShown) setPhoneDock(null);
+  }, [phone, listShown, inspectorShown]);
   const projects = workspace?.projects || [];
   const workspaceId = workspace?.workspace?.id || "";
   const readingPositions = useMemo(
@@ -692,6 +743,9 @@ export function App() {
   const isClaude = agent?.harness === "claude";
   const isOpenCode = agent?.harness === "opencode";
   const logicalTurns = sessionHistory.navigationTurns;
+  // The Turn being read, counted from 1: the latest while none is.
+  const readingIndex = readingTurn ? logicalTurns.findIndex((turn) => turn.id === readingTurn) : -1;
+  const readingTurnNumber = readingIndex >= 0 ? readingIndex + 1 : logicalTurns.length;
   // Claude takes a follow-up to your running turn, not to a turn of its own.
   const claudeFollowUpTurnId = isClaude && busy
     ? logicalTurns
@@ -719,7 +773,9 @@ export function App() {
       : agent?.status === "uncertain"
         ? "Send to check the previous result first"
         : agent?.status === "offline"
-          ? "Send a message to resume this session"
+          ? recovery === "offline"
+            ? "Reconnect above, or send a message to resume this session"
+            : "Send a message to resume this session"
           : null;
   const logicalRunningTurn = busy
     ? logicalTurns
@@ -750,8 +806,17 @@ export function App() {
     agent?.harness,
     currentDetail,
   );
+  // New Claude messages still sending that their own Turn shows: once, there,
+  // with the delivery note (T-120). The same set while its members stay the
+  // same, so a streamed change does not draw every Turn again.
+  const inTurnKey = [...sendingInTurn(currentDetail, selected, outgoing)].sort().join("\n");
+  const inTurn = useMemo<ReadonlySet<string>>(() => new Set(inTurnKey ? inTurnKey.split("\n") : []), [inTurnKey]);
+  // A message this tab is still sending is on its way, not unconfirmed: Core
+  // records its receipt before the harness answers, and a read in between
+  // shows it sending (T-120). Only that same message, while its request runs.
   const unconfirmedMessage = currentDetail?.messageReceipts?.some(
-    (r) => r.status === "sending" || r.status === "uncertain",
+    (r) => r.status === "uncertain" || (r.status === "sending" && !(sending && outgoing.some((m) =>
+      m.agentId === selected && m.receipt.status === "sending" && m.receipt.input.clientMessageId === r.input.clientMessageId))),
   );
   // The Home tab counts what Needs you lists: requests and open Asks. Unread
   // turns stay with their conversations: Home does not list them, so its
@@ -847,6 +912,7 @@ export function App() {
     setInterrupting(false);
     setRequestReopen(null);
     setTurnDockEngaged(false);
+    setPhoneDock(null);
     setReadingTurn(undefined);
     stickToBottom.current = !historyReading;
     searchReading.current = historyReading;
@@ -940,6 +1006,12 @@ export function App() {
     }
   }, [notice]);
   useEffect(() => {
+    if (menuError) {
+      const timer = setTimeout(() => setMenuError(""), 8000);
+      return () => clearTimeout(timer);
+    }
+  }, [menuError]);
+  useEffect(() => {
     followHeld.current = sourceJump || !!artifact;
   }, [sourceJump, artifact]);
   useEffect(() => {
@@ -958,7 +1030,14 @@ export function App() {
     }
     if (stickToBottom.current && scroll.current)
       scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [currentDetail, jumpToTurn, homeOpen, sourceJump, artifact, outgoing]);
+  }, [currentDetail, jumpToTurn, homeOpen, sourceJump, artifact, outgoing, scroller]);
+  // A phone's conversation shown again from the Agent list (the same one
+  // too, which keeps its place): Back to latest if it is not at its end.
+  useEffect(() => {
+    if (listShown) return;
+    const frame = requestAnimationFrame(measureLatest);
+    return () => cancelAnimationFrame(frame);
+  }, [listShown, measureLatest]);
   useEffect(() => {
     if (!sourceJump || !catchupSource || homeOpen || !currentDetail) return;
     if (currentDetail.agent.id !== catchupSource.agentId) return;
@@ -1085,7 +1164,7 @@ export function App() {
     setInterrupting(true);
     setActionError("");
     try {
-      await post(`/agents/${encodeURIComponent(selected)}/interrupt`);
+      await interruptAgent(selected);
       setNotice("Interrupt requested. Your conversation is preserved.");
       refresh();
     } catch (e) {
@@ -1189,6 +1268,54 @@ export function App() {
     else openJobs({ source: "local", settings: "budget" });
     });
   }
+  // An Agent's action menu (T-184), in the list and the conversation header.
+  // Each entry acts on the Agent the menu was opened on, never on whichever
+  // is selected by then; a reconnect or interrupt already running for that
+  // Agent is not sent again (api.ts).
+  // Said where it is seen when the reply comes: in that Agent's conversation
+  // if it is on screen, otherwise naming the Agent.
+  const agentName = (id: string) => workspace?.agents.find((a) => a.id === id)?.name || "the agent";
+  const menuFailed = (id: string, what: string) => (error: unknown) => {
+    if (shownConversation.current === id) setActionError(errorText(error));
+    else setMenuError(`Couldn’t ${what} ${agentName(id)}: ${errorText(error)}`);
+  };
+  // Shown already (its own header's menu): nothing to navigate.
+  const showAgent = (id: string) => {
+    if (id !== selected || homeOpen || (phone && phoneList)) openFromList(id);
+  };
+  const agentActions: AgentActionHandlers = {
+    reconnect: (id) =>
+      reconnectAgent(id).then(refresh, (error) => {
+        refresh();
+        menuFailed(id, "reconnect")(error);
+      }),
+    interrupt: (id) =>
+      interruptAgent(id).then(() => {
+        setNotice(
+          shownConversation.current === id
+            ? "Interrupt requested. Your conversation is preserved."
+            : `Interrupt requested for ${agentName(id)}. The conversation is preserved.`,
+        );
+        refresh();
+      }, menuFailed(id, "interrupt")),
+    settings: (id) => {
+      showAgent(id);
+      setSettingsFor(id);
+    },
+    manage: (id) => {
+      showAgent(id);
+      setRequestActions((v) => ({ agentId: id, sequence: (v?.sequence || 0) + 1 }));
+    },
+  };
+  useEffect(() => {
+    if (!settingsFor || settingsFor !== selected) return;
+    setSettingsFor(null);
+    setModelRequest({ model: "", nonce: Date.now() });
+  }, [settingsFor, selected]);
+  // Taken by that Agent's management once it is shown (its effect runs first).
+  useEffect(() => {
+    if (requestActions && requestActions.agentId === selected) setRequestActions(null);
+  }, [requestActions, selected]);
   function selectAgent(id: string, turnId?: string) {
     setPhoneList(false);
     // Reopening a conversation returns where it was left (T-166).
@@ -1352,7 +1479,10 @@ export function App() {
     setSearch("");
     openMessageLink(searchLink);
   }
+  // From a dock or a sub-agent's card, which on a phone is a panel over the
+  // conversation (PhoneDocks.tsx): the panel closes on the Turn it goes to.
   function navigateToTurn(turnId: string) {
+    setPhoneDock(null);
     setHistoryReading(true);
     searchReading.current = true;
     setAtBottom(false);
@@ -1384,6 +1514,7 @@ export function App() {
     );
   }
   function backToLatest() {
+    setPhoneDock(null);
     setPageTarget(null);
     setPageSpace(null);
     savedPages.drop();
@@ -2008,6 +2139,11 @@ export function App() {
             onScope={setAgentScope}
             onSearch={() => setSearchOpen((v) => !v)}
             onCreate={() => setCreateOpen(true)}
+            extra={
+              !previewMode && workspace ? (
+                <BatchReconnect workspaceId={workspaceId} agents={workspace.agents} scope={scope} onSettled={refresh} />
+              ) : null
+            }
           />
           {searchOpen && (
             <div className="agent-search">
@@ -2064,6 +2200,7 @@ export function App() {
                 a.status === "idle"
               }
               onSelect={() => openFromList(a.id)}
+              actions={agentActions}
             />
             );
             // All projects, grouped as Settings chooses; a project's own
@@ -2267,6 +2404,8 @@ export function App() {
                   onChanged={agentChanged}
                   onRead={markReviewed}
                   requestReopen={requestReopen}
+                  requestActions={requestActions}
+                  actionsButton={false}
                   projectControl={
                     <AgentProjectPicker
                       agent={agent}
@@ -2295,6 +2434,7 @@ export function App() {
                     />
                   }
                 />
+                <AgentActionsMenu agent={agent} handlers={agentActions} className="conversation-action" label="Conversation actions" />
               </div>
             </div>
             {!closed && (
@@ -2338,7 +2478,7 @@ export function App() {
                 </span>
               </div>
             )}
-            <div className="conversation-body">
+            <div className="conversation-body" data-phone-dock={phone && phoneDock ? phoneDock : undefined}>
               {runningTurn && (
                 <CurrentTurnPrompt
                   key={`${selected}:${runningTurn.id}`}
@@ -2356,7 +2496,7 @@ export function App() {
               )}
               <div
                 className="conversation-scroll"
-                ref={scroll}
+                ref={attachScroll}
                 data-agent-id={selected}
                 onWheel={(e) => {
                   if (e.deltaY < 0) {
@@ -2527,6 +2667,7 @@ export function App() {
                         onFile={turnFile}
                         onRewindDraft={previewMode || closed ? undefined : rewindDraft}
                         receipts={currentDetail?.messageReceipts}
+                        sendingInTurn={inTurn}
                         onResultInteract={turnInteract}
                         onOpenQuestion={openQuestion}
                         questionSources={questionSources}
@@ -2611,7 +2752,16 @@ export function App() {
                 onNavigate={navigateToTurn}
                 atLatest={atBottom && !historyReading}
                 onLatest={backToLatest}
+                touch={phone}
               />
+              {phone && (
+                <PhoneDockButtons
+                  open={phoneDock}
+                  onOpen={setPhoneDock}
+                  turn={readingTurnNumber}
+                  turns={logicalTurns.length}
+                />
+              )}
               {(!atBottom || historyReading) && (
                 <button className="jump-latest" onClick={backToLatest}>
                   <ArrowDown size={13} />
@@ -3345,6 +3495,12 @@ export function App() {
         <div className="toast" role="status">
           <Check size={15} />
           {notice}
+        </div>
+      )}
+      {menuError && (
+        <div className="toast toast-error" role="alert">
+          <CircleAlert size={15} />
+          {menuError}
         </div>
       )}
       <HandoffDropStrip />

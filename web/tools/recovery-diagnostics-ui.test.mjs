@@ -141,6 +141,19 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
 }
 const recovery = (p) => p.doc.querySelector(".app-recovery");
 const railShows = (p, name) => new RegExp(name).test(p.doc.querySelector(".agent-list")?.textContent || "");
+// Settings opens on its categories (T-187): Diagnostics and the stored
+// history are editors under Data, privacy & recovery, opened from their cards;
+// one opened before stays mounted when the other is opened.
+async function openSettingsEditor(p, title, selector) {
+  if (!p.doc.querySelector("#settings-tab-data")) p.doc.querySelector('[aria-label="Settings and updates"]').click();
+  await waitFor(() => p.doc.querySelector("#settings-tab-data"), "Settings shows its categories");
+  p.doc.querySelector("#settings-tab-data").click();
+  await waitFor(() => p.button(`Open ${title}`), `Data, privacy & recovery offers ${title}`);
+  p.button(`Open ${title}`).click();
+  await waitFor(() => p.doc.querySelector(selector), `Settings shows ${title}`);
+  return p.doc.querySelector(selector);
+}
+const openDiagnostics = (p) => openSettingsEditor(p, "Copy diagnostics", "#settings-diagnostics");
 const shownText = (p) => p.doc.querySelector('textarea[aria-label="Diagnostics"]')?.value;
 const allStorage = (w) => Object.fromEntries(Array.from({ length: w.localStorage.length }, (_, i) => [w.localStorage.key(i), w.localStorage.getItem(w.localStorage.key(i))]));
 
@@ -209,8 +222,7 @@ test("no text an error carries is kept: messages, string rejections, and names, 
       fail(error);
     }
     for (let i = 0; i < 30; i++) fail(new p.w.TypeError("Cannot read properties of undefined (reading 'x')"));
-    p.doc.querySelector('[aria-label="Settings and updates"]').click();
-    await waitFor(() => p.doc.querySelector("#settings-diagnostics"), "Settings shows Diagnostics");
+    await openDiagnostics(p);
     p.button("Copy diagnostics", p.doc.querySelector("#settings-diagnostics")).click();
     await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
     const text = p.copied[0];
@@ -254,8 +266,7 @@ test("no text an error carries is kept: messages, string rejections, and names, 
       "at /workspace/other-project/src/secret.ts, C:\\Users\\Bob\\notes.txt and \\\\nas\\share\\report.docx via https://x.example/cb?token=abc#frag for bob@example.org");
     leaky.stack = "Error: leaky\n    at loadPrivate (/workspace/other-project/tool.js:1:2)\n    at D:\\work\\other\\x.js:3:4";
     for (let i = 0; i < 3; i++) fail(leaky);
-    q.doc.querySelector('[aria-label="Settings and updates"]').click();
-    await waitFor(() => q.doc.querySelector("#settings-diagnostics"), "Settings shows Diagnostics");
+    await openDiagnostics(q);
     q.button("Copy diagnostics", q.doc.querySelector("#settings-diagnostics")).click();
     await waitFor(() => q.copied.length === 1, "the diagnostics are copied");
     const text = q.copied[0];
@@ -350,8 +361,7 @@ test("a record kept by an earlier version is shown by the same rules and stored 
   const p = await mount({ storage: { "yuzuno.diagnostics.v1": JSON.stringify(old), "yuzuno.composerDraft.v1:a": draft } });
   try {
     await waitFor(() => railShows(p, "Mori"), "the app is drawn");
-    p.doc.querySelector('[aria-label="Settings and updates"]').click();
-    await waitFor(() => p.doc.querySelector("#settings-diagnostics"), "Settings shows Diagnostics");
+    await openDiagnostics(p);
     p.button("Copy diagnostics", p.doc.querySelector("#settings-diagnostics")).click();
     await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
     const text = p.copied[0];
@@ -375,8 +385,7 @@ test("Copy diagnostics adds Core's memory counters, read only for the text: numb
   try {
     await waitFor(() => railShows(p, "Mori"), "the app is drawn");
     assert.equal(p.calls.filter((c) => c.url.endsWith("/api/diagnostics/memory")).length, 0, "nothing reads it until the text is made");
-    p.doc.querySelector('[aria-label="Settings and updates"]').click();
-    await waitFor(() => p.doc.querySelector("#settings-diagnostics"), "Settings shows Diagnostics");
+    await openDiagnostics(p);
     p.button("Copy diagnostics", p.doc.querySelector("#settings-diagnostics")).click();
     await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
     const text = p.copied[0];
@@ -414,8 +423,7 @@ test("when Core's memory can't be read, the text says why and everything else is
   const q = await mount({ memory: { ...memoryReport, os: { available: false, reason: "Read only on Linux" }, allocator: { available: false, reason: "x" }, reclaim: { available: false, reason: "y", maintenanceTickRunning: false } } });
   try {
     await waitFor(() => railShows(q, "Mori"), "the app is drawn");
-    q.doc.querySelector('[aria-label="Settings and updates"]').click();
-    await waitFor(() => q.doc.querySelector("#settings-diagnostics"), "Settings shows Diagnostics");
+    await openDiagnostics(q);
     q.button("Copy diagnostics", q.doc.querySelector("#settings-diagnostics")).click();
     await waitFor(() => q.copied.length === 1, "the diagnostics are copied");
     const text = q.copied[0];
@@ -440,9 +448,7 @@ test("when Core's memory can't be read, the text says why and everything else is
 const historyCalls = (p) => p.calls.filter((c) => c.url.endsWith("/api/diagnostics/memory/history")).length;
 async function openHistory(p) {
   await waitFor(() => railShows(p, "Mori"), "the app is drawn");
-  p.doc.querySelector('[aria-label="Settings and updates"]').click();
-  await waitFor(() => p.doc.querySelector("#settings-history"), "Settings shows the stored history");
-  return p.doc.querySelector("#settings-history");
+  return openSettingsEditor(p, "History & memory information", "#settings-history");
 }
 
 test("the held Agents' stored history is read only when Measure is pressed: a chart and a table of Core's numbers, nothing else from the report", async () => {
@@ -452,10 +458,12 @@ test("the held Agents' stored history is read only when Measure is pressed: a ch
     assert.equal(historyCalls(p), 0, "opening Settings does not read it");
     assert.match(section.textContent, /stored bytes, not the memory Core uses/);
     assert.ok(!section.querySelector("table"), "nothing is shown before it is read");
+    await openDiagnostics(p);
     p.button("Copy diagnostics", p.doc.querySelector("#settings-diagnostics")).click();
     await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
     assert.equal(historyCalls(p), 0, "the diagnostics text does not read it");
     assert.ok(!p.copied[0].includes("Stored history"), "nor include it");
+    assert.equal(await openHistory(p), section, "the same History editor, kept while Diagnostics was open");
     p.button("Measure", section).click();
     await waitFor(() => section.querySelector("table"), "the table shows");
     assert.equal(historyCalls(p), 1, "read once, for this press");

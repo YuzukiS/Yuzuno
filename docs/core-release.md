@@ -197,7 +197,29 @@ python3 tools/core-release.py health --work-dir "$release_work" \
 ```
 
 Publication pins the tag to the fixed SHA, uses a draft for partial uploads,
-compares server digests, then publishes. Download verification uses the official
+compares server digests, then publishes. It creates the draft with the request
+`gh release create --draft` makes, and records the release ID from GitHub's
+reply in `remote-release.json` before reading anything. Later reads, uploads
+and publication address that ID, not whichever release the tag resolves to,
+so nothing after creation depends on finding the draft by its tag. If the
+reply is lost, the receipt keeps `"id": null` and `publish` adopts the one
+release GitHub lists for the frozen tag and source. Until it is listed,
+`publish` stops rather than creating another: the tool cannot tell a release
+that was never created from one that is not listed, so check the repository's
+releases, and keep the receipt while a release for the tag may exist. Two
+listed releases, another tag or source, an unexpected asset or a different
+digest also stop for inspection. Each failed attempt keeps its error and log
+in the report.
+
+Running `publish` again recovers the same authorized release: the same work
+directory, release ID, tag, source and signed files. Assets whose name, size
+and digest match are kept, and only missing ones are uploaded. It never
+creates a second release, moves the tag, signs again or replaces an asset.
+A new release, or different bytes for any reason, needs its own
+authorization, a new release ID and a new work directory; never edit
+`remote-release.json` or `signed/` to make a work directory accept it.
+
+Download verification uses the official
 authenticated `gh` client and the original frozen public key. It does not start
 another Core when the downloader itself is unchanged. Installed health is
 read-only and runs fresh each time; it never triggers install/reload/restart.
@@ -207,6 +229,8 @@ read-only and runs fresh each time; it never triggers install/reload/restart.
 `python3 -m unittest discover -s tools -p 'test_release_*.py' -v` covers fixed CI
 identity, corrupted input, archive traversal, interrupted packaging, stage
 continuation and authorization boundaries without network, build or keys.
+Publication runs against `tools/fixtures/fake-gh.py` as `gh`, with lost
+replies and new drafts missing from the list or from reads by ID.
 For actual smoke development, run the generic smoke tool against two existing
 immutable packages in a bounded Job; do not publish a test version. Retain the
 first failed attempt if a fixture needs correction.
@@ -221,4 +245,5 @@ under the normal bounded Job wrapper; it is not an extra per-release gate.
 
 Design references: [DORA deployment automation](https://dora.dev/capabilities/deployment-automation/),
 [DORA test automation](https://dora.dev/capabilities/test-automation/),
-[GitHub artifact API and digests](https://docs.github.com/en/rest/actions/artifacts).
+[GitHub artifact API and digests](https://docs.github.com/en/rest/actions/artifacts),
+[GitHub releases API](https://docs.github.com/en/rest/releases/releases).

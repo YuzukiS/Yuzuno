@@ -479,6 +479,7 @@ test("moving an agent is explicit and the window follows it", async () => {
     await waitFor(chip, "Mori's conversation shows its project");
     assert.match(chip().textContent, /App/);
     page.document.querySelector('[aria-label="Conversation actions"]').click();
+    (await waitFor(() => page.document.querySelector('[role="menuitem"][data-action="manage"]'), "the actions menu offers Manage")).click();
     const dialog = await waitFor(() => dialogOf(page)?.querySelector(".agent-project-picker select") && dialogOf(page),
       "the conversation actions offer a project");
     const select = dialog.querySelector(".agent-project-picker select");
@@ -602,6 +603,7 @@ test("deleting the scope's last agent shows Home instead of another project's ag
     page.agents.find((agent) => agent.id === "a").unreadCount = 4;
     page.agents.find((agent) => agent.id === "a").reviewedSeq = 2;
     (await waitFor(() => page.document.querySelector('[aria-label="Conversation actions"]'), "Sora's conversation actions")).click();
+    (await waitFor(() => page.document.querySelector('[role="menuitem"][data-action="manage"]'), "the actions menu offers Manage")).click();
     (await waitFor(() => button(page, "Delete agent"), "the actions offer Delete agent")).click();
     await waitFor(() => dialogOf(page)?.querySelector(".danger-button"), "deleting asks to confirm");
     button(page, "Delete agent", page.document.querySelector('[role="dialog"]')).click();

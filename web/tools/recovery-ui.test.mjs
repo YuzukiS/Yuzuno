@@ -77,20 +77,30 @@ function mount(respond) {
 const button = (page) => page.document.querySelector(".recovery-notice button");
 const text = (page) => page.document.body.textContent;
 
-test("it is offered only where reconnecting can check an unconfirmed result", () => {
+test("it is offered where reconnecting can check a result or open an offline session", () => {
   const page = mount(() => ({}));
   const reason = (d) => page.window.recoveryReason(d);
   assert.equal(reason(detail()), "running");
   assert.equal(reason(detail({ harness: "claude", threadId: undefined, claudeSessionId: "0b5c8f9e-0000-4000-8000-000000000001" })), "running");
   assert.equal(reason(detail({ status: "uncertain" }, { turns: [{ id: "t", status: "interrupted", items: [] }] })), "uncertain");
-  // Nothing to check.
-  assert.equal(reason(detail({}, { turns: [{ id: "t", status: "completed", items: [] }] })), null);
+  // Offline, its last Turn ended: nothing to check, but the session can be
+  // opened again without a message (T-184); also while Core is connecting.
+  const ended = { turns: [{ id: "t", status: "completed", items: [] }] };
+  assert.equal(reason(detail({}, ended)), "offline");
+  assert.equal(reason(detail({ connectionState: "connecting" }, ended)), "offline");
+  assert.equal(reason(detail({ connectionState: undefined, status: "offline" }, ended)), "offline");
+  // An older Core that reports no connection: not offline unless it says so.
+  assert.equal(reason(detail({ connectionState: undefined, status: "idle" }, ended)), null);
+  assert.equal(reason(detail({ connectionState: "connected", status: "idle" }, ended)), null);
   // Connected: the running Turn is real.
   assert.equal(reason(detail({ connectionState: "connected", status: "working" })), null);
   assert.equal(reason(detail({ connectionState: "connected", status: "uncertain" })), "uncertain");
   assert.equal(reason(detail({ connectionState: "unconfirmed", status: "error" })), "uncertain");
   // Closed, or no session to reconnect to: no misleading action.
   assert.equal(reason(detail({ closedAt: "now" })), null);
+  assert.equal(reason(detail({ closedAt: "now" }, ended)), null);
+  assert.equal(reason(detail({ threadId: undefined }, ended)), null);
+  assert.equal(reason(detail({ remote: { machine: { id: "m", name: "Box" } } }, ended)), null);
   assert.equal(reason(detail({ threadId: undefined })), null);
   assert.equal(reason(detail({ harness: "claude", threadId: undefined })), null);
   // Other notices already offer a reconnect; the remote controls do too.
@@ -235,5 +245,38 @@ test("a native timeout refreshes to unconfirmed and leaves the same-session chec
   assert.equal(page.calls.length, 2);
   assert.ok(page.calls.every(c => c.url === "/api/agents/agent-a/reconnect?view=summary"));
   assert.equal(page.document.querySelector('textarea').value, "Keep this draft 文本");
+  page.close();
+});
+
+test("an offline session is reconnected by one click without a message, and Core says what it is doing (T-184)", async () => {
+  const waitFor = async (ready) => {
+    for (let attempt = 0; attempt < 80 && !ready(); attempt++) await tick();
+    assert.ok(ready(), "the fixture completed its pending React work");
+  };
+  let release;
+  const page = mount(() => new Promise((resolve) => { release = () => resolve({ body: {} }); }));
+  let recovered = 0;
+  const ended = { turns: [{ id: "turn-1", status: "completed", items: [] }] };
+  page.window.renderNotice({ detail: detail({}, ended), disabled: false, hasDraft: true, onRecovered: () => recovered++ });
+  await waitFor(() => page.window.noticeReady);
+  assert.match(text(page), /This agent’s session isn’t connected\. Reconnect to open the same session; nothing is sent\. Your draft is kept\./);
+  assert.doesNotMatch(text(page), /isn’t confirmed/);
+  assert.equal(button(page).textContent.trim(), "Reconnect");
+  button(page).click();
+  button(page).click();
+  await waitFor(() => button(page).disabled);
+  assert.equal(button(page).textContent.trim(), "Reconnecting…");
+  assert.equal(page.calls.length, 1);
+  assert.equal(page.calls[0].url, "/api/agents/agent-a/reconnect?view=summary");
+  assert.equal(page.calls[0].method, "POST");
+  release();
+  await waitFor(() => recovered === 1 && !button(page).disabled);
+  // What it is doing now comes from Core's refreshed record, not this click.
+  page.window.renderNotice({ detail: detail({ connectionState: "connected", status: "idle" }, ended), disabled: false, hasDraft: true, onRecovered: () => recovered++ });
+  await tick();
+  assert.ok(page.document.querySelector(".recovery-notice") === null, "a connected Agent shows no notice");
+  assert.equal(page.calls.length, 1);
+  assert.ok(page.calls.every((c) => !c.url.includes("/messages")), "no message was sent");
+  assert.equal(page.document.querySelector("textarea").value, "Keep this draft 文本");
   page.close();
 });

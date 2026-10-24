@@ -801,11 +801,15 @@ ul.home-widget {
   color: var(--home-ink-2);
   font-weight: 600;
 }
+/* A topic's sub-cards share its card's edges: the column stays one
+   column. Each sub-card marks itself on its own left border instead (T-197). */
 .home-subs {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-left: 22px;
+}
+.home-section.is-sub {
+  border-left: 3px solid color-mix(in srgb, var(--home-focus) 45%, var(--line));
 }
 .home-section {
   padding: 12px 14px;
@@ -1228,9 +1232,6 @@ ul.home-widget {
   .home-section-meta {
     margin-left: 0;
     width: 100%;
-  }
-  .home-subs {
-    margin-left: 10px;
   }
   .home-ask-choice {
     grid-template-columns: minmax(0, 1fr);

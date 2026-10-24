@@ -78,12 +78,27 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 export function post<T>(path: string, body: unknown = {}): Promise<T> {
   return api<T>(path, { method: "POST", body: JSON.stringify(body) });
 }
+/** An Agent's reconnect or interrupt that is still running: a second click,
+ * or the same action from another control (its menu, a notice, Escape),
+ * waits for it instead of sending again (T-184). */
+const inFlight = new Map<string, Promise<unknown>>();
+function shared(key: string, request: () => Promise<unknown>): Promise<unknown> {
+  const current = inFlight.get(key);
+  if (current) return current;
+  const started = request().finally(() => inFlight.delete(key));
+  inFlight.set(key, started);
+  return started;
+}
 /** Reconnects an Agent. Every caller reads the conversation afterwards
  * through the windowed detail, so Core is asked for the Agent only
  * (`view=summary`); an older Core sends the whole record, which is not read
  * either. */
 export function reconnectAgent(id: string): Promise<unknown> {
-  return post<unknown>(`/agents/${encodeURIComponent(id)}/reconnect?view=summary`);
+  return shared(`reconnect:${id}`, () => post<unknown>(`/agents/${encodeURIComponent(id)}/reconnect?view=summary`));
+}
+/** Asks Core to interrupt an Agent's running turn; its conversation stays. */
+export function interruptAgent(id: string): Promise<unknown> {
+  return shared(`interrupt:${id}`, () => post<unknown>(`/agents/${encodeURIComponent(id)}/interrupt`));
 }
 /** How long a message or an answer waits for Core's reply. A phone's request
  * can hang after sleep or a network change; past this it is unconfirmed, as
