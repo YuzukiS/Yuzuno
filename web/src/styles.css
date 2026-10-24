@@ -3117,6 +3117,13 @@ p {
   grid-template-columns: minmax(0, 1fr);
   /* A phone held sideways is shorter than the desktop minimum. */
   min-height: 0;
+  /* What the on-screen keyboard leaves (keyboard-viewport.ts); 100dvh when
+     nothing covers the bottom. */
+  height: min(100dvh, var(--visual-height, 100dvh));
+}
+/* The keyboard covers the home indicator: no padding is kept for it. */
+:root[data-keyboard] .app.phone {
+  padding-bottom: 0;
 }
 .app.phone > .rail,
 .app.phone > .main-panel,
