@@ -39,6 +39,33 @@ final class ConnectionPageChecks: XCTestCase {
         XCTAssertNoThrow(try XCUIScreen.main.screenshot().pngRepresentation.write(to: file))
     }
 
+    /// Writes where the page's parts are, in points, to the file ios.yml
+    /// prints (YUZUNO_FRAMES): how the safe area is applied, as numbers.
+    private func frames(_ orientation: String) {
+        guard let path = ProcessInfo.processInfo.environment["YUZUNO_FRAMES"] else { return }
+        let parts: [(String, XCUIElement)] = [
+            ("window", yuzuno.windows.firstMatch),
+            ("eyebrow", message(containing: "A little room")),
+            ("heading", message(containing: "Your workspace")),
+            ("field", yuzuno.textFields.firstMatch),
+        ]
+        let lines = parts.map { name, element in "\(orientation) \(name): \(element.exists ? "\(element.frame)" : "missing")" }
+        let text = lines.joined(separator: "\n") + "\n"
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile()
+            handle.write(Data(text.utf8))
+            handle.closeFile()
+        } else {
+            XCTAssertNoThrow(try text.write(toFile: path, atomically: true, encoding: .utf8))
+        }
+    }
+
+    /// Waits until the page is drawn, not only in the accessibility tree.
+    private func drawn() {
+        XCTAssertTrue(message(containing: "Your workspace").waitForExistence(timeout: 10), page())
+        sleep(2)
+    }
+
     /// Types into the empty field and connects.
     private func enter(_ address: String) {
         let field = yuzuno.textFields.firstMatch
@@ -51,12 +78,15 @@ final class ConnectionPageChecks: XCTestCase {
         // A fresh install has no saved Workspace, and the page found the app's bridge.
         freshPage()
         XCTAssertTrue(yuzuno.textFields.firstMatch.exists, page())
+        drawn()
+        frames("portrait")
         screenshot("connection-portrait")
 
         // The safe area in landscape: the notch is then at a side.
         XCUIDevice.shared.orientation = .landscapeLeft
         XCTAssertTrue(yuzuno.textFields.firstMatch.waitForExistence(timeout: 10), page())
-        sleep(2)
+        drawn()
+        frames("landscape")
         screenshot("connection-landscape")
         XCUIDevice.shared.orientation = .portrait
         sleep(2)

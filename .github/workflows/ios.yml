@@ -154,6 +154,8 @@ jobs:
         env:
           # xcodebuild hands TEST_RUNNER_<name> to the test as <name>.
           TEST_RUNNER_YUZUNO_SCREENSHOTS: ${{ runner.temp }}/ios-screenshots
+          # Where the page's parts are, in points; printed below, not uploaded.
+          TEST_RUNNER_YUZUNO_FRAMES: ${{ runner.temp }}/ios-frames.txt
         run: |
           mkdir "$TEST_RUNNER_YUZUNO_SCREENSHOTS"
           app=$(find gen/apple/build/arm64-sim -maxdepth 1 -type d -name '*.app')
@@ -165,6 +167,7 @@ jobs:
           (cd uitests && xcodegen generate)
           xcodebuild test -quiet -project uitests/YuzunoChecks.xcodeproj -scheme Checks \
             -destination "platform=iOS Simulator,id=$device" -resultBundlePath "$RUNNER_TEMP/checks.xcresult"
+          cat "$TEST_RUNNER_YUZUNO_FRAMES"
           xcrun simctl shutdown "$device"
 
       # When the check fails: what failed, from its result bundle (the
