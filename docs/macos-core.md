@@ -50,7 +50,7 @@ None of these gaps stops the build. **Runtime** means the code builds but refuse
 | **Managed updates** | **Refused.** Prepare and Apply need the running Core's process identity, which is read from `/proc` ("Managed Core updates require Linux/WSL"). | runtime | `core/src/updates/state.rs` |
 | Update helper | Would need fixes before updates could work. It reads `/proc/self/fd/1` so that log pruning skips its own live log; on macOS that read fails silently and the live log is not protected. It also compares `current_exe()` with release paths: on Linux that path is already resolved, on macOS it may not be. | runtime | `core/src/updates/helper.rs` |
 | Packages, signing, CI | Linux x86_64 only. The build script refuses other systems, packaging names only `linux-*`, signing accepts only `linux-*`, and CI has no macOS job. | tooling | `tools/build-core-artifact.py`, `tools/package-release.py`, `tools/sign-core-release.py`, `tools/core-release.py`, `.github/workflows/ci.yml` |
-| Starting and stopping Core | The Linux guide starts Core with `setsid nohup` (macOS has no `setsid`) and stops it with SIGINT. Core handles only SIGINT, so SIGTERM from `launchd` or a plain `kill` skips the graceful shutdown (true on Linux too). | runtime | `docs/independent-core.md`, `core/src/main.rs` |
+| Starting and stopping Core | The Linux guide starts Core with `setsid nohup` (macOS has no `setsid`) and stops it with SIGINT. Core now takes SIGTERM, as `launchd` or a plain `kill` sends it, through the same graceful shutdown as SIGINT (T-88; tested on Linux, not yet on macOS). | runtime | `docs/independent-core.md`, `core/src/main.rs` |
 | Finding Claude Code, Node, Codex, git, gh | Through Core's `PATH`. A Core started outside a login shell does not see `/opt/homebrew/bin`: the lab check without it reported "Claude Code was not found on Core's PATH". With `/opt/homebrew/bin` on `PATH`, the same check found Claude Code 2.1.267. | runtime | `core/src/machines.rs`, `core/src/claude.rs` |
 | Labels | Jobs are not marked unavailable: the job tools stay advertised to Agents, and the Jobs panel shows the refusal as an error. Settings → Updates says "Linux / WSL". There is no capability list. | runtime | `core/src/collaboration_store.rs`, `web/src/Jobs.tsx`, `web/src/WorkspaceUpdates.tsx` |
 | Desktop app | Windows only. On a Mac, use a browser. | packaging | `desktop/tauri.conf.json` |
@@ -87,7 +87,7 @@ The first slice therefore leaves Jobs unavailable on macOS. A later "not resourc
    - Agents get the same clean refusal.
 
    Linux behaviour does not change.
-2. **SIGTERM handled like Ctrl-C,** so `kill` or a service manager stops Core gracefully. This helps Linux too.
+2. **SIGTERM handled like Ctrl-C,** so `kill` or a service manager stops Core gracefully. Done for every Unix build (T-88, `core/tests/core_signals.rs` on Linux); still to be run on a Mac.
 3. **Tests that pass on macOS:**
    - the 22 Linux-only update and Jobs tests are gated to Linux;
    - the result-validator test compares canonical paths;

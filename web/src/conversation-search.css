@@ -5,7 +5,7 @@
 .modal.conversation-search-dialog {
   display: flex;
   flex-direction: column;
-  width: min(700px, calc(100vw - 32px));
+  width: min(700px, calc(var(--safe-vw) - 32px));
   background: var(--surface-raised);
   color: var(--ink);
   border-color: var(--line);

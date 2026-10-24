@@ -8,8 +8,8 @@
   --jobs-well: color-mix(in srgb, var(--surface-soft) 72%, var(--surface-raised));
   display: flex;
   flex-direction: column;
-  width: min(1120px, calc(100vw - 32px));
-  height: min(800px, calc(100dvh - 40px));
+  width: min(1120px, calc(var(--safe-vw) - 32px));
+  height: min(800px, calc(var(--safe-dvh) - 40px));
   max-height: none;
   overflow: hidden;
 }
@@ -941,8 +941,8 @@
   /* Narrow: the sources become a row of tabs, and the list and the chosen
      one stack, scrolling with the panel. */
   .modal.jobs-dialog {
-    width: calc(100vw - 16px);
-    height: calc(100dvh - 16px);
+    width: calc(var(--safe-vw) - 16px);
+    height: calc(var(--safe-dvh) - 16px);
     padding: 16px;
   }
   .jobs-dialog > .modal-heading {

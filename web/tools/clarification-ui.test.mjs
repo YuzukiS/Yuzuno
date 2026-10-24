@@ -20,7 +20,7 @@ try {
     entry,
     `import React from 'react';
 import {flushSync} from 'react-dom'; import {createRoot} from 'react-dom/client';
-import {Clarification} from ${JSON.stringify(path.join(root, "src/intelligent-ui/Clarification.tsx"))};
+import {Clarification} from ${JSON.stringify(path.join(root, "src/intelligent-ui/ClarificationForm.tsx"))};
 const root=createRoot(document.getElementById('root'));
 window.renderForm=(props)=>flushSync(()=>root.render(<Clarification {...props}/>));`,
   );

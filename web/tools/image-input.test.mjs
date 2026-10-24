@@ -10,6 +10,7 @@ import {
 import {
   appendImage,
   clipboardImages,
+  validateImageChoice,
   validateImageFiles,
   sameMessageImages,
   MAX_IMAGE_BYTES,
@@ -127,6 +128,12 @@ test("clipboard item/file mixed representation is consumed once; size and format
     /10 MiB/,
   );
   assert.throws(() => validateImageFiles(Array(9).fill(file), []), /8 images/);
+  // Before any image is read: the count and the types, never the bytes,
+  // which making a photo smaller changes.
+  assert.throws(() => validateImageChoice(Array(9).fill(file), []), /8 images/);
+  assert.throws(() => validateImageChoice(Array(3).fill(file), Array(6).fill(image)), /8 images/);
+  assert.throws(() => validateImageChoice([new File(["svg"], "x.svg", { type: "image/svg+xml" })], []), /PNG, JPEG or WebP/);
+  assert.doesNotThrow(() => validateImageChoice([{ ...file, type: "image/jpeg", name: "big.jpg", size: MAX_IMAGE_BYTES * 3 }], []));
 });
 test("message identity compares image order and content, including legacy text-only input", () => {
   assert.equal(sameMessageImages(undefined, []), true);

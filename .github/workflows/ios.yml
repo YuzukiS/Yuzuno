@@ -1,0 +1,194 @@
+# Builds the iOS app (T-170) for the iOS Simulator, unsigned, on a standard
+# GitHub-hosted Apple silicon runner. Every `tauri ios` command needs macOS
+# with Xcode (Tauri's CLI reference); a Simulator build needs no signing.
+# A pull request that changes ios/, or what it uses from desktop/ and web/
+# (the Core rule, jsdom's lock and guard, the icon), runs the iOS app's tests
+# and builds it. The app is not uploaded; its checksum is in the run's
+# summary, as for desktop-macos.yml's pull requests. The one upload is the
+# Simulator smoke's two connection-page screenshots, for 3 days. Never an
+# installable build for an iPhone, which would need the user's own Apple
+# signing. No secret is used. See ios/README.md.
+name: iOS
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ios/**
+      - desktop/src/health.rs
+      - web/package.json
+      - web/package-lock.json
+      - web/tools/jsdom-guard.mjs
+      - web/tools/jsdom-limits.mjs
+      - web/src/assets/yuzu-character.png
+      - .github/workflows/ios.yml
+      - .github/scripts/hosted-guard.sh
+      - .github/scripts/disk-precheck.sh
+
+permissions:
+  contents: read
+
+# A newer push to a PR cancels its older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The CI workflow's Rust; bump them together.
+  RUST_TOOLCHAIN: 1.97.1
+  # Matches ios/Cargo.lock's tauri; bump both together.
+  TAURI_CLI_VERSION: 2.12.3
+
+jobs:
+  simulator:
+    name: iOS Simulator app (unsigned)
+    # The standard macOS 26 Apple silicon runner, free for public
+    # repositories; not a paid larger one, nor a self-hosted one.
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      # Before anything else, refuse any runner but a GitHub-hosted one.
+      - name: GitHub-hosted runner
+        working-directory: .
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ] || { echo "::error::not a GitHub-hosted runner"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Runner details
+        working-directory: .
+        run: .github/scripts/hosted-guard.sh
+
+      # Read-only check of free disk before building; see the script.
+      - name: Disk space precheck
+        working-directory: .
+        run: .github/scripts/disk-precheck.sh 8 "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+
+      - name: Xcode
+        run: |
+          xcode-select -p
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+
+      # Only the pinned toolchain, in a RUSTUP_HOME of its own, as in CI: the
+      # image's own stable Rust changes with image updates.
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }} and its iOS targets
+        run: |
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+          echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
+          export RUSTUP_HOME="$RUNNER_TEMP/rustup"
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update \
+            --target aarch64-apple-ios --target aarch64-apple-ios-sim
+          rustup toolchain list
+          rustup target list --installed --toolchain "$RUST_TOOLCHAIN"
+
+      # The app's own rules (the Core address and what the window may open),
+      # built for this Mac.
+      - name: Tests
+        run: cargo test --locked
+
+      # The connection page and the window's new-window link script, in
+      # JSDOM; jsdom comes from web/'s locked devDependencies, as for the
+      # desktop app's page in CI.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Page tests
+        run: |
+          npm --prefix ../web ci --ignore-scripts --no-audit --no-fund
+          node tests/connection.test.mjs
+          node tests/new_window_links.test.mjs
+
+      # The pinned Tauri CLI, built fresh; nothing is cached.
+      - name: Tauri CLI ${{ env.TAURI_CLI_VERSION }}
+        run: |
+          grep -A1 '^name = "tauri"$' Cargo.lock | grep -q "^version = \"$TAURI_CLI_VERSION\"$" ||
+            { echo "::error::ios/Cargo.lock's tauri is not $TAURI_CLI_VERSION"; exit 1; }
+          cargo install tauri-cli --version "$TAURI_CLI_VERSION" --locked --root "$RUNNER_TEMP/tools"
+          echo "$RUNNER_TEMP/tools/bin" >> "$GITHUB_PATH"
+
+      # The Xcode project, made here each time (ios/gen is not kept yet), and
+      # the app built for the Simulator on Apple silicon, unsigned.
+      - name: Xcode project and Simulator app
+        run: |
+          cargo tauri ios init --ci
+          cargo tauri ios build --ci --no-sign --target aarch64-sim
+
+      # What was built: one app, for the iOS Simulator, with this app's
+      # identifier, its executable built for arm64.
+      - name: App
+        run: |
+          # Tauri moves the Simulator app to gen/apple/build/<arch>/ (cargo-mobile2: arm64-sim).
+          apps=$(find gen/apple/build/arm64-sim -maxdepth 1 -type d -name '*.app')
+          [ "$(printf '%s\n' "$apps" | grep -c .)" = 1 ] || { echo "::error::expected one Simulator app, found: $apps"; exit 1; }
+          app=$apps
+          identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
+          platform=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$app/Info.plist")
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
+          echo "app: $app; identifier: $identifier; platform: $platform; executable: $executable"
+          [ "$identifier" = dev.yuzuno.ios ] || { echo "::error::identifier is $identifier"; exit 1; }
+          [ "$platform" = iPhoneSimulator ] || { echo "::error::platform is $platform"; exit 1; }
+          lipo -archs "$app/$executable" | grep -qx arm64 || { echo "::error::not an arm64 executable: $(lipo -archs "$app/$executable")"; exit 1; }
+          xcrun vtool -show-build "$app/$executable" | grep -E 'platform|minos'
+          # The devices and orientations the app declares, as packaged. On an
+          # iPhone it is portrait only for now (Info.ios.plist); the iPad list
+          # is Tauri's own, unchanged and unchecked here.
+          for key in UIDeviceFamily UISupportedInterfaceOrientations 'UISupportedInterfaceOrientations~ipad' UIRequiresFullScreen; do
+            echo "$key: $(plutil -extract "$key" json -o - "$app/Info.plist" 2>&1)"
+          done
+          iphone=$(plutil -extract UISupportedInterfaceOrientations json -o - "$app/Info.plist")
+          [ "$iphone" = '["UIInterfaceOrientationPortrait"]' ] || { echo "::error::iPhone orientations are $iphone"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/out"
+          ditto -c -k --keepParent "$app" "$RUNNER_TEMP/out/Yuzuno-iOS-Simulator.zip"
+          (cd "$RUNNER_TEMP/out" && shasum -a 256 Yuzuno-iOS-Simulator.zip | tee SHA256SUMS)
+          # A pull request's run builds its merge with main: name that commit.
+          # The checkout is shallow, so its parents come from the commit itself.
+          source=$(git rev-parse HEAD)
+          parents=$(git cat-file -p HEAD | sed -n 's/^parent //p' | paste -s -d ' ' -)
+          echo "built from $source (parents: $parents)"
+          { echo "### iOS Simulator app"; echo; echo "\`$identifier\`, $platform, arm64, built from \`$source\` (parents: \`$parents\`)."; echo; echo '```'; cat "$RUNNER_TEMP/out/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      # The app in a Simulator of its own, without a Core: it starts, its
+      # connection page shows in the app's WKWebView, and the app refuses a
+      # plain HTTP address itself (uitests/run.sh smoke). Turning, the
+      # keyboard, Mobile Safari and their measurements are for a Mac with
+      # Xcode (run.sh full and safari; see ios/README.md), not this job.
+      - name: Simulator smoke
+        timeout-minutes: 20
+        run: |
+          app=$(find gen/apple/build/arm64-sim -maxdepth 1 -type d -name '*.app')
+          uitests/run.sh smoke "$app" "$RUNNER_TEMP/checks"
+
+      # When the smoke fails: what failed, from its result bundle (the
+      # tests' own messages). Nothing is uploaded.
+      - name: Simulator smoke failures
+        if: failure()
+        run: |
+          [ -d "$RUNNER_TEMP/checks/checks.xcresult" ] || { echo "no result bundle"; exit 0; }
+          xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/checks/checks.xcresult"
+          xcrun xcresulttool get test-results tests --path "$RUNNER_TEMP/checks/checks.xcresult"
+
+      # The connection page, made without a Core: no Workspace, account or
+      # address of the user's can be in these. Exactly these two PNG files are
+      # uploaded, kept for 3 days; the app itself is not.
+      - name: Screenshots
+        run: |
+          dir="$RUNNER_TEMP/checks/screenshots"
+          expected="app-portrait.png app-refused.png"
+          found=$(ls -A "$dir" | LC_ALL=C sort | paste -s -d ' ' -)
+          [ "$found" = "$expected" ] || { echo "::error::expected $expected, found: $found"; exit 1; }
+          for file in $expected; do
+            [ "$(head -c 8 "$dir/$file" | xxd -p)" = 89504e470d0a1a0a ] || { echo "::error::$file is not a PNG"; exit 1; }
+          done
+          (cd "$dir" && shasum -a 256 $expected)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-simulator-screenshots-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/checks/screenshots/*.png
+          if-no-files-found: error
+          retention-days: 3

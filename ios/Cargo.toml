@@ -1,0 +1,36 @@
+[package]
+name = "yuzuno-ios"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Yuzuno's iOS app: a window onto a Workspace Core over HTTPS"
+
+# Keep mobile platform dependencies out of the independently runnable Core
+# and the desktop app.
+[workspace]
+
+[lib]
+# The iOS app links this library; `src/main.rs` runs the same app on a Mac,
+# so its tests build there.
+name = "yuzuno_ios_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# The connection page is embedded even under plain `cargo run`.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde_json = "1"
+url = "2.5"
+tauri-plugin-opener = "2"
+
+[profile.release]
+lto = "thin"
+strip = true

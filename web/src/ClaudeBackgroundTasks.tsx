@@ -11,7 +11,7 @@ import {
   type ClaudeBackgroundTaskRecord,
 } from "./claude-background-tasks";
 import { moment } from "./conversation-time";
-import { SubAgentDock, type DockGroup, type DockSubAgent } from "./SubAgents";
+import { SubAgentDock, type DockGroup, type DockSubAgent } from "./SubAgentPanels";
 import type { Agent, NativeTurn, RunningCall } from "./types";
 import { withRunningCalls } from "./running-calls";
 import "./claude-background-tasks.css";

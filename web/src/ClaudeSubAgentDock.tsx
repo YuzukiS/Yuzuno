@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { ClaudeAwayFromTurn, ClaudeSubAgentDetail, ClaudeSubAgentScope } from "./ClaudeControls";
 import { StopTaskButton } from "./ClaudeBackgroundTasks";
 import { claudeSubAgents, type ClaudeSubAgentEntry } from "./claude-subagents";
-import { SubAgentDock, type DockSubAgent } from "./SubAgents";
+import { SubAgentDock, type DockSubAgent } from "./SubAgentPanels";
 import type { Agent, NativeTurn, RunningSubAgent } from "./types";
 import { withRunningCalls } from "./running-calls";
 import { useAppearance } from "./appearance";
@@ -45,7 +45,7 @@ export function claudeDockEntries(agentId: string, turns: readonly NativeTurn[],
       details: (onNavigate) => {
         const turn = byId.get(entry.turnId);
         const detail = <ClaudeSubAgentDetail agentId={agentId} entry={entry} live={live} onNavigate={onNavigate} />;
-        // Laid out as the card's Codex details are (SubAgents.tsx). Its calls
+        // Laid out as the card's Codex details are (SubAgentPanels.tsx). Its calls
         // are shown away from their Turn: no anchors a source link could find.
         return <div key={entry.key} className="subagent-detail">
           {/* A sub-agent in the background is one of Claude's tasks: it can be stopped on its own. */}

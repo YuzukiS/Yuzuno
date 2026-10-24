@@ -47,6 +47,29 @@ enum Command {
         port: u16,
         #[arg(long)]
         workspace_id: String,
+        /// The phone's remote entry for Tailscale Serve: its loopback port,
+        /// with --remote-origin and --remote-login. Checked as Core checks
+        /// them; refused while Core runs.
+        #[arg(long, requires_all = ["remote_origin", "remote_login"], conflicts_with = "no_remote")]
+        remote_port: Option<u16>,
+        #[arg(long, requires_all = ["remote_port", "remote_login"])]
+        remote_origin: Option<String>,
+        #[arg(long, requires_all = ["remote_port", "remote_origin"])]
+        remote_login: Option<String>,
+        /// Start without a remote entry, whatever was recorded.
+        #[arg(long)]
+        no_remote: bool,
+    },
+    /// Stop this installation's Core on its port, as an interrupt does,
+    /// only when it is the one process of this installation and holds the
+    /// port. Prints one JSON result. Never kills.
+    Stop {
+        #[arg(long)]
+        install_dir: PathBuf,
+        #[arg(long)]
+        port: u16,
+        #[arg(long)]
+        workspace_id: String,
     },
 }
 fn main() -> anyhow::Result<()> {
@@ -80,15 +103,37 @@ fn main() -> anyhow::Result<()> {
             install_dir,
             port,
             workspace_id,
+            remote_port,
+            remote_origin,
+            remote_login,
+            no_remote,
         } => {
             use yuzuno_workspace::updates::start;
-            let outcome = start::start(&install_dir, port, &workspace_id, start::Budget::default());
+            let remote = match (remote_port, remote_origin, remote_login) {
+                (Some(port), Some(origin), Some(login)) => start::Remote::Set { port, origin, login },
+                _ if no_remote => start::Remote::Off,
+                _ => start::Remote::Recorded,
+            };
+            let outcome = start::start_with(&install_dir, port, &workspace_id, &remote, start::Budget::default());
             println!("{outcome}");
             match outcome["state"].as_str() {
                 Some("started" | "starting") => {
                     start::keep_running(&install_dir, port, &workspace_id, start::Keep::default())
                 }
                 Some("running") => Ok(()),
+                _ => std::process::exit(3),
+            }
+        }
+        Command::Stop {
+            install_dir,
+            port,
+            workspace_id,
+        } => {
+            use yuzuno_workspace::updates::start;
+            let outcome = start::stop(&install_dir, port, &workspace_id, start::StopBudget::default());
+            println!("{outcome}");
+            match outcome["state"].as_str() {
+                Some("stopped" | "notRunning") => Ok(()),
                 _ => std::process::exit(3),
             }
         }
