@@ -221,6 +221,11 @@ pub(super) fn parse_reply(code: Option<i32>, out: &[u8], stderr: &str, nonce: &s
         1 if stderr.contains("SyntaxError") => {
             Reply::Unusable(format!("its python3 is too old for the Jobs helper, which needs 3.6 or newer ({stderr})"))
         }
+        // A Mac's /usr/bin/python3 without the Command Line Tools is Apple's
+        // stand-in, which only asks for them (T-186; from Apple's xcode-select
+        // and xcrun messages, not measured on a Mac without the tools).
+        _ if stderr.contains("xcode-select") || stderr.contains("xcrun: error") => Reply::Unusable(format!(
+            "its python3 is Apple's stand-in, which runs nothing until the Command Line Tools are installed (xcode-select --install) ({stderr})")),
         _ => Reply::Broken(format!("the helper there exited {code}: {stderr}")),
     })
 }
@@ -607,6 +612,9 @@ fn limits_said(job: &Value, started: &Value) -> String {
     };
     let mut said = format!("{memory}; {cpu}");
     let scoped = limits["memory"] == "limited" || limits["cpu"] == "limited";
+    if !scoped && job["remote"]["platform"] == "Darwin" {
+        said.push_str("; macOS holds no CPU or RAM limit (it has no cgroup): they are reserved for this Core's admission and recorded only");
+    }
     // limited holds nothing in a scope of a user manager that may stop; the
     // helper's own caveat says when that, not a missing controller, is why.
     let unlingering = limits["caveats"].as_array().is_some_and(|caveats| {
@@ -752,6 +760,18 @@ impl Store {
         let ids = q.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         ids.iter().map(|id| get(&db, id)).collect()
     }
+    /// The platform this machine's newest attempt was started on, as its
+    /// helper named it at hello (T-186); None before any attempt reached it.
+    pub(super) fn machine_platform(&self, machine_id: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        let db = self.db.read()?;
+        let mut q = db.prepare(
+            "SELECT json_extract(data,'$.remote.platform') FROM local_jobs
+             WHERE json_extract(data,'$.executor.machineId')=?1 AND json_extract(data,'$.remote.platform') IS NOT NULL
+             ORDER BY seq DESC LIMIT 1",
+        )?;
+        Ok(q.query_row([machine_id], |r| r.get::<_, String>(0)).optional()?)
+    }
     /// Take a slot on the job's machine for this queued remote job, or say
     /// why it waits. The attempt is bound to its slot before it is started.
     pub(super) fn reserve_remote(&self, id: &str) -> Result<Option<Value>> {
@@ -850,6 +870,16 @@ impl Store {
         for (key, value) in facts.as_object().into_iter().flatten() {
             if job["remote"][key].is_null() {
                 job["remote"][key] = value.clone();
+            }
+        }
+        // What the attempt gets follows the machine that answered (T-186): a
+        // Mac holds no limits, whatever was said at submit.
+        if job["executor"]["kind"] == SSH {
+            if let Some(platform) = job["remote"]["platform"].as_str() {
+                let told = capabilities_for(Some(platform));
+                if job["capabilities"]["platform"] != told["platform"] {
+                    job["capabilities"] = told;
+                }
             }
         }
         if let Some(reason) = reason.filter(|_| job["status"] == "starting") {
@@ -1101,6 +1131,8 @@ pub(super) fn pause_refusal(job: &Value) -> Option<String> {
     match job["executor"]["kind"].as_str() {
         None => None,
         Some(SSH) if job["result"]["started"]["limits"]["held"]["unit"].is_string() => None,
+        Some(SSH) if job["remote"]["platform"] == "Darwin" => Some(format!(
+            "Pause is not available for jobs on {name}: it is a Mac, where an attempt has no scope of its own (macOS has no cgroup), and pause freezes only an attempt's own scope; nothing was changed")),
         Some(SSH) => Some(format!(
             "Pause is not available for this job on {name}: it runs without a scope of its own there (no limits are held for it: a record-only machine, or an account that does not linger), and pause freezes only an attempt's own scope; nothing was changed")),
         Some(_) => Some(format!("Pause is not available for jobs on {name}: this executor has no pause, so nothing was changed")),
@@ -1200,6 +1232,11 @@ async fn launch(ws: &Arc<Workspace>, job: Value, programs: &Programs<'_>) -> Res
             }
             Reply::Answer(reply) if reply["status"] == "hello" && reply["hostId"].is_string() => {
                 let mut facts = json!({"hostId": reply["hostId"], "helloBootId": reply["bootId"], "digest": digest(&spec(&job))});
+                // What it runs on decides what the attempt is told it gets
+                // (T-186); a helper that does not say is a Linux one.
+                if let Machine::Ssh(_) = &machine {
+                    facts["platform"] = json!(reply["platform"].as_str().unwrap_or("Linux"));
+                }
                 if let Some(root) = pinned_root(&machine, &reply) {
                     facts["root"] = json!(root);
                 }
@@ -1404,6 +1441,36 @@ pub(super) fn capabilities() -> Value {
         "processes": "Cancel and timeouts stop the attempt's own process group, checking each process (boot, PID, start time) before signalling it. A process group is not a cgroup: a process that starts its own session or group leaves it and is not stopped",
         "bootId": null,
     })
+}
+
+/// The same for a Mac reached over SSH (T-186): macOS has no cgroup, so
+/// nothing there holds a declared limit, and nothing is paused.
+pub(super) fn darwin_capabilities() -> Value {
+    let mut value = capabilities();
+    value["platform"] = json!("macOS");
+    value["limits"] = json!("Declared CPU, RAM and swap are reserved for this Core's admission (the machine's maxJobs and its own budget, when set) and recorded with each attempt; macOS holds none of them: it has no cgroup, so nothing caps the command's CPU share or memory. The machine's mode decides the rest: strict starts nothing there, limited runs and records them as declared only, and a machine registered before limits only records them. Nothing limits the machine's own load");
+    value["pause"] = json!("unavailable: pause freezes only an attempt's own scope, and macOS gives an attempt none; nothing is stopped with signals instead");
+    value
+}
+
+/// What a job is told before its machine has named its platform (T-186):
+/// what is held there depends on it, so nothing is promised yet.
+pub(super) fn unknown_capabilities() -> Value {
+    let mut value = capabilities();
+    value["platform"] = json!("unknown");
+    value["limits"] = json!("Not known yet: what can be held depends on the machine's platform, which Core learns when it first reaches the machine for an attempt; these capabilities are then replaced by that platform's. On Linux the account's systemd may hold memory and CPU in the attempt's own scope (strict starts nothing it cannot hold); on macOS nothing is held, and strict starts nothing. Until then, read the declared CPU, RAM and swap as reserved for this Core's admission and recorded, not as held");
+    value["pause"] = json!("Not known yet: decided by the machine's platform and what it holds there, once it has answered");
+    value
+}
+
+/// What a remote attempt is told it gets, by the platform its machine's
+/// helper named at hello (T-186); not known before any attempt reached it.
+pub(super) fn capabilities_for(platform: Option<&str>) -> Value {
+    match platform {
+        Some("Darwin") => darwin_capabilities(),
+        Some("Linux") => capabilities(),
+        _ => unknown_capabilities(),
+    }
 }
 
 /// The same for Windows on this PC.
