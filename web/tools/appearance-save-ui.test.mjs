@@ -80,11 +80,11 @@ function mount() {
 }
 const FULL = "Not saved on this device: this browser’s storage for Yuzuno is full. Your choice applies in this window until you close or reload it.";
 
-test("a choice the browser saves says so", async () => {
+test("a choice the browser saves says so; before it, nothing was called saved", async () => {
   const page = mount();
   page.window.show(true);
   await tick();
-  assert.equal(page.status(), "Saved on this device");
+  assert.equal(page.status(), "Using the defaults; nothing is saved on this device yet");
   page.choose("appearance-palette", "pine");
   await tick();
   assert.equal(JSON.parse(page.storage.getItem(KEY)).palette, "pine");
@@ -136,7 +136,7 @@ test("restore defaults removes this device's choice and says whether it could", 
   assert.equal(page.storage.getItem("yuzuno.selected"), JSON.stringify("a"), "nothing else is removed");
   assert.equal(page.checked("appearance-palette"), "garden");
   assert.equal(page.checked("appearance-theme"), "light");
-  assert.equal(page.status(), "Saved on this device");
+  assert.equal(page.status(), "Defaults restored on this device");
   page.choose("appearance-palette", "pine");
   await tick();
   page.refuse("SecurityError");
@@ -157,4 +157,21 @@ test("storage this browser won't read: what is shown is not called saved", async
   assert.equal(page.alert(), "Not saved on this device: this browser doesn’t let Yuzuno store settings here. Your choice applies in this window until you close or reload it.");
   assert.equal(page.status(), null);
   page.close();
+});
+
+test("before a save in this visit it says what this device holds, and never that it saved", async () => {
+  const opened = async (stored) => {
+    const page = mount();
+    page.storage.setItem(KEY, stored);
+    page.window.show(true);
+    await tick();
+    const seen = { status: page.status(), palette: page.checked("appearance-palette") };
+    page.close();
+    return seen;
+  };
+  assert.deepEqual(await opened(JSON.stringify({ palette: "pine" })),
+    { status: "Using the choice saved on this device", palette: "pine" });
+  const unreadable = "The choice saved on this device couldn’t be read, so the defaults apply. Choosing again saves a new one.";
+  for (const stored of ["{not json", "[1,2]", "null", "\"pine\""])
+    assert.deepEqual(await opened(stored), { status: unreadable, palette: "garden" }, `saved as ${stored}`);
 });

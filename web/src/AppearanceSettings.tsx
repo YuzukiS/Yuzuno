@@ -1,6 +1,6 @@
 import { Check, Monitor, Moon, Rows2, Rows4, Sun, Type } from "lucide-react";
 import {
-  appearanceReadable,
+  appearanceStored,
   restoreDefaultAppearance,
   saveAppearance,
   useAppearance,
@@ -18,7 +18,6 @@ import {
   palettes,
   type Palette,
 } from "./appearance";
-import type { SaveOutcome } from "./device-storage";
 import { SaveStatus } from "./SaveStatus";
 
 const themes: {
@@ -118,17 +117,11 @@ const paletteLabels: Record<Palette, string> = {
   sunroom: "Sunroom",
 };
 
-/** Storage this browser won't even read: nothing shown is a saved choice. */
-const UNREADABLE: SaveOutcome = {
-  saved: false,
-  reason: "blocked",
-  detail: "this browser doesn’t let Yuzuno store settings here",
-};
-
 /** Appearance, one category of Settings: how Yuzuno looks on this device.
  * It shows the choice in effect, which is the saved one unless this device
  * refused to save it (T-187); then it says so, keeps the choice, and offers
- * to try again or restore the defaults. */
+ * to try again or restore the defaults. Before a save in this visit it says
+ * what this device holds: a saved choice, the defaults, or one it can't read. */
 export function AppearanceSection() {
   const appearance = useAppearance();
   const save = useAppearanceSave();
@@ -393,7 +386,9 @@ export function AppearanceSection() {
         </div>
       </div>
       <SaveStatus
-        outcome={save ?? (appearanceReadable() ? null : UNREADABLE)}
+        outcome={save?.outcome ?? null}
+        action={save?.action}
+        stored={appearanceStored()}
         scope="this device"
         onRetry={() => saveAppearance(appearance)}
         onRestoreDefaults={restoreDefaultAppearance}
