@@ -14,6 +14,7 @@ import {
   Palette,
   RefreshCw,
   ShieldCheck,
+  Smartphone,
   Sparkles,
   X,
 } from "lucide-react";
@@ -24,6 +25,7 @@ import { DiagnosticsCopy } from "./RecoveryPage";
 import { HistoryComposition } from "./HistoryComposition";
 import { ReviewSettings } from "./ReviewSettings";
 import { HomePresentationSettings } from "./HomePresentationSettings";
+import { RemoteAccessSettings } from "./RemoteAccessSettings";
 import { api, errorText, HttpError } from "./api";
 import {
   loadedRelease,
@@ -747,7 +749,7 @@ export function WorkspaceUpdates({
       open={open}
       onOpenChange={onOpenChange}
       title="Settings"
-      description="Updates for the Workspace service and the desktop app, appearance and code review."
+      description="Updates for the Workspace service and the desktop app, appearance, code review and phone access."
       wide
       className="settings-modal"
     >
@@ -982,18 +984,20 @@ export function WorkspaceUpdates({
           {tab === "appearance" && <AppearanceSection />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
+          {tab === "remote" && <RemoteAccessSettings active={open} />}
         </div>
       </div>
     </Modal>
   );
 }
 
-type SettingsTab = "updates" | "appearance" | "home" | "review";
+type SettingsTab = "updates" | "appearance" | "home" | "review" | "remote";
 const settingsTabs: { id: SettingsTab; label: string; Icon: typeof RefreshCw }[] = [
   { id: "updates", label: "Updates", Icon: RefreshCw },
   { id: "appearance", label: "Appearance", Icon: Palette },
   { id: "home", label: "Home", Icon: House },
   { id: "review", label: "Code review", Icon: GitPullRequest },
+  { id: "remote", label: "Phone access", Icon: Smartphone },
 ];
 // Shared by every mount, so React's double effects and quick reopenings
 // don't check twice.
