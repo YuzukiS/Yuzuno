@@ -156,11 +156,22 @@ jobs:
           echo "built from $source (parents: $parents)"
           { echo "### iOS Simulator app"; echo; echo "\`$identifier\`, $platform, arm64, built from \`$source\` (parents: \`$parents\`)."; echo; echo '```'; cat "$RUNNER_TEMP/out/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
-      # The web UI for the Safari comparison below, from this checkout.
+      # The web UI for the Safari comparison below, from this checkout. Its
+      # source has modules whose names differ only in case (subagents.ts and
+      # SubAgents.tsx, clarification.ts and Clarification.tsx), which this
+      # Mac's case-insensitive disk resolves to the wrong file (run
+      # 40060336137): the build runs on a case-sensitive disk image instead.
       # Other web changes do not run this job: it compares WebKit in the app
       # and in Safari, it does not check each web change.
       - name: Web build for Safari
-        run: (cd ../web && npx vite build --outDir "$RUNNER_TEMP/web-dist" --emptyOutDir)
+        run: |
+          image="$RUNNER_TEMP/web-src.sparseimage"
+          volume="$RUNNER_TEMP/web-src"
+          hdiutil create -quiet -size 4g -type SPARSE -fs "Case-sensitive APFS" -volname yuzuno-web "$image"
+          hdiutil attach -quiet -nobrowse -mountpoint "$volume" "$image"
+          git -C .. archive HEAD LICENSE web | tar -x -C "$volume"
+          (cd "$volume/web" && npm ci --ignore-scripts --no-audit --no-fund && npx vite build --outDir "$RUNNER_TEMP/web-dist" --emptyOutDir)
+          hdiutil detach -quiet "$volume"
 
       # The app in a Simulator, without a Core: it starts, its connection
       # page shows in the app's WKWebView, and the app's own commands answer
