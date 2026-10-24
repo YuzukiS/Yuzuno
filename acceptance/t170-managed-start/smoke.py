@@ -267,6 +267,10 @@ def main():
         assert (code, stopped["state"]) == (0, "stopped"), stopped
         before = record_path.read_bytes()
         holder = socket.socket()
+        # As Core's own listener does, so that connections the earlier steps
+        # left in TIME_WAIT on this port don't refuse it; a second listener
+        # (Core's) is still refused.
+        holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         holder.bind(("127.0.0.1", args.remote_port))
         holder.listen()
         try:
