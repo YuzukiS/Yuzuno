@@ -108,6 +108,7 @@ fn failed_run(s: &crate::store::Store) -> String {
     }).collect();
     let run = s.create_run(Some("a"), input, prepared, machine(), json!({"bootId":"boot"})).unwrap();
     let started = s.reserve_next_job(None, None, None).unwrap().unwrap();
+    assert_eq!(started["run"]["id"], run["id"], "the run's stage is the one started");
     s.update_job_evidence(started["id"].as_str().unwrap(), json!({"jobId":started["id"],"attempt":started["attempt"],
         "status":"failed","reason":"exit-code","evidence":{"systemd":{"Result":"exit-code","ExecMainStatus":"1"}}})).unwrap();
     run["id"].as_str().unwrap().to_owned()
@@ -119,6 +120,7 @@ fn checkpointed(s: &crate::store::Store) -> String {
     let created = s.create_job(None, serde_json::from_value(input).unwrap(), json!({"cwd":"/tmp"}), machine(), json!({"bootId":"boot"})).unwrap();
     let id = created["id"].as_str().unwrap();
     let started = s.reserve_next_job(None, None, None).unwrap().unwrap();
+    assert_eq!(started["id"], created["id"], "this Job is the one started");
     s.update_job_evidence(id, json!({"jobId":started["id"],"attempt":started["attempt"],"status":"running",
         "reason":"Running with verified cgroup limits","started":{"at":1792000000.0}})).unwrap();
     s.request_checkpoint_stop(id).unwrap();
@@ -174,14 +176,14 @@ async fn local_work_on_a_host_that_is_not_linux_is_refused_before_anything_is_wr
 async fn on_such_a_host_a_registered_machine_the_history_and_answers_already_given_are_unchanged() {
     let lab = lab();
     let s = &lab.ws.store;
-    // Answers given before, by a Linux Core with the same data: the submit
-    // as job_submit saved it.
+    // Answers given before, by a Linux Core with the same data: a retried
+    // run, and a submit as job_submit saved it.
+    let run = failed_run(s);
+    let retried = s.retry_stage(Some("a"), "retried", &run, "prep").unwrap();
     let mut submitted: Submit = serde_json::from_value(job("kept", json!({"agentId":"a"}))).unwrap();
     submitted.validate().unwrap();
     submitted.default_env();
     let kept = s.create_job(None, submitted, json!({"cwd":"/tmp"}), machine(), json!({"bootId":"boot"})).unwrap();
-    let run = failed_run(s);
-    let retried = s.retry_stage(Some("a"), "retried", &run, "prep").unwrap();
     lab.on_macos();
     let before = lab.saved();
     // A repeated submit and a repeated retry get their earlier answers.
