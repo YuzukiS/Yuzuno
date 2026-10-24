@@ -231,7 +231,9 @@ function EntryRow({ entry }: { entry: StorageEntry }) {
         <code>{entry.name}</code>
         {" · "}
         {entry.backup === "copied"
-          ? "In a Workspace backup"
+          ? entry.kind === "folder"
+            ? "A Workspace backup copies files from here; its manifest lists which"
+            : "In a Workspace backup, as a consistent copy"
           : entry.backup === "excluded"
             ? `Not in a backup: ${entry.backupReason}`
             : "Not in a backup"}

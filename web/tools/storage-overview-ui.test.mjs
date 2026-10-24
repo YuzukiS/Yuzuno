@@ -102,7 +102,8 @@ test("opening it only reads: this device by group and Core's overview once, with
   // The browser here reports nothing: said so, never a size of 0.
   assert.match(p.text(), /This browser does not report how much it keeps for this site\./);
   assert.doesNotMatch(p.text(), /\b0 B\b/, "nothing unknown is shown as 0");
-  assert.match(p.row("input-images"), /^Images sent to Agentssize unknown.*In a Workspace backup/);
+  assert.match(p.row("input-images"), /^Images sent to Agentssize unknown.*A Workspace backup copies files from here; its manifest lists which/);
+  assert.match(p.row("workspace.sqlite"), /In a Workspace backup, as a consistent copy/);
   assert.match(p.row("my-private-notes"), /^Not made by this Coresize unknown.*Not in a backup/);
   assert.match(p.row("claude-runtime"), /Not in a backup: A cache of the Claude runtime, which Core rebuilds/);
   assert.match(p.row("workspace.sqlite"), /3\.0 MiB · 3\.0 MiB on disk/);
