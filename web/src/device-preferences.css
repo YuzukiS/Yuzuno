@@ -44,14 +44,6 @@
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
-.settings-saved,
-.settings-save-failed {
-  margin: 8px 0 0;
-  font-size: calc(9px + var(--font-adjust, 3px));
-}
-.settings-save-failed {
-  color: var(--error-ink, var(--coral));
-}
 
 .shortcut-group h4 {
   margin: 0 0 6px;

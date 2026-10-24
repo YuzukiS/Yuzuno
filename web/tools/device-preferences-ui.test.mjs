@@ -9,8 +9,10 @@ import react from "@vitejs/plugin-react";
 import { JSDOM } from "jsdom";
 
 // This device's preferences (T-189): the send key is kept in this browser
-// only, read back as saved (an unknown value reads as Automatic), and a
-// refused save is said, never "Saved". The keyboard shortcuts help lists the
+// only (device-storage.ts), read back as saved (an unknown value reads as
+// Automatic), and a refused save is said as Appearance says it (SaveStatus),
+// never "Saved", with Try again and Restore defaults. The keyboard
+// shortcuts help lists the
 // shortcuts as they work here (Return as the preference says; the desktop
 // app's own only there), and every key it lists is handled where it says.
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -47,11 +49,13 @@ window.showHelp = () => flushSync(() => root.render(<ShortcutHelpSection />));`,
   await rm(temp, { recursive: true, force: true });
 }
 
+const realSetItem = (w) => w.Storage.prototype.setItem;
 function page({ saved, refuse } = {}) {
   const dom = new JSDOM('<div id="root"></div>', { url: "http://isolated.test", runScripts: "outside-only", pretendToBeVisual: true });
   const w = dom.window;
   w.matchMedia = (media) => ({ media, matches: false, addEventListener() {}, removeEventListener() {} });
   if (saved !== undefined) w.localStorage.setItem("yuzuno.preferences", saved);
+  w.realSetItem = realSetItem(w);
   if (refuse)
     w.Storage.prototype.setItem = function () {
       throw new w.DOMException("The quota has been exceeded.", "QuotaExceededError");
@@ -59,6 +63,7 @@ function page({ saved, refuse } = {}) {
   w.eval(bundle);
   return w;
 }
+const button = (w, label) => [...w.document.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
 const radio = (w, label) =>
   [...w.document.querySelectorAll('input[name="input-send-key"]')].find((input) => input.closest("label").textContent.includes(label));
 const choose = (w, label) => {
@@ -85,9 +90,14 @@ test("a chosen send key is saved on this device and said so", () => {
     choose(w, "Return sends");
     assert.deepEqual(JSON.parse(w.localStorage.getItem("yuzuno.preferences")), { sendKey: "enter" });
     const status = w.document.querySelector('[role="status"]');
-    assert.equal(status?.textContent, "Saved on this device.");
+    assert.equal(status?.textContent.trim(), "Saved on this device");
     assert.equal(w.document.querySelector('[role="alert"]'), null);
     assert.match(w.document.querySelector(".settings-current").textContent, /Return sends/);
+    // Restore defaults removes this device's choice: Automatic again.
+    button(w, "Restore defaults").click();
+    assert.equal(w.localStorage.getItem("yuzuno.preferences"), null);
+    assert.equal(radio(w, "Automatic").checked, true);
+    assert.equal(w.store.readPreferences().sendKey, "auto");
   } finally {
     w.close();
   }
@@ -96,13 +106,20 @@ test("a chosen send key is saved on this device and said so", () => {
 test("a save the browser refuses is said, never 'Saved', and the choice holds for this visit", () => {
   const w = page({ refuse: true });
   try {
-    assert.deepEqual(w.store.savePreferences({ sendKey: "modEnter" }), { ok: false, reason: "this browser's storage is full" });
+    assert.deepEqual(w.store.savePreferences({ sendKey: "modEnter" }), { saved: false, reason: "full", detail: "this browser’s storage for Yuzuno is full" });
     w.showEditor();
     choose(w, "Return sends");
     const alert = w.document.querySelector('[role="alert"]');
-    assert.equal(alert?.textContent, "Not saved: this browser's storage is full. It applies until this page closes.");
+    assert.equal(alert?.textContent.trim(), "Not saved on this device: this browser’s storage for Yuzuno is full. Your choice applies in this window until you close or reload it.");
     assert.ok(!w.document.body.textContent.includes("Saved on this device"), "no Saved");
     assert.equal(w.localStorage.getItem("yuzuno.preferences"), null, "nothing was kept");
+    // Held for this window: the editor shows the choice in effect.
+    assert.equal(radio(w, "Return sends").checked, true);
+    // Storage back: Try again saves it.
+    w.Storage.prototype.setItem = w.realSetItem;
+    button(w, "Try again").click();
+    assert.deepEqual(JSON.parse(w.localStorage.getItem("yuzuno.preferences")), { sendKey: "enter" });
+    assert.equal(w.document.querySelector('[role="status"]')?.textContent.trim(), "Saved on this device");
   } finally {
     w.close();
   }

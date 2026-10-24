@@ -1,13 +1,12 @@
 import { useSyncExternalStore } from "react";
+import { clearDeviceValue, deviceStorageReadable, onDeviceValueChange, readDeviceValue, saveDeviceValue, type SaveOutcome } from "./device-storage";
 
 /**
  * How this device is used (T-189): kept in this browser or app only, for
- * this address. They do not travel to other devices. Unset, each one
- * behaves as Yuzuno always has.
- *
- * Saving says whether it was kept. A browser that refuses to store it (no
- * storage, or storage full) gets the choice for this visit only, and the
- * editor says so instead of "Saved".
+ * this address (device-storage.ts, as Appearance is). They do not travel to
+ * other devices. Unset, each one behaves as Yuzuno always has. A choice this
+ * device refused to save still applies in this window, and its editor says
+ * it was not saved.
  */
 
 /** Which key sends from the conversation's composer.
@@ -30,56 +29,63 @@ export function returnSends(sendKey: SendKey, touch: boolean): boolean {
 }
 
 export function readPreferences(): DevicePreferences {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-    return {
-      sendKey: sendKeys.includes(saved?.sendKey) ? saved.sendKey : defaultPreferences.sendKey,
-    };
-  } catch {
-    return defaultPreferences;
-  }
+  const saved = readDeviceValue(STORAGE_KEY) as Partial<DevicePreferences> | null;
+  return {
+    sendKey: sendKeys.includes(saved?.sendKey as SendKey) ? (saved!.sendKey as SendKey) : defaultPreferences.sendKey,
+  };
 }
 
-export type SaveResult = { ok: true } | { ok: false; reason: string };
-
-// Read once, then again whenever saved here or in another window.
+// The choice in effect: read once, then again whenever chosen here or saved
+// in another window.
 const listeners = new Set<() => void>();
 let current: DevicePreferences | null = null;
+// What this visit's last save or reset did; null before one.
+let lastSave: SaveOutcome | null = null;
 const notify = () => listeners.forEach((listener) => listener());
 const subscribe = (listener: () => void) => {
+  if (!listeners.size) stopWatching = onDeviceValueChange(STORAGE_KEY, changed);
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
+    if (!listeners.size) stopWatching?.();
   };
 };
+let stopWatching: (() => void) | undefined;
+// Another window saved: what is in effect here is what is saved now.
+function changed() {
+  current = null;
+  lastSave = null;
+  notify();
+}
 export function useDevicePreferences(): DevicePreferences {
   return useSyncExternalStore(subscribe, () => (current ??= readPreferences()));
 }
 
-/** Applies the choice now and keeps it on this device, saying whether it was
- * kept: a refused write is not reported as saved. */
-export function savePreferences(preferences: DevicePreferences): SaveResult {
-  current = preferences;
-  notify();
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
-    return { ok: true };
-  } catch (error) {
-    return {
-      ok: false,
-      reason:
-        error instanceof DOMException && error.name === "QuotaExceededError"
-          ? "this browser's storage is full"
-          : "this browser does not allow saving here",
-    };
-  }
+/** What this visit's last save or reset of these preferences did, or null. */
+export function useDevicePreferencesSave(): SaveOutcome | null {
+  return useSyncExternalStore(subscribe, () => lastSave);
 }
 
-/** Another window of this address saved a choice: read it again. */
-if (typeof window !== "undefined")
-  window.addEventListener("storage", (event) => {
-    if (event.key === STORAGE_KEY || event.key === null) {
-      current = null;
-      notify();
-    }
-  });
+/** Whether this device can read its saved preferences at all. */
+export function preferencesReadable(): boolean {
+  return deviceStorageReadable(STORAGE_KEY);
+}
+
+/** Applies the choice now and saves it on this device. A refused write is
+ * reported, not hidden: the choice still applies in this window. */
+export function savePreferences(preferences: DevicePreferences): SaveOutcome {
+  const outcome = saveDeviceValue(STORAGE_KEY, preferences);
+  current = preferences;
+  lastSave = outcome;
+  notify();
+  return outcome;
+}
+
+/** Back to the defaults on this device: its saved choice is removed. */
+export function restoreDefaultPreferences(): SaveOutcome {
+  const outcome = clearDeviceValue(STORAGE_KEY);
+  current = defaultPreferences;
+  lastSave = outcome;
+  notify();
+  return outcome;
+}

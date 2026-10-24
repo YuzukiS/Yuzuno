@@ -1,6 +1,15 @@
-import { useState } from "react";
 import { shortcutModifier } from "./api";
-import { readPreferences, returnSends, savePreferences, type SaveResult, type SendKey } from "./device-preferences";
+import {
+  preferencesReadable,
+  restoreDefaultPreferences,
+  returnSends,
+  savePreferences,
+  useDevicePreferences,
+  useDevicePreferencesSave,
+  type SendKey,
+} from "./device-preferences";
+import type { SaveOutcome } from "./device-storage";
+import { SaveStatus } from "./SaveStatus";
 import { touchKeyboard } from "./touch-input";
 import "./device-preferences.css";
 
@@ -17,18 +26,21 @@ const choices: { value: SendKey; label: string; note: (touch: boolean) => string
   { value: "modEnter", label: `${shortcutModifier}+Return sends`, note: () => "Return makes a new line." },
 ];
 
+/** Storage this browser won't even read: nothing shown is a saved choice. */
+const UNREADABLE: SaveOutcome = {
+  saved: false,
+  reason: "blocked",
+  detail: "this browser doesn’t let Yuzuno store settings here",
+};
+
 /** How a message is sent from the conversation's composer, on this device
- * (T-189). The choice applies at once; the editor says whether it was kept
- * here, and never "Saved" when the browser refused it. */
+ * (T-189). The choice applies at once; whether it was saved here is said as
+ * Appearance says it (SaveStatus), never "Saved" when the browser refused. */
 export function InputPreferencesSection() {
-  const [preferences, setPreferences] = useState(readPreferences);
-  const [saved, setSaved] = useState<SaveResult | null>(null);
+  const preferences = useDevicePreferences();
+  const save = useDevicePreferencesSave();
   const touch = touchKeyboard();
-  function choose(sendKey: SendKey) {
-    const next = { ...preferences, sendKey };
-    setPreferences(next);
-    setSaved(savePreferences(next));
-  }
+  const choose = (sendKey: SendKey) => savePreferences({ ...preferences, sendKey });
   return (
     <section className="settings-section input-preferences" aria-labelledby="settings-input-title">
       <header className="settings-section-heading">
@@ -63,14 +75,13 @@ export function InputPreferencesSection() {
           {shortcutModifier}+Return always sends and Shift+Return always makes a new line. While an input method is
           composing, Return is the input method's.
         </p>
-        {saved && (
-          <p className={saved.ok ? "settings-saved" : "settings-save-failed"} role={saved.ok ? "status" : "alert"}>
-            {saved.ok
-              ? "Saved on this device."
-              : `Not saved: ${saved.reason}. It applies until this page closes.`}
-          </p>
-        )}
       </div>
+      <SaveStatus
+        outcome={save ?? (preferencesReadable() ? null : UNREADABLE)}
+        scope="this device"
+        onRetry={() => savePreferences(preferences)}
+        onRestoreDefaults={restoreDefaultPreferences}
+      />
     </section>
   );
 }
