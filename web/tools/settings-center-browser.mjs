@@ -141,6 +141,56 @@ try {
   await page.screenshot({ path: resolve(output, 'settings-320x300.png') });
   check('320x300 software-keyboard viewport: all categories in picker, editable object choice, focused control and hit-tested action');
   await closeDialog();
+  await page.setViewportSize({ width: 320, height: 900 });
+  await open();
+  await page.getByRole('tab', { name: 'Appearance & interaction' }).click();
+  const appearance = page.locator('.appearance-settings');
+  assert.match(await appearance.getByRole('status').innerText(), /Using the defaults/);
+  const protectedKeys = await page.evaluate(() => ({
+    selected: localStorage.getItem('yuzuno.selected'),
+    draft: localStorage.getItem('yuzuno.composer.v1:cedar'),
+  }));
+  await page.evaluate(() => {
+    const set = Storage.prototype.setItem, remove = Storage.prototype.removeItem;
+    window.settingsFixtureRefusal = { save: true, reset: false };
+    Storage.prototype.setItem = function(key, value) {
+      if (key === 'yuzuno.appearance' && window.settingsFixtureRefusal.save) throw new DOMException('Fixture quota', 'QuotaExceededError');
+      return set.call(this, key, value);
+    };
+    Storage.prototype.removeItem = function(key) {
+      if (key === 'yuzuno.appearance' && window.settingsFixtureRefusal.reset) throw new DOMException('Fixture blocked', 'SecurityError');
+      return remove.call(this, key);
+    };
+  });
+  await appearance.getByRole('radio', { name: 'Dark Low light' }).check();
+  assert.match(await appearance.getByRole('alert').innerText(), /Not saved on this device/);
+  assert.equal(await page.evaluate(() => localStorage.getItem('yuzuno.appearance')), null);
+  await closeDialog();
+  await open();
+  await page.getByRole('tab', { name: 'Appearance & interaction' }).click();
+  assert.equal(await appearance.getByRole('radio', { name: 'Dark Low light' }).isChecked(), true);
+  await appearance.getByRole('alert').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: resolve(output, 'appearance-save-refused-320.png') });
+  await page.evaluate(() => { window.settingsFixtureRefusal.save = false; });
+  await appearance.getByRole('button', { name: 'Try again' }).click();
+  assert.match(await appearance.getByRole('status').innerText(), /^Saved on this device$/);
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('yuzuno.appearance')).theme), 'dark');
+  check('320px: refused appearance save keeps the selected preview after reopening; retry persists only after storage permits it');
+  await page.evaluate(() => { window.settingsFixtureRefusal.reset = true; });
+  await appearance.getByRole('button', { name: 'Restore defaults' }).click();
+  await appearance.getByRole('button', { name: 'Try again' }).click();
+  assert.match(await appearance.getByRole('alert').innerText(), /Not saved on this device/);
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('yuzuno.appearance')).theme), 'dark');
+  await page.evaluate(() => { window.settingsFixtureRefusal.reset = false; });
+  await appearance.getByRole('button', { name: 'Try again' }).click();
+  assert.match(await appearance.getByRole('status').innerText(), /^Defaults restored on this device$/);
+  assert.equal(await page.evaluate(() => localStorage.getItem('yuzuno.appearance')), null);
+  assert.deepEqual(await page.evaluate(() => ({
+    selected: localStorage.getItem('yuzuno.selected'),
+    draft: localStorage.getItem('yuzuno.composer.v1:cedar'),
+  })), protectedKeys);
+  check('appearance reset retry removes this override, preserves the selected Agent and draft, and never saves a defaults object');
+  await closeDialog();
   assert.ok(!calls.some((call) => call.method !== 'GET' && /\/(settings|context\/apply|claude\/auto-continue|jobs\/budget|remote-access)(\/|$)/.test(call.path)), 'Navigation never saves, applies or connects');
   assert.deepEqual(errors, []);
   check('no setting writes, native Apply, remote-access changes or page errors');
