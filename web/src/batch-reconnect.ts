@@ -110,12 +110,13 @@ export function forgetStale(workspace: string, needed: ReadonlySet<string>) {
   });
 }
 
-/** On closing the dialog: answers already read go; failures and what is
- * still on its way stay, with the selection. */
+/** On closing the dialog: answers and skips already read go; failures and
+ * what is still on its way stay, with the selection. */
 export function forgetSettled(workspace: string) {
   write(workspace, (state) => {
     const outcomes = new Map(state.outcomes);
-    for (const [id, outcome] of outcomes) if (outcome.state === "done" && !state.selected.has(id)) outcomes.delete(id);
+    for (const [id, outcome] of outcomes)
+      if ((outcome.state === "done" && !state.selected.has(id)) || outcome.state === "skipped") outcomes.delete(id);
     return { ...state, outcomes };
   });
 }

@@ -322,6 +322,14 @@ test("each queued Agent is checked again before it is sent: closed, on another s
   ], "skipped, said so, and not chosen again");
   assert.equal(page.summary(), "3 reconnected · 3 skipped");
   assert.equal(page.window.settled, 3, "read again after each request only");
+  // Read once: closing lets the skips go. Closed D and connected F are not
+  // listed again, and E reads as it is now.
+  page.document.querySelector('[aria-label="Close dialog"]').click();
+  await tick();
+  page.trigger().click();
+  await tick();
+  assert.deepEqual(page.rows(), ["A [ ] Offline", "B [ ] Offline", "C [ ] Offline", "E [ ] Offline"]);
+  assert.equal(page.summary(), "");
   page.close();
 });
 
