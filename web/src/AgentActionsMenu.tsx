@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { MessageSquare, MoreHorizontal, RotateCw, Settings2, SlidersHorizontal, Square } from "lucide-react";
+import { MoreHorizontal, RotateCw, Settings2, SlidersHorizontal, Square } from "lucide-react";
 import { agentMenuItems, type AgentActionHandlers, type AgentMenuAction, type AgentMenuItem } from "./agent-actions";
 import type { Agent } from "./types";
 import "./agent-actions.css";
@@ -30,7 +30,6 @@ interface OpenMenu {
 }
 
 const icons: Record<AgentMenuAction, typeof RotateCw> = {
-  open: MessageSquare,
   reconnect: RotateCw,
   check: RotateCw,
   interrupt: Square,
@@ -168,9 +167,6 @@ export function AgentActionsMenu({
     // A view it opens takes the focus; otherwise focus returns.
     close(item.action === "reconnect" || item.action === "check" || item.action === "interrupt");
     switch (item.action) {
-      case "open":
-        handlers.open(target.id);
-        break;
       case "reconnect":
       case "check":
         void handlers.reconnect(target.id);

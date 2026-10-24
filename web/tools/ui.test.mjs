@@ -111,6 +111,7 @@ async function mount({
   compactResponse,
   skillsResponse,
   interruptResponse,
+  reconnectResponse,
 } = {}) {
   const calls = [];
   const eventUrls = [];
@@ -158,6 +159,7 @@ async function mount({
     if (url.endsWith("/settings") && settingsResponse) return settingsResponse(url, init);
     if (url.endsWith("/compact") && compactResponse) return compactResponse(url, init);
     if (url.endsWith("/interrupt") && interruptResponse) return interruptResponse(url, init);
+    if (url.includes("/reconnect") && reconnectResponse) return reconnectResponse(url, init);
     if (url.endsWith("/codex/skills") && skillsResponse) return skillsResponse(url, init);
     if (url.endsWith("/models") && modelsResponse) return modelsResponse(url, init);
     if (url.includes("/api/artifact?") && artifactResponse)
@@ -3499,6 +3501,33 @@ test("the Agent action menu takes Escape: it closes and the running turn is not 
     await pause();
     assert.equal(page.calls.filter((c) => c.url.endsWith("/interrupt")).length, 1);
     assert.equal(page.calls.filter((c) => c.url.includes("/messages")).length, 0);
+  } finally {
+    page.close();
+  }
+});
+test("a reconnect already on its way is not sent again from another control: the notice and the menu share it (T-184)", async () => {
+  let release;
+  const page = await mount({
+    status: "offline",
+    agentFields: { threadId: "thread-a", connectionState: "disconnected" },
+    reconnectResponse: () => new Promise((resolve) => (release = resolve)),
+  });
+  try {
+    const notice = await until(() => page.document.querySelector(".recovery-notice button"), "the offline notice offers Reconnect");
+    assert.equal(notice.textContent, "Reconnect");
+    notice.click();
+    await until(() => release, "the notice's reconnect was sent");
+    page.document.querySelector('[aria-label="Conversation actions"]').click();
+    await pause();
+    page.document.querySelector('[role="menuitem"][data-action="reconnect"]').click();
+    await pause();
+    const reconnects = () => page.calls.filter((c) => c.url.includes("/reconnect"));
+    assert.equal(reconnects().length, 1, "the menu waited for the notice's request");
+    release({ ok: true, status: 200, json: async () => ({}), text: async () => "{}" });
+    await pause();
+    assert.equal(reconnects().length, 1);
+    assert.ok(reconnects()[0].url.endsWith("/api/agents/a/reconnect?view=summary"));
+    assert.equal(page.calls.filter((c) => c.url.includes("/messages")).length, 0, "nothing was sent to the Agent");
   } finally {
     page.close();
   }

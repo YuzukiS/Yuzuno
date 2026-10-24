@@ -25,8 +25,8 @@ try {
 import {createRoot} from 'react-dom/client';
 import {AgentRailRow, LONG_PRESS_MS} from ${src("AgentRailRow.tsx")};
 import {AgentActionsMenu} from ${src("AgentActionsMenu.tsx")};
-import {agentMenuItems, once} from ${src("agent-actions.ts")};
-import {post, reconnectAgent} from ${src("api.ts")};
+import {agentMenuItems} from ${src("agent-actions.ts")};
+import {interruptAgent, reconnectAgent} from ${src("api.ts")};
 const root = createRoot(document.getElementById('root'));
 window.agentMenuItems = agentMenuItems;
 window.LONG_PRESS_MS = LONG_PRESS_MS;
@@ -40,10 +40,9 @@ window.addEventListener('keydown', event => {
 });
 // As App's handlers do, by the Agent ID the menu gives.
 const handlers = {
-  open: id => window.done.push('open:' + id),
-  reconnect: id => once(id, 'reconnect', () => reconnectAgent(id))
+  reconnect: id => reconnectAgent(id)
     .then(() => window.done.push('reconnected:' + id), e => window.failed.push(id + ': ' + e.message)),
-  interrupt: id => once(id, 'interrupt', () => post('/agents/' + encodeURIComponent(id) + '/interrupt'))
+  interrupt: id => interruptAgent(id)
     .then(() => window.done.push('interrupted:' + id), e => window.failed.push(id + ': ' + e.message)),
   settings: id => window.done.push('settings:' + id),
   manage: id => window.done.push('manage:' + id),
@@ -103,23 +102,23 @@ const actions = (items) => [...items].map((item) => `${item.action}${item.disabl
 test("it offers only what applies to the Agent as it is", () => {
   const page = mount();
   const menu = (rest) => actions(page.window.agentMenuItems(agent("a", rest)));
-  assert.deepEqual(menu({}), ["open:Open", "settings:Agent settings…", "manage:Manage…"]);
+  assert.deepEqual(menu({}), ["settings:Agent settings…", "manage:Manage…"]);
   assert.deepEqual(menu({ status: "offline", connectionState: "disconnected" }),
-    ["open:Open", "reconnect:Reconnect", "settings:Agent settings…", "manage:Manage…"]);
+    ["reconnect:Reconnect", "settings:Agent settings…", "manage:Manage…"]);
   assert.deepEqual(menu({ status: "uncertain", connectionState: "unconfirmed" }),
-    ["open:Open", "check:Reconnect and check", "settings:Agent settings…", "manage:Manage…"]);
+    ["check:Reconnect and check", "settings:Agent settings…", "manage:Manage…"]);
   assert.deepEqual(menu({ status: "offline", connectionState: "connecting" }),
-    ["open:Open", "reconnect (disabled):Reconnecting…", "settings:Agent settings…", "manage:Manage…"]);
-  assert.deepEqual(menu({ status: "working" }), ["open:Open", "interrupt:Interrupt current turn", "settings:Agent settings…", "manage:Manage…"]);
-  assert.deepEqual(menu({ status: "waiting" }), ["open:Open", "interrupt:Interrupt current turn", "settings:Agent settings…", "manage:Manage…"]);
+    ["reconnect (disabled):Reconnecting…", "settings:Agent settings…", "manage:Manage…"]);
+  assert.deepEqual(menu({ status: "working" }), ["interrupt:Interrupt current turn", "settings:Agent settings…", "manage:Manage…"]);
+  assert.deepEqual(menu({ status: "waiting" }), ["interrupt:Interrupt current turn", "settings:Agent settings…", "manage:Manage…"]);
   // Closed: it reopens from Manage, never reconnects or interrupts here.
-  assert.deepEqual(menu({ status: "offline", connectionState: "disconnected", closedAt: "now" }), ["open:Open", "manage:Manage…"]);
+  assert.deepEqual(menu({ status: "offline", connectionState: "disconnected", closedAt: "now" }), ["manage:Manage…"]);
   // No session to reconnect to; OpenCode has no Agent settings.
-  assert.deepEqual(menu({ status: "offline", connectionState: "disconnected", threadId: undefined }), ["open:Open", "settings:Agent settings…", "manage:Manage…"]);
-  assert.deepEqual(menu({ harness: "opencode", opencodeSessionId: "s", threadId: undefined }), ["open:Open", "manage:Manage…"]);
+  assert.deepEqual(menu({ status: "offline", connectionState: "disconnected", threadId: undefined }), ["settings:Agent settings…", "manage:Manage…"]);
+  assert.deepEqual(menu({ harness: "opencode", opencodeSessionId: "s", threadId: undefined }), ["manage:Manage…"]);
   // A remote Agent reconnects through the same request.
   assert.deepEqual(menu({ status: "offline", connectionState: "disconnected", threadId: undefined, remote: { machine: { id: "m", name: "Box" } } }),
-    ["open:Open", "reconnect:Reconnect", "settings:Agent settings…", "manage:Manage…"]);
+    ["reconnect:Reconnect", "settings:Agent settings…", "manage:Manage…"]);
   page.close();
 });
 
@@ -135,17 +134,17 @@ test("its button opens it by click or keys, keys move through it, and Escape clo
   assert.ok(page.menu(), "it opened");
   assert.equal(trigger.getAttribute("aria-expanded"), "true");
   assert.equal(trigger.getAttribute("aria-controls"), page.menu().id);
-  assert.equal(page.document.activeElement.dataset.action, "open", "focus is on its first entry");
+  assert.equal(page.document.activeElement.dataset.action, "interrupt", "focus is on its first entry");
   page.key(page.document.activeElement, "ArrowDown");
-  assert.equal(page.document.activeElement.dataset.action, "interrupt");
+  assert.equal(page.document.activeElement.dataset.action, "settings");
   page.key(page.document.activeElement, "End");
   assert.equal(page.document.activeElement.dataset.action, "manage");
   page.key(page.document.activeElement, "ArrowDown");
-  assert.equal(page.document.activeElement.dataset.action, "open", "it wraps around");
+  assert.equal(page.document.activeElement.dataset.action, "interrupt", "it wraps around");
   page.key(page.document.activeElement, "ArrowUp");
   assert.equal(page.document.activeElement.dataset.action, "manage");
   page.key(page.document.activeElement, "Home");
-  assert.equal(page.document.activeElement.dataset.action, "open");
+  assert.equal(page.document.activeElement.dataset.action, "interrupt");
   page.key(page.document.activeElement, "Escape");
   await tick();
   assert.ok(page.menu() === null, "Escape closed it");
@@ -275,10 +274,8 @@ test("each entry acts once on the Agent it was opened on, and sends no message",
   page.item("settings").click();
   await open("a");
   page.item("manage").click();
-  await open("a");
-  page.item("open").click();
   await tick();
-  assert.deepEqual([...page.window.done.slice(2)], ["interrupted:b", "settings:b", "manage:a", "open:a"]);
+  assert.deepEqual([...page.window.done.slice(2)], ["interrupted:b", "settings:b", "manage:a"]);
   assert.ok(page.calls.every((c) => !c.url.includes("/messages")), "no message was sent");
   page.close();
 });

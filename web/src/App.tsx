@@ -57,6 +57,7 @@ import {
   openDesktopConnection,
   post,
   reconnectAgent,
+  interruptAgent,
   shortcutModifier,
 } from "./api";
 import { nativeControl } from "./slash-commands";
@@ -116,7 +117,7 @@ import { latestTurnWithEdits } from "./changes";
 import { CodexPlanUsage } from "./CodexPlanUsage";
 import { AgentManagement, type AgentAction } from "./AgentManagement";
 import { AgentActionsMenu } from "./AgentActionsMenu";
-import { once, type AgentActionHandlers } from "./agent-actions";
+import type { AgentActionHandlers } from "./agent-actions";
 import { useConversationSend } from "./useConversationSend";
 import { ClarificationHost } from "./intelligent-ui/ClarificationHost";
 import { AgentRailRow, summaryOrigin, workingFolder } from "./AgentRailRow";
@@ -1092,7 +1093,7 @@ export function App() {
     setInterrupting(true);
     setActionError("");
     try {
-      await post(`/agents/${encodeURIComponent(selected)}/interrupt`);
+      await interruptAgent(selected);
       setNotice("Interrupt requested. Your conversation is preserved.");
       refresh();
     } catch (e) {
@@ -1172,7 +1173,7 @@ export function App() {
   // An Agent's action menu (T-184), in the list and the conversation header.
   // Each entry acts on the Agent the menu was opened on, never on whichever
   // is selected by then; a reconnect or interrupt already running for that
-  // Agent is not sent again.
+  // Agent is not sent again (api.ts).
   // Said where it is seen when the reply comes: in that Agent's conversation
   // if it is on screen, otherwise naming the Agent.
   const agentName = (id: string) => workspace?.agents.find((a) => a.id === id)?.name || "the agent";
@@ -1185,14 +1186,13 @@ export function App() {
     if (id !== selected || homeOpen || (phone && phoneList)) openFromList(id);
   };
   const agentActions: AgentActionHandlers = {
-    open: showAgent,
     reconnect: (id) =>
-      once(id, "reconnect", () => reconnectAgent(id)).then(refresh, (error) => {
+      reconnectAgent(id).then(refresh, (error) => {
         refresh();
         menuFailed(id, "reconnect")(error);
       }),
     interrupt: (id) =>
-      once(id, "interrupt", () => post(`/agents/${encodeURIComponent(id)}/interrupt`)).then(() => {
+      interruptAgent(id).then(() => {
         setNotice(
           shownConversation.current === id
             ? "Interrupt requested. Your conversation is preserved."
