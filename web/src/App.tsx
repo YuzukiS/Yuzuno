@@ -57,6 +57,7 @@ import {
   openDesktopConnection,
   post,
   reconnectAgent,
+  interruptAgent,
   shortcutModifier,
 } from "./api";
 import { nativeControl } from "./slash-commands";
@@ -115,6 +116,8 @@ import { CodexTerminalsDialog } from "./CodexTerminals";
 import { latestTurnWithEdits } from "./changes";
 import { CodexPlanUsage } from "./CodexPlanUsage";
 import { AgentManagement, type AgentAction } from "./AgentManagement";
+import { AgentActionsMenu } from "./AgentActionsMenu";
+import type { AgentActionHandlers } from "./agent-actions";
 import { useConversationSend } from "./useConversationSend";
 import { ClarificationHost } from "./intelligent-ui/ClarificationHost";
 import { AgentRailRow, summaryOrigin, workingFolder } from "./AgentRailRow";
@@ -347,6 +350,16 @@ export function App() {
     agentId: string;
     sequence: number;
   } | null>(null);
+  // An Agent action menu's "Manage…" and "Agent settings…" (T-184), held
+  // until that Agent's conversation is shown: its settings dialog takes only
+  // a request made after it appeared.
+  const [requestActions, setRequestActions] = useState<{
+    agentId: string;
+    sequence: number;
+  } | null>(null);
+  const [settingsFor, setSettingsFor] = useState<string | null>(null);
+  // A menu action that failed for an Agent other than the one shown.
+  const [menuError, setMenuError] = useState("");
   const [historyReading, setHistoryReading] = useState(false);
   // Where a source was opened from: Home leads back to Home.
   const [sourceOrigin, setSourceOrigin] = useState<"home" | "rail">(
@@ -418,6 +431,9 @@ export function App() {
     top: number;
   } | null>(null);
   currentSelected.current = selected;
+  // The Agent whose conversation is on screen now, for a reply that comes later.
+  const shownConversation = useRef<string | null>(null);
+  shownConversation.current = homeOpen || listShown ? null : selected;
   const scopeWorkspace = useRef("");
   const scopeRef = useRef<ProjectScope>(ALL_PROJECTS);
   const workspaceRef = useRef(workspace);
@@ -703,7 +719,9 @@ export function App() {
       : agent?.status === "uncertain"
         ? "Send to check the previous result first"
         : agent?.status === "offline"
-          ? "Send a message to resume this session"
+          ? recovery === "offline"
+            ? "Reconnect above, or send a message to resume this session"
+            : "Send a message to resume this session"
           : null;
   const logicalRunningTurn = busy
     ? logicalTurns
@@ -924,6 +942,12 @@ export function App() {
     }
   }, [notice]);
   useEffect(() => {
+    if (menuError) {
+      const timer = setTimeout(() => setMenuError(""), 8000);
+      return () => clearTimeout(timer);
+    }
+  }, [menuError]);
+  useEffect(() => {
     followHeld.current = sourceJump || !!artifact;
   }, [sourceJump, artifact]);
   useEffect(() => {
@@ -1069,7 +1093,7 @@ export function App() {
     setInterrupting(true);
     setActionError("");
     try {
-      await post(`/agents/${encodeURIComponent(selected)}/interrupt`);
+      await interruptAgent(selected);
       setNotice("Interrupt requested. Your conversation is preserved.");
       refresh();
     } catch (e) {
@@ -1146,6 +1170,54 @@ export function App() {
     else selectAgent(id);
     if (phone) requestAnimationFrame(() => phoneBack.current?.focus());
   }
+  // An Agent's action menu (T-184), in the list and the conversation header.
+  // Each entry acts on the Agent the menu was opened on, never on whichever
+  // is selected by then; a reconnect or interrupt already running for that
+  // Agent is not sent again (api.ts).
+  // Said where it is seen when the reply comes: in that Agent's conversation
+  // if it is on screen, otherwise naming the Agent.
+  const agentName = (id: string) => workspace?.agents.find((a) => a.id === id)?.name || "the agent";
+  const menuFailed = (id: string, what: string) => (error: unknown) => {
+    if (shownConversation.current === id) setActionError(errorText(error));
+    else setMenuError(`Couldn’t ${what} ${agentName(id)}: ${errorText(error)}`);
+  };
+  // Shown already (its own header's menu): nothing to navigate.
+  const showAgent = (id: string) => {
+    if (id !== selected || homeOpen || (phone && phoneList)) openFromList(id);
+  };
+  const agentActions: AgentActionHandlers = {
+    reconnect: (id) =>
+      reconnectAgent(id).then(refresh, (error) => {
+        refresh();
+        menuFailed(id, "reconnect")(error);
+      }),
+    interrupt: (id) =>
+      interruptAgent(id).then(() => {
+        setNotice(
+          shownConversation.current === id
+            ? "Interrupt requested. Your conversation is preserved."
+            : `Interrupt requested for ${agentName(id)}. The conversation is preserved.`,
+        );
+        refresh();
+      }, menuFailed(id, "interrupt")),
+    settings: (id) => {
+      showAgent(id);
+      setSettingsFor(id);
+    },
+    manage: (id) => {
+      showAgent(id);
+      setRequestActions((v) => ({ agentId: id, sequence: (v?.sequence || 0) + 1 }));
+    },
+  };
+  useEffect(() => {
+    if (!settingsFor || settingsFor !== selected) return;
+    setSettingsFor(null);
+    setModelRequest({ model: "", nonce: Date.now() });
+  }, [settingsFor, selected]);
+  // Taken by that Agent's management once it is shown (its effect runs first).
+  useEffect(() => {
+    if (requestActions && requestActions.agentId === selected) setRequestActions(null);
+  }, [requestActions, selected]);
   function selectAgent(id: string, turnId?: string) {
     setPhoneList(false);
     // Reopening a conversation returns where it was left (T-166).
@@ -2021,6 +2093,7 @@ export function App() {
                 a.status === "idle"
               }
               onSelect={() => openFromList(a.id)}
+              actions={agentActions}
             />
             );
             // All projects, grouped as Settings chooses; a project's own
@@ -2219,6 +2292,8 @@ export function App() {
                   onChanged={agentChanged}
                   onRead={markReviewed}
                   requestReopen={requestReopen}
+                  requestActions={requestActions}
+                  actionsButton={false}
                   projectControl={
                     <AgentProjectPicker
                       agent={agent}
@@ -2247,6 +2322,7 @@ export function App() {
                     />
                   }
                 />
+                <AgentActionsMenu agent={agent} handlers={agentActions} className="conversation-action" label="Conversation actions" />
               </div>
             </div>
             {!closed && (
@@ -3294,6 +3370,12 @@ export function App() {
         <div className="toast" role="status">
           <Check size={15} />
           {notice}
+        </div>
+      )}
+      {menuError && (
+        <div className="toast toast-error" role="alert">
+          <CircleAlert size={15} />
+          {menuError}
         </div>
       )}
       <HandoffDropStrip />
