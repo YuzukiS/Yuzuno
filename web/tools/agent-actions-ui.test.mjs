@@ -97,7 +97,8 @@ function mount(respond = () => ({})) {
     close: () => window.close(),
   };
 }
-const actions = (items) => items.map((item) => `${item.action}${item.disabled ? " (disabled)" : ""}:${item.label}`);
+// Copied out of the page's realm: deepEqual compares prototypes.
+const actions = (items) => [...items].map((item) => `${item.action}${item.disabled ? " (disabled)" : ""}:${item.label}`);
 
 test("it offers only what applies to the Agent as it is", () => {
   const page = mount();
@@ -158,7 +159,7 @@ test("its button opens it by click or keys, keys move through it, and Escape clo
   await tick();
   assert.ok(page.menu() === null, "Tab closes it");
   assert.equal(page.calls.length, 0);
-  assert.deepEqual(page.window.opened, [], "opening the menu did not open the Agent");
+  assert.deepEqual([...page.window.opened], [], "opening the menu did not open the Agent");
   page.close();
 });
 
@@ -176,7 +177,7 @@ test("a right-click opens it where the pointer is; a press elsewhere closes it",
   page.pointer(page.document.body, "pointerdown", { pointerType: "mouse" });
   await tick();
   assert.ok(page.menu() === null);
-  assert.deepEqual(page.window.opened, []);
+  assert.deepEqual([...page.window.opened], []);
   assert.equal(page.calls.length, 0);
   page.close();
 });
@@ -196,7 +197,7 @@ test("a long-press opens it and the lift does not also open the Agent; a scroll,
   page.pointer(name(), "pointerup", { pointerType: "touch" });
   select().click();
   await tick();
-  assert.deepEqual(page.window.opened, [], "the lift did not open the Agent");
+  assert.deepEqual([...page.window.opened], [], "the lift did not open the Agent");
   page.key(page.document.activeElement, "Escape");
   await tick();
   // A scroll: the finger moves, then the browser cancels the pointer.
@@ -214,7 +215,7 @@ test("a long-press opens it and the lift does not also open the Agent; a scroll,
   select().click();
   await tick(hold);
   assert.ok(page.menu() === null);
-  assert.deepEqual(page.window.opened, ["a"]);
+  assert.deepEqual([...page.window.opened], ["a"]);
   // A mouse held down is no long-press.
   page.pointer(name(), "pointerdown", { pointerType: "mouse", clientX: 30, clientY: 20 });
   await tick(hold);
@@ -222,7 +223,7 @@ test("a long-press opens it and the lift does not also open the Agent; a scroll,
   page.pointer(name(), "pointerup", { pointerType: "mouse" });
   select().click();
   await tick();
-  assert.deepEqual(page.window.opened, ["a", "a"], "a click after a mouse press is not swallowed");
+  assert.deepEqual([...page.window.opened], ["a", "a"], "a click after a mouse press is not swallowed");
   assert.equal(page.calls.length, 0);
   page.close();
 });
@@ -240,7 +241,7 @@ test("a long-press then a mouse click on the same row opens it: the swallow is c
   page.pointer(name, "pointerdown", { pointerType: "mouse" });
   page.row("a").querySelector(".agent-select").click();
   await tick();
-  assert.deepEqual(page.window.opened, ["a"]);
+  assert.deepEqual([...page.window.opened], ["a"]);
   page.close();
 });
 
@@ -264,7 +265,7 @@ test("each entry acts once on the Agent it was opened on, and sends no message",
   assert.deepEqual(page.calls.map((c) => `${c.method} ${c.url}`), ["POST /api/agents/a/reconnect?view=summary"]);
   release();
   await tick();
-  assert.deepEqual(page.window.done, ["reconnected:a", "reconnected:a"]);
+  assert.deepEqual([...page.window.done], ["reconnected:a", "reconnected:a"]);
   // Another Agent's entries act on that one.
   await open("b");
   page.item("interrupt").click();
@@ -277,7 +278,7 @@ test("each entry acts once on the Agent it was opened on, and sends no message",
   await open("a");
   page.item("open").click();
   await tick();
-  assert.deepEqual(page.window.done.slice(2), ["interrupted:b", "settings:b", "manage:a", "open:a"]);
+  assert.deepEqual([...page.window.done.slice(2)], ["interrupted:b", "settings:b", "manage:a", "open:a"]);
   assert.ok(page.calls.every((c) => !c.url.includes("/messages")), "no message was sent");
   page.close();
 });
@@ -299,7 +300,7 @@ test("a disabled entry runs nothing, and a failure is reported for that Agent", 
   page.item("reconnect").click();
   await tick();
   await tick();
-  assert.deepEqual(page.window.failed, ["b: Could not start Codex"]);
+  assert.deepEqual([...page.window.failed], ["b: Could not start Codex"]);
   // A failed request may be tried again.
   page.document.querySelector('[aria-label="Actions for B"]').click();
   await tick();
@@ -322,6 +323,6 @@ test("a menu opened for one Agent closes when its control comes to show another"
   await tick();
   assert.ok(page.menu() === null, "A's menu closed instead of acting on B");
   assert.equal(page.calls.length, 0);
-  assert.deepEqual(page.window.done, []);
+  assert.deepEqual([...page.window.done], []);
   page.close();
 });
