@@ -1,7 +1,7 @@
 //! T-120: a native request's resolution and a thread status change are
 //! committed as metadata (`apply_metadata_event`), without copying a long
-//! record, and leave what applying them to the whole record leaves; so is a
-//! thread's start (T-140).
+//! record, and leave what applying them to the whole record leaves; so are a
+//! thread's start and an MCP server's startup status (T-140).
 use super::*;
 
 fn record(status: &str, running: bool) -> AgentDetail {
@@ -59,6 +59,8 @@ fn a_resolution_or_status_change_on_the_metadata_leaves_what_the_whole_record_le
         ("thread/status/changed", json!({"threadId":"thread-a","status":{"type":"systemError"}})),
         ("thread/status/changed", json!({"threadId":"thread-a","status":{"type":"active","activeFlags":[]}})),
         ("thread/status/changed", json!({"threadId":"thread-a","status":{"type":"idle"}})),
+        ("mcpServer/startupStatus/updated", json!({"threadId":"thread-a","name":"docs","status":"starting","error":null})),
+        ("mcpServer/startupStatus/updated", json!({"threadId":"thread-a","name":"docs","status":"failed","error":"exited"})),
     ];
     let mut checked = 0;
     for status in ["waiting", "working", "idle", "error", "offline", "uncertain"] {
@@ -87,7 +89,7 @@ fn a_resolution_or_status_change_on_the_metadata_leaves_what_the_whole_record_le
             }
         }
     }
-    assert_eq!(checked, 6 * 2 * 8 * 7);
+    assert_eq!(checked, 6 * 2 * 8 * 9);
 }
 
 /// A harmless stdin sink standing in for the native connection.
@@ -302,4 +304,74 @@ async fn a_thread_started_is_written_as_metadata_and_writes_what_the_whole_recor
             rpc.close();
         }
     }
+}
+
+/// An MCP server's startup status changes no field of the record; applied to
+/// the whole record it settled the status and accepted every receipt not yet
+/// accepted or rejected by its user message, as every event does, an unknown
+/// one too. It is committed as the metadata (T-140): a held record is
+/// changed in place, and, held or not, beside each receipt state, it writes
+/// what the whole-record commit (`record_applied`, as `on_event` made it)
+/// wrote.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_mcp_startup_status_is_written_as_metadata_and_writes_what_the_whole_record_commit_wrote() {
+    let method = "mcpServer/startupStatus/updated";
+    let p = json!({"threadId":"thread-a","name":"docs","status":"ready","error":null});
+    // The record once written, and the journal.
+    let written = |ws: &Workspace| {
+        ws.store.release_for_test("a");
+        let d = ws.store.detail("a").unwrap();
+        let mut meta = metadata(&d);
+        meta["agent"]["rev"] = json!(0);
+        (meta, serde_json::to_value(&d.turns).unwrap(), kinds(ws))
+    };
+    // A second receipt: none; sending, its message in the second Turn;
+    // uncertain, its message in no Turn; unknown, its message in a Turn.
+    let receipts: [Option<(&str, bool)>; 4] = [None, Some(("sending", true)), Some(("uncertain", false)), Some(("unknown", true))];
+    let mut checked = 0;
+    for status in ["working", "waiting", "idle", "uncertain"] {
+        for running in [true, false] {
+            for pending in [vec![], vec![approval("p", 7, 1)]] {
+                for receipt in receipts {
+                    for held in [true, false] {
+                        let mut d = record(status, running);
+                        d.pending = pending.clone();
+                        d.agent.pending_count = pending.len() as u64;
+                        if let Some((state, shown)) = receipt {
+                            if shown {
+                                d.turns[1]["items"] = json!([{"id":"u2","type":"userMessage","clientId":"next","content":[{"type":"text","text":"next"}]}]);
+                            }
+                            d.message_receipts.push(serde_json::from_value(json!({"input":{"clientMessageId":"next","text":"next"},"status":state})).unwrap());
+                        }
+                        let (dir, other_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+                        let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+                        let other = Workspace::new(other_dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+                        for w in [&ws, &other] {
+                            w.store.insert(&d).unwrap();
+                            w.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+                            if !held {
+                                w.store.release_for_test("a");
+                            }
+                        }
+                        let rpc = connect(&ws, 1).await;
+                        let copy = ws.store.held_for_test("a");
+                        let before = in_place();
+                        ws.on_event("a", 1, json!({"method":method,"params":p}));
+                        let case = format!("{status} running={running} pending={} receipt={receipt:?} held={held}", pending.len());
+                        if let Some(copy) = &copy {
+                            assert!(ws.store.held_for_test("a").is_some_and(|now| Arc::ptr_eq(&now, copy)), "{case}: the record was copied");
+                            assert_eq!(in_place(), before + 1, "{case}");
+                        }
+                        other.store.record_applied("a", method, method, &p).unwrap();
+                        let (mine, theirs) = (written(&ws), written(&other));
+                        assert_eq!(mine, theirs, "{case}");
+                        assert_eq!(mine.2.last(), Some(&(method.to_owned(), p.clone())), "{case}");
+                        rpc.close();
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 4 * 2 * 2 * 4 * 2);
 }
