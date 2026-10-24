@@ -42,8 +42,9 @@ export function InputPreferencesSection() {
           <h3 id="settings-input-title">Sending messages</h3>
           <p>Which key sends from a conversation. It is kept on this device only.</p>
         </div>
+        {/* As the shortcuts help names it; short enough for a phone at the largest text. */}
         <span className="settings-current" title="In effect now">
-          Return {returnSends(preferences.sendKey, touch) ? "sends" : "makes a new line"}
+          Return: {returnSends(preferences.sendKey, touch) ? "Send" : "New line"}
         </span>
       </header>
       <div className="settings-group">

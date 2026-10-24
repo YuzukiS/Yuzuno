@@ -307,14 +307,15 @@ async function openHarness(screen, fontSize, label, { refuse = false } = {}) {
     const request = route.request(), url = new URL(request.url());
     if (url.protocol !== "http:") return route.continue();
     assert.equal(url.origin, ORIGIN);
-    const body = { "/": '<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/harness.css"></head><body><div id="root"></div><script src="/harness.js"></script></body></html>',
+    const body = { "/": '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/harness.css"></head><body><div id="root"></div><script src="/harness.js"></script></body></html>',
       "/harness.js": harness.js, "/harness.css": harness.css }[url.pathname];
     if (url.pathname === "/favicon.ico") return route.fulfill({ status: 404, body: "" });
     if (body === undefined) {
       report.requests.push({ case: label, method: request.method(), path: url.pathname, answered: 404, unexpected: true });
       return route.fulfill({ status: 404, body: "" });
     }
-    await route.fulfill({ body, contentType: types[extname(url.pathname) || ".html"] });
+    // UTF-8 said: the sections have ’, ⌘, ↵, ↑ and ↓.
+    await route.fulfill({ body, contentType: `${types[extname(url.pathname) || ".html"]}; charset=utf-8` });
   });
   try {
     await page.goto(`${ORIGIN}/`);
@@ -420,7 +421,7 @@ async function keyboardCases() {
       }
       let f = await focused(page);
       assert.equal(f.value, "auto", `${label}: Tab reaches the choice in effect, Automatic (${path.join(" → ")})`);
-      assert.deepEqual(await said(page), { status: "Using the defaults; nothing is saved on this device yet", alert: null, current: "Return sends", checked: "auto" });
+      assert.deepEqual(await said(page), { status: "Using the defaults; nothing is saved on this device yet", alert: null, current: "Return: Send", checked: "auto" });
       assert.ok(f.visible && f.ring !== "none", `${label}: the focused choice shows a ring (${f.ring})`);
       await page.screenshot({ path: resolve(output, `${screen}-${fontSize}-focus.png`) });
       await page.keyboard.press("ArrowDown");
@@ -428,11 +429,11 @@ async function keyboardCases() {
       f = await focused(page);
       assert.equal(f.value, "enter", `${label}: the arrow moves to Return sends`);
       assert.equal(await stored(page), '{"sendKey":"enter"}');
-      assert.deepEqual(await said(page), { status: "Saved on this device", alert: null, current: "Return sends", checked: "enter" });
+      assert.deepEqual(await said(page), { status: "Saved on this device", alert: null, current: "Return: Send", checked: "enter" });
       await page.keyboard.press("ArrowDown");
       await page.waitForTimeout(100);
       assert.equal(await stored(page), '{"sendKey":"modEnter"}');
-      assert.deepEqual(await said(page), { status: "Saved on this device", alert: null, current: "Return makes a new line", checked: "modEnter" });
+      assert.deepEqual(await said(page), { status: "Saved on this device", alert: null, current: "Return: New line", checked: "modEnter" });
       await page.keyboard.press("Tab");
       f = await focused(page);
       assert.equal(f.text, "Restore defaults", `${label}: Tab then reaches Restore defaults`);
@@ -440,7 +441,7 @@ async function keyboardCases() {
       await page.keyboard.press("Enter");
       await page.waitForTimeout(100);
       assert.equal(await stored(page), null, `${label}: Restore defaults removes this device's choice`);
-      assert.deepEqual(await said(page), { status: "Defaults restored on this device", alert: null, current: "Return sends", checked: "auto" });
+      assert.deepEqual(await said(page), { status: "Defaults restored on this device", alert: null, current: "Return: Send", checked: "auto" });
       check(`keyboard: ${screen}, ${fontSize} px: Tab, arrows and Return choose, save and restore the defaults; focus shown`, { tabs: path });
     } finally {
       await context.close();
@@ -455,7 +456,7 @@ async function refusedCase() {
     await page.locator('input[name="input-send-key"][value="enter"]').check();
     await page.waitForTimeout(100);
     assert.deepEqual(await said(page), {
-      status: null, current: "Return sends", checked: "enter",
+      status: null, current: "Return: Send", checked: "enter",
       alert: "Not saved on this device: this browser’s storage for Yuzuno is full. Your choice applies in this window until you close or reload it.",
     });
     assert.equal(await stored(page), null);

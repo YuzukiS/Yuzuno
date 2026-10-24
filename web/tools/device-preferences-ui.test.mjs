@@ -99,13 +99,13 @@ test("a chosen send key is saved on this device and said so; Restore defaults re
   try {
     w.showEditor();
     assert.equal(checked(w), "auto");
-    assert.equal(current(w), "Return sends");
+    assert.equal(current(w), "Return: Send");
     assert.equal(status(w), "Using the defaults; nothing is saved on this device yet");
     choose(w, "modEnter");
     await tick();
     assert.equal(w.localStorage.getItem("yuzuno.preferences"), '{"sendKey":"modEnter"}');
     assert.equal(checked(w), "modEnter");
-    assert.equal(current(w), "Return makes a new line");
+    assert.equal(current(w), "Return: New line");
     assert.equal(status(w), "Saved on this device");
     assert.equal(alert(w), null);
     // Restore defaults removes this device's choice: Automatic again.
@@ -113,7 +113,7 @@ test("a chosen send key is saved on this device and said so; Restore defaults re
     await tick();
     assert.equal(w.localStorage.getItem("yuzuno.preferences"), null);
     assert.equal(checked(w), "auto");
-    assert.equal(current(w), "Return sends");
+    assert.equal(current(w), "Return: Send");
     assert.equal(status(w), "Defaults restored on this device");
     assert.equal(w.store.readPreferences().sendKey, "auto");
   } finally {
@@ -150,7 +150,7 @@ test("a save the browser refuses is said, never 'Saved', and the choice holds fo
     assert.equal(w.localStorage.getItem("yuzuno.preferences"), null, "nothing was kept");
     // Held for this window: the editor shows the choice in effect.
     assert.equal(checked(w), "enter");
-    assert.equal(current(w), "Return sends");
+    assert.equal(current(w), "Return: Send");
     // Storage back: Try again saves it.
     w.Storage.prototype.setItem = w.real.setItem;
     button(w, "Try again").click();
