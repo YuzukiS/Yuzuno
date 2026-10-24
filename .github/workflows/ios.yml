@@ -1,11 +1,12 @@
 # Builds the iOS app (T-170) for the iOS Simulator, unsigned, on a standard
 # GitHub-hosted Apple silicon runner. Every `tauri ios` command needs macOS
 # with Xcode (Tauri's CLI reference); a Simulator build needs no signing.
-# A pull request that changes ios/ (or the Core rule it shares with the
-# desktop app) runs the iOS app's tests and builds it. Nothing is uploaded;
-# the app's checksum is in the run's summary, as for desktop-macos.yml's pull
-# requests. Never an installable build for an iPhone, which would need the
-# user's own Apple signing. No secret is used. See ios/README.md.
+# A pull request that changes ios/, or what it uses from desktop/ and web/
+# (the Core rule, jsdom's lock and guard, the icon), runs the iOS app's tests
+# and builds it. Nothing is uploaded; the app's checksum is in the run's
+# summary, as for desktop-macos.yml's pull requests. Never an installable
+# build for an iPhone, which would need the user's own Apple signing. No
+# secret is used. See ios/README.md.
 name: iOS
 
 on:
@@ -14,6 +15,11 @@ on:
     paths:
       - ios/**
       - desktop/src/health.rs
+      - web/package.json
+      - web/package-lock.json
+      - web/tools/jsdom-guard.mjs
+      - web/tools/jsdom-limits.mjs
+      - web/src/assets/yuzu-character.png
       - .github/workflows/ios.yml
       - .github/scripts/hosted-guard.sh
       - .github/scripts/disk-precheck.sh
