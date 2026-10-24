@@ -11,7 +11,8 @@
 //   the search and create buttons; the pill drops under the title only in a
 //   rail too narrow for all three.
 // Production bundle in an isolated browser with an explicit API fixture; no
-// Core, daily window or writes.
+// Core, daily window or writes, other than the reading handoff (T-170),
+// answered and counted apart.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
@@ -23,7 +24,7 @@ const dist = resolve(process.env.YUZUNO_UI_DIST);
 assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../acceptance/agent-list");
 await mkdir(output, { recursive: true });
-const report = { checks: [], errors: [], unexpected: [], screenshots: [] };
+const report = { checks: [], errors: [], unexpected: [], readingWrites: [], screenshots: [] };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -87,6 +88,15 @@ const detail = {
   ],
 };
 
+// What this device has saved before the check. The docks' limits are its own,
+// none of them a default, so a save that dropped or reset them shows.
+const seededAppearance = {
+  theme: "light",
+  fontSize: 16,
+  palette: "garden",
+  dock: { jobs: 3, actions: 4, subAgents: 1 },
+  turnDock: { numbers: 8, bars: 2 },
+};
 const browser = await chromium.launch({
   headless: true,
   executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium",
@@ -94,21 +104,27 @@ const browser = await chromium.launch({
 let page;
 try {
   page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
-  await page.addInitScript(() => {
+  await page.addInitScript((appearance) => {
     window.EventSource = class {
       close() {}
     };
     // Seeded once: a reload keeps what Settings saved.
     if (!localStorage.getItem("agent-list-fixture")) {
-      localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
+      localStorage.setItem("yuzuno.appearance", JSON.stringify(appearance));
       localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
       localStorage.setItem("agent-list-fixture", "seeded");
     }
-  });
+  }, seededAppearance);
   await page.route("**/*", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     assert.equal(url.hostname, "yuzuno-agent-list.test");
+    // Where this browser left an Agent (T-170): written on leaving, by design;
+    // answered and counted apart. Nothing else is written.
+    if (url.pathname === "/api/agents/a/reading") {
+      if (request.method() !== "GET") report.readingWrites.push(`${request.method()} ${url.pathname}`);
+      return route.fulfill({ json: request.method() === "GET" ? { handoff: null } : { accepted: true, sourceSeq: 0 } });
+    }
     assert.equal(request.method(), "GET", `No writes: ${request.method()} ${url.pathname}`);
     const json = {
       "/api/workspace": { agents, runtime: { connected: true }, defaultCwd: "/fixture" },
@@ -180,8 +196,12 @@ try {
   const settings = page.getByRole("dialog");
   const openAppearance = async () => {
     await page.getByRole("button", { name: "Settings and updates" }).click();
-    await page.locator("#settings-tab-appearance").click();
-    await settings.getByRole("heading", { name: "Appearance" }).waitFor();
+    await settings.waitFor();
+    // A narrow window lists the categories in a picker, not as tabs (T-189).
+    const picker = settings.getByRole("combobox", { name: "Settings category", exact: true });
+    if (await picker.isVisible()) await picker.selectOption("appearance");
+    else await settings.locator("#settings-tab-appearance").click();
+    await settings.getByRole("heading", { name: "Appearance", exact: true }).waitFor();
   };
   const closeSettings = async () => {
     await page.keyboard.press("Escape");
@@ -315,6 +335,7 @@ try {
   const field = settings.getByRole("group", { name: "Agent list" });
   await field.scrollIntoViewIfNeeded();
   assert.equal(await field.getByRole("radio", { name: /Detailed/ }).isChecked(), true);
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("yuzuno.appearance")));
   await field.getByText("Compact", { exact: true }).click();
   assert.equal(await field.getByRole("radio", { name: /Compact/ }).isChecked(), true);
   await settings.locator(".settings-current", { hasText: "Compact list" }).waitFor();
@@ -323,8 +344,17 @@ try {
   await closeSettings();
   assert.equal(await page.evaluate(() => document.documentElement.dataset.agentList), "compact");
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("yuzuno.appearance")));
-  assert.deepEqual(saved, { theme: "light", fontSize: 16, palette: "garden", agentList: "compact", projectGroups: "headers" });
-  check("Settings → Appearance → Agent list → Compact is saved on this device", { saved });
+  // The five choices this list is drawn with, exactly; and the agent list is
+  // the only one that changed: every other saved setting, the docks' limits
+  // among them, is kept as it was.
+  assert.deepEqual(
+    { theme: saved.theme, fontSize: saved.fontSize, palette: saved.palette, agentList: saved.agentList, projectGroups: saved.projectGroups },
+    { theme: "light", fontSize: 16, palette: "garden", agentList: "compact", projectGroups: "headers" });
+  assert.notEqual(stored.agentList, "compact");
+  for (const [key, value] of Object.entries(stored))
+    if (key !== "agentList") assert.deepEqual(saved[key], value, `${key} is kept`);
+  assert.deepEqual({ dock: saved.dock, turnDock: saved.turnDock }, { dock: seededAppearance.dock, turnDock: seededAppearance.turnDock });
+  check("Settings → Appearance → Agent list → Compact is saved on this device; the other saved settings, the docks' limits among them, are kept", { before: stored, saved });
 
   // Compact: names and status, no line under them; "needs you" and the
   // unread mark still show; every row is shorter, none wider than the rail.
@@ -394,6 +424,10 @@ try {
   await page.keyboard.press("ArrowLeft");
   assert.equal(await settings.getByRole("group", { name: "Agent list" }).getByRole("radio", { name: /Detailed/ }).isChecked(), true);
   assert.equal(await settings.locator(".settings-current", { hasText: "Compact list" }).count(), 0);
+  // Saved too, and the docks' limits still the device's own.
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("yuzuno.appearance")).agentList === "detailed");
+  const detailedAgain = await page.evaluate(() => JSON.parse(localStorage.getItem("yuzuno.appearance")));
+  assert.deepEqual({ dock: detailedAgain.dock, turnDock: detailedAgain.turnDock }, { dock: seededAppearance.dock, turnDock: seededAppearance.turnDock });
   // At 390 px the Settings column still holds both choices.
   await page.setViewportSize({ width: 390, height: 844 });
   const fits = await settings.evaluate((el) => {
@@ -410,7 +444,7 @@ try {
   at = byId(await rows());
   assert.match(at.a.summary || "", /^Reported · /);
   assert.match(at.b.summary || "", /^Update · /);
-  check("the keyboard brings back the detailed list; the choice fits at 390 px", { fits });
+  check("the keyboard brings back the detailed list, the docks' limits still kept; the choice fits at 390 px", { fits, saved: detailedAgain });
 
   assert.deepEqual(report.errors, []);
   report.status = "passed";
