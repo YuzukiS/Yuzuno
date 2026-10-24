@@ -102,7 +102,7 @@ test("New Agent defaults says what each value is and where it comes from; saving
   });
   page.window.renderDefaults();
   await until(() => select(page, "Harness for new Agents"), "the editor");
-  const text = () => page.document.querySelector("#settings-agent-defaults").textContent;
+  const text = () => page.document.querySelector("#settings-agent-defaults")?.textContent ?? "";
   assert.match(text(), /Built in: Codex/);
   assert.match(text(), /Built in: Ask for approval/);
   assert.match(text(), /Built in: Ask before actions/);
@@ -151,7 +151,8 @@ test("Code review says whether this Workspace chose its reviewer; Use built-in d
       : { harness: "codex", model: "gpt-6.1-sol", source, builtIn: { harness: "codex", model: "gpt-6.1-sol" } }];
   });
   page.window.renderReview();
-  const text = () => page.document.querySelector("#settings-review").textContent;
+  // Empty until the section has loaded, so waiting on it retries rather than throws.
+  const text = () => page.document.querySelector("#settings-review")?.textContent ?? "";
   await until(() => /Set for this Workspace/.test(text()), "the reviewer's source");
   assert.match(text(), /Built in: Codex · GPT-6.1 Sol/, "what Use built-in returns to");
   button(page, "Use built-in").click();
