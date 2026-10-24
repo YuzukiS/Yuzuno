@@ -16,9 +16,11 @@ import { NOTIFICATION_PREFS_KEY, defaultNotificationPrefs, parseNotificationPref
 // Appearance (T-187).
 const listeners = new Set<() => void>();
 let current: NotificationPrefs | null = null;
-/** What this visit's last write did: a save or a reset; null before one. */
-export type NotificationPrefsWrite = { outcome: SaveOutcome; action: "save" | "reset" };
+/** What this visit's last write did: a save or a reset; null before one.
+ * Each write is numbered, so the same refusal twice is shown twice (T-189). */
+export type NotificationPrefsWrite = { outcome: SaveOutcome; action: "save" | "reset"; attempt: number };
 let lastWrite: NotificationPrefsWrite | null = null;
+let attempts = 0;
 let stopWatching: (() => void) | null = null;
 const changed = () => listeners.forEach((listener) => listener());
 const subscribe = (listener: () => void) => {
@@ -56,7 +58,7 @@ export function notificationPrefsStored(): DeviceValueState {
 export function saveNotificationPrefs(prefs: NotificationPrefs): SaveOutcome {
   const outcome = saveDeviceValue(NOTIFICATION_PREFS_KEY, prefs);
   current = prefs;
-  lastWrite = { outcome, action: "save" };
+  lastWrite = { outcome, action: "save", attempt: ++attempts };
   changed();
   return outcome;
 }
@@ -71,7 +73,7 @@ export const changeNotificationPrefs = (change: (prefs: NotificationPrefs) => No
 export function restoreDefaultNotificationPrefs(): SaveOutcome {
   const outcome = clearDeviceValue(NOTIFICATION_PREFS_KEY);
   current = defaultNotificationPrefs;
-  lastWrite = { outcome, action: "reset" };
+  lastWrite = { outcome, action: "reset", attempt: ++attempts };
   changed();
   return outcome;
 }

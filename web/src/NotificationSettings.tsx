@@ -227,6 +227,7 @@ export function NotificationSettings() {
       <SaveStatus
         outcome={write?.outcome ?? null}
         action={write?.action}
+        attempt={write?.attempt}
         stored={notificationPrefsStored()}
         scope="this device"
         onRetry={() => retryNotificationPrefsWrite()}

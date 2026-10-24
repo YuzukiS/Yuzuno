@@ -62,13 +62,15 @@ async function mount({ permission = "default", answer = "granted", shows = "show
     virtualConsole: vc,
   });
   const { window } = dom;
-  const page = { dom, window, doc: window.document, errors, requests: [], asked: 0, shown: [] };
+  const page = { dom, window, doc: window.document, errors, requests: [], asked: 0, shown: [], scrolls: 0 };
   window.fetch = (url) => {
     page.requests.push(String(url));
     return Promise.reject(new Error("no request expected"));
   };
   if (!window.isSecureContext) Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
-  window.HTMLElement.prototype.scrollIntoView = () => {};
+  window.HTMLElement.prototype.scrollIntoView = () => {
+    page.scrolls += 1;
+  };
   class Recorder {
     static permission = permission;
     static requestPermission() {
@@ -200,12 +202,17 @@ test("kinds, preview and mute are this device's choices; muting keeps them", asy
   page.close();
 });
 
-test("storage that refuses the save says so; the choice applies in this window", async () => {
+test("storage that refuses the save says so, each time; the choice applies in this window", async () => {
   const page = await mount({ permission: "granted", storage: "blocked" });
   page.box("Notify me on this device").click();
   await until(() => page.doc.querySelector('[role="alert"]'), "the refusal");
   assert.match(page.doc.querySelector('[role="alert"]').textContent, /Not saved on this device/);
   assert.equal(page.box("Notify me on this device").checked, true, "in effect in this window");
   assert.equal(page.window.localStorage.getItem("yuzuno.notifications"), null);
+  // The same refusal again is brought into view again (T-189's per-write attempt).
+  const first = page.scrolls;
+  assert.ok(first >= 1, "the refusal was brought into view");
+  page.box("Mute on this device").click();
+  await until(() => page.scrolls > first, "the second refusal brought into view");
   page.close();
 });
