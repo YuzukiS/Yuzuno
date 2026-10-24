@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Archive,
   ArrowDownToLine,
   ArrowRight,
   Check,
@@ -24,6 +25,7 @@ import { DiagnosticsCopy } from "./RecoveryPage";
 import { HistoryComposition } from "./HistoryComposition";
 import { ReviewSettings } from "./ReviewSettings";
 import { HomePresentationSettings } from "./HomePresentationSettings";
+import { WorkspaceBackup } from "./WorkspaceBackup";
 import { api, errorText, HttpError } from "./api";
 import {
   loadedRelease,
@@ -982,18 +984,20 @@ export function WorkspaceUpdates({
           {tab === "appearance" && <AppearanceSection />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
+          {tab === "backup" && <WorkspaceBackup active={open} />}
         </div>
       </div>
     </Modal>
   );
 }
 
-type SettingsTab = "updates" | "appearance" | "home" | "review";
+type SettingsTab = "updates" | "appearance" | "home" | "review" | "backup";
 const settingsTabs: { id: SettingsTab; label: string; Icon: typeof RefreshCw }[] = [
   { id: "updates", label: "Updates", Icon: RefreshCw },
   { id: "appearance", label: "Appearance", Icon: Palette },
   { id: "home", label: "Home", Icon: House },
   { id: "review", label: "Code review", Icon: GitPullRequest },
+  { id: "backup", label: "Backup", Icon: Archive },
 ];
 // Shared by every mount, so React's double effects and quick reopenings
 // don't check twice.
