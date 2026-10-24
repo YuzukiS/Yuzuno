@@ -2280,3 +2280,109 @@ fn machine_id_agent_is_where_the_submitting_agent_runs_and_the_job_keeps_that_ma
     let error = lab.ws.store.resolve_machine(Some("r2"), input(&lab, "gone", "true", json!({"machineId":"agent"}))).unwrap_err();
     assert!(error.to_string().contains("spare box, which is no longer registered"), "{error}");
 }
+
+/// A Mac over SSH (T-186): its helper names the platform at hello, and from
+/// then on the attempt is told what a Mac gives: limits reserved for this
+/// Core's admission and recorded, never held (macOS has no cgroup), and no
+/// pause. The stand-in runs the real helper here and only says "Darwin" in its
+/// hello reply, so everything else is the helper's own Linux behaviour.
+#[tokio::test]
+async fn a_mac_is_told_its_limits_are_declared_only_and_that_it_cannot_pause() {
+    let lab = lab();
+    let path = |name: &str| lab.dir.path().join(name);
+    let at = format!("HOME={} YUZUNO_JOBS_MACHINE_ID_FILE={} YUZUNO_JOBS_CAPABILITIES_FILE={}",
+        path("home").display(), path("machine-a").display(), path("capabilities.json").display());
+    let mac = script(path("ssh-mac"), format!(
+        "#!/bin/sh\n{ARGS}request=$(cat)\nreply=$(printf '%s' \"$request\" | {at} /bin/sh -c \"$1\")\ncode=$?\nprintf '%s\\n' \"$reply\" | sed 's/\"platform\": \"Linux\"/\"platform\": \"Darwin\"/'\nexit $code\n"));
+    // Before any attempt reached it, nothing is known of the machine.
+    assert_eq!(lab.ws.store.machine_platform("m1").unwrap(), None);
+    let submitted = submit(&lab, "on-mac", "sleep 2; echo once >> runs.txt");
+    assert_eq!(submitted["capabilities"]["platform"], "Linux", "said at submit, before the machine answered");
+    let running = until(&lab, &mac, &submitted, |j| j["status"] == "running").await;
+    assert_eq!(running["remote"]["platform"], "Darwin", "{running}");
+    assert_eq!(running["capabilities"], remote::darwin_capabilities(), "corrected at hello");
+    let reason = running["reason"].as_str().unwrap();
+    assert!(reason.ends_with("memory declared only, not limited; CPU declared only, not limited; macOS holds no CPU or RAM limit (it has no cgroup): they are reserved for this Core's admission and recorded only"), "{reason}");
+    assert_eq!(remote::pause_refusal(&running).unwrap(),
+        "Pause is not available for jobs on lab box: it is a Mac, where an attempt has no scope of its own (macOS has no cgroup), and pause freezes only an attempt's own scope; nothing was changed");
+    let done = until(&lab, &mac, &submitted, |j| j["reserved"] == false).await;
+    assert_eq!(done["status"], "succeeded", "{done}");
+    assert_eq!(done["capabilities"]["platform"], "macOS");
+    assert_eq!(starts(&lab), 1);
+    // A later submit is told what the machine was when it last answered.
+    assert_eq!(lab.ws.store.machine_platform("m1").unwrap().as_deref(), Some("Darwin"));
+    // The same machine answering as Linux again: its next attempt says Linux.
+    let linux = submit(&lab, "on-linux", "echo once >> runs.txt");
+    let ended = until(&lab, &lab.ssh, &linux, |j| j["reserved"] == false).await;
+    assert_eq!((ended["status"].as_str(), ended["remote"]["platform"].as_str()), (Some("succeeded"), Some("Linux")), "{ended}");
+    assert_eq!(ended["capabilities"], remote::capabilities());
+    assert_eq!(lab.ws.store.machine_platform("m1").unwrap().as_deref(), Some("Linux"));
+}
+
+/// What a Mac's attempt can be told it gets: the Linux statement's inputs,
+/// artifacts and processes, with its own limits and no pause; nothing held
+/// promised when the platform is not known (T-186).
+#[test]
+fn a_mac_is_described_as_holding_no_limits_and_no_pause() {
+    let (linux, mac) = (remote::capabilities(), remote::darwin_capabilities());
+    assert_eq!(remote::capabilities_for(None), remote::unknown_capabilities());
+    assert_eq!(remote::capabilities_for(Some("Linux")), linux);
+    assert_eq!(remote::capabilities_for(Some("Darwin")), mac);
+    assert_eq!(mac["platform"], "macOS");
+    assert!(mac["limits"].as_str().unwrap().contains("macOS holds none of them: it has no cgroup"));
+    assert!(mac["pause"].as_str().unwrap().starts_with("unavailable"));
+    for same in ["executor", "slots", "admission", "gpu", "inputs", "artifacts", "outputs", "processes", "bootId"] {
+        assert_eq!(mac[same], linux[same], "{same}");
+    }
+}
+
+/// A Mac without the Command Line Tools has Apple's stand-in for python3,
+/// which only asks for them: unusable, so the job is not started rather than
+/// waiting for an answer that never comes (T-186; the messages are Apple's
+/// xcode-select and xcrun ones, not measured on such a Mac).
+#[test]
+fn apples_stand_in_for_python3_is_not_a_python3() {
+    for stderr in [
+        "xcode-select: note: No developer tools were found, requesting install.\nIf developer tools are located at a non-default location on disk, use `sudo xcode-select --switch path`",
+        "xcrun: error: invalid active developer path (/Library/Developer/CommandLineTools), missing xcrun at: /Library/Developer/CommandLineTools/usr/bin/xcrun",
+    ] {
+        match remote::parse_reply(Some(1), b"", stderr, "n") {
+            remote::Reply::Unusable(why) => assert!(why.starts_with("its python3 is Apple's stand-in, which runs nothing until the Command Line Tools are installed (xcode-select --install)"), "{why}"),
+            other => panic!("{stderr}: {other:?}"),
+        }
+    }
+    // Any other failure there is not this: it may pass.
+    assert!(matches!(remote::parse_reply(Some(1), b"", "Traceback: KeyError", "n"), remote::Reply::Broken(_)));
+}
+
+/// The first job a machine gets, before Core has reached it, is not told the
+/// machine is Linux: what can be held there is not known yet, so no limit is
+/// promised (T-186, Lead 9134). Through job_submit itself: a machine never
+/// reached is unknown, one whose last attempt answered as a Mac is a Mac.
+#[tokio::test]
+async fn a_first_submit_to_a_machine_not_reached_yet_promises_no_limits() {
+    let lab = lab();
+    let path = |name: &str| lab.dir.path().join(name);
+    let at = format!("HOME={} YUZUNO_JOBS_MACHINE_ID_FILE={} YUZUNO_JOBS_CAPABILITIES_FILE={}",
+        path("home").display(), path("machine-a").display(), path("capabilities.json").display());
+    let mac = script(path("ssh-mac"), format!(
+        "#!/bin/sh\n{ARGS}request=$(cat)\nreply=$(printf '%s' \"$request\" | {at} /bin/sh -c \"$1\")\ncode=$?\nprintf '%s\\n' \"$reply\" | sed 's/\"platform\": \"Linux\"/\"platform\": \"Darwin\"/'\nexit $code\n"));
+    // m1 answers once as a Mac (driven here, before job_submit starts the executor's own loop).
+    let earlier = submit(&lab, "earlier", "true");
+    let done = until(&lab, &mac, &earlier, |j| j["reserved"] == false).await;
+    assert_eq!((done["status"].as_str(), done["remote"]["platform"].as_str()), (Some("succeeded"), Some("Darwin")), "{done}");
+    // m2 was never reached.
+    lab.ws.store.add_machine(&RemoteMachine {
+        id: "m2".into(), name: "new box".into(), target: "new-box".into(), codex: "codex".into(),
+        default_cwd: lab.work.to_string_lossy().into_owned(), limit_mode: Some("limited".into()), ..Default::default()
+    }).unwrap();
+    let request = |id: &str, machine: &str| json!({"requestId":id,"taskId":"T-1","name":id,"cwd":lab.work,"argv":["/bin/sh","-c","true"],
+        "env":{"PATH":"/usr/bin:/bin"},"resources":{"cpuMillis":500,"memoryMiB":128,"swapMiB":0},"timeoutSeconds":120,
+        "guardGit":false,"machineId":machine});
+    let first = super::call(lab.ws.clone(), Some("a".into()), "job_submit".into(), request("first-on-new", "m2")).await.unwrap();
+    assert_eq!(first["capabilities"], remote::unknown_capabilities(), "{first}");
+    let limits = first["capabilities"]["limits"].as_str().unwrap();
+    assert!(limits.starts_with("Not known yet") && limits.contains("not as held"), "{limits}");
+    let on_mac = super::call(lab.ws.clone(), Some("a".into()), "job_submit".into(), request("next-on-mac", "m1")).await.unwrap();
+    assert_eq!(on_mac["capabilities"], remote::darwin_capabilities(), "{on_mac}");
+}
