@@ -287,6 +287,10 @@ export function RemoteCreateAgent({
     if (!open) {
       checkRequest.current += 1;
       setChecking(false);
+      // A harness picked in a dialog that was cancelled is not this
+      // Workspace's choice: the next opening starts on the default again.
+      harnessChosen.current = false;
+      setPermission("");
     }
   }, [open]);
 

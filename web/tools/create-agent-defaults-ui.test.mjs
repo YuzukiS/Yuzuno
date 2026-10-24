@@ -164,6 +164,19 @@ test("Codex offers Follow Codex config beside Yuzuno's choices; a choice is the 
   assert.deepEqual([body.harness, body.permissionPreset, "permissionMode" in body], ["codex", "full", false]);
 });
 
+test("a harness picked in a cancelled dialog does not stick: the next opening starts on the default again", async () => {
+  const page = mount(view({ harness: "claude" }));
+  await page.open();
+  await until(() => picked(page, "Harness") === "claude", "the Workspace's default harness");
+  await pick(page, "Harness", "codex");
+  await pick(page, "Permissions", "full");
+  page.window.renderCreate({ open: false, close() {}, defaultCwd: "/workspace", disabled: false, onCreated() {} });
+  await tick();
+  await page.open();
+  await until(() => picked(page, "Harness") === "claude", "the default harness after cancelling");
+  assert.equal(picked(page, "Permissions"), "", "the cancelled permission choice does not stick either");
+});
+
 test("a Core that doesn't report defaults: the dialog works as before and says the default isn't known", async () => {
   const page = mount(null);
   await page.open();
