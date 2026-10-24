@@ -5,6 +5,7 @@
 // 337. Sideways 100dvh is 292 and Safari reported -12. Back upright with the
 // keyboard still open, it reported 377 with no scroll. This is not WebKit:
 // it checks what the app does with those numbers.
+import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
