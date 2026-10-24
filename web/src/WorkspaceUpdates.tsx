@@ -17,6 +17,8 @@ import {
 import type { SettingsEditor } from "./settings-catalog";
 import { SettingsCenter, type SettingsNavigation } from "./SettingsCenter";
 import { AppearanceSection } from "./AppearanceSettings";
+import { InputPreferencesSection } from "./InputPreferences";
+import { ShortcutHelpSection } from "./ShortcutHelp";
 import { Modal } from "./components";
 import { DesktopUpdate } from "./DesktopUpdate";
 import { DiagnosticsCopy } from "./RecoveryPage";
@@ -978,6 +980,8 @@ export function WorkspaceUpdates({
           {tab === "diagnostics" && <DiagnosticsCopy />}
           {tab === "history" && <HistoryComposition />}
           {tab === "appearance" && <AppearanceSection />}
+          {tab === "input" && <InputPreferencesSection />}
+          {tab === "shortcuts" && <ShortcutHelpSection />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
           {tab === "notifications" && <NotificationSettings />}
