@@ -9,7 +9,15 @@
 // the Agent, the state ("closed", "keyboard", "work-open", "turns-open",
 // "closed-again"), the numbers, `failed`: the criteria that state did not
 // meet (none, []), and `unmeasured`: those it could not measure there (the
-// latest reply's, when the conversation is not at its latest). Once, when a conversation is first on screen without the
+// latest reply's, when the conversation is not at its latest; and a control a
+// dialog covers, "(modal: not-applicable)" — a dialog is over the
+// conversation on purpose). `unmeasured` is not `failed` and is not passing
+// either: neither counts as the criterion met. A dialog excuses only "on
+// top", and only for the control it actually covers; the overflow criteria
+// are never waived with it. Each line also carries `dialog` and `keyboard`,
+// so which of those was true is read off the record rather than inferred from
+// a state's name or a screenshot's, and `vvRaw`/`visualHeight`/`clientHeight`
+// beside the rounded `visual`. Once, when a conversation is first on screen without the
 // keyboard, it opens the work panel and then the turn panel with their
 // buttons, and closes each by a click outside it: scripted clicks, not
 // touches, done in about a second, well before the next screenshot. Otherwise
@@ -27,12 +35,26 @@
     return [r.left, r.top, r.width, r.height].map(Math.round);
   };
   const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-  // What a tap at the middle of an element reaches.
+  // A dialog of the app's own (components.tsx's Modal: a Radix
+  // Dialog.Content, role="dialog", beside a .modal-overlay sibling) is on
+  // screen. While one is, it covers the conversation on purpose.
+  const dialog = () => [...document.querySelectorAll('[role="dialog"]')].some(shown);
+  // What a tap at the middle of an element reaches: the element itself
+  // ("self"), nothing at all ("nothing": the middle is outside the viewport,
+  // where elementFromPoint answers null — not the same as being covered), or
+  // what covers it. `modal` says that what it reached belongs to a dialog: the
+  // overlay is a sibling of the dialog box, so closest() has to name both, and
+  // the dialog's own content can be what a tap reaches, not only the overlay.
   const onTop = (el) => {
-    if (!shown(el)) return "hidden";
+    if (!shown(el)) return { hit: "hidden", modal: false };
     const r = el.getBoundingClientRect();
     const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-    return hit && (hit === el || el.contains(hit)) ? "self" : hit ? String(hit.className || hit.tagName).slice(0, 60) : "nothing";
+    if (hit && (hit === el || el.contains(hit))) return { hit: "self", modal: false };
+    if (!hit) return { hit: "nothing", modal: false };
+    return {
+      hit: String(hit.className || hit.tagName).slice(0, 60),
+      modal: !!hit.closest('.modal-overlay, [role="dialog"]'),
+    };
   };
   const post = (value) => {
     const line = JSON.stringify({ probe: "phone-conversation", ms: Math.round(performance.now()), ...value });
@@ -68,7 +90,20 @@
       ["image", '.composer-tools button[aria-label="Add images"]'],
       ["markUp", '.composer-tools button[aria-label="Mark up an image"]'],
       ["mode", ".composer-tools .composer-mode"],
-    ].map(([name, selector]) => { const el = panel.querySelector(selector); return [name, { onTop: onTop(el), box: box(el) }]; }));
+    ].map(([name, selector]) => {
+      const el = panel.querySelector(selector);
+      const reached = onTop(el);
+      return [name, { onTop: reached.hit, modal: reached.modal, box: box(el) }];
+    }));
+    // A control a dialog covers is not measured here rather than failed: the
+    // dialog is meant to be over it. Only a dialog excuses it, and only the
+    // "on top" criterion — nothing else is waived with it.
+    const open = dialog();
+    const needControl = (criterion, control) => {
+      if (control.onTop === "self") return;
+      if (open && control.modal) unmeasured.push(`${criterion} (modal: not-applicable)`);
+      else failed.push(criterion);
+    };
     const work = panel.querySelector(".work-dock"), turns = panel.querySelector(".turn-dock");
     const composer = panel.querySelector(".composer")?.getBoundingClientRect();
     const text = box(panel.querySelector(".conversation-inner"));
@@ -88,11 +123,11 @@
     need("nothing runs off the side", overflow.length === 0);
     if (state === "keyboard") {
       need("no dock button with the keyboard", buttons.length === 0);
-      need("input on top", controls.input.onTop === "self");
-      need("Send on top", controls.send.onTop === "self");
+      needControl("input on top", controls.input);
+      needControl("Send on top", controls.send);
       need("Send in the visual viewport", !!send && !!vv && send.top >= vv.offsetTop - 1 && send.bottom <= vv.offsetTop + vv.height + 1);
     } else {
-      for (const [name, control] of Object.entries(controls)) need(`${name} on top`, control.onTop === "self");
+      for (const [name, control] of Object.entries(controls)) needControl(`${name} on top`, control);
       need("two dock buttons of 44px", buttons.length === 2 && buttons.every((b) => b.offsetWidth >= 44 && b.offsetHeight >= 44));
       need("dock buttons clear of the composer", !!composer && !buttons.some((b) => meets(b.getBoundingClientRect(), composer)));
     }
@@ -134,6 +169,19 @@
       n: ++n, agent: who, state, why, failed, unmeasured, away,
       window: [innerWidth, innerHeight],
       visual: vv ? [vv.width, vv.height, vv.offsetTop].map(Math.round) : null,
+      // The same reading unrounded, with the scale, beside what the layout
+      // made of it: `visual` alone could not tell a short viewport from one
+      // the page had not taken up yet, and -12 is a reading to keep as it
+      // came rather than round into something that looks deliberate.
+      vvRaw: vv ? { offsetTop: vv.offsetTop, height: vv.height, scale: vv.scale } : null,
+      visualHeight: getComputedStyle(document.documentElement).getPropertyValue("--visual-height").trim() || null,
+      clientHeight: document.documentElement.clientHeight,
+      // Whether a dialog is on screen and whether the keyboard is up, so the
+      // two can be read off the record instead of guessed from the state's
+      // name or a screenshot's.
+      dialog: open,
+      keyboard: document.documentElement.hasAttribute("data-keyboard"),
+      focus: document.activeElement ? (document.activeElement.getAttribute("aria-label") || document.activeElement.tagName) : null,
       overflow, text, buttons: buttons.map(box), controls, notice, replyRows, error,
       panel: opened ? box(opened) : null, items,
     });
