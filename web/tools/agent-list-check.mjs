@@ -9,7 +9,7 @@
 //   tab on its left edge.
 // - The rail's title line holds YOUR AGENTS, a small Active / Closed pill and
 //   the search and create buttons; the pill drops under the title only in a
-//   rail too narrow for all three.
+//   rail too narrow for all three. A phone's list is the whole width: one line.
 // Production bundle in an isolated browser with an explicit API fixture; no
 // Core, daily window or writes, other than the reading handoff (T-170),
 // answered and counted apart.
@@ -392,17 +392,19 @@ try {
   await page.setViewportSize({ width: 940, height: 650 });
   for (const row of await rows()) assert.ok(row.summary === null && !row.overflows, JSON.stringify(row));
   await shot("rail-compact-dark-940.png");
-  // The avatar-only rail of the narrowest windows keeps the ring.
+  // A phone's list, the whole width (T-170), keeps the ring.
   await page.setViewportSize({ width: 390, height: 844 });
   seen = await marks();
   assert.ok(seen.inside && seen.ring.content !== "none", `390 px: ${JSON.stringify(seen)}`);
   report.marks.push(seen);
   await shot("rail-compact-dark-390.png");
   report.selection.push(await noTab("dark, 390 px"));
-  // The avatar-only rail: the + button, then the pill as a column, in the rail.
-  const narrow = await heading();
-  assert.ok(narrow.inRail && narrow.pill.top >= narrow.actions.bottom, `390 px title line: ${JSON.stringify(narrow)}`);
-  report.titles.avatarOnly = narrow;
+  // On a phone the list is the whole width, so the Active / Closed pill lies
+  // on the title line with the buttons rather than stacking as in a narrow
+  // sidebar (T-170).
+  const phoneTitle = await heading();
+  assert.ok(phoneTitle.rail === 390 && phoneTitle.inRail && !phoneTitle.overflow && oneLine(phoneTitle), `390 px title line: ${JSON.stringify(phoneTitle)}`);
+  report.titles.phone = phoneTitle;
   await openAppearance();
   await settings.getByRole("group", { name: "Agent list" }).screenshot({ path: resolve(output, "settings-agent-list-dark.png"), animations: "disabled" });
   report.screenshots.push("settings-agent-list-dark.png");
