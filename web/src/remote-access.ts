@@ -154,30 +154,34 @@ export function stateLines(view: RemoteAccessView): StateLine[] {
     },
     {
       label: "Tailscale Serve",
+      // For a conflict Core's detail is the whole sentence, with where the
+      // other entry sends requests; for an error it is the reason. For
+      // Yuzuno's own entry it would repeat the line.
       text:
-        {
-          unchecked: "Not checked yet",
-          absent: "No Yuzuno entry",
-          ours: `Yuzuno's entry on port ${serve.port ?? "?"}${serve.target ? ` → ${serve.target}` : ""}`,
-          sameTargetNotRecorded: `An entry on port ${serve.port ?? "?"} points to Core, but Settings did not make it`,
-          conflict: `Port ${serve.port ?? "?"} is used by another Serve entry; Yuzuno leaves it as it is`,
-          error: "Could not be read",
-        }[serve.state] +
-        // For Yuzuno's own entry the detail repeats the line; for a conflict
-        // or an error it is the reason.
-        (serve.detail && (serve.state === "conflict" || serve.state === "error") ? ` (${serve.detail})` : "") +
-        others,
+        serve.state === "conflict"
+          ? serve.detail ?? `Port ${serve.port ?? "?"} is used by another Serve entry; Yuzuno leaves it as it is`
+          : {
+              unchecked: "Not checked yet",
+              absent: "No Yuzuno entry",
+              ours: `Yuzuno's entry on port ${serve.port ?? "?"}${serve.target ? ` → ${serve.target}` : ""}`,
+              sameTargetNotRecorded: `An entry on port ${serve.port ?? "?"} points to Core, but Settings did not make it`,
+              error: `Could not be read${serve.detail ? ` (${serve.detail})` : ""}`,
+            }[serve.state] + others,
       tone:
         serve.state === "ours" ? "on" : serve.state === "absent" ? "off" : serve.state === "unchecked" ? "unknown" : "warn",
     },
     notYet
       ? {
           label: "Verification",
-          text: unready
-            ? `Not ready: “${verificationStepLabels[unready.id] ?? unready.id}”${unready.detail ? `: ${unready.detail}` : ""}`
-            : ready
-              ? "Not set up; Core's host, Tailscale and HTTPS are ready"
-              : "Not set up",
+          // A Serve port taken by another entry is said on the Serve line;
+          // here, what to do about it.
+          text: unready?.id === "serve" && serve.state === "conflict"
+            ? `Not ready: port ${serve.port ?? "?"} is taken; choose another Serve port under Advanced`
+            : unready
+              ? `Not ready: “${verificationStepLabels[unready.id] ?? unready.id}”${unready.detail ? `: ${unready.detail}` : ""}`
+              : ready
+                ? "Not set up; Core's host, Tailscale and HTTPS are ready"
+                : "Not set up",
           tone: unready ? "warn" : "off",
         }
       : {
