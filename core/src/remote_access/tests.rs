@@ -433,3 +433,51 @@ async fn a_refused_removal_turns_core_off_and_keeps_the_entry_recorded_as_its_ow
     assert_eq!(again["state"], "succeeded", "{again}");
     assert!(lab.fake()["serve"]["TCP"].get("8444").is_none());
 }
+
+/// The page is built on the example views in this file (T-185, Dev 3); a
+/// real view must keep their fields, and the states they list.
+const VIEWS: &str = include_str!("../../../web/tools/fixtures/remote-access-views.json");
+
+fn keys(value: &Value) -> std::collections::BTreeSet<String> {
+    value.as_object().map(|o| o.keys().filter(|k| !k.starts_with('_')).cloned().collect()).unwrap_or_default()
+}
+
+#[tokio::test]
+async fn real_views_keep_the_shape_the_page_is_built_on() {
+    let fixtures: Value = serde_json::from_str(VIEWS).unwrap();
+    let example = &fixtures["appliedVerified"];
+    let lab = lab("wsl");
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    let port = free_port();
+    lab.apply(json!({"requestId": "on", "enabled": true, "localPort": port})).await.unwrap();
+    let real = lab.view().await;
+    let mut known = keys(example);
+    known.extend(keys(&fixtures["remoteEntryReadOnly"]));
+    assert!(keys(&real).is_subset(&known), "fields the page does not know: {:?}", keys(&real).difference(&known).collect::<Vec<_>>());
+    assert!(keys(example).is_subset(&keys(&real)), "fields the page reads but Core does not send: {:?}", keys(example).difference(&keys(&real)).collect::<Vec<_>>());
+    for field in ["support", "saved", "listening", "serve", "tailscale", "verification", "qr", "defaults"] {
+        assert_eq!(keys(&real[field]), keys(&example[field]), "{field}");
+    }
+    for field in ["coreHost", "tailscaleHost"] {
+        assert_eq!(keys(&real["support"][field]), keys(&example["support"][field]), "support.{field}");
+    }
+    let optional: std::collections::BTreeSet<String> = ["error", "notes"].map(String::from).into();
+    let mut op_known = keys(&example["operation"]);
+    op_known.extend(optional);
+    assert!(keys(&real["operation"]).is_subset(&op_known), "{}", real["operation"]);
+    assert_eq!(keys(&real["operation"]["request"]), keys(&example["operation"]["request"]));
+    let ids = |view: &Value| view["verification"]["steps"].as_array().unwrap().iter().map(|s| s["id"].clone()).collect::<Vec<_>>();
+    assert_eq!(ids(&real), ids(example));
+    for step in real["verification"]["steps"].as_array().unwrap() {
+        assert_eq!(keys(step), ["detail", "id", "state"].map(String::from).into());
+    }
+    // The states and steps Core can report, as the page lists them.
+    let list = |name: &str| fixtures[name].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    assert_eq!(list("operationStates"), ["running", "succeeded", "failed", "rolledBack", "uncertain", "interrupted"]);
+    assert_eq!(list("operationSteps"), ["validate", "save", "listen", "serve", "verify", "done"]);
+    assert_eq!(list("serveStates"), ["unchecked", "absent", "ours", "sameTargetNotRecorded", "conflict", "error"]);
+    // Through the phone entry: read-only, with its reason.
+    let remote = view(&lab.ws, false).await.unwrap();
+    assert_eq!(remote["canChange"], false);
+    assert!(remote["readOnlyReason"].is_string());
+}
