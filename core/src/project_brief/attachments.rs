@@ -44,7 +44,7 @@ pub(super) struct Staged {
 static HELD: Mutex<BTreeMap<PathBuf, usize>> = Mutex::new(BTreeMap::new());
 
 #[derive(Default)]
-pub(super) struct Hold(Vec<PathBuf>);
+pub(crate) struct Hold(Vec<PathBuf>);
 
 impl Hold {
     fn add(&mut self, path: PathBuf) {
@@ -65,6 +65,33 @@ impl Drop for Hold {
             }
         }
     }
+}
+
+/// Holds every snapshot file now in the cache until the Hold drops, so that
+/// `collect_garbage` removes none of them meanwhile. A Workspace backup
+/// (T-192) takes it before copying the database, then copies the files that
+/// copy names: none can go between the two.
+pub(crate) fn hold_all(data_dir: &Path) -> Result<Hold> {
+    let cache = dir(data_dir);
+    let mut hold = Hold::default();
+    // Under the lock collect_garbage scans with: no removal is half-way.
+    let mut held = HELD.lock().unwrap();
+    let entries = match std::fs::read_dir(&cache) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(hold),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        *held.entry(path.clone()).or_default() += 1;
+        hold.0.push(path);
+    }
+    Ok(hold)
+}
+
+#[cfg(test)]
+pub(crate) fn held(path: &Path) -> bool {
+    HELD.lock().unwrap().contains_key(path)
 }
 
 /// Kind and MIME type by extension; None for one this does not know.
@@ -286,7 +313,7 @@ pub(super) fn prune(db: &Connection, project: &str, cap: u64) -> Result<bool> {
 
 /// Deletes snapshot files no section keeps and no write holds. Returns the
 /// bytes and files removed.
-pub(super) fn collect_garbage(store: &Store, cache: &Path) -> Result<(u64, usize)> {
+pub(crate) fn collect_garbage(store: &Store, cache: &Path) -> Result<(u64, usize)> {
     let held = HELD.lock().unwrap();
     let kept: HashSet<String> = {
         let db = store.db.read()?;

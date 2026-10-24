@@ -1,0 +1,59 @@
+.workspace-backup .workspace-backup-row {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* The row's words keep a width of their own: with a large font they move
+   above the folder field instead of shrinking to a word per line. */
+.workspace-backup .workspace-backup-row .settings-row-main {
+  flex: 1 1 220px;
+}
+.workspace-backup .settings-input {
+  flex: 1 1 220px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--input);
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+}
+.workspace-backup-note,
+.workspace-backup-refusal,
+.workspace-backup-error,
+.workspace-backup-precheck,
+.workspace-backup-operation,
+.workspace-backup-recent,
+.workspace-backup-coverage {
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+.workspace-backup-refusal,
+.workspace-backup-error {
+  color: var(--danger, #b42318);
+}
+.workspace-backup-operation {
+  padding: 8px 10px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.3));
+  border-radius: 6px;
+}
+.workspace-backup-operation[data-state="succeeded"] {
+  border-color: var(--success, #2e7d32);
+}
+.workspace-backup-operation-title {
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+.workspace-backup-recent h4 {
+  margin: 0 0 4px;
+  font-size: 0.9em;
+}
+.workspace-backup-recent ul,
+.workspace-backup-result ul,
+.workspace-backup-coverage ul {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+.workspace-backup-limit {
+  margin-top: 8px;
+}

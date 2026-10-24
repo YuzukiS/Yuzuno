@@ -13,6 +13,10 @@
 //! Rust naming: `store::Brief` is an Agent's listed view; everything here is
 //! a Project Brief.
 mod attachments;
+/// A Workspace backup's hold on Brief attachment files (T-192).
+pub(crate) use attachments::hold_all as hold_attachments;
+#[cfg(test)]
+pub(crate) use attachments::{collect_garbage as collect_attachment_garbage, held as attachment_held};
 mod editors;
 mod home;
 mod http;

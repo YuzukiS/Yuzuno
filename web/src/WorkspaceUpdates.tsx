@@ -27,6 +27,7 @@ import { HistoryComposition } from "./HistoryComposition";
 import { ReviewSettings } from "./ReviewSettings";
 import { HomePresentationSettings } from "./HomePresentationSettings";
 import { NotificationSettings } from "./NotificationSettings";
+import { WorkspaceBackup } from "./WorkspaceBackup";
 import { api, errorText, HttpError } from "./api";
 import {
   loadedRelease,
@@ -992,6 +993,7 @@ export function WorkspaceUpdates({
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
           {tab === "notifications" && <NotificationSettings />}
+          {tab === "backup" && <WorkspaceBackup active={open && visible} />}
         </>}
       />
     </Modal>
