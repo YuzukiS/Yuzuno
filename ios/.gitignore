@@ -1,0 +1,3 @@
+/target/
+# Made by `cargo tauri ios init` (see README.md); not kept yet.
+/gen/
