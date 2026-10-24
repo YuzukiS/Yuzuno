@@ -173,10 +173,14 @@ export function runtimeView(read: RuntimeRead, now = Date.now()): RuntimeView {
             : health.value.releaseId === "development"
               ? fact("no", "A development build", "Not installed as a release; updates don't apply to it.")
               : fact("yes", health.value.releaseId),
+        // A Core without its update manager reports neither: not known, not
+        // "not ready" (it answered).
         ready:
-          health.value.apiReady && health.value.storageReady
-            ? fact("yes", "Ready")
-            : fact("no", "Not ready", [!health.value.apiReady && "API", !health.value.storageReady && "storage"].filter(Boolean).join(" and ") + " not ready"),
+          health.value.apiReady === false || health.value.storageReady === false
+            ? fact("no", "Not ready", [health.value.apiReady === false && "API", health.value.storageReady === false && "storage"].filter(Boolean).join(" and ") + " not ready")
+            : health.value.apiReady && health.value.storageReady
+              ? fact("yes", "Ready")
+              : fact("unknown", "Not reported", "This Core doesn't report whether its API and storage are ready."),
       }
     : {
         version: fact("unknown", "Not known", `Core could not be read: ${health.error}`),

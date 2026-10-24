@@ -258,6 +258,19 @@ test("a development Core and a page from another release are said plainly", asyn
   page.close();
 });
 
+test("a Core without its update manager reports no release or readiness: Unknown, not \"not ready\"", async () => {
+  // As /api/health answers when Core runs without the update manager.
+  const page = mount(core({ "/api/health": { product: "yuzuno", application: "yuzuno", version: "0.1.0", workspaceId: "w" } }));
+  page.window.show();
+  await tick();
+  assert.deepEqual(page.facts(page.group("Workspace service")), {
+    Version: "Yes · 0.1.0",
+    Release: "Unknown · Not reported",
+    State: "Unknown · Not reported · This Core doesn't report whether its API and storage are ready.",
+  });
+  page.close();
+});
+
 test("in the desktop app its version is read from the app's own status, never an update check", async () => {
   const page = mount(core(), { desktop: { version: "0.3.0", channel: "installer", unavailable: null, phase: "idle", error: null, receivedBytes: 0, totalBytes: null, available: null } });
   page.window.show();
