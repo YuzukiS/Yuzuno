@@ -409,6 +409,9 @@ const said = (page) => page.evaluate(() => ({
 async function keyboardCases() {
   for (const [screen, fontSize] of [["desktop", 16], ["phone", 24]]) {
     const label = `keyboard alone, ${screen}, ${fontSize} px`;
+    // The phone is a touch screen (with a keyboard attached, here): there
+    // Automatic makes Return a new line.
+    const automatic = screen === "phone" ? "Return: New line" : "Return: Send";
     const { context, page } = await openHarness(screen, fontSize, label);
     try {
       // Tab from where the dialog puts focus to the send key's choices.
@@ -421,7 +424,7 @@ async function keyboardCases() {
       }
       let f = await focused(page);
       assert.equal(f.value, "auto", `${label}: Tab reaches the choice in effect, Automatic (${path.join(" → ")})`);
-      assert.deepEqual(await said(page), { status: "Using the defaults; nothing is saved on this device yet", alert: null, current: "Return: Send", checked: "auto" });
+      assert.deepEqual(await said(page), { status: "Using the defaults; nothing is saved on this device yet", alert: null, current: automatic, checked: "auto" });
       assert.ok(f.visible && f.ring !== "none", `${label}: the focused choice shows a ring (${f.ring})`);
       await page.screenshot({ path: resolve(output, `${screen}-${fontSize}-focus.png`) });
       await page.keyboard.press("ArrowDown");
@@ -441,7 +444,7 @@ async function keyboardCases() {
       await page.keyboard.press("Enter");
       await page.waitForTimeout(100);
       assert.equal(await stored(page), null, `${label}: Restore defaults removes this device's choice`);
-      assert.deepEqual(await said(page), { status: "Defaults restored on this device", alert: null, current: "Return: Send", checked: "auto" });
+      assert.deepEqual(await said(page), { status: "Defaults restored on this device", alert: null, current: automatic, checked: "auto" });
       check(`keyboard: ${screen}, ${fontSize} px: Tab, arrows and Return choose, save and restore the defaults; focus shown`, { tabs: path });
     } finally {
       await context.close();
