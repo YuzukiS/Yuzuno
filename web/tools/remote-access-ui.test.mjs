@@ -211,16 +211,22 @@ test("before it is set up, a check says what is ready, not that the entry failed
   }
 });
 
+/** jsdom has no layout: what the page asks to bring into view, as
+ * [text, options] (options copied out of the page's realm). */
+function recordScrolls(p) {
+  const shown = [];
+  p.window.HTMLElement.prototype.scrollIntoView = function (options) {
+    shown.push([this.textContent, { ...options }]);
+  };
+  return shown;
+}
+
 test("a port out of range is said where it can be seen, every time, and nothing is sent", async () => {
   const p = mount((url) => {
     if (url.endsWith("/check")) return { body: checkedView() };
     return { body: view() };
   });
-  // jsdom has no layout: record what the page asks to bring into view.
-  const shown = [];
-  p.window.HTMLElement.prototype.scrollIntoView = function (options) {
-    shown.push([this.textContent, options]);
-  };
+  const shown = recordScrolls(p);
   try {
     await waitFor(() => button(p, "Check"), "the form");
     button(p, "Check").click();
@@ -230,11 +236,41 @@ test("a port out of range is said where it can be seen, every time, and nothing 
     button(p, "Save and apply").click();
     await waitFor(() => p.alerts().includes(refusal), "the refusal");
     assert.deepEqual(shown, [[refusal, { block: "nearest" }]]);
+    await tick();
+    await tick();
+    assert.equal(shown.length, 1, "once per time it is said");
     // Pressed again after scrolling away: brought into view again.
     button(p, "Save and apply").click();
     await waitFor(() => shown.length === 2, "shown again");
     assert.deepEqual(shown[1], [refusal, { block: "nearest" }]);
     assert.equal(p.applies().length, 0, "nothing sent");
+  } finally {
+    p.close();
+  }
+});
+
+test("a refusal from Core is brought into view once; reading Core again does not scroll", async () => {
+  let current = checkedView();
+  const p = mount((url, method) => {
+    if (url.endsWith("/api/remote-access") && method === "GET") return { body: current };
+    if (url.endsWith("/check")) return { body: current };
+    if (url.includes("/operations/")) return { body: current.operation };
+    current = checkedView({ operation: op("running", "save", { requestId: "someone-else" }) });
+    return exampleError("busy");
+  });
+  const shown = recordScrolls(p);
+  try {
+    await waitFor(() => button(p, "Check"), "the form");
+    button(p, "Check").click();
+    await waitFor(() => !button(p, "Save and apply").disabled, "checked");
+    button(p, "Save and apply").click();
+    await waitFor(() => p.alerts().some((a) => /already running/.test(a)), "the refusal");
+    assert.equal(shown.length, 1);
+    assert.match(shown[0][0], /already running/);
+    // The running change is read about once a second: none of it scrolls.
+    await waitFor(() => p.calls.filter((c) => c.url.includes("/operations/")).length >= 2, "two reads of the change");
+    assert.equal(shown.length, 1, "reading Core again does not scroll");
+    assert.notEqual(p.doc.activeElement, p.doc.querySelector('[role="alert"]'), "focus stays where it was");
   } finally {
     p.close();
   }
