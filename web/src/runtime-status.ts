@@ -6,11 +6,13 @@ import type { Workspace } from "./types";
 import { loadedRelease } from "./updates";
 
 /**
- * The runtime and versions this Workspace runs on (T-191), from what Core
- * and this client already hold: Core's version, each machine's stored last
- * check, Codex's connection on the Core host, the Core host's Jobs, and this
- * client's own version. Reading them signs nothing in, reconnects nothing,
- * updates nothing and runs no check: a check is the Machines page's.
+ * The runtime and versions this Workspace runs on (T-191): Core's version,
+ * each machine's stored last check, Codex's connection on the Core host as
+ * Core holds it now, the Core host's Jobs budget, and this client's own
+ * version. Reading them signs nothing in, reconnects nothing, updates
+ * nothing and runs no machine check (that is the Machines page's). Reading
+ * the Jobs budget may have Core sample the GPUs (at most every ten seconds)
+ * and keep that sample, as the status bar's own reads do.
  */
 
 /** One fact as known: yes, no, or not known, never guessed. */
@@ -38,7 +40,8 @@ export interface JobsBudget {
 
 /** What one read gathered, each with whether it could be read. */
 export interface RuntimeRead {
-  /** When this client read it, its own clock. */
+  /** When this client had all four answers, by its own clock; each was
+   * answered on its own, so this isn't one snapshot. */
   at: string;
   health: { ok: true; value: CoreHealth } | { ok: false; error: string };
   machines: { ok: true; value: WorkspaceMachine[] } | { ok: false; error: string };
@@ -58,8 +61,9 @@ const settle = async <T>(read: () => Promise<T>) => {
   }
 };
 
-/** Reads what is already held; every request is a GET (or the desktop
- * app's local status) and none starts a check. */
+/** Every request is a GET (or the desktop app's local status); none starts
+ * a machine check, a sign-in, a reconnect or an update. The four answers
+ * come separately: `at` is when this client had them all, not one snapshot. */
 export async function readRuntime(signal?: AbortSignal): Promise<RuntimeRead> {
   const invoke = desktopShell.invoke();
   const [health, machines, workspace, budget, desktop] = await Promise.all([
@@ -106,11 +110,10 @@ export interface RuntimeView {
 const HARNESSES = ["codex", "claude"] as const;
 function cliFact(check: HarnessCheck | undefined, machineCheck: MachineCheck | null | undefined): Fact {
   if (!machineCheck) return fact("unknown", "Not checked yet", "Check the machine on the Machines page.");
-  if (!check) {
-    return machineCheck.reachable
-      ? fact("unknown", "Not part of the last check", "The last check didn't look for it.")
-      : fact("unknown", "Not known", "The last check didn't reach this machine.");
-  }
+  // A check that didn't reach the machine says nothing about its CLIs, even
+  // where Core keeps a placeholder entry for one.
+  if (!machineCheck.reachable) return fact("unknown", "Not known", "The last check didn't reach this machine.");
+  if (!check) return fact("unknown", "Not part of the last check", "The last check didn't look for it.");
   if (!check.supported) return fact("no", "Not supported on this machine", check.error);
   const found = check.version ? `Found · ${check.version}` : "Found";
   if (check.found) return fact("yes", found, check.executable);
