@@ -218,6 +218,15 @@ export function saveAppearance(appearance: Appearance): SaveOutcome {
   return outcome;
 }
 
+/** Tries this visit's last write of Appearance again, as it was: a save of
+ * the choice in effect, or a reset that removes this device's choice (not a
+ * save of the defaults). */
+export function retryAppearanceWrite(): SaveOutcome {
+  return lastSave?.action === "reset"
+    ? restoreDefaultAppearance()
+    : saveAppearance(current ?? readAppearance());
+}
+
 /** Back to the defaults on this device: its saved choice is removed. */
 export function restoreDefaultAppearance(): SaveOutcome {
   applyAppearance(defaultAppearance);
