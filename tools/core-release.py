@@ -370,7 +370,7 @@ class Flow:
         upload = release['upload_url'].split('{', 1)[0]
         require(upload.endswith(f"/releases/{release['id']}/assets"), 'Upload URL names another release')
         for path in expected.values():
-            # The content types `gh release upload` gives these three files.
+            # The content types `gh release upload` set on these files in earlier releases.
             kind = {'.json': 'application/json', '.minisig': 'application/octet-stream', '.gz': 'application/x-gtar'}[path.suffix]
             self.api(['--method', 'POST', '-H', f'Content-Type: {kind}',
                       f'{upload}?name={urllib.parse.quote(path.name)}', '--input', path])
