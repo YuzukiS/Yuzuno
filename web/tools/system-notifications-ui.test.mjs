@@ -87,6 +87,7 @@ function mount({ permission = "granted", saved = { enabled: true }, looking = fa
     window.read(workspaceId, JSON.parse(JSON.stringify(agents)), asks && JSON.parse(JSON.stringify(asks)));
     await tick();
   };
+  // window.opened is the page's own array: compared through Array.from (another realm).
   page.titles = () => page.shown.map((n) => n.title);
   page.close = () => {
     assert.deepEqual(errors, []);
@@ -107,7 +108,7 @@ test("a finished Turn, read while the user looks elsewhere, is one notification 
   assert.deepEqual(page.shown.map(({ title, body, tag }) => ({ title, body, tag })), [{ title: "Mori finished", body: "The Turn finished.", tag: "yuzuno:finished:a" }]);
   // A click opens that conversation.
   page.shown[0].notification.onclick();
-  assert.deepEqual(page.dom.window.opened, ["a"]);
+  assert.deepEqual(Array.from(page.dom.window.opened), ["a"]);
   // The same state read again: nothing more.
   await page.read([result("a")]);
   assert.equal(page.shown.length, 1);
@@ -158,7 +159,7 @@ test("a new Ask notifies once and opens Home; many changes at once are one notif
   await page.read([], [ask]);
   assert.deepEqual(page.titles(), ["Mori asks you"]);
   page.shown[0].notification.onclick();
-  assert.deepEqual(page.dom.window.opened, ["home"]);
+  assert.deepEqual(Array.from(page.dom.window.opened), ["home"]);
 
   const working = ["a", "b", "c", "d"].map((id) => agent(id, { status: "working" }));
   await page.read(working, [ask]);
