@@ -2100,3 +2100,247 @@ fn a_whole_read_is_counted_for_its_own_store() {
     assert_eq!((one.detail_reads("a") - mine, other.detail_reads("a") - theirs), (3, 0),
         "a read was counted for another store");
 }
+
+fn delivered_in_place() -> u64 {
+    super::DELIVERED_IN_PLACE.with(|n| n.get())
+}
+
+/// A delivery's data, as the bridge sends it.
+fn delivery_data(client: &str, status: &str, turn: &str) -> Value {
+    json!({"type":"message_delivery","clientMessageId":client,"status":status,"turnId":turn})
+}
+
+/// Follow-up `client` shown in Turn `turn` of both stores, as `show_follow_up` shows it.
+fn shown_in(stores: [&Store; 2], turn: &str, client: &str) {
+    let show = follow_up(turn, client);
+    for store in stores {
+        store.record_event("a", "test/shown", &json!({}), show.clone()).unwrap();
+    }
+}
+
+/// A delivery committed as claude.rs committed it before (`record_event` of
+/// `deliver_message` over the whole record) in `generic`, and through
+/// `record_delivery` in `scoped`; whether `scoped` wrote it in place.
+fn delivery_both(generic: &Store, scoped: &Store, client: &str, status: &str, turn: &str) -> bool {
+    let (at, root) = (chrono::Utc::now(), std::env::temp_dir());
+    let data = delivery_data(client, status, turn);
+    generic.record_event("a", "claude/messageDelivery", &data,
+        |d| crate::claude::deliver_message(d, &root, client, turn, status, at, false)).unwrap();
+    let before = delivered_in_place();
+    scoped.record_delivery("a", "claude/messageDelivery", &data, client,
+        |d, elsewhere| crate::claude::deliver_message(d, &root, client, turn, status, at, elsewhere)).unwrap();
+    delivered_in_place() == before + 1
+}
+
+/// The follow-ups' receipts, in both stores, beside one uncertain receipt.
+fn delivery_receipts(stores: [&Store; 2], clients: &[&str]) {
+    for store in stores {
+        let clients: Vec<String> = clients.iter().map(|c| c.to_string()).collect();
+        store.update_meta("a", "message/requested", &json!({}), move |m| {
+            for client in &clients {
+                m.message_receipts.push(receipt(client, "also this"));
+            }
+            let mut uncertain = receipt("u1", "maybe sent");
+            uncertain.status = "uncertain".into();
+            m.message_receipts.push(uncertain);
+        }).unwrap();
+    }
+}
+
+/// A delivery is written without copying the other Turns, with what
+/// comparing the whole record writes: read where it was shown, moved from an
+/// earlier or a later Turn, into a Turn the record lacks (Claude's own, or
+/// one the bridge names), from the first of two Turns showing it, beside a
+/// Turn in progress or a request waiting, and beside an Item another Turn
+/// has not written yet.
+#[test]
+fn a_claude_delivery_is_written_without_copying_the_other_turns() {
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    let same = |step: &str, in_place: bool| {
+        assert!(in_place, "{step}: the scoped store copied the record");
+        assert_eq!(state(&generic), state(&scoped), "{step}: written in place, something else was written");
+        for store in [&generic, &scoped] {
+            store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+        }
+    };
+    let both = [&generic, &scoped];
+    delivery_receipts(both, &["d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9"]);
+    let holders = |client: &str| -> Vec<String> {
+        scoped.detail("a").unwrap().turns.iter()
+            .filter(|t| t["items"].as_array().unwrap().iter().any(|i| i["clientId"] == client))
+            .map(|t| t["id"].as_str().unwrap().to_owned()).collect()
+    };
+
+    shown_in(both, "t5", "d1");
+    same("accepted where it was shown", delivery_both(&generic, &scoped, "d1", "accepted", "t5"));
+    shown_in(both, "t1", "d2");
+    same("moved to a later Turn", delivery_both(&generic, &scoped, "d2", "next", "t4"));
+    assert_eq!(holders("d2"), ["t4"]);
+    shown_in(both, "t4", "d3");
+    same("moved to an earlier Turn", delivery_both(&generic, &scoped, "d3", "accepted", "t2"));
+    assert_eq!(holders("d3"), ["t2"]);
+    shown_in(both, "t1", "d6");
+    shown_in(both, "t3", "d6");
+    same("moved from the first of two Turns showing it", delivery_both(&generic, &scoped, "d6", "accepted", "t5"));
+    assert_eq!(holders("d6"), ["t3", "t5"]);
+    shown_in(both, "t3", "d4");
+    same("moved to a Turn the record lacks", delivery_both(&generic, &scoped, "d4", "next", "follow-9"));
+    let d = scoped.detail("a").unwrap();
+    let last = d.turns.last().unwrap();
+    assert_eq!((last["id"].clone(), last["status"].clone(), d.agent.status.clone()), (json!("follow-9"), json!("inProgress"), "working".to_owned()));
+    shown_in(both, "t2", "d5");
+    same("moved to Claude's own Turn the record lacks", delivery_both(&generic, &scoped, "d5", "accepted", "native-x"));
+    assert_eq!(scoped.detail("a").unwrap().turns.last().unwrap()["_yuzunoSource"], "native");
+    // follow-9 and native-x run: neither is copied for d7, so the status
+    // stays as their running leaves it.
+    shown_in(both, "t2", "d7");
+    same("beside Turns in progress", delivery_both(&generic, &scoped, "d7", "accepted", "t2"));
+    assert_eq!(scoped.agent("a").unwrap().status, "working");
+    for store in both {
+        store.update_meta("a", "test/request", &json!({}), |m| m.pending.push(pending_request("waiting", 9))).unwrap();
+    }
+    shown_in(both, "t4", "d8");
+    same("beside a request waiting", delivery_both(&generic, &scoped, "d8", "accepted", "t4"));
+    assert_eq!(scoped.agent("a").unwrap().status, "waiting");
+    shown_in(both, "t1", "d9");
+    for store in both {
+        super::tests::stream(store, "a", "item/completed",
+            &json!({"turnId":"t0","item":{"id":"m0-later","type":"agentMessage","text":"streamed elsewhere"}}));
+    }
+    same("beside an Item another Turn has not written", delivery_both(&generic, &scoped, "d9", "next", "follow-9"));
+    let r = scoped.detail("a").unwrap().message_receipts.into_iter().find(|r| r.input.client_message_id == "u1").unwrap();
+    assert_eq!(r.status, "uncertain", "another receipt is left as it was");
+}
+
+/// Where writing in place cannot be shown to write what comparing writes, a
+/// delivery is committed as `record_event` committed it: a follow-up no Turn
+/// shows is built once, from its receipt and its images, on the record
+/// compared.
+#[test]
+fn a_claude_delivery_is_compared_where_in_place_cannot_show_the_same_write() {
+    fn compared(generic: &Store, scoped: &Store, step: &str, client: &str, turn: &str) {
+        assert!(!delivery_both(generic, scoped, client, "accepted", turn), "{step}: written in place");
+        assert_eq!(state(generic), state(scoped), "{step}");
+    }
+    let image = format!("{}.png", "a".repeat(64));
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        let mut shown_nowhere = receipt("n1", "with a picture");
+        shown_nowhere.input.images = vec![image.clone()];
+        store.update_meta("a", "message/requested", &json!({}), move |m| m.message_receipts.push(shown_nowhere)).unwrap();
+    }
+    let (at, root) = (chrono::Utc::now(), std::env::temp_dir());
+    let data = delivery_data("n1", "accepted", "t5");
+    generic.record_event("a", "claude/messageDelivery", &data,
+        |d| crate::claude::deliver_message(d, &root, "n1", "t5", "accepted", at, false)).unwrap();
+    let (runs, before) = (std::cell::Cell::new(0), delivered_in_place());
+    scoped.record_delivery("a", "claude/messageDelivery", &data, "n1", |d, elsewhere| {
+        runs.set(runs.get() + 1);
+        crate::claude::deliver_message(d, &root, "n1", "t5", "accepted", at, elsewhere);
+    }).unwrap();
+    assert_eq!((runs.get(), delivered_in_place() - before), (1, 0), "a follow-up no Turn shows: built more than once, or in place");
+    assert_eq!(state(&generic), state(&scoped), "a follow-up no Turn shows");
+    let d = scoped.detail("a").unwrap();
+    let n1 = d.turns.iter().flat_map(|t| t["items"].as_array().unwrap()).find(|i| i["clientId"] == "n1").unwrap();
+    assert_eq!(n1["content"][1]["type"], "localImage", "{n1}");
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    delivery_receipts([&generic, &scoped], &["d1"]);
+    shown_in([&generic, &scoped], "t1", "d1");
+    for store in [&generic, &scoped] {
+        let mut memory = store.memory.lock().unwrap();
+        memory.held.clear();
+        memory.briefs.clear();
+    }
+    compared(&generic, &scoped, "a record not held", "d1", "t5");
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    delivery_receipts([&generic, &scoped], &["d1"]);
+    shown_in([&generic, &scoped], "t1", "d1");
+    for store in [&generic, &scoped] {
+        store.record_event("a", "test/duplicate", &json!({}), |d| {
+            let copy = d.turns[2].clone();
+            d.turns.push(copy);
+        }).unwrap();
+    }
+    compared(&generic, &scoped, "Turns without distinct IDs", "d1", "t5");
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    delivery_receipts([&generic, &scoped], &["d1"]);
+    shown_in([&generic, &scoped], "t1", "d1");
+    for store in [&generic, &scoped] {
+        let mut blocks = receipt("old-4", "message 4");
+        blocks.status = "accepted".into();
+        blocks.input.text_blocks = Some(vec![crate::message_content::TextBlock { id: "b".into(), start: 0, end: 7 }]);
+        store.update_meta("a", "message/requested", &json!({}), move |m| m.message_receipts.push(blocks)).unwrap();
+        unrestore(store, "t4", "u4");
+    }
+    compared(&generic, &scoped, "an old Item restore would change", "d1", "t5");
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    delivery_receipts([&generic, &scoped], &["d1"]);
+    shown_in([&generic, &scoped], "t1", "d1");
+    for store in [&generic, &scoped] {
+        let whole = serde_json::to_string(&store.detail("a").unwrap()).unwrap();
+        let mut db = store.db.write().unwrap();
+        let tx = db.transaction().unwrap();
+        tx.execute("UPDATE agents SET layout=0, data=?1 WHERE id='a'", [whole]).unwrap();
+        record_rows::delete_rows(&tx, "a").unwrap();
+        tx.commit().unwrap();
+        drop(db);
+        let mut memory = store.memory.lock().unwrap();
+        memory.held.clear();
+        memory.briefs.clear();
+        drop(memory);
+        store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+    }
+    compared(&generic, &scoped, "a record kept as one body", "d1", "t5");
+}
+
+/// Each way a delivery's write can fail, planning, writing its journal,
+/// metadata, Turn or Item rows, or at COMMIT, publishes nothing: the record
+/// held and its rows are as they were, and once the fault is gone the same
+/// delivery is journaled once and moves the follow-up.
+#[test]
+fn a_claude_delivery_whose_write_fails_publishes_nothing() {
+    for (fault, undo, wrote) in [
+        ("ALTER TABLE agent_turns RENAME TO hidden_turns;", "ALTER TABLE hidden_turns RENAME TO agent_turns;", false),
+        ("CREATE TRIGGER refuse BEFORE INSERT ON journal WHEN NEW.kind='claude/messageDelivery' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            "DROP TRIGGER refuse;", true),
+        ("CREATE TRIGGER refuse BEFORE UPDATE ON agents BEGIN SELECT RAISE(ABORT, 'refused'); END;", "DROP TRIGGER refuse;", true),
+        ("CREATE TRIGGER refuse BEFORE INSERT ON agent_turns WHEN NEW.turn_id='follow-9' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            "DROP TRIGGER refuse;", true),
+        ("CREATE TRIGGER refuse BEFORE INSERT ON agent_items WHEN NEW.turn_id='follow-9' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            "DROP TRIGGER refuse;", true),
+        ("CREATE TABLE t140_parent(id INTEGER PRIMARY KEY);
+          CREATE TABLE t140_child(parent INTEGER REFERENCES t140_parent(id) DEFERRABLE INITIALLY DEFERRED);
+          CREATE TRIGGER t140_orphan AFTER INSERT ON journal WHEN NEW.kind='claude/messageDelivery'
+              BEGIN INSERT INTO t140_child(parent) VALUES(-1); END;", "DROP TRIGGER t140_orphan;", true),
+    ] {
+        let ((_ga, generic), (_sa, store)) = pair();
+        delivery_receipts([&generic, &store], &["d1"]);
+        shown_in([&generic, &store], "t1", "d1");
+        super::tests::stream(&store, "a", "item/completed",
+            &json!({"turnId":"t5","item":{"id":"m5","type":"agentMessage","text":"later"}}));
+        let unwritten = || store.memory.lock().unwrap().held.get("a").map(|held| held.unwritten.clone());
+        let (before, lacking) = (published(&store), unwritten());
+        store.db.write().unwrap().execute_batch(fault).unwrap();
+        let (at, root, data) = (chrono::Utc::now(), std::env::temp_dir(), delivery_data("d1", "next", "follow-9"));
+        let deliver = |d: &mut AgentDetail, elsewhere: bool| crate::claude::deliver_message(d, &root, "d1", "follow-9", "next", at, elsewhere);
+        let taken = delivered_in_place();
+        assert!(store.record_delivery("a", "claude/messageDelivery", &data, "d1", &deliver).is_err(), "{fault}");
+        assert_eq!(delivered_in_place(), taken + u64::from(wrote), "{fault}: which path wrote");
+        assert!(store.held("a").is_some(), "{fault}");
+        store.db.write().unwrap().execute_batch(undo).unwrap();
+        assert_eq!(published(&store), before, "{fault}");
+        assert_eq!(unwritten(), lacking, "{fault}");
+        store.record_delivery("a", "claude/messageDelivery", &data, "d1", &deliver).unwrap();
+        let deliveries: i64 = store.db.read().unwrap()
+            .query_row("SELECT count(*) FROM journal WHERE agent_id='a' AND kind='claude/messageDelivery'", [], |r| r.get(0)).unwrap();
+        assert_eq!(deliveries, 1, "{fault}: the failed write was journaled");
+        let s = state(&store);
+        assert_eq!(s["held"], s["reloaded"], "{fault}: what is held is not what its rows and journal rebuild");
+        let follow = s["reloaded"]["turns"].as_array().unwrap().iter().find(|t| t["id"] == "follow-9").cloned();
+        assert!(follow.is_some_and(|t| t["items"].as_array().unwrap().iter().any(|i| i["clientId"] == "d1")), "{fault}");
+    }
+}
