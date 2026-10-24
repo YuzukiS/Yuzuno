@@ -70,6 +70,12 @@
 .batch-row[data-state="done"] .batch-state {
   color: var(--ink);
 }
+.batch-summary {
+  min-height: 1.4em;
+  margin: -6px 0 10px;
+  color: var(--muted);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
 .batch-empty {
   margin: 4px 0 14px;
   color: var(--muted);

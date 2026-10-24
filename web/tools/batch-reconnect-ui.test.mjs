@@ -94,6 +94,7 @@ function mount() {
     toggle: (name) => row(name).querySelector("input").click(),
     retry: (name) => [...row(name).querySelectorAll("button")].find((b) => b.textContent === "Retry").click(),
     primary: () => document.querySelector(".modal-actions .primary-button"),
+    summary: () => document.querySelector(".batch-summary[role=status]").textContent,
     secondary: () => document.querySelector(".modal-actions .secondary-button"),
     dialog: () => document.querySelector('[role="dialog"]'),
     // Only the existing reconnect, never a message, a reopen or an interrupt.
@@ -170,6 +171,7 @@ test("at most three run at once; each row says what Core answered; a failure sta
     "E [x] Still offline",
   ]);
   assert.equal(page.window.settled, 5, "the Workspace is read again after each");
+  assert.equal(page.summary(), "2 reconnected · 2 not connected yet · 1 couldn’t reconnect");
   assert.equal(page.primary().textContent, "Reconnect 3");
   page.retry("B");
   await tick();
@@ -178,6 +180,7 @@ test("at most three run at once; each row says what Core answered; a failure sta
   page.calls[5].answer({ body: connected(five[1]) });
   await tick();
   assert.equal(page.rows()[1], "B [ ] Connected · Ready");
+  assert.equal(page.summary(), "3 reconnected · 2 not connected yet");
   assert.ok(page.sent().every((s) => /^POST \/api\/agents\/[a-e]\/reconnect\?view=summary$/.test(s)), "only the reconnect was sent");
   page.close();
 });
@@ -251,5 +254,38 @@ test("in a project it lists that project's Agents; others only when asked; a cho
   page.primary().click();
   await tick();
   assert.deepEqual(page.sent(), [reconnectUrl("a"), reconnectUrl("c")]);
+  page.close();
+});
+
+test("a failure reconnected elsewhere since is not shown again, and its choice is dropped", async () => {
+  const page = mount();
+  page.window.render([agent("a"), agent("b")]);
+  await tick();
+  page.trigger().click();
+  await tick();
+  page.toggle("B");
+  await tick();
+  page.primary().click();
+  await tick();
+  page.calls[0].answer({ status: 503, body: { error: "Runtime not ready" } });
+  await tick();
+  assert.deepEqual(page.rows(), ["A [ ] Offline", "B [x] Couldn’t reconnect: Runtime not ready"]);
+  page.document.querySelector('[aria-label="Close dialog"]').click();
+  await tick();
+  // B is reconnected from its own menu meanwhile.
+  page.window.render([agent("a"), agent("b", { status: "idle", connectionState: "connected" })]);
+  await tick();
+  page.trigger().click();
+  await tick();
+  assert.deepEqual(page.rows(), ["A [ ] Offline"], "B's old failure is not shown");
+  page.document.querySelector('[aria-label="Close dialog"]').click();
+  await tick();
+  // Offline again later: nothing chosen for the user.
+  page.window.render([agent("a"), agent("b")]);
+  await tick();
+  page.trigger().click();
+  await tick();
+  assert.deepEqual(page.rows(), ["A [ ] Offline", "B [ ] Offline"]);
+  assert.equal(page.calls.length, 1);
   page.close();
 });

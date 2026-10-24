@@ -87,6 +87,17 @@ export function busy(state: BatchState): boolean {
   return [...state.outcomes.values()].some((o) => o.state === "waiting" || o.state === "running");
 }
 
+/** On opening the dialog: for Agents that no longer need a reconnect
+ * (reconnected elsewhere since), an old failure and the choice go. */
+export function forgetStale(workspace: string, needed: ReadonlySet<string>) {
+  write(workspace, (state) => {
+    const selected = new Set([...state.selected].filter((id) => needed.has(id)));
+    const outcomes = new Map(state.outcomes);
+    for (const [id, outcome] of outcomes) if (outcome.state === "failed" && !needed.has(id)) outcomes.delete(id);
+    return { selected, outcomes };
+  });
+}
+
 /** On closing the dialog: answers already read go; failures and what is
  * still on its way stay, with the selection. */
 export function forgetSettled(workspace: string) {

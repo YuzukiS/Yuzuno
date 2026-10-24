@@ -7,6 +7,7 @@ import {
   choose,
   choosable,
   forgetSettled,
+  forgetStale,
   reconnectBatch,
   useBatch,
   type BatchOutcome,
@@ -77,9 +78,13 @@ export function BatchReconnect({
   if (!count && !open) return null;
 
   const wide = everywhere || scope === ALL_PROJECTS;
-  const rows = agents.filter(
-    (agent) => (candidates.includes(agent) || batch.outcomes.has(agent.id)) && (wide || inScope(agent, scope)),
-  );
+  // A failure stays listed while the Agent still needs a reconnect; one
+  // reconnected since (from its menu, say) is not shown as failed again.
+  const listed = (agent: Agent) => {
+    const outcome = batch.outcomes.get(agent.id);
+    return candidates.includes(agent) || (!!outcome && outcome.state !== "failed");
+  };
+  const rows = agents.filter((agent) => listed(agent) && (wide || inScope(agent, scope)));
   const elsewhere = scope === ALL_PROJECTS ? 0 : candidates.filter((agent) => !inScope(agent, scope)).length;
   const pending = (id: string) => {
     const state = batch.outcomes.get(id)?.state;
@@ -89,6 +94,23 @@ export function BatchReconnect({
   const ready = rows.filter((agent) => batch.selected.has(agent.id) && choosable(agent) && !pending(agent.id));
   const offered = rows.filter((agent) => choosable(agent) && !pending(agent.id));
   const running = busy(batch);
+  // Said again for a screen reader as answers come in.
+  const counts = { reconnected: 0, notYet: 0, failed: 0, going: 0 };
+  for (const agent of rows) {
+    const outcome = batch.outcomes.get(agent.id);
+    if (outcome?.state === "waiting" || outcome?.state === "running") counts.going++;
+    else if (outcome?.state === "failed") counts.failed++;
+    else if (outcome?.state === "done") {
+      if (outcome.agent && reconnectOffer(outcome.agent) === null) counts.reconnected++;
+      else counts.notYet++;
+    }
+  }
+  const summary = [
+    counts.reconnected ? `${counts.reconnected} reconnected` : "",
+    counts.notYet ? `${counts.notYet} not connected yet` : "",
+    counts.failed ? `${counts.failed} couldn’t reconnect` : "",
+    counts.going ? `${counts.going} on the way` : "",
+  ].filter(Boolean).join(" · ");
 
   return (
     <>
@@ -97,7 +119,10 @@ export function BatchReconnect({
         className="icon-button rail-reconnect"
         aria-label={`Reconnect agents: ${count} not connected`}
         title="Reconnect agents"
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          forgetStale(workspaceId, new Set(candidates.filter(choosable).map((agent) => agent.id)));
+          setOpen(true);
+        }}
       >
         <RotateCw size={13} />
         <span>{count}</span>
@@ -157,6 +182,9 @@ export function BatchReconnect({
             })}
           </ul>
         )}
+        <p className="batch-summary" role="status">
+          {summary}
+        </p>
         <div className="modal-actions">
           <button
             type="button"
