@@ -108,7 +108,9 @@ export function AgentActionsMenu({
     (menu.focus === "last" ? items.at(-1) : items[0])?.focus();
   }, [menu, placed]);
 
-  // A press elsewhere, a scroll or a resize closes it, leaving focus there.
+  // A press elsewhere, a resize, or a scroll that moves its button closes it,
+  // leaving focus there. Another pane's scroll, such as a conversation
+  // following a running turn's output, leaves it open.
   useEffect(() => {
     if (!menu) return;
     const outside = (event: Event) => {
@@ -116,7 +118,10 @@ export function AgentActionsMenu({
       if (!list.current?.contains(target) && !trigger.current?.contains(target)) close(false);
     };
     const dismiss = (event: Event) => {
-      if (!list.current?.contains(event.target as Node)) close(false);
+      const target = event.target;
+      if (target instanceof Node && list.current?.contains(target)) return;
+      const anchor = trigger.current;
+      if (!(target instanceof Node) || !anchor || target.contains(anchor)) close(false);
     };
     document.addEventListener("pointerdown", outside, true);
     window.addEventListener("resize", dismiss);

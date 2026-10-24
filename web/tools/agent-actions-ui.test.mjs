@@ -323,3 +323,40 @@ test("a menu opened for one Agent closes when its control comes to show another"
   assert.deepEqual([...page.window.done], []);
   page.close();
 });
+
+test("a scroll closes it only when it moves its button: a conversation following a running turn leaves it open", async () => {
+  const page = mount();
+  const scroll = (target) => target.dispatchEvent(new page.window.Event("scroll"));
+  // Another pane, as the conversation under the header, scrolling as output grows.
+  const pane = page.document.createElement("div");
+  page.document.body.append(pane);
+  page.window.renderHeader(agent("a", { status: "working" }));
+  await tick();
+  page.document.querySelector('[aria-label="Conversation actions"]').click();
+  await tick();
+  scroll(pane);
+  await tick();
+  assert.ok(page.menu(), "still open while the conversation scrolls");
+  page.item("interrupt").click();
+  await tick();
+  assert.deepEqual(page.calls.map((c) => `${c.method} ${c.url}`), ["POST /api/agents/a/interrupt"]);
+  // In the list: another pane's scroll leaves it open; the list it is in, or
+  // the page, scrolling moves its button and closes it.
+  page.window.renderRows([agent("b")]);
+  await tick();
+  page.document.querySelector('[aria-label="Actions for B"]').click();
+  await tick();
+  scroll(pane);
+  await tick();
+  assert.ok(page.menu(), "another pane's scroll leaves it open");
+  scroll(page.document.getElementById("root"));
+  await tick();
+  assert.equal(page.menu(), null, "the list it is in scrolled: closed");
+  page.document.querySelector('[aria-label="Actions for B"]').click();
+  await tick();
+  assert.ok(page.menu());
+  scroll(page.document);
+  await tick();
+  assert.equal(page.menu(), null, "the page scrolled: closed");
+  page.close();
+});

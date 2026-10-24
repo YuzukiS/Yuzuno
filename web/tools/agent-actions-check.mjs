@@ -166,10 +166,19 @@ try {
       await page.waitForTimeout(300);
       assert.equal(posts("/api/agents/b/interrupt"), 0);
       await page.getByRole("button", { name: "Conversation actions", exact: true }).click();
+      await menu(page).waitFor();
+      // As the conversation follows a running turn's output: it scrolls under
+      // the header, and the menu stays open.
+      await page.locator(".conversation-scroll").evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+        el.dispatchEvent(new Event("scroll"));
+      });
+      await page.waitForTimeout(200);
+      assert.equal(await menu(page).count(), 1, "the menu stays open while the conversation scrolls");
       await menu(page).getByRole("menuitem", { name: "Interrupt current turn" }).click();
       await page.waitForTimeout(300);
       assert.equal(posts("/api/agents/b/interrupt"), 1);
-      check("Working Hana: Escape in the menu interrupts nothing; Interrupt current turn sends one request");
+      check("Working Hana: Escape in the menu interrupts nothing; the menu stays open while the conversation scrolls; Interrupt current turn sends one request");
     }
     await context.close();
   }
