@@ -1187,8 +1187,9 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
 
     /// Nothing that cannot be tied to this installation's one Core is
     /// signalled: an answer from a process outside the installation, another
-    /// Workspace or program, two Cores of the installation, or a Core whose
-    /// executable is not the release it says it runs.
+    /// Workspace or program, a Core of the installation that does not hold
+    /// the port, two Cores of the installation, or a Core whose executable is
+    /// not the release it says it runs.
     #[test]
     fn a_stop_signals_nothing_it_cannot_tie_to_this_installations_one_core() {
         let install = install();
@@ -1206,6 +1207,33 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
             done.store(true, std::sync::atomic::Ordering::SeqCst);
             assert_eq!((outcome["state"].as_str(), outcome["code"].as_str()), (Some("refused"), Some(code)), "{body}: {outcome}");
         }
+        // A Core of this installation given the port, which does not hold
+        // it: this test process answers there.
+        let core_path = install.layout.root.join("releases/a/bin/yuzuno-workspace");
+        let (port, done) = answer(r#"{"product":"yuzuno","workspaceId":"workspace-1","apiReady":true,"releaseId":"a"}"#);
+        let quiet_data = install.temp.path().join("quiet");
+        fs::create_dir_all(&quiet_data).unwrap();
+        fs::write(quiet_data.join("no-listen"), "").unwrap();
+        let mut quiet = Command::new(&core_path)
+            .arg("--install-dir")
+            .arg(&install.layout.root)
+            .args(["--port", &port.to_string(), "--cwd", "/", "--codex", "codex", "--data-dir"])
+            .arg(&quiet_data)
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !quiet_data.join("started").exists() {
+            assert!(Instant::now() < deadline, "the quiet Core did not start");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        record(&install.layout, &install.running, &launch(&install, port), WORKSPACE, |_| None).unwrap();
+        let outcome = stop(&install.layout.root, port, WORKSPACE, QUICK_STOP);
+        let quiet_alive = quiet.try_wait().unwrap().is_none();
+        let _ = quiet.kill();
+        let _ = quiet.wait();
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!((outcome["state"].as_str(), outcome["code"].as_str()), (Some("refused"), Some("unidentified")), "{outcome}");
+        assert!(quiet_alive, "a Core not holding the port was signalled");
         let port = free_port();
         let launch = launch(&install, port);
         record(&install.layout, &install.running, &launch, WORKSPACE, |_| None).unwrap();
@@ -1215,7 +1243,7 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
         // A second Core of this installation, on another port.
         let second_data = install.temp.path().join("second");
         fs::create_dir_all(&second_data).unwrap();
-        let mut second = Command::new(install.layout.root.join("releases/a/bin/yuzuno-workspace"))
+        let mut second = Command::new(&core_path)
             .arg("--install-dir")
             .arg(&install.layout.root)
             .args(["--port", &free_port().to_string(), "--cwd", "/", "--codex", "codex", "--data-dir"])

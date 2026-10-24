@@ -7,8 +7,9 @@
 //! `/api/health`. A copy at another name (standing in for the release's
 //! helper) records nothing. It notes each start in `<data-dir>/started`. Files in
 //! `--data-dir` change it: `exit-early` (it exits before listening),
-//! `ignore-interrupt` (it ignores SIGINT), `release-id` (the release its
-//! health names, instead of its own).
+//! `ignore-interrupt` (it ignores SIGINT), `no-listen` (it runs without
+//! listening), `release-id` (the release its health names, instead of its
+//! own).
 use std::{
     env, fs,
     io::{Read, Write},
@@ -66,6 +67,12 @@ fn main() {
     if data.join("exit-early").exists() {
         eprintln!("the stand-in exits early");
         std::process::exit(3);
+    }
+    if data.join("no-listen").exists() {
+        // Running, but holding no port.
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
     }
     if data.join("ignore-interrupt").exists() {
         // SIGINT is 2, SIG_IGN is 1.
