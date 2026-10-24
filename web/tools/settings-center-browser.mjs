@@ -138,13 +138,14 @@ try {
     await page.keyboard.press('ArrowDown');
     assert.equal(await page.getByRole('tab', { name: 'Notifications & attention' }).getAttribute('aria-selected'), 'true');
     await search('手机访问');
-    await page.getByText('Unavailable here.', { exact: false }).waitFor();
-    assert.equal(await page.locator('.settings-catalog-card button').count(), 0);
+    // Phone access has its own editor (T-185); finding it opens nothing yet.
+    await page.getByRole('button', { name: 'Open Phone & remote access', exact: true }).waitFor();
+    assert.equal(await page.getByText('Unavailable here.', { exact: false }).count(), 0);
     const overflow = await page.getByRole('dialog').evaluate((el) => ({ width: innerWidth, left: el.getBoundingClientRect().left, right: el.getBoundingClientRect().right, scroll: el.scrollWidth, client: el.clientWidth }));
     assert.ok(overflow.left >= 0 && overflow.right <= width + 1 && overflow.scroll <= overflow.client + 1, JSON.stringify(overflow));
     await page.screenshot({ path: resolve(output, `settings-${width}.png`) });
     await closeDialog();
-    check(`${width}px: keyboard category navigation, honest unavailable phone access and no dialog overflow`);
+    check(`${width}px: keyboard category navigation, phone access found with its editor and no dialog overflow`);
   }
   await page.setViewportSize({ width: 320, height: 300 });
   await open();
