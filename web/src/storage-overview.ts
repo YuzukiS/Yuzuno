@@ -1,7 +1,6 @@
 // T-193: Settings → Data & storage. What this device keeps for this site,
-// what the Workspace keeps on the Core host (GET /api/storage, and folder
-// sizes only from a measurement the user starts), and what is kept elsewhere.
-// Read only: nothing here removes anything.
+// what the Workspace keeps on the Core host (GET /api/storage, which walks no
+// folder), and what is kept elsewhere. Read only: nothing here removes anything.
 
 /** One top-level name in Core's data folder (storage_overview.rs `describe`). */
 export type StorageEntry = {
@@ -16,31 +15,6 @@ export type StorageEntry = {
   error?: string;
 };
 
-export type MeasuredFolder =
-  | { name: string; measured: false }
-  | {
-      name: string;
-      measured: true;
-      files: number;
-      bytes: number;
-      diskBytes: number;
-      complete: boolean;
-      links: number;
-      otherDevice: number;
-      unreadable: number;
-      special: number;
-    };
-
-export type Measurement = {
-  id: string;
-  state: "running" | "done" | "limited" | "stopped" | "failed";
-  startedAt: string;
-  endedAt: string | null;
-  current: string | null;
-  entries: number;
-  folders: MeasuredFolder[];
-};
-
 export type NativeGroup = { harness: string; machine: string | null; agents: number; closed: number };
 
 export type StorageOverviewView = {
@@ -53,8 +27,6 @@ export type StorageOverviewView = {
   jobs: { total: number | null; unfinished: number | null };
   native: NativeGroup[];
   notInBackup: string[];
-  measurement: Measurement | null;
-  bounds: { entries: number; seconds: number };
 };
 
 /** What each name Core makes in its data folder holds. */
@@ -202,50 +174,4 @@ export async function browserEstimate(): Promise<BrowserEstimate> {
   } catch {
     return null;
   }
-}
-
-export function measuredFolder(view: StorageOverviewView | null, name: string): MeasuredFolder | undefined {
-  return view?.measurement?.folders.find((folder) => folder.name === name);
-}
-
-/** Text to copy: counts and sizes only. No path, ID, name or draft text. */
-export function overviewText(
-  view: StorageOverviewView | null,
-  device: DeviceInventory | null,
-  updates: { managed: boolean; releaseBytes: number; backupBytes: number } | null,
-): string {
-  const lines = ["Yuzuno data & storage overview"];
-  if (device) {
-    lines.push(`This device (this site), read ${device.readAt}:`);
-    if (!device.available) lines.push(`  not readable: ${device.reason}`);
-    for (const group of device.groups) {
-      const label = deviceGroups.find((item) => item.id === group.id)!.label;
-      lines.push(`  ${label}: ${group.keys} keys, about ${sizeText(group.bytes)} (estimate)`);
-    }
-    lines.push(`  Agents with a draft: ${device.draftAgents}; unreadable drafts: ${device.unreadableDrafts}; messages not yet accepted: ${device.unsentMessages}`);
-  }
-  if (view) {
-    lines.push(`Workspace on the Core host, read ${view.readAt}:`);
-    for (const entry of view.entries) {
-      const label = entryLabels[entry.what] ?? entry.what;
-      const folder = measuredFolder(view, entry.name);
-      const size = entry.kind === "file" && entry.bytes !== undefined
-        ? `${sizeText(entry.bytes)} file size, ${sizeText(entry.diskBytes ?? 0)} on disk`
-        : folder?.measured
-          ? `${folder.files} files, ${sizeText(folder.bytes)}, ${sizeText(folder.diskBytes)} on disk${folder.complete ? "" : " (incomplete)"}`
-          : entry.kind === "folder" ? "not measured" : entry.kind;
-      lines.push(`  ${label}: ${size}; backup: ${entry.backup}`);
-    }
-    if (view.measurement) lines.push(`  measurement: ${view.measurement.state}, ${view.measurement.entries} entries read, started ${view.measurement.startedAt}`);
-    lines.push(`  Job records: ${view.jobs.total ?? "unknown"} (${view.jobs.unfinished ?? "unknown"} unfinished)`);
-    for (const group of view.native) {
-      lines.push(`  ${harnessNames[group.harness] ?? group.harness} native sessions on ${group.machine === null ? "the Core host" : "a remote machine"}: ${group.agents} Agents (${group.closed} closed), not measured`);
-    }
-  }
-  if (updates) {
-    lines.push(updates.managed
-      ? `Update releases: ${sizeText(updates.releaseBytes)}; update database copies: ${sizeText(updates.backupBytes)}`
-      : "Update releases: not a managed install; none kept");
-  }
-  return lines.join("\n");
 }

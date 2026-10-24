@@ -18,9 +18,6 @@
 .storage-rows .storage-size { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .storage-rows .storage-detail { grid-column: 1 / -1; color: var(--text-secondary); font-size: .88em; line-height: 1.45; overflow-wrap: anywhere; }
 .storage-list { margin: 6px 0; padding-left: 1.2em; color: var(--text-secondary); font-size: .9em; line-height: 1.5; }
-.storage-measure, .storage-copy { display: grid; gap: 8px; justify-items: start; margin-top: 12px; }
-.storage-measure p { margin: 0; }
-.storage-copy textarea { width: 100%; }
 @media (max-width: 480px) {
   .storage-rows li { grid-template-columns: minmax(0, 1fr); }
   .storage-rows .storage-size { text-align: left; white-space: normal; }

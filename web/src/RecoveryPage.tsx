@@ -33,9 +33,7 @@ function useDiagnosticsCopy() {
   return { text, state, copy };
 }
 
-/** The copied text, shown so the user sees what they pass on (also used by
- * Settings → Data & storage, under its own label). */
-export function DiagnosticsText({ text, state, label = "Diagnostics" }: { text: string | null; state: string; label?: string }) {
+function DiagnosticsText({ text, state }: { text: string | null; state: string }) {
   return (
     <>
       {state === "copied" && (
@@ -51,7 +49,7 @@ export function DiagnosticsText({ text, state, label = "Diagnostics" }: { text: 
       {text !== null && (
         <textarea
           className="diagnostics-text"
-          aria-label={label}
+          aria-label="Diagnostics"
           readOnly
           rows={10}
           value={text}

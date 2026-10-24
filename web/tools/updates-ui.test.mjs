@@ -1089,7 +1089,7 @@ test("a step Core refuses or fails ends the chain once, with its reason, and is 
 
 // Data & storage is one of Settings' editors (T-193): its card under Data,
 // privacy & recovery opens it in place. It reads Core's overview only while
-// it is shown, again each time it is shown, and never measures by itself.
+// it is shown, and again each time it is shown.
 test("data & storage opens from Data, privacy & recovery and reads Core's overview each time it is shown", async () => {
   const f = await mount();
   const view = {
@@ -1129,7 +1129,7 @@ test("data & storage opens from Data, privacy & recovery and reads Core's overvi
     await f.close();
     await wait(300);
     assert.equal(reads(), 2, "closed, it reads nothing");
-    assert.deepEqual(f.calls.filter((c) => c.url.includes("/api/storage") && c.method !== "GET"), [], "it never measures by itself");
+    assert.deepEqual(f.calls.filter((c) => c.url.includes("/api/storage") && c.method !== "GET"), [], "it changes nothing");
     assert.deepEqual(f.errors, []);
   } finally { f.w.close(); }
 });

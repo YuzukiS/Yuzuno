@@ -1,6 +1,6 @@
 // T-193: Settings → Data & storage, against a stub Core. Opening it only
-// reads; folder sizes come only from Measure; nothing unknown is shown as 0;
-// the copied overview holds sizes and counts, never a path, name, ID or draft.
+// reads, once while shown; nothing unknown is shown as 0; no draft or
+// message text is shown.
 import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -32,7 +32,7 @@ async function until(check, what = "Expected storage state") {
 }
 
 const DATA_DIR = "/home/someone/.local/share/yuzuno/workspace";
-const overview = (measurement = null) => ({
+const overview = () => ({
   format: 1,
   readAt: "2026-10-24T22:00:00Z",
   dataDir: DATA_DIR,
@@ -51,18 +51,7 @@ const overview = (measurement = null) => ({
     { harness: "codex", machine: null, agents: 3, closed: 1 },
   ],
   notInBackup: ["Native session histories kept by Codex, Claude Code and OpenCode outside the Workspace"],
-  measurement,
-  bounds: { entries: 1000000, seconds: 30 },
 });
-const running = { id: "m1", state: "running", startedAt: "2026-10-24T22:01:00Z", endedAt: null, current: "input-images", entries: 4096, folders: [] };
-const limited = {
-  id: "m1", state: "limited", startedAt: "2026-10-24T22:01:00Z", endedAt: "2026-10-24T22:01:30Z", current: null, entries: 1000000,
-  folders: [
-    { name: "input-images", measured: true, files: 3, bytes: 1000, diskBytes: 12288, complete: false, links: 2, otherDevice: 0, unreadable: 1, special: 0 },
-    { name: "jobs", measured: false },
-  ],
-};
-
 function mount(seed = {}) {
   const vc = new VirtualConsole();
   const errors = [], calls = [];
@@ -70,15 +59,10 @@ function mount(seed = {}) {
   const dom = new JSDOM('<div id="root"></div>', { url: "http://isolated.test/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole: vc });
   const w = dom.window, doc = w.document;
   for (const [key, value] of Object.entries(seed)) w.localStorage.setItem(key, value);
-  const core = { measurement: null };
   w.fetch = async (url, init = {}) => {
     const method = init.method || "GET";
     calls.push({ url: String(url), method });
-    let value;
-    if (String(url).endsWith("/api/storage/measure")) value = { measurement: (core.measurement = running) };
-    else if (String(url).endsWith("/api/storage/measure/stop")) value = { measurement: core.measurement };
-    else if (String(url).endsWith("/api/storage")) value = overview(core.measurement);
-    else value = {};
+    const value = String(url).endsWith("/api/storage") ? overview() : {};
     return { ok: true, status: 200, json: async () => structuredClone(value), text: async () => JSON.stringify(value) };
   };
   w.eval(bundle);
@@ -87,7 +71,7 @@ function mount(seed = {}) {
   const button = (label) => [...doc.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
   const reads = () => calls.filter((c) => c.url.endsWith("/api/storage") && c.method === "GET").length;
   const posts = () => calls.filter((c) => c.method !== "GET");
-  return { w, doc, calls, errors, core, text, row, button, reads, posts, close: () => w.close() };
+  return { w, doc, calls, errors, text, row, button, reads, posts, close: () => w.close() };
 }
 
 const managed = { managed: true, storage: { releaseBytes: 314572800, backupBytes: 20971520, retainedReleases: 3, keepReleases: 3 } };
@@ -102,13 +86,13 @@ const seed = {
   "another-app": "x",
 };
 
-test("opening it only reads: this device by group, Core's overview once, and no folder is measured", async (t) => {
+test("opening it only reads: this device by group and Core's overview once, with unknown sizes said to be unknown", async (t) => {
   const p = mount(seed); t.after(p.close);
   p.w.renderStorage({ active: true, updates: managed });
   await until(() => p.text().includes("Workspace database"), "Core's overview");
   await until(() => p.text().includes("does not report"), "the browser's own figures");
   assert.equal(p.reads(), 1, "one read of Core's overview");
-  assert.deepEqual(p.posts(), [], "opening it starts no measurement and changes nothing");
+  assert.deepEqual(p.posts(), [], "opening it changes nothing");
   const groups = Object.fromEntries([...p.doc.querySelectorAll("[data-group]")].map((li) => [li.dataset.group, li.textContent]));
   assert.deepEqual(Object.keys(groups), ["unsent", "drafts", "preferences", "other", "foreign"]);
   assert.match(groups.drafts, /4 entries/);
@@ -118,37 +102,15 @@ test("opening it only reads: this device by group, Core's overview once, and no 
   // The browser here reports nothing: said so, never a size of 0.
   assert.match(p.text(), /This browser does not report how much it keeps for this site\./);
   assert.doesNotMatch(p.text(), /\b0 B\b/, "nothing unknown is shown as 0");
-  assert.match(p.row("input-images"), /^Images sent to Agentsnot measured.*In a Workspace backup/);
-  assert.match(p.row("my-private-notes"), /not measured: not made by Core/);
+  assert.match(p.row("input-images"), /^Images sent to Agentssize unknown.*In a Workspace backup/);
+  assert.match(p.row("my-private-notes"), /^Not made by this Coresize unknown.*Not in a backup/);
   assert.match(p.row("claude-runtime"), /Not in a backup: A cache of the Claude runtime, which Core rebuilds/);
   assert.match(p.row("workspace.sqlite"), /3\.0 MiB · 3\.0 MiB on disk/);
   assert.match(p.text(), /12 Job records, 1 not finished/);
-  assert.match(p.text(), /Claude Code · lab box.*not measured.*Kept by Claude Code in its own folder on that computer/);
+  assert.match(p.text(), /Claude Code · lab box.*size unknown.*Kept by Claude Code in its own folder on that computer/);
   assert.match(p.text(), /Codex · the Core host.*3 Agents \(1 closed\)/);
   assert.match(p.text(), /Releases: 300 MiB \(3 kept, up to 3\)\. Database copies made before updates: 20 MiB/);
-  assert.ok(p.button("Measure folders"), "folders are measured only when asked");
-  assert.deepEqual(p.errors, []);
-});
-
-test("Measure asks Core once and follows it; Stop asks it to stop; a cut-short result says what it lacks", async (t) => {
-  const p = mount(); t.after(p.close);
-  p.w.renderStorage({ active: true, updates: managed });
-  await until(() => p.button("Measure folders"));
-  p.button("Measure folders").click();
-  await until(() => p.button("Stop"), "the running measurement");
-  assert.deepEqual(p.posts().map((c) => c.url.replace(/^.*\/api/, "")), ["/storage/measure"]);
-  assert.match(p.text(), /Measuring Images sent to Agents… 4096 entries read/);
-  p.button("Stop").click();
-  await until(() => p.posts().length === 2, "the stop request");
-  assert.equal(p.posts()[1].url.replace(/^.*\/api/, ""), "/storage/measure/stop");
-  // Core reports how it ended: cut short by its bounds.
-  p.core.measurement = limited;
-  await until(() => p.button("Measure again"), "the ended measurement");
-  assert.match(p.row("input-images"), /at least 1000 B · 12 KiB on disk/);
-  assert.match(p.row("input-images"), /3 files · 2 links not followed, 1 could not be read/);
-  assert.match(p.row("jobs"), /not reached by the measurement/);
-  assert.match(p.text(), /cut short at 1,000,000 entries or 30 s: sizes marked "at least" are incomplete/);
-  assert.equal(p.posts().length, 2, "following it only reads");
+  assert.equal(p.doc.querySelectorAll("#settings-storage button").length, 0, "nothing to press: it only reads");
   assert.deepEqual(p.errors, []);
 });
 
@@ -168,20 +130,10 @@ test("hidden, it reads nothing; shown again, it reads Core again", async (t) => 
   assert.deepEqual(p.posts(), []);
 });
 
-test("the copied overview holds sizes and counts, never a path, name, ID or draft text", async (t) => {
-  const p = mount(seed); t.after(p.close);
+test("an install that isn't managed says so instead of showing 0", async (t) => {
+  const p = mount(); t.after(p.close);
   p.w.renderStorage({ active: true, updates: { managed: false, storage: { releaseBytes: 0, backupBytes: 0, retainedReleases: 0, keepReleases: 3 } } });
   await until(() => p.text().includes("Workspace database"));
   assert.match(p.text(), /This Core is not a managed install, so Yuzuno keeps no releases or update copies for it\./);
-  p.button("Copy this overview").click();
-  const area = await until(() => p.doc.querySelector('textarea[aria-label="Data & storage overview"]'), "the copied text");
-  const copied = area.value;
-  assert.match(copied, /Images sent to Agents: not measured; backup: copied/);
-  assert.match(copied, /Drafts: 4 keys, about/);
-  assert.match(copied, /Update releases: not a managed install; none kept/);
-  for (const secret of [DATA_DIR, "/home/", "lab box", "my-private-notes", "agent-a", "secret draft text", "secret outbox text", "secret pasted body"]) {
-    assert.ok(!copied.includes(secret), `the copy does not hold ${secret}`);
-  }
-  assert.match(p.text(), /This window can't use the clipboard\. Select the text below and copy it\./);
-  assert.deepEqual(p.posts(), [], "copying sends nothing");
+  assert.doesNotMatch(p.text(), /\b0 B\b/, "no 0 for releases it does not keep");
 });
