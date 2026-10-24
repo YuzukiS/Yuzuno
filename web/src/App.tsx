@@ -715,7 +715,9 @@ export function App() {
       : agent?.status === "uncertain"
         ? "Send to check the previous result first"
         : agent?.status === "offline"
-          ? "Send a message to resume this session"
+          ? recovery === "offline"
+            ? "Reconnect above, or send a message to resume this session"
+            : "Send a message to resume this session"
           : null;
   const logicalRunningTurn = busy
     ? logicalTurns

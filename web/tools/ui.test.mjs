@@ -2785,18 +2785,25 @@ test("an image pasted into the draft is marked up where it is: no file is chosen
 });
 
 test("the composer says something under the draft only when it needs you", async () => {
-  for (const [status, notice] of [
+  for (const [status, notice, agentFields = {}] of [
     ["idle", null],
+    // No session to reconnect to: sending starts one.
     ["offline", "Send a message to resume this session"],
+    // Its session can be reconnected from the notice above (T-184).
+    ["offline", "Reconnect above, or send a message to resume this session", { threadId: "thread-a", connectionState: "disconnected" }],
     ["uncertain", "Send to check the previous result first"],
   ]) {
-    const page = await mount({ status });
+    const page = await mount({ status, agentFields });
     try {
+      // The Reconnect line reads the Agent's detail, which loads after the list.
+      if (notice) await until(() => page.document.querySelector(".composer-bottom > .composer-hint")?.textContent === notice, `${status}: ${notice}`);
       const hint = page.document.querySelector(".composer-bottom > .composer-hint");
       assert.equal(hint?.hasAttribute("data-notice"), notice !== null, status);
       if (notice) assert.equal(hint.textContent, notice, status);
       // Otherwise the line holds only the keys, which show while typing.
       else assert.ok(!!hint?.querySelector(".composer-keys"), status);
+      // The notice it points to is there when it says so.
+      assert.equal(!!page.document.querySelector(".recovery-notice button"), !!notice?.startsWith("Reconnect above"), status);
     } finally { page.close(); }
   }
 });
