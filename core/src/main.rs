@@ -203,8 +203,21 @@ async fn run(
         options.port
     );
     let events = ws.changes.clone();
+    // An interrupt (Ctrl+C) and a termination request (SIGTERM, as `kill` and
+    // service managers send) both stop Core through the shutdown below. The
+    // SIGTERM handler is installed here, before Core serves, so a request
+    // that comes once Core answers never ends it at once (T-88).
+    #[cfg(unix)]
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("Cannot handle SIGTERM")?;
     let signal = updates.clone();
     tokio::spawn(async move {
+        #[cfg(unix)]
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+        #[cfg(not(unix))]
         let _ = tokio::signal::ctrl_c().await;
         signal.shutdown.send_replace(true);
     });
