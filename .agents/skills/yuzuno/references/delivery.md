@@ -104,6 +104,8 @@ The reviewer must correct failed arguments using the returned error and schema. 
 
 In source versions supporting `searchRecovery` evidence, a non-parameter `source_search` failure can recover through successful pages at the same frozen revision and literal query, beginning at the same parsed cursor. Core compares the prefixes' actual matching path sets in that frozen tree; adding or removing a trailing slash alone proves nothing (`src` may also match `src-extra`). Follow every returned `nextCursor` until the chain ends. Partial chains, skipped source entries, other failures and terminal limits remain incomplete. The report retains the original failure, path-set fingerprint, successful receipt chain and final `resolvedByReceipt`. This source capability does not imply it is deployed on an older connected Core or repair the underlying I/O failure.
 
+In source versions supporting `recoveryReceipts` evidence, a failed `source_read` range recovers once successful reads of the same frozen revision, path and blob have delivered every requested line, including reads made before the failure. `recoveryReceipts` lists those reads and `resolvedByReceipt` names the one that completed the range. A range over 500 lines is recorded as `invalid_arguments`. Reads of another revision, path or blob, requests that delivered nothing, other failures and terminal limits still leave the review incomplete. Older connected Cores count only reads made after the failure, and a completed review keeps the conclusion it recorded.
+
 ## Result
 
 - `task_submit_result` on the same task: exact head, CI run, review identifier and conclusion, tests and their scope, known limits, and links. Pass `dispatchId` when you were dispatched and your tools accept it.

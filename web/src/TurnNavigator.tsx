@@ -27,6 +27,8 @@ const WHEEL_STEP = 60;
 /** Row heights, here so the glide below can place rows without measuring. */
 const NUMBER_ROW = 32;
 const BAR_ROW = 11;
+/** A numbered Turn's row on a phone: a finger's height. */
+const TOUCH_NUMBER_ROW = 44;
 /** Distance within which the pointer magnifies rows, strongest at its tip. */
 const LENS = 64;
 const GLIDE = { duration: 260, easing: "cubic-bezier(.2, .8, .2, 1)" };
@@ -92,6 +94,7 @@ export function TurnNavigator({
   onLatest,
   loadedNumbering = false,
   readingTurnId,
+  touch = false,
 }: {
   turns: NativeTurn[];
   /** Logical turn selected by the virtual conversation's position model. */
@@ -104,6 +107,8 @@ export function TurnNavigator({
   atLatest?: boolean;
   /** Back to the latest content, as the conversation's own button does. */
   onLatest?: () => void;
+  /** Chosen by touch (a phone, PhoneDocks.tsx): numbered Turns are 44 px rows. */
+  touch?: boolean;
 }) {
   const [reading, setReading] = useState(turns.at(-1)?.id);
   // Where the reader moved the dock's window by wheel or keyboard; null
@@ -132,11 +137,12 @@ export function TurnNavigator({
   const shown = dockWindow(turns.length, center, turnDock.numbers, turnDock.bars);
   // Where each shown Turn's row sits, from the list's middle (the dock stays
   // vertically centred), and whether it is a number or a bar.
+  const numberRow = touch ? TOUCH_NUMBER_ROW : NUMBER_ROW;
   const layout = useMemo(() => {
     const rows = shown.map(({ index, distance }) => ({
       id: turns[index]?.id,
       kind: distance ? "bar" : "number",
-      height: distance ? BAR_ROW : NUMBER_ROW,
+      height: distance ? BAR_ROW : numberRow,
     }));
     let y = -rows.reduce((sum, row) => sum + row.height, 0) / 2;
     const places = new Map<string, { y: number; kind: string }>();
@@ -145,7 +151,7 @@ export function TurnNavigator({
       y += row.height;
     }
     return places;
-  }, [turnKey, center, turnDock.numbers, turnDock.bars]);
+  }, [turnKey, center, turnDock.numbers, turnDock.bars, numberRow]);
   const placed = useRef(layout);
   const lensFrame = useRef(0);
   const highlighted = dialogTurn ?? hover ?? focused;
@@ -416,7 +422,7 @@ export function TurnNavigator({
               key={turn.id}
               data-kind={bar ? "bar" : "number"}
               data-dock-turn={turn.id}
-              style={{ height: bar ? BAR_ROW : NUMBER_ROW }}
+              style={{ height: bar ? BAR_ROW : numberRow }}
             >
               <button
                 type="button"

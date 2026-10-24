@@ -164,13 +164,45 @@ fn native_available(thread: &Value) -> Result<()> {
     );
     Ok(())
 }
+/// The bytes `serde_json::to_vec(value)` gives, counted as the same
+/// serializer writes them (its escapes, UTF-8 and number formats alike),
+/// with no buffer.
+fn json_len(value: &Value) -> Result<usize> {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value)?;
+    Ok(count.0)
+}
+
 async fn history(rpc: &Rpc, thread: &str) -> Result<Vec<Value>> {
+    history_within(rpc, thread, MAX_TURNS, MAX_ARCHIVE).await
+}
+
+/// The whole native history, refused after any page that takes it past
+/// `max_turns` Turns or `max_bytes` serialized.
+async fn history_within(rpc: &Rpc, thread: &str, max_turns: usize, max_bytes: usize) -> Result<Vec<Value>> {
     tokio::time::timeout(Duration::from_secs(30), async {
         let mut turns = Vec::new(); let mut cursor: Option<String> = None; let mut seen = HashSet::new();
+        // serde_json::to_vec(&turns).len(), kept as Turns arrive instead of
+        // serializing them all again for each page: the brackets, each Turn
+        // once, and a comma between two.
+        let mut bytes = 2;
         loop {
             let page = rpc.request("thread/turns/list", json!({"threadId":thread,"cursor":cursor,"limit":100,"sortDirection":"asc","itemsView":"full"})).await?;
-            turns.extend(page["data"].as_array().context("Codex did not return a history page")?.iter().cloned());
-            ensure!(turns.len() <= MAX_TURNS && serde_json::to_vec(&turns)?.len() <= MAX_ARCHIVE, "This conversation exceeds the bounded rewind preview; nothing changed");
+            for turn in page["data"].as_array().context("Codex did not return a history page")? {
+                bytes += json_len(turn)? + usize::from(!turns.is_empty());
+                turns.push(turn.clone());
+            }
+            ensure!(turns.len() <= max_turns && bytes <= max_bytes, "This conversation exceeds the bounded rewind preview; nothing changed");
             ensure!(turns.iter().all(|t| t["status"] != "inProgress" && t["itemsView"] == "full"), "Native history is active or incomplete; nothing changed");
             cursor = page["nextCursor"].as_str().map(str::to_owned);
             match &cursor { None => break, Some(c) => ensure!(seen.insert(c.clone()), "Native history cursor did not advance") }
@@ -1121,5 +1153,62 @@ mod tests {
         // Unexpired, but no one can confirm it now: the next sweep frees it.
         expire_previews();
         assert!(freed(&baseline).await, "the preview of a Workspace that is gone is freed");
+    }
+
+    /// Five native Turns whose JSON has escapes, multi-byte text, numbers of
+    /// every form and nested and empty containers, served two per page.
+    fn varied_history(dir: &tempfile::TempDir) -> Vec<Value> {
+        let turns: Vec<Value> = (0..5).map(|n| json!({"id":format!("t{n}"),"status":"completed","itemsView":"full",
+            "items":[{"id":format!("u{n}"),"type":"userMessage","content":[{"type":"text","text":format!("\"q\" \\ back\nnew\ttab\u{1}\u{7f} 日本 🍊 {n}")}]}],
+            "numbers":[0, -1, 1.5, 1e300, 0.1, -0.0, u64::MAX, i64::MIN],
+            "nested":{"a":[1,{"b":[]}],"c":{},"d":null,"e":true,"f":false}})).collect();
+        std::fs::write(dir.path().join("native.json"), serde_json::to_vec(&turns).unwrap()).unwrap();
+        turns
+    }
+    fn connection_of(ws: &Arc<Workspace>) -> Connection {
+        ws.rpcs.lock().unwrap().get("a").cloned().unwrap()
+    }
+    fn pages(dir: &tempfile::TempDir) -> usize {
+        calls(dir, "thread/turns/list").len()
+    }
+
+    #[tokio::test]
+    async fn history_is_kept_at_its_byte_and_turn_bounds_and_refused_one_past_them() {
+        let (dir, ws) = fixture().await;
+        varied_history(&dir);
+        let c = connection_of(&ws);
+        let all = history_within(&c.rpc, "native-thread", MAX_TURNS, MAX_ARCHIVE).await.unwrap();
+        assert_eq!(all.len(), 5);
+        // Exactly what the whole array serializes to (as the check used to
+        // compute it) is still within the bound; one byte or Turn less is not.
+        let total = serde_json::to_vec(&all).unwrap().len();
+        assert_eq!(history_within(&c.rpc, "native-thread", 5, total).await.unwrap(), all);
+        let error = history_within(&c.rpc, "native-thread", 5, total - 1).await.unwrap_err().to_string();
+        assert!(error.contains("exceeds the bounded rewind preview"), "{error}");
+        let error = history_within(&c.rpc, "native-thread", 4, total).await.unwrap_err().to_string();
+        assert!(error.contains("exceeds the bounded rewind preview"), "{error}");
+        stop(&ws).await;
+    }
+
+    #[tokio::test]
+    async fn history_size_is_checked_after_every_page() {
+        let (dir, ws) = fixture().await;
+        varied_history(&dir);
+        let c = connection_of(&ws);
+        let all = history_within(&c.rpc, "native-thread", MAX_TURNS, MAX_ARCHIVE).await.unwrap();
+        // A budget the first page (two Turns) exceeds is refused after it,
+        // and one the second page exceeds after that: no page is skipped.
+        let first = serde_json::to_vec(&all[..2]).unwrap().len();
+        let before = pages(&dir);
+        assert!(history_within(&c.rpc, "native-thread", MAX_TURNS, first - 1).await.is_err());
+        assert_eq!(pages(&dir) - before, 1, "refused after the first page");
+        let before = pages(&dir);
+        assert!(history_within(&c.rpc, "native-thread", MAX_TURNS, first).await.is_err());
+        assert_eq!(pages(&dir) - before, 2, "the first page fits, the second does not");
+        // An empty history is one empty page, "[]": two bytes.
+        std::fs::write(dir.path().join("native.json"), b"[]").unwrap();
+        assert!(history_within(&c.rpc, "native-thread", MAX_TURNS, 2).await.unwrap().is_empty());
+        assert!(history_within(&c.rpc, "native-thread", MAX_TURNS, 1).await.is_err());
+        stop(&ws).await;
     }
 }

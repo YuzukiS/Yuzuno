@@ -845,6 +845,80 @@ test("claude: a follow-up while your turn runs is sent once, as queued and not y
   }
 });
 
+test("a new Claude message shows once while Claude's bridge holds it, with its note in its Turn (T-120)", async () => {
+  // As Core leaves it (Job dc43ce8d): the receipt is recorded sending, then
+  // the Turn opens with the message named by its client ID, then Claude's
+  // bridge answers. Accepted binds it; rejected or a lost answer keeps the
+  // preview as before.
+  for (const outcome of ["accepted", "rejected", "lost"]) {
+    const extraTurns = [];
+    const receipts = [];
+    let answer;
+    const reply = (url, init) => {
+      const input = JSON.parse(init.body);
+      receipts.push({ agentId: "a", input, status: "sending", turnId: null, error: null });
+      extraTurns.push({ id: "t-new", status: "inProgress", items: [{ id: "t-new:input", type: "userMessage", nativeUuid: "t-new",
+        _yuzunoClientMessageId: input.clientMessageId, content: [{ type: "text", text: input.text }] }] });
+      return new Promise((resolve, reject) => {
+        answer = () => {
+          if (outcome === "lost") return reject(new Error("Response lost"));
+          const receipt = receipts[0];
+          if (outcome === "accepted") {
+            Object.assign(receipt, { status: "accepted", turnId: "t-new", binding: { turnId: "t-new", itemId: "t-new:input", userIndex: 0 } });
+            extraTurns[0].items[0].clientId = input.clientMessageId;
+          } else {
+            Object.assign(receipt, { status: "rejected", error: "Claude refused the prompt" });
+            extraTurns[0].status = "failed";
+          }
+          const { agentId: _agent, ...body } = receipt;
+          resolve({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) });
+        };
+      });
+    };
+    const page = await mount({ harness: "claude", extraTurns, receipts, messageResponse: reply });
+    const refresh = async () => { page.window.dispatchEvent(new page.window.Event("focus")); await pause(); await pause(); };
+    try {
+      const text = `Summarize the release notes (${outcome}).`;
+      const started = () => page.document.querySelector('[data-item-id="t-new:input"]');
+      const noteOf = (el) => el?.querySelector("[role=status]")?.textContent ?? null;
+      const previews = () => [...page.document.querySelectorAll(".outgoing-message")];
+      setValue(page.window, page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), text);
+      await pause();
+      page.document.querySelector('[aria-label="Send message"]').click();
+      await until(() => answer, `${outcome}: the send reached Core`);
+      await refresh();
+      await until(() => started(), `${outcome}: the Turn's message`);
+      assert.equal(noteOf(started()), "Sending…", `${outcome}: its note is on the message in its Turn`);
+      assert.equal(previews().length, 0, `${outcome}: no second copy as a preview`);
+      // A boolean: a failing equal on a DOM node inspects the whole document.
+      assert.equal(!!page.document.querySelector(".message-delivery-notice"), false, `${outcome}: in flight is not "not confirmed"`);
+      // Another Agent shows none of it.
+      button(page, "Hana").click();
+      await until(() => page.document.querySelector('[data-composer-input][aria-label="Message Hana"]'), "Hana's conversation");
+      assert.equal(previews().length, 0);
+      assert.notEqual(noteOf(started()), "Sending…", "Hana's view has no note for Mori's message");
+      button(page, "Mori").click();
+      await until(() => noteOf(started()) === "Sending…", `${outcome}: back to Mori, still one copy sending`);
+      assert.equal(previews().length, 0);
+      answer();
+      await pause(); await pause();
+      await refresh();
+      if (outcome === "accepted") {
+        assert.equal(previews().length, 0, "accepted: the message alone");
+        assert.notEqual(noteOf(started()), "Sending…");
+      } else {
+        const note = outcome === "rejected" ? "Not sent · draft kept" : "Delivery unconfirmed · draft kept";
+        await until(() => previews().length === 1, `${outcome}: its preview as before`);
+        assert.equal(noteOf(previews()[0]), note, outcome);
+        assert.notEqual(noteOf(started()), "Sending…", `${outcome}: the Turn's message no longer says sending`);
+        assert.ok(previews()[0].querySelector(".outgoing-hide"), `${outcome}: it can be hidden as before`);
+      }
+      assert.equal(page.calls.filter((c) => c.url.endsWith("/messages")).length, 1, `${outcome}: sent once`);
+      assert.deepEqual(page.errors, []);
+    } finally { page.close(); }
+  }
+});
+
 test("an unconfirmed delivery preview can be hidden without marking it sent or sending it again (T-65)", async () => {
   const lost = { clientMessageId: "lost-delivery", text: "Is it done?", expectedTurnId: "t1", question: null };
   const receipts = [{ agentId: "a", input: lost, status: "uncertain", turnId: null, error: "Response lost" }];
