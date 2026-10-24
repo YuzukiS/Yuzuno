@@ -173,9 +173,12 @@ export function applyAppearance(appearance: Appearance) {
 const listeners = new Set<() => void>();
 let current: Appearance | null = null;
 /** What this visit's last write of Appearance did: a save or a reset. */
-export type AppearanceWrite = { outcome: SaveOutcome; action: "save" | "reset" };
+/** Which write it was is a new number each time, also when the outcome is
+ * the same as the last one's. */
+export type AppearanceWrite = { outcome: SaveOutcome; action: "save" | "reset"; attempt: number };
 // Null before one.
 let lastSave: AppearanceWrite | null = null;
+let attempts = 0;
 function changed() {
   current = null;
   // Another window saved: what is in effect here is what is saved now.
@@ -213,7 +216,7 @@ export function saveAppearance(appearance: Appearance): SaveOutcome {
   applyAppearance(appearance);
   const outcome = saveDeviceValue(STORAGE_KEY, appearance);
   current = appearance;
-  lastSave = { outcome, action: "save" };
+  lastSave = { outcome, action: "save", attempt: ++attempts };
   listeners.forEach((listener) => listener());
   return outcome;
 }
@@ -232,7 +235,7 @@ export function restoreDefaultAppearance(): SaveOutcome {
   applyAppearance(defaultAppearance);
   const outcome = clearDeviceValue(STORAGE_KEY);
   current = defaultAppearance;
-  lastSave = { outcome, action: "reset" };
+  lastSave = { outcome, action: "reset", attempt: ++attempts };
   listeners.forEach((listener) => listener());
   return outcome;
 }
