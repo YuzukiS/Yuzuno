@@ -234,7 +234,10 @@ export function AutoContinueSetting({
     detail.agent.status,
   );
   const [busy, setBusy] = useState(false);
-  if (!view) return null;
+  if (!view) return <div id="agent-auto-continue" tabIndex={-1} className="auto-continue-setting">
+    <dt>Usage limit</dt>
+    <dd role={error ? "alert" : "status"}>{error || "Loading this Agent’s usage-limit policy…"}</dd>
+  </div>;
   const value = view.agent === null ? "default" : view.agent ? "on" : "off";
   async function choose(next: string) {
     setBusy(true);
@@ -269,7 +272,7 @@ export function AutoContinueSetting({
     }
   }
   return (
-    <div className="auto-continue-setting">
+    <div className="auto-continue-setting" id="agent-auto-continue" tabIndex={-1}>
       <dt>Usage limit</dt>
       <dd>
         <select

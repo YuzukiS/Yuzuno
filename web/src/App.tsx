@@ -86,6 +86,7 @@ import type {
   Workspace,
   WorkSummary,
 } from "./types";
+import type { SettingsDestination } from "./settings-catalog";
 import { UpdateBanner, WorkspaceUpdatesHost } from "./WorkspaceUpdates";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
@@ -161,7 +162,7 @@ import "./connection-status.css";
 import { OutgoingMessages } from "./OutgoingMessages";
 import { sendingInTurn } from "./delivery-note";
 import { CurrentTurnPrompt } from "./CurrentTurnPrompt";
-import { Jobs, ConversationJobs } from "./Jobs";
+import { Jobs, ConversationJobs, openJobs } from "./Jobs";
 import { ConversationSubAgentDock } from "./ClaudeSubAgentDock";
 import { ConversationBackgroundTaskDock } from "./ClaudeBackgroundTasks";
 import { refreshLiveJobs } from "./live-jobs";
@@ -280,15 +281,21 @@ export function App() {
   const [updatesOpen, setUpdatesOpen] = useState(false);
   const [updatesNeedReload, setUpdatesNeedReload] = useState(false);
   const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
+  const [settingsInspectorAgent, setSettingsInspectorAgent] = useState<string | null>(null);
+  const [settingsProject, setSettingsProject] = useState<string | null>(null);
   // The composer's `/model`: opens this Agent's settings, never a prompt.
-  const [modelRequest, setModelRequest] = useState<{ model: string; nonce: number; kind?: "permissions" } | null>(null);
+  const [modelRequest, setModelRequest] = useState<{ model: string; nonce: number; kind?: "permissions"; agentId?: string; section?: "model" | "context" } | null>(null);
   // What /new and /resume open New agent with (T-29); null is its usual start.
   const [createInitial, setCreateInitial] = useState<CreateInitial | null>(null);
   // /status, /usage and /mcp: the context panel, at that part of it.
   const [inspectorFocus, setInspectorFocus] = useState<{ id: string; nonce: number } | null>(null);
   useEffect(() => {
     if (!inspectorFocus) return;
-    const frame = requestAnimationFrame(() => document.getElementById(inspectorFocus.id)?.scrollIntoView({ block: "nearest" }));
+    const frame = requestAnimationFrame(() => {
+      const target = document.getElementById(inspectorFocus.id);
+      target?.scrollIntoView({ block: "nearest" });
+      target?.focus();
+    });
     return () => cancelAnimationFrame(frame);
   }, [inspectorFocus]);
   const [forkOpen, setForkOpen] = useState(false);
@@ -640,6 +647,12 @@ export function App() {
   const savedPages = useSavedPages(detail, selected);
   const sessionHistory = useSessionHistory(savedPages.detail, selected);
   const currentDetail = sessionHistory.detail;
+  useEffect(() => {
+    if (settingsInspectorAgent && inspectorShown && currentDetail?.agent.id === settingsInspectorAgent) {
+      setInspectorFocus({ id: "agent-auto-continue", nonce: Date.now() });
+      setSettingsInspectorAgent(null);
+    }
+  }, [settingsInspectorAgent, inspectorShown, currentDetail?.agent.id]);
   // Earlier native Turns come before the oldest saved one, so they are
   // offered only where the saved conversation starts (T-161).
   const nativeHistoryHere = !currentDetail?.conversation?.hasBefore;
@@ -1224,6 +1237,33 @@ export function App() {
     if (phone && id === selected && !homeOpen) setPhoneList(false);
     else selectAgent(id);
     if (phone) requestAnimationFrame(() => phoneBack.current?.focus());
+  }
+  function openSettingsDestination(destination: SettingsDestination) {
+    if (previewMode) return;
+    setUpdatesOpen(false);
+    // Let the Settings dialog release its focus/aria-hidden layer before
+    // another existing dialog or the conversation inspector takes over.
+    requestAnimationFrame(() => {
+    if (destination.kind === "agent") {
+      const chosen = workspace?.agents.find((item) => item.id === destination.agentId && !item.closedAt);
+      if (!chosen || chosen.harness === "opencode" ||
+        (destination.section === "context" && chosen.harness !== "codex") ||
+        (destination.section === "auto-continue" && (chosen.harness !== "claude" || chosen.remote))) return;
+      selectAgent(chosen.id);
+      if (destination.section === "auto-continue") {
+        if (phone) { setPhoneInspector(true); setPhoneList(false); }
+        else setInspector(true);
+        setSettingsInspectorAgent(chosen.id);
+      } else {
+        setModelRequest({ model: "", nonce: Date.now(), agentId: chosen.id, section: destination.section });
+      }
+    } else if (destination.kind === "project") {
+      if (!projects.some((project) => project.id === destination.projectId && !project.archivedAt)) return;
+      setSettingsProject(destination.projectId);
+      setProjectDialog("manage");
+    } else if (destination.kind === "machines") setMachinesOpen(true);
+    else openJobs({ source: "local", settings: "budget" });
+    });
   }
   // An Agent's action menu (T-184), in the list and the conversation header.
   // Each entry acts on the Agent the menu was opened on, never on whichever
@@ -2314,10 +2354,15 @@ export function App() {
                   observedContextUsage={currentDetail?.contextUsage}
                   disabled={previewMode || closed}
                   onOpenChange={setAgentSettingsOpen}
-                  request={modelRequest}
-                  onRequestOpened={() => setNotice(modelRequest?.kind === "permissions"
-                    ? "Agent settings are open, with this Agent's permissions. A change applies from its next turn."
-                    : "Model settings are open. A change applies from this Agent's next turn.")}
+                  request={modelRequest?.agentId && modelRequest.agentId !== agent.id ? null : modelRequest}
+                  onRequestOpened={() => {
+                    if (modelRequest?.agentId) setModelRequest(null);
+                    setNotice(modelRequest?.section === "context"
+                      ? "Context settings are open for this Agent. Saving and applying are separate actions."
+                      : modelRequest?.kind === "permissions"
+                        ? "Agent settings are open, with this Agent's permissions. A change applies from its next turn."
+                        : "Model settings are open. A change applies from this Agent's next turn.");
+                  }}
                   onSaved={() => {
                     refresh();
                     setNotice(
@@ -3222,6 +3267,7 @@ export function App() {
         open={updatesOpen}
         onOpenChange={setUpdatesOpen}
         onNeedsReloadChange={setUpdatesNeedReload}
+        navigation={{ agents: workspace?.agents || [], projects, disabled: previewMode, onNavigate: openSettingsDestination }}
         preserveDrafts={() => { if (imageUploads.hasPending()) throw new Error("Wait for images to finish saving before updating."); preserveDrafts(); }}
       />
       <CollaborationBoard
@@ -3402,8 +3448,9 @@ export function App() {
       />
       <ProjectManager
         open={!!projectDialog}
-        onOpenChange={(open) => !open && setProjectDialog(null)}
+        onOpenChange={(open) => { if (!open) { setProjectDialog(null); setSettingsProject(null); } }}
         initialView={projectDialog || "manage"}
+        initialProjectId={settingsProject}
         projects={projects}
         usage={workspace?.projectUsage}
         agents={workspace?.agents || []}

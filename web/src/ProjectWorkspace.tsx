@@ -267,6 +267,7 @@ export function ProjectManager({
   open,
   onOpenChange,
   initialView,
+  initialProjectId,
   projects,
   usage = {},
   agents,
@@ -276,6 +277,7 @@ export function ProjectManager({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialView: "new" | "manage";
+  initialProjectId?: string | null;
   projects: Project[];
   /** Linked agents and tasks per project, as Core counts them. */
   usage?: Record<string, ProjectUsage>;
@@ -289,7 +291,7 @@ export function ProjectManager({
   const unassigned = agents.filter((agent) => !agent.projectId);
   useEffect(() => {
     if (!open) return;
-    const first = activeProjects(projects)[0];
+    const first = activeProjects(projects).find((project) => project.id === initialProjectId) || activeProjects(projects)[0];
     setView(
       initialView === "new"
         ? { kind: "new" }

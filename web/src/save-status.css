@@ -1,0 +1,43 @@
+/* Whether a preference is saved (T-187): a quiet line when it is, an alert
+   with what to do when it isn't. */
+.save-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin: 0 2px;
+  color: var(--text-quiet);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.save-status svg {
+  flex: none;
+}
+.save-status > p {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.save-status-failed {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--coral) 40%, var(--paper));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--coral) 10%, var(--paper));
+  color: var(--ink);
+}
+.save-status-failed > p {
+  align-items: flex-start;
+  flex: 1 1 260px;
+}
+.save-status-failed > p svg {
+  margin-top: 2px;
+  color: var(--coral);
+}
+.save-status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

@@ -575,11 +575,11 @@ try {
       await page.getByRole("dialog").waitFor({ state: "detached" });
     });
 
-    await step(`${theme}: Settings has the desktop app under Updates, in three categories`, async () => {
+    await step(`${theme}: Settings has the desktop app under Updates, in the eight-category settings center`, async () => {
       await page.getByRole("button", { name: "Settings and updates", exact: true }).click();
       const settings = page.locator(".modal.settings-modal");
       await settings.waitFor();
-      assert.deepEqual(await settings.locator(".settings-nav [role=tab]").allInnerTexts(), ["Updates", "Appearance", "Home", "Code review"]);
+      assert.deepEqual(await settings.locator(".settings-nav [role=tab]").allInnerTexts(), ["Appearance & interaction", "Notifications & attention", "Agents & runtime", "Connections & devices", "Projects & collaboration", "Jobs & resources", "Data, privacy & recovery", "Updates & about"]);
       const desktop = settings.locator('#settings-panel-updates [aria-label="Desktop app"]');
       await desktop.waitFor();
       assert.match(await desktop.textContent(), /updated separately/);
