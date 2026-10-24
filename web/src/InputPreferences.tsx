@@ -1,14 +1,14 @@
 import { shortcutModifier } from "./api";
 import {
-  preferencesReadable,
+  preferencesStored,
   restoreDefaultPreferences,
+  retryPreferencesWrite,
   returnSends,
   savePreferences,
   useDevicePreferences,
   useDevicePreferencesSave,
   type SendKey,
 } from "./device-preferences";
-import type { SaveOutcome } from "./device-storage";
 import { SaveStatus } from "./SaveStatus";
 import { touchKeyboard } from "./touch-input";
 import "./device-preferences.css";
@@ -26,16 +26,10 @@ const choices: { value: SendKey; label: string; note: (touch: boolean) => string
   { value: "modEnter", label: `${shortcutModifier}+Return sends`, note: () => "Return makes a new line." },
 ];
 
-/** Storage this browser won't even read: nothing shown is a saved choice. */
-const UNREADABLE: SaveOutcome = {
-  saved: false,
-  reason: "blocked",
-  detail: "this browser doesn’t let Yuzuno store settings here",
-};
-
 /** How a message is sent from the conversation's composer, on this device
  * (T-189). The choice applies at once; whether it was saved here is said as
- * Appearance says it (SaveStatus), never "Saved" when the browser refused. */
+ * Appearance says it (SaveStatus), never "Saved" when the browser refused,
+ * and before a save in this visit, what this device holds. */
 export function InputPreferencesSection() {
   const preferences = useDevicePreferences();
   const save = useDevicePreferencesSave();
@@ -77,9 +71,11 @@ export function InputPreferencesSection() {
         </p>
       </div>
       <SaveStatus
-        outcome={save ?? (preferencesReadable() ? null : UNREADABLE)}
+        outcome={save?.outcome ?? null}
+        action={save?.action}
+        stored={preferencesStored()}
         scope="this device"
-        onRetry={() => savePreferences(preferences)}
+        onRetry={retryPreferencesWrite}
         onRestoreDefaults={restoreDefaultPreferences}
       />
     </section>

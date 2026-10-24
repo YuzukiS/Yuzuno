@@ -1,12 +1,21 @@
 import { useSyncExternalStore } from "react";
-import { clearDeviceValue, deviceStorageReadable, onDeviceValueChange, readDeviceValue, saveDeviceValue, type SaveOutcome } from "./device-storage";
+import {
+  clearDeviceValue,
+  deviceValueState,
+  onDeviceValueChange,
+  readDeviceValue,
+  saveDeviceValue,
+  type DeviceValueState,
+  type SaveOutcome,
+} from "./device-storage";
 
 /**
  * How this device is used (T-189): kept in this browser or app only, for
  * this address (device-storage.ts, as Appearance is). They do not travel to
  * other devices. Unset, each one behaves as Yuzuno always has. A choice this
  * device refused to save still applies in this window, and its editor says
- * it was not saved.
+ * it was not saved: what applies a preference reads the choice in effect
+ * (useDevicePreferences), not what is stored.
  */
 
 /** Which key sends from the conversation's composer.
@@ -39,8 +48,10 @@ export function readPreferences(): DevicePreferences {
 // in another window.
 const listeners = new Set<() => void>();
 let current: DevicePreferences | null = null;
-// What this visit's last save or reset did; null before one.
-let lastSave: SaveOutcome | null = null;
+/** What this visit's last write of these preferences did: a save or a reset. */
+export type PreferencesWrite = { outcome: SaveOutcome; action: "save" | "reset" };
+// Null before one.
+let lastSave: PreferencesWrite | null = null;
 const notify = () => listeners.forEach((listener) => listener());
 const subscribe = (listener: () => void) => {
   if (!listeners.size) stopWatching = onDeviceValueChange(STORAGE_KEY, changed);
@@ -62,13 +73,21 @@ export function useDevicePreferences(): DevicePreferences {
 }
 
 /** What this visit's last save or reset of these preferences did, or null. */
-export function useDevicePreferencesSave(): SaveOutcome | null {
+export function useDevicePreferencesSave(): PreferencesWrite | null {
   return useSyncExternalStore(subscribe, () => lastSave);
 }
 
-/** Whether this device can read its saved preferences at all. */
-export function preferencesReadable(): boolean {
-  return deviceStorageReadable(STORAGE_KEY);
+/** What this device holds for these preferences, read now: saved ones, none
+ * (the defaults), ones it can't read (not an object, or a send key this
+ * version doesn't have; the defaults apply), or storage it can't read at
+ * all. An object without a send key is saved: it may hold another of these
+ * preferences only. */
+export function preferencesStored(): DeviceValueState {
+  const state = deviceValueState(STORAGE_KEY);
+  if (state !== "saved") return state;
+  const value = readDeviceValue(STORAGE_KEY) as Partial<DevicePreferences> | null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "invalid";
+  return value.sendKey === undefined || sendKeys.includes(value.sendKey) ? "saved" : "invalid";
 }
 
 /** Applies the choice now and saves it on this device. A refused write is
@@ -76,16 +95,23 @@ export function preferencesReadable(): boolean {
 export function savePreferences(preferences: DevicePreferences): SaveOutcome {
   const outcome = saveDeviceValue(STORAGE_KEY, preferences);
   current = preferences;
-  lastSave = outcome;
+  lastSave = { outcome, action: "save" };
   notify();
   return outcome;
+}
+
+/** Tries this visit's last write again, as it was: a save of the choice in
+ * effect, or a reset that removes this device's choice (not a save of the
+ * defaults). */
+export function retryPreferencesWrite(): SaveOutcome {
+  return lastSave?.action === "reset" ? restoreDefaultPreferences() : savePreferences(current ?? readPreferences());
 }
 
 /** Back to the defaults on this device: its saved choice is removed. */
 export function restoreDefaultPreferences(): SaveOutcome {
   const outcome = clearDeviceValue(STORAGE_KEY);
   current = defaultPreferences;
-  lastSave = outcome;
+  lastSave = { outcome, action: "reset" };
   notify();
   return outcome;
 }

@@ -10,9 +10,10 @@ import { JSDOM } from "jsdom";
 
 // This device's preferences (T-189): the send key is kept in this browser
 // only (device-storage.ts), read back as saved (an unknown value reads as
-// Automatic), applies when another window saves it, and a refused save is
-// said as Appearance says it (SaveStatus), never "Saved", with Try again and
-// Restore defaults. The keyboard shortcuts help lists the shortcuts as they
+// Automatic), applies when another window saves it, and is said as
+// Appearance says it (SaveStatus): before a save, what this device holds;
+// a refused save or reset, never "Saved", with Try again (of that write)
+// and Restore defaults. The keyboard shortcuts help lists the shortcuts as they
 // work here (Return as the preference says; the desktop app's own only
 // there), and every key it lists is handled where it says.
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -49,17 +50,24 @@ window.showHelp = () => flushSync(() => root.render(<ShortcutHelpSection />));`,
   await rm(temp, { recursive: true, force: true });
 }
 
-const realSetItem = (w) => w.Storage.prototype.setItem;
-function page({ saved, refuse } = {}) {
+/** A page; the browser may refuse writes (`refuse`: storage full; `refuseRemove`:
+ * blocked) or every read (`unreadable`). `w.real` has its own methods back. */
+function page({ saved, refuse, refuseRemove, unreadable } = {}) {
   const dom = new JSDOM('<div id="root"></div>', { url: "http://isolated.test", runScripts: "outside-only", pretendToBeVisual: true });
   const w = dom.window;
   w.matchMedia = (media) => ({ media, matches: false, addEventListener() {}, removeEventListener() {} });
   if (saved !== undefined) w.localStorage.setItem("yuzuno.preferences", saved);
-  w.realSetItem = realSetItem(w);
+  const storage = w.Storage.prototype;
+  w.real = { setItem: storage.setItem, removeItem: storage.removeItem, getItem: storage.getItem };
+  const blocked = () => {
+    throw new w.DOMException("The operation is insecure.", "SecurityError");
+  };
   if (refuse)
-    w.Storage.prototype.setItem = function () {
+    storage.setItem = function () {
       throw new w.DOMException("The quota has been exceeded.", "QuotaExceededError");
     };
+  if (refuseRemove) storage.removeItem = blocked;
+  if (unreadable) storage.getItem = blocked;
   w.eval(bundle);
   return w;
 }
@@ -92,6 +100,7 @@ test("a chosen send key is saved on this device and said so; Restore defaults re
     w.showEditor();
     assert.equal(checked(w), "auto");
     assert.equal(current(w), "Return sends");
+    assert.equal(status(w), "Using the defaults; nothing is saved on this device yet");
     choose(w, "modEnter");
     await tick();
     assert.equal(w.localStorage.getItem("yuzuno.preferences"), '{"sendKey":"modEnter"}');
@@ -105,6 +114,7 @@ test("a chosen send key is saved on this device and said so; Restore defaults re
     assert.equal(w.localStorage.getItem("yuzuno.preferences"), null);
     assert.equal(checked(w), "auto");
     assert.equal(current(w), "Return sends");
+    assert.equal(status(w), "Defaults restored on this device");
     assert.equal(w.store.readPreferences().sendKey, "auto");
   } finally {
     w.close();
@@ -122,6 +132,7 @@ test("another window's saved choice applies here too", async () => {
     w.dispatchEvent(new w.StorageEvent("storage", { key: "yuzuno.preferences" }));
     await tick();
     assert.equal(checked(w), "enter");
+    assert.equal(status(w), "Using the choice saved on this device");
   } finally {
     w.close();
   }
@@ -141,12 +152,64 @@ test("a save the browser refuses is said, never 'Saved', and the choice holds fo
     assert.equal(checked(w), "enter");
     assert.equal(current(w), "Return sends");
     // Storage back: Try again saves it.
-    w.Storage.prototype.setItem = w.realSetItem;
+    w.Storage.prototype.setItem = w.real.setItem;
     button(w, "Try again").click();
     await tick();
     assert.equal(w.localStorage.getItem("yuzuno.preferences"), '{"sendKey":"enter"}');
     assert.equal(status(w), "Saved on this device");
     assert.equal(alert(w), null);
+  } finally {
+    w.close();
+  }
+});
+
+test("a reset the browser refuses is said; Try again resets, not saves the defaults", async () => {
+  const w = page({ saved: '{"sendKey":"modEnter"}', refuseRemove: true });
+  try {
+    w.showEditor();
+    assert.equal(checked(w), "modEnter");
+    assert.equal(status(w), "Using the choice saved on this device");
+    button(w, "Restore defaults").click();
+    await tick();
+    assert.equal(alert(w), "Not saved on this device: this browser doesn’t let Yuzuno store settings here. Your choice applies in this window until you close or reload it.");
+    // The defaults apply in this window; the saved choice is still there.
+    assert.equal(checked(w), "auto");
+    assert.equal(w.localStorage.getItem("yuzuno.preferences"), '{"sendKey":"modEnter"}');
+    w.Storage.prototype.removeItem = w.real.removeItem;
+    button(w, "Try again").click();
+    await tick();
+    assert.equal(w.localStorage.getItem("yuzuno.preferences"), null, "removed, not the defaults saved");
+    assert.equal(status(w), "Defaults restored on this device");
+    assert.equal(alert(w), null);
+  } finally {
+    w.close();
+  }
+});
+
+test("before a save, the editor says what this device holds, never Saved", () => {
+  const unread = "The choice saved on this device couldn’t be read, so the defaults apply. Choosing again saves a new one.";
+  for (const [saved, said, sendKey] of [
+    [undefined, "Using the defaults; nothing is saved on this device yet", "auto"],
+    ['{"sendKey":"enter"}', "Using the choice saved on this device", "enter"],
+    ['{"sendKey":"Return"}', unread, "auto"],
+    ["[]", unread, "auto"],
+    ["not json", unread, "auto"],
+  ]) {
+    const w = page({ saved });
+    try {
+      w.showEditor();
+      assert.deepEqual([status(w), alert(w), checked(w)], [said, null, sendKey], String(saved));
+    } finally {
+      w.close();
+    }
+  }
+  // Storage this browser won't read: the defaults, and not saved.
+  const w = page({ saved: '{"sendKey":"enter"}', unreadable: true });
+  try {
+    w.showEditor();
+    assert.equal(status(w), null);
+    assert.equal(alert(w), "Not saved on this device: this browser doesn’t let Yuzuno store settings here. Your choice applies in this window until you close or reload it.");
+    assert.equal(checked(w), "auto");
   } finally {
     w.close();
   }
