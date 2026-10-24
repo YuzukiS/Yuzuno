@@ -461,6 +461,11 @@ export function Jobs({
   });
   const [budget, setBudget] = useState<Budget | null>(null);
   const [budgetRequest, setBudgetRequest] = useState(0);
+  const clearBudgetRequest = useCallback(() => setBudgetRequest(0), []);
+  useEffect(() => {
+    // Closing or leaving Local also cancels a request whose budget has not loaded yet.
+    if (!open || source !== "local") clearBudgetRequest();
+  }, [open, source, clearBudgetRequest]);
   const [selected, setSelected] = useState("");
   const [detail, setDetail] = useState<Job | null>(null);
   const [log, setLog] = useState<Log | null>(null);
@@ -560,7 +565,7 @@ export function Jobs({
           : {},
       );
       setSelected(detail.jobId || "");
-      if (detail.settings === "budget") setBudgetRequest((value) => value + 1);
+      setBudgetRequest(detail.settings === "budget" ? (value) => value + 1 : 0);
       setCreating(false);
       setOpen(true);
     };
@@ -954,6 +959,7 @@ export function Jobs({
                   {budget && (
                     <JobsBudget
                       openRequest={budgetRequest}
+                      onOpenRequestHandled={clearBudgetRequest}
                       budget={budget}
                       // GPUs on which the user paused a running job (T-107).
                       pausedGpus={
@@ -1073,11 +1079,13 @@ const jobSources: { id: JobSource; label: string; Icon: typeof BriefcaseBusiness
  */
 function JobsBudget({
   openRequest,
+  onOpenRequestHandled,
   budget,
   pausedGpus,
   onSaved,
 }: {
   openRequest?: number;
+  onOpenRequestHandled?: () => void;
   budget: Budget;
   pausedGpus: Set<string>;
   onSaved: () => void;
@@ -1126,6 +1134,7 @@ function JobsBudget({
             </span>
             <BudgetSettings
               openRequest={openRequest}
+              onOpenRequestHandled={onOpenRequestHandled}
               budget={budget.budget}
               bounds={budget.budgetBounds}
               host={budget.machine}

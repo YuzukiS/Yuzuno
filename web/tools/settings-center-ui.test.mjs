@@ -151,8 +151,10 @@ test("a targeted context request survives the selected Agent mounting, without a
 
 test("a budget navigation request expands the unique budget editor without writing", async (t) => {
   const p = mount(); t.after(p.close);
-  p.w.renderBudget({ budget: { cpuMillis: 2000, memoryMiB: 4096, swapMiB: 0 }, openRequest: 1, onSaved() {} });
+  let handled = 0;
+  p.w.renderBudget({ budget: { cpuMillis: 2000, memoryMiB: 4096, swapMiB: 0 }, openRequest: 1, onOpenRequestHandled() { handled++; }, onSaved() {} });
   await until(() => p.doc.querySelector('details')?.open);
   assert.equal(p.doc.activeElement.tagName, 'SUMMARY');
+  assert.equal(handled, 1, 'the parent consumes the request after it is used');
   assert.equal(p.calls.length, 0);
 });

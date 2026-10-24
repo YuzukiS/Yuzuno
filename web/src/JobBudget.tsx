@@ -116,6 +116,7 @@ export type BudgetHost = {
 
 export function BudgetSettings({
   openRequest,
+  onOpenRequestHandled,
   budget,
   bounds,
   host,
@@ -124,6 +125,7 @@ export function BudgetSettings({
   onSaved,
 }: {
   openRequest?: number;
+  onOpenRequestHandled?: () => void;
   budget: Resources;
   bounds?: BudgetBounds;
   host?: BudgetHost;
@@ -138,7 +140,8 @@ export function BudgetSettings({
     setEditing(true);
     container.current?.querySelector("summary")?.focus();
     container.current?.scrollIntoView?.({ block: "start" });
-  }, [openRequest]);
+    onOpenRequestHandled?.();
+  }, [openRequest, onOpenRequestHandled]);
   const [value, setValue] = useState(budget);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);

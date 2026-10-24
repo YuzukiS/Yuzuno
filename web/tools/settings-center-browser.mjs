@@ -102,6 +102,7 @@ try {
   check('budget search expands the existing Core machine budget editor');
   await page.getByRole('tab', { name: 'GitHub Actions', exact: true }).click();
   await page.getByRole('tab', { name: 'Local', exact: true }).click();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const budgetEditor = page.locator('details.job-budget-settings');
   await budgetEditor.waitFor();
   assert.equal(await budgetEditor.evaluate((el) => el.open), false, 'Budget request must be consumed before a source remount');
