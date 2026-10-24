@@ -3298,3 +3298,11 @@ p {
     max-height: max(64px, 20dvh);
   }
 }
+/* A short screen can leave the conversation itself no height; its dock
+   buttons, kept at its foot, then rose over the conversation's header and
+   covered its menu, where Reconnect also is. The header stays above them;
+   an open dock and its scrim still cover it. */
+.app.phone .conversation-header {
+  position: relative;
+  z-index: 5;
+}
