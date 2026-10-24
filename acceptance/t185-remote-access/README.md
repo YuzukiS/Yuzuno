@@ -12,3 +12,9 @@ python3 acceptance/t185-remote-access/smoke.py --core target/debug/yuzuno-worksp
 The smoke uses a fresh data folder and free loopback ports. It never uses port
 4317, a daily Core, a real Tailscale or Serve. It needs a WSL host, as the
 feature does. Run it as a bounded Job; it writes `report.json` in `--out`.
+
+For a browser check of the page, `lab.py start --core … --out … [--web-dir web/dist] [--environment]`
+leaves such a Core running and writes `lab.json` (its page, the local port to
+apply, the stand-ins' state file, its pid and start time); `lab.py stop --out …`
+stops only that Core. `--environment` starts it with `YUZUNO_REMOTE_*` and a
+matching Serve entry, as a phone entry set up before Settings.
