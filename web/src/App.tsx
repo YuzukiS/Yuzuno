@@ -62,6 +62,7 @@ import {
 } from "./api";
 import { nativeControl } from "./slash-commands";
 import { touchKeyboard } from "./touch-input";
+import { returnSends, useDevicePreferences } from "./device-preferences";
 import {
   ArtifactModal,
   Avatar,
@@ -278,6 +279,8 @@ export function App() {
   const [createProject, setCreateProject] = useState<string | null>(null);
   // Settings that change what the Agent list renders, not only its look.
   const appearance = useAppearance();
+  // Which key sends, on this device (T-189); unset, as before.
+  const { sendKey } = useDevicePreferences();
   const [updatesOpen, setUpdatesOpen] = useState(false);
   const [updatesNeedReload, setUpdatesNeedReload] = useState(false);
   const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
@@ -2907,6 +2910,7 @@ export function App() {
                     draft={draft}
                     readOnly={previewMode || draftBlocked}
                     slashCommands={previewMode || isOpenCode ? false : isClaude ? "claude" : "codex"}
+                    sendKey={sendKey}
                     onChange={next => setDraft(selected, next)}
                     onSkill={skill => skill.path && setDraft(selected, current => {
                       const others = (current.skills || []).filter(s => s.agentId === selected && !(s.name === skill.name && s.path === skill.path));
@@ -2973,7 +2977,7 @@ export function App() {
                         </>
                       ) : (
                         <span className="composer-keys">
-                          {touchKeyboard() ? (
+                          {!returnSends(sendKey, touchKeyboard()) ? (
                             <>
                               <kbd>↵</kbd> New line{" "}
                               <kbd>{shortcutModifier} ↵</kbd> Send
