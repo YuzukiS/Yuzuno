@@ -517,3 +517,77 @@ async fn a_first_apply_rolled_back_says_phone_access_stays_off() {
     assert!(error.contains("(TCP 8444 → 127.0.0.1:22)") && error.ends_with("phone access stays off"), "{error}");
     assert!(lab.view().await["listening"].is_null());
 }
+
+#[tokio::test]
+async fn a_new_local_port_on_the_same_serve_port_replaces_cores_own_entry() {
+    let lab = lab("wsl");
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    let (first, second) = (free_port(), free_port());
+    lab.apply(json!({"requestId": "on", "enabled": true, "localPort": first})).await.unwrap();
+    let before = lab.calls().len();
+    let op = lab.apply(json!({"requestId": "move", "enabled": true, "localPort": second})).await.unwrap();
+    assert_eq!(op["state"], "succeeded", "{op}");
+    let changes: Vec<String> = lab.calls()[before..].iter().filter(|c| c.starts_with("serve --")).cloned().collect();
+    assert_eq!(changes, [format!("serve --https=8444 off"), format!("serve --bg --https=8444 http://127.0.0.1:{second}")]);
+    let serve = &lab.fake()["serve"];
+    assert_eq!(serve["Web"][format!("{DNS}:8444")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{second}").as_str());
+    assert!(serve["Web"][format!("{DNS}:443")].is_object(), "the other service is kept");
+    let host = format!("{DNS}:8444");
+    assert_eq!(get(second, "/api/health", Some(OWNER), &host).await.0, 200);
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    assert!(client.get(format!("http://127.0.0.1:{first}/api/health")).send().await.is_err(), "the old port is closed");
+    assert_eq!(lab.saved().owned.map(|o| o.target), Some(format!("http://127.0.0.1:{second}")));
+}
+
+#[tokio::test]
+async fn a_refused_replacement_points_serve_back_at_the_previous_entry() {
+    let lab = lab("wsl");
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    let (first, second) = (free_port(), free_port());
+    lab.apply(json!({"requestId": "on", "enabled": true, "localPort": first})).await.unwrap();
+    lab.set_fake(|s| s["failAddTarget"] = json!(format!("http://127.0.0.1:{second}")));
+    let op = lab.apply(json!({"requestId": "move", "enabled": true, "localPort": second})).await.unwrap();
+    assert_eq!(op["state"], "rolledBack", "{op}");
+    assert!(op["error"].as_str().unwrap().ends_with("The previous phone access is unchanged"), "{op}");
+    assert!(op.get("notes").is_none(), "pointed back: {op}");
+    assert_eq!(lab.fake()["serve"]["Web"][format!("{DNS}:8444")]["Handlers"]["/"]["Proxy"], format!("http://127.0.0.1:{first}").as_str());
+    assert_eq!(get(first, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200);
+    let saved = lab.saved();
+    assert_eq!(saved.effective.and_then(|e| e.listen).map(|e| e.port), Some(first));
+}
+
+#[tokio::test]
+async fn an_unanswered_serve_add_puts_the_previous_listener_back_and_keeps_the_record() {
+    let lab = lab("wsl");
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    let (first, second) = (free_port(), free_port());
+    lab.apply(json!({"requestId": "on", "enabled": true, "localPort": first})).await.unwrap();
+    lab.set_fake(|s| s["hangAdd"] = json!(true));
+    let op = lab.apply(json!({"requestId": "move", "enabled": true, "localPort": second, "servePort": 8445})).await.unwrap();
+    assert_eq!(op["state"], "uncertain", "{op}");
+    // What applies is unchanged in Core and in its record: a restart now serves the same entry.
+    assert_eq!(get(first, "/api/health", Some(OWNER), &format!("{DNS}:8444")).await.0, 200);
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    assert!(client.get(format!("http://127.0.0.1:{second}/api/health")).send().await.is_err());
+    assert_eq!(startup(&lab.ws.data_dir, None).listen.map(|(e, _)| e.port), Some(first));
+    lab.set_fake(|s| s["hangAdd"] = Value::Null);
+    let again = lab.apply(json!({"requestId": "move-again", "enabled": true, "localPort": second, "servePort": 8445})).await.unwrap();
+    assert_eq!(again["state"], "succeeded", "{again}");
+    assert!(lab.fake()["serve"]["TCP"].get("8444").is_none(), "the previous entry, on another port, removed");
+}
+
+#[tokio::test]
+async fn an_unreadable_record_is_kept_aside_by_the_next_apply() {
+    let lab = lab("wsl");
+    std::fs::write(path(&lab.ws), "{not json").unwrap();
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    let view = lab.view().await;
+    assert!(view["startupError"].as_str().unwrap().contains("Phone access was not started"), "{view}");
+    let op = lab.apply(json!({"requestId": "on", "enabled": true, "localPort": free_port()})).await.unwrap();
+    assert_eq!(op["state"], "succeeded", "{op}");
+    assert!(op["notes"][0].as_str().unwrap().contains("could not be read"), "{op}");
+    let kept: Vec<_> = std::fs::read_dir(&lab.ws.data_dir).unwrap().flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("remote-access.json.unreadable-")).collect();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(std::fs::read_to_string(kept[0].path()).unwrap(), "{not json");
+}

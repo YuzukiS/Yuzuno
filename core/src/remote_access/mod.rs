@@ -197,6 +197,14 @@ fn update<T>(ws: &Workspace, change: impl FnOnce(&mut Saved) -> Result<T>) -> Re
     Ok(value)
 }
 
+/// Move an unreadable record out of the way, keeping it for inspection.
+fn set_aside(ws: &Workspace) -> Result<String> {
+    let _held = ws.remote_access.file.lock().unwrap();
+    let name = format!("{FILE}.unreadable-{}", uuid::Uuid::new_v4().simple());
+    std::fs::rename(path(ws), ws.data_dir.join(&name))?;
+    Ok(name)
+}
+
 fn changed(ws: &Workspace) {
     ws.changes.publish(&json!({"type":"workspace.changed","scope":"remote-access"}));
 }
@@ -553,7 +561,9 @@ fn observe(ws: &Workspace, result: &Value) {
 /// The page's view, read only: nothing is probed and nothing is written.
 async fn view(ws: &Arc<Workspace>, can_change: bool) -> Result<Value> {
     let state = &ws.remote_access;
-    let saved = read(&path(ws))?;
+    // An unreadable record reads as none here; startup said why, and the next
+    // apply keeps it aside and starts again.
+    let saved = read(&path(ws)).unwrap_or_default();
     let host = state.host(false);
     let listening = state.current.lock().unwrap().as_ref().map(|(entry, since, source)| json!({
         "port": entry.port, "origin": entry.origin, "login": entry.login, "since": since, "source": source,
@@ -617,7 +627,16 @@ fn qr(url: &str) -> Option<Value> {
 
 async fn start(ws: &Arc<Workspace>, request: ApplyRequest) -> Result<Value> {
     anyhow::ensure!(!request.request_id.trim().is_empty() && request.request_id.len() <= 128, "requestId must contain 1–128 bytes");
-    let existing = read(&path(ws))?.operations.into_iter().find(|op| op.request_id == request.request_id);
+    let mut notes = Vec::new();
+    let saved = match read(&path(ws)) {
+        Ok(saved) => saved,
+        Err(error) => {
+            let aside = set_aside(ws)?;
+            notes.push(format!("The phone access record could not be read ({error:#}); it is kept as {aside}, and this change starts from none"));
+            Saved::default()
+        }
+    };
+    let existing = saved.operations.into_iter().find(|op| op.request_id == request.request_id);
     if let Some(op) = existing {
         anyhow::ensure!(op.request == request, "idempotency_conflict: requestId already names a different phone access change");
         return Ok(serde_json::to_value(op)?);
@@ -632,7 +651,7 @@ async fn start(ws: &Arc<Workspace>, request: ApplyRequest) -> Result<Value> {
         state: "running".into(),
         step: "validate".into(),
         error: None,
-        notes: Vec::new(),
+        notes,
         started_at: crate::model::now(),
         finished_at: None,
         url: None,
@@ -762,25 +781,46 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
         }
     };
     let (found, detail) = host::serve_entry(&config, &dns, serve_port, &target);
-    match found {
-        "match" => {}
-        "absent" => {
-            if let Err(error) = host::serve_add(host, serve_port, &target).await {
-                if error.downcast_ref::<host::TimedOut>().is_some() {
-                    // Whether it took effect is unknown: look once more.
-                    let now = host::serve_status(host).await.ok().map(|c| host::serve_entry(&c, &dns, serve_port, &target).0);
-                    if now != Some("match") {
-                        // Kept as it is: the retry finds the listener and checks Serve again.
-                        if let Undo::Restore(previous) = rollback {
-                            close(previous).await;
-                        }
-                        op.state = "uncertain".into();
-                        return Err(error.context("Serve did not confirm the entry; apply again to check and finish"));
-                    }
-                } else {
+    let owned = read(&path(ws))?.owned;
+    // Core's own entry on this Serve port, for another local port or node
+    // name: replaced, not taken for someone else's.
+    let replacing = owned.clone().filter(|o| {
+        found != "match" && o.serve_port == serve_port && host::serve_entry(&config, &o.host, o.serve_port, &o.target).0 == "match"
+    });
+    match (found, &replacing) {
+        ("match", _) => {}
+        ("absent", _) | (_, Some(_)) => {
+            if replacing.is_some() {
+                if let Err(error) = host::serve_off(host, serve_port).await {
+                    let timed_out = error.downcast_ref::<host::TimedOut>().is_some();
                     undo(ws, &mut slot, rollback).await;
-                    op.state = "rolledBack".into();
-                    return Err(error.context(format!("{}{}", unchanged[..1].to_uppercase(), &unchanged[1..])));
+                    op.state = if timed_out { "uncertain" } else { "rolledBack" }.into();
+                    return Err(error.context(format!("Core's previous entry on port {serve_port} was not replaced; {unchanged}")));
+                }
+            }
+            if let Err(error) = host::serve_add(host, serve_port, &target).await {
+                let timed_out = error.downcast_ref::<host::TimedOut>().is_some();
+                // Whether a lost answer took effect: look once more.
+                let now = if timed_out {
+                    host::serve_status(host).await.ok().map(|c| host::serve_entry(&c, &dns, serve_port, &target).0)
+                } else {
+                    None
+                };
+                if now != Some("match") {
+                    if let Some(old) = &replacing {
+                        if let Err(again) = host::serve_add(host, serve_port, &old.target).await {
+                            op.notes.push(format!("Serve port {serve_port} could not be pointed back at {}: {again:#}; apply again", old.target));
+                        }
+                    }
+                    // What applies stays as it was, in Core and in its record, so a
+                    // restart before the retry serves the same entry.
+                    undo(ws, &mut slot, rollback).await;
+                    op.state = if timed_out { "uncertain" } else { "rolledBack" }.into();
+                    return Err(if timed_out {
+                        error.context(format!("Serve did not confirm the entry; {unchanged}. Apply again to check and finish"))
+                    } else {
+                        error.context(format!("{}{}", unchanged[..1].to_uppercase(), &unchanged[1..]))
+                    });
                 }
             }
         }
@@ -790,9 +830,8 @@ async fn enable(ws: &Arc<Workspace>, host: &Host, op: &mut Operation) -> Result<
             bail!("{detail}. Choose another Serve port in the advanced settings; {unchanged}");
         }
     }
-    // The previous entry Core owned, on another port: removed only while it is still exactly that.
-    let owned = read(&path(ws))?.owned;
-    if let Some(old) = owned.filter(|o| o.serve_port != serve_port || o.target != target || o.host != dns) {
+    // The previous entry Core owned on another Serve port: removed only while it is still exactly that.
+    if let Some(old) = owned.filter(|o| o.serve_port != serve_port) {
         let still = host::serve_entry(&config, &old.host, old.serve_port, &old.target).0;
         match still {
             "match" => {
@@ -907,7 +946,7 @@ async fn get_view(AppState(ws): AppState<Arc<Workspace>>, request: Request) -> R
 async fn post_check(AppState(ws): AppState<Arc<Workspace>>, request: Request) -> Result<Json<Value>, ApiError> {
     let can_change = request.extensions().get::<RemoteRequest>().is_none();
     let host = ws.remote_access.host(true);
-    let saved = read(&path(&ws))?;
+    let saved = read(&path(&ws)).unwrap_or_default();
     let result = check(&ws, &host, current(&ws), planned(&saved)).await;
     observe(&ws, &result);
     changed(&ws);

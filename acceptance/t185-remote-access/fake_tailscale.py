@@ -3,7 +3,8 @@
 copy: its state is `<copy>.json`, each call is appended to `<copy>.log`.
 Answers `status --json`, `serve status --json`, `serve --bg --https=P target`
 and `serve --https=P off`. Faults the state names: failAdd, failOff (refused),
-lostAdd (added, then no answer), slow (seconds before any answer).
+failAddTarget (refuses adding that target), lostAdd (added, then no answer),
+hangAdd (no answer, nothing added), slow (seconds before any answer).
 Used by core/src/remote_access/tests.rs and smoke.py; nothing reaches Tailscale."""
 import json, sys, time
 STATE, LOG = sys.argv[0] + ".json", sys.argv[0] + ".log"
@@ -19,8 +20,10 @@ if args == ["serve", "status", "--json"]:
     print(json.dumps(serve) if serve.get("TCP") else ""); sys.exit(0)
 if args[:2] == ["serve", "--bg"] and args[2].startswith("--https="):
     port, target = args[2].split("=")[1], args[3]
-    if s.get("failAdd"):
-        print(s["failAdd"], file=sys.stderr); sys.exit(1)
+    if s.get("failAdd") or s.get("failAddTarget") == target:
+        print(s.get("failAdd") or "refused " + target, file=sys.stderr); sys.exit(1)
+    if s.get("hangAdd"):
+        time.sleep(30); sys.exit(0)
     serve.setdefault("TCP", {})[port] = {"HTTPS": True}
     serve.setdefault("Web", {})[s["status"]["Self"]["DNSName"].rstrip(".") + ":" + port] = {"Handlers": {"/": {"Proxy": target}}}
     save()
