@@ -34,7 +34,19 @@ cargo tauri ios build --no-sign --target aarch64-sim
 
 This builds `gen/apple/build/arm64-sim/Yuzuno.app`, unsigned, which the Simulator runs: drag it onto a running Simulator. `cargo tauri ios dev` builds and opens it in one step. The Simulator runs on the Mac and does not replicate a physical device ([Apple](https://developer.apple.com/documentation/xcode/running-your-app-on-simulated-or-physical-devices)). Your Workspace must be reachable from the Mac at the HTTPS address you enter.
 
-The [iOS workflow](../.github/workflows/ios.yml) makes this same Simulator build on a GitHub-hosted Mac for every pull request that changes `ios/`. It then installs the app in an iPhone Simulator and checks, with a UI test (`uitests/`), that the app starts and that its connection page works there: the field, the app's own refusal of a plain HTTP address, an address nothing answers, and that the window stays upright when the phone turns. It then opens Mobile Safari in the same Simulator, with the same page and the web UI on a synthetic Workspace (`web/tools/phone-fixture-server.mjs`, on the Mac's 127.0.0.1), upright, sideways and with the keyboard open, to compare what WebKit gives a page there; the pages' own measurements are printed in the run's log. No Core is reached, so a link in a Core's pages is not checked there. The app's checksum and the commit it was built from are in the run's summary; the only upload is nine screenshots of those pages, kept for 3 days. It uses no secret and signs nothing.
+The [iOS workflow](../.github/workflows/ios.yml) makes this same Simulator build on a GitHub-hosted Mac for every pull request that changes `ios/`. It checks that the packaged iPhone app is upright only, then runs the smoke test in an iPhone Simulator: the app starts, its connection page shows, and the app refuses a plain HTTP address itself. No Core is reached. The app's checksum and the commit it was built from are in the run's summary; the only upload is two screenshots of the connection page, kept for 3 days. It uses no secret and signs nothing.
+
+#### The UI checks on a Mac
+
+`uitests/run.sh` runs the UI checks in a Simulator of their own, which it deletes afterwards, so a Mac's other Simulators are left alone. It needs Xcode and xcodegen, and installs nothing.
+
+```sh
+uitests/run.sh smoke gen/apple/build/arm64-sim/Yuzuno.app /tmp/yuzuno-checks
+uitests/web-build.sh /tmp/yuzuno-web
+YUZUNO_UI_DIST=/tmp/yuzuno-web uitests/run.sh full gen/apple/build/arm64-sim/Yuzuno.app /tmp/yuzuno-checks
+```
+
+`smoke` is what CI runs. `full` also turns the phone, opens the keyboard, tries an address nothing answers, and opens Mobile Safari beside the app with the same page and the web UI on a synthetic Workspace (`web/tools/phone-fixture-server.mjs`, on the Mac's 127.0.0.1 only). Each page measures itself after every change; the lines are in `phone-measure.jsonl`. `web-build.sh` builds `web/` on a case-sensitive disk image, since `web/src` has had modules whose names differ only in case. Its `npm ci` runs on that image. These are Simulator results, not an iPhone's.
 
 ### Your own iPhone
 

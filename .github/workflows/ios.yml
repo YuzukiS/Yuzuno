@@ -5,7 +5,7 @@
 # (the Core rule, jsdom's lock and guard, the icon), runs the iOS app's tests
 # and builds it. The app is not uploaded; its checksum is in the run's
 # summary, as for desktop-macos.yml's pull requests. The one upload is the
-# Simulator check's three connection-page screenshots, for 3 days. Never an
+# Simulator smoke's two connection-page screenshots, for 3 days. Never an
 # installable build for an iPhone, which would need the user's own Apple
 # signing. No secret is used. See ios/README.md.
 name: iOS
@@ -20,9 +20,6 @@ on:
       - web/package-lock.json
       - web/tools/jsdom-guard.mjs
       - web/tools/jsdom-limits.mjs
-      - web/tools/phone-fixture-server.mjs
-      - web/tools/phone-measure.js
-      - web/tools/browser-fixtures.mjs
       - web/src/assets/yuzu-character.png
       - .github/workflows/ios.yml
       - .github/scripts/hosted-guard.sh
@@ -107,37 +104,6 @@ jobs:
           node tests/connection.test.mjs
           node tests/new_window_links.test.mjs
 
-      # Temporary (T-170, Lead 8337): Dev 5's rename of the web modules whose
-      # names differed only in case (fix/t170-case-names at e3d5fb7), built
-      # on this Mac's own disk, which ignores case; main 22e1fae, before the
-      # rename, is the control and must fail with MISSING_EXPORT. Web only:
-      # nothing here builds the app. Removed once the rename is on main.
-      - name: Web build on the Mac's own disk (case names)
-        run: |
-          volume=$(df . | tail -1 | awk '{print $NF}')
-          echo "checkout: $PWD on $volume"
-          diskutil info "$volume" | grep -i 'File System Personality'
-          touch case-probe-a
-          if ls case-probe-A > /dev/null 2>&1; then echo "case-probe-A found: this disk ignores case"; else echo "::error::this disk is case-sensitive"; exit 1; fi
-          rm -f case-probe-a
-          for commit in e3d5fb7002a2a43b9575a41d5d5cb52b6442c65c 22e1faed36cf99b3f256fe7cea8bd67771de413f; do
-            git -C .. fetch -q --no-tags --depth 1 origin "$commit"
-            dir="$RUNNER_TEMP/case-$commit"
-            mkdir -p "$dir"
-            git -C .. archive "$commit" LICENSE web | tar -x -C "$dir"
-            echo "$commit in $dir on $(df "$dir" | tail -1 | awk '{print $NF}')"
-            set +e
-            (cd "$dir/web" && npm ci --ignore-scripts --no-audit --no-fund && npx vite build --outDir "$RUNNER_TEMP/web-dist-case-$commit" --emptyOutDir) > "$dir/build.log" 2>&1
-            echo $? > "$dir/build.exit"
-            set -e
-            echo "$commit: npm ci + vite build exit $(cat "$dir/build.exit"), MISSING_EXPORT lines $(grep -c MISSING_EXPORT "$dir/build.log")"
-          done
-          fix="$RUNNER_TEMP/case-e3d5fb7002a2a43b9575a41d5d5cb52b6442c65c"
-          control="$RUNNER_TEMP/case-22e1faed36cf99b3f256fe7cea8bd67771de413f"
-          if [ "$(cat "$fix/build.exit")" != 0 ] || grep -q MISSING_EXPORT "$fix/build.log"; then tail -40 "$fix/build.log"; echo "::error::the rename does not build on this disk"; exit 1; fi
-          if [ "$(cat "$control/build.exit")" = 0 ] || ! grep -q MISSING_EXPORT "$control/build.log"; then tail -40 "$control/build.log"; echo "::error::the control did not fail with MISSING_EXPORT"; exit 1; fi
-          grep MISSING_EXPORT "$control/build.log" | perl -pe 's/\e\[[0-9;]*m//g'
-
       # The pinned Tauri CLI, built fresh; nothing is cached.
       - name: Tauri CLI ${{ env.TAURI_CLI_VERSION }}
         run: |
@@ -187,80 +153,33 @@ jobs:
           echo "built from $source (parents: $parents)"
           { echo "### iOS Simulator app"; echo; echo "\`$identifier\`, $platform, arm64, built from \`$source\` (parents: \`$parents\`)."; echo; echo '```'; cat "$RUNNER_TEMP/out/SHA256SUMS"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
-      # The web UI for the Safari comparison below, from this checkout. Its
-      # source has modules whose names differ only in case (subagents.ts and
-      # SubAgents.tsx, clarification.ts and Clarification.tsx), which this
-      # Mac's case-insensitive disk resolves to the wrong file (run
-      # 40060336137): the build runs on a case-sensitive disk image instead.
-      # Other web changes do not run this job: it compares WebKit in the app
-      # and in Safari, it does not check each web change.
-      - name: Web build for Safari
-        run: |
-          image="$RUNNER_TEMP/web-src.sparseimage"
-          volume="$RUNNER_TEMP/web-src"
-          hdiutil create -quiet -size 4g -type SPARSE -fs "Case-sensitive APFS" -volname yuzuno-web "$image"
-          hdiutil attach -quiet -nobrowse -mountpoint "$volume" "$image"
-          git -C .. archive HEAD LICENSE web | tar -x -C "$volume"
-          (cd "$volume/web" && npm ci --ignore-scripts --no-audit --no-fund && npx vite build --outDir "$RUNNER_TEMP/web-dist" --emptyOutDir)
-          hdiutil detach -quiet "$volume"
-
-      # The app in a Simulator, without a Core: it starts, its connection
-      # page shows in the app's WKWebView, and the app's own commands answer
-      # there (uitests/). Then Mobile Safari in the same Simulator, with the
-      # same page and the web UI on a synthetic Workspace, both served on
-      # 127.0.0.1 by web/tools/phone-fixture-server.mjs; the pages measure
-      # themselves (phone-measure.js) and the lines are printed here. The
-      # check saves nine screenshots, the only files that leave the runner.
-      - name: Simulator check
+      # The app in a Simulator of its own, without a Core: it starts, its
+      # connection page shows in the app's WKWebView, and the app refuses a
+      # plain HTTP address itself (uitests/run.sh smoke). Turning, the
+      # keyboard, Mobile Safari beside the app and their measurements are for
+      # a Mac with Xcode (run.sh full; see ios/README.md), not this job.
+      - name: Simulator smoke
         timeout-minutes: 20
-        env:
-          # xcodebuild hands TEST_RUNNER_<name> to the test as <name>.
-          TEST_RUNNER_YUZUNO_SCREENSHOTS: ${{ runner.temp }}/ios-screenshots
-          # Where the page's parts are, in points; printed below, not uploaded.
-          TEST_RUNNER_YUZUNO_FRAMES: ${{ runner.temp }}/ios-frames.txt
-          TEST_RUNNER_YUZUNO_SAFARI: http://127.0.0.1:4510/
-          YUZUNO_UI_DIST: ${{ runner.temp }}/web-dist
-          YUZUNO_MEASURE_OUT: ${{ runner.temp }}/phone-measure.jsonl
-          YUZUNO_PORT: "4510"
         run: |
-          mkdir "$TEST_RUNNER_YUZUNO_SCREENSHOTS"
           app=$(find gen/apple/build/arm64-sim -maxdepth 1 -type d -name '*.app')
-          device=$(xcrun simctl create yuzuno-check "iPhone 17")
-          xcrun simctl list devices | awk -v device="$device" '/^-- /{runtime=$0} index($0, device){print runtime; print}'
-          xcrun simctl boot "$device"
-          xcrun simctl bootstatus "$device" -b
-          xcrun simctl install "$device" "$app"
-          YUZUNO_EXTRA="/connection=$PWD/connection" node ../web/tools/phone-fixture-server.mjs > "$RUNNER_TEMP/page-server.log" 2>&1 &
-          server=$!
-          for attempt in $(seq 1 30); do curl -sf -o /dev/null "${TEST_RUNNER_YUZUNO_SAFARI}connection/" && break; sleep 0.5; done
-          (cd uitests && xcodegen generate)
-          xcodebuild test -quiet -project uitests/YuzunoChecks.xcodeproj -scheme Checks \
-            -destination "platform=iOS Simulator,id=$device" -resultBundlePath "$RUNNER_TEMP/checks.xcresult"
-          cat "$TEST_RUNNER_YUZUNO_FRAMES"
-          echo "--- what the pages in Safari measured (CSS px)"
-          cat "$YUZUNO_MEASURE_OUT"
-          kill "$server"
-          xcrun simctl shutdown "$device"
+          uitests/run.sh smoke "$app" "$RUNNER_TEMP/checks"
 
-      # When the check fails: what failed, from its result bundle (the
+      # When the smoke fails: what failed, from its result bundle (the
       # tests' own messages). Nothing is uploaded.
-      - name: Simulator check failures
+      - name: Simulator smoke failures
         if: failure()
         run: |
-          [ ! -f "$RUNNER_TEMP/page-server.log" ] || cat "$RUNNER_TEMP/page-server.log"
-          [ ! -f "$RUNNER_TEMP/phone-measure.jsonl" ] || cat "$RUNNER_TEMP/phone-measure.jsonl"
-          [ -d "$RUNNER_TEMP/checks.xcresult" ] || { echo "no result bundle"; exit 0; }
-          xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/checks.xcresult"
-          xcrun xcresulttool get test-results tests --path "$RUNNER_TEMP/checks.xcresult"
+          [ -d "$RUNNER_TEMP/checks/checks.xcresult" ] || { echo "no result bundle"; exit 0; }
+          xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/checks/checks.xcresult"
+          xcrun xcresulttool get test-results tests --path "$RUNNER_TEMP/checks/checks.xcresult"
 
-      # The connection page in the app and in Safari, and the web UI on the
-      # fixture's synthetic Workspace, all made without a Core: no Workspace,
-      # account or address of the user's can be in these. Exactly these nine
-      # PNG files are uploaded, kept for 3 days; the app itself is not.
+      # The connection page, made without a Core: no Workspace, account or
+      # address of the user's can be in these. Exactly these two PNG files are
+      # uploaded, kept for 3 days; the app itself is not.
       - name: Screenshots
         run: |
-          dir="$RUNNER_TEMP/ios-screenshots"
-          expected="app-portrait.png app-refused.png app-rotated.png safari-connection-landscape.png safari-connection-portrait.png safari-web-dialog.png safari-web-keyboard.png safari-web-landscape.png safari-web-portrait.png"
+          dir="$RUNNER_TEMP/checks/screenshots"
+          expected="app-portrait.png app-refused.png"
           found=$(ls -A "$dir" | LC_ALL=C sort | paste -s -d ' ' -)
           [ "$found" = "$expected" ] || { echo "::error::expected $expected, found: $found"; exit 1; }
           for file in $expected; do
@@ -270,6 +189,6 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ios-simulator-screenshots-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ios-screenshots/*.png
+          path: ${{ runner.temp }}/checks/screenshots/*.png
           if-no-files-found: error
           retention-days: 3

@@ -1,10 +1,10 @@
 import XCTest
 
-/// The Yuzuno app as ios.yml installs it in this Simulator: its connection
-/// page in the app's WKWebView, answered by the app's own commands. No Core
-/// is reached. Then Mobile Safari in the same Simulator, with the same page
-/// and the web UI on a synthetic Workspace, for comparison. A passing check
-/// is a Simulator result, not an iPhone's.
+/// The Yuzuno app as run.sh installs it in a Simulator of its own: its
+/// connection page in the app's WKWebView, answered by the app's own
+/// commands. No Core is reached. On a Mac (run.sh full), also measured, and
+/// Mobile Safari beside it with the same page and the web UI on a synthetic
+/// Workspace. A passing check is a Simulator result, not an iPhone's.
 final class ConnectionPageChecks: XCTestCase {
     private let yuzuno = XCUIApplication(bundleIdentifier: "dev.yuzuno.ios")
     private let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
@@ -85,16 +85,31 @@ final class ConnectionPageChecks: XCTestCase {
         yuzuno.buttons["Connect"].tap()
     }
 
-    func testTheConnectionPageAnswersThroughTheApp() {
+    /// Every run, CI's smoke included (run.sh smoke): the app starts, shows
+    /// its connection page in its WKWebView, and refuses a plain HTTP address
+    /// itself (core_url.rs, through connect_core).
+    func testLaunchAndTheAppsOwnRefusal() {
         // A fresh install has no saved Workspace, and the page found the app's bridge.
         freshPage()
         XCTAssertTrue(yuzuno.textFields.firstMatch.exists, page())
         drawn(in: yuzuno)
-        record("app portrait", in: yuzuno)
         screenshot("app-portrait")
+        enter("http://core.example.ts.net")
+        XCTAssertTrue(message(containing: "HTTPS address").waitForExistence(timeout: 20), page())
+        screenshot("app-refused")
+    }
 
-        // The iPhone app is portrait only for now (Info.ios.plist, Lead 8305):
-        // turning the phone leaves the window as it was.
+    /// On a Mac with Xcode (run.sh full): where the page's parts are upright,
+    /// with the phone turned (the iPhone app stays upright, Info.ios.plist)
+    /// and with the keyboard open, and an address nothing answers.
+    func testTheAppMeasured() throws {
+        guard ProcessInfo.processInfo.environment["YUZUNO_EXPLORE"] != nil else {
+            throw XCTSkip("run.sh full only")
+        }
+        freshPage()
+        drawn(in: yuzuno)
+        record("app portrait", in: yuzuno)
+
         XCUIDevice.shared.orientation = .landscapeLeft
         sleep(2)
         drawn(in: yuzuno)
@@ -105,11 +120,9 @@ final class ConnectionPageChecks: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
         sleep(2)
 
-        // The refusal is the app's own (core_url.rs), through connect_core.
         enter("http://core.example.ts.net")
         XCTAssertTrue(message(containing: "HTTPS address").waitForExistence(timeout: 20), page())
         record("app keyboard", in: yuzuno)
-        screenshot("app-refused")
 
         // An HTTPS address nothing answers: 192.0.2.1 is a documentation
         // address (RFC 5737). The health check gives up within its 4 s, and
@@ -148,7 +161,7 @@ final class ConnectionPageChecks: XCTestCase {
     /// to submit, so the keyboard is opened in the web UI only.
     func testThePagesInSafari() throws {
         guard let base = ProcessInfo.processInfo.environment["YUZUNO_SAFARI"], let root = URL(string: base) else {
-            throw XCTSkip("ios.yml serves the pages for Safari; not set here")
+            throw XCTSkip("run.sh full only: it serves Safari's pages")
         }
         safari.open(URL(string: "connection/", relativeTo: root)!.absoluteURL)
         pastFirstRun()
