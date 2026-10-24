@@ -17,8 +17,10 @@
 #                              shut down or deleted here
 #   YUZUNO_DERIVED_DATA=<dir>  the tests' build, built incrementally
 # Otherwise each run creates a Simulator of type YUZUNO_DEVICE_TYPE (default
-# "iPhone 17", on the newest runtime installed) and deletes it when it ends,
-# and builds the tests in <out>/DerivedData.
+# "iPhone 17") and deletes it when it ends, and builds the tests in
+# <out>/DerivedData. Either way the Simulator runs the installed iOS runtime
+# that matches the active Xcode's Simulator SDK (DEVELOPER_DIR picks another
+# Xcode); with none, or a kept Simulator on another runtime, it stops.
 set -euo pipefail
 [ $# = 3 ] && { [ "$1" = smoke ] || [ "$1" = full ]; } || { echo "usage: run.sh smoke|full <app> <out>" >&2; exit 64; }
 mode=$1
@@ -29,11 +31,32 @@ here=$(cd "$(dirname "$0")" && pwd)
 ios=$(dirname "$here")
 
 derived=${YUZUNO_DERIVED_DATA:-$out/DerivedData}
+# The runtime of the SDK the tests are built with: simctl's own default is
+# the newest runtime installed, which an older Xcode cannot test on.
+sdk=$(xcrun --sdk iphonesimulator --show-sdk-version)
+runtime=$(xcrun simctl list runtimes --json | python3 -c '
+import json, sys
+sdk = sys.argv[1]
+for runtime in json.load(sys.stdin)["runtimes"]:
+    version = runtime.get("version", "")
+    if runtime.get("platform") == "iOS" and runtime.get("isAvailable") and (version == sdk or version.startswith(sdk + ".")):
+        print(runtime["identifier"])
+        break
+' "$sdk")
+[ -n "$runtime" ] || { echo "run.sh: no installed iOS Simulator runtime for the iphonesimulator SDK $sdk" >&2; exit 1; }
+echo "Simulator SDK $sdk, runtime $runtime"
 if [ -n "${YUZUNO_DEVICE:-}" ]; then
   device=$YUZUNO_DEVICE
   kept=1
+  on=$(xcrun simctl list devices --json | python3 -c '
+import json, sys
+for runtime, devices in json.load(sys.stdin)["devices"].items():
+    if any(each.get("udid") == sys.argv[1] for each in devices):
+        print(runtime)
+' "$device")
+  [ "$on" = "$runtime" ] || { echo "run.sh: YUZUNO_DEVICE $device runs ${on:-no runtime found}, not $runtime" >&2; exit 1; }
 else
-  device=$(xcrun simctl create "yuzuno-check-$mode-$$" "${YUZUNO_DEVICE_TYPE:-iPhone 17}")
+  device=$(xcrun simctl create "yuzuno-check-$mode-$$" "${YUZUNO_DEVICE_TYPE:-iPhone 17}" "$runtime")
   kept=
 fi
 server=
