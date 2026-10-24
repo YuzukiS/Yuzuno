@@ -374,9 +374,25 @@ export function App() {
   const readingFrame = useRef(0);
   const initialReading = useRef(false);
   const scroll = useRef<HTMLDivElement>(null);
+  // The conversation's scroller, as state too: its end is put in view when
+  // the scroller is first drawn, not only when the detail arrives. The detail
+  // can come before the Workspace that draws it (T-170): the conversation
+  // then opened at the top of its window, with no Back to latest.
+  const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
+  const attachScroll = useCallback((element: HTMLDivElement | null) => {
+    scroll.current = element;
+    setScroller(element);
+  }, []);
   const readEnd = useRef<HTMLDivElement>(null);
   const composer = useRef<ComposerHandle>(null);
   const stickToBottom = useRef(true);
+  // Back to latest shows when the conversation's end is out of view, as
+  // measured, never only because it was assumed to open there. It says only
+  // that (a scroll says the rest) and moves nothing.
+  const measureLatest = useCallback(() => {
+    const el = scroll.current;
+    if (el && el.clientHeight > 0 && el.scrollHeight - el.scrollTop - el.clientHeight >= 72) setAtBottom(false);
+  }, []);
   const searchReading = useRef(false);
   const draggingScrollbar = useRef(false);
   // What grows after it is drawn (a tool row unfolding, a chart laying out),
@@ -406,11 +422,14 @@ export function App() {
         performance.now() - readerToggled.current > 600
       )
         el.scrollTop = el.scrollHeight;
+      // Following, but not moved to the end: said once the frame is done
+      // (by then a conversation that has just opened has been put there).
+      else if (stickToBottom.current) requestAnimationFrame(measureLatest);
     });
     observer.observe(inner);
     if (inner.parentElement) observer.observe(inner.parentElement);
     return () => observer.disconnect();
-  }, []);
+  }, [measureLatest]);
   const fileReturn = useRef<{
     agentId: string;
     scrollTop: number;
@@ -970,7 +989,14 @@ export function App() {
     }
     if (stickToBottom.current && scroll.current)
       scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [currentDetail, jumpToTurn, homeOpen, sourceJump, artifact, outgoing]);
+  }, [currentDetail, jumpToTurn, homeOpen, sourceJump, artifact, outgoing, scroller]);
+  // A phone's conversation shown again from the Agent list (the same one
+  // too, which keeps its place): Back to latest if it is not at its end.
+  useEffect(() => {
+    if (listShown) return;
+    const frame = requestAnimationFrame(measureLatest);
+    return () => cancelAnimationFrame(frame);
+  }, [listShown, measureLatest]);
   useEffect(() => {
     if (!sourceJump || !catchupSource || homeOpen || !currentDetail) return;
     if (currentDetail.agent.id !== catchupSource.agentId) return;
@@ -2340,7 +2366,7 @@ export function App() {
               )}
               <div
                 className="conversation-scroll"
-                ref={scroll}
+                ref={attachScroll}
                 data-agent-id={selected}
                 onWheel={(e) => {
                   if (e.deltaY < 0) {
