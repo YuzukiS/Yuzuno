@@ -211,7 +211,7 @@ fn a_damaged_or_altered_backup_is_refused_and_nothing_is_restored() {
         }), "not a regular file"),
         ("a path outside the folders", Box::new(|dir: &Path| rewrite_manifest(dir, |m| m["files"][0]["path"] = json!("jobs/../../escape"))),
             "a path a backup cannot hold"),
-        ("a newer format", Box::new(|dir: &Path| rewrite_manifest(dir, |m| m["version"] = json!(2))), "format version 2"),
+        ("a newer format", Box::new(|dir: &Path| rewrite_manifest(dir, |m| m["version"] = json!(3))), "format version 3"),
         ("a damaged database", Box::new(|dir: &Path| {
             let path = dir.join(DATABASE);
             let mut bytes = fs::read(&path).unwrap();
@@ -522,4 +522,44 @@ async fn operations_are_idempotent_one_at_a_time_and_a_restart_interrupts_them()
     assert!(interrupted.error.unwrap().contains("Core stopped"));
     assert!(!scratch.exists());
     assert_eq!(reopened.get(&first.id).unwrap().state, "succeeded", "finished operations are kept");
+}
+
+#[test]
+fn a_job_queued_just_before_the_snapshot_refuses_the_backup() {
+    let root = tempfile::tempdir().unwrap();
+    let data = workspace(root.path());
+    let store = running_core(&data);
+    let ctl = Control::default();
+    let live = store.clone();
+    // After any check before the copy, before the copy itself.
+    once_at(&ctl, "database", move || {
+        live.db.write().unwrap().execute(
+            "INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES('job-late','task','agent-a','queued','{\"name\":\"just queued\"}')", []).unwrap();
+    });
+    let out = root.path().join("backup");
+    let refused = error(running(&data, &store, &out, &ctl));
+    assert!(refused.contains("1 Job(s) have not ended: just queued (job-late)"), "{refused}");
+    assert_eq!(entries(root.path()), ["source"], "nothing is left behind");
+}
+
+#[test]
+fn a_version_1_backup_of_whole_folders_is_still_checked_and_restored() {
+    let root = tempfile::tempdir().unwrap();
+    let (_, out, _) = backed_up(root.path());
+    // As slice 1 wrote it: a file the database copy does not name, version 1.
+    let extra = format!("{FILES}/{UNNAMED}");
+    fs::write(out.join(&extra), "no section keeps this").unwrap();
+    let (bytes, sha256) = hash_file(&out.join(&extra)).unwrap();
+    rewrite_manifest(&out, |m| {
+        m["files"].as_array_mut().unwrap().push(json!({"path":UNNAMED,"bytes":bytes,"sha256":sha256}));
+    });
+    assert!(error(verify(&out)).contains("which its database copy does not name"), "version 2 holds named files only");
+    rewrite_manifest(&out, |m| m["version"] = json!(1));
+    verify(&out).unwrap();
+    let restored = restore(&out, &root.path().join("restored")).unwrap();
+    assert_eq!(restored.files, 7);
+    // A named attachment is still required.
+    fs::remove_file(out.join(FILES).join(ATTACHMENT)).unwrap();
+    rewrite_manifest(&out, |m| m["files"].as_array_mut().unwrap().retain(|f| f["path"] != ATTACHMENT));
+    assert!(error(verify(&out)).contains("which the backup does not hold"));
 }

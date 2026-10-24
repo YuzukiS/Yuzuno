@@ -45,7 +45,10 @@ pub mod online;
 mod tests;
 
 pub const FORMAT: &str = "yuzuno-workspace-backup";
-pub const VERSION: u32 = 1;
+/// 2: the files are exactly ones the database copy names (`Named`).
+/// 1: slice 1, which copied Core's folders whole; still checked and restored.
+pub const VERSION: u32 = 2;
+const OLDEST: u32 = 1;
 const DATABASE: &str = "workspace.sqlite";
 const MANIFEST: &str = "manifest.json";
 const FILES: &str = "files";
@@ -249,7 +252,7 @@ pub fn backup(data: &Path, out: &Path) -> Result<Manifest> {
 /// transaction: a committed snapshot, taken without waiting for or holding up
 /// the writer (WAL mode only). Every Brief attachment file is held first, so
 /// none the copy names can be removed before it is copied. A Job unfinished
-/// in that snapshot refuses the backup.
+/// in that snapshot refuses the backup: it is read from the copy itself.
 pub fn running(data: &Path, store: &crate::store::Store, out: &Path, ctl: &Control) -> Result<Manifest> {
     // By the path Core keeps them under: collect_garbage compares the same.
     let _held = crate::project_brief::hold_attachments(data)?;
@@ -257,9 +260,6 @@ pub fn running(data: &Path, store: &crate::store::Store, out: &Path, ctl: &Contr
     make(&data, out, ctl, |path| {
         let reader = store.db.read()?;
         wal_only(&reader)?;
-        let unfinished = unfinished_jobs(&reader)?;
-        ensure!(unfinished.is_empty(), "{} Job(s) have not ended: {}. Back up once they have", unfinished.len(),
-            unfinished.iter().map(|(id, name)| format!("{name} ({id})")).collect::<Vec<_>>().join(", "));
         copy_snapshot(&reader, path)
     })
 }
@@ -305,6 +305,10 @@ fn make(data: &Path, out: &Path, ctl: &Control, snapshot: impl FnOnce(&Path) -> 
         private_dirs(&partial)?;
         ctl.at("database")?;
         snapshot(&partial.join(DATABASE))?;
+        // On the copy itself: a Job unfinished in the snapshot refuses it.
+        let unfinished = unfinished_jobs(&crate::data_dir::read_only(&partial.join(DATABASE))?)?;
+        ensure!(unfinished.is_empty(), "{} Job(s) have not ended: {}. Back up once they have", unfinished.len(),
+            unfinished.iter().map(|(id, name)| format!("{name} ({id})")).collect::<Vec<_>>().join(", "));
         let (database, removed, workspace_id) = finish_copy(&partial.join(DATABASE))?;
         ctl.at("files")?;
         let (planned, mut excluded) = select(data, &crate::data_dir::read_only(&partial.join(DATABASE))?)?;
@@ -379,7 +383,14 @@ pub fn verify(dir: &Path) -> Result<Manifest> {
     }
     let db = crate::data_dir::read_only(&dir.join(DATABASE))?;
     agrees(&facts(&db, Role::Backup)?, &manifest)?;
-    Named::read(&db)?.check(&manifest.files)?;
+    let named = Named::read(&db)?;
+    if manifest.version >= 2 {
+        named.check(&manifest.files)?;
+    } else {
+        // Version 1 copied the folders whole: it may hold files the copy
+        // does not name, but must hold every attachment file it does.
+        named.attachments_held(&manifest.files)?;
+    }
     Ok(manifest)
 }
 
@@ -516,7 +527,6 @@ impl Named {
     /// The files a backup holds are exactly ones this copy names, and every
     /// Brief attachment file it names is among them.
     fn check(&self, files: &[FileEntry]) -> Result<()> {
-        let mut attachments = BTreeSet::new();
         for file in files {
             let mut parts = file.path.split('/');
             let (folder, entry) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
@@ -526,11 +536,14 @@ impl Named {
             if let Some(reason) = parts.find_map(|name| Self::skip(folder, name)) {
                 bail!("The backup holds {}, which a backup leaves out ({reason})", file.path);
             }
-            if folder == "brief-attachments" {
-                attachments.insert(entry);
-            }
         }
-        if let Some(missing) = self.attachments.iter().find(|sha| !attachments.contains(sha.as_str())) {
+        self.attachments_held(files)
+    }
+
+    /// Every Brief attachment file this copy names is among `files`.
+    fn attachments_held(&self, files: &[FileEntry]) -> Result<()> {
+        let held: BTreeSet<&str> = files.iter().filter_map(|file| file.path.strip_prefix("brief-attachments/")).collect();
+        if let Some(missing) = self.attachments.iter().find(|sha| !held.contains(sha.as_str())) {
             bail!("The database copy names the Brief attachment file {missing}, which the backup does not hold");
         }
         Ok(())
@@ -645,8 +658,8 @@ pub(crate) fn read_manifest(dir: &Path) -> Result<Manifest> {
     ensure!(meta.is_file() && meta.len() <= 64 * 1024 * 1024, "{MANIFEST} is not a regular file of at most 64 MiB");
     let value: Value = serde_json::from_slice(&fs::read(&path)?).context("The backup manifest is not JSON")?;
     ensure!(value["format"] == FORMAT, "{} is not a Workspace backup (format {})", dir.display(), value["format"]);
-    ensure!(value["version"] == VERSION,
-        "This backup has format version {}; this Core reads version {VERSION}. Use the Core that made it", value["version"]);
+    ensure!(value["version"].as_u64().is_some_and(|v| (OLDEST as u64..=VERSION as u64).contains(&v)),
+        "This backup has format version {}; this Core reads versions {OLDEST} to {VERSION}. Use the Core that made it", value["version"]);
     serde_json::from_value(value).context("The backup manifest is not one this Core can read")
 }
 
