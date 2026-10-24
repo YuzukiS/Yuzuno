@@ -178,6 +178,7 @@ import { PendingQuestions, type PendingQuestionsHandle } from "./PendingQuestion
 import { QuestionIndex, questionKey } from "./pending-questions";
 import { pruneRequestDrafts } from "./request-draft";
 import { usePhone } from "./phone-layout";
+import { PhoneDockButtons, type PhoneDock } from "./PhoneDocks";
 import { followVisualViewport } from "./keyboard-viewport";
 import type { QuestionSource } from "./types";
 import { Home, type HomeTarget } from "./home/Home";
@@ -308,6 +309,9 @@ export function App() {
     setPlanRequest((request) => request && request.agentId !== selected ? null : request);
   }, [selected]);
   const [turnDockEngaged, setTurnDockEngaged] = useState(false);
+  // On a phone the work and turn docks open one at a time over the
+  // conversation (PhoneDocks.tsx); closed, they take no width.
+  const [phoneDock, setPhoneDock] = useState<PhoneDock>(null);
   const [inspector, setInspector] = useState(true);
   // A wide window's choice; on a phone the list is a screen of its own.
   const [railOpen, setRailOpen] = useState(true);
@@ -507,8 +511,12 @@ export function App() {
     const refreshJobs = () => jobsRefresh.now();
     // Jobs open as a dialog above Home (whose own Jobs widget sends this),
     // so Home stays: closing it would put a conversation on screen behind
-    // the dialog and start its read dwell.
-    const openJobs = () => setCollaborationOpen(false);
+    // the dialog and start its read dwell. On a phone the work panel a job
+    // was opened from closes, so the conversation is whole on return.
+    const openJobs = () => {
+      setCollaborationOpen(false);
+      setPhoneDock(null);
+    };
     window.addEventListener("yuzuno:open-job", openJobs);
     window.addEventListener("yuzuno:jobs-refresh", refreshJobs);
     return () => { window.removeEventListener("yuzuno:jobs-refresh", refreshJobs); window.removeEventListener("yuzuno:open-job", openJobs); };
@@ -554,6 +562,11 @@ export function App() {
   const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode, browserOffline);
   const agent = workspace?.agents.find((a) => a.id === selected);
   const inspectorShown = (phone ? phoneInspector : inspector) && !!agent && !homeOpen;
+  // An open dock panel closes when something covers the conversation (the
+  // Agent list, or the context panel a job opens) or the window widens.
+  useEffect(() => {
+    if (!phone || listShown || inspectorShown) setPhoneDock(null);
+  }, [phone, listShown, inspectorShown]);
   const projects = workspace?.projects || [];
   const workspaceId = workspace?.workspace?.id || "";
   const readingPositions = useMemo(
@@ -676,6 +689,9 @@ export function App() {
   const isClaude = agent?.harness === "claude";
   const isOpenCode = agent?.harness === "opencode";
   const logicalTurns = sessionHistory.navigationTurns;
+  // The Turn being read, counted from 1: the latest while none is.
+  const readingIndex = readingTurn ? logicalTurns.findIndex((turn) => turn.id === readingTurn) : -1;
+  const readingTurnNumber = readingIndex >= 0 ? readingIndex + 1 : logicalTurns.length;
   // Claude takes a follow-up to your running turn, not to a turn of its own.
   const claudeFollowUpTurnId = isClaude && busy
     ? logicalTurns
@@ -831,6 +847,7 @@ export function App() {
     setInterrupting(false);
     setRequestReopen(null);
     setTurnDockEngaged(false);
+    setPhoneDock(null);
     setReadingTurn(undefined);
     stickToBottom.current = !historyReading;
     searchReading.current = historyReading;
@@ -1309,7 +1326,10 @@ export function App() {
     setSearch("");
     openMessageLink(searchLink);
   }
+  // From a dock or a sub-agent's card, which on a phone is a panel over the
+  // conversation (PhoneDocks.tsx): the panel closes on the Turn it goes to.
   function navigateToTurn(turnId: string) {
+    setPhoneDock(null);
     setHistoryReading(true);
     searchReading.current = true;
     setAtBottom(false);
@@ -1341,6 +1361,7 @@ export function App() {
     );
   }
   function backToLatest() {
+    setPhoneDock(null);
     setPageTarget(null);
     setPageSpace(null);
     savedPages.drop();
@@ -2290,7 +2311,7 @@ export function App() {
                 </span>
               </div>
             )}
-            <div className="conversation-body">
+            <div className="conversation-body" data-phone-dock={phone && phoneDock ? phoneDock : undefined}>
               {runningTurn && (
                 <CurrentTurnPrompt
                   key={`${selected}:${runningTurn.id}`}
@@ -2563,7 +2584,16 @@ export function App() {
                 onNavigate={navigateToTurn}
                 atLatest={atBottom && !historyReading}
                 onLatest={backToLatest}
+                touch={phone}
               />
+              {phone && (
+                <PhoneDockButtons
+                  open={phoneDock}
+                  onOpen={setPhoneDock}
+                  turn={readingTurnNumber}
+                  turns={logicalTurns.length}
+                />
+              )}
               {(!atBottom || historyReading) && (
                 <button className="jump-latest" onClick={backToLatest}>
                   <ArrowDown size={13} />
