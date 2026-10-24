@@ -135,6 +135,10 @@ jobs:
           [ "$platform" = iPhoneSimulator ] || { echo "::error::platform is $platform"; exit 1; }
           lipo -archs "$app/$executable" | grep -qx arm64 || { echo "::error::not an arm64 executable: $(lipo -archs "$app/$executable")"; exit 1; }
           xcrun vtool -show-build "$app/$executable" | grep -E 'platform|minos'
+          # The devices and orientations the app declares, as packaged.
+          for key in UIDeviceFamily UISupportedInterfaceOrientations 'UISupportedInterfaceOrientations~ipad' UIRequiresFullScreen; do
+            echo "$key: $(/usr/libexec/PlistBuddy -c "Print :$key" "$app/Info.plist" 2>&1 | tr -s ' \n' ' ')"
+          done
           mkdir -p "$RUNNER_TEMP/out"
           ditto -c -k --keepParent "$app" "$RUNNER_TEMP/out/Yuzuno-iOS-Simulator.zip"
           (cd "$RUNNER_TEMP/out" && shasum -a 256 Yuzuno-iOS-Simulator.zip | tee SHA256SUMS)
