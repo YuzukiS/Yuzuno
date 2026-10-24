@@ -17,6 +17,8 @@ export type RemoteAccessOperation = {
   state: "running" | "succeeded" | "failed" | "rolledBack" | "uncertain" | "interrupted";
   step: "validate" | "save" | "listen" | "serve" | "verify" | "done";
   error?: string;
+  /** Sentences Core adds about what it did, such as an entry it took over. */
+  notes?: string[];
   startedAt: string;
   finishedAt?: string;
   url?: string;
@@ -68,6 +70,8 @@ export type RemoteAccessView = {
   defaults: { servePort: number; localPort: number };
   /** false on the phone entry itself: a phone cannot lock itself out. */
   canChange: boolean;
+  /** Why it cannot be changed here, when `canChange` is false. */
+  readOnlyReason?: string | null;
 };
 
 /** What Save and apply sends besides its request ID. */
@@ -188,4 +192,12 @@ export function newRequestId(): string {
   const bytes = new Uint8Array(12);
   crypto.getRandomValues(bytes);
   return `remote-${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** The address a phone would open for these settings: the Tailscale node's
+ * HTTPS name and the Serve port, with no port for 443, as Core makes it. */
+export function previewUrl(dnsName: string | undefined, servePort: number): string | null {
+  if (!dnsName) return null;
+  const host = dnsName.replace(/\.$/, "");
+  return servePort === 443 ? `https://${host}` : `https://${host}:${servePort}`;
 }

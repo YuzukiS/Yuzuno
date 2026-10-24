@@ -6,6 +6,7 @@ import {
   newRequestId,
   operationStepLabels,
   operationSteps,
+  previewUrl,
   qrPath,
   running,
   savePending,
@@ -228,6 +229,12 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
   const enabledNow = !!view && (!!view.saved?.enabled || !!view.listening || view.serve.state === "ours");
   const done = operation ? outcome(operation) : null;
   const unverified = !!view?.url && !!view.verification && !view.verification.ok;
+  // What Save and apply would make, from the node Check read and the typed port.
+  const typed = fields ? draftOf(fields) : null;
+  const preview =
+    view && typed && typeof typed !== "string"
+      ? previewUrl(tailscale?.dnsName, typed.servePort ?? view.defaults.servePort)
+      : null;
   const stepIndex = operation ? operationSteps.indexOf(operation.step) : -1;
   return (
     <section id="settings-remote" className="settings-section remote-access" aria-label="Phone access settings">
@@ -377,11 +384,18 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
                   {done}
                 </p>
               )}
+              {!busy && !!operation.notes?.length && (
+                <ul className="remote-access-notes" aria-label="Notes from Core">
+                  {operation.notes.map((note, index) => (
+                    <li key={index}>{note}</li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
           {supported && !view.canChange && (
             <p className="remote-access-note" role="note">
-              This page is open through the phone entry, so it cannot change it. Change it from Yuzuno on the computer.
+              {view.readOnlyReason || "This page is open through the phone entry, so it cannot change it. Change it from Yuzuno on the computer."}
             </p>
           )}
           {supported && view.canChange && fields && (
@@ -436,6 +450,11 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
                   />
                 </label>
               </details>
+              {preview && (
+                <p className="remote-access-preview">
+                  Your phone will open <strong>{preview}</strong>
+                </p>
+              )}
               <div className="settings-row settings-row-end remote-access-actions">
                 <div className="settings-row-action">
                   <button type="button" className="secondary-button" disabled={checking || sending || busy} onClick={() => void runCheck()}>

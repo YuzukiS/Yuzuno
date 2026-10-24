@@ -194,7 +194,7 @@ test("check, then save and apply: progress by step, then the address with copy a
     }
     if (url.endsWith("/operations/op-1")) {
       if (++polls < 2) return { body: op("running", "serve", { requestId: current.operation.requestId }) };
-      current = on({ operation: op("succeeded", "done", { requestId: current.operation.requestId, url: `${ENTRY}/` }) });
+      current = on({ operation: op("succeeded", "done", { requestId: current.operation.requestId, url: `${ENTRY}/`, notes: ["The earlier entry on port 8444 was removed."] }) });
       return { body: current.operation };
     }
     return { status: 404, body: { error: "no" } };
@@ -207,7 +207,11 @@ test("check, then save and apply: progress by step, then the address with copy a
     assert.deepEqual(p.calls.find((c) => c.url.endsWith("/check")).body, {});
     assert.match(p.text(), /Windows · desk\.example\.ts\.net · running/);
     assert.match(p.states()[2][1], /No Yuzuno entry · 1 other entry left as they are/);
+    assert.equal(p.doc.querySelector(".remote-access-preview").textContent, "Your phone will open https://desk.example.ts.net:8444");
+    type(p, "Serve port", "443");
+    assert.equal(p.doc.querySelector(".remote-access-preview").textContent, "Your phone will open https://desk.example.ts.net", "no port for 443");
     type(p, "Serve port", "9443");
+    assert.equal(p.doc.querySelector(".remote-access-preview").textContent, "Your phone will open https://desk.example.ts.net:9443");
     button(p, "Save and apply").click();
     await waitFor(() => p.doc.querySelector(".remote-access-steps"), "the steps");
     const apply = p.applies()[0].body;
@@ -221,6 +225,7 @@ test("check, then save and apply: progress by step, then the address with copy a
     assert.equal(p.doc.querySelector(".remote-access-qr path").getAttribute("d"), "M4,4h1v1h-1zM6,4h1v1h-1zM5,5h1v1h-1zM4,6h1v1h-1zM5,6h1v1h-1zM6,6h1v1h-1z");
     assert.equal(p.doc.querySelector(".settings-current").textContent, "On");
     assert.match(p.text(), /Applied\./);
+    assert.deepEqual([...p.doc.querySelectorAll(".remote-access-notes li")].map((li) => li.textContent), ["The earlier entry on port 8444 was removed."]);
     button(p, "Copy").click();
     await waitFor(() => button(p, "Copied"), "copied");
     assert.deepEqual(p.copied, [`${ENTRY}/`]);
@@ -323,7 +328,7 @@ test("on the phone entry itself the page only shows: the address, and no way to 
   const p = mount(() => ({ body: example("remoteEntryReadOnly") }), { url: "https://pc.tail0.ts.net:8444/" });
   try {
     await waitFor(() => p.doc.querySelector(".remote-access-result"), "the address");
-    assert.match(p.text(), /open through the phone entry, so it cannot change it/);
+    assert.match(p.text(), /This page is open through the phone entry\. Change phone access from Yuzuno on the computer, so this phone cannot lock itself out\./);
     for (const label of ["Check", "Save and apply", "Turn off"]) assert.equal(!!button(p, label), false, label);
     assert.deepEqual(p.states().map(([tone]) => tone), ["on", "on", "on", "on"]);
     assert.deepEqual(p.writes(), []);
@@ -366,6 +371,10 @@ test("the backend's example views read as they should, and none of them is writt
       assert.match(p.text(), /Applied\. The status above is what Core reports now\./);
       assert.equal(p.doc.querySelector(".remote-access-result a").getAttribute("href"), "https://pc.tail0.ts.net:8444");
       assert.deepEqual(p.states().map(([tone]) => tone), ["on", "on", "on", "on"]);
+      const qr = p.doc.querySelector(".remote-access-qr");
+      assert.equal(qr.getAttribute("viewBox"), "0 0 33 33", "25 modules and a four-module margin");
+      assert.equal(qr.getAttribute("aria-label"), "QR code for https://pc.tail0.ts.net:8444");
+      assert.match(qr.querySelector("path").getAttribute("d"), /^M4,4h1v1h-1z/);
     },
     rolledBackAtServe: (p) => {
       assert.deepEqual(p.states()[0], ["warn", "Saved settingsOn · https://pc.tail0.ts.net:8445 · owner@github · not applied"]);

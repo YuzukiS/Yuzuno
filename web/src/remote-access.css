@@ -153,6 +153,21 @@
 .remote-access-verification li[data-state="failed"] {
   color: var(--danger, #b55d53);
 }
+.remote-access-notes {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.remote-access-preview {
+  margin: 0;
+  padding: 10px 16px 0;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  overflow-wrap: anywhere;
+}
 @media (max-width: 640px) {
   .remote-access-states li {
     grid-template-columns: 8px minmax(0, 1fr);
