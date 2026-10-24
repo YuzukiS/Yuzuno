@@ -1751,3 +1751,201 @@ fn claude_results_racing_streamed_items_are_held_as_their_rows_and_journal_rebui
     let t5 = reloaded.iter().find(|t| t["id"] == "t5").unwrap();
     assert_eq!(t5["items"].as_array().unwrap().iter().filter(|i| i["id"].as_str().is_some_and(|id| id.starts_with('s'))).count(), 80);
 }
+
+/// The Claude sends' commits this thread got to writing without copying the
+/// record's other Turns (`Store::commit_turn`, `TurnChange::Sent`).
+fn sent_in_place() -> u64 {
+    super::SENT_IN_PLACE.with(|n| n.get())
+}
+
+/// A send's `turnRequested` data, as claude.rs journals it.
+fn requested_data(turn: &str) -> Value {
+    json!({"turnId":turn,"text":"next task","images":[]})
+}
+
+/// The change claude.rs makes for a send's `turnRequested`
+/// (`claude_send_input_locked`), for Turn `turn`.
+fn requested(turn: &str) -> impl Fn(&mut AgentDetail) + Clone {
+    let turn = turn.to_owned();
+    move |d: &mut AgentDetail| {
+        let t = d.turn_mut(&turn);
+        t["status"] = "inProgress".into();
+        t["items"] = json!([{"id":format!("{turn}:input"),"type":"userMessage","content":[{"type":"text","text":"next task"}],"nativeUuid":turn}]);
+        let started = t["_yuzunoStartedAt"].as_i64();
+        crate::conversation_time::stamp_message(&mut t["items"][0], started, "core");
+        d.agent.status = "working".into();
+        d.agent.error = None;
+    }
+}
+
+/// The change claude.rs makes for `message/bound` (`claude_answer_form_locked`).
+fn bound(turn: &str, client: &str) -> impl Fn(&mut AgentDetail) + Clone {
+    let (turn, client) = (turn.to_owned(), client.to_owned());
+    move |d: &mut AgentDetail| {
+        if let Some(t) = d.turns.iter_mut().find(|t| t["id"] == turn.as_str()) {
+            if let Some(item) = t["items"].as_array_mut().and_then(|items| items.iter_mut().find(|i| i["type"] == "userMessage")) {
+                item["clientId"] = client.as_str().into();
+            }
+        }
+    }
+}
+
+/// A send's commit made as claude.rs made it before (`record_event`,
+/// comparing the whole record) in `generic`, and through `record_send` in
+/// `scoped`; whether `scoped` wrote it in place.
+fn send_both(generic: &Store, scoped: &Store, kind: &str, data: &Value, change: impl Fn(&mut AgentDetail) + Clone) -> bool {
+    generic.record_event("a", kind, data, change.clone()).unwrap();
+    let before = sent_in_place();
+    scoped.record_send("a", kind, data, change).unwrap();
+    sent_in_place() == before + 1
+}
+
+/// A send's new Turn and the client ID bound to its user message are written
+/// without copying the other Turns, with what comparing the whole record
+/// writes: the same record held and in its rows, journal and receipts. Only
+/// the new Turn's Item is planned.
+#[test]
+fn a_claude_send_is_written_without_copying_the_other_turns() {
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    let same = |step: &str, in_place: bool| {
+        assert!(in_place, "{step}: the scoped store copied the record");
+        assert_eq!(state(&generic), state(&scoped), "{step}: written in place, something else was written");
+        for store in [&generic, &scoped] {
+            store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+        }
+    };
+    // The new Turn: the scoped store plans its one Item and no other.
+    generic.record_event("a", "claude/turnRequested", &requested_data("s1"), requested("s1")).unwrap();
+    let (planned, taken) = (record_rows::PLANNED_ITEMS.with(|n| n.get()), sent_in_place());
+    scoped.record_send("a", "claude/turnRequested", &requested_data("s1"), requested("s1")).unwrap();
+    assert_eq!(record_rows::PLANNED_ITEMS.with(|n| n.get()) - planned, 1, "only the new Turn's Item is planned");
+    same("a send's new Turn", sent_in_place() == taken + 1);
+    let s1 = scoped.detail("a").unwrap().turns.into_iter().find(|t| t["id"] == "s1").unwrap();
+    assert_eq!((s1["status"].clone(), s1["items"][0]["nativeUuid"].clone()), (json!("inProgress"), json!("s1")));
+    // Its receipt, then its client ID bound once the bridge accepted it:
+    // commit's bind binds the receipt to that message, in both.
+    for store in [&generic, &scoped] {
+        store.update_meta("a", "message/requested", &json!({}), |m| m.message_receipts.push(receipt("m1", "next task"))).unwrap();
+    }
+    same("its client ID bound", send_both(&generic, &scoped, "message/bound",
+        &json!({"clientMessageId":"m1","turnId":"s1"}), bound("s1", "m1")));
+    let d = scoped.detail("a").unwrap();
+    let r = d.message_receipts.iter().find(|r| r.input.client_message_id == "m1").unwrap();
+    assert_eq!(r.binding.as_ref().map(|b| b.turn_id.as_str()), Some("s1"), "{r:?}");
+    // Beside an Item streamed into another Turn that its rows lack: written too.
+    for store in [&generic, &scoped] {
+        super::tests::stream(store, "a", "item/completed",
+            &json!({"turnId":"t5","item":{"id":"m5","type":"agentMessage","text":"streamed elsewhere"}}));
+    }
+    same("a send beside an unwritten Item", send_both(&generic, &scoped, "claude/turnRequested", &requested_data("s2"), requested("s2")));
+    // After a failed Turn: the Agent works again, its error cleared.
+    for store in [&generic, &scoped] {
+        store.update_meta("a", "test/error", &json!({}), |m| {
+            m.agent.status = "error".into();
+            m.agent.error = Some("failed".into());
+        }).unwrap();
+    }
+    same("a send after an error", send_both(&generic, &scoped, "claude/turnRequested", &requested_data("s3"), requested("s3")));
+    let agent = scoped.agent("a").unwrap();
+    assert_eq!((agent.status.as_str(), agent.error.as_deref()), ("working", None));
+}
+
+/// Where writing in place cannot be shown to write what comparing writes, a
+/// send's commit is made as `record_event` makes it.
+#[test]
+fn a_claude_send_is_compared_where_in_place_cannot_show_the_same_write() {
+    fn compared(generic: &Store, scoped: &Store, step: &str, kind: &str, data: &Value, change: impl Fn(&mut AgentDetail) + Clone) {
+        assert!(!send_both(generic, scoped, kind, data, change), "{step}: written in place");
+        assert_eq!(state(generic), state(scoped), "{step}");
+    }
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        let mut memory = store.memory.lock().unwrap();
+        memory.held.clear();
+        memory.briefs.clear();
+    }
+    compared(&generic, &scoped, "a record not held", "claude/turnRequested", &requested_data("s1"), requested("s1"));
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    compared(&generic, &scoped, "a bind of a Turn the record lacks, which appends none", "message/bound",
+        &json!({"clientMessageId":"m1","turnId":"missing"}), bound("missing", "m1"));
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        store.record_event("a", "test/duplicate", &json!({}), |d| {
+            let copy = d.turns[1].clone();
+            d.turns.push(copy);
+        }).unwrap();
+    }
+    compared(&generic, &scoped, "Turns without distinct IDs", "claude/turnRequested", &requested_data("s1"), requested("s1"));
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        let mut blocks = receipt("old-4", "message 4");
+        blocks.status = "accepted".into();
+        blocks.input.text_blocks = Some(vec![crate::message_content::TextBlock { id: "b".into(), start: 0, end: 7 }]);
+        store.update_meta("a", "message/requested", &json!({}), move |m| m.message_receipts.push(blocks)).unwrap();
+        unrestore(store, "t4", "u4");
+    }
+    compared(&generic, &scoped, "an old Item restore would change", "claude/turnRequested", &requested_data("s1"), requested("s1"));
+
+    let ((_ga, generic), (_sa, scoped)) = pair();
+    for store in [&generic, &scoped] {
+        let whole = serde_json::to_string(&store.detail("a").unwrap()).unwrap();
+        let mut db = store.db.write().unwrap();
+        let tx = db.transaction().unwrap();
+        tx.execute("UPDATE agents SET layout=0, data=?1 WHERE id='a'", [whole]).unwrap();
+        record_rows::delete_rows(&tx, "a").unwrap();
+        tx.commit().unwrap();
+        drop(db);
+        let mut memory = store.memory.lock().unwrap();
+        memory.held.clear();
+        memory.briefs.clear();
+        drop(memory);
+        store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+    }
+    compared(&generic, &scoped, "a record kept as one body", "claude/turnRequested", &requested_data("s1"), requested("s1"));
+}
+
+/// Each way a send's write can fail, planning, writing its journal, metadata,
+/// Turn or Item rows, or at COMMIT, publishes nothing: the record held and
+/// its rows are as they were, and once the fault is gone the same send is
+/// journaled once and its Turn written.
+#[test]
+fn a_claude_send_whose_write_fails_publishes_nothing() {
+    for (fault, undo, wrote) in [
+        ("ALTER TABLE agent_turns RENAME TO hidden_turns;", "ALTER TABLE hidden_turns RENAME TO agent_turns;", false),
+        ("CREATE TRIGGER refuse BEFORE INSERT ON journal WHEN NEW.kind='claude/turnRequested' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            "DROP TRIGGER refuse;", true),
+        ("CREATE TRIGGER refuse BEFORE UPDATE ON agents BEGIN SELECT RAISE(ABORT, 'refused'); END;", "DROP TRIGGER refuse;", true),
+        ("CREATE TRIGGER refuse BEFORE INSERT ON agent_turns WHEN NEW.turn_id='s1' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            "DROP TRIGGER refuse;", true),
+        ("CREATE TRIGGER refuse BEFORE INSERT ON agent_items WHEN NEW.turn_id='s1' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            "DROP TRIGGER refuse;", true),
+        ("CREATE TABLE t140_parent(id INTEGER PRIMARY KEY);
+          CREATE TABLE t140_child(parent INTEGER REFERENCES t140_parent(id) DEFERRABLE INITIALLY DEFERRED);
+          CREATE TRIGGER t140_orphan AFTER INSERT ON journal WHEN NEW.kind='claude/turnRequested'
+              BEGIN INSERT INTO t140_child(parent) VALUES(-1); END;", "DROP TRIGGER t140_orphan;", true),
+    ] {
+        let ((_ga, _generic), (_sa, store)) = pair();
+        super::tests::stream(&store, "a", "item/completed",
+            &json!({"turnId":"t5","item":{"id":"m5","type":"agentMessage","text":"later"}}));
+        let unwritten = || store.memory.lock().unwrap().held.get("a").map(|held| held.unwritten.clone());
+        let (before, lacking) = (published(&store), unwritten());
+        store.db.write().unwrap().execute_batch(fault).unwrap();
+        let taken = sent_in_place();
+        assert!(store.record_send("a", "claude/turnRequested", &requested_data("s1"), requested("s1")).is_err(), "{fault}");
+        assert_eq!(sent_in_place(), taken + u64::from(wrote), "{fault}: which path wrote");
+        assert!(store.held("a").is_some(), "{fault}");
+        store.db.write().unwrap().execute_batch(undo).unwrap();
+        assert_eq!(published(&store), before, "{fault}");
+        assert_eq!(unwritten(), lacking, "{fault}");
+        store.record_send("a", "claude/turnRequested", &requested_data("s1"), requested("s1")).unwrap();
+        let sends: i64 = store.db.read().unwrap()
+            .query_row("SELECT count(*) FROM journal WHERE agent_id='a' AND kind='claude/turnRequested'", [], |r| r.get(0)).unwrap();
+        assert_eq!(sends, 1, "{fault}: the failed write was journaled");
+        let s = state(&store);
+        assert_eq!(s["held"], s["reloaded"], "{fault}: what is held is not what its rows and journal rebuild");
+        assert!(s["reloaded"]["turns"].as_array().unwrap().iter().any(|t| t["id"] == "s1"), "{fault}");
+    }
+}
