@@ -82,7 +82,14 @@ test("eight categories and bilingual search expose real scope, without fake cont
     p.type(query, term);
     const card = await until(() => [...p.doc.querySelectorAll('.settings-catalog-card')].find((item) => item.querySelector('h4')?.textContent === title));
     assert.match(card.textContent, new RegExp(scope));
-    if (term === "手机访问") { assert.match(card.textContent, /Unavailable here/); assert.equal(card.querySelector("button, input, select"), null); }
+    if (term === "手机访问") {
+      // Phone access has its own editor (T-185); the card opens it in place.
+      assert.doesNotMatch(card.textContent, /Unavailable here/);
+      card.querySelector("button").click();
+      const editor = await until(() => p.doc.querySelector("#settings-editor-remote:not([hidden])"));
+      assert.equal(editor.textContent, "Existing remote editor");
+      assert.equal(p.doc.querySelector("#settings-tab-connections").getAttribute("aria-selected"), "true");
+    }
   }
   p.type(query, "CONTEXT compaction");
   await until(() => p.doc.querySelectorAll('.settings-catalog-card').length === 1);

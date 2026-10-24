@@ -247,7 +247,14 @@ A phone's browser has no SSH tunnel. Instead, Core can open a **second loopback 
 
 Core's own port is unchanged, except that it refuses a request carrying Tailscale's or a proxy's headers, in case Serve is pointed at it by mistake. A program on the Core host can still reach both ports directly, as it always could reach Core's.
 
-**Set it up** (the names here are examples; use your node's name from `tailscale status`):
+**From Settings** (Core in WSL, Tailscale for Windows on the same PC). Settings → Phone & remote access does steps 2 to 4 below without restarting Core:
+- **Check** reads, without changing anything: the host pair, Tailscale, HTTPS, Core's second port, whether Windows reaches it, the Serve entry, and a request through it from Windows.
+- **Save and apply** opens the second port, adds the one Serve entry and checks it again. A step that fails is named. A failure before the check puts the previous entry back; a failed check leaves it set and says it is not verified.
+- **Disable** removes only that Serve entry and closes the second port. Connections that came through the entry, live updates included, end when it changes.
+
+Core keeps what it applied in `remote-access.json` in the Workspace data folder and uses it at every start. Once anything is applied there, the `YUZUNO_REMOTE_*` settings below are ignored, and the page says so; until then they apply as before, and applying the same values takes them over without touching Serve. Core changes only the Serve entry it created, or one it found already pointing exactly where it would; an entry changed outside Yuzuno is left as it is. Phone access is changed only from Core's own port, never through the phone entry. Any other host (a Tailscale inside WSL, Linux, macOS) uses the steps below. Settings were checked with stand-ins for `tailscale.exe` and Windows' `curl.exe` (`acceptance/t185-remote-access`), not with a real phone or a real Serve.
+
+**Set it up by hand** (the names here are examples; use your node's name from `tailscale status`):
 1. **Tailnet:** MagicDNS and [HTTPS certificates](https://tailscale.com/docs/how-to/set-up-https-certificates) must be on. Turning certificates on publishes your machine names and tailnet name in public Certificate Transparency logs, and turning them off later does not revoke issued certificates.
 2. **Choose a free HTTPS port.** `tailscale serve status` lists what Serve already uses on this node; never reuse or reset another entry. Funnel's port limits do not apply to Serve.
 3. **Core's settings.** For an installed Core, stop it and start it again with the entry, through its own start entry (`$ROOT` and `<Workspace>` as in [Start, stop and restart](#start-stop-and-restart)):
