@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { clearLocal, saveLocal, storageReadable, type SaveOutcome } from "./preference-save";
 
 export type ThemePreference = "light" | "dark" | "system";
 /** Text size in px, any whole number from MIN_FONT_SIZE to MAX_FONT_SIZE. */
@@ -157,13 +158,18 @@ export function applyAppearance(appearance: Appearance) {
     });
 }
 
-// The saved choice for React views that change what they render with it,
-// not only how it looks: read once, then again whenever it is saved here or
-// in another window.
+// The choice in effect for React views that change what they render with
+// it, not only how it looks: read once, then again whenever it is chosen
+// here or saved in another window. A choice this device refused to save is
+// still the one in effect here, until this window closes (T-187).
 const listeners = new Set<() => void>();
 let current: Appearance | null = null;
+// What this visit's last save or reset did; null before one.
+let lastSave: SaveOutcome | null = null;
 function changed() {
   current = null;
+  // Another window saved: what is in effect here is what is saved now.
+  lastSave = null;
   listeners.forEach((listener) => listener());
 }
 const subscribe = (listener: () => void) => {
@@ -176,15 +182,35 @@ export function useAppearance(): Appearance {
   return useSyncExternalStore(subscribe, () => (current ??= readAppearance()));
 }
 
-export function saveAppearance(appearance: Appearance) {
+/** What this visit's last save or reset of Appearance did, or null. */
+export function useAppearanceSave(): SaveOutcome | null {
+  return useSyncExternalStore(subscribe, () => lastSave);
+}
+
+/** Whether this device can read its saved Appearance at all. */
+export function appearanceReadable(): boolean {
+  return storageReadable(STORAGE_KEY);
+}
+
+/** Applies `appearance` and saves it on this device. A refused write is
+ * reported, not hidden: the choice still applies in this window. */
+export function saveAppearance(appearance: Appearance): SaveOutcome {
   applyAppearance(appearance);
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(appearance));
-  } catch {
-    // A browser with unavailable storage can still apply the setting this visit.
-  }
+  const outcome = saveLocal(STORAGE_KEY, appearance);
   current = appearance;
+  lastSave = outcome;
   listeners.forEach((listener) => listener());
+  return outcome;
+}
+
+/** Back to the defaults on this device: its saved choice is removed. */
+export function restoreDefaultAppearance(): SaveOutcome {
+  applyAppearance(defaultAppearance);
+  const outcome = clearLocal(STORAGE_KEY);
+  current = defaultAppearance;
+  lastSave = outcome;
+  listeners.forEach((listener) => listener());
+  return outcome;
 }
 
 /** Runs before React mounts, so the workspace appears with its saved settings. */
