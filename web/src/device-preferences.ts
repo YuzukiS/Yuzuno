@@ -48,10 +48,13 @@ export function readPreferences(): DevicePreferences {
 // in another window.
 const listeners = new Set<() => void>();
 let current: DevicePreferences | null = null;
-/** What this visit's last write of these preferences did: a save or a reset. */
-export type PreferencesWrite = { outcome: SaveOutcome; action: "save" | "reset" };
+/** What this visit's last write of these preferences did: a save or a reset,
+ * and which write it was (a new number each time, also when the outcome is
+ * the same as the last one's). */
+export type PreferencesWrite = { outcome: SaveOutcome; action: "save" | "reset"; attempt: number };
 // Null before one.
 let lastSave: PreferencesWrite | null = null;
+let attempts = 0;
 const notify = () => listeners.forEach((listener) => listener());
 const subscribe = (listener: () => void) => {
   if (!listeners.size) stopWatching = onDeviceValueChange(STORAGE_KEY, changed);
@@ -95,7 +98,7 @@ export function preferencesStored(): DeviceValueState {
 export function savePreferences(preferences: DevicePreferences): SaveOutcome {
   const outcome = saveDeviceValue(STORAGE_KEY, preferences);
   current = preferences;
-  lastSave = { outcome, action: "save" };
+  lastSave = { outcome, action: "save", attempt: ++attempts };
   notify();
   return outcome;
 }
@@ -111,7 +114,7 @@ export function retryPreferencesWrite(): SaveOutcome {
 export function restoreDefaultPreferences(): SaveOutcome {
   const outcome = clearDeviceValue(STORAGE_KEY);
   current = defaultPreferences;
-  lastSave = { outcome, action: "reset" };
+  lastSave = { outcome, action: "reset", attempt: ++attempts };
   notify();
   return outcome;
 }

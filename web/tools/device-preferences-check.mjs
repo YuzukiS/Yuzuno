@@ -530,20 +530,20 @@ const editorState = (editor) => editor.evaluate((el) => ({
   checked: el.querySelector('input[name="input-send-key"]:checked')?.value ?? null,
 }));
 /** The browser refusing (or again keeping) a preference set, this device's send key by default, from now on in this page. */
-const refuseWrites = (page, refuse, refusedKey = "yuzuno.preferences") => page.evaluate(({ refuse, refusedKey }) => {
+const refuseWrites = (page, refuse, refusedKey = "yuzuno.preferences", errorName = "QuotaExceededError") => page.evaluate(({ refuse, refusedKey, errorName }) => {
   const storage = Storage.prototype;
   window.t189Storage ||= { setItem: storage.setItem, removeItem: storage.removeItem };
   if (!refuse) return Object.assign(storage, window.t189Storage);
   const full = function (key, ...rest) {
-    if (key === refusedKey) throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+    if (key === refusedKey) throw new DOMException("Refused here.", errorName);
     return window.t189Storage.setItem.call(this, key, ...rest);
   };
   storage.setItem = full;
   storage.removeItem = function (key) {
-    if (key === refusedKey) throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+    if (key === refusedKey) throw new DOMException("Refused here.", errorName);
     return window.t189Storage.removeItem.call(this, key);
   };
-}, { refuse, refusedKey });
+}, { refuse, refusedKey, errorName });
 const composerHint = async (page) => (await page.locator(".composer-keys").textContent()).replace(/\s+/g, " ").trim();
 /** A fresh "draft" and one press in the conversation: what it did. */
 async function pressInConversation(app, key) {
@@ -828,6 +828,56 @@ async function fitCase(device, fontSize, entry, { refused = false } = {}) {
   }
 }
 
+/** The same refusal twice (storage blocked: one shared outcome), from the
+ * keyboard on a phone at 24 px. After the first, the user scrolls back up to
+ * the choices; the second refusal must come into view with nothing here
+ * scrolling. Focus stays on the choice; whether that choice is then still in
+ * view is recorded, not required. */
+async function repeatedRefusalCase() {
+  const label = "fit, phone 320×640, 24 px, input, refused twice (blocked)";
+  try {
+    const app = await openApp("phone", undefined, label, 24);
+    const { page } = app;
+    try {
+      const editor = await openEditor(page, INPUT_ENTRY);
+      await refuseWrites(page, true, "yuzuno.preferences", "SecurityError");
+      const radio = (value) => editor.locator(`input[name="input-send-key"][value="${value}"]`);
+      const focusState = () => page.evaluate(() => {
+        const el = document.activeElement, pane = document.querySelector(".settings-pane").getBoundingClientRect(), r = el.getBoundingClientRect();
+        return { value: el?.value ?? null, inView: r.top >= Math.max(pane.top, 0) - 1 && r.bottom <= Math.min(pane.bottom, innerHeight) + 1 };
+      });
+      await radio("auto").focus();
+      await page.keyboard.press("ArrowDown");
+      await page.waitForTimeout(300);
+      const first = await room(page, INPUT_ENTRY.editor, ".save-status [role=alert]", false);
+      const afterFirst = await focusState();
+      // The user scrolls back up to the choices: the refusal leaves the view.
+      await editor.locator(".input-send-choice").first().evaluate((el) => el.scrollIntoView({ block: "start" }));
+      await page.waitForTimeout(150);
+      const away = await room(page, INPUT_ENTRY.editor, ".save-status [role=alert]", false);
+      await page.keyboard.press("ArrowDown");
+      await page.waitForTimeout(300);
+      const second = await room(page, INPUT_ENTRY.editor, ".save-status [role=alert]", false);
+      const afterSecond = await focusState();
+      await page.screenshot({ path: resolve(output, "fit-phone-24-refused-twice.png") });
+      report.fit.push({ case: label, first: first.controls, afterFirst, away: away.controls, second: second.controls, afterSecond, stored: await stored(page) });
+      assert.equal(await stored(page), null, `${label}: nothing kept`);
+      assert.ok(first.controls[0]?.whole && first.controls[0]?.reached, `${label}: the first refusal in view as it appears`);
+      assert.ok(!away.controls[0]?.whole, `${label}: scrolled back up, the refusal is out of view (else this proves nothing)`);
+      assert.equal(afterSecond.value, "modEnter", `${label}: focus stays on the choice made`);
+      assert.ok(second.controls[0]?.whole && second.controls[0]?.reached, `${label}: the second, same refusal in view as it appears (${JSON.stringify(second.controls)})`);
+    } finally {
+      await app.context.close();
+    }
+    return true;
+  } catch (error) {
+    const message = String(error?.message || error).split("\n")[0];
+    report.fitFailures.push({ case: label, message });
+    console.log(`FAIL ${label}: ${message}`);
+    return false;
+  }
+}
+
 /** The keyboard alone with a phone's software keyboard up (320×300): from
  * search to a choice saved, the focused choice in view. */
 async function shortKeyboardCase() {
@@ -882,6 +932,7 @@ async function fitCases() {
       if (await fitCase(device, fontSize, entry)) check(`fit: ${device}, ${fontSize} px, ${entry.editor}: every control fits the pane as shown and is reached`);
   for (const entry of [INPUT_ENTRY, APPEARANCE_ENTRY])
     if (await fitCase("phone", 24, entry, { refused: true })) check(`fit: phone, 24 px, ${entry.editor}: a refusal is in view whole as it appears`);
+  if (await repeatedRefusalCase()) check("fit: phone, 24 px, the same refusal twice from the keyboard: each in view as it appears; focus stays on the choice");
   if (await shortKeyboardCase()) check("fit: 320×300 with the keyboard alone, the focused choice is in view with its ring and saved");
   assert.deepEqual(report.fitFailures, [], "every fit case");
 }

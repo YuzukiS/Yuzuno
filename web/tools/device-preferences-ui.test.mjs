@@ -53,24 +53,32 @@ window.showHelp = () => flushSync(() => root.render(<ShortcutHelpSection />));`,
   await rm(temp, { recursive: true, force: true });
 }
 
-/** A page; the browser may refuse writes (`refuse`: storage full; `refuseRemove`:
- * blocked) or every read (`unreadable`). `w.real` has its own methods back. */
-function page({ saved, refuse, refuseRemove, unreadable } = {}) {
+/** A page; the browser may refuse writes (`refuse`: storage full; `blocked`:
+ * blocked, which device-storage says with one shared outcome; `refuseRemove`:
+ * blocked) or every read (`unreadable`). `w.real` has its own methods back.
+ * `w.scrolled` lists what was brought into view. */
+function page({ saved, refuse, blocked, refuseRemove, unreadable } = {}) {
   const dom = new JSDOM('<div id="root"></div>', { url: "http://isolated.test", runScripts: "outside-only", pretendToBeVisual: true });
   const w = dom.window;
   w.matchMedia = (media) => ({ media, matches: false, addEventListener() {}, removeEventListener() {} });
   if (saved !== undefined) w.localStorage.setItem("yuzuno.preferences", saved);
   const storage = w.Storage.prototype;
   w.real = { setItem: storage.setItem, removeItem: storage.removeItem, getItem: storage.getItem };
-  const blocked = () => {
+  const blockedCall = () => {
     throw new w.DOMException("The operation is insecure.", "SecurityError");
   };
   if (refuse)
     storage.setItem = function () {
       throw new w.DOMException("The quota has been exceeded.", "QuotaExceededError");
     };
-  if (refuseRemove) storage.removeItem = blocked;
-  if (unreadable) storage.getItem = blocked;
+  if (refuseRemove) storage.removeItem = blockedCall;
+  if (unreadable) storage.getItem = blockedCall;
+  if (blocked) storage.setItem = blockedCall;
+  // jsdom draws nothing; what asked to be brought into view is counted.
+  w.scrolled = [];
+  w.Element.prototype.scrollIntoView = function () {
+    w.scrolled.push(this.className);
+  };
   w.eval(bundle);
   return w;
 }
@@ -184,6 +192,36 @@ test("a reset the browser refuses is said; Try again resets, not saves the defau
     assert.equal(w.localStorage.getItem("yuzuno.preferences"), null, "removed, not the defaults saved");
     assert.equal(status(w), "Defaults restored on this device");
     assert.equal(alert(w), null);
+  } finally {
+    w.close();
+  }
+});
+
+test("each refused write brings its refusal into view, the same refusal twice too; opening with storage unreadable does not; focus stays", async () => {
+  const opened = page({ unreadable: true });
+  try {
+    opened.showEditor();
+    await tick();
+    assert.match(alert(opened) ?? "", /^Not saved on this device: /);
+    assert.deepEqual(here(opened.scrolled), [], "storage found unreadable on opening is not scrolled to");
+  } finally {
+    opened.close();
+  }
+  // Blocked: device-storage says it with one shared outcome, each time.
+  const w = page({ blocked: true });
+  try {
+    w.showEditor();
+    const choice = (value) => w.document.querySelector(`input[name="input-send-key"][value="${value}"]`);
+    choice("enter").focus();
+    choose(w, "enter");
+    await tick();
+    assert.deepEqual(here(w.scrolled), ["save-status save-status-failed"], "the first refusal");
+    choice("modEnter").focus();
+    choose(w, "modEnter");
+    await tick();
+    assert.deepEqual(here(w.scrolled), ["save-status save-status-failed", "save-status save-status-failed"], "the same refusal again");
+    assert.equal(w.document.activeElement, choice("modEnter"), "focus stays on the choice");
+    assert.equal(checked(w), "modEnter");
   } finally {
     w.close();
   }

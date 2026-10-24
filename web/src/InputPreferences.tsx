@@ -74,6 +74,7 @@ export function InputPreferencesSection() {
       <SaveStatus
         outcome={save?.outcome ?? null}
         action={save?.action}
+        attempt={save?.attempt}
         stored={preferencesStored()}
         scope="this device"
         onRetry={retryPreferencesWrite}

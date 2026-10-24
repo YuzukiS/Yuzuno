@@ -14,6 +14,7 @@ import "./save-status.css";
 export function SaveStatus({
   outcome,
   action = "save",
+  attempt,
   stored,
   scope,
   unsaved = "Your choice applies in this window until you close or reload it.",
@@ -24,6 +25,9 @@ export function SaveStatus({
   outcome: SaveOutcome | null;
   /** What that write was: a save, or a reset to the defaults. */
   action?: "save" | "reset";
+  /** Which write that was: a new number for each save or reset, so a
+   * refusal said again (the same outcome) is brought into view again. */
+  attempt?: number;
   /** Before a write, what the caller read there: a saved choice, none (the
    * defaults), one it couldn't read (the defaults apply), or storage it
    * can't read at all. */
@@ -43,10 +47,12 @@ export function SaveStatus({
   );
   const failed = outcome && !outcome.saved ? outcome : !outcome && stored === "unreadable" ? STORAGE_BLOCKED : null;
   const refusal = useRef<HTMLDivElement>(null);
-  // Only for a write in this visit, not storage found unreadable on opening.
+  // For each write in this visit that was refused, also one refused the same
+  // way as the last; not for storage found unreadable on opening. Focus stays
+  // where it is.
   useEffect(() => {
     if (outcome && !outcome.saved) refusal.current?.scrollIntoView?.({ block: "nearest" });
-  }, [outcome, action]);
+  }, [outcome, action, attempt]);
   if (failed && !failed.saved)
     return (
       <div ref={refusal} className="save-status save-status-failed">
