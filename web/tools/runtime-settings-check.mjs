@@ -1,7 +1,7 @@
 // T-191: Runtime & versions in Settings, in Chromium, with a disposable
 // fixture server (no Core): opened from Updates & about at 1280, 390 and
-// 320 px; it fits, its facts and Read again are reachable, only GETs are
-// sent, and Check machines opens the Machines page. YUZUNO_CHECK_MODE=before
+// 320 px; it fits, its facts and Read again are reachable, nothing is sent
+// and no machine is checked, and Check machines opens the Machines page. YUZUNO_CHECK_MODE=before
 // takes the Updates & about screenshot of a build without it, with no checks.
 //   YUZUNO_UI_DIST=<build> YUZUNO_BROWSER_OUTPUT=<dir> [YUZUNO_CHECK_MODE=before] node tools/runtime-settings-check.mjs
 import assert from "node:assert/strict";
@@ -122,8 +122,13 @@ try {
         return { left: r.left, right: r.right, inside: r.left >= 0 && r.right <= width, overflow, page: document.documentElement.scrollWidth <= innerWidth };
       }, width);
       assert.ok(fit.inside && fit.page && fit.overflow.length === 0, `the section fits ${width} px: ${JSON.stringify(fit)}`);
+      // Settings scrolls in its own pane: a tall window shows the whole section
+      // for the screenshot (the fit above is at the real size).
+      await page.setViewportSize({ width, height: 2600 });
+      await page.waitForTimeout(200);
       await section.screenshot({ path: resolve(output, `${label}-runtime.png`), animations: "disabled" });
       report.screenshots.push(`${label}-runtime.png`);
+      await page.setViewportSize({ width, height });
       const box = section.locator(".runtime-machine", { hasText: "Build box" });
       assert.match(await box.locator(".runtime-checked").textContent(), /older than an hour$/);
       // Keyboard: Read again and Check machines take focus.
@@ -139,11 +144,14 @@ try {
       await section.getByRole("button", { name: "Check machines" }).click();
       await page.locator(".machines-page").waitFor();
       await shot(page, `${label}-machines`);
-      const sent = calls.filter((c) => !c.startsWith("GET "));
-      assert.deepEqual(sent, [], "only reads");
-      assert.ok(!calls.some((c) => /\/check$|\/models$|\/usage$|\/mcp/.test(c)), "no check, model list, usage or MCP request");
+      // Every request of this window, kept before anything is asserted. The
+      // app's own views (an open conversation's inspector, for one) read too;
+      // the section's own requests are exactly checked in runtime-settings-ui.
       report.requests[label] = [...calls];
-      check(`${label}: Read again reads again; Check machines opens the Machines page; only GETs, no check or model list`);
+      const sent = calls.filter((c) => !c.startsWith("GET "));
+      assert.deepEqual(sent, [], "only reads: nothing is sent");
+      assert.ok(!calls.some((c) => /\/machines\/[^/]+\/check$/.test(c)), "no machine check");
+      check(`${label}: Read again reads again; Check machines opens the Machines page; only GETs, no machine check`);
     }
     await context.close();
   }
