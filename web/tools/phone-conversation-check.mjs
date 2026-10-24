@@ -1,27 +1,29 @@
 // T-170: a conversation on a phone, in Chromium (or Playwright's Linux WebKit,
 // see browser-engine.mjs), on a production build with every API answered
-// here (no Core). Synthetic content only: an Agent with 1408 Turns (four-digit
-// Turn numbers), a long Chinese reply, a long link and a Turn's error, jobs,
-// CI runs and a sub-agent (three groups in the work dock) and the composer's
-// notice to resume the session; a second Agent waiting to be reconnected,
-// with the recovery notice; a third asking to run a long command. At 320,
-// 375, 390 and 402 px wide, and on a phone held sideways: nothing runs off
-// the side, the text has the width the docks used to take, the docks open on
-// demand from buttons that cover neither the composer, Send nor Back to
-// latest and still reach jobs, the sub-agent, Turns and Back to latest, the
-// notices, the error and the approval read in full, the reply's actions keep
-// a line of their own above its time and Rewind, and a conversation opened
-// again keeps its draft and where it was read. A wide window keeps both docks
-// beside the text. An emulated phone is not a real one: no on-screen
-// keyboard, iOS Safari or real Core.
+// here (no Core): phone-conversation-fixture.mjs's crowded conversations,
+// synthetic content only. At 320, 375, 390 and 402 px wide, and on a phone
+// held sideways: nothing runs off the side, the text has the width the docks
+// used to take, the docks open on demand from buttons that cover neither the
+// composer, Send nor Back to latest and still reach jobs, the sub-agent,
+// Turns and Back to latest, the notices, the error and the approval read in
+// full, the reply's actions keep a line of their own above its time and
+// Rewind, and a conversation opened again keeps its draft and where it was
+// read. A wide window keeps both docks beside the text. Last, the probe
+// Mobile Safari runs (phone-conversation-probe.js, served with the same
+// conversations by phone-fixture-server.mjs) meets its criteria here too. An
+// emulated phone is not a real one: no on-screen keyboard, iOS Safari or
+// real Core.
 //   YUZUNO_UI_DIST=<isolated build> node tools/phone-conversation-check.mjs [--baseline]
 // --baseline only measures and takes the screenshots (a build from before),
 // and reads the draft and position kept on return, for the comparison.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { launchBrowser } from "./browser-engine.mjs";
 import { idleJobsBudget, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { childPath, conversationWorkspace, errorText, TURNS } from "./phone-conversation-fixture.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -29,97 +31,14 @@ assert.notEqual(dist, resolve("dist"));
 const baseline = process.argv.includes("--baseline");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../target/phone-conversation");
 await mkdir(output, { recursive: true });
-const report = { mode: baseline ? "baseline" : "check", viewports: [], checks: [], errors: [], unexpected: [], mutations: [] };
+const report = { mode: baseline ? "baseline" : "check", viewports: [], checks: [], errors: [], unexpected: [], mutations: [], openedAway: [] };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
 };
 
-const TURNS = 1408;
-const now = Date.now();
-const at = (minutesAgo) => new Date(now - minutesAgo * 60_000).toISOString();
-// A Turn's times are Unix seconds, as Codex reports them.
-const seconds = (minutesAgo) => Math.floor((now - minutesAgo * 60_000) / 1000);
-const base = { color: "sage", createdAt: at(9000), updatedAt: at(1), unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, goal: "", cwd: "/fixture", model: "gpt-6", projectId: "p1" };
-// Mori is offline: the composer asks for a message to resume the session.
-// Hana was cut off mid-Turn: Reconnect above, and the composer says so.
-// Sora asks to run a command.
-const agents = [
-  { ...base, id: "a", name: "Mori", status: "offline", harness: "codex", connectionState: "disconnected", threadId: "thread-a" },
-  { ...base, id: "b", name: "Hana", status: "offline", harness: "codex", connectionState: "disconnected", threadId: "thread-b" },
-  { ...base, id: "c", name: "Sora", status: "waiting", harness: "codex", connectionState: "connected", threadId: "thread-c", pendingCount: 1 },
-];
-const projects = [{ id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture" }, createdAt: at(9000), updatedAt: at(9000) }];
-const longChinese = "手机上读这一段时，正文应该占满整个宽度，左右两侧不再留给常驻的竖栏。".repeat(6);
-const longLink = "https://example.com/a/very/long/path/that/does/not/break/on/its/own/" + "segment-".repeat(12) + "end";
-const errorText = "The previous attempt stopped: the connection to the native session closed before the reply finished; nothing was sent twice.";
-// Mori started a sub-agent three Turns before the last.
-const child = "01a1418f-0000-7000-8000-000000000001";
-const subAgent = (kind) => ({ type: "subAgentActivity", id: `${kind}-child`, kind, agentThreadId: child, agentPath: "/root/child-1", model: kind === "started" ? "gpt-6-astra" : null });
-const turn = (who, n, last) => ({
-  id: `${who}-t${n}`,
-  status: last && who === "Hana" ? "inProgress" : "completed",
-  startedAt: seconds(TURNS - n + 2),
-  completedAt: last && who === "Hana" ? undefined : seconds(TURNS - n + 1),
-  items: [
-    { id: `${who}-u${n}`, type: "userMessage", content: [{ type: "text", text: `${who} step ${n + 1}: check the next part.` }] },
-    ...(who === "Mori" && n === TURNS - 3 ? [subAgent("started"), subAgent("completed")] : []),
-    { id: `${who}-r${n}`, type: "agentMessage", text: last ? `${longChinese}\n\n打开：\n\n${longLink}\n\nThen check it again.` : `${who} reply ${n + 1}.` },
-  ],
-  ...(n === TURNS - 2 ? { error: { message: errorText } } : {}),
-});
-const longCommand = "node tools/a-long-script-name-for-the-phone-check.mjs --output=/fixture/" + "nested/".repeat(10) + "report.json";
-const approval = {
-  id: "req-1", agentId: "c", method: "item/commandExecution/requestApproval", createdAt: at(3),
-  params: { command: longCommand, cwd: "/fixture", reason: "Run the check that writes its report", itemId: "cmd-1", turnId: "Sora-t11", availableDecisions: ["accept", "decline", "cancel"] },
-};
-const allTurns = Object.fromEntries(agents.map((agent) => [agent.id, agent.id === "c"
-  ? Array.from({ length: 12 }, (_, n) => ({ ...turn(agent.name, n, false), ...(n === 11 ? { status: "inProgress", completedAt: undefined } : {}) }))
-  : Array.from({ length: TURNS }, (_, n) => turn(agent.name, n, n === TURNS - 1))]));
-// As Core sends a long conversation: a window of Turns, the latest unless a
-// Turn or a page before or after a cursor is asked for, and an index of all.
-const WINDOW = 12;
-const detail = (agent, query) => {
-  const all = allTurns[agent.id];
-  const cursor = (name) => all.findIndex((t) => t.id === JSON.parse(query.get(name))[0]);
-  const start = query.has("turnId") ? Math.max(0, all.findIndex((t) => t.id === query.get("turnId")))
-    : query.has("before") ? Math.max(0, cursor("before") - WINDOW)
-    : query.has("after") ? Math.min(all.length - 1, cursor("after") + 1)
-    : Math.max(0, all.length - WINDOW);
-  const turns = all.slice(start, start + WINDOW);
-  return {
-    agent, pending: agent.id === "c" ? [approval] : [], messageReceipts: [], artifacts: [], turns,
-    // Codex reports Plan mode: the composer shows its mode.
-    codexPlan: { generation: 1, reported: { mode: "plan", source: "settings", observedAt: at(5) }, switch: null },
-    conversation: {
-      index: all.map((t, i) => ({ ...t, number: i + 1, itemCount: t.items.length, items: [t.items[0]] })),
-      questions: [], nativeClientIds: [],
-      start: JSON.stringify([turns[0].id, turns[0].items[0].id]),
-      end: JSON.stringify([turns.at(-1).id, turns.at(-1).items.at(-1).id]),
-      hasBefore: start > 0, hasAfter: start + WINDOW < all.length,
-      totalItems: all.reduce((sum, t) => sum + t.items.length, 0),
-    },
-  };
-};
-const childDetail = {
-  threadId: child, parentThreadId: "thread-a", nickname: null, role: null, path: "/root/child-1", depth: 1, model: "gpt-6-astra", status: "idle",
-  turn: { id: "child-turn", status: "completed", error: null },
-  result: { text: "子 agent 的结论：布局在窄屏上不再横向溢出。", truncated: false }, readFrom: "history", readAt: new Date(now).toISOString(),
-};
-const resources = { cpuMillis: 2000, memoryMiB: 4096, swapMiB: 0 };
-const job = (id, name, status, minutes) => ({
-  id, requestId: id, name, taskRef: "T-170", agentId: "a", agent: { name: "Mori" }, machine: { name: "Core host" }, status,
-  reserved: status === "running", reason: status === "failed" ? "exit-code" : null, resources, reservation: resources,
-  cursor: minutes, createdAt: at(minutes + 2), startedAt: at(minutes + 1), finishedAt: status === "running" ? null : at(minutes),
-  argv: ["/usr/bin/true"], cwd: "/fixture", env: {}, outputs: [],
-});
-const jobs = { jobs: [job("j1", "a build with a long name for the phone check", "running", 1), job("j2", "the layout check", "failed", 5), job("j3", "unit tests", "succeeded", 9)], liveJobs: [], hasMore: false, nextBefore: null };
-const run = (n, status, conclusion) => ({
-  id: `github:1:4${n}:1`, name: `CI ${n}`, repository: "o/r", runId: `4${n}`, attempt: "1", headSha: "a".repeat(40), status,
-  rawStatus: status === "running" ? "in_progress" : "completed", conclusion, url: `https://github.com/o/r/actions/runs/4${n}`, observedAt: at(n), cursor: n,
-});
-const ci = { runs: [run(1, "running", null), run(2, "passed", "success")], subscriptions: [], hasMore: false, nextBefore: null };
-const home = { generatedAt: new Date(now).toISOString(), order: ["p1"], needsYou: [], projects: [] };
+const { agents, detail, childDetail, reads } = conversationWorkspace();
+const tools = fileURLToPath(new URL(".", import.meta.url));
 
 const browser = await launchBrowser();
 async function open(viewport) {
@@ -151,14 +70,13 @@ async function open(viewport) {
       report.mutations.push({ viewport: viewport.name, method, path });
       return route.fulfill({ status: 400, json: { error: `Unexpected ${method} ${path} in this check` } });
     }
-    if (path === `/api/agents/a/subagents/${child}`) return route.fulfill({ json: childDetail });
+    if (path === childPath) return route.fulfill({ json: childDetail });
     const agent = agents.find((a) => path === `/api/agents/${a.id}`);
     const json = agent ? detail(agent, url.searchParams) : {
-      "/api/workspace": { workspace: { id: "ws-phone" }, agents, projects, runtime: { connected: true }, defaultCwd: "/fixture" },
-      "/api/home": home,
+      ...reads,
       "/api/machines": { machines: [{ id: "local", name: "Core host", kind: "local", defaultCwd: "/fixture", lastCheck: null }] },
-      "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget, "/api/jobs": jobs,
-      "/api/jobs/live": noLiveJobs, "/api/ci": ci, "/api/ci/live": ci, "/api/reviews": noReviews,
+      "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget,
+      "/api/jobs/live": noLiveJobs, "/api/reviews": noReviews,
     }[path];
     if (json) return route.fulfill({ json });
     if (path.startsWith("/api/")) {
@@ -185,6 +103,16 @@ async function openAgent(page, name, phone) {
   await page.locator(".main-panel .conversation-scroll .turn").last().waitFor();
   await page.waitForTimeout(500);
 }
+/** Opened, a conversation shows its latest message; when one opens elsewhere
+ * (seen on main's build and this one alike, now and then), Back to latest
+ * takes it there before measuring, and the report says so. */
+async function atLatest(page, viewport, name) {
+  const away = await page.locator(".main-panel .conversation-scroll").evaluate((el) => Math.round(el.scrollHeight - el.scrollTop - el.clientHeight));
+  if (away <= 2) return;
+  report.openedAway.push({ viewport: viewport.name, agent: name, away });
+  await page.locator(".jump-latest").click();
+  await page.waitForTimeout(800);
+}
 const shot = (page, viewport, what) => page.screenshot({ path: resolve(output, `${report.mode}-${viewport.name}-${what}.png`) });
 
 /** What a person sees of the conversation now: overflow, the text's width,
@@ -204,6 +132,17 @@ const measure = (page) => page.evaluate(() => {
     const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
     return hit && (hit === el || el.contains(hit)) ? "self" : hit ? (hit.className?.toString() || hit.tagName).slice(0, 60) : "nothing";
   };
+  // What sticks out of the text column: its outermost parts that end past it.
+  const inner = main.querySelector(".conversation-inner");
+  const edge = inner ? inner.getBoundingClientRect().right + 1 : Infinity;
+  const offenders = inner ? [...inner.querySelectorAll("*")]
+    .filter((el) => el.getBoundingClientRect().right > edge && el.parentElement.getBoundingClientRect().right <= edge)
+    .slice(0, 6)
+    .map((el) => {
+      const style = getComputedStyle(el);
+      return { el: `${el.tagName.toLowerCase()}.${String(el.className).trim().replace(/\s+/g, ".")}`, box: box(el), position: style.position,
+        width: style.width, minWidth: style.minWidth, whiteSpace: style.whiteSpace, text: el.textContent.trim().slice(0, 40) };
+    }) : [];
   const hint = main.querySelector(".composer-hint[data-notice]");
   const error = [...main.querySelectorAll(".turn .inline-error")].filter(shown).at(-1);
   const card = main.querySelector(".pending-card");
@@ -218,6 +157,7 @@ const measure = (page) => page.evaluate(() => {
     viewport: [innerWidth, innerHeight],
     pageOverflow: document.documentElement.scrollWidth - innerWidth,
     overflow,
+    offenders,
     appClass: document.querySelector(".app")?.className,
     textColumn: box(main.querySelector(".conversation-inner")),
     workDock: { shown: shown(main.querySelector(".work-dock")), box: box(main.querySelector(".work-dock")) },
@@ -267,6 +207,52 @@ async function leaveAndReturn(page, phone) {
   return { before, after: await place(page) };
 }
 
+/** The probe Mobile Safari runs, on what phone-fixture-server.mjs serves it
+ * with YUZUNO_FIXTURE=conversation, here in an emulated 402 px phone as the
+ * Safari check opens it: Mori from the Agent list, then the keyboard (set as
+ * keyboard-viewport.ts sets it). Its measurements and the writes the server
+ * refused, from the server's file. */
+async function probeRun() {
+  const port = 20000 + (process.pid % 20000);
+  const measured = resolve(output, `${report.mode}-probe-measure.jsonl`);
+  await writeFile(measured, "");
+  const server = spawn(process.execPath, [resolve(tools, "phone-fixture-server.mjs")], {
+    env: { ...process.env, YUZUNO_UI_DIST: dist, YUZUNO_MEASURE_OUT: measured, YUZUNO_PORT: String(port),
+      YUZUNO_FIXTURE: "conversation", YUZUNO_INJECT: resolve(tools, "phone-conversation-probe.js") },
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  const exited = new Promise((done) => server.once("exit", done));
+  try {
+    await new Promise((ready, fail) => {
+      server.stdout.on("data", (chunk) => { if (String(chunk).includes("phone fixture:")) ready(); });
+      exited.then((code) => fail(new Error(`the fixture server exited (${code})`)));
+    });
+    const context = await browser.newContext({ viewport: { width: 402, height: 874 }, hasTouch: true, isMobile: true, reducedMotion: "reduce" });
+    const page = await context.newPage();
+    page.on("pageerror", (error) => report.errors.push(`probe: ${error.message}`));
+    await page.goto(`http://127.0.0.1:${port}/`);
+    await page.locator(".app").waitFor();
+    await openAgent(page, "Mori", true);
+    const lines = async () => (await readFile(measured, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    const probed = async () => (await lines()).filter((line) => line.probe === "phone-conversation");
+    // The drive starts 1.9 s after the conversation is on screen.
+    for (let wait = 0; wait < 60 && !(await probed()).some((line) => line.why === "drive" && line.state === "closed-again" && line.n > 3); wait++)
+      await page.waitForTimeout(250);
+    await page.waitForTimeout(2500);
+    await page.evaluate(() => { document.documentElement.dataset.keyboard = ""; });
+    await page.waitForTimeout(2800);
+    await page.evaluate(() => { delete document.documentElement.dataset.keyboard; });
+    await page.waitForTimeout(800);
+    await page.screenshot({ path: resolve(output, `${report.mode}-probe-mori.png`) });
+    await context.close();
+    const all = await lines();
+    return { lines: all.filter((line) => line.probe === "phone-conversation"), refused: all.filter((line) => line.kind === "refused") };
+  } finally {
+    server.kill("SIGTERM");
+    await exited;
+  }
+}
+
 const viewports = [
   { name: "phone-320", width: 320, height: 640, touch: true },
   { name: "phone-375", width: 375, height: 667, touch: true },
@@ -281,15 +267,20 @@ try {
     const phone = viewport.touch;
     const { context, page } = await open(viewport);
     await openAgent(page, "Mori", phone);
+    await atLatest(page, viewport, "Mori");
     const mori = await measure(page);
     await shot(page, viewport, "mori");
     await openAgent(page, "Hana", phone);
+    await atLatest(page, viewport, "Hana");
     const hana = await measure(page);
     await shot(page, viewport, "hana");
     await openAgent(page, "Sora", phone);
+    await atLatest(page, viewport, "Sora");
     const sora = await measure(page);
     await shot(page, viewport, "sora");
     report.viewports.push({ name: viewport.name, mori, hana, sora });
+    for (const [who, seen] of [["Mori", mori], ["Hana", hana], ["Sora", sora]])
+      if (seen.offenders.length) console.log(`${viewport.name} ${who}: sticks out ${JSON.stringify(seen.offenders)}`);
     console.log(`${viewport.name}: page overflow ${mori.pageOverflow}, overflow ${JSON.stringify(mori.overflow)}, text ${JSON.stringify(mori.textColumn)}, ` +
       `docks work ${mori.workDock.shown} turns ${mori.turnDock.shown}, buttons ${mori.buttons.length}, notice ${JSON.stringify(mori.notice)}, reply rows ${JSON.stringify(mori.replyRows)}`);
     if (baseline) {
@@ -312,7 +303,7 @@ try {
     for (const [who, seen] of [["Mori", mori], ["Hana", hana], ["Sora", sora]]) {
       assert.match(seen.appClass, /\bphone\b/);
       assert.ok(seen.pageOverflow <= 0, `${who}: the page is ${seen.pageOverflow}px wider than the screen`);
-      assert.deepEqual(seen.overflow, [], `${who}: nothing in the conversation runs off its side`);
+      assert.deepEqual(seen.overflow, [], `${who}: nothing in the conversation runs off its side: ${JSON.stringify(seen.offenders)}`);
       assert.ok(!seen.workDock.shown && !seen.turnDock.shown, `${who}: both docks wait to be opened`);
       // The text has the width: no more than the small margins and the
       // scrollbar (sideways, the column's own reading width bounds it).
@@ -429,6 +420,18 @@ try {
       `it opens where it was read: ${JSON.stringify(returned)}`);
     check(`${viewport.name}: opened again, the conversation keeps its draft and where it was read`, returned);
     await context.close();
+  }
+  // The probe for Mobile Safari, run here: before, what it finds; now, that
+  // its every measurement meets its criteria, in each state it reaches.
+  report.probe = await probeRun();
+  const states = [...new Set(report.probe.lines.map((line) => line.state))];
+  console.log(`probe: ${report.probe.lines.length} measurements, states ${states}, failed ${JSON.stringify([...new Set(report.probe.lines.flatMap((line) => line.failed))])}`);
+  if (!baseline) {
+    for (const state of ["closed", "work-open", "closed-again", "turns-open", "keyboard"])
+      assert.ok(states.includes(state), `the probe measured ${state}: ${states}`);
+    assert.deepEqual(report.probe.lines.filter((line) => line.failed.length), [], "every probe measurement meets its criteria");
+    assert.deepEqual(report.probe.refused, [], "the fixture server refused no write");
+    check("the Safari probe meets its criteria here, on the fixture server's crowded conversations", { states, measurements: report.probe.lines.length });
   }
   if (!baseline) {
     assert.deepEqual(report.errors, [], "no page errors");
