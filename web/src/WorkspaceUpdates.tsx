@@ -6,17 +6,16 @@ import {
   ChevronRight,
   CircleAlert,
   Clock3,
-  GitPullRequest,
   Github,
   HardDrive,
-  House,
   LoaderCircle,
-  Palette,
   RefreshCw,
   ShieldCheck,
   Sparkles,
   X,
 } from "lucide-react";
+import type { SettingsEditor } from "./settings-catalog";
+import { SettingsCenter, type SettingsNavigation } from "./SettingsCenter";
 import { AppearanceSection } from "./AppearanceSettings";
 import { Modal } from "./components";
 import { DesktopUpdate } from "./DesktopUpdate";
@@ -325,11 +324,13 @@ export function WorkspaceUpdatesHost({
   onOpenChange,
   onNeedsReloadChange,
   preserveDrafts,
+  navigation,
 }: {
   enabled: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onNeedsReloadChange: (needsReload: boolean) => void;
+  navigation?: SettingsNavigation;
   preserveDrafts: () => void;
 }) {
   const intent = useUpdateIntent();
@@ -345,6 +346,7 @@ export function WorkspaceUpdatesHost({
       onOpenChange={onOpenChange}
       preserveDrafts={preserveDrafts}
       chain={chain}
+      navigation={navigation}
       {...updates}
     />
   );
@@ -359,6 +361,7 @@ export function WorkspaceUpdates({
   preserveDrafts,
   needsReload,
   chain,
+  navigation,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -368,7 +371,9 @@ export function WorkspaceUpdates({
   preserveDrafts: () => void;
   needsReload: boolean;
   chain: UpdateChainControl;
+  navigation?: SettingsNavigation;
 }) {
+  const [activeEditor, setActiveEditor] = useState<SettingsEditor | null>("updates");
   const [action, setAction] = useState("");
   const [error, setError] = useState("");
   const acting = useRef(false);
@@ -450,7 +455,6 @@ export function WorkspaceUpdates({
   }
   const completed = operation?.phase === "complete";
   const waiting = operation?.phase === "waiting";
-  const [tab, setTab] = useState<SettingsTab>("updates");
   const source = status?.managed ? status.releaseSource : undefined;
   // A signed release on GitHub that is not yet a local package.
   const offered =
@@ -516,14 +520,14 @@ export function WorkspaceUpdates({
   // Opening Settings looks for a newer release, at most every few minutes.
   // Seeing one is not consent: only the button below starts an update.
   useEffect(() => {
-    if (!open || tab !== "updates" || !status?.managed || needsReload || step || transferring)
+    if (!open || activeEditor !== "updates" || !status?.managed || needsReload || step || transferring)
       return;
     const checked = Date.parse(source?.checkedAt || "") || 0;
     if (Date.now() - Math.max(checked, lastAutoCheck) < AUTO_CHECK_MS) return;
     lastAutoCheck = Date.now();
     void perform("check");
     // Only opening Settings, or its first status, asks for a check.
-  }, [open, tab, !!status?.managed]);
+  }, [open, activeEditor, !!status?.managed]);
   /** One click carries this release through every step it still needs. */
   const updateButton = (release: ReleaseSummary, quiet = false) => (
     <button
@@ -747,22 +751,15 @@ export function WorkspaceUpdates({
       open={open}
       onOpenChange={onOpenChange}
       title="Settings"
-      description="Updates for the Workspace service and the desktop app, appearance and code review."
+      description="Find a setting, check what it affects and open its editor."
       wide
       className="settings-modal"
     >
-      <div className="workspace-updates settings-layout">
-        <SettingsTabs
-          tab={tab}
-          onTab={setTab}
-          attention={stage === "running" || stage === "reload" || stage === "prepared" || stage === "local" || stage === "published"}
-        />
-        <div
-          className="settings-pane"
-          role="tabpanel"
-          id={`settings-panel-${tab}`}
-          aria-labelledby={`settings-tab-${tab}`}
-        >
+      <SettingsCenter
+        navigation={navigation}
+        onEditorChange={setActiveEditor}
+        attention={stage === "running" || stage === "reload" || stage === "prepared" || stage === "local" || stage === "published"}
+        renderEditor={(tab) => <>
           {tab === "updates" && (
             <section
               className="settings-section"
@@ -977,24 +974,17 @@ export function WorkspaceUpdates({
           {/* The Windows app's own updates sit with the service's, not in a
               category of their own. */}
           {tab === "updates" && <DesktopUpdate preserveDrafts={preserveDrafts} />}
-          {tab === "updates" && <DiagnosticsCopy />}
-          {tab === "updates" && <HistoryComposition />}
+          {tab === "diagnostics" && <DiagnosticsCopy />}
+          {tab === "history" && <HistoryComposition />}
           {tab === "appearance" && <AppearanceSection />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
-        </div>
-      </div>
+        </>}
+      />
     </Modal>
   );
 }
 
-type SettingsTab = "updates" | "appearance" | "home" | "review";
-const settingsTabs: { id: SettingsTab; label: string; Icon: typeof RefreshCw }[] = [
-  { id: "updates", label: "Updates", Icon: RefreshCw },
-  { id: "appearance", label: "Appearance", Icon: Palette },
-  { id: "home", label: "Home", Icon: House },
-  { id: "review", label: "Code review", Icon: GitPullRequest },
-];
 // Shared by every mount, so React's double effects and quick reopenings
 // don't check twice.
 let lastAutoCheck = 0;
@@ -1048,58 +1038,6 @@ const sourceLabels: Record<NonNullable<UpdateStatus["releaseSource"]>["phase"], 
   failed: "Release check or download needs attention",
   cancelled: "Download cancelled",
 };
-
-/** One category at a time, as the old Yuzuno settings rail did. Arrow keys
- * move between categories; the Updates entry carries a dot while an update
- * waits for a step from you. */
-function SettingsTabs({
-  tab,
-  onTab,
-  attention,
-}: {
-  tab: SettingsTab;
-  onTab: (tab: SettingsTab) => void;
-  attention: boolean;
-}) {
-  const list = useRef<HTMLDivElement>(null);
-  return (
-    <div
-      ref={list}
-      className="settings-nav"
-      role="tablist"
-      aria-label="Settings"
-      aria-orientation="vertical"
-      onKeyDown={(event) => {
-        const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[event.key];
-        if (!step) return;
-        event.preventDefault();
-        const index = settingsTabs.findIndex((t) => t.id === tab);
-        const next = settingsTabs[(index + step + settingsTabs.length) % settingsTabs.length];
-        onTab(next.id);
-        list.current?.querySelector<HTMLElement>(`#settings-tab-${next.id}`)?.focus();
-      }}
-    >
-      {settingsTabs.map(({ id, label, Icon }) => (
-        <button
-          key={id}
-          type="button"
-          role="tab"
-          id={`settings-tab-${id}`}
-          aria-selected={tab === id}
-          aria-controls={`settings-panel-${id}`}
-          tabIndex={tab === id ? 0 : -1}
-          onClick={() => onTab(id)}
-        >
-          <Icon size={15} aria-hidden="true" />
-          {label}
-          {id === "updates" && attention && (
-            <span className="settings-nav-dot" aria-label="needs a step from you" />
-          )}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 export function UpdateBanner({ onOpen }: { onOpen: () => void }) {
   return (
