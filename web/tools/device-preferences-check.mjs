@@ -765,7 +765,7 @@ const room = (page, editorId, selector = "input, select, button, textarea", scro
     const hit = document.elementFromPoint(r.left + r.width / 2, Math.max(box.top, Math.min(box.bottom - 1, r.top + r.height / 2)));
     return { name: (control.textContent || control.getAttribute("aria-label") || control.tagName).trim().slice(0, 40), height: Math.round(r.height), whole, reached: !!hit && (hit === control || control.contains(hit)) };
   });
-  return { shown, tallest: Math.max(0, ...seen.map((c) => c.height)), controls: seen };
+  return { shown, sideways: pane.scrollWidth > pane.clientWidth + 1, tallest: Math.max(0, ...seen.map((c) => c.height)), controls: seen };
 }, { editorId, selector, scroll });
 
 // A refused save, per editor: the storage key refused and the choice made.
@@ -793,8 +793,9 @@ async function fitCase(device, fontSize, entry, { refused = false } = {}) {
       const r = await room(page, entry.editor);
       const name = `${device}-${fontSize}-${entry.editor}${refused ? "-refused" : ""}`;
       await page.screenshot({ path: resolve(output, `fit-${name}.png`) });
-      report.fit.push({ case: label, shown: r.shown, tallest: r.tallest, controls: r.controls.length, unreached: r.controls.filter((c) => !c.whole || !c.reached), alert });
+      report.fit.push({ case: label, shown: r.shown, sideways: r.sideways, tallest: r.tallest, controls: r.controls.length, unreached: r.controls.filter((c) => !c.whole || !c.reached), alert });
       assert.ok(r.controls.length > 0, `${label}: controls found`);
+      assert.equal(r.sideways, false, `${label}: the pane does not scroll sideways`);
       assert.ok(r.tallest <= r.shown, `${label}: the tallest control (${r.tallest} px) fits the pane as shown (${r.shown} px)`);
       assert.deepEqual(r.controls.filter((c) => !c.whole || !c.reached), [], `${label}: every control, scrolled to, is wholly shown and reached`);
       if (alert) {

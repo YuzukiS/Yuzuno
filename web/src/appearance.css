@@ -781,9 +781,14 @@
   .dock-limits {
     padding: 6px 10px;
   }
+  /* Each kind's name above its slider and number: in three columns a row
+     was wider than a 320 px phone at the largest text (T-189). */
   .dock-limit {
-    grid-template-columns: 7.5em minmax(0, 1fr) 3.8em;
-    gap: 9px;
+    grid-template-columns: minmax(0, 1fr) 3.8em;
+    gap: 2px 9px;
+  }
+  .dock-limit > span {
+    grid-column: 1 / -1;
   }
   .agent-list-options {
     gap: 7px;
