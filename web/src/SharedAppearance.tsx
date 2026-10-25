@@ -1,14 +1,71 @@
 import { useEffect, useRef, useState } from "react";
 import { errorText, NetworkError } from "./api";
-import { importAppearance, useAppearance } from "./appearance";
-import { appearanceFields, fieldValue, importedAppearance, type AppearanceField } from "./appearance-file";
+import { importAppearance, useAppearance, type Appearance } from "./appearance";
+import {
+  appearanceFields,
+  fieldValue,
+  importedAppearance,
+  type AppearanceField,
+  type AppearanceFileContents,
+} from "./appearance-file";
 import { fetchPreset, savePreset, type PresetRead } from "./appearance-preset";
-import { AppearanceChoices } from "./AppearanceSettings";
+import { fieldLabels, fieldText } from "./AppearanceSettings";
 import "./appearance.css";
 
 const via = { local: " through Core’s own address", remote: " through the remote entry" };
 const short = (workspaceId: string) => workspaceId.slice(0, 8);
 const when = (at: string | null) => (at ? `, saved ${new Date(at).toLocaleString()}` : "");
+
+/** Each setting the preset holds beside the one in effect, ticked in
+ * `chosen` where they differ, as the Appearance file's import shows a file. */
+function PresetChoices({
+  appearance,
+  contents,
+  chosen,
+  onChosen,
+}: {
+  appearance: Appearance;
+  contents: AppearanceFileContents;
+  chosen: readonly AppearanceField[];
+  onChosen: (update: (old: AppearanceField[]) => AppearanceField[]) => void;
+}) {
+  return (
+    <ul>
+      {appearanceFields.map((field) => {
+        const value = contents.values[field];
+        const bad = contents.invalid.find((item) => item.field === field);
+        if (value === undefined && !bad) return null;
+        const now = fieldText(field, fieldValue(appearance, field));
+        if (value === undefined)
+          return (
+            <li key={field} data-state="invalid">
+              <span className="appearance-file-name">{fieldLabels[field]}</span>
+              <span>Now: {now}</span>
+              <span>Shared: {bad!.value}, not a value Yuzuno accepts; kept as now</span>
+            </li>
+          );
+        const same = value === fieldValue(appearance, field);
+        return (
+          <li key={field} data-state={same ? "same" : "differs"}>
+            <label className="appearance-file-name">
+              <input
+                type="checkbox"
+                disabled={same}
+                checked={!same && chosen.includes(field)}
+                onChange={(event) =>
+                  onChosen((old) => (event.target.checked ? [...old, field] : old.filter((f) => f !== field)))
+                }
+              />
+              {fieldLabels[field]}
+            </label>
+            <span>Now: {now}</span>
+            <span>{same ? "Shared: the same" : `Shared: ${fieldText(field, value)}`}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 /**
  * The Workspace's shared Appearance preset (T-194), beside this device's own
@@ -21,7 +78,8 @@ const when = (at: string | null) => (at ? `, saved ${new Date(at).toLocaleString
 export function SharedAppearanceSection({ active }: { active: boolean }) {
   const appearance = useAppearance();
   const [read, setRead] = useState<PresetRead | null>(null);
-  const [reading, setReading] = useState<"reading" | { error: string } | null>(null);
+  // Opened active, it is reading from the start, never "not read" first.
+  const [reading, setReading] = useState<"reading" | { error: string } | null>(active ? "reading" : null);
   const [preview, setPreview] = useState(false);
   const [chosen, setChosen] = useState<AppearanceField[]>([]);
   const [busy, setBusy] = useState<"save" | "apply" | null>(null);
@@ -160,6 +218,7 @@ export function SharedAppearanceSection({ active }: { active: boolean }) {
       id="settings-appearance-preset"
       className="settings-section appearance-preset"
       aria-labelledby="settings-appearance-preset-title"
+      lang="en"
     >
       <header className="settings-section-heading">
         <div>
@@ -215,7 +274,7 @@ export function SharedAppearanceSection({ active }: { active: boolean }) {
               {when(read.savedAt)}. Ticked settings are taken from the shared preset and saved on this device only; the
               others stay as they are.
             </p>
-            <AppearanceChoices appearance={appearance} contents={read.contents} chosen={chosen} onChosen={setChosen} from="Shared" />
+            <PresetChoices appearance={appearance} contents={read.contents} chosen={chosen} onChosen={setChosen} />
             {read.contents.unknown.length > 0 && (
               <p className="settings-row-help">
                 Not Appearance settings this version knows, so left out: {read.contents.unknown.join(", ")}
