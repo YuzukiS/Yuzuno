@@ -42,3 +42,22 @@ footer { display: flex; align-items: center; justify-content: space-between; col
 .window-controls button:hover { background: #e9ece2; color: #465c42; }
 .window-controls button[data-window="close"]:hover { background: #f3e2da; color: #ac745e; }
 .window-controls svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+/* The Workspaces saved on this computer (T-195). What is listed is what was
+   written down; nothing here says any of it answers. */
+.saved { margin: 0 0 22px; }
+.saved[hidden] { display: none; }
+.saved h2 { font-size: 12px; font-weight: 600; margin: 0 0 5px; }
+.saved .hint { margin: 0 0 10px; }
+.saved ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.saved li { display: flex; align-items: center; gap: 8px; border: 1px solid #e3e1d4; border-radius: 9px; background: #fffefa; padding: 9px 11px; }
+.saved li[data-selected="true"] { border-color: #c3cdb4; background: #fbfcf6; }
+.saved-open { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; height: auto; padding: 2px 0; background: none; border: none; color: inherit; text-align: left; font: inherit; }
+.saved-open:hover { background: none; }
+.saved-name { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.saved-url { font-size: 11px; color: #7c8279; overflow-wrap: anywhere; }
+/* Which Workspace answered here before: a name and an address do not tell
+   two of them apart, this does. */
+.saved-workspace { font-size: 10px; color: #a0a695; overflow-wrap: anywhere; }
+/* Only one entry may start a Core, and only the Windows app starts one. */
+.saved-start { font-size: 10px; color: #6f7a68; }
+.saved-rename, .saved-remove { align-self: center; height: 30px; padding: 0 10px; font-size: 11px; }

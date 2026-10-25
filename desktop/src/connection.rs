@@ -51,6 +51,10 @@ pub(crate) fn configured_url(
 
 /// What is kept of the Core last connected from the connection page, and
 /// where it is installed in WSL when it said so (T-171).
+/// The one-address record this app used to write. Nothing writes it any
+/// more -- `entries::record` writes the list -- but the checks here still
+/// build one with it to show that such a record is read as it always was.
+#[cfg(test)]
 pub fn saved_record(core: &Url, start: Option<&StartProfile>) -> String {
     let mut record = serde_json::json!({ "coreUrl": core.as_str() });
     if let Some(start) = start {

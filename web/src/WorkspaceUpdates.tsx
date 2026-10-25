@@ -22,7 +22,7 @@ import { AppearanceSection } from "./AppearanceSettings";
 import { SharedAppearanceSection } from "./SharedAppearance";
 import { InputPreferencesSection } from "./InputPreferences";
 import { LanguagePreferencesSection } from "./LanguagePreferences";
-import { langTag, strings, useLanguage } from "./i18n";
+import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { TimePreferencesSection } from "./TimePreferences";
 import { ShortcutHelpSection } from "./ShortcutHelp";
 import { DeviceTransferSection } from "./DeviceTransfer";
@@ -49,15 +49,19 @@ import {
   updateChainStep,
   updateInProgress,
   updateIntentKey,
-  updateLabels,
+  updateLabel,
   updateStatusFresh,
+  updateStepLabel,
   updateSteps,
+  updateStopText,
   updateWaitRows,
   type ReleaseSummary,
   type UpdateIntent,
   type UpdateStep,
   type UpdateStatus,
+  type UpdateStop,
 } from "./updates";
+import { updatesText } from "./updates-text";
 import "./updates.css";
 
 export function useWorkspaceUpdates(enabled: boolean, open: boolean) {
@@ -84,7 +88,7 @@ export function useWorkspaceUpdates(enabled: boolean, open: boolean) {
           typeof next.current.releaseId !== "string" ||
           typeof next.current.gitSha !== "string" || !next.storage ||
           !Array.isArray(next.candidates) || !Array.isArray(next.blockers))
-        throw new Error("Workspace update status is unavailable.");
+        throw new Error(updatesText("en").statusUnavailable);
       if (request !== generation.current) return;
       setRead({ status: next, at });
       setConnectionError("");
@@ -190,7 +194,7 @@ function useUpdateChain(
   const acting = useRef(false);
   const [tab] = useState(thisTab);
   const [posting, setPosting] = useState(false);
-  const [stopped, setStopped] = useState<{ version: string; reason: string } | null>(null);
+  const [stopped, setStopped] = useState<{ version: string; reason: UpdateStop } | null>(null);
   const advance = useCallback(async () => {
     if (acting.current || !status) return;
     acting.current = true;
@@ -211,7 +215,7 @@ function useUpdateChain(
         const step = chain.next;
         // Another window chose this release; it saves its drafts and applies.
         if (step === "apply" && chosen.owner && chosen.owner !== tab) return;
-        const stop = (reason: string) => {
+        const stop = (reason: UpdateStop) => {
           keep(null);
           setStopped({ version: chosen.version, reason });
         };
@@ -221,7 +225,7 @@ function useUpdateChain(
           try {
             drafts.current();
           } catch (error) {
-            return stop(`${errorText(error)} Nothing was applied; your draft is still here.`);
+            return stop({ why: "drafts", error: errorText(error) });
           }
         }
         // The pending step is saved before it is sent, so a reload or another
@@ -229,7 +233,7 @@ function useUpdateChain(
         // started. Every send counts toward the limit, interrupted ones too.
         const sends = (chosen.asked?.step === step ? chosen.unanswered ?? 0 : 0) + 1;
         if (sends > UNANSWERED_LIMIT)
-          return stop("Workspace did not answer. Check the update state, then choose the version again.");
+          return stop({ why: "unanswered" });
         const asked = { step, at: Date.now(), priorOperationId: status.operation?.id ?? null };
         const pending = { ...chosen, asked, unanswered: sends };
         keep(pending);
@@ -260,9 +264,9 @@ function useUpdateChain(
           // Core's refusal ends the chain. A lost answer is asked again, a
           // few times, only when the next status shows Core did not carry
           // the request out (Apply also repeats its request ID).
-          if (error instanceof HttpError) return stop(errorText(error));
+          if (error instanceof HttpError) return stop({ said: errorText(error) });
           if (sends >= UNANSWERED_LIMIT)
-            return stop("Workspace did not answer. Check the update state, then choose the version again.");
+            return stop({ why: "unanswered" });
           // Judge it only from a status read after it gave up.
           keep({ ...pending, asked: { ...asked, at: Date.now() } });
         } finally {
@@ -270,7 +274,7 @@ function useUpdateChain(
         }
       });
     } catch (error) {
-      setStopped({ version: savedUpdateIntent()?.version ?? "", reason: errorText(error) });
+      setStopped({ version: savedUpdateIntent()?.version ?? "", reason: { said: errorText(error) } });
       keep(null);
     } finally {
       acting.current = false;
@@ -402,9 +406,11 @@ export function WorkspaceUpdates({
 }) {
   const language = useLanguage();
   const dialog = settingsDialogText(language);
+  const t = updatesText(language);
   const [activeEditor, setActiveEditor] = useState<SettingsEditor | null>("updates");
   const [action, setAction] = useState("");
-  const [error, setError] = useState("");
+  // What stopped this editor's own request, worded where it is shown.
+  const [error, setError] = useState<{ said: string } | { why: "notSaved"; error: string } | { why: "timedOut" } | null>(null);
   const acting = useRef(false);
   const candidate =
     status?.candidates.find((r) => r.releaseId === status.preparedReleaseId) ||
@@ -434,18 +440,19 @@ export function WorkspaceUpdates({
     )?.version ??
     targetId;
   function update(release: ReleaseSummary) {
-    setError("");
+    setError(null);
     try {
       chain.start(release);
     } catch (e) {
-      setError(`This window could not save your choice, so nothing started. ${errorText(e)}`);
+      setError({ why: "notSaved", error: errorText(e) });
     }
   }
   async function perform(name: "check" | "cancel" | "cancel-download") {
     if (acting.current) return;
     acting.current = true;
     setAction(name);
-    setError("");
+    setError(null);
+    let timedOut = false;
     try {
       const body = name === "cancel" ? { operationId: operation?.id } : {};
       const controller = new AbortController();
@@ -457,17 +464,14 @@ export function WorkspaceUpdates({
           signal: controller.signal,
         });
       } catch (e) {
-        if (controller.signal.aborted)
-          throw new Error(
-            "Request timed out. Check the saved update status before trying again.",
-          );
+        timedOut = controller.signal.aborted;
         throw e;
       } finally {
         clearTimeout(timeout);
       }
       await refresh();
     } catch (e) {
-      setError(errorText(e));
+      setError(timedOut ? { why: "timedOut" } : { said: errorText(e) });
       await refresh();
     } finally {
       acting.current = false;
@@ -479,7 +483,7 @@ export function WorkspaceUpdates({
       preserveDrafts();
       window.location.reload();
     } catch (e) {
-      setError(errorText(e));
+      setError({ said: errorText(e) });
     }
   }
   const completed = operation?.phase === "complete";
@@ -497,7 +501,7 @@ export function WorkspaceUpdates({
   const downloadProgress = source?.phase === "downloading" && (
     <div className="updates-download-progress">
       <progress
-        aria-label="Release download"
+        aria-label={t.download}
         max={source.totalBytes || 1}
         value={source.receivedBytes}
       />
@@ -514,7 +518,7 @@ export function WorkspaceUpdates({
       onClick={() => void perform("cancel-download")}
     >
       <X size={14} />
-      Cancel download
+      {t.cancelDownload}
     </button>
   );
   // Where the Workspace is, as one answer: each stage has one next step.
@@ -543,7 +547,7 @@ export function WorkspaceUpdates({
       onClick={() => void perform("check")}
     >
       <RefreshCw size={14} className={action === "check" ? "updates-spin" : ""} />
-      Check for updates
+      {t.check}
     </button>
   );
   // Opening Settings looks for a newer release, at most every few minutes.
@@ -565,7 +569,7 @@ export function WorkspaceUpdates({
       onClick={() => update(release)}
     >
       <ArrowDownToLine size={quiet ? 14 : 15} />
-      Update to {release.version}
+      {t.updateTo(release.version)}
     </button>
   );
   // What a cancel can still stop: a transfer, the wait for idle agents, or
@@ -586,24 +590,17 @@ export function WorkspaceUpdates({
         }}
       >
         <X size={14} />
-        Cancel update
+        {t.cancelUpdate}
       </button>
     ) : null;
   // What the one click still does from here.
-  const oneClick = (from: "published" | "local" | "prepared") =>
-    `One click ${
-      from === "published"
-        ? "downloads and verifies it, prepares it, and switches"
-        : from === "local"
-          ? "prepares it and switches"
-          : "switches"
-    } once your agents finish their current turns. Conversations and drafts stay.`;
+  const oneClick = t.oneClick;
   const notes = (text?: string) =>
     text ? (
       <details className="updates-notes">
         <summary>
           <ChevronRight size={12} aria-hidden="true" />
-          What’s new
+          {t.whatsNew}
         </summary>
         <p className="updates-release-notes">{text}</p>
       </details>
@@ -612,18 +609,17 @@ export function WorkspaceUpdates({
     loading: {
       tone: "quiet",
       Icon: LoaderCircle,
-      title: "Checking your version…",
+      title: t.loading,
       body: null,
       act: null,
     },
     unmanaged: {
       tone: "quiet",
       Icon: CircleAlert,
-      title: "Updates are off for this Core",
+      title: t.unmanaged,
       body: (
         <p className="update-card-line">
-          {status?.reason ||
-            "This Core uses a development checkout. Install a managed release to enable updates here."}
+          {status?.reason || t.development}
         </p>
       ),
       act: checkButton,
@@ -631,34 +627,34 @@ export function WorkspaceUpdates({
     running: {
       tone: "busy",
       Icon: LoaderCircle,
-      title: `Updating to ${targetVersion ?? "a new version"}`,
+      title: t.updating(targetVersion ?? null),
       body: (
         <>
           <p className="update-card-line">
             {step === "download"
               ? source?.phase === "checking"
-                ? "Checking signed releases…"
-                : "Downloading the signed package. You can close Settings; the update keeps going."
+                ? t.checkingSigned
+                : t.downloading
               : step === "verify"
-                ? source && sourceLabels[source.phase]
+                ? source && t.sources[source.phase]
                 : step === "prepare"
-                  ? "Checking the complete release and making room. Your workspace is still available."
+                  ? t.preparing
                   : step === "wait"
                     ? waiting
-                      ? "Waiting for your agents. Active agents are asked to save progress and finish their current turn. Long tools may need more time; delivery does not mean paused."
+                      ? t.waiting
                       : chain.elsewhere
-                        ? "Prepared. The window where you chose this update saves its drafts, then switches once your agents finish their current turns."
+                        ? t.elsewhere
                         // Until Core reports the wait, it has not begun.
-                        : "Saving your drafts and asking Workspace to switch once your agents finish their current turns…"
+                        : t.asking
                     : operation?.phase === "restoring"
-                      ? `Returning to the same sessions${operation.totalSessions ? ` · ${operation.recoveredSessions || 0} of ${operation.totalSessions}` : ""}. No previous task is sent again.`
-                      : `${operation ? updateLabels[operation.phase] : "Installing"}. This window reconnects by itself; your unfinished draft stays with you.`}
+                      ? t.restoring(operation.recoveredSessions || 0, operation.totalSessions)
+                      : t.installing(operation ? updateLabel(operation.phase, language) : null)}
           </p>
           {(step === "download" || step === "verify") && downloadProgress}
           {operation?.deadline && waiting && (
             <p className="update-card-meta updates-deadline">
               <Clock3 size={12} />
-              Wait ends at{" "}
+              {t.waitEnds}
               {new Date(operation.deadline).toLocaleTimeString([], {
                 hour: "2-digit",
                 minute: "2-digit",
@@ -675,7 +671,7 @@ export function WorkspaceUpdates({
             disabled={blocked || chain.posting}
             onClick={() => chain.continueHere()}
           >
-            Continue in this window
+            {t.continueHere}
           </button>
         </>
       ) : (
@@ -685,28 +681,23 @@ export function WorkspaceUpdates({
     reload: {
       tone: "action",
       Icon: RefreshCw,
-      title: `Yuzuno ${status?.current.version ?? ""} is installed`,
-      body: (
-        <p className="update-card-line">
-          This window still shows the previous version. Reload to use the new
-          one; your drafts are kept.
-        </p>
-      ),
+      title: t.installed(status?.current.version ?? ""),
+      body: <p className="update-card-line">{t.reloadLine}</p>,
       act: (
         <button className="primary-button" onClick={reload}>
           <RefreshCw size={15} />
-          Reload this window
+          {t.reload}
         </button>
       ),
     },
     prepared: {
       tone: "action",
       Icon: ArrowDownToLine,
-      title: `Version ${candidate?.version} is ready`,
+      title: t.ready(candidate?.version),
       body: (
         <>
           <p className="update-card-line">
-            Prepared on this Core. {oneClick("prepared")}
+            {t.preparedHere}{oneClick("prepared")}
           </p>
           {notes(candidate?.notes)}
         </>
@@ -716,12 +707,12 @@ export function WorkspaceUpdates({
     local: {
       tone: "action",
       Icon: ArrowDownToLine,
-      title: `Version ${candidate?.version} is available`,
+      title: t.available(candidate?.version),
       body: (
         <>
           <p className="update-card-line">
-            {candidate?.source || "Reviewed local release"} ·{" "}
-            {updateBytes(candidate?.bytes ?? 0)}. {oneClick("local")}
+            {candidate?.source || t.reviewedLocal}
+            {t.sized(updateBytes(candidate?.bytes ?? 0))}{oneClick("local")}
           </p>
           {notes(candidate?.notes)}
         </>
@@ -731,18 +722,18 @@ export function WorkspaceUpdates({
     published: {
       tone: "action",
       Icon: ArrowDownToLine,
-      title: `Version ${offered?.version} is available`,
+      title: t.available(offered?.version),
       body: (
         <>
           <p className="update-card-line">
             {source?.phase === "available"
-              ? `Signed release from ${source.repository || "GitHub"}`
-              : source && sourceLabels[source.phase]}{" "}
+              ? t.signedFrom(source.repository || "GitHub")
+              : source && t.sources[source.phase]}{" "}
             · {updateBytes(offered?.bytes ?? 0)}
           </p>
           <p className="update-card-meta">
             <ShieldCheck size={13} />
-            Publisher signature verified · {offered?.platform}
+            {t.signature}{offered?.platform}
           </p>
           <p className="update-card-line">{oneClick("published")}</p>
           {downloadProgress}
@@ -761,14 +752,14 @@ export function WorkspaceUpdates({
     current: {
       tone: "ok",
       Icon: source?.phase === "checking" ? LoaderCircle : Check,
-      title: `Yuzuno ${status?.current.version ?? ""} is up to date`,
+      title: t.upToDate(status?.current.version ?? ""),
       body: (
         <p className="update-card-line">
           {source?.phase === "checking"
-            ? "Checking signed releases…"
+            ? t.checkingSigned
             : source?.configured && source.checkedAt
-              ? `Checked ${new Date(source.checkedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`
-              : "No newer version is waiting."}
+              ? t.checked(new Date(source.checkedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))
+              : t.noneWaiting}
         </p>
       ),
       act: checkButton,
@@ -799,15 +790,11 @@ export function WorkspaceUpdates({
             >
               <header className="settings-section-heading">
                 <div>
-                  <h3 id="settings-updates-title">Workspace service</h3>
-                  <p>
-                    The Workspace service, Core + Web UI on Linux / WSL,
-                    changes only when you choose a version to update to.
-                    Checking restarts nothing.
-                  </p>
+                  <h3 id="settings-updates-title">{t.title}</h3>
+                  <p>{t.intro}</p>
                 </div>
                 {status && (
-                  <span className="settings-current" title="Installed now">
+                  <span className="settings-current" title={t.installedNow}>
                     {status.current.version}
                   </span>
                 )}
@@ -815,7 +802,7 @@ export function WorkspaceUpdates({
               <div
                 className={`update-card is-${card.tone}`}
                 role="group"
-                aria-label="Update status"
+                aria-label={t.status}
               >
                 <div className="update-card-main">
                   <CardIcon
@@ -836,12 +823,12 @@ export function WorkspaceUpdates({
                 )}
                 {!!updateWaitRows(status).length && (active || prepared) && (
                   <div className="update-card-part">
-                    <p className="update-card-label">Waiting for</p>
+                    <p className="update-card-label">{t.waitingFor}</p>
                     <ul
                       className="updates-blockers"
-                      aria-label="What the update is waiting for"
+                      aria-label={t.waitingForLabel}
                     >
-                      {updateWaitRows(status).map((b, i) => (
+                      {updateWaitRows(status, language).map((b, i) => (
                         <li key={`${b.agentId || b.name}-${i}`} className={b.idle ? "is-idle" : undefined}>
                           <span className="updates-blocker-dot" />
                           <strong>{b.name}</strong>
@@ -859,15 +846,11 @@ export function WorkspaceUpdates({
                   >
                     <p className="update-card-result">
                       {completed ? <Check size={15} /> : <CircleAlert size={15} />}
-                      <strong>{updateLabels[finished.phase]}</strong>
+                      <strong>{updateLabel(finished.phase, language)}</strong>
                       <span>
-                        {finished.phase === "complete"
-                          ? "Your workspace, conversations and drafts are still here. Agents that yielded stay idle; send a message when you want to continue."
-                          : finished.phase === "rolledBack"
-                            ? "The previous compatible version is running. Your Workspace data was kept."
-                            : finished.phase === "cancelled"
-                              ? "Pause requests have expired. Agents that yielded stay idle; send a message when you want to continue."
-                              : "The operation is saved. Review the details before trying again."}
+                        {finished.phase === "complete" || finished.phase === "rolledBack" || finished.phase === "cancelled"
+                          ? t.finished[finished.phase]
+                          : t.finished.other}
                       </span>
                     </p>
                     {finished.error && <p className="updates-error">{finished.error}</p>}
@@ -882,7 +865,7 @@ export function WorkspaceUpdates({
                   <div className="update-card-part">
                     <p className="updates-error" role="alert">
                       {source.error}
-                      {source.candidate ? " The last verified release is kept." : ""}
+                      {source.candidate ? t.lastKept : ""}
                     </p>
                   </div>
                 )}
@@ -891,22 +874,22 @@ export function WorkspaceUpdates({
                     <p className="updates-notice" role="status">
                       <RefreshCw size={15} />
                       {step
-                        ? "Reconnecting to Workspace service… Your update and drafts are saved."
-                        : `Workspace is unavailable. ${connectionError}`}
+                        ? t.reconnecting
+                        : t.unavailable(connectionError === updatesText("en").statusUnavailable ? t.statusUnavailable : connectionError)}
                     </p>
                   </div>
                 )}
                 {error && (
                   <div className="update-card-part">
                     <p className="updates-error" role="alert">
-                      {error}
+                      {"said" in error ? error.said : error.why === "notSaved" ? t.notSaved(error.error) : t.timedOut}
                     </p>
                   </div>
                 )}
                 {chain.stopped && !step && (
                   <div className="update-card-part">
                     <p className="updates-error" role="alert">
-                      The update to {chain.stopped.version} stopped. {chain.stopped.reason}
+                      {t.stopped(chain.stopped.version, updateStopText(chain.stopped.reason, language))}
                     </p>
                   </div>
                 )}
@@ -914,8 +897,8 @@ export function WorkspaceUpdates({
                 {(stage === "local" || stage === "prepared") && offered && (
                   <div className="update-card-part update-card-also">
                     <p className="update-card-meta">
-                      Version {offered.version} is also published ·{" "}
-                      {source && sourceLabels[source.phase]}
+                      {t.alsoPublished(offered.version)}
+                      {source && t.sources[source.phase]}
                     </p>
                     <span className="update-card-also-actions">
                       {cancellable && cancelDownload}
@@ -932,11 +915,11 @@ export function WorkspaceUpdates({
                 <details className="update-details">
                   <summary>
                     <ChevronRight size={13} aria-hidden="true" />
-                    Version details
+                    {t.details}
                   </summary>
                   <dl>
                     <div>
-                      <dt>Installed</dt>
+                      <dt>{t.installedLabel}</dt>
                       <dd>
                         <span className="updates-version-number">{status.current.version}</span>
                         <code title={status.current.releaseId}>{status.current.releaseId}</code>
@@ -944,41 +927,38 @@ export function WorkspaceUpdates({
                       </dd>
                     </div>
                     <div>
-                      <dt>Runs as</dt>
-                      <dd>Workspace service · Core + Web UI · Linux / WSL</dd>
+                      <dt>{t.runsAs}</dt>
+                      <dd>{t.runsAsValue}</dd>
                     </div>
                     {candidate && (
                       <div>
-                        <dt>{prepared ? "Prepared" : "Next version"}</dt>
+                        <dt>{prepared ? t.preparedLabel : t.nextVersion}</dt>
                         <dd>
                           <span className="updates-version-number">{candidate.version}</span>
                           <code>{candidate.releaseId}</code>
-                          <span>
-                            {candidate.platform} · API {candidate.protocol} · data{" "}
-                            {candidate.schema.writes} · records {candidate.records.writes}
-                          </span>
-                          <span>{candidate.source || "Reviewed local release"}</span>
+                          <span>{t.release(candidate.platform, candidate.protocol, candidate.schema.writes, candidate.records.writes)}</span>
+                          <span>{candidate.source || t.reviewedLocal}</span>
                           <code>{candidate.gitSha.slice(0, 8)}</code>
                         </dd>
                       </div>
                     )}
                     {status.managed && (
                       <div>
-                        <dt>Update source</dt>
+                        <dt>{t.source}</dt>
                         <dd>
                           {!source ? (
-                            "Local releases only"
+                            t.localOnly
                           ) : !source.configured ? (
                             source.reason
                           ) : (
                             <>
                               <span>
-                                <Github size={13} /> {source.repository || "Published releases"}
+                                <Github size={13} /> {source.repository || t.publishedReleases}
                               </span>
                               <span>
                                 {source.checkedAt
-                                  ? `Checked ${new Date(source.checkedAt).toLocaleString()}`
-                                  : "Uses GitHub CLI on the Core host"}
+                                  ? t.checked(new Date(source.checkedAt).toLocaleString())
+                                  : t.usesCli}
                               </span>
                             </>
                           )}
@@ -987,14 +967,14 @@ export function WorkspaceUpdates({
                     )}
                     {status.managed && (
                       <div>
-                        <dt>Storage</dt>
+                        <dt>{t.storage}</dt>
                         <dd className="updates-storage">
                           <HardDrive size={13} />
-                          {updateBytes(
-                            status.storage.releaseBytes + status.storage.backupBytes,
-                          )}{" "}
-                          on the Core host · {status.storage.retainedReleases} releases kept ·
-                          up to {status.storage.keepReleases} retained for recovery
+                          {t.stored(
+                            updateBytes(status.storage.releaseBytes + status.storage.backupBytes),
+                            status.storage.retainedReleases,
+                            status.storage.keepReleases,
+                          )}
                         </dd>
                       </div>
                     )}
@@ -1054,11 +1034,13 @@ const AUTO_CHECK_MS = 5 * 60_000;
 /** The steps of the update in hand. Those the release already had when it
  * was chosen are marked as reused rather than redone. */
 function UpdateSteps({ current, from }: { current: UpdateStep; from: UpdateStep }) {
-  const at = updateSteps.findIndex((s) => s.step === current);
-  const reused = updateSteps.findIndex((s) => s.step === from);
+  const t = useStrings(updatesText);
+  const language = useLanguage();
+  const at = updateSteps.indexOf(current);
+  const reused = updateSteps.indexOf(from);
   return (
-    <ol className="update-steps" aria-label="Update progress">
-      {updateSteps.map(({ step, label }, i) => {
+    <ol className="update-steps" aria-label={t.progress}>
+      {updateSteps.map((step, i) => {
         const state =
           i < at ? (i < reused ? "reused" : "done") : i === at ? "current" : "next";
         return (
@@ -1066,7 +1048,7 @@ function UpdateSteps({ current, from }: { current: UpdateStep; from: UpdateStep 
             key={step}
             className={`is-${state}`}
             aria-current={state === "current" ? "step" : undefined}
-            title={state === "reused" ? "Already done before this update" : undefined}
+            title={state === "reused" ? t.reusedTitle : undefined}
           >
             <span className="update-step-label">
               <span className="update-step-mark" aria-hidden="true">
@@ -1076,29 +1058,16 @@ function UpdateSteps({ current, from }: { current: UpdateStep; from: UpdateStep 
                   <Check size={10} strokeWidth={3} />
                 ) : null}
               </span>
-              {label}
+              {updateStepLabel(step, language)}
             </span>
-            {state === "reused" && <span className="sr-only">, already done</span>}
-            {state === "done" && <span className="sr-only">, done</span>}
+            {state === "reused" && <span className="sr-only">{t.reusedNote}</span>}
+            {state === "done" && <span className="sr-only">{t.doneNote}</span>}
           </li>
         );
       })}
     </ol>
   );
 }
-
-const sourceLabels: Record<NonNullable<UpdateStatus["releaseSource"]>["phase"], string> = {
-  idle: "Check for a published release",
-  checking: "Checking signed releases…",
-  available: "Signed release available",
-  current: "You’re on the latest published version",
-  downloading: "Downloading update…",
-  verifying: "Verifying the complete package…",
-  registering: "Adding the verified update…",
-  downloaded: "Download verified — ready to prepare",
-  failed: "Release check or download needs attention",
-  cancelled: "Download cancelled",
-};
 
 export function UpdateBanner({ onOpen }: { onOpen: () => void }) {
   return (
