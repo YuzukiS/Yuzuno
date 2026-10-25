@@ -46,6 +46,7 @@ import {
 } from "./CiJobs";
 import { WorkDock, WorkDockGroup, WorkDockItem, WorkDockMore } from "./WorkDock";
 import { useAppearance } from "./appearance";
+import { strings, useStrings } from "./i18n";
 import {
   JobCard,
   JobDetailHeading,
@@ -419,6 +420,13 @@ export function ConversationJobs({
   );
 }
 
+// The toolbar's entry to Jobs follows the interface language (T-189); the
+// panel itself is still English.
+const entryText = strings(
+  { label: "Jobs", title: "Local jobs, GitHub Actions and PR reviews" },
+  { label: "Job", title: "本地 Job、GitHub Actions 与 PR 审查" },
+);
+
 export function Jobs({
   workspaceId,
   agent,
@@ -432,6 +440,7 @@ export function Jobs({
   revision: string;
   disabled: boolean;
 }) {
+  const entry = useStrings(entryText);
   const owners = (agents || (agent ? [agent] : [])).filter(
     (a) => !a.closedAt && !a.remote,
   );
@@ -796,11 +805,11 @@ export function Jobs({
             if (!pending.current) setCreating(false);
           }}
           disabled={disabled}
-          aria-label="Jobs"
-          title="Local jobs, GitHub Actions and PR reviews"
+          aria-label={entry.label}
+          title={entry.title}
         >
           <BriefcaseBusiness size={15} />
-          <span className="toolbar-nav-label">Jobs</span>
+          <span className="toolbar-nav-label">{entry.label}</span>
           {budget && (
             <span
               className="nav-count"

@@ -40,12 +40,17 @@ export function scopeForAgent(
   return validScope(projectScope(agent.projectId), projects);
 }
 
-export function scopeLabel(scope: ProjectScope, projects: Project[]) {
-  if (scope === ALL_PROJECTS) return "All projects";
-  if (scope === NO_PROJECT) return "No project";
+export function scopeLabel(
+  scope: ProjectScope,
+  projects: Project[],
+  // What this window calls the scopes that are not a project's own name.
+  names: { all: string; none: string; project: string } = { all: "All projects", none: "No project", project: "Project" },
+) {
+  if (scope === ALL_PROJECTS) return names.all;
+  if (scope === NO_PROJECT) return names.none;
   return (
     projects.find((project) => project.id === scopeProjectId(scope))?.name ||
-    "Project"
+    names.project
   );
 }
 
