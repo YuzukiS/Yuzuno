@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CircleStop, MoreHorizontal, RotateCw, Settings2, SlidersHorizontal, Square } from "lucide-react";
+import { CircleStop, MoreHorizontal, RotateCw, Settings2, SlidersHorizontal, Square, Unplug } from "lucide-react";
 import { agentMenuItems, type AgentActionHandlers, type AgentMenuAction, type AgentMenuItem } from "./agent-actions";
 import type { Agent } from "./types";
 import "./agent-actions.css";
@@ -34,6 +34,7 @@ const icons: Record<AgentMenuAction, typeof RotateCw> = {
   check: RotateCw,
   endMissing: CircleStop,
   interrupt: Square,
+  disconnect: Unplug,
   settings: SlidersHorizontal,
   manage: Settings2,
 };
