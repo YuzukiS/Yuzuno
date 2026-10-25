@@ -807,7 +807,9 @@ fn a_space_budget_keeps_only_what_fits_and_says_what_stays_and_why() {
     declare(&folder, "b-2", 10 << 20);
     declare(&folder, "b-1", 1 << 20);
     let budget = |bytes: u64| Rule { keep: 3, budget_bytes: Some(bytes) };
-    let verdicts = |p: &retention::Preview| p.entries.iter().map(|e| (e.name.as_str(), e.verdict)).collect::<Vec<_>>();
+    fn verdicts(p: &retention::Preview) -> Vec<(&str, &'static str)> {
+        p.entries.iter().map(|e| (e.name.as_str(), e.verdict)).collect()
+    }
     let before = listing(&folder);
 
     // No budget: the count alone, as before; the sizes are said to be declared ones.

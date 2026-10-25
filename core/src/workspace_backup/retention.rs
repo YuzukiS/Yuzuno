@@ -331,11 +331,11 @@ pub(crate) fn preview_within(folder: &Path, rule: impl Into<Rule>, workspace: &s
 fn budget_outcome(entries: &[Entry], workspace: &str, bytes: u64, newest_bytes: Option<u64>) -> Budget {
     let stays = |e: &&Entry| matches!(e.verdict, "keep" | "protected" | "unknown") && e.workspace_id.as_deref().is_none_or(|id| id == workspace);
     let kept_estimate_bytes = entries.iter().filter(stays).filter_map(|e| e.estimate_bytes).fold(0u64, u64::saturating_add);
-    let unsized = entries.iter().filter(stays).filter(|e| e.estimate_bytes.is_none()).count();
+    let without_size = entries.iter().filter(stays).filter(|e| e.estimate_bytes.is_none()).count();
     let (budget, kept) = (size_text(bytes), size_text(kept_estimate_bytes));
-    let (state, reason) = if unsized > 0 {
-        let stay = if unsized == 1 { "that stays has" } else { "that stay have" };
-        ("unknown", format!("{unsized} {stay} no size that can be trusted, so whether this Workspace's backups fit in {budget} can't be confirmed; those with a size declare {kept}"))
+    let (state, reason) = if without_size > 0 {
+        let stay = if without_size == 1 { "that stays has" } else { "that stay have" };
+        ("unknown", format!("{without_size} {stay} no size that can be trusted, so whether this Workspace's backups fit in {budget} can't be confirmed; those with a size declare {kept}"))
     } else if kept_estimate_bytes <= bytes {
         ("met", format!("this Workspace's backups that stay declare {kept} of {budget}"))
     } else {
