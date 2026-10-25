@@ -5,7 +5,9 @@ import { appearanceFields, fieldValue, importedAppearance, type AppearanceField 
 import { fieldLabel, fieldText } from "./AppearanceSettings";
 import type { FileRefusal } from "./appearance-file";
 import type { SaveOutcome } from "./device-storage";
-import { strings, useLanguage } from "./i18n";
+import { importLanguagePreferences, strings, useLanguage, useLanguagePreferences, type LanguageChoice } from "./i18n";
+import { notificationCategories, type NotificationCategory } from "./notification-prefs";
+import { importNotificationPrefs, useNotificationPrefs } from "./notification-store";
 import { saveRefusalReason } from "./SaveStatus";
 import { importPreferences, useDevicePreferences, type SendKey } from "./device-preferences";
 import {
@@ -34,18 +36,26 @@ type Message =
 // Key names (Return, ⌘, Ctrl), time zones (IANA's) and file names are written
 // as they are; what a file holds is shown as it holds it.
 const text = strings({
-  groups: { appearance: "Appearance", sending: "Sending messages", time: "Time display" } as Record<DeviceGroup, string>,
+  groups: { appearance: "Appearance", sending: "Sending messages", time: "Time display", language: "Language", notifications: "Notifications" } as Record<DeviceGroup, string>,
   sendKeys: (modifier: string): Record<SendKey, string> => ({ auto: "Automatic", enter: "Return sends", modEnter: `${modifier}+Return sends` }),
   clocks: { system: "System", h12: "12-hour", h24: "24-hour" } as Record<ClockFormat, string>,
   ownZone: "This device’s own",
   sendKey: "Send key",
   clock: "Clock",
   timeZone: "Time zone",
+  // Each language is named in its own words, as Settings → Language names them.
+  languages: { system: "System", en: "English", "zh-Hans": "简体中文" } as Record<LanguageChoice, string>,
+  interfaceLanguage: "Interface language",
+  kinds: { needsYou: "An Agent needs you", failed: "A Turn failed", finished: "A Turn finished", backupFailed: "A daily backup failed" } as Record<NotificationCategory, string>,
+  choices: { preview: "Show what was written", muted: "Mute on this device" },
+  on: "On",
+  off: "Off",
+  deviceOwn: "Whether this device notifies at all, and this browser’s permission, stay as they are: applying never turns notifications on or asks for permission.",
   invalid: "not a value Yuzuno accepts; kept as now",
   title: "Move preferences to another device",
-  intro: "One file of this device’s Appearance, how messages are sent and how times are shown. Accounts, permissions, folders, conversations and drafts are never in it, and nothing in the Workspace changes. Importing shows each group beside yours, and you apply each group on its own. This copies a file; it doesn’t sync devices.",
+  intro: "One file of this device’s Appearance, how messages are sent, how times are shown, the interface language and the notification choices. Accounts, permissions, folders, conversations and drafts are never in it, and nothing in the Workspace changes. Importing shows each group beside yours, and you apply each group on its own. This copies a file; it doesn’t sync devices.",
   fileGroup: "Preferences file",
-  help: "Exports the settings in effect. An Appearance export from this settings page can be imported here too. Language and keyboard shortcuts aren’t in the file.",
+  help: "Exports the settings in effect: the language as chosen (System stays System), and which notifications, previews and mute, but not whether this device notifies at all. An Appearance export from this settings page can be imported here too. Keyboard shortcuts aren’t in the file. An older Yuzuno reading this file leaves out the language and notifications.",
   export: "Export to a file",
   import: "Import from a file…",
   choose: "Choose a preferences file",
@@ -74,18 +84,25 @@ const text = strings({
     }
   },
 }, {
-  groups: { appearance: "外观", sending: "发送消息", time: "时间显示" },
+  groups: { appearance: "外观", sending: "发送消息", time: "时间显示", language: "界面语言", notifications: "通知" },
   sendKeys: (modifier) => ({ auto: "自动", enter: "Return 发送", modEnter: `${modifier}+Return 发送` }),
   clocks: { system: "系统", h12: "12 小时制", h24: "24 小时制" },
   ownZone: "此设备自己的时区",
   sendKey: "发送键",
   clock: "时钟",
   timeZone: "时区",
+  languages: { system: "系统", en: "English", "zh-Hans": "简体中文" },
+  interfaceLanguage: "界面语言",
+  kinds: { needsYou: "有 Agent 需要你", failed: "Turn 失败", finished: "Turn 完成", backupFailed: "每日备份失败" },
+  choices: { preview: "显示所写的内容", muted: "在此设备上静音" },
+  on: "开",
+  off: "关",
+  deviceOwn: "此设备是否发送通知，以及此浏览器的权限，都保持不变：应用时从不开启通知，也不请求权限。",
   invalid: "不是 Yuzuno 接受的值；保持当前",
   title: "把偏好移到另一台设备",
-  intro: "一个文件，包含此设备的外观、消息的发送方式和时间的显示方式。账户、权限、文件夹、会话和草稿从不在其中，Workspace 中的任何内容也不会改变。导入时会把每组与你的并排显示，由你逐组应用。这是复制一个文件，不会在设备之间同步。",
+  intro: "一个文件，包含此设备的外观、消息的发送方式、时间的显示方式、界面语言和通知选择。账户、权限、文件夹、会话和草稿从不在其中，Workspace 中的任何内容也不会改变。导入时会把每组与你的并排显示，由你逐组应用。这是复制一个文件，不会在设备之间同步。",
   fileGroup: "偏好文件",
-  help: "导出当前生效的设置。在此设置页导出的外观文件也可以在这里导入。界面语言和键盘快捷键不在文件中。",
+  help: "导出当前生效的设置：界面语言按你的选择导出（“系统”仍是“系统”），通知则导出通知哪些内容、是否显示内容和静音，但不包括此设备是否发送通知。在此设置页导出的外观文件也可以在这里导入。键盘快捷键不在文件中。较旧版本的 Yuzuno 读取此文件时会略过界面语言和通知。",
   export: "导出到文件",
   import: "从文件导入…",
   choose: "选择偏好文件",
@@ -99,6 +116,8 @@ const text = strings({
         sendKey: `文件中是此版本没有的发送键：${refusal.value}`,
         clock: `文件中是此版本没有的时钟格式：${refusal.value}`,
         timeZone: `文件中是此浏览器不认识的时区：${refusal.value}`,
+        language: `文件中是此版本没有的界面语言选择：${refusal.value}`,
+        onOff: `文件中的值不是开或关：${refusal.value}`,
       }[refusal.reason] ?? refusal.refused
     }。保持当前。`,
   now: (value) => `当前：${value}`,
@@ -145,8 +164,8 @@ function readText(file: File): Promise<string> {
 
 /**
  * This device's preferences to and from one file (T-194): Appearance, how
- * messages are sent and how times are shown. Export writes the settings in
- * effect. Import shows each group beside yours, and each group is applied
+ * messages are sent, how times are shown, the interface language and the
+ * notification choices. Export writes the settings in effect. Import shows each group beside yours, and each group is applied
  * on its own, only once saved on this device: a refused save, or Cancel,
  * leaves that group as it is. No step changes more than one group, and
  * nothing here syncs between devices.
@@ -159,6 +178,9 @@ export function DeviceTransferSection() {
   const appearance = useAppearance();
   const sending = useDevicePreferences();
   const time = useTimePreferences();
+  const languageChoice = useLanguagePreferences();
+  const notifications = useNotificationPrefs();
+  const onOff = (on: boolean) => (on ? t.on : t.off);
   const [file, setFile] = useState<{ name: string; contents: DeviceFileContents } | null>(null);
   const [said, setSaid] = useState<Partial<Record<DeviceGroup | "file", Said>>>({});
   const picker = useRef<HTMLInputElement>(null);
@@ -183,6 +205,29 @@ export function DeviceTransferSection() {
       const value = read.value.sendKey;
       return [{ key: "sendKey", label: t.sendKey, now: sendKeyText[sending.sendKey], file: sendKeyText[value], differs: value !== sending.sendKey }];
     }
+    if (group === "language") {
+      const read = contents.language;
+      if (!read || "refused" in read || read.value.language === undefined) return [];
+      const value = read.value.language;
+      return [{ key: "language", label: t.interfaceLanguage, now: t.languages[languageChoice.language], file: t.languages[value], differs: value !== languageChoice.language }];
+    }
+    if (group === "notifications") {
+      const read = contents.notifications;
+      if (!read || "refused" in read) return [];
+      const out: Row[] = [];
+      for (const kind of notificationCategories) {
+        const value = read.value.categories?.[kind];
+        if (value === undefined) continue;
+        const now = notifications.categories[kind];
+        out.push({ key: kind, label: t.kinds[kind], now: onOff(now), file: onOff(value), differs: value !== now });
+      }
+      for (const name of ["preview", "muted"] as const) {
+        const value = read.value[name];
+        if (value === undefined) continue;
+        out.push({ key: name, label: t.choices[name], now: onOff(notifications[name]), file: onOff(value), differs: value !== notifications[name] });
+      }
+      return out;
+    }
     const read = contents.time;
     if (!read || "refused" in read) return [];
     const out: Row[] = [];
@@ -198,7 +243,7 @@ export function DeviceTransferSection() {
   };
 
   function exportFile() {
-    const text = exportDevicePreferences({ appearance, sending, time });
+    const text = exportDevicePreferences({ appearance, sending, time, language: languageChoice, notifications });
     const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
@@ -248,10 +293,23 @@ export function DeviceTransferSection() {
       const read = contents.sending;
       if (!read || "refused" in read) return;
       outcome = importPreferences({ ...sending, ...read.value });
-    } else {
+    } else if (group === "time") {
       const read = contents.time;
       if (!read || "refused" in read) return;
       outcome = importTimePreferences({ ...time, ...read.value });
+    } else if (group === "language") {
+      const read = contents.language;
+      if (!read || "refused" in read) return;
+      outcome = importLanguagePreferences({ ...languageChoice, ...read.value });
+    } else {
+      const read = contents.notifications;
+      if (!read || "refused" in read) return;
+      // The kinds, previews and mute only: whether this device notifies stays its own.
+      outcome = importNotificationPrefs({
+        categories: { ...notifications.categories, ...read.value.categories },
+        preview: read.value.preview ?? notifications.preview,
+        muted: read.value.muted ?? notifications.muted,
+      });
     }
     setSaid((old) => ({
       ...old,
@@ -330,6 +388,7 @@ export function DeviceTransferSection() {
                       ))}
                     </ul>
                   )}
+                  {group === "notifications" && <p className="settings-row-help">{t.deviceOwn}</p>}
                   {!refused && (
                     <button type="button" disabled={!pending} onClick={() => apply(group)}>
                       {t.apply(t.groups[group], pending)}
