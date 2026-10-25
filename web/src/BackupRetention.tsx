@@ -197,7 +197,8 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
                                 // The preview is from before the removal; it is read again once that has ended.
                                 setPreview(null);
                                 setConfirming(null);
-                                setStarted(`Removal of ${e.name} started; preview again once it has ended.`);
+                                // Core may still refuse it at once; its answer shows above, with the backup operations.
+                                setStarted(`Removal of ${e.name} requested; Core's answer shows above. Preview again once it has ended.`);
                               }}
                             >
                               Remove this backup

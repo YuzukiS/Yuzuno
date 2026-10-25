@@ -494,6 +494,8 @@ test("removing one backup asks first, names exactly that one, and sends one remo
     if (url.endsWith("/retention/preview")) return { body: { folder: "/backups/daily", keep: 1, unreadableNames: 0, removableEstimateBytes: 3 * 1024 * 1024, entries: [kept, removable] } };
     if (url.endsWith("/retention/remove")) {
       sent.push(body);
+      // The second comes from a preview made before the first removal: Core judges the folder as it is now.
+      if (sent.length === 2) return { status: 400, body: { error: `${removable.name} is no longer in /backups/daily; nothing was removed` } };
       return { status: 202, body: { operation: op({ id: "op8", kind: "remove", step: "preview", requestId: body.requestId, request: { folder: body.folder, name: body.name } }) } };
     }
     if (url.endsWith("/operations/op8")) {
@@ -528,11 +530,20 @@ test("removing one backup asks first, names exactly that one, and sends one remo
     await waitFor(() => sent.length === 1, "one removal");
     assert.equal(sent[0].requestId.length > 0, true);
     assert.deepEqual({ ...sent[0], requestId: "r" }, { requestId: "r", folder: "/backups/daily", keep: 1, name: removable.name, manifestSha256: "sha-22" });
-    assert.match(group().textContent, /Removal of yuzuno-backup-20261022T0300Z started; preview again once it has ended\./);
+    assert.match(group().textContent, /Removal of yuzuno-backup-20261022T0300Z requested; Core's answer shows above\. Preview again once it has ended\./);
     assert.equal(group().querySelector('[aria-label="Retention preview"]') === null, true, "the preview from before is not offered again");
     await waitFor(() => p.text().includes("Removal finished"), "the removal's outcome");
     assert.match(p.text(), /Removed \/backups\/daily\/yuzuno-backup-20261022T0300Z, about 3\.0 MiB as its manifest declared\. First, \/backups\/daily\/yuzuno-backup-20261023T0300Z was read back whole\./);
     assert.equal(sent.length, 1);
+    // A stale preview offers it again; Core's refusal is shown as it is, and nothing claims it was removed.
+    button(p, "Preview").click();
+    await waitFor(() => button(p, "Remove…"), "the stale preview");
+    button(p, "Remove…").click();
+    await waitFor(() => button(p, "Remove this backup"), "the confirmation");
+    button(p, "Remove this backup").click();
+    await waitFor(() => sent.length === 2 && p.doc.querySelector(".workspace-backup-error[role=alert]"), "Core's refusal");
+    assert.equal(p.doc.querySelector(".workspace-backup-error[role=alert]").textContent.trim(), `${removable.name} is no longer in /backups/daily; nothing was removed`);
+    assert.equal(sent[1].requestId !== sent[0].requestId, true, "a new confirmation is a new request");
   } finally {
     p.close();
   }
