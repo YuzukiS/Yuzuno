@@ -710,12 +710,28 @@ export function App() {
   // Earlier native Turns come before the oldest saved one, so they are
   // offered only where the saved conversation starts (T-161).
   const nativeHistoryHere = !currentDetail?.conversation?.hasBefore;
-  const [pageTarget, setPageTarget] = useState<{agentId:string; turnId:string; itemId?:string; top:number; start:string|null; end:string|null} | null>(null);
+  const [pageTarget, setPageTarget] = useState<{agentId:string; turnId:string; itemId?:string; top:number; start:string|null; end:string|null; hold:true} | null>(null);
   const [pageSpace, setPageSpace] = useState<"before" | "after" | null>(null);
   useEffect(() => { setPageTarget(null); setPageSpace(null); }, [selected]);
   useEffect(() => { if (sourceJump || jumpToTurn) setPageSpace(null); }, [sourceJump, jumpToTurn]);
   // An earlier window that could not be read moves nothing to hold in place.
   useEffect(() => { if (savedPages.error) setPageTarget(null); }, [savedPages.error]);
+  /** What the reader sees at the top of the conversation: the first item
+   * whose top is in view, as ReadingAnchor picks it. Earlier messages are put
+   * in front of everything shown, so it stays mounted and can be held in
+   * place; an item still hidden in a closed group never is (T-161). */
+  function readerAnchor() {
+    const pane = scroll.current;
+    if (!pane) return null;
+    const box = pane.getBoundingClientRect();
+    const visible = Array.from(pane.querySelectorAll<HTMLElement>("[data-item-id]"))
+      .map(element => ({element, rect:element.getBoundingClientRect()}))
+      .filter(({rect}) => rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom);
+    const first = visible.find(({rect}) => rect.top >= box.top) || visible[0];
+    const turnId = first?.element.closest<HTMLElement>("[id^='turn-']")?.id.slice("turn-".length);
+    return first && turnId && first.element.dataset.itemId
+      ? {turnId, itemId:first.element.dataset.itemId, top:first.rect.top} : null;
+  }
   function pageAnchor(turnId: string, itemId?: string) {
     const turn = document.getElementById(`turn-${turnId}`);
     if (!itemId) return turn;
@@ -1695,9 +1711,10 @@ export function App() {
     }
     const [turnId, itemId] = JSON.parse(cursor) as [string, string | null];
     const item = pageAnchor(turnId, itemId || undefined);
+    // A page target holds the reader's place; it opens nothing (T-161).
     const target = {agentId:selected, turnId, itemId:itemId || undefined,
       top:item?.getBoundingClientRect().top ?? (scroll.current?.getBoundingClientRect().top ?? 0) + 32,
-      start:window.start, end:window.end};
+      start:window.start, end:window.end, hold:true as const};
     stickToBottom.current = false;
     setHistoryReading(true);
     setAtBottom(false);
@@ -1706,9 +1723,10 @@ export function App() {
       // live window is pinned, so new messages do not move it out from
       // under the earlier ones.
       live.pinWindow();
+      const reading = readerAnchor();
       if (savedPages.loadEarlier(cursor)) {
         setPageSpace(null);
-        setPageTarget(target);
+        setPageTarget(reading ? {...target, ...reading} : target);
         return;
       }
     }

@@ -69,7 +69,7 @@ import { QuestionAnchor } from "./QuestionAnchor";
 import { ClaudeCheckpointButton } from "./ClaudeCheckpoint";
 import { questionKey } from "./pending-questions";
 import type { QuestionSource } from "./types";
-import { ConversationRows, useConversationDisclosure, useConversationTarget, useFirstConversationMount, useConversationWindowed } from "./ConversationWindow";
+import { ConversationRows, useConversationDisclosure, useConversationReveal, useConversationTarget, useFirstConversationMount, useConversationWindowed } from "./ConversationWindow";
 
 // A tap makes Yuzu squash, hop and wiggle. Only the individual scale, rotate
 // and translate properties move, so it stacks on a mark's own tilt and on the
@@ -635,9 +635,10 @@ function ToolActivity({
   const [opened, setOpened] = useConversationDisclosure(key, open);
   const firstMount = useFirstConversationMount(key);
   const target = useConversationTarget(turnId);
+  const reveal = useConversationReveal(turnId);
   const windowed = useConversationWindowed();
   const shownTarget = shownItemId({ kind: "tools", items, calls }, target?.itemId);
-  const revealing = !!shownTarget;
+  const revealing = !!shownItemId({ kind: "tools", items, calls }, reveal?.itemId);
   useLayoutEffect(() => {
     // Commit the disclosure choice before App clears the navigation hint.
     // Native `toggle` is queued and may otherwise arrive after row removal.
@@ -739,12 +740,13 @@ export function Turn({
   const pointFix = usePointFix();
   const links = useMessageLinks();
   const target = useConversationTarget(turn.id);
+  const reveal = useConversationReveal(turn.id);
   const windowed = useConversationWindowed();
   useEffect(() => { drawn.current = true; }, []);
   const plan = turn._yuzunoPlan;
   const planSourceId = `yuzuno-plan-${turn.id}`;
   const [planOpen, setPlanOpen] = useConversationDisclosure(`plan:${turn.id}`, false);
-  const revealingPlan = target?.itemId === planSourceId;
+  const revealingPlan = reveal?.itemId === planSourceId;
   useLayoutEffect(() => { if (revealingPlan) setPlanOpen(true); }, [revealingPlan]);
   const firstUser = turn.items.find((item) => item.type === "userMessage");
   const ordered = conversationBlocks(turn.items);
