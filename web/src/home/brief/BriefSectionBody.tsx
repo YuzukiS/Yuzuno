@@ -1,4 +1,4 @@
-import { Component, useMemo, type ComponentType, type ReactNode } from "react";
+import { Component, useContext, useMemo, type ComponentType, type ReactNode } from "react";
 import {
   ActionProvider,
   Renderer,
@@ -13,6 +13,7 @@ import { SourceLinks } from "../../intelligent-ui/SourceLinks";
 import type { ResultSpec } from "../../intelligent-ui/contract.ts";
 import type { Section } from "../types";
 import { BriefContext, type BriefContextValue } from "./BriefContext";
+import { CardFoldWorkspace } from "../card-fold";
 import { BriefMarkdown } from "./Markdown";
 import { BriefMath } from "./Math";
 import { BriefChecklist, BriefColumns, BriefFindings, BriefGroup, BriefMetrics, BriefPlan } from "./Blocks";
@@ -197,6 +198,9 @@ export function BriefSectionBody(props: BodyProps) {
 }
 
 function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMachine }: BodyProps) {
+  // Home's own Workspace, from the context its cards already read, so no
+  // call site has to pass it (T-195).
+  const workspaceId = useContext(CardFoldWorkspace);
   const spec = useMemo(() => {
     if (!isBriefSpec(section.body)) return null;
     // A chart's data is asked for by its element id, which json-render does
@@ -251,7 +255,13 @@ function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMach
   return (
     <div className="brief-body" data-section={section.key}>
       <BriefContext.Provider value={context}>
-        <ResultProvider spec={shim} blocks={tables} identity={`brief:${projectId}:${section.key}`}>
+        {/* How a table here is sorted and what is ticked in it is kept per
+            Workspace (T-195): two Workspaces at one address can have the same
+            project and section ids, and one window's view of a table is not
+            the other's. Home already gives its cards the Workspace
+            (card-fold.tsx), "" where it has none -- an identity no Workspace
+            claims, never read as one's. */}
+        <ResultProvider spec={shim} blocks={tables} identity={`brief:${workspaceId}:${projectId}:${section.key}`}>
           <StateProvider initialState={{}}>
             <VisibilityProvider>
               <ActionProvider handlers={noActions}>

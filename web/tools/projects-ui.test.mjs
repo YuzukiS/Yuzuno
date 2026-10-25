@@ -308,7 +308,7 @@ async function fromScopeMenu(page, text) {
 
 test("a remembered project scopes the rail and an out-of-scope remembered agent starts on Home", async () => {
   const page = await mount({
-    storage: { "yuzuno.selected": "e", "yuzuno.projectScope.ws-1": "project:p-app" },
+    storage: { "yuzuno.selected.ws-1": "e", "yuzuno.projectScope.ws-1": "project:p-app" },
     agents: { e: { unreadCount: 3, reviewedSeq: 2 } },
     catchupItems: [
       { id: "c:req", agentId: "c", agentName: "Sora", kind: "pending", title: "Needs you", body: "Run tests?", seq: 12 },
@@ -351,7 +351,7 @@ test("a remembered project scopes the rail and an out-of-scope remembered agent 
 test("switching scope never selects or reads another agent; opening one explicitly does", async () => {
   // The dwell runs ten times faster in this test (and its windows with it);
   // the positive control below shows that scaled dwell is what reads.
-  const page = await mount({ storage: { "yuzuno.selected": "a" }, timers: { [AUTO_READ_DWELL_MS]: SCALED_DWELL_MS } });
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, timers: { [AUTO_READ_DWELL_MS]: SCALED_DWELL_MS } });
   try {
     await waitFor(() => page.document.querySelector(".conversation-scroll"), "Mori is open");
     await openScope(page, "Research");
@@ -382,7 +382,7 @@ test("switching scope never selects or reads another agent; opening one explicit
 });
 
 test("Escape closes the project menu without interrupting a working agent", async () => {
-  const page = await mount({ storage: { "yuzuno.selected": "a" }, agents: { a: { status: "working" } } });
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, agents: { a: { status: "working" } } });
   try {
     // Escape would interrupt only while Mori is shown working (App's keydown).
     await waitFor(() => page.document.querySelector(".interrupt-button"), "Mori is shown working");
@@ -410,7 +410,7 @@ test("Escape closes the project menu without interrupting a working agent", asyn
 });
 
 test("projects are created explicitly and folder groups are only suggestions", async () => {
-  const page = await mount({ storage: { "yuzuno.selected": "a" } });
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
   try {
     await fromScopeMenu(page, "Manage projects");
     const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
@@ -436,7 +436,7 @@ test("projects are created explicitly and folder groups are only suggestions", a
 });
 
 test("new agents start in the viewed project with its folder, which they may change", async () => {
-  const page = await mount({ storage: { "yuzuno.selected": "a", "yuzuno.projectScope.ws-1": "project:p-app" } });
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a", "yuzuno.projectScope.ws-1": "project:p-app" } });
   try {
     page.document.querySelector('[aria-label="Create agent"]').click();
     const dialog = await waitFor(() => dialogOf(page), "the Create agent dialog opens");
@@ -473,7 +473,7 @@ test("new agents start in the viewed project with its folder, which they may cha
 });
 
 test("moving an agent is explicit and the window follows it", async () => {
-  const page = await mount({ storage: { "yuzuno.selected": "a", "yuzuno.projectScope.ws-1": "project:p-app" } });
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a", "yuzuno.projectScope.ws-1": "project:p-app" } });
   try {
     const chip = () => page.document.querySelector(".conversation-metadata .project-chip");
     await waitFor(chip, "Mori's conversation shows its project");
@@ -501,7 +501,7 @@ test("moving an agent is explicit and the window follows it", async () => {
 });
 
 test("the task board follows the window's project and states projects explicitly", async () => {
-  const page = await mount({ storage: { "yuzuno.selected": "a", "yuzuno.projectScope.ws-1": "project:p-app" } });
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a", "yuzuno.projectScope.ws-1": "project:p-app" } });
   try {
     button(page, "Tasks & messages").click();
     const lists = () => page.calls.filter((call) => call.url.endsWith("/task_list"));
@@ -560,7 +560,7 @@ test("the design specimen offers scopes only and sends no project requests", asy
 });
 
 test("unsaved default folders survive workspace refreshes", async () => {
-  const page = await mount({ storage: { "yuzuno.selected": "a" } });
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
   try {
     await fromScopeMenu(page, "Manage projects");
     // The field is named for a machine, so it appears once machines are read.
@@ -582,7 +582,7 @@ test("unsaved default folders survive workspace refreshes", async () => {
 });
 
 test("a project with linked tasks cannot be deleted from the dialog", async () => {
-  const page = await mount({ storage: { "yuzuno.selected": "a" } });
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
   try {
     await fromScopeMenu(page, "Manage projects");
     const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
@@ -597,7 +597,7 @@ test("a project with linked tasks cannot be deleted from the dialog", async () =
 });
 
 test("deleting the scope's last agent shows Home instead of another project's agent", async () => {
-  const page = await mount({ storage: { "yuzuno.selected": "c", "yuzuno.projectScope.ws-1": "project:p-res" } });
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "c", "yuzuno.projectScope.ws-1": "project:p-res" } });
   try {
     // Mori elsewhere has unread work that an automatic selection would read.
     page.agents.find((agent) => agent.id === "a").unreadCount = 4;
@@ -621,7 +621,7 @@ test("deleting the scope's last agent shows Home instead of another project's ag
 });
 
 test("a new agent in another project is listed where it lives, and typed folders survive reopening", async () => {
-  const page = await mount({ storage: { "yuzuno.selected": "a", "yuzuno.projectScope.ws-1": "project:p-app" } });
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a", "yuzuno.projectScope.ws-1": "project:p-app" } });
   try {
     page.document.querySelector('[aria-label="Create agent"]').click();
     let dialog = await waitFor(() => dialogOf(page), "the Create agent dialog opens");
@@ -650,7 +650,7 @@ test("a new agent in another project is listed where it lives, and typed folders
 });
 
 test("a partly failed folder suggestion still refreshes and explains what is left", async () => {
-  const page = await mount({ storage: { "yuzuno.selected": "a" }, failMove: ["e"] });
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, failMove: ["e"] });
   try {
     await fromScopeMenu(page, "Manage projects");
     const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
@@ -668,7 +668,7 @@ test("a partly failed folder suggestion still refreshes and explains what is lef
 });
 
 test("Machines opens from the Workspace menu, reads nothing while open, and opens an agent where it lives", async () => {
-  const page = await mount({ storage: { "yuzuno.selected": "a", "yuzuno.projectScope.ws-1": "project:p-app" },
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a", "yuzuno.projectScope.ws-1": "project:p-app" },
     agents: { a: { unreadCount: 2, reviewedSeq: 3 } } });
   try {
     await fromScopeMenu(page, "Machines");
@@ -696,7 +696,7 @@ test("Machines opens from the Workspace menu, reads nothing while open, and open
 
 
 test("Home content editor settings save stable IDs, explicit none and compatibility per project", async () => {
-  const page = await mount({ storage: { "yuzuno.selected": "a" } });
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
   try {
     await fromScopeMenu(page, "Manage projects");
     const settings = await waitFor(() => page.document.querySelector('.home-editor-settings input'), "editor setting loads");
@@ -733,7 +733,7 @@ test("Home content editor settings save stable IDs, explicit none and compatibil
 });
 
 test("Home content editors follow a language change from another window, an unsaved choice kept (T-189)", async () => {
-  const page = await mount({ storage: { "yuzuno.selected": "a" } });
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
   const language = async (value) => {
     page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: value }));
     page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
@@ -763,7 +763,7 @@ test("Home content editors follow a language change from another window, an unsa
 });
 
 test("a project's service opens only once this computer proves it reaches Core's port", async () => {
-  const page = await mount({ storage: { "yuzuno.selected": "a" } });
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
   try {
     await fromScopeMenu(page, "Manage projects");
     const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
@@ -814,7 +814,7 @@ test("a project's service opens only once this computer proves it reaches Core's
 });
 
 test("a page not opened on a loopback address says only that its connection reaches no unconfirmed service (T-170)", async () => {
-  const page = await mount({ url: "https://phone-entry.test:8444/", storage: { "yuzuno.selected": "a" } });
+  const page = await mount({ url: "https://phone-entry.test:8444/", storage: { "yuzuno.selected.ws-1": "a" } });
   try {
     await fromScopeMenu(page, "Manage projects");
     const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
@@ -859,7 +859,7 @@ test("a page not opened on a loopback address says only that its connection reac
 
 // T-189: the Projects window in Chinese. Project, Agent and machine names,
 // folders, repository and service names and what Core says stay as written.
-const chinese = { "yuzuno.selected": "a", "yuzuno.language": { language: "zh-Hans" } };
+const chinese = { "yuzuno.selected.ws-1": "a", "yuzuno.language": { language: "zh-Hans" } };
 
 test("the Projects window reads in Chinese; names, folders and Core's words stay as written (T-189)", async () => {
   const page = await mount({ storage: chinese });

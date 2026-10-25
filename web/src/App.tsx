@@ -232,6 +232,18 @@ function readStorage<T>(key: string, fallback: T): T {
     return fallback;
   }
 }
+/**
+ * Which Agent this window last had open, per Workspace (T-195). Two saved
+ * Workspaces can sit at one address: one memory between them meant each
+ * visit overwrote the other's, and where an Agent id happened to exist in
+ * both, one Workspace opened the other's choice.
+ *
+ * Shaped like its sibling in this same read, `scopeStorageKey`. The older
+ * unscoped `yuzuno.selected` is not read: it says which Agent but not which
+ * Workspace. It is left where it is -- this is a reading place, which the
+ * storage view already says is made again as you use Yuzuno.
+ */
+const selectedStorageKey = (workspaceId: string) => `yuzuno.selected.${workspaceId}`;
 function writeStorage(key: string, value: unknown) {
   try {
     localStorage.setItem(key, JSON.stringify(value));
@@ -246,9 +258,10 @@ export function App() {
   const [workspace, setWorkspace] = useState<Workspace | null>(
     previewMode ? previewWorkspace : null,
   );
-  const [selected, setSelected] = useState<string>(() =>
-    previewMode ? "mikan" : readStorage("yuzuno.selected", ""),
-  );
+  // Empty until /api/workspace says which Workspace this is: the Agent to
+  // open is that Workspace's to remember (selectedStorageKey), and the same
+  // read already settles which Agent is shown.
+  const [selected, setSelected] = useState<string>(previewMode ? "mikan" : "");
   // Which Workspace this window is in. Empty until /api/workspace answers,
   // and what belongs to one Workspace -- the shown conversation, drafts,
   // unsent messages, shared requests -- is neither read nor written while it
@@ -954,15 +967,21 @@ export function App() {
       }
       const current = scopeRef.current;
       const visible = w.agents.filter((a) => inScope(a, current));
-      const kept = w.agents.find((a) => a.id === currentSelected.current);
+      // On this Workspace's first read, the Agent it remembers; after that,
+      // whichever is open now.
+      const wanted = firstLoad
+        ? readStorage(selectedStorageKey(id), "")
+        : currentSelected.current;
+      const kept = w.agents.find((a) => a.id === wanted);
       // A remembered agent outside the remembered project is not opened
       // into view: the window starts on Home instead of reading it.
       if (kept && firstLoad && !inScope(kept, current)) setHomeOpen(true);
-      setSelected((s) =>
-        w.agents.some((a) => a.id === s)
-          ? s
-          : visible.find((a) => !a.closedAt)?.id || visible[0]?.id || "",
-      );
+      setSelected((s) => {
+        const asked = firstLoad ? wanted : s;
+        return w.agents.some((a) => a.id === asked)
+          ? asked
+          : visible.find((a) => !a.closedAt)?.id || visible[0]?.id || "";
+      });
     },
     (error) => {
       workspaceFailed.current = true;
@@ -970,8 +989,15 @@ export function App() {
     },
     () => setLoading(false),
   );
+  // Remembered for this Workspace only, and not at all until it is known.
+  // Its own effect, so a Workspace that arrives or changes records what is
+  // open in it without also resetting the state that belongs to opening an
+  // Agent.
   useEffect(() => {
-    writeStorage("yuzuno.selected", selected);
+    if (previewMode || !workspaceId) return;
+    writeStorage(selectedStorageKey(workspaceId), selected);
+  }, [workspaceId, selected]);
+  useEffect(() => {
     setActionError("");
     setInterrupting(false);
     setRequestReopen(null);

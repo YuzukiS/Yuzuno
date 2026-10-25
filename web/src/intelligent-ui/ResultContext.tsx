@@ -69,19 +69,30 @@ export function ResultProvider({
       Object.fromEntries(Object.entries(blocks).map(([id, content]) => [id, resultFingerprint(content)])),
     [blocks],
   );
-  const [views, setViews] = useState<Views>(() => {
-    if (!prints) return readViews(key, fingerprint);
+  const saved = (at: string): Views => {
+    const under = `${VIEW_PREFIX}${at}`;
+    if (!prints) return readViews(under, fingerprint);
     const kept: Views = {};
     for (const [id, print] of Object.entries(prints)) {
-      const view = readViews(`${key}#${id}`, print)[id];
+      const view = readViews(`${under}#${id}`, print)[id];
       if (view) kept[id] = view;
     }
     return kept;
-  });
+  };
+  const [views, setViews] = useState<Views>(() => saved(identity));
   // A live update keeps this provider mounted: a block that changed or is
   // gone drops its view here too, and every other view stays as it is.
   const [drawn, setDrawn] = useState(prints);
-  if (prints && drawn && prints !== drawn) {
+  // So does the Core at this address answering as another Workspace, which
+  // changes the identity under it (T-195). These views are then the identity
+  // before's: they are read again for this one rather than kept in memory
+  // and saved under its key by the next change to them.
+  const [shownFor, setShownFor] = useState(identity);
+  if (shownFor !== identity) {
+    setShownFor(identity);
+    setViews(saved(identity));
+    setDrawn(prints);
+  } else if (prints && drawn && prints !== drawn) {
     setDrawn(prints);
     const stale = Object.keys(views).filter((id) => prints[id] !== drawn[id]);
     if (stale.length)

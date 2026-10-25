@@ -94,7 +94,7 @@ const keyGroups: [DeviceGroupId, string[]][] = [
     "yuzuno.projectGroupsFolded.", "yuzuno.homeWidgets", "yuzuno.homeWidgets.", "yuzuno.home-panel.v1:", "yuzuno.home-cards.v1:",
   ]],
   ["reading", [
-    "yuzuno.selected", "yuzuno.reading.", "yuzuno.reading-source.v1:", "yuzuno.reading-seq.v1:",
+    "yuzuno.selected.", "yuzuno.selected", "yuzuno.reading.", "yuzuno.reading-source.v1:", "yuzuno.reading-seq.v1:",
     "yuzuno.reading-offers.v1:", "yuzuno.home-seen-blocks.v1:", "yuzuno.result-view.", "yuzuno.hiddenDeliveries",
     "yuzuno.question-dismissed.v1:",
   ]],
