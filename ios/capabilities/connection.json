@@ -1,12 +1,14 @@
 {
   "identifier": "connection",
-  "description": "Only the embedded connection page may read the saved Workspace address, and choose and check one. A Core's own pages are granted nothing.",
+  "description": "Only the embedded connection page may read the Workspaces saved on this iPhone, name and forget them, and choose and check one. A Core's own pages are granted nothing.",
   "local": true,
   "windows": [
     "main"
   ],
   "permissions": [
-    "allow-saved-core",
-    "allow-connect-core"
+    "allow-saved-cores",
+    "allow-connect-core",
+    "allow-rename-core",
+    "allow-remove-core"
   ]
 }
