@@ -28,6 +28,8 @@ const text = strings({
   source: "Value source:",
   effect: "When it takes effect:",
   unavailable: "Unavailable here.",
+  // After a label: a space in English, none after a Chinese colon or stop.
+  gap: " ",
   agent: "Agent",
   project: "Project",
   chooseAgent: "Choose an Agent…",
@@ -52,6 +54,7 @@ const text = strings({
   source: "取值来源：",
   effect: "何时生效：",
   unavailable: "此处不可用。",
+  gap: "",
   agent: "Agent",
   project: "项目",
   chooseAgent: "选择一个 Agent…",
@@ -197,10 +200,10 @@ function SettingCard({ entry, navigation, active, onOpen }: {
   }
   return <section className="settings-catalog-card" aria-labelledby={`setting-${entry.id}`}>
     <h4 id={`setting-${entry.id}`}>{entry.title}</h4>
-    <p className="settings-scope"><strong>{t.scope}</strong> {entry.scope}{selected ? ` · ${selected.name}` : ""}</p>
-    <p><strong>{t.source}</strong> {entry.source}</p>
-    <p><strong>{t.effect}</strong> {entry.effect}</p>
-    {unavailable ? <p className="settings-unavailable"><strong>{t.unavailable}</strong> {target.reason}</p> : <>
+    <p className="settings-scope"><strong>{t.scope}</strong>{t.gap}{entry.scope}{selected ? ` · ${selected.name}` : ""}</p>
+    <p><strong>{t.source}</strong>{t.gap}{entry.source}</p>
+    <p><strong>{t.effect}</strong>{t.gap}{entry.effect}</p>
+    {unavailable ? <p className="settings-unavailable"><strong>{t.unavailable}</strong>{t.gap}{target.reason}</p> : <>
       {requiresObject && <label className="settings-object-choice">
         {target.kind === "agent" ? t.agent : t.project}
         <select value={selected?.id ?? ""} onChange={(event) => setObjectId(event.target.value)} aria-label={`${entry.title} ${target.kind}`}>
