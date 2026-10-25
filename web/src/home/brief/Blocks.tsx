@@ -16,6 +16,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { sourceTarget } from "../../intelligent-ui/contract.ts";
+import { useStrings } from "../../i18n";
+import { briefText } from "./brief-text";
 import {
   metricDelta,
   type ChecklistProps,
@@ -80,22 +82,21 @@ export function BriefColumns({ widths, children }: ColumnsProps & { children?: R
 }
 
 export function BriefChecklist({ title, items }: ChecklistProps) {
+  const t = useStrings(briefText);
   const done = items.filter((item) => item.done).length;
   return (
-    <section className="brief-list" aria-label={title || "Checklist"}>
+    <section className="brief-list" aria-label={title || t.checklist}>
       <header>
         {title && <h4>{title}</h4>}
-        <span>
-          {done} of {items.length} done
-        </span>
+        <span>{t.doneOf(done, items.length)}</span>
       </header>
       <ul>
         {items.map((item) => (
           <li key={item.id} data-done={item.done || undefined}>
             {item.done ? (
-              <SquareCheckBig size={15} aria-label="Done" />
+              <SquareCheckBig size={15} aria-label={t.done} />
             ) : (
-              <Square size={15} aria-label="Not done" />
+              <Square size={15} aria-label={t.notDone} />
             )}
             <span>{item.text}</span>
           </li>
@@ -105,15 +106,16 @@ export function BriefChecklist({ title, items }: ChecklistProps) {
   );
 }
 
-const planStates: Record<PlanState, { label: string; icon: LucideIcon }> = {
-  todo: { label: "To do", icon: Circle },
-  doing: { label: "Doing", icon: CircleDot },
-  done: { label: "Done", icon: CircleCheck },
-  blocked: { label: "Blocked", icon: Ban },
+const planStates: Record<PlanState, { icon: LucideIcon }> = {
+  todo: { icon: Circle },
+  doing: { icon: CircleDot },
+  done: { icon: CircleCheck },
+  blocked: { icon: Ban },
 };
 export function BriefPlan({ title, steps }: PlanProps) {
+  const t = useStrings(briefText);
   return (
-    <section className="brief-list" aria-label={title || "Plan"}>
+    <section className="brief-list" aria-label={title || t.plan}>
       {title && (
         <header>
           <h4>{title}</h4>
@@ -121,13 +123,13 @@ export function BriefPlan({ title, steps }: PlanProps) {
       )}
       <ol>
         {steps.map((step) => {
-          const state = planStates[step.state] || planStates.todo;
-          const Icon = state.icon;
+          const known = step.state in planStates ? step.state : "todo";
+          const Icon = planStates[known].icon;
           return (
             <li key={step.id} data-state={step.state}>
               <span className="brief-chip" data-state={step.state}>
                 <Icon size={12} aria-hidden="true" />
-                {state.label}
+                {t.planState[known]}
               </span>
               <span>{step.text}</span>
             </li>
@@ -138,12 +140,12 @@ export function BriefPlan({ title, steps }: PlanProps) {
   );
 }
 
-const severities: Record<Severity, { label: string; icon: LucideIcon }> = {
-  critical: { label: "Critical", icon: OctagonAlert },
-  high: { label: "High", icon: TriangleAlert },
-  medium: { label: "Medium", icon: TriangleAlert },
-  low: { label: "Low", icon: Info },
-  info: { label: "Info", icon: Info },
+const severities: Record<Severity, { icon: LucideIcon }> = {
+  critical: { icon: OctagonAlert },
+  high: { icon: TriangleAlert },
+  medium: { icon: TriangleAlert },
+  low: { icon: Info },
+  info: { icon: Info },
 };
 /** Where a finding came from: a web link opens outside, anything else is shown as written. */
 function FindingSource({ source }: { source: string }) {
@@ -158,8 +160,9 @@ function FindingSource({ source }: { source: string }) {
   );
 }
 export function BriefFindings({ title, items }: FindingsProps) {
+  const t = useStrings(briefText);
   return (
-    <section className="brief-list brief-findings" aria-label={title || "Findings"}>
+    <section className="brief-list brief-findings" aria-label={title || t.findings}>
       {title && (
         <header>
           <h4>{title}</h4>
@@ -167,13 +170,13 @@ export function BriefFindings({ title, items }: FindingsProps) {
       )}
       <ul>
         {items.map((item) => {
-          const severity = severities[item.severity] || severities.info;
-          const Icon = severity.icon;
+          const known = item.severity in severities ? item.severity : "info";
+          const Icon = severities[known].icon;
           return (
             <li key={item.id}>
               <span className="brief-chip" data-severity={item.severity}>
                 <Icon size={12} aria-hidden="true" />
-                {severity.label}
+                {t.severity[known]}
               </span>
               <div>
                 <p>{item.text}</p>
@@ -191,6 +194,7 @@ export function BriefFindings({ title, items }: FindingsProps) {
 
 const shown = (value: number | string) => String(value);
 export function BriefMetrics({ items }: MetricsProps) {
+  const t = useStrings(briefText);
   return (
     <dl className="brief-metrics">
       {items.map((item, index) => {
@@ -208,19 +212,16 @@ export function BriefMetrics({ items }: MetricsProps) {
               <small
                 className="brief-delta"
                 data-sign={delta.sign}
-                title={`Previously ${shown(item.previous!)}${unit}`}
+                title={t.previously(`${shown(item.previous!)}${unit}`)}
               >
                 <Arrow size={12} aria-hidden="true" />
                 {delta.text}
                 {unit}
-                <span className="sr-only"> since the previous version</span>
+                <span className="sr-only">{t.sincePrevious}</span>
               </small>
             ) : (
               item.previous !== undefined && (
-                <small className="brief-delta">
-                  Previously {shown(item.previous)}
-                  {unit}
-                </small>
+                <small className="brief-delta">{t.previously(`${shown(item.previous)}${unit}`)}</small>
               )
             )}
             {item.detail && <small>{item.detail}</small>}

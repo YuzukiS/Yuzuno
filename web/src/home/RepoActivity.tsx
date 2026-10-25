@@ -24,6 +24,8 @@ import { api, errorText } from "../api";
 import { sourceTarget } from "../intelligent-ui/contract.ts";
 import { absolute, relative } from "./format";
 import { useTimeDisplay } from "../time-preferences";
+import { useLanguage, type Language } from "../i18n";
+import { homeText } from "./home-text";
 import "./repo-activity.css";
 
 export type RepoCommit = {
@@ -70,6 +72,9 @@ export type RepoActivityRepository = {
 };
 export type RepoActivityPage = { observedAt: string; repositories: RepoActivityRepository[] };
 
+/** Core answered without the activity list: worded when shown. */
+const NO_ACTIVITY = Symbol("no repository activity");
+
 /** Core answers from its cache; this only decides how often Home asks. */
 export const REFRESH_MS = 120_000;
 
@@ -111,35 +116,36 @@ function useOnScreen(ref: RefObject<HTMLElement | null>) {
 }
 
 type Tone = "ok" | "active" | "attention" | "neutral";
-const pullCi: Record<string, { label: string; tone: Tone; icon: LucideIcon }> = {
-  success: { label: "Checks passed", tone: "ok", icon: CircleCheck },
-  failure: { label: "Checks failed", tone: "attention", icon: CircleX },
-  pending: { label: "Checks running", tone: "active", icon: CircleDot },
+const pullCi: Record<string, { tone: Tone; icon: LucideIcon }> = {
+  success: { tone: "ok", icon: CircleCheck },
+  failure: { tone: "attention", icon: CircleX },
+  pending: { tone: "active", icon: CircleDot },
 };
+type RunWord = keyof ReturnType<typeof homeText>["run"];
 /** GitHub's status and conclusion as one word; unknown words stay unknown. */
-function runState(run: RepoRun): { label: string; tone: Tone; icon: LucideIcon } {
+function runState(run: RepoRun): { word: RunWord; tone: Tone; icon: LucideIcon } {
   if (run.status !== "completed") {
-    if (run.status === "in_progress") return { label: "running", tone: "active", icon: LoaderCircle };
+    if (run.status === "in_progress") return { word: "running", tone: "active", icon: LoaderCircle };
     if (["queued", "waiting", "pending", "requested"].includes(run.status))
-      return { label: "queued", tone: "active", icon: CircleDashed };
-    return { label: "unknown", tone: "neutral", icon: CircleDashed };
+      return { word: "queued", tone: "active", icon: CircleDashed };
+    return { word: "unknown", tone: "neutral", icon: CircleDashed };
   }
   switch (run.conclusion) {
     case "success":
-      return { label: "passed", tone: "ok", icon: CircleCheck };
+      return { word: "passed", tone: "ok", icon: CircleCheck };
     case "failure":
     case "timed_out":
     case "startup_failure":
-      return { label: "failed", tone: "attention", icon: CircleX };
+      return { word: "failed", tone: "attention", icon: CircleX };
     case "action_required":
-      return { label: "needs action", tone: "attention", icon: CircleAlert };
+      return { word: "action", tone: "attention", icon: CircleAlert };
     case "cancelled":
-      return { label: "cancelled", tone: "neutral", icon: CircleMinus };
+      return { word: "cancelled", tone: "neutral", icon: CircleMinus };
     case "skipped":
     case "neutral":
-      return { label: "skipped", tone: "neutral", icon: CircleMinus };
+      return { word: "skipped", tone: "neutral", icon: CircleMinus };
     default:
-      return { label: "unknown", tone: "neutral", icon: CircleDashed };
+      return { word: "unknown", tone: "neutral", icon: CircleDashed };
   }
 }
 
@@ -157,56 +163,58 @@ function Row({ href, label, children }: { href: string; label: string; children:
   );
 }
 
-const when = (at: string | null) => relative(at) || "time unknown";
+const when = (at: string | null, language: Language) => relative(at, language) || homeText(language).timeUnknown;
 
 function Lists({ repo }: { repo: RepoActivityRepository }) {
   const time = useTimeDisplay();
-  const branch = repo.defaultBranch ? ` on ${repo.defaultBranch}` : "";
+  const language = useLanguage();
+  const t = homeText(language);
+  const branch = repo.defaultBranch ? t.onBranch(repo.defaultBranch) : "";
   const open = repo.pullsTotal ?? repo.pulls.length;
   return (
     <div className="repo-activity-lists">
-      <section aria-label={`Commits${branch}`}>
+      <section aria-label={`${t.commits}${branch}`}>
         <h5>
-          <GitCommitHorizontal size={12} aria-hidden /> Commits
+          <GitCommitHorizontal size={12} aria-hidden /> {t.commits}
         </h5>
         <ul>
-          {repo.commits.length === 0 && <li className="repo-empty">No commits</li>}
+          {repo.commits.length === 0 && <li className="repo-empty">{t.noCommits}</li>}
           {repo.commits.map((commit) => (
             <li key={commit.sha}>
               <Row
                 href={commit.url}
-                label={`${commit.sha.slice(0, 7)} ${commit.title} · ${commit.author || "unknown author"} · ${absolute(commit.at, time)}`}
+                label={`${commit.sha.slice(0, 7)} ${commit.title} · ${commit.author || t.unknownAuthor} · ${absolute(commit.at, time)}`}
               >
                 <code>{commit.sha.slice(0, 7)}</code>
                 <span className="repo-row-title">{commit.title}</span>
                 <small>
-                  {commit.author || "unknown"} · {when(commit.at)}
+                  {commit.author || t.unknown} · {when(commit.at, language)}
                 </small>
               </Row>
             </li>
           ))}
         </ul>
       </section>
-      <section aria-label="Open pull requests">
+      <section aria-label={t.openPulls}>
         <h5>
-          <GitPullRequest size={12} aria-hidden /> Pull requests
-          {open > 0 && <span className="repo-count">{open} open</span>}
+          <GitPullRequest size={12} aria-hidden /> {t.pulls}
+          {open > 0 && <span className="repo-count">{t.openCount(open)}</span>}
         </h5>
         <ul>
-          {repo.pulls.length === 0 && <li className="repo-empty">No open pull requests</li>}
+          {repo.pulls.length === 0 && <li className="repo-empty">{t.noPulls}</li>}
           {repo.pulls.map((pull) => {
-            const ci = pull.ci ? pullCi[pull.ci.state] : undefined;
+            const ci = pull.ci && pullCi[pull.ci.state] ? { ...pullCi[pull.ci.state], label: t.checks[pull.ci.state] } : undefined;
             const CiIcon = ci?.icon;
             return (
               <li key={pull.number}>
                 <Row
                   href={pull.url}
-                  label={`#${pull.number} ${pull.title} · ${pull.author || "unknown author"}${pull.draft ? " · draft" : ""} · ${ci?.label || "checks unknown"}`}
+                  label={`#${pull.number} ${pull.title} · ${pull.author || t.unknownAuthor}${pull.draft ? ` · ${t.draft}` : ""} · ${ci?.label || t.checksUnknown}`}
                 >
                   <code>#{pull.number}</code>
-                  {pull.draft && <span className="repo-draft">draft</span>}
+                  {pull.draft && <span className="repo-draft">{t.draft}</span>}
                   <span className="repo-row-title">{pull.title}</span>
-                  <small>{pull.author || "unknown"}</small>
+                  <small>{pull.author || t.unknown}</small>
                   {ci && CiIcon && (
                     <span className={`repo-state is-${ci.tone}`} role="img" aria-label={ci.label}>
                       <CiIcon size={11} aria-hidden />
@@ -218,20 +226,21 @@ function Lists({ repo }: { repo: RepoActivityRepository }) {
           })}
         </ul>
       </section>
-      <section aria-label="Actions runs">
+      <section aria-label={t.actionsRuns}>
         <h5>
           <Workflow size={12} aria-hidden /> Actions
         </h5>
         <ul>
-          {repo.runs.length === 0 && <li className="repo-empty">No recent runs</li>}
+          {repo.runs.length === 0 && <li className="repo-empty">{t.noRuns}</li>}
           {repo.runs.map((run) => {
-            const state = runState(run);
+            const found = runState(run);
+            const state = { ...found, label: t.run[found.word] };
             const Icon = state.icon;
             return (
               <li key={run.id}>
                 <Row
                   href={run.url}
-                  label={`${run.name} · ${run.branch || "no branch"} · ${state.label} · ${absolute(run.at, time)}`}
+                  label={`${run.name} · ${run.branch || t.noBranch} · ${state.label} · ${absolute(run.at, time)}`}
                 >
                   <span className={`repo-state is-${state.tone}`}>
                     <Icon size={11} aria-hidden /> {state.label}
@@ -239,7 +248,7 @@ function Lists({ repo }: { repo: RepoActivityRepository }) {
                   <span className="repo-row-title">{run.name}</span>
                   <small>
                     {run.branch ? `${run.branch} · ` : ""}
-                    {when(run.at)}
+                    {when(run.at, language)}
                   </small>
                 </Row>
               </li>
@@ -253,9 +262,10 @@ function Lists({ repo }: { repo: RepoActivityRepository }) {
 
 /** While nothing is known yet: the same frame, so arriving data does not move anything. */
 function Placeholder() {
+  const t = homeText(useLanguage());
   return (
     <div className="repo-activity-lists" aria-hidden>
-      {["Commits", "Pull requests", "Actions"].map((name) => (
+      {[t.commits, t.pulls, "Actions"].map((name) => (
         <section key={name}>
           <h5>{name}</h5>
           <ul>
@@ -273,6 +283,8 @@ function Placeholder() {
 
 function Head({ name, url, branch, observedAt }: { name: string; url: string; branch?: string; observedAt?: string | null }) {
   const time = useTimeDisplay();
+  const language = useLanguage();
+  const t = homeText(language);
   const href = githubPage(url);
   return (
     <header>
@@ -287,7 +299,7 @@ function Head({ name, url, branch, observedAt }: { name: string; url: string; br
       {branch && <code className="repo-branch">{branch}</code>}
       {observedAt !== undefined && (
         <small className="repo-asof" title={absolute(observedAt, time)}>
-          {observedAt ? `as of ${relative(observedAt)}` : "not read yet"}
+          {observedAt ? t.asOf(relative(observedAt, language)) : t.notRead}
         </small>
       )}
     </header>
@@ -313,8 +325,10 @@ export function RepoActivity({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const visible = useOnScreen(ref);
+  const t = homeText(useLanguage());
   const [page, setPage] = useState<RepoActivityPage | null>(null);
-  const [failed, setFailed] = useState("");
+  // Core's reason, or null; NO_ACTIVITY is worded when shown (T-189).
+  const [failed, setFailed] = useState<string | typeof NO_ACTIVITY>("");
   const readAt = useRef(0);
   useEffect(() => {
     setPage(null);
@@ -332,7 +346,10 @@ export function RepoActivity({
       readRepoActivity(projectId, controller.signal)
         .then((value) => {
           if (controller.signal.aborted) return;
-          if (!Array.isArray(value?.repositories)) throw new Error("Core sent no repository activity");
+          if (!Array.isArray(value?.repositories)) {
+            setFailed(NO_ACTIVITY);
+            return;
+          }
           setPage(value);
           setFailed("");
         })
@@ -355,23 +372,24 @@ export function RepoActivity({
   }, [visible, projectId]);
 
   if (page && page.repositories.length === 0) return null;
+  const failure = failed === NO_ACTIVITY ? t.noActivity : failed;
   return (
     <div ref={ref} className="repo-activity" aria-busy={!page && !failed}>
       {page
         ? page.repositories.map((repo) => {
-            const problem = (repo.stale && (repo.error || "not refreshed recently")) || failed;
+            const problem = (repo.stale && (repo.error || t.notRefreshed)) || failure;
             return (
               <article key={repo.id} className="repo-activity-repo" data-repo={repo.fullName}>
                 <Head name={repo.fullName} url={repo.url} branch={repo.defaultBranch} observedAt={repo.observedAt} />
-                {problem && <Problem lead="Last known data" text={problem} />}
+                {problem && <Problem lead={t.lastKnown} text={problem} />}
                 <Lists repo={repo} />
               </article>
             );
           })
-        : (linked?.length ? linked : [{ id: 0, fullName: "Repository", url: "" }]).map((repo) => (
-            <article key={repo.id} className={`repo-activity-repo${failed ? "" : " is-loading"}`}>
+        : (linked?.length ? linked : [{ id: 0, fullName: t.repository, url: "" }]).map((repo) => (
+            <article key={repo.id} className={`repo-activity-repo${failure ? "" : " is-loading"}`}>
               <Head name={repo.fullName} url={repo.url} />
-              {failed && <Problem lead="Repository activity is unavailable" text={failed} />}
+              {failure && <Problem lead={t.activityUnavailable} text={failure} />}
               <Placeholder />
             </article>
           ))}

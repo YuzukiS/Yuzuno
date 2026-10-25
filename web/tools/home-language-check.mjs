@@ -6,6 +6,10 @@
 //  - the language changed in another window: Home's own words are Chinese;
 //    the project, Agent and card names, the Brief's text, the Ask's question
 //    and options and both unsent replies as they were; nothing sent;
+//  - with them, Home's widgets (Machines and a pinned status, while being
+//    arranged), a repository's activity and a card of lists, metrics, a live
+//    reference and an attachment: their own words follow too, what GitHub
+//    and the Agent wrote stays as written, and the arranging stays on;
 //  - back to English in another window: Home is as it was, the replies kept;
 //  - an order Core refused to save: its banner follows the language changed
 //    in another window, Core's reason as it came.
@@ -37,8 +41,27 @@ const projects = [
   { id: "p2", name: "Atlas", defaultDirs: { local: "/fixture" }, createdAt: "", updatedAt: "" },
 ];
 const markdown = (text) => ({ root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["text"] }, text: { type: "Markdown", props: { text } } } });
-const section = (key, kind, title, text, extra = {}) => ({ key, kind, title, version: 1, owner: { agentId: "a", name: "Mori", state: "active" },
+let ids = 0;
+const section = (key, kind, title, text, extra = {}) => ({ id: ++ids, key, kind, title, version: 1, owner: { agentId: "a", name: "Mori", state: "active" },
   updatedAt: ago(5), updatedTurnId: "t1", body: markdown(text), attachments: [], refs: {}, seen: null, history: false, ...extra });
+// A card of the Brief's other blocks, each with words of its own around what
+// the Agent wrote.
+const blocks = { root: "body", elements: {
+  body: { type: "BriefBody", props: {}, children: ["list", "plan", "findings", "metrics", "refs", "files"] },
+  list: { type: "Checklist", props: { title: "Before release", items: [{ id: "c1", text: "Docs updated", done: true }, { id: "c2", text: "Smoke test", done: false }] } },
+  plan: { type: "Plan", props: { steps: [{ id: "s1", text: "Build installer", state: "done" }, { id: "s2", text: "Sign build", state: "blocked" }] } },
+  findings: { type: "Findings", props: { items: [{ id: "f1", source: "review", severity: "high", text: "Installer path is long" }] } },
+  metrics: { type: "Metrics", props: { items: [{ label: "Open bugs", value: 3, previous: 5 }] } },
+  refs: { type: "LiveRefs", props: { items: [{ kind: "task", id: "T-7", label: "Ship" }] } },
+  files: { type: "Attachments", props: { items: [{ name: "notes", caption: "Release notes link" }] } },
+} };
+const blockRefs = { "task:T-7": { kind: "task", id: "T-7", found: true, title: "Ship release", state: "doing", tone: "active", observedAt: ago(2) } };
+const blockFiles = [{ name: "notes", kind: "link", mime: "text/uri-list", size: 0, snapshot: false, mayChange: false, takenAt: ago(10), url: "https://github.com/acme/app/releases" }];
+const linked = { repositories: [{ id: 1, fullName: "acme/app", url: "https://github.com/acme/app", syncedAt: ago(1), error: null }], links: [] };
+const activity = { observedAt: ago(1), repositories: [{ id: 1, fullName: "acme/app", url: "https://github.com/acme/app", defaultBranch: "main", observedAt: ago(1), stale: false,
+  commits: [{ sha: "a".repeat(40), title: "Fold every Home card", author: "mori", at: ago(30), url: "https://github.com/acme/app/commit/aaaa" }],
+  pulls: [{ number: 7, title: "Cards fold", author: "mori", draft: false, url: "https://github.com/acme/app/pull/7", ci: { state: "success" } }],
+  runs: [{ id: 9, name: "CI", branch: "main", status: "completed", conclusion: "success", at: ago(9), url: "https://github.com/acme/app/actions/runs/9" }] }] };
 // What the Agent wrote, in its own words: shown as written in either language.
 const BODY = { ship: "The release is ready.", progress: "Cards now fold one by one.", load: "CPU is busy with the nightly build." };
 const home = {
@@ -53,6 +76,7 @@ const home = {
       section("ship", "ask", "Ship today?", BODY.ship, { ask: { question: "Ship the release today?", state: "open", reply: { options: [{ id: "yes", label: "Ship" }, { id: "no", label: "Wait" }], freeText: true } } }),
       section("progress", "report", "Progress", BODY.progress),
       section("load", "status", "Build load", BODY.load, { status: { asOf: ago(240), validFor: 3600, stale: true }, time: { nextUpdate: ago(-120) } }),
+      section("blocks", "report", "Release checklist", "", { body: blocks, refs: blockRefs, attachments: blockFiles }),
     ] },
   }, {
     // A second, quiet project, so Home can be reordered.
@@ -80,8 +104,8 @@ await context.route("**/*", async (route) => {
   }
   if (path === "/other.html") return route.fulfill({ body: "<!doctype html><title>other</title>", contentType: "text/html" });
   if (path.startsWith("/api/")) report.reads.push(`${method} ${path}`);
-  // Linked repositories are read with a POST; this project has none.
-  if (method === "POST" && path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
+  // Linked repositories are read with a POST.
+  if (method === "POST" && path === "/api/collaboration/github_repositories") return route.fulfill({ json: linked });
   if (path === "/api/home" && holdHome) return new Promise(() => {});
   if (method !== "GET") {
     report.writes.push({ method, path });
@@ -90,7 +114,7 @@ await context.route("**/*", async (route) => {
   const json = {
     "/api/workspace": { workspace: { id: "ws-home-language" }, agents: [agent], projects, runtime: { connected: true }, defaultCwd: "/fixture" },
     "/api/agents/a": { agent, pending: [], messageReceipts: [], artifacts: [], turns: [] },
-    "/api/home": home, "/api/machine-load": machineLoad, "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates,
+    "/api/home": home, "/api/machine-load": machineLoad, "/api/projects/p1/repo-activity": activity, "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates,
     "/api/jobs/budget": idleJobsBudget, "/api/jobs": noJobs, "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
   }[path];
   if (json) return route.fulfill({ json });
@@ -135,6 +159,8 @@ const shown = () => page.evaluate(() => {
   const ship = document.querySelector('[data-section-key="ship"]');
   const reply = document.querySelector('[data-section-key="progress"] .home-card-reply');
   const panel = document.querySelector('[data-home-project="p1"]');
+  const card2 = document.querySelector('[data-section-key="blocks"]');
+  const labels = (selector, root = document) => [...root.querySelectorAll(selector)].map((el) => el.getAttribute("aria-label"));
   return {
     lang: document.querySelector(".home-view").getAttribute("lang"),
     needs: { heading: one(".home-needs-you h2"), item: all(".home-needs-item > span > span, .home-needs-item > span > strong, .home-needs-since"), title: document.querySelector(".home-needs-item").getAttribute("title") },
@@ -161,6 +187,21 @@ const shown = () => page.evaluate(() => {
     team: text(panel.querySelector(".home-team-details summary")),
     missing: text(panel.querySelector(".home-missing li")),
     counts: all(".home-agent-counts .home-count", panel),
+    teamOpen: panel.querySelector(".home-team-details").open,
+    widgets: { heading: one(".home-widget-column-head h2"), arrange: one(".home-widget-column-head button"), tools: labels(".home-widget-tools button") },
+    machines: { heading: one(".home-machines h2"), manage: one(".home-machines-manage"), titles: all(".home-machines .home-load-title"), gpu: all(".home-gpus .home-fact"), empty: one(".home-machine-jobs-list .home-note") },
+    pinned: { label: document.querySelector(".home-pinned").getAttribute("aria-label"), title: one(".home-pinned-head h2 span"), from: one(".home-pinned-from"), foot: all(".home-pinned-foot button") },
+    repo: { heads: all(".repo-activity-lists h5"), runs: all(".repo-row .repo-state").filter(Boolean), checks: labels(".repo-row .repo-state[aria-label]"), asOf: one(".repo-asof"), titles: all(".repo-row-title"), name: one(".repo-name") },
+    blocks: {
+      title: text(card2.querySelector("h3")),
+      checklist: [text(card2.querySelector(".brief-list header h4")), text(card2.querySelector(".brief-list header span"))],
+      items: all(".brief-list li > span:last-child, .brief-findings p", card2),
+      chips: all(".brief-chip", card2),
+      metric: [text(card2.querySelector(".brief-metrics dt")), text(card2.querySelector(".brief-delta")), card2.querySelector(".brief-delta").getAttribute("title")],
+      ref: [card2.querySelector(".brief-ref").getAttribute("title"), text(card2.querySelector(".brief-ref > span")), text(card2.querySelector(".brief-ref-state"))],
+      file: [text(card2.querySelector(".brief-attachment-caption")), text(card2.querySelector(".brief-attachment-meta")), text(card2.querySelector(".brief-attachment-link"))],
+      lists: labels(".brief-list, .brief-refs, .brief-attachments", card2),
+    },
   };
 });
 
@@ -178,6 +219,12 @@ try {
   await page.locator('[data-section-key="ship"] .home-defer > button').click();
   await page.locator('[data-section-key="ship"] .home-defer [role="group"]').waitFor();
   await page.locator('[data-home-project="p1"] .home-team-details summary').click();
+  // A status pinned to the widgets, which are being arranged; the repository read.
+  await page.locator('[data-section-key="load"] .home-pin').click();
+  await page.locator(".home-pinned").waitFor({ timeout: 10_000 });
+  await page.locator(".home-widget-column-head button").click();
+  await page.locator(".home-widget-tools").first().waitFor();
+  await page.locator(".home-repos .repo-activity-repo").waitFor({ timeout: 10_000 });
 
   // ---- In English.
   const en = await shown();
@@ -202,7 +249,23 @@ try {
   assert.deepEqual([en.seenAll, en.team], ["Seen all", "Team details & history"]);
   assert.equal(en.missing, "Mori ended a turn without updating the Brief · 1 h ago");
   assert.deepEqual(en.counts, ["0 working", "1 idle", "0 waiting", "0 errors"]);
+  assert.equal(en.teamOpen, true);
+  assert.deepEqual(en.widgets, { heading: "Widgets", arrange: "Done", tools: ["Move Machines up", "Move Machines down", "Hide Machines", "Move Build load up", "Move Build load down", "Hide Build load", "Unpin Build load"] });
+  assert.deepEqual(en.machines, { heading: "Machines", manage: "Manage", titles: ["CPU 20% of 8 cores", "Memory 8.8 GiB of 32.0 GiB", "GPU", "Jobs on this machine"], gpu: ["GPU unknown"], empty: "No Jobs running" });
+  assert.deepEqual(en.pinned, { label: "Build load, pinned from Yuzuno", title: "Build load", from: "Yuzuno · Mori · Updated 5 min ago", foot: ["Open in Yuzuno", "Reply"] });
+  assert.deepEqual(en.repo, { heads: ["Commits", "Pull requests1 open", "Actions"], runs: ["passed"], checks: ["Checks passed"], asOf: "as of 1 min ago", titles: ["Fold every Home card", "Cards fold", "CI"], name: "acme/app" });
+  assert.deepEqual(en.blocks.checklist, ["Before release", "1 of 2 done"]);
+  assert.deepEqual(en.blocks.items, ["Docs updated", "Smoke test", "Build installer", "Sign build", "Installer path is long"]);
+  assert.deepEqual(en.blocks.chips, ["Done", "Blocked", "High"]);
+  assert.deepEqual(en.blocks.metric, ["Open bugs", "−2 since the previous version", "Previously 5"]);
+  assert.match(en.blocks.ref[0], /^(Open )?Task T-7: Ship release · as of /);
+  assert.deepEqual(en.blocks.ref.slice(1), ["Ship", "doing"]);
+  assert.equal(en.blocks.file[0], "Release notes link");
+  assert.match(en.blocks.file[1], /^Referenced /);
+  assert.equal(en.blocks.file[2], "https://github.com/acme/app/releases");
+  assert.deepEqual(en.blocks.lists, ["Before release", "Plan", "Findings", "References", "Attachments"]);
   check("English: Needs you, the project's frame, each card's kind, state, times and controls, Defer and both replies");
+  check("English: the widgets being arranged, Machines, a pinned status, a repository's activity and a card's lists, metrics, reference and attachment");
 
   // ---- Changed to Chinese in another window.
   const before = report.writes.length;
@@ -227,7 +290,23 @@ try {
   assert.deepEqual([zh.seenAll, zh.team], ["全部标为已看", "团队详情与历史"]);
   assert.equal(zh.missing, "Mori 结束了一个 Turn，但没有更新 Brief · 1 小时前");
   assert.deepEqual(zh.counts, ["工作中 0", "就绪 1", "等待中 0", "出错 0"]);
+  assert.equal(zh.teamOpen, true, "the team details stay open");
+  assert.deepEqual(zh.widgets, { heading: "小组件", arrange: "完成", tools: ["上移 机器", "下移 机器", "隐藏 机器", "上移 Build load", "下移 Build load", "隐藏 Build load", "取消固定 Build load"] });
+  assert.deepEqual(zh.machines, { heading: "机器", manage: "管理", titles: ["CPU 20% / 8 核", "内存 8.8 GiB / 32.0 GiB", "GPU", "此机器上的 Job"], gpu: ["GPU 未知"], empty: "没有正在运行的 Job" });
+  assert.deepEqual(zh.pinned, { label: "Build load，固定自 Yuzuno", title: "Build load", from: "Yuzuno · Mori · 更新于 5 分钟前", foot: ["在 Yuzuno 中打开", "回复"] });
+  assert.deepEqual(zh.repo, { heads: ["提交", "拉取请求1 个开放", "Actions"], runs: ["通过"], checks: ["检查通过"], asOf: "截至 1 分钟前", titles: en.repo.titles, name: "acme/app" });
+  assert.deepEqual(zh.blocks.checklist, ["Before release", "已完成 1/2"]);
+  assert.deepEqual(zh.blocks.items, en.blocks.items);
+  assert.deepEqual(zh.blocks.chips, ["已完成", "受阻", "高"]);
+  assert.deepEqual(zh.blocks.metric, ["Open bugs", "−2（相对上一版本）", "之前为 5"]);
+  assert.match(zh.blocks.ref[0], /^(打开 )?任务 T-7: Ship release · 截至 /);
+  assert.deepEqual(zh.blocks.ref.slice(1), ["Ship", "doing"]);
+  assert.equal(zh.blocks.file[0], "Release notes link");
+  assert.match(zh.blocks.file[1], /^引用 /);
+  assert.equal(zh.blocks.file[2], en.blocks.file[2]);
+  assert.deepEqual(zh.blocks.lists, ["Before release", "计划", "发现", "引用", "附件"]);
   check("Chinese: Home's own words follow the language changed in another window");
+  check("Chinese: widgets, Machines, the pinned status, repository activity and the card's blocks follow it; GitHub's titles, the Agent's items, labels, caption and reference state as written; arranging still on");
   // What Agents and the user wrote, as it was.
   for (const key of ["ship", "progress", "load"]) {
     assert.equal(zh.cards[key].title, en.cards[key].title);
