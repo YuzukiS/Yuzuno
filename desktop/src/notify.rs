@@ -93,15 +93,20 @@ pub fn desktop_notifications(window: WebviewWindow, connection: tauri::State<'_,
 /// What became of a notification handed to this app.
 #[derive(Serialize)]
 pub struct Handed {
-    /// Given to the system. False: held back, the window being in front.
+    /// Given to the system. False: not given, `held` says why.
     handed: bool,
+    /// "looking": one meant for while the user looks elsewhere, held back
+    /// because this window is in front. Nothing was shown; nothing failed.
+    held: Option<&'static str>,
 }
 
 /// Hands one notification to the system. `handed` means only that: whether
 /// the system shows it is not reported back. With `when_away`, one meant for
 /// while the user looks elsewhere, it is held back while this window is in
-/// front (`notification_text::shown_now`); a page that sends none (an older
-/// one) is handed on as before.
+/// front (`notification_text::shown_now`), as the window reports it; a state
+/// that can't be read is an error, never taken for away. A page that sends
+/// no `when_away` (an older one) is handed on as before. Whether to hand it
+/// on is decided first; then what it says is checked.
 #[tauri::command]
 pub fn desktop_notify(
     app: AppHandle,
@@ -115,19 +120,22 @@ pub fn desktop_notify(
     if !CHECKED {
         return Err("This app can't show system notifications on this system yet.".into());
     }
-    let (title, body) = notification_text::checked(&title, &body)?;
-    let focused = window.is_focused().unwrap_or(false);
-    let minimized = window.is_minimized().unwrap_or(false);
-    if !notification_text::shown_now(when_away.unwrap_or(false), focused, minimized) {
-        return Ok(Handed { handed: false });
+    if when_away.unwrap_or(false) {
+        let unread = |error: tauri::Error| format!("This app couldn't read whether its window is in front: {error}");
+        let focused = window.is_focused().map_err(unread)?;
+        let minimized = window.is_minimized().map_err(unread)?;
+        if !notification_text::shown_now(true, focused, minimized) {
+            return Ok(Handed { handed: false, held: Some("looking") });
+        }
     }
+    let (title, body) = notification_text::checked(&title, &body)?;
     app.notification()
         .builder()
         .title(title)
         .body(body)
         .show()
         .map_err(|error| format!("The system didn't take the notification: {error}"))?;
-    Ok(Handed { handed: true })
+    Ok(Handed { handed: true, held: None })
 }
 
 #[cfg(test)]
