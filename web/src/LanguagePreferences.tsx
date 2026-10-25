@@ -28,7 +28,7 @@ const text = strings({
   systemFallback: (asked: string) => `This browser asks for ${asked}, which this version doesn’t have, so English is shown.`,
   chosen: "Whatever this browser’s language is.",
   coverage: (pages: string) =>
-    `This version translates Settings’ directory, its search and save messages, and these pages: ${pages}. Other Settings pages and the rest of Yuzuno stay in English, as does anything a page has no translation for. System notifications, the test one included, stay in English too, and release notes and license texts are shown as written. What you and Agents write, code, logs and names are never translated. Times keep their own clock format and time zone.`,
+    `This version translates Settings’ directory, its search and save messages, and these pages: ${pages}. Other Settings pages and the rest of Yuzuno stay in English, as does anything a page has no translation for, such as the Shared Appearance preset under Appearance. System notifications, the test one included, stay in English too, and release notes and license texts are shown as written. What you and Agents write, code, logs and names are never translated. Times keep their own clock format and time zone.`,
   list: (items: string[]) => items.map((item) => `“${item}”`).join(", "),
 }, {
   title: "界面语言",
@@ -40,7 +40,7 @@ const text = strings({
   systemFallback: (asked) => `此浏览器要求使用 ${asked}，此版本没有该语言，因此显示英文。`,
   chosen: "无论此浏览器使用什么语言。",
   coverage: (pages) =>
-    `此版本已翻译设置目录、搜索与保存提示，以及这些页面：${pages}。其他设置页面和 Yuzuno 的其余部分仍为英文，页面中没有译文的文字也显示为英文。系统通知（包括测试通知）也仍为英文；发布说明与许可证文本按原文显示。你和 Agent 写下的内容、代码、日志与名称从不翻译。时间仍按各自的时钟格式与时区显示。`,
+    `此版本已翻译设置目录、搜索与保存提示，以及这些页面：${pages}。其他设置页面和 Yuzuno 的其余部分仍为英文，页面中没有译文的文字也显示为英文，例如“外观”下的“共享外观预设”。系统通知（包括测试通知）也仍为英文；发布说明与许可证文本按原文显示。你和 Agent 写下的内容、代码、日志与名称从不翻译。时间仍按各自的时钟格式与时区显示。`,
   list: (items) => items.map((item) => `“${item}”`).join("、"),
 });
 
