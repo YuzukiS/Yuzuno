@@ -51,10 +51,18 @@ fn read_profiles(app: &AppHandle) -> core_profiles::Saved {
 ///
 /// `profile` names a saved Workspace this is meant to be. When that profile
 /// already knows a `workspaceId` and the Core answers with another one, this
-/// opens nothing and says so: a Workspace that shares a name or an address
-/// with the saved one is still a different Workspace, and its drafts,
-/// reading places and unsent answers are not that one's. The page then asks
-/// what to do, and a later call with `accept` set carries that answer back.
+/// opens nothing and keeps opening nothing: a Workspace that shares a name or
+/// an address with the saved one is still a different Workspace.
+///
+/// It is refused rather than offered, because this app cannot yet keep the
+/// two apart. The window has one WebView and the page it opens is the Core's
+/// own origin, so both Workspaces at one address share that origin's storage,
+/// and `web/src/composer-draft.ts` keys a composer draft and its pasted
+/// bodies by Agent alone (`yuzuno.composer.v1:<agent>`,
+/// `yuzuno.paste.v1:<agent>:<body>`), with no Workspace in the key. Two
+/// Workspaces whose Agents share an identifier would therefore hand each
+/// other their unsent drafts. Opening it anyway is not offered until a draft
+/// is kept per Workspace, or this app keeps a store per profile.
 #[tauri::command]
 async fn connect_core(
     app: AppHandle,
@@ -62,7 +70,6 @@ async fn connect_core(
     url: String,
     profile: Option<String>,
     name: Option<String>,
-    accept: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let core = core_url::parse(&url)?;
     let workspace = check_health(&state.client, &core).await?;
@@ -76,9 +83,7 @@ async fn connect_core(
     // just answered. Only a profile that already knows one can disagree.
     if let Some(known) = known.as_ref() {
         let before = known.workspace_id.as_deref();
-        if core_profiles::identity(before, workspace.as_deref()) == core_profiles::Identity::Changed
-            && accept != Some(true)
-        {
+        if core_profiles::identity(before, workspace.as_deref()) == core_profiles::Identity::Changed {
             return Ok(serde_json::json!({
                 "url": core.as_str(),
                 "opened": false,

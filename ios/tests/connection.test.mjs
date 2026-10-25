@@ -242,25 +242,22 @@ test('two saved Workspaces are listed apart, by workspace, though they share a n
   } finally { dom.window.close(); }
 });
 
-test('a saved Workspace that answers as another one opens nothing until that is answered', async () => {
+test('a saved Workspace that answers as another one is refused, not offered', async () => {
   const calls = [];
   const dom = await mount(async (command, args) => {
     calls.push({ command, args });
     if (command === 'saved_cores') return two;
-    if (command === 'connect_core') {
+    if (command === 'connect_core')
       // The address still answers, as a different Workspace than the one
       // saved under this name.
-      if (!args.accept)
-        return {
-          url: args.url,
-          opened: false,
-          identity: 'changed',
-          profileName: 'Home',
-          savedWorkspaceId: 'w-one',
-          workspaceId: 'w-other',
-        };
-      return { url: args.url, opened: true, identity: 'known', saved: true, workspaceId: 'w-other' };
-    }
+      return {
+        url: args.url,
+        opened: false,
+        identity: 'changed',
+        profileName: 'Home',
+        savedWorkspaceId: 'w-one',
+        workspaceId: 'w-other',
+      };
   });
   try {
     const document = dom.window.document;
@@ -270,30 +267,28 @@ test('a saved Workspace that answers as another one opens nothing until that is 
     document.querySelector('#saved-list li .saved-open').click();
     await settle();
 
-    // Nothing was opened, and why is said in the Workspace's own terms.
     assert.equal(identity.hidden, false);
     assert.match(status.textContent, /not the workspace saved under that name/);
     assert.equal(status.dataset.error, 'true');
     assert.doesNotMatch(status.textContent, /Opening your workspace|Found it/);
-    assert.match(document.querySelector('#identity-text').textContent, /drafts and reading places/);
     assert.equal(calls.filter((call) => call.command === 'connect_core').length, 1, 'asked once, not retried');
     assert.equal(calls.at(-1).args.profile, 'core-1', 'asked as the saved Workspace it was meant to be');
-    assert.notEqual(calls.at(-1).args.accept, true);
 
-    // Leaving it closed opens nothing and keeps the profile.
+    // Nothing offers to open it: this app cannot keep two Workspaces at one
+    // address apart, and says why rather than handing over a switch that
+    // would mix their unsent drafts.
+    assert.equal(document.querySelector('#identity-open'), null, 'no way to open it anyway');
+    assert.match(document.querySelector('#identity-text').textContent, /kept per agent, not per workspace/);
+    assert.equal(
+      [...document.querySelectorAll('#identity-check button')].length,
+      1,
+      'only leaving it closed',
+    );
+
     document.querySelector('#identity-cancel').click();
     assert.equal(identity.hidden, true);
     assert.match(status.textContent, /Left closed/);
     assert.equal(calls.filter((call) => call.command === 'connect_core').length, 1);
-
-    // Opening it anyway is a separate, explicit choice.
-    document.querySelector('#saved-list li .saved-open').click();
-    await settle();
-    document.querySelector('#identity-open').click();
-    await settle();
-    const connects = calls.filter((call) => call.command === 'connect_core');
-    assert.equal(connects.at(-1).args.accept, true);
-    assert.match(status.textContent, /Found it. Opening your workspace/);
   } finally { dom.window.close(); }
 });
 

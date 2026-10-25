@@ -9,7 +9,6 @@ const savedSection = document.querySelector('#saved-cores');
 const savedList = document.querySelector('#saved-list');
 const identity = document.querySelector('#identity-check');
 const identityText = document.querySelector('#identity-text');
-const identityOpen = document.querySelector('#identity-open');
 const identityCancel = document.querySelector('#identity-cancel');
 const invoke = window.__TAURI__?.core?.invoke;
 
@@ -149,7 +148,7 @@ async function removeProfile(profile) {
 // saved is said to be so: Connect tries again, or it opens without saving.
 // A saved Workspace that answers as a different one opens nothing until
 // that is answered.
-async function connect(accept = false) {
+async function connect() {
   if (button.disabled) return;
   busy(true);
   offerUnsaved(null);
@@ -160,7 +159,6 @@ async function connect(accept = false) {
       url: address.value,
       profile: editing?.id ?? null,
       name: nameField.value || null,
-      accept,
     });
     if (result.identity === 'changed') {
       show('This is not the workspace saved under that name.', true);
@@ -186,9 +184,6 @@ async function connect(accept = false) {
   }
 }
 
-identityOpen.addEventListener('click', () => {
-  if (different) connect(true);
-});
 identityCancel.addEventListener('click', () => {
   askAboutIdentity(null);
   show('Left closed. Its address is still saved, under the same name.');
