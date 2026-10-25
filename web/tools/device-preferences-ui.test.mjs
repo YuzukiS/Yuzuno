@@ -403,6 +403,8 @@ test("a saved letter this version doesn't offer, or two shortcuts on one letter,
       w.real.setItem.call(w.localStorage, "yuzuno.shortcuts", saved);
       w.showHelp();
       assert.deepEqual(NAMES.map((name) => pick(w, name).value), ["K", "N", "F"], saved);
+      // Said so: not "Using the choice saved" (review R1).
+      assert.match(w.document.querySelector(".save-status").textContent, /couldn’t be read, so the defaults apply/, saved);
     } finally {
       w.close();
     }

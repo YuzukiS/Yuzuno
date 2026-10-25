@@ -28,17 +28,28 @@ export const reservedLetters = ["A", "C", "V", "X", "Y", "Z", "W", "T", "Q", "R"
 export const shortcutLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").filter((letter) => !reservedLetters.includes(letter));
 const STORAGE_KEY = "yuzuno.shortcuts";
 
+/** What this device saved, and whether it can be used: an object whose
+ * letters this version offers, no two shortcuts on one. */
+function readSaved(): { keys: ShortcutKeys; usable: boolean } {
+  const saved = readDeviceValue(STORAGE_KEY) as Partial<Record<Rebindable, unknown>> | null;
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) return { keys: { ...defaultShortcutKeys }, usable: false };
+  const keys = { ...defaultShortcutKeys };
+  let usable = true;
+  for (const action of rebindable) {
+    const key = saved[action];
+    if (key === undefined) continue;
+    if (typeof key === "string" && shortcutLetters.includes(key)) keys[action] = key;
+    else usable = false;
+  }
+  if (new Set(Object.values(keys)).size !== rebindable.length) return { keys: { ...defaultShortcutKeys }, usable: false };
+  return { keys, usable };
+}
+
 /** What this device has chosen, over the defaults. A letter this version
  * doesn't offer, or two shortcuts on one letter, is not used: the defaults. */
 export function readShortcutKeys(): ShortcutKeys {
-  const saved = readDeviceValue(STORAGE_KEY) as Partial<Record<Rebindable, unknown>> | null;
-  const keys = { ...defaultShortcutKeys };
-  if (saved && typeof saved === "object" && !Array.isArray(saved))
-    for (const action of rebindable) {
-      const key = saved[action];
-      if (typeof key === "string" && shortcutLetters.includes(key)) keys[action] = key;
-    }
-  return new Set(Object.values(keys)).size === rebindable.length ? keys : { ...defaultShortcutKeys };
+  const { keys, usable } = readSaved();
+  return usable ? keys : { ...defaultShortcutKeys };
 }
 
 /** The other shortcut on `key`, if one is. */
@@ -79,12 +90,11 @@ export const useShortcutKeys = (): ShortcutKeys => useSyncExternalStore(subscrib
 /** What this visit's last save or reset of them did, or null. */
 export const useShortcutKeysWrite = (): ShortcutKeysWrite | null => useSyncExternalStore(subscribe, () => lastWrite);
 
-/** What this device holds for them, read now (as preferencesStored). */
+/** What this device holds for them, read now (as preferencesStored): one it
+ * can't use, as readShortcutKeys can't, is "invalid" (the defaults apply). */
 export function shortcutKeysStored(): DeviceValueState {
   const state = deviceValueState(STORAGE_KEY);
-  if (state !== "saved") return state;
-  const value = readDeviceValue(STORAGE_KEY);
-  return value && typeof value === "object" && !Array.isArray(value) ? "saved" : "invalid";
+  return state === "saved" && !readSaved().usable ? "invalid" : state;
 }
 
 /** Gives a shortcut another letter, at once, and saves it on this device. A

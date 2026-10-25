@@ -5,6 +5,7 @@
 //    Ctrl+K no longer does, and the rail's search button says Ctrl J;
 //  - New Agent → J is refused, naming Find an Agent; Ctrl+N still opens New
 //    Agent;
+//  - Search this conversation → G: its button announces Control+G Meta+G;
 //  - after a reload Ctrl+J still opens Find;
 //  - Restore defaults: Ctrl+K opens Find again; the send key's preference is
 //    never written;
@@ -111,8 +112,12 @@ try {
   assert.equal(refused, "Ctrl+J is already Find an Agent. Nothing was changed: choose another letter, or give Find an Agent another one first.");
   assert.equal(await page.getByRole("combobox", { name: "Key for New Agent" }).inputValue(), "N");
   assert.equal(await stored("yuzuno.shortcuts"), '{"find":"J","newAgent":"N","search":"F"}');
+  await choose("Search this conversation", "G");
+  assert.equal(await stored("yuzuno.shortcuts"), '{"find":"J","newAgent":"N","search":"G"}');
   await page.screenshot({ path: join(output, "shortcut-keys.png") });
   await closeDialog();
+  // The conversation's search button announces its letter in effect.
+  assert.equal(await page.locator("[aria-keyshortcuts]").first().getAttribute("aria-keyshortcuts"), "Control+G Meta+G");
   await press("Control+j");
   assert.equal(await findShown(), true, "Ctrl+J opens Find");
   await press("Control+j");

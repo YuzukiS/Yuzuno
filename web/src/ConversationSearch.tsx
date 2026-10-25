@@ -181,7 +181,7 @@ export function ConversationSearch({
           className="conversation-action conversation-search-trigger"
           aria-label={t.search}
           title={t.searchTitle(shortcutModifier, keys.search)}
-          aria-keyshortcuts="Control+F Meta+F"
+          aria-keyshortcuts={`Control+${keys.search} Meta+${keys.search}`}
           disabled={disabled}
         >
           <Search size={16} />
