@@ -2,7 +2,7 @@
 // you registered or created for the Task, who uses each one now, and the
 // cleanup of generated Cargo output you select there. Core checks again
 // before removing anything; this only shows what it reports.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FolderGit2, RefreshCw } from "lucide-react";
 import { api, errorText, post } from "./api";
 
@@ -203,7 +203,18 @@ function Cleanup({ taskId, view }: { taskId: string; view: WorkspaceView }) {
   );
 }
 
-export function TaskWorkspaces({ taskId, materialsWorktree }: { taskId: string; materialsWorktree?: string | null }) {
+export function TaskWorkspaces({ taskId, materialsWorktree, focused = false }: {
+  taskId: string;
+  materialsWorktree?: string | null;
+  /** Opened here (from Data & storage): brought into view; nothing is run. */
+  focused?: boolean;
+}) {
+  const section = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!focused) return;
+    section.current?.scrollIntoView?.({ block: "start" });
+    section.current?.querySelector<HTMLElement>("h4")?.focus();
+  }, [focused]);
   const [listing, setListing] = useState<Listing | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -244,9 +255,9 @@ export function TaskWorkspaces({ taskId, materialsWorktree }: { taskId: string; 
   const workspaces = Array.isArray(listing?.workspaces) ? listing.workspaces : [];
   const registered = workspaces.some((w) => w.path === named);
   return (
-    <section className="collab-section task-workspaces" aria-label="Workspace">
+    <section ref={section} className="collab-section task-workspaces" aria-label="Workspace">
       <div className="collab-section-heading">
-        <h4>
+        <h4 tabIndex={-1}>
           <FolderGit2 size={15} aria-hidden="true" />
           Workspace
         </h4>

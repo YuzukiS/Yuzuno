@@ -1096,3 +1096,55 @@ test("a review's result mail and a review link open its task at that review's re
     linked.close();
   }
 });
+
+// T-193: Data & storage opens a task by its ID at its own Workspace section.
+test("opened at a task's Workspace section, the board shows that task there and only lists its folders: nothing is previewed or removed", async () => {
+  const done = task({ id: "T-7", title: "Build cache", status: "done" });
+  const folder = { id: "w1", path: "/work/build-cache", origin: "registered", state: "present",
+    git: { branch: "t-7", head: "0123456789abcdef", origin: "example/demo", repositoryId: 42, sameRepository: true, changes: { modified: 0, untracked: 0, complete: true } },
+    users: { agents: [], liveJobs: [], taskJobs: 0 } };
+  const page = mount((operation, body) => {
+    if (operation === "task_list") return { tasks: [task(), done], hasMore: false };
+    if (operation === "task_get") return { task: body.taskId === "T-7" ? done : task(), activities: [], executions: [], hasMore: false };
+    if (operation === "workspaces") return { taskId: "T-7", repositories: [], workspaces: [folder] };
+    if (operation === "github_links" || operation === "github_refresh") return { links: [], repositories: [] };
+    if (operation === "delivery_get") return { flow: null, settings: { harness: "codex", model: "gpt-6.1-sol" } };
+    if (operation === "peers_list") return { peers: [] };
+    if (operation === "peer_read") return { messages: [], hasMore: false };
+    if (operation.startsWith("pr-reviews?")) return { reviews: [], hasMore: false, nextBefore: null };
+    if (operation.startsWith("pr-operations?")) return { operations: [], repositories: [], hasMore: false, nextBefore: null };
+    throw new Error(operation);
+  });
+  try {
+    page.render({ focus: { taskId: "T-7", section: "workspaces", at: 1 } });
+    const heading = await waitFor(() => page.document.querySelector(".task-workspaces h4"), "the task's Workspace section");
+    assert.equal(page.calls.find((call) => call.operation === "task_get").body.taskId, "T-7", "the task named by its ID, though done");
+    await waitFor(() => page.document.activeElement === heading, "the Workspace section brought into view");
+    await waitFor(() => /\/work\/build-cache/.test(page.document.querySelector(".task-workspaces").textContent), "its folders listed");
+    assert.deepEqual(page.calls.filter((call) => call.operation === "workspaces").map((call) => call.method), ["GET"], "only listed");
+    assert.ok(!page.calls.some((call) => ["preview", "cleanup"].includes(call.operation)), "nothing is previewed or removed");
+    assert.ok(button(page, "Preview cleanup"), "the cleanup is the section's own, still to be asked for");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("opened at the Workspace section of a task Core no longer has, the board says so and lists no other task's folders", async () => {
+  const page = mount((operation, body) => {
+    if (operation === "task_list") return { tasks: [task()], hasMore: false };
+    if (operation === "task_get") return body.taskId === "T-404" ? { httpStatus: 404, error: "task T-404 was not found" } : { task: task(), activities: [], executions: [], hasMore: false };
+    if (operation === "peers_list") return { peers: [] };
+    if (operation === "peer_read") return { messages: [], hasMore: false };
+    return { httpStatus: 500, error: `unexpected ${operation}` };
+  });
+  try {
+    page.render({ focus: { taskId: "T-404", section: "workspaces", at: 1 } });
+    await waitFor(() => /task T-404 was not found/.test(page.document.body.textContent), "Core's answer for that task");
+    assert.deepEqual(page.calls.filter((call) => call.operation === "task_get").map((call) => call.body.taskId), ["T-404"], "only the task named by its ID");
+    assert.ok(!page.document.querySelector(".task-workspaces"), "no Workspace section");
+    assert.ok(!page.calls.some((call) => ["workspaces", "preview", "cleanup"].includes(call.operation)), "no folders listed, previewed or removed");
+  } finally {
+    page.close();
+  }
+});
