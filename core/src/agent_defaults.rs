@@ -189,7 +189,8 @@ pub fn resolve_model(
             ensure!(asked_effort.is_none(), "Choose the Codex model the reasoning effort is for");
             let none = AgentDefaults::default();
             let project = project.unwrap_or(&none);
-            match [(project, "project"), (defaults, "workspace")].into_iter().find(|(layer, _)| layer.codex_model.is_some()) {
+            let found = [(project, "project"), (defaults, "workspace")].into_iter().find(|(layer, _)| layer.codex_model.is_some());
+            match found {
                 Some((layer, source)) => {
                     let model = layer.codex_model.clone().unwrap_or_default();
                     // `null` asks for the model's own effort instead of the default's.
@@ -469,7 +470,7 @@ mod tests {
     fn a_change_leaves_out_what_it_does_not_name_and_null_deletes_a_choice() {
         let saved = AgentDefaults { harness: Some("claude".into()), codex_permission_preset: Some("config".into()), ..Default::default() };
         let next = change(json!({"codexPermissionPreset":null,"claudePermissionMode":"auto"})).apply(saved);
-        assert_eq!(next, AgentDefaults { harness: Some("claude".into()), codex_permission_preset: None, claude_permission_mode: Some("auto".into()) });
+        assert_eq!(next, AgentDefaults { harness: Some("claude".into()), codex_permission_preset: None, claude_permission_mode: Some("auto".into()), ..Default::default() });
         assert!(serde_json::from_value::<Change>(json!({"model":"x"})).is_err(), "an unknown default is refused");
         for wrong in [json!({"harness":"opencode"}), json!({"codexPermissionPreset":"yolo"}), json!({"claudePermissionMode":"bypassPermissions"})] {
             assert!(change(wrong.clone()).apply(AgentDefaults::default()).validate().is_err(), "{wrong}");
@@ -484,7 +485,7 @@ mod tests {
         assert_eq!(built_in.settings, AgentSettings::default(), "nothing set: exactly as before");
         assert_eq!(built_in.sources, json!({"harness":"builtin","permission":"builtin"}));
 
-        let set = AgentDefaults { harness: Some("claude".into()), codex_permission_preset: Some("config".into()), claude_permission_mode: Some("auto".into()) };
+        let set = AgentDefaults { harness: Some("claude".into()), codex_permission_preset: Some("config".into()), claude_permission_mode: Some("auto".into()), ..Default::default() };
         let workspace = resolve(&set, None, None, None, None).unwrap();
         assert_eq!((workspace.harness.as_str(), workspace.settings.permission_mode.as_deref()), ("claude", Some("auto")));
         assert_eq!(workspace.settings.permission_preset, None, "a Codex default does not reach a Claude Agent");
@@ -529,7 +530,7 @@ mod tests {
 
     #[test]
     fn in_a_project_its_override_comes_after_the_request_and_before_the_workspace() {
-        let workspace = AgentDefaults { harness: Some("claude".into()), codex_permission_preset: Some("config".into()), claude_permission_mode: Some("auto".into()) };
+        let workspace = AgentDefaults { harness: Some("claude".into()), codex_permission_preset: Some("config".into()), claude_permission_mode: Some("auto".into()), ..Default::default() };
         let project = AgentDefaults { harness: Some("codex".into()), codex_permission_preset: Some("full".into()), ..Default::default() };
         // The project's harness and Codex permissions; nothing asked.
         let new = resolve(&workspace, Some(&project), None, None, None).unwrap();
