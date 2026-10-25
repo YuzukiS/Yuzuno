@@ -108,6 +108,59 @@ async fn settings_back_up_check_and_restore_only_from_cores_own_port() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{relative}");
 }
 
+/// The daily backup (T-196): off until turned on, only from Core's own port,
+/// at a time of day in UTC into a folder that exists. Turning it on backs up
+/// nothing now, and its schedule file is never in a backup.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_daily_backup_is_off_until_turned_on_from_cores_own_port_and_its_time_is_utc() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    let ws = Workspace::new(data.clone(), "/tmp".into(), "unused-codex".into()).unwrap();
+    let remote = server::remote_router(ws.clone(), tmp.path().join("assets"), None, RemoteEntry::new(ORIGIN, LOGIN).unwrap());
+    let local = server::router(ws, tmp.path().join("assets"));
+    let (status, view) = call(&local, "GET", "/api/workspace/backup", None, false).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["schedule"]["enabled"], json!(false), "off by default: {view}");
+    assert_eq!((view["schedule"]["nextRunAt"].clone(), view["schedule"]["lastRun"].clone()), (Value::Null, Value::Null));
+
+    let daily = tmp.path().join("daily");
+    std::fs::create_dir(&daily).unwrap();
+    let on = json!({"enabled":true,"timeUtc":"03:00","folder":daily});
+    let (status, _) = call(&remote, "POST", "/api/workspace/backup/schedule", Some(on.clone()), true).await;
+    assert!(unrouted(status), "a phone cannot turn it on: {status}");
+    let (status, bad) = call(&local, "POST", "/api/workspace/backup/schedule", Some(json!({"enabled":true,"timeUtc":"25:00","folder":daily})), false).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(bad["error"].as_str().unwrap().contains("HH:MM, in UTC"), "{bad}");
+    let (status, missing) = call(&local, "POST", "/api/workspace/backup/schedule",
+        Some(json!({"enabled":true,"timeUtc":"03:00","folder":tmp.path().join("missing")})), false).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(missing["error"].as_str().unwrap().contains("is not a folder"), "{missing}");
+    let (status, view) = call(&local, "GET", "/api/workspace/backup", None, false).await;
+    assert_eq!((status, view["schedule"]["enabled"].clone()), (StatusCode::OK, json!(false)), "refusals change nothing");
+
+    let (status, set) = call(&local, "POST", "/api/workspace/backup/schedule", Some(on), false).await;
+    assert_eq!(status, StatusCode::OK, "{set}");
+    let schedule = &set["schedule"];
+    assert_eq!((schedule["enabled"].clone(), schedule["timeUtc"].clone()), (json!(true), json!("03:00")));
+    let next = chrono::DateTime::parse_from_rfc3339(schedule["nextRunAt"].as_str().unwrap()).unwrap();
+    assert!(next > chrono::Utc::now() && next.format("%H:%M:%S").to_string() == "03:00:00" && next.offset().local_minus_utc() == 0, "{schedule}");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(std::fs::read_dir(&daily).unwrap().count(), 0, "turning it on backs up nothing now");
+    assert!(data.join("backup-schedule.json").is_file());
+
+    // A backup made now leaves the schedule out: a restored copy starts with none.
+    let backup = tmp.path().join("backup");
+    let (status, started) = call(&local, "POST", "/api/workspace/backups", Some(json!({"requestId":"b1","to":backup})), false).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    assert_eq!(finished(&local, started["operation"]["id"].as_str().unwrap()).await["state"], "succeeded");
+    let manifest: Value = serde_json::from_slice(&std::fs::read(backup.join("manifest.json")).unwrap()).unwrap();
+    assert!(manifest["excluded"].as_array().unwrap().iter().any(|e| e["path"] == "backup-schedule.json"), "{manifest}");
+
+    let (status, off) = call(&local, "POST", "/api/workspace/backup/schedule", Some(json!({"enabled":false,"timeUtc":"03:00"})), false).await;
+    assert_eq!(status, StatusCode::OK, "{off}");
+    assert_eq!((off["schedule"]["enabled"].clone(), off["schedule"]["nextRunAt"].clone()), (json!(false), Value::Null));
+}
+
 /// The retention preview (T-196, slice 2): only from Core's own port, read
 /// only, and refusing a relative folder or a count out of range.
 #[tokio::test(flavor = "multi_thread")]

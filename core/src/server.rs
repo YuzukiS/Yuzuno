@@ -57,6 +57,7 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
     ws.start_jobs();
     ws.start_ci_monitor();
     ws.start_delivery();
+    ws.start_backup_schedule();
     let mcp = crate::collaboration_mcp::router(ws.clone(), port);
     let router = browser_routes(assets, updates.clone())
         // Only on Core's own port: the desktop app on this computer asks.
