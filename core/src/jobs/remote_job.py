@@ -327,11 +327,19 @@ def stop(group, limit=None, since=None):
     it, or now), and go on until none is left (or for `limit` seconds of this
     call). True only once the group is known to be empty: while the machine
     cannot be asked, nothing is signalled and nothing is called stopped, and
-    after BLIND_LIMIT of that this answers False rather than waiting on it."""
+    after BLIND_LIMIT of that this answers False rather than waiting on it.
+
+    The TERM goes to the first membership this call can actually see, which is
+    not always at its start: while the machine cannot be asked there is
+    nothing to signal, and a group that became visible later would otherwise
+    be KILLed without ever being asked to end. Without `since` the 5 s before
+    a KILL runs from that TERM rather than from a time nothing was signalled.
+    `since` is the TERM an earlier call already sent, checked against this
+    attempt, boot and process; it is kept, so a grace already given is never
+    restarted by a later call."""
     begin = time.monotonic()
-    first = begin if since is None else since
-    for pid in live(group) or []:
-        send(pid, signal.SIGTERM, group)
+    first = since
+    termed = False
     blind = None
     while True:
         left = live(group)
@@ -346,7 +354,13 @@ def stop(group, limit=None, since=None):
                 return False
         else:
             blind = None
-            if now - first >= 5:
+            if not termed:
+                for pid in left:
+                    send(pid, signal.SIGTERM, group)
+                termed = True
+                if first is None:
+                    first = now
+            elif now - first >= 5:
                 for pid in left:
                     send(pid, signal.SIGKILL, group)
         time.sleep(0.1)

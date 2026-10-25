@@ -1579,6 +1579,18 @@ class EnumerationFailureTests(unittest.TestCase):
             raise remote_job.Unclear("this machine's processes could not be listed")
         remote_job.all_pids = refuse
 
+    def blind_for(self, times):
+        """The first `times` listings fail, then they work: the machine comes
+        back while a stop is already under way."""
+        real, asked = self.real_pids, []
+
+        def maybe():
+            asked.append(None)
+            if len(asked) <= times:
+                raise remote_job.Unclear("this machine's processes could not be listed")
+            return real()
+        remote_job.all_pids = maybe
+
     def test_all_pids_raises_rather_than_reporting_an_empty_machine(self):
         """The failure injected at libproc, the single call all_pids makes, so
         the raise itself is checked and not just its callers. DARWIN is forced
@@ -1610,6 +1622,30 @@ class EnumerationFailureTests(unittest.TestCase):
         with self.assertRaises(remote_job.Unclear):
             remote_job.members(self.group)
         self.assertIsNone(remote_job.live(self.group), "live() reports unknown as None")
+
+    def test_the_first_membership_it_can_see_is_termed_before_any_kill(self):
+        """None then members, from review of #362 (P3-1): a group that becomes
+        visible partway through a stop is asked to end before it is killed.
+        Nothing is signalled while the machine cannot be asked, so the 5 s
+        before a KILL has to run from that TERM and not from a time when
+        nothing was sent."""
+        self.blind_for(2)
+        self.assertIs(remote_job.stop(self.group, limit=3.0), False)
+        kinds = [signum for _, signum in self.signalled]
+        self.assertTrue(kinds, "it signals once it can see the group")
+        self.assertEqual(kinds[0], signal.SIGTERM, self.signalled)
+        self.assertNotIn(signal.SIGKILL, kinds,
+                         "no KILL inside the grace that TERM started")
+
+    def test_a_grace_already_given_is_not_restarted(self):
+        """`since` is the TERM an earlier call sent, which stop_lost checked
+        against this attempt, boot and process. A later call keeps it: a group
+        whose TERM went out long ago is not handed another 5 s each round."""
+        self.blind_for(2)
+        self.assertIs(remote_job.stop(self.group, limit=3.0, since=time.monotonic() - 10), False)
+        kinds = [signum for _, signum in self.signalled]
+        self.assertEqual(kinds[0], signal.SIGTERM, self.signalled)
+        self.assertIn(signal.SIGKILL, kinds, "the grace it was already given is not extended")
 
     def test_stop_never_calls_an_unasked_machine_empty_and_signals_nothing(self):
         self.blind()
