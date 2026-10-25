@@ -360,6 +360,7 @@ test("a project's defaults in Chinese (T-189): inherited values and where they c
   const section = (label) => page.document.querySelector(`[aria-label="${label}"]`);
   const options = (label) => [...select(page, label).options].map((o) => o.textContent.trim());
   assert.equal(section("此项目的新 Agent 默认值").querySelector("h3").textContent, "新 Agent 默认值");
+  assert.equal(section("此项目的新 Agent 默认值").getAttribute("lang"), "zh-Hans", "its own lang on an English project page");
   assert.match(section("此项目的新 Agent 默认值").textContent, /已为此 Workspace 设置：Claude Code。/);
   assert.deepEqual(options("新 Agent 的 Harness"), ["继承 · Claude Code（已为此 Workspace 设置）", "Codex", "Claude Code"]);
   assert.deepEqual(options("新 Agent 的 Codex 权限"), ["继承 · 请求批准（内置）", "跟随 Codex 配置", "请求批准", "替我批准", "完全访问"]);
@@ -377,6 +378,7 @@ test("a project's defaults in Chinese (T-189): inherited values and where they c
   switchTo("en");
   await until(() => select(page, "Harness for new Agents"), "English again");
   assert.match(section("New Agent defaults for this project").textContent, /Saved for this project/);
+  assert.equal(section("New Agent defaults for this project").getAttribute("lang"), "en");
   assert.equal(select(page, "Codex permissions for new Agents").value, "auto");
   await choose(page, "Harness for new Agents", "codex");
   switchTo("zh-Hans");

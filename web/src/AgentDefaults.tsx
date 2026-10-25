@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, errorText } from "./api";
-import { strings, useLanguage } from "./i18n";
+import { langTag, strings, useLanguage } from "./i18n";
 import type { Model } from "./types";
 import {
   CLAUDE_MODES,
@@ -142,7 +142,8 @@ const text = strings({
  *
  * With `projectId`, the same fields for Agents created in that project: no
  * choice there inherits the Workspace's (or the built-in), and clearing one
- * deletes only that project's override.
+ * deletes only that project's override. Its words follow the interface
+ * language there too, with its own `lang`: the page around it is English.
  */
 export function AgentDefaults({ active, projectId, disabled = false }: { active: boolean; projectId?: string; disabled?: boolean }) {
   const language = useLanguage();
@@ -267,6 +268,7 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
       id={projectId ? undefined : "settings-agent-defaults"}
       className="settings-section agent-defaults-settings"
       aria-label={projectId ? t.sectionProject : t.section}
+      lang={langTag(language)}
     >
       <header className="settings-section-heading">
         <div>
