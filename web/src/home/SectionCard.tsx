@@ -1,5 +1,5 @@
 import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useClockFormat } from "../time-preferences";
+import { systemTimeZone, timeZoneName, useTimeDisplay } from "../time-preferences";
 import { CalendarClock, Check, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
 import { errorText } from "../api";
 import type { Agent } from "../types";
@@ -23,21 +23,21 @@ const gone = { closed: "has closed", deleted: "was deleted", moved: "moved to an
 
 /** When a status's data is from, and whether it is past its validity. */
 function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; stale: boolean }) {
-  const clock = useClockFormat();
+  const time = useTimeDisplay();
   return (
-    <span className={stale ? "home-stale" : ""} title={absolute(status.asOf, clock)}>
+    <span className={stale ? "home-stale" : ""} title={absolute(status.asOf, time)}>
       <Clock3 size={12} />
-      Data as of {absolute(status.asOf, clock)}
+      Data as of {absolute(status.asOf, time)}
       {stale && ` · older than its ${duration(status.validFor)} validity`}
     </span>
   );
 }
 
 function Time({ label, iso }: { label: string; iso?: string }) {
-  const clock = useClockFormat();
+  const time = useTimeDisplay();
   if (!iso) return null;
   return (
-    <span title={absolute(iso, clock)}>
+    <span title={absolute(iso, time)}>
       {label} {relative(iso)}
     </span>
   );
@@ -115,7 +115,7 @@ export const SectionCard = memo(function SectionCard({
   onSeen: (marks: SeenMark[]) => Promise<void>;
   onChanged: () => void;
 }) {
-  const clock = useClockFormat();
+  const time = useTimeDisplay();
   // Collapsing hides the body only: drafts, Defer and table state are kept,
   // and the header still says what changed and offers Seen (T-115).
   const [collapsed, toggleFold] = useCardFold(`section:${projectId}:${section.key}`);
@@ -210,7 +210,7 @@ export const SectionCard = memo(function SectionCard({
             {section.owner.name}
             {section.owner.state !== "active" && ` (${section.owner.state})`}
           </span>
-          <span title={absolute(section.updatedAt, clock)}>{relative(section.updatedAt)}</span>
+          <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt)}</span>
         </span>
         {replyable && (
           <button
@@ -279,7 +279,7 @@ export const SectionCard = memo(function SectionCard({
         <div className="home-ask">
           {deferred && (
             <p className="home-note">
-              <CalendarClock size={12} /> Deferred until {absolute(deferred, clock)}
+              <CalendarClock size={12} /> Deferred until {absolute(deferred, time)}
             </p>
           )}
           <AskReply
@@ -310,13 +310,20 @@ export const SectionCard = memo(function SectionCard({
                       type="button"
                       className="secondary-button"
                       disabled={busy}
-                      title={absolute(choice.until, clock)}
+                      title={absolute(choice.until, time)}
                       onClick={() => void defer(choice.until)}
                     >
                       {choice.label}
                     </button>
                   ))}
                 </span>
+              )}
+              {/* Times here are shown in another zone, but Defer's 9:00 is
+                  this device's own (T-189): said where it is chosen. */}
+              {deferOpen && time.timeZone && time.timeZone !== systemTimeZone() && (
+                <p className="home-note home-defer-zone">
+                  Tomorrow and Next week are 9:00 in this device’s time zone, {timeZoneName(systemTimeZone())}.
+                </p>
               )}
             </div>
           )}
