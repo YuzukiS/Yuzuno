@@ -47,8 +47,9 @@ pub struct Registry {
     entries: Mutex<HashMap<String, Entry>>,
     tickets: std::sync::atomic::AtomicU64,
     /// Claude's latest snapshot, per Agent: the connection generation that
-    /// sent it and the ids of every task it lists, ambient ones included.
-    claude_live: Mutex<HashMap<String, (u64, HashSet<String>)>>,
+    /// sent it, the ids of every task it lists (ambient ones included), and
+    /// how many of them are not ambient: real background work.
+    claude_live: Mutex<HashMap<String, (u64, HashSet<String>, usize)>>,
 }
 
 impl Registry {
@@ -81,7 +82,8 @@ impl Registry {
     pub fn record_claude(&self, id: &str, generation: u64, event: &Value) -> bool {
         let Some(tasks) = event["tasks"].as_array() else { return false };
         let live = tasks.iter().filter_map(|task| task["task_id"].as_str().map(str::to_owned)).collect();
-        self.claude_live.lock().unwrap().insert(id.into(), (generation, live));
+        let active = tasks.iter().filter(|task| task["ambient"] != true).count();
+        self.claude_live.lock().unwrap().insert(id.into(), (generation, live, active));
         let shells = tasks
             .iter()
             .filter(|task| task["task_type"] == "local_bash" && task["ambient"] != true)
@@ -99,8 +101,16 @@ impl Registry {
     /// id, ended or unknown (CLI 2.1.280, T-25 probe).
     pub fn claude_running(&self, id: &str, generation: u64, task: &str) -> Option<bool> {
         let live = self.claude_live.lock().unwrap();
-        let (_, tasks) = live.get(id).filter(|(seen, _)| *seen == generation)?;
+        let (_, tasks, _) = live.get(id).filter(|(seen, _, _)| *seen == generation)?;
         Some(tasks.contains(task))
+    }
+
+    /// How many tasks other than ambient ones Claude's latest snapshot from
+    /// this connection generation lists; None when it has sent none, which a
+    /// bridge does until a task starts (Disconnect, T-184).
+    pub fn claude_active(&self, id: &str, generation: u64) -> Option<usize> {
+        let live = self.claude_live.lock().unwrap();
+        live.get(id).filter(|(seen, _, _)| *seen == generation).map(|(_, _, active)| *active)
     }
 }
 
@@ -151,6 +161,12 @@ fn codex_changed(ws: &Arc<Workspace>, id: &str, thread: &str, command_ended: boo
             check_codex(&ws, &id, &thread).await;
         }
     });
+}
+
+/// This Codex Agent's background terminals, listed now on its connection;
+/// None when it has none or Codex doesn't answer (Disconnect, T-184).
+pub(crate) async fn codex_count_now(ws: &Arc<Workspace>, id: &str, thread: &str) -> Option<usize> {
+    check_codex(ws, id, thread).await
 }
 
 async fn check_codex(ws: &Arc<Workspace>, id: &str, thread: &str) -> Option<usize> {

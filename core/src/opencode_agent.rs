@@ -115,7 +115,7 @@ impl Workspace {
             error: None,
             remote: None,
             connection_state: "disconnected".into(),
-            closed_at: None,
+            closed_at: None, disconnected_at: None,
         };
         let detail = AgentDetail {
             agent: agent.clone(),
@@ -174,6 +174,7 @@ impl Workspace {
     pub(crate) async fn opencode_ensure(self: &Arc<Self>, id: &str) -> Result<Connection> {
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
+        crate::model::ensure_not_disconnected(&d.agent)?;
         if let Some(c) = self.opencodes.lock().unwrap().get(id).cloned() {
             return Ok(c);
         }
