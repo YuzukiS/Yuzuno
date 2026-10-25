@@ -27,8 +27,10 @@ export function readOnly(storage: Pick<Storage, "getItem">): Pick<Storage, "getI
   };
 }
 
-/** Drafts of this Workspace's Agents, from manifests alone: no paste body is
- * read. Drafts of Agents this Workspace doesn't list are only counted. */
+/** Drafts saved for the Agent IDs this Workspace lists, from manifests alone:
+ * no paste body is read. A draft is keyed by Agent ID only (no Workspace is
+ * recorded), so a match is by ID, not proof of the Workspace. Drafts for IDs
+ * this Workspace doesn't list are only counted. */
 export function listDrafts(
   storage: Pick<Storage, "getItem" | "key" | "length"> | null,
   agents: readonly { id: string; name: string; closedAt?: string | null }[],
@@ -53,7 +55,8 @@ export function listDrafts(
 export function draftExportText(draft: ComposerDraft, agentName: string, at = new Date()): string {
   const lines = [
     `Yuzuno draft for ${agentName}`,
-    `Exported ${at.toISOString()} from the copy saved on this device. Text typed since it was last saved is not included.`,
+    `Exported ${at.toISOString()} from the copy saved in this browser for this site. Text typed since it was last saved is not included.`,
+    "Saved under the Agent's ID only: the Workspace it was written in is not recorded.",
   ];
   if (draft.images?.length)
     lines.push(`Images in the draft: ${draft.images.length} (references only; the images themselves are not in this file)`);

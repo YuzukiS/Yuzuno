@@ -15,9 +15,10 @@ function readStorage(): Storage | null {
 type Shown = { agentId: string; name: string } & ({ text: string } | { error: string });
 
 /**
- * Settings → Draft storage (T-193): the drafts this device keeps for this
- * Workspace's Agents. One is opened only when chosen, shown whole, and saved
- * as a text file only when asked. Nothing here changes, sends or clears a draft.
+ * Settings → Draft storage (T-193): the drafts this browser keeps for the
+ * Agent IDs this Workspace lists (a draft records no Workspace). One is opened
+ * only when chosen, shown whole, and saved as a text file only when asked.
+ * Nothing here changes, sends or clears a draft.
  */
 export function DraftExport({ active, agents }: { active: boolean; agents: { id: string; name: string; closedAt?: string | null }[] | null }) {
   const [listing, setListing] = useState<DraftListing | null>(null);
@@ -71,9 +72,10 @@ export function DraftExport({ active, agents }: { active: boolean; agents: { id:
         <div>
           <h3 id="settings-drafts-title">Drafts on this device</h3>
           <p>
-            The drafts this browser keeps for this Workspace's Agents. Choose one to see it whole, then save it as a text
-            file. These are the copies saved on this device: text typed in an open conversation since it was last saved is
-            not in them. Nothing here sends, changes or clears a draft.
+            Drafts saved in this browser for this site, shown for the Agents this Workspace lists. A draft is saved under
+            its Agent's ID only: which Workspace it was written in is not recorded, so a matching Agent doesn't prove it.
+            Choose one to see it whole, then save it as a text file. These are the copies saved on this device: text typed
+            in an open conversation since it was last saved is not in them. Nothing here sends, changes or clears a draft.
           </p>
         </div>
       </header>
@@ -85,7 +87,7 @@ export function DraftExport({ active, agents }: { active: boolean; agents: { id:
       )}
       {listing?.available && (
         <>
-          {listing.rows.length === 0 && <p className="diagnostics-note">No Agent of this Workspace has a saved draft on this device.</p>}
+          {listing.rows.length === 0 && <p className="diagnostics-note">No saved draft on this device matches an Agent this Workspace lists.</p>}
           <ul className="draft-export-rows">
             {listing.rows.map((row) => (
               <li key={row.agentId} data-agent={row.agentId}>
@@ -104,7 +106,7 @@ export function DraftExport({ active, agents }: { active: boolean; agents: { id:
           </ul>
           {listing.otherAgents > 0 && (
             <p className="diagnostics-note">
-              {listing.otherAgents} saved {listing.otherAgents === 1 ? "draft belongs" : "drafts belong"} to Agents this
+              {listing.otherAgents} saved {listing.otherAgents === 1 ? "draft is" : "drafts are"} for Agent IDs this
               Workspace doesn't list, so {listing.otherAgents === 1 ? "it is" : "they are"} not shown here.
             </p>
           )}

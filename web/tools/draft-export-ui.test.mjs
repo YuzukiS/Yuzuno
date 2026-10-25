@@ -84,7 +84,8 @@ test("the list reads manifests only, shows this Workspace's drafts as they are, 
   assert.match(p.row("a3").textContent, /^MapleCan't be read \(.+\); left as it is\.$/, "a damaged draft is said, and offers nothing");
   assert.equal(p.row("a4"), null, "an empty saved draft is no draft");
   assert.equal(p.row("zz"), null, "another Workspace's draft is not listed");
-  assert.match(p.section().textContent, /1 saved draft belongs to Agents this Workspace doesn't list, so it is not shown here\./);
+  assert.match(p.section().textContent, /1 saved draft is for Agent IDs this Workspace doesn't list, so it is not shown here\./);
+  assert.match(p.section().textContent, /which Workspace it was written in is not recorded, so a matching Agent doesn't prove it/);
   assert.ok(!p.section().textContent.includes("another Workspace's words"));
   assert.deepEqual(p.reads.filter((key) => key.startsWith("yuzuno.paste.v1:")), [], "no pasted text is read for the list");
   assert.deepEqual(p.writes, [], "nothing is written");
@@ -97,7 +98,7 @@ test("a chosen draft is shown whole, pasted text included, and saved as a text f
   await until(() => p.row("a1"));
   p.row("a1").querySelector("button").click();
   const text = await until(() => p.shown(), "the chosen draft");
-  assert.match(text, /^Yuzuno draft for Cedar\nExported \S+ from the copy saved on this device\. Text typed since it was last saved is not included\.\n/);
+  assert.match(text, /^Yuzuno draft for Cedar\nExported \S+ from the copy saved in this browser for this site\. Text typed since it was last saved is not included\.\nSaved under the Agent's ID only: the Workspace it was written in is not recorded\.\n/);
   assert.match(text, /^Images in the draft: 1 \(references only; the images themselves are not in this file\)$/m);
   assert.match(text, /Hello there \n\[Pasted text #1, 2 lines\]\nPASTED BODY line one\nline two\n\[End of pasted text #1\]\n$/);
   assert.deepEqual(p.reads.filter((key) => key.startsWith("yuzuno.paste.v1:")), ["yuzuno.paste.v1:a1:b1"], "only the chosen draft's pasted text is read");
