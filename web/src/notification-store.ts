@@ -63,6 +63,21 @@ export function saveNotificationPrefs(prefs: NotificationPrefs): SaveOutcome {
   return outcome;
 }
 
+/** Choices taken from a preferences file (T-194): saved on this device
+ * first, and in effect only once saved; a refused save changes nothing.
+ * Whether this device notifies at all (`enabled`) stays as it is, and
+ * nothing asks the browser for permission or shows a notification. */
+export function importNotificationPrefs(choices: Pick<NotificationPrefs, "categories" | "preview" | "muted">): SaveOutcome {
+  const now = current ?? read();
+  const prefs: NotificationPrefs = { ...choices, enabled: now.enabled };
+  const outcome = saveDeviceValue(NOTIFICATION_PREFS_KEY, prefs);
+  if (!outcome.saved) return outcome;
+  current = prefs;
+  lastWrite = { outcome, action: "save", attempt: ++attempts };
+  changed();
+  return outcome;
+}
+
 /** Changes the choice in effect (not the one a render saw, which a quick
  * second change could undo) and saves the result. */
 export const changeNotificationPrefs = (change: (prefs: NotificationPrefs) => NotificationPrefs): SaveOutcome =>
