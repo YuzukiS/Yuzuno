@@ -42,6 +42,26 @@ type View = {
   recent: Operation[];
   notCovered: string[];
   replaceRunningWorkspace: string;
+  /** Absent from a Core before T-196. */
+  schedule?: Schedule;
+};
+/** The daily backup (T-196): a time of day in UTC, a folder each run writes a
+ * new folder in, the next slot and the last run as its operation ended. */
+type Schedule = {
+  enabled: boolean;
+  timeUtc: string;
+  folder: string | null;
+  nextRunAt: string | null;
+  lastRun: {
+    slot: string;
+    missed: number;
+    startedAt: string;
+    to: string;
+    operationId: string | null;
+    state: "running" | "succeeded" | "failed" | "stopped" | "interrupted" | "not_started";
+    error: string | null;
+    finishedAt: string | null;
+  } | null;
 };
 type Precheck = {
   ok: true;
@@ -335,6 +355,14 @@ export function WorkspaceBackup({ active }: { active: boolean }) {
         </div>
       )}
 
+      {view?.schedule && (
+        <DailyBackup
+          schedule={view.schedule}
+          canChange={canChange}
+          onSaved={(schedule) => setView((old) => (old ? { ...old, schedule } : old))}
+        />
+      )}
+
       {lost && pending && (
         <div className="workspace-backup-refusal" role="alert">
           <p>No answer from Core. The request may have arrived; trying again sends the same request.</p>
@@ -370,6 +398,120 @@ export function WorkspaceBackup({ active }: { active: boolean }) {
       )}
       {view && <p className="settings-row-help workspace-backup-limit">{view.replaceRunningWorkspace}.</p>}
     </section>
+  );
+}
+
+/** "03:00" UTC as this device's clock shows it today. */
+function localTime(timeUtc: string) {
+  const [hours, minutes] = timeUtc.split(":").map(Number);
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hours, minutes))
+    .toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+const utc = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+
+function lastRunText(run: NonNullable<Schedule["lastRun"]>) {
+  const made = run.missed > 0 ? ` It made up for ${run.missed} missed ${run.missed === 1 ? "day" : "days"}.` : "";
+  switch (run.state) {
+    case "running":
+      return `The run for ${utc(run.slot)} is backing up to ${run.to}.${made}`;
+    case "succeeded":
+      return `Last run, for ${utc(run.slot)}: backed up to ${run.to} and checked.${made}`;
+    case "not_started":
+      return `Last run, for ${utc(run.slot)}, did not start: ${run.error ?? "no reason was given"}.${made}`;
+    default:
+      return `Last run, for ${utc(run.slot)}, ${run.state === "failed" ? "failed" : run.state}: ${run.error ?? "no reason was given"}.${made}`;
+  }
+}
+
+/** The daily backup in Settings (T-196): off until turned on here. Its time
+ * is UTC, shown with this device's equivalent. A run starting is not shown
+ * as a success; its outcome is, once the backup ends. Nothing is deleted. */
+function DailyBackup({ schedule, canChange, onSaved }: {
+  schedule: Schedule;
+  canChange: boolean;
+  onSaved: (schedule: Schedule) => void;
+}) {
+  const [enabled, setEnabled] = useState(schedule.enabled);
+  const [time, setTime] = useState(schedule.timeUtc || "03:00");
+  const [folder, setFolder] = useState(schedule.folder ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const changed = enabled !== schedule.enabled || time !== (schedule.timeUtc || "03:00") || folder !== (schedule.folder ?? "");
+  async function save() {
+    setSaving(true);
+    setError("");
+    try {
+      const answer = await api<{ schedule: Schedule }>("/workspace/backup/schedule", {
+        method: "POST",
+        body: JSON.stringify({ enabled, timeUtc: time, folder: folder.trim() || null }),
+      });
+      onSaved(answer.schedule);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+  const run = schedule.lastRun;
+  return (
+    <div className="settings-group workspace-backup-daily" aria-label="Daily backup">
+      <div className="settings-row workspace-backup-row">
+        <span className="settings-row-main">
+          <span className="settings-row-title">Daily backup</span>
+          <span className="settings-row-help">
+            {schedule.enabled
+              ? `Every day at ${schedule.timeUtc} UTC (${localTime(schedule.timeUtc)} on this device), into a new folder in ${schedule.folder}. Old backups are never deleted.`
+              : "Off. When on, Core backs up once a day while it runs, as Back up does; a day it was stopped or asleep is made up once."}
+          </span>
+        </span>
+      </div>
+      {canChange && (
+        <div className="settings-row workspace-backup-row">
+          <label className="workspace-backup-check">
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+            Back up every day
+          </label>
+          <input
+            className="settings-input workspace-backup-time"
+            type="time"
+            aria-label="Time of day (UTC)"
+            value={time}
+            onChange={(e) => setTime(e.target.value)}
+          />
+          <input
+            className="settings-input"
+            aria-label="Folder for daily backups"
+            placeholder="/path/to/backups-folder"
+            value={folder}
+            onChange={(e) => setFolder(e.target.value)}
+          />
+          <button type="button" disabled={saving || !changed} onClick={() => void save()}>
+            Save
+          </button>
+        </div>
+      )}
+      {canChange && /^\d\d:\d\d$/.test(time) && (
+        <p className="settings-row-help workspace-backup-note">
+          {time} UTC is {localTime(time)} on this device today.
+        </p>
+      )}
+      {schedule.enabled && schedule.nextRunAt && (
+        <p className="workspace-backup-note" role="status">
+          Next run: {utc(schedule.nextRunAt)}.
+        </p>
+      )}
+      {run && (
+        <p className={run.state === "succeeded" || run.state === "running" ? "workspace-backup-note" : "workspace-backup-error"}>
+          {lastRunText(run)}
+        </p>
+      )}
+      {error && (
+        <p className="workspace-backup-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

@@ -20,6 +20,7 @@ import { RuntimeSection } from "./RuntimeSection";
 import { AboutSection } from "./AboutSection";
 import { AppearanceSection } from "./AppearanceSettings";
 import { InputPreferencesSection } from "./InputPreferences";
+import { TimePreferencesSection } from "./TimePreferences";
 import { ShortcutHelpSection } from "./ShortcutHelp";
 import { Modal } from "./components";
 import { DesktopUpdate } from "./DesktopUpdate";
@@ -996,6 +997,7 @@ export function WorkspaceUpdates({
           )}
           {tab === "appearance" && <AppearanceSection />}
           {tab === "input" && <InputPreferencesSection />}
+          {tab === "time" && <TimePreferencesSection />}
           {tab === "shortcuts" && <ShortcutHelpSection />}
           {tab === "agent-defaults" && <AgentDefaults active={open} />}
           {tab === "review" && <ReviewSettings active={open} />}

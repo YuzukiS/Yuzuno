@@ -264,6 +264,7 @@ pub fn changes() -> Router<Arc<Workspace>> {
         .route("/api/workspace/restore/precheck", post(precheck))
         .route("/api/workspace/restores", post(start_restore))
         .route("/api/workspace/backup/operations/{id}/stop", post(stop))
+        .route("/api/workspace/backup/schedule", post(set_schedule))
 }
 
 /// Whether a backup can start now, and why not; the size it will roughly
@@ -300,6 +301,7 @@ async fn status(State(ws): State<Arc<Workspace>>, headers: HeaderMap) -> Result<
         "recent": ws.backups.recent(),
         "notCovered": super::NOT_COVERED,
         "replaceRunningWorkspace": "Replacing the Workspace this Core uses needs Core stopped; it is not offered here",
+        "schedule": ws.backup_schedule.view(chrono::Utc::now()),
     })))
 }
 
@@ -347,12 +349,70 @@ async fn start_backup(State(ws): State<Arc<Workspace>>, Json(body): Json<BackupR
         Ok(to) => to,
         Err(error) => return started(Err(Refusal::Invalid(error))),
     };
-    let request = json!({"to": body.to});
-    let (data, store, target) = (ws.data_dir.clone(), ws.store.clone(), to.clone());
-    started(ws.backups.start("backup", &body.request_id, request, |id| scratch_beside(&to, "partial", id), move |ctl| {
+    started(begin_backup(&ws, &body.request_id, &to))
+}
+
+/// A backup of this Workspace into the new folder `to`, as an operation:
+/// from Settings, or for the daily schedule (`schedule`).
+pub(crate) fn begin_backup(ws: &Workspace, request_id: &str, to: &Path) -> Result<Operation, Refusal> {
+    let request = json!({"to": to});
+    let (data, store, target) = (ws.data_dir.clone(), ws.store.clone(), to.to_path_buf());
+    ws.backups.start("backup", request_id, request, |id| scratch_beside(to, "partial", id), move |ctl| {
         let manifest = super::running(&data, &store, &target, ctl)?;
         Ok(summary(&manifest, &target))
-    }))
+    })
+}
+
+impl Workspace {
+    /// Looks at the clock for the daily backup every half minute, and at once
+    /// when the schedule changes; with the schedule off it does nothing.
+    pub(crate) fn start_backup_schedule(self: &Arc<Self>) {
+        if self.backup_schedule.started.set(()).is_err() {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                let Some(ws) = weak.upgrade() else { break };
+                let looked = tokio::task::spawn_blocking({
+                    let ws = ws.clone();
+                    move || ws.backup_schedule.tick(&ws.backups, chrono::Utc::now(), |request, to| begin_backup(&ws, request, to))
+                }).await;
+                match looked {
+                    Ok(Err(error)) => eprintln!("Daily backup: {error:#}"),
+                    Err(error) => eprintln!("Daily backup: {error}"),
+                    Ok(Ok(())) => {}
+                }
+                let schedule = ws.backup_schedule.clone();
+                drop(ws);
+                tokio::select! { _ = schedule.wake.notified() => {}, _ = tokio::time::sleep(super::schedule::LOOK) => {} }
+            }
+        });
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ScheduleRequest {
+    enabled: bool,
+    time_utc: String,
+    #[serde(default)]
+    folder: Option<String>,
+}
+
+/// Turns the daily backup on or off (Core's own port only). Its time is UTC.
+async fn set_schedule(State(ws): State<Arc<Workspace>>, Json(body): Json<ScheduleRequest>) -> Response {
+    let folder = match body.folder.as_deref().filter(|f| !f.is_empty()).map(|f| absolute("folder", f)).transpose() {
+        Ok(folder) => folder,
+        Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({"error":format!("{error:#}")}))).into_response(),
+    };
+    let planner = ws.backup_schedule.clone();
+    let set = tokio::task::spawn_blocking(move || planner.set(body.enabled, &body.time_utc, folder, chrono::Utc::now())).await;
+    match set {
+        Ok(Ok(_)) => Json(json!({"schedule": ws.backup_schedule.view(chrono::Utc::now())})).into_response(),
+        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({"error":format!("{error:#}")}))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":error.to_string()}))).into_response(),
+    }
 }
 
 #[derive(Deserialize)]

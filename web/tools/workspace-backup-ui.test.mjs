@@ -344,3 +344,75 @@ test("a lost answer is sent again as the same request", async () => {
     p.close();
   }
 });
+
+const OFF = { enabled: false, timeUtc: "", folder: null, nextRunAt: null, lastRun: null };
+
+test("the daily backup is off until saved on; its time is UTC and a refusal is said", async () => {
+  const sent = [];
+  let refuse = true;
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/workspace/backup")) return { body: view({ schedule: OFF }) };
+    if (url.endsWith("/api/workspace/backup/schedule")) {
+      sent.push(body);
+      if (refuse) return { status: 400, body: { error: "/backups/missing is not a folder on the computer that runs Core" } };
+      return { body: { schedule: { enabled: true, timeUtc: body.timeUtc, folder: body.folder, nextRunAt: "2026-10-26T03:00:00Z", lastRun: null } } };
+    }
+    assert.fail(`unexpected ${method} ${url}`);
+  });
+  try {
+    const daily = () => p.doc.querySelector('[aria-label="Daily backup"]');
+    await waitFor(() => daily(), "the daily backup");
+    assert.match(daily().textContent, /Off\. When on, Core backs up once a day/);
+    assert.doesNotMatch(daily().textContent, /Next run/);
+    assert.equal(p.posts().length, 0, "opening sends nothing");
+    daily().querySelector('input[type="checkbox"]').click();
+    type(p, "Folder for daily backups", "/backups/missing");
+    await waitFor(() => !button(p, "Save").disabled, "Save offered");
+    assert.match(daily().textContent, /03:00 UTC is .* on this device today/);
+    button(p, "Save").click();
+    await waitFor(() => daily().querySelector('[role="alert"]'), "the refusal");
+    assert.match(daily().querySelector('[role="alert"]').textContent, /is not a folder/);
+    assert.match(daily().textContent, /^Daily backupOff\./, "still off");
+    refuse = false;
+    type(p, "Folder for daily backups", "/backups/daily");
+    await waitFor(() => !button(p, "Save").disabled, "Save offered again");
+    button(p, "Save").click();
+    await waitFor(() => daily().textContent.includes("Next run: 2026-10-26 03:00 UTC."), "the schedule on");
+    assert.match(daily().textContent, /Every day at 03:00 UTC \(.+ on this device\), into a new folder in \/backups\/daily\. Old backups are never deleted\./);
+    assert.deepEqual(sent.at(-1), { enabled: true, timeUtc: "03:00", folder: "/backups/daily" });
+    assert.equal(button(p, "Save").disabled, true, "nothing left to save");
+  } finally {
+    p.close();
+  }
+});
+
+test("a daily run is shown as it ended, never as a success while it runs; the phone only reads", async () => {
+  const failed = { slot: "2026-10-28T03:00:00Z", missed: 2, startedAt: "2026-10-28T08:00:05Z", to: "/backups/daily/yuzuno-backup-20261028T0300Z",
+    operationId: "op9", state: "failed", error: "Not enough space for the backup: needs 2 GiB more. Nothing was written", finishedAt: "2026-10-28T08:00:06Z" };
+  const p = mount((url) => {
+    assert.ok(url.endsWith("/api/workspace/backup"), url);
+    return { body: view({ canChange: false, schedule: { enabled: true, timeUtc: "03:00", folder: "/backups/daily", nextRunAt: "2026-10-29T03:00:00Z", lastRun: failed } }) };
+  });
+  try {
+    const daily = () => p.doc.querySelector('[aria-label="Daily backup"]');
+    await waitFor(() => daily()?.textContent.includes("failed"), "the failed run");
+    assert.match(daily().textContent, /Last run, for 2026-10-28 03:00 UTC, failed: Not enough space for the backup: needs 2 GiB more\. Nothing was written\. It made up for 2 missed days\./);
+    assert.equal(daily().querySelector("input, button"), null, "the phone entry has no controls");
+    assert.equal(p.posts().length, 0);
+  } finally {
+    p.close();
+  }
+  const q = mount((url) => {
+    assert.ok(url.endsWith("/api/workspace/backup"), url);
+    return { body: view({ schedule: { enabled: true, timeUtc: "03:00", folder: "/backups/daily", nextRunAt: "2026-10-29T03:00:00Z",
+      lastRun: { slot: "2026-10-28T03:00:00Z", missed: 0, startedAt: "2026-10-28T03:00:05Z", to: "/backups/daily/yuzuno-backup-20261028T0300Z",
+        operationId: "op10", state: "running", error: null, finishedAt: null } } }) };
+  });
+  try {
+    const daily = () => q.doc.querySelector('[aria-label="Daily backup"]');
+    await waitFor(() => daily()?.textContent.includes("is backing up to"), "the running run");
+    assert.doesNotMatch(daily().textContent, /and checked/, "not a success while it runs");
+  } finally {
+    q.close();
+  }
+});
