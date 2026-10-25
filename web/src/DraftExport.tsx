@@ -13,7 +13,7 @@ function readStorage(): Storage | null {
   }
 }
 
-type Shown = { agentId: string; name: string } & ({ text: string } | { why: DraftProblem });
+type Shown = { agentId: string; name: string; attributed: boolean } & ({ text: string } | { why: DraftProblem });
 type Many = { state: "saving"; name: string; count: number } | { state: "failed"; failed: DraftsFailure[]; of: number } | { state: "notSaved"; why: DraftProblem };
 
 // Drafts, their names, the files saved and what they hold are as written;
@@ -170,7 +170,10 @@ export function DraftExport({ active, agents, workspaceId }: { active: boolean; 
     const next = listDrafts(readStorage(), listed, workspaceId);
     setListing(next);
     const open = shownNow.current;
-    if (!wasActive.current || !open || !listed.some((agent) => agent.id === open.agentId)) {
+    // A draft of this Workspace's is put away when its Agent is no longer
+    // listed. One that names no Workspace is not this Workspace's to begin
+    // with, so the list saying nothing about it puts nothing away (T-195).
+    if (!wasActive.current || !open || (open.attributed && !listed.some((agent) => agent.id === open.agentId))) {
       setShown(null);
       setSave(null);
     }
@@ -185,8 +188,9 @@ export function DraftExport({ active, agents, workspaceId }: { active: boolean; 
   function open(row: DraftRow) {
     const storage = readStorage();
     setSave(null);
-    if (!storage) return setShown({ agentId: row.agentId, name: row.name, why: { kind: "noStorage" } });
-    setShown({ agentId: row.agentId, name: row.name, ...exportDraft(storage, row) });
+    const who = { agentId: row.agentId, name: row.name, attributed: row.attributed };
+    if (!storage) return setShown({ ...who, why: { kind: "noStorage" } });
+    setShown({ ...who, ...exportDraft(storage, row) });
   }
 
   function download() {
