@@ -16,8 +16,6 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 3] = [Kind::NeedsYou, Kind::Failed, Kind::Finished];
-
     fn name(self) -> &'static str {
         match self {
             Kind::NeedsYou => "needsYou",
