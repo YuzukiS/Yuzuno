@@ -1,5 +1,5 @@
 .claude-mcp-status .section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.claude-mcp-status .section-title h2 { display: flex; align-items: center; gap: 6px; }
+.claude-mcp-status .section-title :is(h2, h5) { display: flex; align-items: center; gap: 6px; }
 .mcp-status-note, .mcp-auth-help, .mcp-server-list p { font-size: 11px; line-height: 1.5; color: var(--text-secondary); margin: 7px 0; overflow-wrap: anywhere; }
 .mcp-observed { color: var(--text-secondary); font-size: 10px; margin: 6px 0; }
 .mcp-server-list { list-style: none; padding: 0; margin: 8px 0 0; max-height: 300px; overflow-y: auto; }

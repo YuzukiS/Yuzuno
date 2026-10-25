@@ -1115,6 +1115,10 @@ ul.home-widget {
   display: flex;
   gap: 6px;
 }
+.home-defer-zone {
+  flex-basis: 100%;
+  margin: 0;
+}
 .home-panel-foot {
   display: flex;
   flex-wrap: wrap;

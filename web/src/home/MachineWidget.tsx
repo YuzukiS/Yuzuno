@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTimeDisplay } from "../time-preferences";
 import { Cpu, Gpu, MemoryStick, Monitor } from "lucide-react";
 import { errorText } from "../api";
 import { openJobs } from "../Jobs";
@@ -80,6 +81,7 @@ export function MachineWidget({
   projectName: (id: string | null) => string;
   readOnly: boolean;
 }) {
+  const time = useTimeDisplay();
   const visible = useDocumentVisible();
   const navigate = useHomeNavigation();
   // Collapsed, it reads no load; the header keeps the last reading's time (T-115).
@@ -110,7 +112,7 @@ export function MachineWidget({
   }, [readOnly, visible, collapsed]);
   const cpu = load?.cpu;
   const memory = load?.memory;
-  const atText = load ? `Core host · as of ${absolute(load.at)}` : readOnly ? "Core host" : "Reading…";
+  const atText = load ? `Core host · as of ${absolute(load.at, time)}` : readOnly ? "Core host" : "Reading…";
   const errorLine = error && `Machine load is unavailable: ${error}${load ? " · Showing the last reading." : ""}`;
   const jobs = load?.jobs;
   return (

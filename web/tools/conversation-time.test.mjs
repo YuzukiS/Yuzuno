@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 process.env.TZ = "Asia/Shanghai";
 const { patchDetail } = await import("../src/detail-patch.ts");
 const { DetailSync } = await import("../src/detail-sync.ts");
-const { conversationTimeMarks, timeMarkKey } = await import("../src/conversation-time.ts");
+const { conversationTimeMarks, timeMarkKey, turnFooter } = await import("../src/conversation-time.ts");
 
 const pause = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 const at = (minute, second = 0) => Date.UTC(2026, 9, 14, 2, minute, second);
@@ -68,4 +68,31 @@ test("streamed deltas never cause a read; only a change notice does", async () =
   await pause(60);
   assert.equal(reads, 2);
   sync.dispose();
+});
+
+// This device's clock format and time zone (T-189): the same loaded Turns,
+// written with others, are written again, not taken from the marks already
+// made; another zone moves the time, not the moment.
+test("another clock format or time zone writes the same loaded Turns' marks and ending again", () => {
+  const d = detail();
+  d.turns[0].status = "completed";
+  d.turns[0].completedAt = at(3) / 1000;
+  const shown = (clock, timeZone = null) => ({ clock, timeZone });
+  const [system, h12, h24] = [shown("system"), shown("h12"), shown("h24")];
+  const newYork = shown("h24", "America/New_York");
+  const written = (time) => [...conversationTimeMarks(d.turns, time).values()].map((mark) => mark.label);
+  const ending = (time) => turnFooter(d.turns[0], null, time).find((part) => part.kind === "time").moment;
+  const before = written(system);
+  assert.deepEqual(before, [new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(at(0, 5)))], "unset, as before");
+  assert.deepEqual(written(h24), ["10:00"]);
+  assert.equal(ending(h24).label, "10:03");
+  assert.match(written(h12)[0], /^10:00\s?AM$/);
+  // 02:00 UTC is 22:00 the evening before in New York.
+  assert.deepEqual(written(newYork), ["22:00"]);
+  assert.equal(ending(newYork).label, "22:03");
+  assert.match(ending(newYork).title, /October 13/);
+  assert.equal(ending(newYork).dateTime, ending(system).dateTime, "the moment itself is unchanged");
+  assert.deepEqual(written(h24), ["10:00"], "and back");
+  assert.equal(conversationTimeMarks(d.turns, h24), conversationTimeMarks(d.turns, h24), "one result per Turns and time display");
+  assert.deepEqual(written(system), before);
 });

@@ -173,6 +173,7 @@ import { ConversationWindow, ConversationRows } from "./ConversationWindow";
 import { ConversationMetadata } from "./ConversationMetadata";
 import { moveWindow, useCustomFrame, WindowControls } from "./WindowControls";
 import { conversationTimeMarks } from "./conversation-time";
+import { useTimeDisplay } from "./time-preferences";
 import { PastedTextComposer, type ComposerHandle } from "./PastedTextComposer";
 import { draftTextBlocks } from "./message-content";
 import { RequestSummary } from "./MessageContent";
@@ -212,6 +213,7 @@ const LiveTurn = memo(Turn, (a: TurnProps, b: TurnProps) =>
   a.index === b.index &&
   a.loadedNumbering === b.loadedNumbering &&
   a.isLatestAgentTurn === b.isLatestAgentTurn &&
+  a.time === b.time &&
   a.sourceItemId === b.sourceItemId &&
   a.pendingToolIds === b.pendingToolIds &&
   a.highlightSource === b.highlightSource &&
@@ -713,7 +715,10 @@ export function App() {
     .slice()
     .reverse()
     .find((turn) => turn.items.some(hasAgentContent))?.id;
-  const timeMarks = conversationTimeMarks(currentDetail?.turns ?? []);
+  // Times are written again, in every loaded Turn, when the clock format
+  // or time zone changes (T-189).
+  const time = useTimeDisplay();
+  const timeMarks = conversationTimeMarks(currentDetail?.turns ?? [], time);
   const pending = currentDetail?.pending || [];
   // Browser drafts of answers to native questions (T-170) last only while
   // Core still lists their request for this Agent.
@@ -2652,6 +2657,7 @@ export function App() {
                         loadedNumbering={!!currentDetail.history}
                         isLatestAgentTurn={turn.id === latestAgentTurnId}
                         timeMarks={timeMarks}
+                        time={time}
                         backgroundShells={currentDetail.backgroundShells}
                         agent={agent}
                         pendingToolIds={pendingToolIds}

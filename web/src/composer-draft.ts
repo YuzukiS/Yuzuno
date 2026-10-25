@@ -93,6 +93,54 @@ type SavedPart =
   | Pick<PastedText, "kind" | "id" | "number" | "bodyId">;
 type SavedDraft = { version: 1; nextNumber: number; parts: SavedPart[]; images?: DraftImage[]; skills?: DraftSkill[] };
 
+/**
+ * What an Agent's saved draft holds, read from its manifest alone (T-193): no
+ * paste body is read. "legacy" is a draft the older string map still holds; an
+ * empty saved draft (or none) is "none". `load` checks more: a draft summed up
+ * here can still prove damaged when it is opened.
+ */
+export type SavedDraftSummary =
+  | { state: "none" }
+  | { state: "saved" | "legacy"; textChars: number; pastes: number; images: number; skills: number }
+  | { state: "damaged"; reason: string };
+export function savedDraftSummary(storage: Pick<Storage, "getItem">, agent: string): SavedDraftSummary {
+  const raw = storage.getItem(prefix + agent);
+  try {
+    if (raw) {
+      const saved = JSON.parse(raw);
+      if (saved?.version !== 1 || !Array.isArray(saved.parts)) throw new Error("Invalid saved draft");
+      const texts = saved.parts.filter((p: SavedPart) => p?.kind === "text" && typeof p.text === "string") as { text: string }[];
+      const pastes = saved.parts.filter((p: SavedPart) => p?.kind === "paste").length;
+      const images = Array.isArray(saved.images) ? saved.images.length : 0;
+      const skills = Array.isArray(saved.skills) ? saved.skills.length : 0;
+      if (!texts.some((p) => p.text.trim()) && !pastes && !images) return { state: "none" };
+      return { state: "saved", textChars: texts.reduce((n, p) => n + p.text.length, 0), pastes, images, skills };
+    }
+    const legacy = JSON.parse(storage.getItem("yuzuno.drafts") || "{}");
+    const text = typeof legacy?.[agent] === "string" ? legacy[agent] : "";
+    return text.trim() ? { state: "legacy", textChars: text.length, pastes: 0, images: 0, skills: 0 } : { state: "none" };
+  } catch (error) {
+    return { state: "damaged", reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** The Agents this device's draft storage holds something for: a manifest,
+ * or an entry in the older string map. Nothing is read beyond keys and that map. */
+export function savedDraftAgents(storage: Pick<Storage, "getItem" | "key" | "length">): string[] {
+  const agents = new Set<string>();
+  for (let index = 0; index < storage.length; index++) {
+    const key = storage.key(index);
+    if (key?.startsWith(prefix)) agents.add(key.slice(prefix.length));
+  }
+  try {
+    const legacy = JSON.parse(storage.getItem("yuzuno.drafts") || "{}");
+    for (const [agent, text] of Object.entries(legacy ?? {})) if (typeof text === "string") agents.add(agent);
+  } catch {
+    // A damaged older map is reported for each Agent it would hold (savedDraftSummary).
+  }
+  return [...agents];
+}
+
 /** Cache only identities, so nearby keystrokes never stringify/read paste bodies. */
 export class DraftStorage {
   private written = new Set<string>();

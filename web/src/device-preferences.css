@@ -1,6 +1,6 @@
-/* This device's preferences (T-189): sending messages and the keyboard
-   shortcuts, two sections of Settings (InputPreferences.tsx,
-   ShortcutHelp.tsx). Their groups are padded and sized as Settings' rows
+/* This device's preferences (T-189): sending messages, the clock format
+   and the keyboard shortcuts, sections of Settings (InputPreferences.tsx,
+   TimePreferences.tsx, ShortcutHelp.tsx). Their groups are padded and sized as Settings' rows
    are (updates.css): a title, then its help. */
 .input-preferences .settings-group,
 .settings-group.shortcut-group {
@@ -69,6 +69,9 @@
 }
 .input-preferences-fixed {
   margin: 10px 0 0;
+}
+.time-zone-choice {
+  margin-top: 14px;
 }
 
 .shortcut-group h4 {

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTimeDisplay } from "../time-preferences";
 import { ArrowUpRight, Clock3, Eye, MessageSquareReply, NotebookText, Pin as PinIcon, PinOff, TriangleAlert } from "lucide-react";
 import type { Agent } from "../types";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
@@ -33,6 +34,7 @@ export function PinnedSection({
   /** Where replies can be sent from (not the design preview): the workspace and the project's open Agents. */
   reply?: { workspaceId: string; agents: Agent[] };
 }) {
+  const time = useTimeDisplay();
   const title = source.state === "shown" ? source.section.title : pin.title;
   const projectName = source.state === "shown" ? source.projectName : pin.projectName;
   // Collapsing hides its content only; a source that is gone or not current
@@ -60,7 +62,7 @@ export function PinnedSection({
               {" · "}
               {source.section.owner.name}
               {" · "}
-              <span title={absolute(source.section.updatedAt)}>Updated {relative(source.section.updatedAt)}</span>
+              <span title={absolute(source.section.updatedAt, time)}>Updated {relative(source.section.updatedAt)}</span>
             </>
           )}
         </span>
@@ -79,9 +81,9 @@ export function PinnedSection({
             </p>
           )}
           {source.section.status && (
-            <p className={`home-pinned-time${source.section.status.stale ? " home-stale" : ""}`} title={absolute(source.section.status.asOf)}>
+            <p className={`home-pinned-time${source.section.status.stale ? " home-stale" : ""}`} title={absolute(source.section.status.asOf, time)}>
               <Clock3 size={12} aria-hidden="true" />
-              Data as of {absolute(source.section.status.asOf)}
+              Data as of {absolute(source.section.status.asOf, time)}
               {source.section.status.stale && ` · older than its ${duration(source.section.status.validFor)} validity`}
             </p>
           )}

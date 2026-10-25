@@ -14,6 +14,7 @@ import { sourceTarget } from "../../intelligent-ui/contract.ts";
 import { useBrief, type BriefContextValue } from "./BriefContext";
 import type { LiveRefState, Section } from "../types";
 import { formatTime, type LiveRef, type LiveRefKind, type LiveRefsProps } from "./brief-catalog";
+import { useTimeDisplay } from "../../time-preferences";
 
 const kinds: Record<LiveRefKind, { label: string; icon: LucideIcon }> = {
   task: { label: "Task", icon: ClipboardList },
@@ -81,6 +82,7 @@ function opening(ref: LiveRef, brief: BriefContextValue, state: LiveRefState | u
 }
 
 function Chip({ item }: { item: LiveRef }) {
+  const time = useTimeDisplay();
   const brief = useBrief();
   const kind = kinds[item.kind];
   if (!kind) return null;
@@ -92,7 +94,7 @@ function Chip({ item }: { item: LiveRef }) {
   // read out after it (T-173). Without a label, the current title shows.
   const name = item.label || state?.title || item.id;
   const full = item.label && state?.title && state.title !== item.label ? state.title : null;
-  const title = `${kind.label} ${item.id}${full ? `: ${full}` : ""}${state?.observedAt ? ` · as of ${formatTime(state.observedAt)}` : ""}`;
+  const title = `${kind.label} ${item.id}${full ? `: ${full}` : ""}${state?.observedAt ? ` · as of ${formatTime(state.observedAt, time)}` : ""}`;
   const content = (
     <>
       <Icon size={13} aria-hidden="true" />

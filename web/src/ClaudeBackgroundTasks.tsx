@@ -11,6 +11,7 @@ import {
   type ClaudeBackgroundTaskRecord,
 } from "./claude-background-tasks";
 import { moment } from "./conversation-time";
+import { useTimeDisplay, type TimeDisplay } from "./time-preferences";
 import { SubAgentDock, type DockGroup, type DockSubAgent } from "./SubAgentPanels";
 import type { Agent, NativeTurn, RunningCall } from "./types";
 import { withRunningCalls } from "./running-calls";
@@ -86,10 +87,10 @@ export function StopTaskButton({ agentId, record, live, label }: {
   );
 }
 
-function when(at: string | undefined) {
+function when(at: string | undefined, time: TimeDisplay) {
   const ms = at ? Date.parse(at) : NaN;
   if (!Number.isFinite(ms)) return null;
-  const m = moment(ms);
+  const m = moment(ms, time);
   return <time dateTime={m.dateTime} title={m.title}>{m.label}</time>;
 }
 
@@ -102,12 +103,13 @@ export function ClaudeBackgroundTaskDetail({ agentId, entry, live, onNavigate }:
 }) {
   const { record } = entry;
   const running = entry.status === "running";
+  const time = useTimeDisplay();
   return <div className="claude-subagent claude-background-task" data-task-status={entry.status}>
     <dl className="claude-subagent-facts">
       <dt>Status</dt><dd>{entry.state}</dd>
       <dt>Kind</dt><dd>{entry.kind}{record.ambient ? " · housekeeping" : ""}</dd>
-      {record.startedAt && <><dt>Started</dt><dd>{when(record.startedAt)}</dd></>}
-      {record.endedAt && <><dt>Ended</dt><dd>{when(record.endedAt)}</dd></>}
+      {record.startedAt && <><dt>Started</dt><dd>{when(record.startedAt, time)}</dd></>}
+      {record.endedAt && <><dt>Ended</dt><dd>{when(record.endedAt, time)}</dd></>}
       {record.taskId && <><dt>Task</dt><dd><code>{record.taskId}</code></dd></>}
     </dl>
     <section className="claude-subagent-part" aria-label="Runs">
