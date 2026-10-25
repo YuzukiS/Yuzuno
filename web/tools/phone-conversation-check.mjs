@@ -332,7 +332,8 @@ try {
     }
     for (const [who, seen] of [["Mori", mori], ["Hana", hana]])
       assert.ok(seen.notice && !seen.notice.clipped && seen.notice.whiteSpace !== "nowrap", `${who}: the composer's notice reads in full: ${JSON.stringify(seen.notice)}`);
-    assert.equal(mori.notice.text, "Send a message to resume this session");
+    // Mori is offline with Reconnect above (T-184 9f349c1): the notice points to it.
+    assert.equal(mori.notice.text, "Reconnect above, or send a message to resume this session");
     assert.equal(hana.notice.text, "Reconnect above to check the last turn; your draft is kept");
     assert.ok(mori.replyRows?.separate, `the reply's actions keep their line above its time: ${JSON.stringify(mori.replyRows)}`);
     assert.ok(mori.error && mori.error.text === errorText && !mori.error.clipped, `the Turn's error reads in full: ${JSON.stringify(mori.error)}`);

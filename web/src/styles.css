@@ -3290,6 +3290,28 @@ p {
 .app.phone .composer-area > :is(.composer, .composer-footnote) {
   flex: none;
 }
+/* An upright phone gives the conversation the height the composer's desktop
+   sizes took (T-170: "the conversation itself takes too small a share of the
+   screen"). The project, folder, model and context line goes, as with the
+   keyboard up: the side panel has the folder and where the Agent runs, its
+   settings the model and context, Manage the project. The empty input is one
+   line high and grows as it is written in; Send keeps its 44 px. */
+.app.phone .composer-footnote {
+  display: none;
+}
+.app.phone .composer-area {
+  margin-bottom: 8px;
+}
+.app.phone .pasted-text-composer .cm-content {
+  min-height: 44px;
+  padding-top: 8px;
+}
+.app.phone .composer-bottom {
+  padding-bottom: 6px;
+}
+.app.phone .remote-controls {
+  padding-block: 5px;
+}
 :root[data-keyboard] .app.phone .pasted-text-composer .cm-scroller {
   max-height: max(64px, calc(var(--visual-height, 100dvh) * 0.3));
 }
