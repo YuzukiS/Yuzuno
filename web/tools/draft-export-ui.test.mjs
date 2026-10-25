@@ -145,7 +145,7 @@ test("a chosen draft is shown whole, pasted text included, and saved as a text f
   assert.match(text, /^Yuzuno draft for Cedar\nExported \S+ from the copy saved in this browser for this site\. Text typed since it was last saved is not included\.\nSaved under the Workspace and Agent it was written in\.\n/);
   assert.match(text, /^Images in the draft: 1 \(references only; the images themselves are not in this file\)$/m);
   assert.match(text, /Hello there \n\[Pasted text #1, 2 lines\]\nPASTED BODY line one\nline two\n\[End of pasted text #1\]\n$/);
-  assert.deepEqual(p.reads.filter((key) => key.startsWith("yuzuno.paste.v1:")), ["yuzuno.paste.v1:a1:b1"], "only the chosen draft's pasted text is read");
+  assert.deepEqual(p.reads.filter((key) => key.startsWith("yuzuno.paste.v1:")), [`yuzuno.paste.v1:${mine("a1")}:b1`], "only the chosen draft's pasted text is read");
   assert.deepEqual([p.saves.blobs.length, p.saves.links.length], [0, 0], "showing saves nothing");
   assert.match(p.section().textContent, /The whole saved draft for Cedar\. Nothing has been saved, copied or sent\./);
   [...p.section().querySelectorAll("button")].find((b) => b.textContent.trim() === "Download .txt").click();

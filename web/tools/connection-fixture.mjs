@@ -78,6 +78,9 @@ export function installConnectionFixture(options = {}) {
     };
     let body = {};
     if (path === "/api/workspace") body = {
+      // A real Core always says which Workspace this is, and the page keeps
+      // drafts and unsent messages per Workspace (T-195).
+      workspace: { id: "ws-connection" },
       agents: agents.map(a => ({ ...a })), defaultCwd: "/fixture",
       runtime: { connected: !state.catalogError, ...(state.catalogError ? { error: "Simulated Codex catalog failure" } : {}) },
     };

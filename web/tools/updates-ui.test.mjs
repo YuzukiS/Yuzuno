@@ -120,7 +120,7 @@ async function mount(overrides = {}, shell, seed) {
   w.localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
   // Saved under the Workspace and Agent it was written in (T-195).
   w.localStorage.setItem(
-    `yuzuno.composer.v1:${JSON.stringify(["ws-1", "a"])}`,
+    `yuzuno.composer.v1:${JSON.stringify(["fixture-workspace", "a"])}`,
     JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "中文 draft kept while updating" }] }),
   );
   w.matchMedia = (media) => ({
@@ -507,7 +507,7 @@ function draftReportContext(f, action, clickedAt, readsBefore, refused) {
       .map(({ request, count }) => (count > 1 ? `${request} ×${count}` : request)),
     // Each body write this test refused, in ms from the click (negative: before it).
     refusedBodyWrites: refused.map((at) => at - clickedAt),
-    savedDraftParts: read("yuzuno.composer.v1:a", (draft) => draft.parts.map((part) => part.kind)),
+    savedDraftParts: read(`yuzuno.composer.v1:${JSON.stringify(["fixture-workspace", "a"])}`, (draft) => draft.parts.map((part) => part.kind)),
     pastedChips: f.w.document.querySelectorAll(".pasted-text-chip").length,
     choice: read(intentKey, (intent) => ({
       from: intent.from,
