@@ -1,7 +1,41 @@
 import { useEffect, useRef } from "react";
 import { Check, CircleAlert, Info, RotateCcw } from "lucide-react";
 import { STORAGE_BLOCKED, type DeviceValueState, type SaveOutcome } from "./device-storage";
+import { strings, useStrings } from "./i18n";
 import "./save-status.css";
+
+// In the interface language (T-189). The browser's own words for a refusal
+// it didn't name, as a log's, are shown as it wrote them.
+const text = strings({
+  unsaved: "Your choice applies in this window until you close or reload it.",
+  scope: (scope: string) => scope,
+  reason: (failed: Extract<SaveOutcome, { saved: false }>) => failed.detail,
+  notSaved: (scope: string, reason: string, unsaved: string) => `Not saved on ${scope}: ${reason}. ${unsaved}`,
+  retry: "Try again",
+  restore: "Restore defaults",
+  restored: (scope: string) => `Defaults restored on ${scope}`,
+  saved: (scope: string) => `Saved on ${scope}`,
+  using: (scope: string) => `Using the choice saved on ${scope}`,
+  invalid: (scope: string) => `The choice saved on ${scope} couldn’t be read, so the defaults apply. Choosing again saves a new one.`,
+  none: (scope: string) => `Using the defaults; nothing is saved on ${scope} yet`,
+}, {
+  unsaved: "你的选择在此窗口中生效，直到关闭或重新加载它。",
+  scope: (scope: string) => (scope === "this device" ? "此设备" : scope),
+  reason: (failed) => {
+    if (failed.reason === "full") return "此浏览器为 Yuzuno 保留的存储空间已满";
+    if (failed.reason === "blocked") return "此浏览器不允许 Yuzuno 在这里保存设置";
+    const refused = /^the browser refused it \((.*)\)$/.exec(failed.detail);
+    return refused ? `浏览器拒绝了它（${refused[1]}）` : "浏览器没有保留它";
+  },
+  notSaved: (scope, reason, unsaved) => `未保存到${scope}：${reason}。${unsaved}`,
+  retry: "重试",
+  restore: "恢复默认",
+  restored: (scope) => `已在${scope}上恢复默认`,
+  saved: (scope) => `已保存到${scope}`,
+  using: (scope) => `正在使用${scope}上保存的选择`,
+  invalid: (scope) => `${scope}上保存的选择无法读取，因此使用默认值。重新选择会保存一个新的。`,
+  none: (scope) => `正在使用默认值；${scope}上还没有保存任何选择`,
+});
 
 /**
  * Whether a preference is saved where it says (T-187). "Saved" only after a
@@ -17,7 +51,7 @@ export function SaveStatus({
   attempt,
   stored,
   scope,
-  unsaved = "Your choice applies in this window until you close or reload it.",
+  unsaved,
   onRetry,
   onRestoreDefaults,
 }: {
@@ -39,10 +73,12 @@ export function SaveStatus({
   onRetry?: () => void;
   onRestoreDefaults?: () => void;
 }) {
+  const t = useStrings(text);
+  const where = t.scope(scope);
   const restore = onRestoreDefaults && (
     <button type="button" className="quiet-button" onClick={onRestoreDefaults}>
       <RotateCcw size={13} aria-hidden="true" />
-      Restore defaults
+      {t.restore}
     </button>
   );
   const failed = outcome && !outcome.saved ? outcome : !outcome && stored === "unreadable" ? STORAGE_BLOCKED : null;
@@ -58,14 +94,12 @@ export function SaveStatus({
       <div ref={refusal} className="save-status save-status-failed">
         <p role="alert">
           <CircleAlert size={14} aria-hidden="true" />
-          <span>
-            Not saved on {scope}: {failed.detail}. {unsaved}
-          </span>
+          <span>{t.notSaved(where, t.reason(failed), unsaved ?? t.unsaved)}</span>
         </p>
         <div className="save-status-actions">
           {onRetry && (
             <button type="button" className="secondary-button" onClick={onRetry}>
-              Try again
+              {t.retry}
             </button>
           )}
           {restore}
@@ -75,17 +109,17 @@ export function SaveStatus({
   const line = outcome ? (
     <>
       <Check size={13} aria-hidden="true" />
-      {action === "reset" ? `Defaults restored on ${scope}` : `Saved on ${scope}`}
+      {action === "reset" ? t.restored(where) : t.saved(where)}
     </>
   ) : stored === "saved" ? (
-    `Using the choice saved on ${scope}`
+    t.using(where)
   ) : stored === "invalid" ? (
     <>
       <Info size={13} aria-hidden="true" />
-      {`The choice saved on ${scope} couldn’t be read, so the defaults apply. Choosing again saves a new one.`}
+      {t.invalid(where)}
     </>
   ) : (
-    `Using the defaults; nothing is saved on ${scope} yet`
+    t.none(where)
   );
   return (
     <div className="save-status" data-state={outcome ? action : stored}>
