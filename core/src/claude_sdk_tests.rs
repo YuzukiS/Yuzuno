@@ -402,3 +402,294 @@ fn a_manifest_the_checks_refuse_is_said_by_a_fixed_reason_never_by_what_it_lists
     assert_eq!(status["copy"], json!({"state": "unknown"}));
     assert!(!status.to_string().contains("PrivatePathSentinel"), "{status}");
 }
+
+// Prepared copies no installed release needs (T-193): synthetic install
+// folders only. `<base>/releases/<id>/runtimes/claude` as a managed install
+// lays them out.
+
+/// A release whose runtime differs from the others' by its bridge.
+fn distinct_release(base: &Path, id: &str) -> PathBuf {
+    let root = release(base, id, &integrity(&package()));
+    write(&root.join("bridge.mjs"), format!("{BRIDGE}// {id}\n"));
+    root
+}
+
+struct Install {
+    base: tempfile::TempDir,
+    cache: PathBuf,
+    node: String,
+    /// This Core's release.
+    current: PathBuf,
+    /// Another installed release, as the update rollback keeps one.
+    previous: PathBuf,
+    /// The copy of a release the update helper has since removed.
+    orphan: String,
+}
+
+fn install() -> Install {
+    let base = tempfile::tempdir().unwrap();
+    let archive = base.path().join("package.tgz");
+    write(&archive, package());
+    let (node, _) = node(base.path(), &archive, "0");
+    let cache = base.path().join("cache");
+    let current = distinct_release(base.path(), "core-b");
+    let previous = distinct_release(base.path(), "core-a");
+    let gone = distinct_release(base.path(), "core-0");
+    for root in [&current, &previous, &gone] {
+        prepare(root, &cache, &node).unwrap();
+    }
+    let orphan = content_key(&gone).unwrap();
+    std::fs::remove_dir_all(base.path().join("releases/core-0")).unwrap();
+    Install { base, cache, node, current, previous, orphan }
+}
+
+fn script(root: &Path) -> Result<PathBuf> {
+    Ok(root.join("bridge.mjs"))
+}
+
+fn by_key(view: &Value) -> BTreeMap<String, Value> {
+    view["copies"].as_array().unwrap().iter()
+        .map(|copy| (copy["key"].as_str().unwrap_or("(none)").to_owned(), copy.clone())).collect()
+}
+
+fn says_no_path(value: &Value, base: &Path) {
+    assert!(!value.to_string().contains(&*base.to_string_lossy()), "no path is said: {value}");
+}
+
+#[test]
+fn each_copy_says_what_needs_it_and_only_one_no_release_needs_can_go() {
+    let at = install();
+    let (current, previous) = (content_key(&at.current).unwrap(), content_key(&at.previous).unwrap());
+    // Not copies this can tell are copies: kept, never offered.
+    write(&at.cache.join(format!("{TEMPORARY}{}", "f".repeat(32))).join("half"), "x");
+    let no_receipt = "1".repeat(32);
+    write(&at.cache.join(&no_receipt).join("sdk.mjs"), "x");
+    let mismatched = "2".repeat(32);
+    write(&at.cache.join(&mismatched).join(RECEIPT), std::fs::read(at.cache.join(&at.orphan).join(RECEIPT)).unwrap());
+    let link = "3".repeat(32);
+    std::os::unix::fs::symlink(at.cache.join(&at.orphan), at.cache.join(&link)).unwrap();
+    write(&at.cache.join("notes.txt"), "x");
+
+    let view = copies(script(&at.current), Ok(&at.cache));
+    assert_eq!(view["state"], "ready", "{view}");
+    assert_eq!(view["limited"], false);
+    let copies = by_key(&view);
+    assert_eq!(copies.len(), 7, "the temporary folder is not listed: {view}");
+    assert_eq!((&copies[&current]["usedBy"], &copies[&current]["removable"]), (&json!("thisCore"), &json!(false)));
+    assert_eq!((&copies[&previous]["usedBy"], &copies[&previous]["removable"]), (&json!("installedRelease"), &json!(false)));
+    let orphan = &copies[&at.orphan];
+    assert_eq!((&orphan["usedBy"], &orphan["removable"], &orphan["problem"]), (&Value::Null, &json!(true), &Value::Null));
+    assert_eq!(orphan["version"], "0.3.296");
+    assert!(orphan["bytes"].as_u64().unwrap() > 0, "{orphan}");
+    for (key, problem) in [(&no_receipt, "noReceipt"), (&mismatched, "receiptMismatch"), (&link, "notFolder")] {
+        assert_eq!((&copies[key]["problem"], &copies[key]["removable"]), (&json!(problem), &json!(false)), "{key}");
+    }
+    assert_eq!((&copies["(none)"]["problem"], &copies["(none)"]["removable"]), (&json!("unknownName"), &json!(false)));
+    says_no_path(&view, at.base.path());
+}
+
+#[test]
+fn nothing_is_offered_or_removed_when_what_the_releases_need_cannot_be_told() {
+    type Arrange = fn(&Install) -> PathBuf;
+    let cases: [(&str, Arrange, &str); 5] = [
+        ("a bridge outside an install", |at| {
+            let bridge = at.base.path().join("checkout/runtimes/claude/bridge.mjs");
+            write(&bridge, BRIDGE);
+            bridge
+        }, "notRelease"),
+        ("a release being staged", |at| {
+            std::fs::create_dir_all(at.base.path().join("releases/.stage-1b4e28ba-2fa1-11d2-883f-0016d3cca427")).unwrap();
+            at.current.join("bridge.mjs")
+        }, "installing"),
+        ("a download being staged", |at| {
+            std::fs::create_dir_all(at.base.path().join("incoming/.stage-1b4e28ba-2fa1-11d2-883f-0016d3cca427")).unwrap();
+            at.current.join("bridge.mjs")
+        }, "installing"),
+        ("a release runtime with a link in it", |at| {
+            std::os::unix::fs::symlink("/", at.previous.join("elsewhere")).unwrap();
+            at.current.join("bridge.mjs")
+        }, "releasesUnreadable"),
+        ("a stray file among the releases", |at| {
+            write(&at.base.path().join("releases/stray"), "x");
+            at.current.join("bridge.mjs")
+        }, "releasesUnreadable"),
+    ];
+    for (label, arrange, reason) in cases {
+        let at = install();
+        let bridge = arrange(&at);
+        let view = copies(Ok(bridge.clone()), Ok(&at.cache));
+        assert_eq!((&view["state"], &view["reason"], &view["copies"]), (&json!("refused"), &json!(reason), &json!([])), "{label}");
+        let done = remove_chosen(Ok(bridge), Ok(&at.cache), &[at.orphan.clone()]);
+        assert_eq!((&done["state"], &done["reason"]), (&json!("refused"), &json!(reason)), "{label}");
+        assert!(at.cache.join(&at.orphan).join(RECEIPT).is_file(), "{label}: nothing was removed");
+    }
+}
+
+#[test]
+fn only_chosen_unneeded_copies_go_and_what_is_needed_is_read_again_first() {
+    let at = install();
+    let base = at.base.path();
+    let (current, previous) = (content_key(&at.current).unwrap(), content_key(&at.previous).unwrap());
+    // Listed as removable, then needed again before the removal: a release
+    // with that runtime is installed once more.
+    let back = distinct_release(base, "core-1");
+    let again = content_key(&back).unwrap();
+    prepare(&back, &at.cache, &at.node).unwrap();
+    std::fs::rename(base.join("releases/core-1"), base.join("set-aside")).unwrap();
+    assert_eq!(by_key(&copies(script(&at.current), Ok(&at.cache)))[&again]["removable"], true);
+    std::fs::rename(base.join("set-aside"), base.join("releases/core-1")).unwrap();
+    // A release downloaded and waiting to be prepared (`incoming/`) needs its copy too.
+    let waiting = distinct_release(base, "core-2");
+    let downloaded = content_key(&waiting).unwrap();
+    prepare(&waiting, &at.cache, &at.node).unwrap();
+    std::fs::create_dir_all(base.join("incoming")).unwrap();
+    std::fs::rename(base.join("releases/core-2"), base.join("incoming/core-2")).unwrap();
+    assert_eq!(by_key(&copies(script(&at.current), Ok(&at.cache)))[&downloaded]["usedBy"], "installedRelease");
+    let no_receipt = "1".repeat(32);
+    write(&at.cache.join(&no_receipt).join("sdk.mjs"), "x");
+    let missing = "4".repeat(32);
+
+    let chosen = [at.orphan.clone(), again.clone(), current.clone(), previous.clone(), downloaded.clone(), missing.clone(), no_receipt.clone()];
+    let done = remove_chosen(script(&at.current), Ok(&at.cache), &chosen);
+    assert_eq!(done["state"], "done", "{done}");
+    let outcomes: BTreeMap<String, Value> = done["results"].as_array().unwrap().iter()
+        .map(|result| (result["key"].as_str().unwrap().to_owned(), result.clone())).collect();
+    assert_eq!(outcomes[&at.orphan]["outcome"], "removed");
+    assert!(outcomes[&at.orphan]["bytes"].as_u64().unwrap() > 0);
+    for key in [&again, &current, &previous, &downloaded] {
+        assert_eq!(outcomes[key]["outcome"], "protected", "{key}");
+        assert!(at.cache.join(key).join(RECEIPT).is_file(), "{key} is kept");
+    }
+    assert_eq!(outcomes[&missing]["outcome"], "notFound");
+    assert_eq!((&outcomes[&no_receipt]["outcome"], &outcomes[&no_receipt]["problem"]), (&json!("unknown"), &json!("noReceipt")));
+    assert!(at.cache.join(&no_receipt).is_dir());
+    assert!(!at.cache.join(&at.orphan).exists());
+    assert!(left_in(&at.cache).iter().all(|name| !name.starts_with(TEMPORARY)), "{:?}", left_in(&at.cache));
+    says_no_path(&done, base);
+
+    for keys in [vec![], vec![again.clone(), again.clone()], vec!["../escape".to_owned()], vec![at.orphan.to_uppercase()],
+                 (0..65).map(|n| format!("{n:032x}")).collect::<Vec<_>>()] {
+        let done = remove_chosen(script(&at.current), Ok(&at.cache), &keys);
+        assert_eq!((&done["state"], &done["reason"]), (&json!("refused"), &json!("badChoice")), "{keys:?}");
+    }
+}
+
+/// Whether a folder made read-only refuses this process (not when run as root).
+fn read_only_refuses(dir: &Path) -> bool {
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let probe = dir.join(".probe");
+    let refused = std::fs::write(&probe, "x").is_err();
+    let _ = std::fs::remove_file(&probe);
+    refused
+}
+
+#[test]
+fn a_copy_that_cannot_be_moved_aside_stays_whole_and_one_partly_removed_is_never_used() {
+    let at = install();
+    // The cache refuses the rename: nothing changes.
+    let refuses = read_only_refuses(&at.cache);
+    let done = remove_chosen(script(&at.current), Ok(&at.cache), &[at.orphan.clone()]);
+    std::fs::set_permissions(&at.cache, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if !refuses {
+        eprintln!("skipped: read-only folders don't refuse this user");
+        return;
+    }
+    assert_eq!(done["results"][0]["outcome"], "failed", "{done}");
+    assert!(done["results"][0]["error"].is_string());
+    has_the_sdk(&at.cache.join(&at.orphan));
+
+    // A folder inside it refuses removal: moved aside, partly removed.
+    let stuck = at.cache.join(&at.orphan).join("stuck");
+    write(&stuck.join("file"), "x");
+    assert!(read_only_refuses(&stuck));
+    let done = remove_chosen(script(&at.current), Ok(&at.cache), &[at.orphan.clone()]);
+    assert_eq!(done["results"][0]["outcome"], "partly", "{done}");
+    assert!(done["results"][0].get("bytes").is_none(), "no space is claimed for it");
+    let left = left_in(&at.cache);
+    let aside = left.iter().find(|name| name.starts_with(&format!("{TEMPORARY}removing-{}", at.orphan))).expect("moved aside").clone();
+    assert!(!left.contains(&at.orphan));
+    // It is not listed, and no preparation copies from it; the next one clears it.
+    assert!(!by_key(&copies(script(&at.current), Ok(&at.cache))).contains_key(&at.orphan));
+    for entry in std::fs::read_dir(at.cache.join(&aside).join("stuck")).unwrap().flatten() {
+        assert_eq!(entry.file_name(), "file");
+    }
+    std::fs::set_permissions(at.cache.join(&aside).join("stuck"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let next = distinct_release(at.base.path(), "core-c");
+    let target = prepare(&next, &at.cache, &at.node).unwrap();
+    assert!(!receipt(&target)["source"].as_str().unwrap().contains("removing"), "{}", receipt(&target));
+    assert!(!at.cache.join(&aside).exists(), "the next preparation clears it");
+}
+
+#[tokio::test]
+async fn a_removal_waits_while_a_runtime_is_being_prepared() {
+    let at = install();
+    let held = PREPARING.clone().lock_owned().await;
+    let removal = tokio::spawn(remove(script(&at.current), Ok(at.cache.clone()), vec![at.orphan.clone()]));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(!removal.is_finished());
+    assert!(at.cache.join(&at.orphan).is_dir());
+    drop(held);
+    let done = removal.await.unwrap();
+    assert_eq!(done["results"][0]["outcome"], "removed", "{done}");
+}
+
+/// Every file under `dir` with its bytes, links as their targets: what a
+/// refusal must leave exactly as it was.
+fn contents(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+    let mut found = BTreeMap::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(here) = pending.pop() {
+        for entry in std::fs::read_dir(&here).unwrap().flatten() {
+            let path = entry.path();
+            let name = path.strip_prefix(dir).unwrap().to_string_lossy().into_owned();
+            let kind = entry.file_type().unwrap();
+            if kind.is_symlink() {
+                found.insert(name, std::fs::read_link(&path).unwrap().to_string_lossy().into_owned().into_bytes());
+            } else if kind.is_dir() {
+                pending.push(path);
+            } else {
+                found.insert(name, std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn only_this_workspaces_own_cache_is_offered_and_one_set_elsewhere_or_linked_is_left_as_it_is() {
+    let data = Path::new("/data/workspace");
+    let own = data.join("claude-runtime");
+    // Which cache a request may work in.
+    assert_eq!(removal_cache(None, Some(&own), data), Ok(own.clone()));
+    assert_eq!(removal_cache(Some("".into()), Some(&own), data), Ok(own.clone()), "an empty override is no override");
+    assert_eq!(removal_cache(Some("/shared/claude-runtime".into()), Some(&own), data), Err("cacheElsewhere"));
+    assert_eq!(removal_cache(None, Some(Path::new("/data/other/claude-runtime")), data), Err("cacheElsewhere"), "another Workspace's");
+    assert_eq!(removal_cache(None, None, data), Err("cacheUnset"));
+
+    let at = install();
+    let before = contents(at.base.path());
+    // A cache set elsewhere: nothing is offered, nothing removed.
+    let view = copies(script(&at.current), Err("cacheElsewhere"));
+    assert_eq!((&view["state"], &view["reason"], &view["copies"]), (&json!("refused"), &json!("cacheElsewhere"), &json!([])));
+    let done = remove_chosen(script(&at.current), Err("cacheElsewhere"), &[at.orphan.clone()]);
+    assert_eq!((&done["state"], &done["reason"], &done["results"]), (&json!("refused"), &json!("cacheElsewhere"), &json!([])));
+    assert_eq!(contents(at.base.path()), before, "not a byte changed");
+
+    // The cache folder itself a link: the same.
+    let real = at.base.path().join("real-cache");
+    std::fs::rename(&at.cache, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &at.cache).unwrap();
+    let before = contents(at.base.path());
+    let view = copies(script(&at.current), Ok(&at.cache));
+    assert_eq!((&view["state"], &view["reason"], &view["copies"]), (&json!("refused"), &json!("cacheLinked"), &json!([])));
+    let done = remove_chosen(script(&at.current), Ok(&at.cache), &[at.orphan.clone()]);
+    assert_eq!((&done["state"], &done["reason"]), (&json!("refused"), &json!("cacheLinked")));
+    assert_eq!(contents(at.base.path()), before, "not a byte changed");
+    assert!(real.join(&at.orphan).join(RECEIPT).is_file());
+
+    // Back as a plain folder, the same copy can go.
+    std::fs::remove_file(&at.cache).unwrap();
+    std::fs::rename(&real, &at.cache).unwrap();
+    let done = remove_chosen(script(&at.current), Ok(&at.cache), &[at.orphan.clone()]);
+    assert_eq!(done["results"][0]["outcome"], "removed", "{done}");
+}

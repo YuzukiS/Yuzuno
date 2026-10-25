@@ -27,3 +27,7 @@
 .storage-task-open label { display: grid; gap: 4px; min-width: 0; max-width: 100%; }
 .storage-task-open select { max-width: 100%; }
 .storage-task-open .storage-note { flex-basis: 100%; }
+/* Prepared Claude runtimes: tick only what can go, then confirm (T-193). */
+.claude-runtime-copies .storage-name label { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
+.claude-runtime-copies .storage-confirm { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.claude-runtime-copies .storage-confirm .storage-note { margin-top: 0; }
