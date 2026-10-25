@@ -1,6 +1,6 @@
 /** Small display helpers for Home. Unknown values stay "unknown", never 0. */
 
-import { clockFormatter, type ClockFormat } from "../time-preferences.ts";
+import { timeFormatter, type TimeDisplay } from "../time-preferences.ts";
 
 export const UNKNOWN = "unknown";
 
@@ -37,12 +37,12 @@ export function relative(iso: string | null | undefined, now = Date.now()) {
   return text === "just now" ? text : future ? `in ${text}` : `${text} ago`;
 }
 
-const absoluteTime = clockFormatter({ month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-/** "Oct 24, 09:05 PM": written with this device's clock format. */
-export function absolute(iso: string | null | undefined, clock: ClockFormat) {
+const absoluteTime = timeFormatter({ month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+/** "Oct 24, 09:05 PM": written with this device's clock format and time zone. */
+export function absolute(iso: string | null | undefined, time: TimeDisplay) {
   if (!iso) return "";
   const at = new Date(iso);
-  return Number.isFinite(at.getTime()) ? absoluteTime(clock).format(at) : "";
+  return Number.isFinite(at.getTime()) ? absoluteTime(time).format(at) : "";
 }
 
 export function duration(seconds: number) {

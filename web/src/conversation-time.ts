@@ -1,6 +1,6 @@
 import { formatElapsed } from "./activity-time.ts";
 import { conversationBlocks } from "./conversation-blocks.ts";
-import { clockFormatter, type ClockFormat } from "./time-preferences.ts";
+import { timeFormatter, type TimeDisplay } from "./time-preferences.ts";
 import type { BackgroundShells, NativeItem, NativeTurn } from "./types";
 
 const positive = (value: unknown) =>
@@ -12,8 +12,8 @@ const duration = (value: unknown) =>
     ? value
     : undefined;
 
-const clockTime = clockFormatter({ hour: "numeric", minute: "2-digit" });
-const fullDate = clockFormatter({ dateStyle: "full", timeStyle: "short" });
+const clockTime = timeFormatter({ hour: "numeric", minute: "2-digit" });
+const fullDate = timeFormatter({ dateStyle: "full", timeStyle: "short" });
 
 export interface Moment {
   at: number;
@@ -23,10 +23,11 @@ export interface Moment {
   dateTime: string;
 }
 
-/** `at` written with this device's clock format (time-preferences.ts). */
-export function moment(at: number, clock: ClockFormat): Moment {
+/** `at` written with this device's clock format and time zone
+ * (time-preferences.ts). */
+export function moment(at: number, time: TimeDisplay): Moment {
   const date = new Date(at);
-  return { at, label: clockTime(clock).format(date), title: fullDate(clock).format(date), dateTime: date.toISOString() };
+  return { at, label: clockTime(time).format(date), title: fullDate(time).format(date), dateTime: date.toISOString() };
 }
 
 /**
@@ -55,16 +56,17 @@ export const timeMarkKey = (turnId: string, itemId: string) => `${turnId}\n${ite
  * Minute marks for the whole loaded conversation, in display order. A message
  * is marked when its minute differs from the previous timed message, so only
  * the earliest of a run in one minute shows its time. Messages without a time
- * neither show one nor break a run. Written with `clock`: another clock
- * format makes them again.
+ * neither show one nor break a run. Written with `time`: another clock
+ * format or time zone makes them again. Every zone's minutes start at the
+ * same instants, so this device's own minutes mark the same messages.
  */
 // Detail snapshots are replaced, never mutated, so one result per array and
-// clock format holds.
-const marksCache = new WeakMap<readonly NativeTurn[], { clock: ClockFormat; marks: Map<string, Moment> }>();
+// time display holds.
+const marksCache = new WeakMap<readonly NativeTurn[], { time: TimeDisplay; marks: Map<string, Moment> }>();
 
-export function conversationTimeMarks(turns: readonly NativeTurn[], clock: ClockFormat): ReadonlyMap<string, Moment> {
+export function conversationTimeMarks(turns: readonly NativeTurn[], time: TimeDisplay): ReadonlyMap<string, Moment> {
   const cached = marksCache.get(turns);
-  if (cached && cached.clock === clock) return cached.marks;
+  if (cached && cached.time === time) return cached.marks;
   const marks = new Map<string, Moment>();
   let previous: string | undefined;
   for (const turn of turns) {
@@ -73,11 +75,11 @@ export function conversationTimeMarks(turns: readonly NativeTurn[], clock: Clock
       const at = messageTime(turn, block.item);
       if (at === undefined) continue;
       const key = minuteKey(at);
-      if (key !== previous) marks.set(timeMarkKey(turn.id, block.item.id), moment(at, clock));
+      if (key !== previous) marks.set(timeMarkKey(turn.id, block.item.id), moment(at, time));
       previous = key;
     }
   }
-  marksCache.set(turns, { clock, marks });
+  marksCache.set(turns, { time, marks });
   return marks;
 }
 
@@ -111,9 +113,9 @@ const endings: Record<string, { elapsed: string; at: string; title: string }> = 
 /**
  * Footer for a finished turn. Background shells are passed only for the
  * latest agent turn; older turns never show the thread's current processes.
- * Its times are written with `clock`.
+ * Its times are written with `time`.
  */
-export function turnFooter(turn: NativeTurn, shells: BackgroundShells | null | undefined, clock: ClockFormat): FooterPart[] {
+export function turnFooter(turn: NativeTurn, shells: BackgroundShells | null | undefined, time: TimeDisplay): FooterPart[] {
   const ending = endings[turn.status];
   if (!ending) return [];
   const parts: FooterPart[] = [];
@@ -121,7 +123,7 @@ export function turnFooter(turn: NativeTurn, shells: BackgroundShells | null | u
   if (elapsed !== undefined) parts.push({ kind: "text", text: `${ending.elapsed} ${formatElapsed(elapsed)}` });
   const completedAt = turnCompletedAt(turn);
   if (completedAt !== undefined) {
-    const at = moment(completedAt, clock);
+    const at = moment(completedAt, time);
     const prefix = turn.status === "completed" || elapsed === undefined ? ending.at : "";
     parts.push({ kind: "time", prefix, moment: at, title: `${ending.title} ${at.title}` });
   }
@@ -131,7 +133,7 @@ export function turnFooter(turn: NativeTurn, shells: BackgroundShells | null | u
     parts.push({
       kind: "text",
       text: "shell status unknown",
-      title: `${shells.lastCount} background ${shells.lastCount === 1 ? "shell was" : "shells were"} running at ${moment(shells.checkedAt, clock).label}. The runtime connection has changed since, so the current count is unknown.`,
+      title: `${shells.lastCount} background ${shells.lastCount === 1 ? "shell was" : "shells were"} running at ${moment(shells.checkedAt, time).label}. The runtime connection has changed since, so the current count is unknown.`,
     });
   return parts;
 }

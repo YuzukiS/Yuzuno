@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useClockFormat } from "../../time-preferences";
+import { useTimeDisplay } from "../../time-preferences";
 import {
   ArrowUpRight,
   FileChartLine,
@@ -307,7 +307,7 @@ function Path({ path }: { path: string }) {
 type Shown = { url: string; version: number; takenAt: string; title: string; ownerId: string };
 
 function Attachment({ name, caption }: { name: string; caption?: string }) {
-  const clock = useClockFormat();
+  const time = useTimeDisplay();
   const { projectId, section } = useBrief();
   const markUp = usePointFix();
   const [shown, setShown] = useState<Shown | null>(null);
@@ -375,7 +375,7 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
       <small className="brief-attachment-meta">
         {attachment.kind !== "link" && <>{bytes(attachment.size)} · </>}
         {attachment.snapshot ? "Snapshot" : "Referenced"}{" "}
-        <time dateTime={attachment.takenAt}>{formatTime(attachment.takenAt, clock)}</time>
+        <time dateTime={attachment.takenAt}>{formatTime(attachment.takenAt, time)}</time>
       </small>
       {attachment.kind === "link" ? (
         link?.kind === "web" ? (
@@ -403,7 +403,7 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
           open={!!shown}
           src={shown?.url ?? ""}
           name={attachment.name}
-          description={`${label ? `${label} · ` : ""}Snapshot ${formatTime(shown?.takenAt ?? attachment.takenAt, clock)}`}
+          description={`${label ? `${label} · ` : ""}Snapshot ${formatTime(shown?.takenAt ?? attachment.takenAt, time)}`}
           unavailable="This image snapshot can't be read from this Core. It may have been removed with an older version of the card."
           onClose={() => setShown(null)}
           onAnnotate={markUp && shown ? () => {

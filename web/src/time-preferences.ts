@@ -10,12 +10,13 @@ import {
 } from "./device-storage.ts";
 
 /**
- * How this device shows times (T-189): kept in this browser or app only, for
- * this address (device-storage.ts, as Appearance and the send key are). Only
- * how a time is written changes: the date, the time zone, relative times
- * ("5 min ago") and every time Yuzuno stores stay as they are. Unset, times
- * look as they always have. A choice this device refused to save still
- * applies in this window, and its editor says it was not saved.
+ * How this device shows times (T-189): its clock format and time zone, kept
+ * in this browser or app only, for this address (device-storage.ts, as
+ * Appearance and the send key are). Only how a time is written changes:
+ * relative times ("5 min ago"), business times (Defer's "Tomorrow 9:00" is
+ * this device's own 9:00) and every time Yuzuno stores stay as they are.
+ * Unset, times look as they always have. A choice this device refused to
+ * save still applies in this window, and its editor says it was not saved.
  */
 
 /** - `system`: this browser's locale decides, as before.
@@ -25,25 +26,59 @@ import {
 export const clockFormats = ["system", "h12", "h24"] as const;
 export type ClockFormat = (typeof clockFormats)[number];
 
-export type TimePreferences = { clock: ClockFormat };
-export const defaultTimePreferences: TimePreferences = { clock: "system" };
+/** `timeZone`: an IANA time zone that times are shown in, or null for this
+ * device's own. A time shown in another zone may fall on another day there:
+ * its date is that zone's too. */
+export type TimePreferences = { clock: ClockFormat; timeZone: string | null };
+export const defaultTimePreferences: TimePreferences = { clock: "system", timeZone: null };
+/** What writes a time takes: the preferences in effect, as one value, so a
+ * change of either is a change of it. */
+export type TimeDisplay = TimePreferences;
 const STORAGE_KEY = "yuzuno.time";
 
-/** What `clock` adds to a time's format; nothing for `system`, so the
- * default writes exactly what it wrote before. */
-function clockOptions(clock: ClockFormat | undefined): Intl.DateTimeFormatOptions {
-  return clock === "h12" ? { hour12: true } : clock === "h24" ? { hourCycle: "h23" } : {};
+/** This device's own time zone, as the browser names it. */
+export const systemTimeZone = () => new Intl.DateTimeFormat().resolvedOptions().timeZone;
+/** "America/New_York" as people read it: "America/New York". */
+export const timeZoneName = (zone: string) => zone.replace(/_/g, " ");
+
+/** Whether this browser can show times in `zone`. */
+export function knownTimeZone(zone: unknown): zone is string {
+  if (typeof zone !== "string" || !zone) return false;
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-/** A formatter with `options` for each clock, each made once. Times shown
- * with a clock format pass the one in effect (useClockFormat), so a change
- * writes every shown time again. */
-export function clockFormatter(options: Intl.DateTimeFormatOptions) {
-  const made = new Map<ClockFormat, Intl.DateTimeFormat>();
-  return (clock: ClockFormat): Intl.DateTimeFormat => {
-    const key = clockFormats.includes(clock) ? clock : "system";
+/** The time zones this browser can show times in; empty when it can't list
+ * them (then only this device's own is offered). */
+export function timeZones(): string[] {
+  const list = (Intl as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf?.("timeZone") ?? [];
+  return list.length && !list.includes("UTC") ? [...list, "UTC"] : list;
+}
+
+/** What `time` adds to a time's format; nothing for the defaults, so they
+ * write exactly what they wrote before. */
+function displayOptions(clock: ClockFormat, timeZone: string | null): Intl.DateTimeFormatOptions {
+  return {
+    ...(clock === "h12" ? { hour12: true } : clock === "h24" ? { hourCycle: "h23" } : {}),
+    ...(timeZone ? { timeZone } : {}),
+  };
+}
+
+/** A formatter with `options` for each clock format and time zone, each made
+ * once. Times shown with these preferences pass the ones in effect
+ * (useTimeDisplay), so a change writes every shown time again. */
+export function timeFormatter(options: Intl.DateTimeFormatOptions) {
+  const made = new Map<string, Intl.DateTimeFormat>();
+  return (time: TimeDisplay | undefined): Intl.DateTimeFormat => {
+    const clock = time && clockFormats.includes(time.clock) ? time.clock : "system";
+    const timeZone = time?.timeZone ?? null;
+    const key = `${clock} ${timeZone ?? ""}`;
     let format = made.get(key);
-    if (!format) made.set(key, (format = new Intl.DateTimeFormat(undefined, { ...options, ...clockOptions(key) })));
+    if (!format) made.set(key, (format = new Intl.DateTimeFormat(undefined, { ...options, ...displayOptions(clock, timeZone) })));
     return format;
   };
 }
@@ -52,6 +87,7 @@ export function readTimePreferences(): TimePreferences {
   const saved = readDeviceValue(STORAGE_KEY) as Partial<TimePreferences> | null;
   return {
     clock: clockFormats.includes(saved?.clock as ClockFormat) ? (saved!.clock as ClockFormat) : defaultTimePreferences.clock,
+    timeZone: knownTimeZone(saved?.timeZone) ? saved!.timeZone! : defaultTimePreferences.timeZone,
   };
 }
 
@@ -84,8 +120,8 @@ function changed() {
 export function useTimePreferences(): TimePreferences {
   return useSyncExternalStore(subscribe, () => (current ??= readTimePreferences()));
 }
-/** The clock format in effect on this device. */
-export const useClockFormat = (): ClockFormat => useTimePreferences().clock;
+/** How times are written on this device now. */
+export const useTimeDisplay = (): TimeDisplay => useTimePreferences();
 
 /** What this visit's last save or reset of these preferences did, or null. */
 export function useTimePreferencesSave(): TimePreferencesWrite | null {
@@ -93,14 +129,17 @@ export function useTimePreferencesSave(): TimePreferencesWrite | null {
 }
 
 /** What this device holds for these preferences, read now: saved ones, none
- * (the defaults), ones it can't read (not an object, or a clock format this
- * version doesn't have; the defaults apply), or storage it can't read. */
+ * (the defaults), ones it can't read (not an object, or a clock format or
+ * time zone this version or browser doesn't have; the defaults apply), or
+ * storage it can't read. */
 export function timePreferencesStored(): DeviceValueState {
   const state = deviceValueState(STORAGE_KEY);
   if (state !== "saved") return state;
   const value = readDeviceValue(STORAGE_KEY) as Partial<TimePreferences> | null;
   if (!value || typeof value !== "object" || Array.isArray(value)) return "invalid";
-  return value.clock === undefined || clockFormats.includes(value.clock) ? "saved" : "invalid";
+  const clock = value.clock === undefined || clockFormats.includes(value.clock);
+  const zone = value.timeZone === undefined || value.timeZone === null || knownTimeZone(value.timeZone);
+  return clock && zone ? "saved" : "invalid";
 }
 
 /** Applies the choice now and saves it on this device. A refused write is
