@@ -577,6 +577,18 @@ test("Settings shows the diagnostics first: Preview copies, saves and sends noth
     assert.equal(await blobText(p, saves.blobs[0]), text, "the file holds the shown text");
     assert.match(section.textContent, /Your browser was asked to save yuzuno-diagnostics-[\dTZ-]+\.txt\. If no file appears, select the text below and copy it\./);
     assert.equal(p.copied.length, 1, "downloading does not copy");
+    // While Preview again gathers (Core's health read held open), the shown text is about
+    // to change: Copy and Download wait.
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const answer = p.w.fetch;
+    p.w.fetch = async (url, init) => { if (String(url).endsWith("/api/health")) await held; return answer(url, init); };
+    p.button("Preview again", section).click();
+    await waitFor(() => p.button("Copy", section).disabled, "Copy waits while the text is gathered again");
+    assert.equal(p.button("Download .txt", section).disabled, true);
+    release();
+    await waitFor(() => !p.button("Copy", section).disabled, "the new text is shown");
+    assert.deepEqual([p.copied.length, saves.links.length], [1, 1], "nothing left while it gathered");
   } finally {
     p.close();
   }

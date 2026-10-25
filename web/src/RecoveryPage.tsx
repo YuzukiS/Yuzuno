@@ -142,8 +142,9 @@ function useDiagnosticsPreview() {
     setText(value);
     setState("shown");
   }
+  // While Preview again gathers, the text shown is about to change: nothing leaves.
   async function copy() {
-    if (text === null) return;
+    if (text === null || state === "reading") return;
     try {
       if (!navigator.clipboard?.writeText) throw new Error("no clipboard");
       await navigator.clipboard.writeText(text);
@@ -153,7 +154,7 @@ function useDiagnosticsPreview() {
     }
   }
   function download() {
-    if (text === null) return;
+    if (text === null || state === "reading") return;
     const name = `yuzuno-diagnostics-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
     try {
       const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
@@ -220,10 +221,10 @@ export function DiagnosticsCopy() {
       <DiagnosticsText text={text} state={state} />
       {text !== null && (
         <div className="diagnostics-actions">
-          <button type="button" className="secondary-button" onClick={() => void copy()}>
+          <button type="button" className="secondary-button" onClick={() => void copy()} disabled={state === "reading"}>
             <Copy size={14} aria-hidden="true" /> Copy
           </button>
-          <button type="button" className="secondary-button" onClick={download}>
+          <button type="button" className="secondary-button" onClick={download} disabled={state === "reading"}>
             <Download size={14} aria-hidden="true" /> Download .txt
           </button>
         </div>
