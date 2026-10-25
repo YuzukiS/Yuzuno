@@ -371,16 +371,18 @@ test("an uncertain send started before the name arrives keeps one client message
 
 test("sending one Workspace's Agent leaves the same Agent id in another free to send", async (t) => {
   const f = await fixture(t, { workspace: "ws-here", outbox: {} });
+  let release;
   globalThis.fetch = async (url, init) => {
     f.calls.push({ url, body: JSON.parse(init.body) });
-    return new Promise(() => {});
+    return new Promise((resolve) => {
+      release = () => resolve({ ok: true, json: async () => ({ input: JSON.parse(init.body), status: "accepted", turnId: "t0", error: null }) });
+    });
   };
   let sending;
   await act(async () => {
     sending = f.hook().submit("still sending here");
   });
   assert.equal(f.hook().sending, true);
-  void sending;
   await f.move("ws-there");
   assert.equal(
     f.hook().sending,
@@ -400,6 +402,13 @@ test("sending one Workspace's Agent leaves the same Agent id in another free to 
     ["still sending here", "sent from there"],
     "it was not refused as already sending",
   );
+  // Let the held send finish, so this file never ends with a request open:
+  // a failure in a later case would otherwise keep the process alive rather
+  // than reporting.
+  await act(async () => {
+    release();
+    await sending;
+  });
 });
 
 test("a record saved before the outbox was kept per Workspace is left alone, not retried here", async (t) => {
