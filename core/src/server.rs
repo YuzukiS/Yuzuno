@@ -121,6 +121,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::rewind::router())
         .merge(crate::claude_quota::router())
         .merge(crate::agent_defaults::router())
+        .merge(crate::appearance_preset::router())
         .merge(crate::task_proposals::router())
         .merge(crate::task_workspaces::router())
         .merge(crate::codex_usage::router())

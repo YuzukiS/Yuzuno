@@ -19,6 +19,8 @@ import { SettingsCenter, type SettingsNavigation, type SettingsOpenAt } from "./
 import { RuntimeSection } from "./RuntimeSection";
 import { AboutSection } from "./AboutSection";
 import { AppearanceSection } from "./AppearanceSettings";
+import { SharedAppearanceSection } from "./SharedAppearance";
+import { EnglishPart } from "./EnglishPart";
 import { InputPreferencesSection } from "./InputPreferences";
 import { LanguagePreferencesSection } from "./LanguagePreferences";
 import { langTag, strings, useLanguage } from "./i18n";
@@ -1015,7 +1017,14 @@ export function WorkspaceUpdates({
               onOpenMachines={navigation && !navigation.disabled ? () => navigation.onNavigate({ kind: "machines" }) : undefined}
             />
           )}
-          {tab === "appearance" && <AppearanceSection />}
+          {tab === "appearance" && (
+            <>
+              <AppearanceSection />
+              <EnglishPart>
+                <SharedAppearanceSection active={open && visible} />
+              </EnglishPart>
+            </>
+          )}
           {tab === "input" && <InputPreferencesSection />}
           {tab === "time" && <TimePreferencesSection />}
           {tab === "language" && <LanguagePreferencesSection />}
