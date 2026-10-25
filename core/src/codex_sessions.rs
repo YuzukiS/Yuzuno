@@ -253,6 +253,21 @@ fn anchored_turn_cursor(cursor: &str) -> bool {
     })).unwrap_or(false)
 }
 
+/// Unfinished Turns the native history, read to its end, doesn't have
+/// (T-198): Codex never saved them. Unlike a timeout, a page beyond the
+/// check's range or a failed read, this is the native history's own answer;
+/// the caller records it so the user can end them (`MissingTurns`).
+#[derive(Debug)]
+pub(crate) struct MissingNativeTurns {
+    pub turn_ids: Vec<String>,
+}
+impl std::fmt::Display for MissingNativeTurns {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("原生历史未包含先前未完成的 Turn；状态仍需确认")
+    }
+}
+impl std::error::Error for MissingNativeTurns {}
+
 /// Refresh the recent window and any cached unfinished Turn that fell outside
 /// it while another client advanced the session. Metadata pages locate those
 /// specific Turns; only their full pages are loaded. Never infer tool success
@@ -268,7 +283,11 @@ pub(crate) async fn recovery_page(rpc: &Rpc, id: &str, cached: &AgentDetail) -> 
         let mut cursor = page.next_cursor.clone();
         for _ in 0..1700 {
             if missing.is_empty() { return Ok(page); }
-            let current = cursor.as_deref().context("原生历史未包含先前未完成的 Turn；状态仍需确认")?;
+            let Some(current) = cursor.as_deref() else {
+                let mut turn_ids: Vec<String> = missing.into_iter().collect();
+                turn_ids.sort();
+                return Err(MissingNativeTurns { turn_ids }.into());
+            };
             let metadata = rpc.request("thread/turns/list", json!({
                 "threadId":id,"cursor":current,"limit":HISTORY_PAGE_SIZE,"sortDirection":"desc","itemsView":"notLoaded"
             })).await?;
