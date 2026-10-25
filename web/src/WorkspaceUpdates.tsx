@@ -20,7 +20,6 @@ import { RuntimeSection } from "./RuntimeSection";
 import { AboutSection } from "./AboutSection";
 import { AppearanceSection } from "./AppearanceSettings";
 import { SharedAppearanceSection } from "./SharedAppearance";
-import { EnglishPart } from "./EnglishPart";
 import { InputPreferencesSection } from "./InputPreferences";
 import { LanguagePreferencesSection } from "./LanguagePreferences";
 import { langTag, strings, useLanguage } from "./i18n";
@@ -1010,7 +1009,13 @@ export function WorkspaceUpdates({
           {tab === "diagnostics" && <DiagnosticsCopy />}
           {tab === "history" && <HistoryComposition />}
           {tab === "drafts" && <DraftExport active={open && visible} agents={navigation?.agents ?? null} />}
-          {tab === "storage" && <StorageOverview active={open && visible} updates={status ? { managed: status.managed, storage: status.storage } : null} />}
+          {tab === "storage" && (
+            <StorageOverview
+              active={open && visible}
+              updates={status ? { managed: status.managed, storage: status.storage } : null}
+              onOpenTaskWorkspaces={navigation && !navigation.disabled ? (taskId) => navigation.onNavigate({ kind: "taskWorkspaces", taskId }) : undefined}
+            />
+          )}
           {tab === "runtime" && (
             <RuntimeSection
               active={open && visible}
@@ -1020,9 +1025,7 @@ export function WorkspaceUpdates({
           {tab === "appearance" && (
             <>
               <AppearanceSection />
-              <EnglishPart>
-                <SharedAppearanceSection active={open && visible} />
-              </EnglishPart>
+              <SharedAppearanceSection active={open && visible} />
             </>
           )}
           {tab === "input" && <InputPreferencesSection />}

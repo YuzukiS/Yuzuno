@@ -1,4 +1,5 @@
 import { post } from "./api";
+import { strings, type Language } from "./i18n";
 
 /** Whether a Harness CLI answered `--version`, and for Claude Code what its
  * sign-in check said (`signIn`). */
@@ -45,18 +46,34 @@ export function runMachineCheck(machineId: string) {
   return post<MachineCheck>(`/machines/${encodeURIComponent(machineId)}/check`);
 }
 
-export function checkAge(check: MachineCheck, now = Date.now()) {
+// How long ago, in the interface language where a page passes it (T-189).
+const ages = strings({
+  unknown: "at an unknown time",
+  justNow: "just now",
+  minutes: (n: number) => `${n} min ago`,
+  hours: (n: number) => `${n} h ago`,
+  days: (n: number) => `${n} d ago`,
+}, {
+  unknown: "时间未知",
+  justNow: "刚刚",
+  minutes: (n) => `${n} 分钟前`,
+  hours: (n) => `${n} 小时前`,
+  days: (n) => `${n} 天前`,
+});
+
+export function checkAge(check: MachineCheck, now = Date.now(), language: Language = "en") {
+  const t = ages(language);
   const at = Date.parse(check.checkedAt);
-  if (Number.isNaN(at)) return { label: "at an unknown time", stale: true };
+  if (Number.isNaN(at)) return { label: t.unknown, stale: true };
   const seconds = Math.max(0, Math.round((now - at) / 1000));
   const label =
     seconds < 45
-      ? "just now"
+      ? t.justNow
       : seconds < 3600
-        ? `${Math.max(1, Math.round(seconds / 60))} min ago`
+        ? t.minutes(Math.max(1, Math.round(seconds / 60)))
         : seconds < 86400
-          ? `${Math.round(seconds / 3600)} h ago`
-          : `${Math.round(seconds / 86400)} d ago`;
+          ? t.hours(Math.round(seconds / 3600))
+          : t.days(Math.round(seconds / 86400));
   return { label, stale: now - at > STALE_AFTER_MS };
 }
 

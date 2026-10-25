@@ -284,6 +284,7 @@ pub fn changes() -> Router<Arc<Workspace>> {
         .route("/api/workspace/restores", post(start_restore))
         .route("/api/workspace/backup/operations/{id}/stop", post(stop))
         .route("/api/workspace/backup/schedule", post(set_schedule))
+        .route("/api/workspace/backup/schedule/retention", post(set_retention))
 }
 
 /// Whether a backup can start now, and why not; the size it will roughly
@@ -382,6 +383,20 @@ pub(crate) fn begin_backup(ws: &Workspace, request_id: &str, to: &Path) -> Resul
     })
 }
 
+/// The automatic removal after the daily backup's run for its slot
+/// (`schedule`), as a removal operation: one at a time with every other.
+pub(crate) fn begin_prune(ws: &Workspace, request_id: &str, folder: &Path, rule: super::retention::Rule) -> Result<Operation, Refusal> {
+    let workspace = ws.store.workspace_id().map_err(Refusal::Invalid)?;
+    let mut request = json!({"folder": folder, "keep": rule.keep, "automatic": true});
+    if let Some(bytes) = rule.budget_bytes {
+        request["budgetBytes"] = json!(bytes);
+    }
+    let (backups, target) = (ws.backups.clone(), folder.to_path_buf());
+    ws.backups.start("remove", request_id, request, |_| None, move |ctl| {
+        super::retention::prune(&target, rule, &workspace, || backups.all(), ctl, super::retention::MAX_ENTRIES, super::retention::PASS_LIMIT)
+    })
+}
+
 impl Workspace {
     /// Looks at the clock for the daily backup every half minute, and at once
     /// when the schedule changes; with the schedule off it does nothing.
@@ -395,7 +410,9 @@ impl Workspace {
                 let Some(ws) = weak.upgrade() else { break };
                 let looked = tokio::task::spawn_blocking({
                     let ws = ws.clone();
-                    move || ws.backup_schedule.tick(&ws.backups, chrono::Utc::now(), |request, to| begin_backup(&ws, request, to))
+                    move || ws.backup_schedule.tick(&ws.backups, chrono::Utc::now(),
+                        |request, to| begin_backup(&ws, request, to),
+                        |request, folder, rule| begin_prune(&ws, request, folder, rule))
                 }).await;
                 match looked {
                     Ok(Err(error)) => eprintln!("Daily backup: {error:#}"),
@@ -434,6 +451,41 @@ async fn set_schedule(State(ws): State<Arc<Workspace>>, Json(body): Json<Schedul
     match set {
         Ok(Ok(_)) => Json(json!({"schedule": ws.backup_schedule.view(chrono::Utc::now())})).into_response(),
         Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(json!({"error":format!("{error:#}")}))).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":error.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RetentionRequest {
+    enabled: bool,
+    #[serde(default)]
+    keep: Option<usize>,
+    #[serde(default)]
+    budget_bytes: Option<u64>,
+    /// The folder the page previewed: it must be the schedule's now.
+    #[serde(default)]
+    folder: Option<String>,
+}
+
+/// Turns automatic removal after each daily backup on or off (Core's own
+/// port only). On is for the folder the page previewed; it removes nothing now.
+async fn set_retention(State(ws): State<Arc<Workspace>>, Json(body): Json<RetentionRequest>) -> Response {
+    let refused = |error: anyhow::Error| (StatusCode::BAD_REQUEST, Json(json!({"error":format!("{error:#}")}))).into_response();
+    let folder = match body.folder.as_deref().filter(|f| !f.is_empty()).map(|f| absolute("folder", f)).transpose() {
+        Ok(folder) => folder,
+        Err(error) => return refused(error),
+    };
+    if body.enabled && body.keep.is_none() {
+        return refused(anyhow::anyhow!("Say how many backups to keep"));
+    }
+    let planner = ws.backup_schedule.clone();
+    let set = tokio::task::spawn_blocking(move || {
+        planner.set_retention(body.enabled, body.keep.unwrap_or(0), body.budget_bytes, folder.as_deref(), chrono::Utc::now())
+    }).await;
+    match set {
+        Ok(Ok(_)) => Json(json!({"schedule": ws.backup_schedule.view(chrono::Utc::now())})).into_response(),
+        Ok(Err(error)) => refused(error),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":error.to_string()}))).into_response(),
     }
 }

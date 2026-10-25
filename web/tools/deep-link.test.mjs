@@ -1,8 +1,9 @@
 // Message links and saved reading positions (T-166): the link names a message
-// by stable identities only, and positions stay bounded in this client.
+// by stable identities only, and positions stay bounded in this client. An
+// Agent link (T-184) names only its Workspace and Agent.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { messageLinkHref, parseMessageLink } from "../src/deep-link.ts";
+import { agentLinkHref, messageLinkHref, parseAgentLink, parseAppLink, parseMessageLink } from "../src/deep-link.ts";
 import { localReadingPositions } from "../src/reading-position.ts";
 
 const link = { workspaceId: "ws-1", agentId: "agent-a", turnId: "019a-turn", itemId: "msg_7", threadId: "thread-9" };
@@ -34,6 +35,30 @@ test("anything else is not a message link", () => {
     `#/message?w=ws-1&a=a&t=${"x".repeat(257)}`,
     `#/message?w=ws-1&a=a&t=t&i=${"y".repeat(3000)}`,
   ]) assert.equal(parseMessageLink(text), null, text);
+});
+
+test("an Agent link names its Workspace and Agent only, and reads back from any origin", () => {
+  const href = agentLinkHref("http://127.0.0.1:4317/", { workspaceId: "ws-1", agentId: "agent-a" });
+  assert.equal(href, "http://127.0.0.1:4317/#/agent?w=ws-1&a=agent-a");
+  assert.deepEqual(parseAgentLink(href), { workspaceId: "ws-1", agentId: "agent-a" });
+  assert.deepEqual(parseAgentLink(href.replace("http://127.0.0.1:4317", "https://core.example:8443")), { workspaceId: "ws-1", agentId: "agent-a" });
+  assert.deepEqual(parseAgentLink("  #/agent?w=ws-1&a=agent-a  "), { workspaceId: "ws-1", agentId: "agent-a" });
+  assert.equal(parseMessageLink(href), null, "it is not a message link");
+  for (const text of [
+    "#/agent?w=ws-1",
+    "#/agent?a=agent-a",
+    "#/agents?w=ws-1&a=agent-a",
+    "#/agent?w=ws-1&a=agent-a&t=t1",
+    "#/agent?w=ws-1&a=agent-a&a=agent-b",
+    "#/agent?w=ws-1&a=two%20words",
+    "http://127.0.0.1:4317/?w=ws-1&a=agent-a",
+  ]) assert.equal(parseAgentLink(text), null, text);
+});
+
+test("an address or paste is read as a message link or an Agent link, never both", () => {
+  assert.deepEqual(parseAppLink(messageLinkHref("http://h/", link)), { kind: "message", ...link });
+  assert.deepEqual(parseAppLink("http://h/#/agent?w=ws-1&a=agent-a"), { kind: "agent", workspaceId: "ws-1", agentId: "agent-a" });
+  for (const text of ["", "agent-a", "https://example.com/#/agent", "#/message?w=ws-1&a=a"]) assert.equal(parseAppLink(text), null, text);
 });
 
 function memoryStorage() {

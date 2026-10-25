@@ -6,12 +6,14 @@ import type { Agent } from "./types";
 import "./recovery.css";
 
 /**
- * Disconnecting an Agent (T-184): its native session on this computer
- * stops, and stays stopped until the user reconnects it. Unlike Close the
- * Agent stays open, with its conversation, settings, tasks and drafts, and
- * its Jobs go on. Core disconnects it only if it can confirm the Agent is
- * idle; otherwise it says why and nothing changes. Nothing happens until
- * the user confirms here.
+ * Disconnecting an Agent (T-184): its native session on this computer, or on
+ * its SSH machine once that machine confirms it, stops, and nothing starts
+ * it until the user reconnects it. An SSH machine that can't confirm the
+ * stop leaves it held as disconnected, and Core answers with an error.
+ * Unlike Close the Agent stays open, with its conversation, settings, tasks
+ * and drafts, and its Jobs go on. Core disconnects it only if it can confirm
+ * the Agent is idle; otherwise it says why and nothing changes. Nothing
+ * happens until the user confirms here.
  */
 export function DisconnectAgentDialog({
   agent,
@@ -36,6 +38,7 @@ export function DisconnectAgentDialog({
   }, [agentId, open]);
   if (!agent) return null;
   const harness = agent.harness === "claude" ? "Claude Code" : "Codex";
+  const machine = agent.remote?.machine.name;
   async function confirm() {
     if (busy || !agent) return;
     const target = agent.id;
@@ -60,7 +63,9 @@ export function DisconnectAgentDialog({
       description="Nothing changes until you confirm."
     >
       <div className="end-missing-dialog disconnect-dialog">
-        <p>This stops the agent’s {harness} session on this computer. The agent stays open:</p>
+        <p>
+          This stops the agent’s {harness} session on {machine || "this computer"}. The agent stays open:
+        </p>
         <ul>
           <li>its conversation, settings, permissions, tasks and your drafts are kept;</li>
           <li>Jobs it started keep running, and their results wait for it;</li>
@@ -73,6 +78,12 @@ export function DisconnectAgentDialog({
           It is disconnected only if Core can confirm it is idle: no turn, request, unconfirmed message or background
           work. Otherwise nothing changes, and you are told why. To end the agent instead, use Close.
         </p>
+        {machine && (
+          <p>
+            {machine} is asked to stop Claude and to say once it has. If it can’t say so, you are told, and the agent
+            stays disconnected until you press Reconnect.
+          </p>
+        )}
         {error && (
           <p role="alert" className="recovery-error">
             {error}
