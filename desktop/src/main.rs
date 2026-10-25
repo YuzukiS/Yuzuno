@@ -531,8 +531,13 @@ async fn open_core(
             "The workspaces saved on this computer could not be read ({reason}). This app will not open a workspace it cannot check against them, and has changed nothing of what is saved."
         ));
     }
+    // A Core that sends no Workspace answers an empty string, and one may
+    // send more than this keeps: both are absent, not a value. Comparing one
+    // would call an older Core at a saved address a different Workspace, and
+    // writing one would make the record unreadable from then on.
+    let answered = entries::accepted_workspace(&workspace);
     if let Some(entry) = saved.entries().iter().find(|entry| entry.url == core) {
-        if entries::identity(entry.workspace_id.as_deref(), Some(&workspace)) == entries::Identity::Changed {
+        if entries::identity(entry.workspace_id.as_deref(), answered) == entries::Identity::Changed {
             return Err(format!(
                 "“{}” answered as a different workspace than the one saved under that name, so it was not opened. Its conversations, drafts and reading places are that other workspace's. Save it at an address of its own, or remove the saved workspace first — that forgets its drafts here along with it.",
                 entry.name
@@ -610,7 +615,7 @@ async fn open_core(
         None => previous.filter(|saved| saved.core == core && saved.workspace_id == workspace),
     };
     *start = kept;
-    remember_opened(window.app_handle(), &core, Some(&workspace), start.as_ref());
+    remember_opened(window.app_handle(), &core, answered, start.as_ref());
     Ok(desktop_url(&core).into())
 }
 

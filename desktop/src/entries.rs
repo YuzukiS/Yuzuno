@@ -130,6 +130,18 @@ fn workspace_ok(workspace: &str) -> bool {
     !workspace.is_empty() && workspace.len() <= WORKSPACE_LIMIT
 }
 
+/// The `workspaceId` a Core answered with, when it is one this keeps.
+///
+/// A Core that sends none answers an empty string here, and one may send
+/// more than this keeps. Neither is a Workspace this can be compared with or
+/// written down: both are **absent**, not a value. Storing one would make
+/// the record unreadable on the next launch -- and a record that cannot be
+/// read refuses every connection, rename and removal -- while comparing one
+/// would call an older Core at a saved address a different Workspace.
+pub fn accepted_workspace(answered: &str) -> Option<&str> {
+    workspace_ok(answered).then_some(answered)
+}
+
 /// A name for a Workspace nobody has named: its host and port, which is what
 /// was typed. A desktop Core is usually on loopback, where the port is what
 /// tells two of them apart, so the port belongs in the name.
@@ -314,7 +326,15 @@ pub fn record(entries: &[Entry], selected: Option<&str>) -> Result<String, Strin
     if text.len() > LIMIT {
         return Err("this record is larger than this app reads back".into());
     }
-    Ok(text)
+    // Written only if this would read it back whole. A record this app can
+    // write but not read leaves it refusing every connection, rename and
+    // removal until the file is deleted by hand, so the one rule that must
+    // hold is checked by doing it, not by keeping a second copy of the
+    // reader's checks in step with it.
+    match read(text.as_bytes()) {
+        Saved::Entries { .. } | Saved::Never => Ok(text),
+        Saved::Unusable(reason) => Err(format!("this app could not read back what it was about to save ({reason})")),
+    }
 }
 
 #[cfg(test)]
@@ -481,6 +501,35 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn a_workspace_this_does_not_keep_is_absent_rather_than_a_value() {
+        // A Core that sends none answers an empty string here.
+        assert_eq!(accepted_workspace(""), None);
+        assert_eq!(accepted_workspace(&"w".repeat(WORKSPACE_LIMIT + 1)), None);
+        assert_eq!(accepted_workspace("w-one"), Some("w-one"));
+        // Absent compares as unknown, so an older Core at a saved address is
+        // not called a different Workspace.
+        assert_eq!(identity(Some("w-one"), accepted_workspace("")), Identity::Unknown);
+    }
+
+    #[test]
+    fn nothing_is_written_that_could_not_be_read_back() {
+        // The failure this guards: an entry written with a workspaceId the
+        // reader rejects makes the whole record unusable, and a record that
+        // cannot be read refuses every connection, rename and removal.
+        for bad in ["", &"w".repeat(WORKSPACE_LIMIT + 1)] {
+            let entries = vec![entry("core-1", "Home", "http://127.0.0.1:4317", Some(bad), None)];
+            let refused = record(&entries, Some("core-1")).unwrap_err();
+            assert!(refused.contains("could not read back"), "{refused}");
+        }
+        // A name beyond what the reader takes is refused the same way.
+        let long = vec![entry("core-1", &"n".repeat(NAME_LIMIT + 1), "http://127.0.0.1:4317", None, None)];
+        assert!(record(&long, None).unwrap_err().contains("could not read back"));
+        // And what it does accept still writes.
+        let fine = vec![entry("core-1", "Home", "http://127.0.0.1:4317", Some("w-one"), None)];
+        assert!(record(&fine, Some("core-1")).is_ok());
     }
 
     #[test]
