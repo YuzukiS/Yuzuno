@@ -228,8 +228,9 @@ test("Settings sets the Workspace default with no Agent chosen, says where it co
     assert.equal(inEffect(page), "Wait for you");
     assert.match(text(page), /existing ones included/, "a chain that changes Agents following it, not a new-Agent default");
     assert.doesNotMatch(text(page), /created from now on|only new Agents/);
-    assert.equal(button(page, "Use built-in"), undefined, "nothing saved to clear");
-    assert.equal(button(page, "Save default"), undefined, "nothing changed");
+    // Absence as booleans: a failing assert on an element inspects the whole window.
+    assert.ok(!button(page, "Use built-in"), "nothing saved to clear");
+    assert.ok(!button(page, "Save default"), "nothing changed");
     choose(page, "on");
     await tick();
     button(page, "Save default").click();
@@ -244,7 +245,7 @@ test("Settings sets the Workspace default with no Agent chosen, says where it co
     assert.equal(core.state.saved, null);
     assert.match(text(page), /Built in: wait for you\./);
     assert.equal(inEffect(page), "Wait for you");
-    assert.equal(button(page, "Use built-in"), undefined);
+    assert.ok(!button(page, "Use built-in"), "no Use built-in");
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
@@ -263,7 +264,7 @@ test("a save that fails says so and keeps what Core has; an older Core that does
     page.window.renderDefault({ active: true });
     await tick();
     assert.match(text(page), /This Core doesn’t say whether a default is saved\./);
-    assert.equal(button(page, "Use built-in"), undefined);
+    assert.ok(!button(page, "Use built-in"), "no Use built-in");
     refuse = true;
     choose(page, "off");
     await tick();
