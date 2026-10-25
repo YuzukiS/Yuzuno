@@ -19,6 +19,8 @@ import {
   useNotificationPrefs,
   useNotificationPrefsWrite,
 } from "./notification-store";
+import { PushSettings } from "./PushSettings";
+import { browserPushHost, pushSupport } from "./push-client";
 import { SaveStatus } from "./SaveStatus";
 import { strings, useLanguage, type Language } from "./i18n";
 import "./notification-settings.css";
@@ -123,7 +125,7 @@ const text = strings({
   insideHelp:
     "Needs you and unread updates always show in the Workspace, whatever you choose here. Messages between Agents are their own mail, not notifications to you.",
   unavailable: "Not available",
-  unavailableHelp: "Notifications while Yuzuno is closed, push notifications, and notification sounds or quiet hours of its own.",
+  unavailableHelp: "Notifications while Yuzuno is closed, except push notifications in the iPhone or iPad Home Screen app; notification sounds or quiet hours of its own.",
 }, {
   kinds: {
     needsYou: { title: "有 Agent 需要你", help: "需要你批准或回答的请求，或 Home 上新的 Ask。" },
@@ -202,7 +204,7 @@ const text = strings({
   inside: "Yuzuno 内",
   insideHelp: "无论你在这里如何选择，“需要你处理”和未读动态始终在 Workspace 中显示。Agent 之间的消息是它们自己的邮件，不是给你的通知。",
   unavailable: "暂不支持",
-  unavailableHelp: "Yuzuno 关闭时的通知、推送通知，以及 Yuzuno 自己的通知声音或免打扰时段。",
+  unavailableHelp: "Yuzuno 关闭时的通知（iPhone 或 iPad 主屏幕 App 的推送通知除外），以及 Yuzuno 自己的通知声音或免打扰时段。",
 });
 
 /** What this browser allows, in the user's words, with what to do about it. */
@@ -282,6 +284,10 @@ export function NotificationSettings() {
   // Turned off in macOS: the choices stay this device's to keep, for when
   // macOS allows them; nothing is asked or sent (T-188).
   const offInMacos = access.state === "denied" && access.system === "macos";
+  // The iPhone or iPad Home Screen app shows no notifications from the open
+  // page, but can have push (T-200): the kinds below are what it pushes.
+  const [pushHost] = useState(browserPushHost);
+  const pushes = pushSupport(pushHost) === "available";
   const save = (next: Partial<NotificationPrefs>) => changeNotificationPrefs((now) => ({ ...now, ...next }));
   /** Asks the browser, or macOS, from this click, when it has not been asked. */
   const ask = async () => {
@@ -360,7 +366,8 @@ export function NotificationSettings() {
           </label>
         )}
       </div>
-      {(usable || offInMacos) && (
+      <PushSettings prefs={prefs} host={pushHost} />
+      {(usable || offInMacos || pushes) && (
         <div className="settings-group" aria-label={t.what}>
           {notificationCategories.map((kind) => (
             <label className="settings-row" key={kind}>

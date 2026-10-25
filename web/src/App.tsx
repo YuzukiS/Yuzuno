@@ -95,7 +95,7 @@ import { useAppearanceFollow } from "./appearance-follow";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
-import { MessageLinks, agentLinkHref, messageLinkHref, parseAppLink, type AgentLink, type AppLink, type MessageLink, type MessageLinkApi } from "./deep-link";
+import { MessageLinks, agentLinkHref, messageLinkHref, parseAppLink, type AgentLink, type AppLink, type HomeLink, type MessageLink, type MessageLinkApi } from "./deep-link";
 import { localReadingPositions, readingAnchor, type ReadingPosition } from "./reading-position";
 import { ageText, markOfferHandled, offerable, restoredOffset, type Handoff } from "./reading-handoff";
 import { publishReading, readHandoff } from "./reading-handoff-api";
@@ -1027,6 +1027,21 @@ export function App() {
     window.addEventListener("hashchange", take);
     return () => window.removeEventListener("hashchange", take);
   }, []);
+  // A push notification clicked while Yuzuno is open (T-200): the service
+  // worker focuses this window and posts the link it built from its own
+  // scope, never from the push.
+  useEffect(() => {
+    const worker = typeof navigator === "undefined" ? undefined : navigator.serviceWorker;
+    if (previewMode || !worker) return;
+    const take = (event: MessageEvent) => {
+      const data = event.data as { type?: unknown; href?: unknown } | null;
+      if (data?.type !== "yuzuno:open" || typeof data.href !== "string") return;
+      const link = parseAppLink(data.href);
+      if (link) setIncomingLink(link);
+    };
+    worker.addEventListener("message", take);
+    return () => worker.removeEventListener("message", take);
+  }, []);
   useEffect(() => {
     if (!incomingLink || !workspace) return;
     setIncomingLink(null);
@@ -1577,8 +1592,19 @@ export function App() {
     openFromList(owner.id);
     if (owner.closedAt) setNotice(shell.shownClosed(owner.name));
   }
+  /** Opens the Workspace's Home a link names (T-200, a push about an Ask or
+   * several updates). Another Workspace's is said, and nothing changes. */
+  function openHomeLink(link: HomeLink) {
+    if (link.workspaceId !== workspaceId) {
+      setNotice(shell.linkOtherHome);
+      return;
+    }
+    setHomeOpen(true);
+    setPhoneList(false);
+  }
   function openAppLink(link: AppLink) {
     if (link.kind === "agent") openAgentLink(link);
+    else if (link.kind === "home") openHomeLink(link);
     else openMessageLink(link);
   }
   const openLink = useRef(openMessageLink);
@@ -1610,7 +1636,10 @@ export function App() {
       if (position) reading.current = { agentId: shown, position };
     });
   }
-  const searchLink = searchOpen ? parseAppLink(search) : null;
+  // Search offers to open a message or an Agent link; a Home link is what a
+  // notification opens, not something to paste.
+  const pastedLink = searchOpen ? parseAppLink(search) : null;
+  const searchLink = pastedLink?.kind === "home" ? null : pastedLink;
   function openSearchLink() {
     if (!searchLink) return;
     setSearchOpen(false);
