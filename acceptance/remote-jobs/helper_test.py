@@ -210,7 +210,11 @@ class HelperTests(unittest.TestCase):
         """
         unreadable = Path(self.tmp.name) / "pids-unreadable"
         blind_env = {"YUZUNO_JOBS_PIDS_UNREADABLE_FILE": str(unreadable)}
-        attempt = self.attempt("sleep 30", timeout=2)
+        # Far longer than the window below: without the retry the supervisor
+        # only waits for the command to end by itself and then stops a group
+        # that is already gone, so a command that could finish in time would
+        # let this pass either way.
+        attempt = self.attempt("sleep 300", timeout=2)
         started = self.call(dict(attempt, action="start"), env_extra=blind_env)
         self.assertIn(started["status"], ("started", "running"), started)
         pid = started["started"]["pid"]
@@ -230,10 +234,10 @@ class HelperTests(unittest.TestCase):
         # Asked again: the stop that reached nothing is asked for again, and
         # this same attempt converges on its timeout.
         unreadable.unlink()
-        settled = self.settle(attempt, seconds=30)
+        settled = self.settle(attempt, seconds=25)
         self.assertEqual(settled["result"]["status"], "failed", settled)
         self.assertIn("timeout", settled["result"]["reason"], settled)
-        self.assertTrue(gone(pid), "its command is stopped")
+        self.assertTrue(gone(pid), "its command is stopped, not merely finished")
 
     def attempt(self, script, timeout=60, workspace="ws-1", limits=None):
         spec = {"argv": ["/bin/sh", "-c", script], "cwd": str(self.work), "env": {"PATH": "/usr/bin:/bin"},
