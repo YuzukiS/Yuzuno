@@ -24,6 +24,7 @@ import { LanguagePreferencesSection } from "./LanguagePreferences";
 import { langTag, strings, useLanguage } from "./i18n";
 import { TimePreferencesSection } from "./TimePreferences";
 import { ShortcutHelpSection } from "./ShortcutHelp";
+import { DeviceTransferSection } from "./DeviceTransfer";
 import { Modal } from "./components";
 import { DesktopUpdate } from "./DesktopUpdate";
 import { DiagnosticsCopy } from "./RecoveryPage";
@@ -1012,6 +1013,7 @@ export function WorkspaceUpdates({
           {tab === "time" && <TimePreferencesSection />}
           {tab === "language" && <LanguagePreferencesSection />}
           {tab === "shortcuts" && <ShortcutHelpSection />}
+          {tab === "transfer" && <DeviceTransferSection />}
           {tab === "agent-defaults" && <AgentDefaults active={open} />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}

@@ -24,6 +24,7 @@ export const entriesZh: Record<string, EntryText> = {
   appearance: { title: "主题、文字与布局", scope: "此设备 · 此站点", source: "保存在此浏览器或 WebView 中的偏好；未设置时使用内置默认值。", effect: "更改会立即预览。存储成功后，重新打开仍会保留。可导出为文件，预览后再导入。" },
   "send-key": { title: "发送消息", scope: "此设备 · 此站点", source: "保存在此浏览器或 WebView 中的选择；未设置时为“自动”。", effect: "立即作用于会话的输入框。存储成功后，重新打开仍会保留。" },
   shortcuts: { title: "键盘快捷键", scope: "此设备", source: "此版本已有的快捷键，按它们在此设备上的实际效果列出。", effect: "仅供查看。此版本还不能改用其他按键。" },
+  transfer: { title: "把偏好移到另一台设备", scope: "此设备 · 你保存的文件", source: "此设备当前生效的外观、发送键和时间显示。不含 Workspace、账户或权限的任何内容。", effect: "“Export”写出一个文件。“Import”把每组设置与你现有的并排显示；每组单独应用，只在保存到此设备后才生效。它不会在设备之间同步。" },
   clock: { title: "时钟与时区", scope: "此设备 · 此站点", source: "保存在此浏览器或 WebView 中的选择；未设置时为“系统”和此设备的时区。", effect: "立即改写会话和 Home 中的时间及其日期。保存的时间与相对时间不变。存储成功后，重新打开仍会保留。" },
   language: { title: "界面语言", scope: "此设备 · 此站点", source: "保存在此浏览器或 WebView 中的选择；未设置时为“系统”，即此浏览器的语言。此版本没有的语言显示为英文。", effect: "设置目录、搜索和此设备的页面会立即切换；其他页面仍为英文。人和 Agent 写下的内容、代码与日志从不翻译。" },
   notifications: { title: "通知偏好", scope: "此设备 · 此浏览器", source: "此设备的选择，保存在此浏览器中；权限由浏览器自己管理。“需要你处理”和未读动态始终在 Workspace 内显示。", effect: "仅在 Yuzuno 打开而你在看别处时通知。静音不会改变 Agent 或 Workspace 投递的任何内容；没有推送或后台通知。" },

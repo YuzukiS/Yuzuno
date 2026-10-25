@@ -421,10 +421,10 @@ test("the retention preview says what it would keep, could remove and protect, o
   const sent = [];
   const backup = (day, verdict, reason, extra = {}) => ({
     name: `yuzuno-backup-202610${day}T0300Z`, path: `/backups/daily/yuzuno-backup-202610${day}T0300Z`, verdict, reason,
-    workspaceId: "ws-synthetic", createdAt: `2026-10-${day}T03:00:05+00:00`, estimateBytes: 3 * 1024 * 1024, ...extra,
+    workspaceId: "ws-synthetic", createdAt: `2026-10-${day}T03:00:05+00:00`, estimateBytes: 3 * 1024 * 1024, manifestSha256: `sha-${day}`, ...extra,
   });
   const preview = {
-    folder: "/backups/daily", keep: 2, notInspected: 0, removableEstimateBytes: 3 * 1024 * 1024,
+    folder: "/backups/daily", keep: 2, unreadableNames: 0, removableEstimateBytes: 3 * 1024 * 1024,
     entries: [
       backup("24", "keep", "One of the latest 2", { lastCheckedAt: "2026-10-24T04:00:00+00:00" }),
       backup("23", "keep", "One of the latest 2"),
@@ -468,7 +468,8 @@ test("the retention preview says what it would keep, could remove and protect, o
     assert.match(result.textContent, /last checked 2026-10-24 04:00 UTC/);
     assert.match(result.textContent, /A backup of another Workspace/);
     const labels = [...group().querySelectorAll("button")].map((b) => b.textContent.trim().toLowerCase());
-    assert.ok(!labels.some((l) => /delete|remove|clean|apply|automatic/.test(l)), labels.join(", "));
+    assert.ok(!labels.some((l) => /delete|clean|apply|automatic/.test(l)), labels.join(", "));
+    assert.deepEqual(labels.filter((l) => l.startsWith("remove")), ["remove…"], "one Remove… for the one removable backup, and it only asks");
     const removable = [...result.querySelectorAll("li")].find((li) => li.textContent.includes("yuzuno-backup-20261022T0300Z"));
     removable.querySelector("button").click();
     await waitFor(() => sent.some(([kind]) => kind === "check"), "the check");
@@ -476,6 +477,73 @@ test("the retention preview says what it would keep, could remove and protect, o
     assert.equal(check.path, "/backups/daily/yuzuno-backup-20261022T0300Z");
     assert.ok(check.requestId, "Check is the existing operation, with its own requestId");
     await waitFor(() => p.text().includes("Check finished"), "the check's outcome");
+  } finally {
+    p.close();
+  }
+});
+
+test("removing one backup asks first, names exactly that one, and sends one removal Core judges again", async () => {
+  const sent = [];
+  const removable = { name: "yuzuno-backup-20261022T0300Z", path: "/backups/daily/yuzuno-backup-20261022T0300Z", verdict: "remove",
+    reason: "Older than the latest 1", workspaceId: "ws-synthetic", createdAt: "2026-10-22T03:00:05+00:00", estimateBytes: 3 * 1024 * 1024, manifestSha256: "sha-22" };
+  const kept = { ...removable, name: "yuzuno-backup-20261023T0300Z", path: "/backups/daily/yuzuno-backup-20261023T0300Z", verdict: "keep",
+    reason: "One of the latest 1", createdAt: "2026-10-23T03:00:05+00:00", manifestSha256: "sha-23" };
+  let reads = 0;
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/workspace/backup")) return { body: view() };
+    if (url.endsWith("/retention/preview")) return { body: { folder: "/backups/daily", keep: 1, unreadableNames: 0, removableEstimateBytes: 3 * 1024 * 1024, entries: [kept, removable] } };
+    if (url.endsWith("/retention/remove")) {
+      sent.push(body);
+      // The second comes from a preview made before the first removal: Core judges the folder as it is now.
+      if (sent.length === 2) return { status: 400, body: { error: `${removable.name} is no longer in /backups/daily; nothing was removed` } };
+      return { status: 202, body: { operation: op({ id: "op8", kind: "remove", step: "preview", requestId: body.requestId, request: { folder: body.folder, name: body.name } }) } };
+    }
+    if (url.endsWith("/operations/op8")) {
+      reads += 1;
+      return { body: reads < 2 ? op({ id: "op8", kind: "remove", step: "verify", request: { name: removable.name } })
+        : op({ id: "op8", kind: "remove", state: "succeeded", step: "remove", finishedAt: "2026-10-25T03:00:00Z", request: { name: removable.name },
+          result: { removed: removable.path, name: removable.name, freedEstimateBytes: 3 * 1024 * 1024, keptChecked: kept.path } }) };
+    }
+    assert.fail(`unexpected ${method} ${url}`);
+  });
+  try {
+    const group = () => p.doc.querySelector('[aria-label="Keep the latest backups"]');
+    await waitFor(() => group(), "the retention controls");
+    type(p, "Folder holding backups", "/backups/daily");
+    type(p, "Backups to keep", "1");
+    await waitFor(() => !button(p, "Preview").disabled, "Preview offered");
+    button(p, "Preview").click();
+    await waitFor(() => button(p, "Remove…"), "Remove… on the removable backup");
+    assert.equal([...group().querySelectorAll("button")].filter((b) => b.textContent.trim() === "Remove…").length, 1);
+    button(p, "Remove…").click();
+    const confirm = () => group().querySelector(`[aria-label="Remove ${removable.name}"]`);
+    await waitFor(() => confirm(), "the confirmation");
+    assert.match(confirm().textContent, /Remove \/backups\/daily\/yuzuno-backup-20261022T0300Z, backed up 2026-10-22 03:00 UTC, about 3\.0 MiB\? Only this one backup is removed/);
+    assert.match(confirm().textContent, /reads another backup of this Workspace back whole; if it can't, nothing is removed\. A removed backup can't be brought back\./);
+    assert.equal(sent.length, 0, "asking sends nothing");
+    button(p, "Cancel").click();
+    await waitFor(() => !confirm(), "the confirmation closed");
+    assert.equal(sent.length, 0, "Cancel sends nothing");
+    button(p, "Remove…").click();
+    await waitFor(() => button(p, "Remove this backup"), "the confirmation again");
+    button(p, "Remove this backup").click();
+    await waitFor(() => sent.length === 1, "one removal");
+    assert.equal(sent[0].requestId.length > 0, true);
+    assert.deepEqual({ ...sent[0], requestId: "r" }, { requestId: "r", folder: "/backups/daily", keep: 1, name: removable.name, manifestSha256: "sha-22" });
+    assert.match(group().textContent, /Removal of yuzuno-backup-20261022T0300Z requested; Core's answer shows above\. Preview again once it has ended\./);
+    assert.equal(group().querySelector('[aria-label="Retention preview"]') === null, true, "the preview from before is not offered again");
+    await waitFor(() => p.text().includes("Removal finished"), "the removal's outcome");
+    assert.match(p.text(), /Removed \/backups\/daily\/yuzuno-backup-20261022T0300Z, about 3\.0 MiB as its manifest declared\. First, \/backups\/daily\/yuzuno-backup-20261023T0300Z was read back whole\./);
+    assert.equal(sent.length, 1);
+    // A stale preview offers it again; Core's refusal is shown as it is, and nothing claims it was removed.
+    button(p, "Preview").click();
+    await waitFor(() => button(p, "Remove…"), "the stale preview");
+    button(p, "Remove…").click();
+    await waitFor(() => button(p, "Remove this backup"), "the confirmation");
+    button(p, "Remove this backup").click();
+    await waitFor(() => sent.length === 2 && p.doc.querySelector(".workspace-backup-error[role=alert]"), "Core's refusal");
+    assert.equal(p.doc.querySelector(".workspace-backup-error[role=alert]").textContent.trim(), `${removable.name} is no longer in /backups/daily; nothing was removed`);
+    assert.equal(sent[1].requestId !== sent[0].requestId, true, "a new confirmation is a new request");
   } finally {
     p.close();
   }

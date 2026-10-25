@@ -49,7 +49,7 @@ test("Settings' search finds an entry by its words in either language", () => {
   assert.deepEqual(titles("界面语言"), ["Language"]);
   assert.deepEqual(titles("language"), ["Language"]);
   assert.deepEqual(titles("键盘快捷键"), ["Keyboard shortcuts"]);
-  assert.deepEqual(titles("外观与交互 发送"), ["Sending messages"]);
+  assert.deepEqual(titles("外观与交互 发送键"), ["Sending messages"]);
 });
 
 test("the editors this version translates are the device's own: Language, Sending messages, Clock & time zone, Keyboard shortcuts", () => {
