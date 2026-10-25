@@ -10,6 +10,7 @@ import {
 import { errorText, post } from "./api";
 import { Modal } from "./components";
 import { permissionLabel } from "./CodexPermissions";
+import { langTag, strings, useLanguage } from "./i18n";
 import type { Agent, AgentDetail, ForkOutcome, ForkPreview } from "./types";
 import "./session-import.css";
 import "./codex-fork.css";
@@ -35,6 +36,24 @@ function saveRequests(value: Record<string, string>) {
   }
 }
 
+// The notice's own words (T-189); the Fork dialog below stays in English.
+const writerText = strings({
+  continuesIn: "This conversation continues in ",
+  continuesFrom: (closed: boolean, turns: number) =>
+    `${closed ? " (closed)" : ""}, from a Codex fork of its first ${turns} ${turns === 1 ? "turn" : "turns"}. This session was not changed.`,
+  open: "Open",
+  conflict: "Another Codex client still owns this session, even if its turn has finished, so it can’t continue here. Release it in that client and try again, or continue from an official Codex fork.",
+  tryAgain: "Try again",
+  fork: "Continue in a fork…",
+}, {
+  continuesIn: "此会话在 ",
+  continuesFrom: (closed, turns) => `${closed ? "（已关闭）" : " "}中继续，它来自 Codex 对前 ${turns} 个 Turn 的分叉。此会话本身未被更改。`,
+  open: "打开",
+  conflict: "另一个 Codex 客户端仍占有此会话（即使它的 Turn 已经结束），因此无法在这里继续。请在该客户端中释放它后重试，或从官方 Codex 分叉继续。",
+  tryAgain: "重试",
+  fork: "在分叉中继续…",
+});
+
 /** Explains another client's ownership, or where the session continues. */
 export function CodexWriterNotice({
   detail,
@@ -52,6 +71,8 @@ export function CodexWriterNotice({
   onOpen: (agentId: string) => void;
 }) {
   const [retrying, setRetrying] = useState(false);
+  const language = useLanguage();
+  const t = writerText(language);
   const handoff = detail.codexHandoff;
   const forkedTo = handoff?.forkedTo;
   // A closed continuation still exists; a deleted one no longer continues
@@ -60,20 +81,18 @@ export function CodexWriterNotice({
     forkedTo && agents.find((agent) => agent.id === forkedTo.agentId);
   if (forkedTo && target) {
     return (
-      <div className="codex-writer-notice is-continued" role="status">
+      <div className="codex-writer-notice is-continued" role="status" lang={langTag(language)}>
         <GitFork size={14} />
         <span>
-          This conversation continues in <strong>{target.name}</strong>
-          {target.closedAt ? " (closed)" : ""}, from a Codex fork of its first{" "}
-          {forkedTo.turnCount} {forkedTo.turnCount === 1 ? "turn" : "turns"}.
-          This session was not changed.
+          {t.continuesIn}<strong>{target.name}</strong>
+          {t.continuesFrom(!!target.closedAt, forkedTo.turnCount)}
         </span>
         <button
           type="button"
           className="inline-link"
           onClick={() => onOpen(target.id)}
         >
-          Open
+          {t.open}
           <ArrowUpRight size={12} />
         </button>
       </div>
@@ -82,12 +101,10 @@ export function CodexWriterNotice({
   if (!handoff?.writerConflictAt || detail.agent.connectionState === "connected")
     return null;
   return (
-    <div className="codex-writer-notice" role="status">
+    <div className="codex-writer-notice" role="status" lang={langTag(language)}>
       <CircleAlert size={14} />
       <span>
-        Another Codex client still owns this session, even if its turn has
-        finished, so it can’t continue here. Release it in that client and try
-        again, or continue from an official Codex fork.
+        {t.conflict}
       </span>
       <span className="codex-writer-actions">
         <button
@@ -104,7 +121,7 @@ export function CodexWriterNotice({
           ) : (
             <RefreshCw size={14} />
           )}
-          Try again
+          {t.tryAgain}
         </button>
         <button
           type="button"
@@ -113,7 +130,7 @@ export function CodexWriterNotice({
           onClick={onFork}
         >
           <GitFork size={14} />
-          Continue in a fork…
+          {t.fork}
         </button>
       </span>
     </div>

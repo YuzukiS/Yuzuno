@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Clock, LoaderCircle, Play, X } from "lucide-react";
 import { api, errorText, post } from "./api";
-import { strings, useStrings } from "./i18n";
+import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import type { AgentDetail } from "./types";
 import "./recovery.css";
 import "./quota-resume.css";
@@ -31,14 +31,64 @@ export interface AutoContinueView {
   } | null;
 }
 
-const limitNames: Record<string, string> = {
-  five_hour: "five-hour",
-  seven_day: "weekly",
-  seven_day_opus: "weekly Opus",
-  seven_day_sonnet: "weekly Sonnet",
-};
-const limitName = (type: string | null | undefined) =>
-  type ? `${limitNames[type] || type.replace(/_/g, " ")} ` : "";
+// The notice's and the panel setting's own words (T-189); Core's reasons,
+// errors and times as they came.
+const noticeText = strings({
+  limits: { five_hour: "five-hour", seven_day: "weekly", seven_day_opus: "weekly Opus", seven_day_sonnet: "weekly Sonnet" } as Record<string, string>,
+  /** Claude's usage limit, of that kind when known. */
+  limit: (kind: string) => `Claude’s ${kind ? `${kind} ` : ""}usage limit`,
+  waiting: (limit: string, resets: string, due: string) =>
+    `${limit} stopped this agent. It resets at ${resets}; Yuzuno then sends one message to continue the task in the same session, at about ${due}. Earlier messages and tools are not sent again, and approvals still ask you.`,
+  sending: "Continuing after Claude’s usage limit reset…",
+  cancelled: "Automatic continue was cancelled",
+  uncertain: "The automatic continue message’s delivery isn’t confirmed",
+  failed: "Couldn’t continue automatically",
+  ended: (what: string, reason: string | null, limit: string, resets: string | null) =>
+    `${what}: ${reason || "no reason given"}.${resets ? ` ${limit} resets at ${resets}.` : ""}`,
+  stopped: (limit: string, resets: string, enabled: boolean) =>
+    `${limit} stopped this agent. It resets at ${resets}. ${enabled ? "Automatic continue couldn’t be arranged for this stop." : "Nothing continues by itself."}`,
+  mayRefuse: (resets: string) => `Claude may still refuse until ${resets}.`,
+  now: "Continue now",
+  dontContinue: "Don’t continue automatically",
+  afterReset: "Continue automatically after the reset",
+  usageLimit: "Usage limit",
+  loading: "Loading this Agent’s usage-limit policy…",
+  selectLabel: "After Claude’s usage limit resets",
+  selectTitle: "When Claude’s usage limit stops this agent, Yuzuno can wait for Claude’s reset and send one message to continue the task in the same session.",
+  default: (workspace: boolean) => `Default · ${workspace ? "continue" : "wait for you"}`,
+  resume: "Continue after reset",
+  wait: "Wait for you",
+  makeDefault: (workspace: boolean) => (workspace ? "Make the default: wait for you" : "Make the default: continue"),
+  savedUnread: (error: string) => `The default is saved, but this agent’s view couldn’t be read again: ${error}`,
+}, {
+  limits: { five_hour: "5 小时", seven_day: "每周", seven_day_opus: "每周 Opus", seven_day_sonnet: "每周 Sonnet" },
+  limit: (kind) => `Claude 的${kind ? ` ${kind}` : ""}用量限额`,
+  waiting: (limit, resets, due) =>
+    `${limit}让此 Agent 停了下来。它会在 ${resets} 重置；届时 Yuzuno 会在同一会话中发送一条消息继续任务，时间约为 ${due}。之前的消息和工具不会重新发送，审批仍会询问你。`,
+  sending: "Claude 的用量限额已重置，正在继续…",
+  cancelled: "自动继续已取消",
+  uncertain: "自动继续消息的送达尚未确认",
+  failed: "无法自动继续",
+  ended: (what, reason, limit, resets) => `${what}：${reason || "未给出原因"}。${resets ? `${limit}会在 ${resets} 重置。` : ""}`,
+  stopped: (limit, resets, enabled) =>
+    `${limit}让此 Agent 停了下来。它会在 ${resets} 重置。${enabled ? "无法为这次停止安排自动继续。" : "不会自动继续。"}`,
+  mayRefuse: (resets) => `在 ${resets} 之前，Claude 可能仍会拒绝。`,
+  now: "立即继续",
+  dontContinue: "不要自动继续",
+  afterReset: "重置后自动继续",
+  usageLimit: "用量限额",
+  loading: "正在载入此 Agent 的用量限额策略…",
+  selectLabel: "Claude 的用量限额重置后",
+  selectTitle: "当 Claude 的用量限额让此 Agent 停下时，Yuzuno 可以等待 Claude 重置，再在同一会话中发送一条消息继续任务。",
+  default: (workspace) => `默认 · ${workspace ? "继续" : "等你处理"}`,
+  resume: "重置后继续",
+  wait: "等你处理",
+  makeDefault: (workspace) => (workspace ? "设为默认：等你处理" : "设为默认：继续"),
+  savedUnread: (error) => `默认值已保存，但无法重新读取此 Agent 的视图：${error}`,
+});
+type NoticeWords = ReturnType<typeof noticeText>;
+const limitName = (type: string | null | undefined, t: NoticeWords) =>
+  t.limit(type ? t.limits[type] || type.replace(/_/g, " ") : "");
 export const at = (seconds: number) =>
   new Date(seconds * 1000).toLocaleString([], {
     month: "short",
@@ -107,6 +157,8 @@ export function QuotaResumeNotice({
     autoContinueVersion(detail),
   );
   const [busy, setBusy] = useState<"" | "now" | "cancel" | "on">("");
+  const language = useLanguage();
+  const t = noticeText(language);
   if (!view) return null;
   const intent = view.intent;
   const stopped = view.stopped;
@@ -134,30 +186,22 @@ export function QuotaResumeNotice({
   }
 
   const resets = intent?.resetsAt ?? stopped?.resetsAt;
-  const limit = limitName(intent?.limitType ?? stopped?.limitType);
+  const limit = limitName(intent?.limitType ?? stopped?.limitType, t);
   const beforeReset = resets !== undefined && resets * 1000 > Date.now();
   let text: string;
   if (intent?.state === "waiting") {
-    text = `Claude’s ${limit}usage limit stopped this agent. It resets at ${at(intent.resetsAt)}; Yuzuno then sends one message to continue the task in the same session, at about ${at(intent.dueAt)}. Earlier messages and tools are not sent again, and approvals still ask you.`;
+    text = t.waiting(limit, at(intent.resetsAt), at(intent.dueAt));
   } else if (intent?.state === "sending") {
-    text = "Continuing after Claude’s usage limit reset…";
+    text = t.sending;
   } else if (intent && intent.state !== "sent") {
     const what =
-      intent.state === "cancelled"
-        ? "Automatic continue was cancelled"
-        : intent.state === "uncertain"
-          ? "The automatic continue message’s delivery isn’t confirmed"
-          : "Couldn’t continue automatically";
-    text = `${what}: ${intent.reason || "no reason given"}.${resets ? ` Claude’s ${limit}usage limit resets at ${at(resets)}.` : ""}`;
+      intent.state === "cancelled" ? t.cancelled : intent.state === "uncertain" ? t.uncertain : t.failed;
+    text = t.ended(what, intent.reason, limit, resets ? at(resets) : null);
   } else {
-    text = `Claude’s ${limit}usage limit stopped this agent. It resets at ${at(resets!)}. ${
-      view.enabled
-        ? "Automatic continue couldn’t be arranged for this stop."
-        : "Nothing continues by itself."
-    }`;
+    text = t.stopped(limit, at(resets!), view.enabled);
   }
   return (
-    <div className="recovery-notice quota-resume-notice" role="status">
+    <div className="recovery-notice quota-resume-notice" role="status" lang={langTag(language)}>
       <Clock size={14} />
       <span>{text}</span>
       <div className="quota-resume-actions">
@@ -168,9 +212,7 @@ export function QuotaResumeNotice({
               className="secondary-button"
               disabled={disabled || !!busy}
               title={
-                beforeReset
-                  ? `Claude may still refuse until ${at(intent.resetsAt)}.`
-                  : undefined
+                beforeReset ? t.mayRefuse(at(intent.resetsAt)) : undefined
               }
               onClick={() => void act("now")}
             >
@@ -179,7 +221,7 @@ export function QuotaResumeNotice({
               ) : (
                 <Play size={14} />
               )}
-              Continue now
+              {t.now}
             </button>
             <button
               type="button"
@@ -192,7 +234,7 @@ export function QuotaResumeNotice({
               ) : (
                 <X size={14} />
               )}
-              Don’t continue automatically
+              {t.dontContinue}
             </button>
           </>
         )}
@@ -208,7 +250,7 @@ export function QuotaResumeNotice({
             ) : (
               <Clock size={14} />
             )}
-            Continue automatically after the reset
+            {t.afterReset}
           </button>
         )}
       </div>
@@ -243,6 +285,7 @@ export function AutoContinueSetting({
     detail.agent.status,
   );
   const [busy, setBusy] = useState(false);
+  const t = useStrings(noticeText);
   // Core confirmed it, so it is shown at once; the rest of this Agent's
   // view (an armed or cancelled continue) is read again.
   const heard = useRef<HearDefault | null>(null);
@@ -258,8 +301,8 @@ export function AutoContinueSetting({
     };
   }, [agentId]);
   if (!view) return <div id="agent-auto-continue" tabIndex={-1} className="auto-continue-setting">
-    <dt>Usage limit</dt>
-    <dd role={error ? "alert" : "status"}>{error || "Loading this Agent’s usage-limit policy…"}</dd>
+    <dt>{t.usageLimit}</dt>
+    <dd role={error ? "alert" : "status"}>{error || t.loading}</dd>
   </div>;
   const value = view.agent === null ? "default" : view.agent ? "on" : "off";
   async function choose(next: string) {
@@ -294,7 +337,7 @@ export function AutoContinueSetting({
           ),
         );
       } catch (e) {
-        setError(`The default is saved, but this agent’s view couldn’t be read again: ${errorText(e)}`);
+        setError(t.savedUnread(errorText(e)));
       }
     } catch (e) {
       setError(errorText(e));
@@ -304,20 +347,18 @@ export function AutoContinueSetting({
   }
   return (
     <div className="auto-continue-setting" id="agent-auto-continue" tabIndex={-1}>
-      <dt>Usage limit</dt>
+      <dt>{t.usageLimit}</dt>
       <dd>
         <select
-          aria-label="After Claude’s usage limit resets"
+          aria-label={t.selectLabel}
           value={value}
           disabled={disabled || busy}
           onChange={(e) => void choose(e.target.value)}
-          title="When Claude’s usage limit stops this agent, Yuzuno can wait for Claude’s reset and send one message to continue the task in the same session."
+          title={t.selectTitle}
         >
-          <option value="default">
-            Default · {view.workspace ? "continue" : "wait for you"}
-          </option>
-          <option value="on">Continue after reset</option>
-          <option value="off">Wait for you</option>
+          <option value="default">{t.default(view.workspace)}</option>
+          <option value="on">{t.resume}</option>
+          <option value="off">{t.wait}</option>
         </select>
         <button
           type="button"
@@ -325,9 +366,7 @@ export function AutoContinueSetting({
           disabled={disabled || busy}
           onClick={() => void setDefault(!view.workspace)}
         >
-          {view.workspace
-            ? "Make the default: wait for you"
-            : "Make the default: continue"}
+          {t.makeDefault(view.workspace)}
         </button>
         {error && (
           <span role="alert" className="recovery-error">

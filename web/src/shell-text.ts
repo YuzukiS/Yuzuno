@@ -118,6 +118,26 @@ export const shellText = strings({
   addInput: "Add input to the current turn",
   // Core fits a large image to Yuzuno's Claude budget (core/src/input_images.rs).
   claudeImages: "Large images are scaled or compressed when sent to Claude · originals are kept",
+  // The context panel (T-189 slice 19); the work summary, names, paths and
+  // the session ID stay as they came.
+  atGlance: "At a glance",
+  closePanel: "Close context panel",
+  currentWork: "CURRENT WORK",
+  agentReport: "Agent report · ",
+  noTask: "No task yet.",
+  workingFolder: "Working folder",
+  harness: "Harness",
+  location: "Location",
+  coreHost: "Core host",
+  session: "Session",
+  notStarted: "Not started yet",
+  thisConversation: "This conversation",
+  turns: "Turns",
+  unreadUpdates: "Unread updates",
+  needsResponse: "Needs your response",
+  goPending: "Go to pending request",
+  storyA: "Every little step",
+  storyB: "is part of the story.",
 }, {
   status: {
     idle: "就绪",
@@ -220,6 +240,24 @@ export const shellText = strings({
   reconnectLast: "请先重新连接并核对上一个 Turn",
   addInput: "向当前 Turn 添加输入",
   claudeImages: "发送给 Claude 时，大图片会被缩放或压缩 · 原图会保留",
+  atGlance: "概览",
+  closePanel: "关闭上下文面板",
+  currentWork: "当前工作",
+  agentReport: "Agent 报告 · ",
+  noTask: "还没有任务。",
+  workingFolder: "工作文件夹",
+  harness: "Harness",
+  location: "位置",
+  coreHost: "Core 主机",
+  session: "会话",
+  notStarted: "尚未开始",
+  thisConversation: "此会话",
+  turns: "Turn",
+  unreadUpdates: "未读更新",
+  needsResponse: "需要你回复",
+  goPending: "前往待处理的请求",
+  storyA: "每一小步，",
+  storyB: "都是故事的一部分。",
 });
 
 /** The shell's words in one language. */

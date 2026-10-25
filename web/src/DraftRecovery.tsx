@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Modal } from "./components";
-import { strings, useStrings } from "./i18n";
+import { langTag, strings, useLanguage } from "./i18n";
 
 const text = strings({
   reset: "Reset saved draft…",
@@ -9,6 +9,7 @@ const text = strings({
   failed: "The draft could not be reset. It has not been discarded. Check browser storage access and try again.",
   cancel: "Cancel",
   discard: "Discard saved draft",
+  closeDialog: "Close dialog",
 }, {
   reset: "重置已保存的草稿…",
   title: "要丢弃这份已保存的草稿吗？",
@@ -16,12 +17,14 @@ const text = strings({
   failed: "无法重置草稿，草稿未被丢弃。请检查浏览器存储权限后重试。",
   cancel: "取消",
   discard: "丢弃已保存的草稿",
+  closeDialog: "关闭对话框",
 });
 
 export function DraftRecovery({ onDiscard }: { onDiscard: () => boolean }) {
   const [open, setOpen] = useState(false);
   const [failed, setFailed] = useState(false);
-  const t = useStrings(text);
+  const language = useLanguage();
+  const t = text(language);
   return (
     <>
       <button
@@ -39,6 +42,8 @@ export function DraftRecovery({ onDiscard }: { onDiscard: () => boolean }) {
         onOpenChange={setOpen}
         title={t.title}
         description={t.description}
+        lang={langTag(language)}
+        closeLabel={t.closeDialog}
       >
         {failed && (
           <p className="inline-error" role="alert">
