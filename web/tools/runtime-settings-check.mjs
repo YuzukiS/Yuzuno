@@ -1,7 +1,9 @@
 // T-191: Runtime & versions in Settings, in Chromium, with a disposable
 // fixture server (no Core): opened from Updates & about at 1280, 390 and
 // 320 px; it fits, its facts and Read again are reachable, nothing is sent
-// and no machine is checked, and Check machines opens the Machines page. YUZUNO_CHECK_MODE=before
+// and no machine is checked, MCP services shows a Codex and a Claude Code
+// Agent's last reports without asking either, and Check machines opens the
+// Machines page. YUZUNO_CHECK_MODE=before
 // takes the Updates & about screenshot of a build without it, with no checks.
 //   YUZUNO_UI_DIST=<build> YUZUNO_BROWSER_OUTPUT=<dir> [YUZUNO_CHECK_MODE=before] node tools/runtime-settings-check.mjs
 import assert from "node:assert/strict";
@@ -22,6 +24,9 @@ const agents = [{
   id: "a", name: "Mori", cwd: "/fixture/project", model: "codex-fixture", color: "sage", harness: "codex", goal: "",
   createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, status: "idle", connectionState: "connected",
   threadId: "thread-a", settings: { reasoningEffort: "low", approvalPolicy: "on-request", sandbox: "workspace-write" },
+}, {
+  id: "b", name: "Ume, a Claude Code Agent with a long name", cwd: "/fixture/project", model: "sonnet", color: "sage", harness: "claude", goal: "",
+  createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, status: "idle", connectionState: "connected",
 }];
 const minutesAgo = (m) => new Date(Date.now() - m * 60_000).toISOString();
 const answers = () => ({
@@ -54,6 +59,19 @@ const answers = () => ({
   "/api/machine-load": { at: new Date().toISOString(), cpu: { cores: 8, totalPct: 10, jobsPct: 0, agentsPct: null, otherPct: null },
     memory: { totalMiB: 16384, usedMiB: 4096, availableMiB: 12288, jobsMiB: 0, agentsMiB: null }, gpus: null, jobs: [] },
   "/api/agents/a": { agent: agents[0], pending: [], artifacts: [], turns: [{ id: "t1", status: "completed", items: [{ id: "r1", type: "agentMessage", text: "Saved reply" }] }] },
+  // Mori's startup reports, as Core keeps them; reading asks Codex nothing.
+  "/api/agents/a/codex/mcp": { state: "observed", reason: "startup_reports", generation: 1, more: 0, servers: [
+    { name: "files-service-with-a-very-long-configured-name-that-must-wrap-too", status: "ready", error: null, failureReason: null, observedAt: minutesAgo(3) },
+    { name: "tracker", status: "failed", error: "startup timed out", failureReason: null, observedAt: minutesAgo(3) },
+  ] },
+  // What Ume's last read found (?cached=true); nothing asks it again here.
+  "/api/agents/b/claude/mcp-status": {
+    state: "ready", reason: "observed", generation: 1, sessionId: "s", checkedAt: minutesAgo(0), stale: false, freshForSeconds: 60,
+    observation: { observedAt: minutesAgo(0), total: 2, truncated: false, servers: [
+      { name: "docs-search-service-with-a-very-long-configured-name-that-must-wrap", status: "connected" },
+      { name: "tracker", status: "failed", reason: "authentication" },
+    ] },
+  },
 });
 const calls = [];
 const report = { mode: before ? "before" : "after", checks: [], screenshots: [], errors: [], console: [], requests: {} };
@@ -66,7 +84,7 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://fixture.test");
   if (url.pathname.startsWith("/api/")) {
     for await (const _ of req);
-    calls.push(`${req.method} ${url.pathname}`);
+    calls.push(`${req.method} ${url.pathname}${url.pathname.endsWith("/mcp-status") ? url.search : ""}`);
     if (url.pathname === "/api/events") {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       res.write(": fixture\n\n");
@@ -112,6 +130,8 @@ try {
       await open.waitFor();
       // The app itself reads the Workspace and machines; that nothing of the
       // section is read before it opens is checked in runtime-settings-ui.
+      // Requests from here on are the section's (and the app's own views').
+      const opened = calls.length;
       await open.click();
       const section = page.locator("#settings-runtime");
       await section.locator(".runtime-fact").first().waitFor();
@@ -148,6 +168,19 @@ try {
         assert.equal(await control.evaluate((el) => el === document.activeElement), true, `${name} takes focus`);
       }
       assert.ok(runtimeReads().some((c) => c.endsWith("/api/health")), "Core's version is read once it opens");
+      // MCP services: Mori (Codex) first, then switched to Ume (Claude Code).
+      const mcp = section.locator(".runtime-mcp");
+      await mcp.locator('[aria-label="Codex MCP services"] .mcp-server-list li').nth(1).waitFor();
+      await mcp.locator("select").selectOption("b");
+      await mcp.locator('[aria-label="Claude MCP services"] .mcp-server-list li').nth(1).waitFor();
+      await mcp.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(80);
+      await shot(page, `${label}-runtime-mcp-claude`);
+      assert.deepEqual(calls.slice(opened).filter((c) => /\/(codex\/mcp|mcp-status)/.test(c)),
+        ["GET /api/agents/a/codex/mcp", "GET /api/agents/b/claude/mcp-status?cached=true"],
+        "each report shown is the last one kept; nothing asks Codex or Claude Code without Refresh");
+      await mcp.locator("select").selectOption("a");
+      await mcp.locator('[aria-label="Codex MCP services"] .mcp-server-list li').nth(1).waitFor();
       check(`${label}: Runtime & versions opens from Updates & about, fits, marks the stale check, and its controls take focus`);
       await section.getByRole("button", { name: "Read again" }).click();
       await page.waitForTimeout(300);

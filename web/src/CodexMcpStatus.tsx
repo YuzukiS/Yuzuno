@@ -28,11 +28,19 @@ const time = (at: string) => new Date(at).toLocaleTimeString([], { hour: "2-digi
  * Remounts for another Agent or connection; reads nothing while there is no
  * connection to have reported.
  */
-export function CodexMcpStatus({ agent }: { agent: Agent }) {
-  return <StatusPanel key={JSON.stringify([agent.id, agent.connectionState, agent.closedAt])} agent={agent} />;
+type Options = {
+  heading?: string;
+  headingLevel?: 2 | 5;
+  /** The inspector's /mcp scrolls to this panel by its id; another copy
+   * (Settings, T-191) must not take it. */
+  anchor?: boolean;
+};
+
+export function CodexMcpStatus({ agent, ...options }: { agent: Agent } & Options) {
+  return <StatusPanel key={JSON.stringify([agent.id, agent.connectionState, agent.closedAt])} agent={agent} {...options} />;
 }
 
-function StatusPanel({ agent }: { agent: Agent }) {
+function StatusPanel({ agent, heading = "MCP services", headingLevel = 2, anchor = true }: { agent: Agent } & Options) {
   const [view, setView] = useState<View | null>(null);
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -63,9 +71,10 @@ function StatusPanel({ agent }: { agent: Agent }) {
         : view && view.state !== "observed" ? "MCP status is unavailable."
           : view && !servers.length ? "No startup report received on this connection yet. That does not mean none are configured, or that all are fine."
             : null;
-  return <section id="agent-mcp-status" tabIndex={-1} className="inspector-section claude-mcp-status" aria-label="Codex MCP services">
+  const Heading = headingLevel === 5 ? "h5" : "h2";
+  return <section id={anchor ? "agent-mcp-status" : undefined} tabIndex={anchor ? -1 : undefined} className="inspector-section claude-mcp-status" aria-label="Codex MCP services">
     <div className="section-title">
-      <h2><Plug size={14} />MCP services</h2>
+      <Heading><Plug size={14} />{heading}</Heading>
       <button type="button" className="icon-button" aria-label="Read MCP startup reports again" title="Read again (asks Codex nothing)"
         disabled={busy || !connected} onClick={() => void load()}>
         <RefreshCw size={13} className={busy ? "mcp-refreshing" : undefined} />
