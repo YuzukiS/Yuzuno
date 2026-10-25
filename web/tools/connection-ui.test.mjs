@@ -388,8 +388,11 @@ test("a Workspace that cannot be read opens no Agent and says so; a retry restor
       "the banner offers its retry",
     );
     assert.equal(shown(), undefined, "no Agent is opened while the Workspace is unknown");
+    // Spread into this realm: the fixture's own array is the page's, and a
+    // strict comparison of two empty arrays from different realms fails on
+    // their prototypes.
     assert.deepEqual(
-      p.f.calls.filter((c) => /\/api\/agents\/[ab]$/.test(c.path)).map((c) => c.path),
+      [...p.f.calls.filter((c) => /\/api\/agents\/[ab]$/.test(c.path)).map((c) => c.path)],
       [],
       "and neither Agent is read: the older key names one, but not which Workspace",
     );
