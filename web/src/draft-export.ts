@@ -96,8 +96,9 @@ export const DRAFTS_FORMAT = "yuzuno-drafts";
 export type DraftsFailure = { agentId: string; name: string; reason: string };
 
 /** The chosen drafts, each read now and only these, through storage that
- * cannot be written. All or nothing: when any can't be read, those are
- * named and no file is made. */
+ * cannot be written: as they are now, which another window may have changed
+ * since the list was read. All or nothing: when any can't be read, or is no
+ * longer saved, those are named and no file is made. */
 export function exportDrafts(
   storage: Pick<Storage, "getItem">,
   rows: readonly DraftRow[],
@@ -107,13 +108,18 @@ export function exportDrafts(
   const failed: DraftsFailure[] = [];
   const read = new DraftStorage(readOnly(storage));
   for (const row of rows) {
+    const now = savedDraftSummary(storage, row.agentId);
+    if (now.state === "none" || now.state === "damaged") {
+      failed.push({ agentId: row.agentId, name: row.name, reason: now.state === "none" ? "it is no longer saved here" : now.reason });
+      continue;
+    }
     try {
       const draft = read.load(row.agentId);
       drafts.push({
         agentId: row.agentId,
         name: row.name,
         closed: row.closed,
-        savedBy: row.summary.state === "legacy" ? "earlierVersion" : "thisVersion",
+        savedBy: now.state === "legacy" ? "earlierVersion" : "thisVersion",
         parts: draft.parts.map((part) =>
           part.kind === "text" ? { kind: "text", text: part.text } : { kind: "paste", number: part.number, lines: part.lines, text: part.text },
         ),

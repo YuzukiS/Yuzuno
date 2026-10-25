@@ -56,7 +56,9 @@ function mount({ refuse = false, extra = {} } = {}) {
   const dom = new JSDOM('<div id="root"></div>', { url: "http://isolated.test/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole: vc });
   const w = dom.window, doc = w.document;
   for (const [key, value] of Object.entries({ ...seed, ...extra })) w.localStorage.setItem(key, value);
-  const proto = w.Storage.prototype, get = proto.getItem;
+  const proto = w.Storage.prototype, get = proto.getItem, set = proto.setItem;
+  // Another window's write, past the page's own (which records and refuses them).
+  const elsewhere = (key, value) => set.call(w.localStorage, key, value);
   proto.getItem = function (key) { reads.push(key); return get.call(this, key); };
   proto.setItem = function (key) { writes.push(`set ${key}`); };
   proto.removeItem = function (key) { writes.push(`remove ${key}`); };
@@ -71,7 +73,7 @@ function mount({ refuse = false, extra = {} } = {}) {
   const blobText = (blob) => new Promise((resolve) => { const r = new w.FileReader(); r.onload = () => resolve(r.result); r.readAsText(blob); });
   const tick = (id) => row(id).querySelector('input[type="checkbox"]');
   const button = (text) => [...section().querySelectorAll("button")].find((b) => b.textContent.trim() === text);
-  return { w, doc, errors, reads, writes, saves, section, row, shown, blobText, tick, button, close: () => w.close() };
+  return { w, doc, errors, reads, writes, saves, section, row, shown, blobText, tick, button, elsewhere, close: () => w.close() };
 }
 
 test("the list reads manifests only, shows this Workspace's drafts as they are, and counts the others", async (t) => {
@@ -210,4 +212,28 @@ test("when a ticked draft can't be read, nothing is downloaded, it is named, the
   await until(() => p.saves.links.length === 1, "the rest is saved");
   assert.deepEqual(JSON.parse(await p.blobText(p.saves.blobs[0])).drafts.map((d) => d.agentId), ["a1"]);
   assert.deepEqual(p.writes, []);
+});
+
+test("ticked drafts are saved as they are when downloaded: one another window re-saved says so, one it emptied is named, not saved empty", async (t) => {
+  const p = mount(); t.after(p.close);
+  p.w.renderDrafts({ active: true, agents });
+  await until(() => p.row("a2"));
+  p.tick("a1").click();
+  p.tick("a2").click();
+  await until(() => /2 drafts chosen/.test(p.section().textContent));
+  // Another window, after the list was read: Pine's draft saved in this version's form, Cedar's emptied.
+  p.elsewhere("yuzuno.composer.v1:a2", JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "re-saved words" }] }));
+  p.elsewhere("yuzuno.composer.v1:a1", JSON.stringify({ version: 1, nextNumber: 1, parts: [] }));
+  p.button("Download selected (.json)").click();
+  const alert = await until(() => p.section().querySelector(".draft-export-many [role=\"alert\"]"), "the emptied draft is said");
+  assert.equal(alert.textContent, "Nothing was downloaded: 1 of 2 chosen drafts can't be read (Cedar: it is no longer saved here). Untick it to save the rest.");
+  assert.equal(p.saves.links.length, 0);
+  p.tick("a1").click();
+  await until(() => /1 draft chosen/.test(p.section().textContent));
+  p.button("Download selected (.json)").click();
+  await until(() => p.saves.links.length === 1);
+  assert.deepEqual(JSON.parse(await p.blobText(p.saves.blobs[0])).drafts, [
+    { agentId: "a2", name: "Pine", closed: true, savedBy: "thisVersion", images: 0, skills: [], parts: [{ kind: "text", text: "re-saved words" }] },
+  ]);
+  assert.deepEqual(p.writes, [], "the page wrote nothing");
 });
