@@ -238,18 +238,24 @@ test("a project's overrides come in when it is chosen: the harness follows unles
   assert.equal(inLab.projectId, "p1");
   assert.equal("permissionPreset" in inLab, false, "the project's default is Core's to apply");
   assert.deepEqual(page.errors, []);
-  // A harness this Agent chose stays when the project changes; the project's Codex permissions are not carried over.
-  const again = mount((project) => (project === "p1" ? lab : workspace));
+  // A harness this Agent chose (a change, not a click on the one shown) stays when the project
+  // changes, and that project's Claude Code mode is not carried over to it.
+  const claudeLab = {
+    ...workspace,
+    effective: { ...workspace.effective, harness: { value: "claude", source: "project" }, claudePermissionMode: { value: "auto", source: "project" } },
+    project: { id: "p1", saved: { harness: "claude", claudePermissionMode: "auto" }, inherited: workspace.effective },
+  };
+  const again = mount((project) => (project === "p1" ? claudeLab : workspace));
   await again.open({ projects });
   await until(() => picked(again, "Harness") === "claude", "the Workspace's default harness");
-  await pick(again, "Harness", "claude");
+  await pick(again, "Harness", "codex");
   await pick(again, "Project", "p1");
   await until(() => again.calls.some((c) => c.url.includes("/agent-defaults?projectId=p1")), "read for the project");
   await tick();
-  assert.equal(picked(again, "Harness"), "claude");
+  assert.equal(picked(again, "Harness"), "codex", "this Agent's own choice stays");
   await type(again, "Name", "Chosen");
   const chosen = await submit(again);
-  assert.equal(chosen.harness, "claude");
+  assert.equal(chosen.harness, "codex");
   assert.equal("permissionPreset" in chosen || "permissionMode" in chosen, false);
   assert.deepEqual(again.errors, []);
 });
