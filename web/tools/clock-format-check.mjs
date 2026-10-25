@@ -1,13 +1,17 @@
-// T-189: this device's clock format in Chromium (en-US, Asia/Shanghai), with
-// every API answered here (no Core, no daily configuration or data). In the
-// production build's real Settings (search → Clock format → a choice):
+// T-189: this device's clock format and time zone in Chromium (en-US,
+// Asia/Shanghai), with every API answered here (no Core, no daily
+// configuration or data). In the production build's real Settings (search →
+// Clock & time zone → a choice):
 //  - unset, conversation and Home times are written as before this setting;
 //  - a choice rewrites the open conversation's message times and Turn ending
 //    at once, and an open Home's "Data as of", their datetime unchanged;
 //  - a saved choice is kept after a reload; one the browser refuses applies
 //    in this window, is said not saved, and is gone after a reload;
 //  - Restore defaults removes this device's choice and the times are as
-//    before again.
+//    before again;
+//  - a time zone rewrites the open conversation's and Home's times, and
+//    their dates (Kiritimati, UTC+14, is a day ahead), datetime unchanged;
+//    Restore defaults brings this device's zone back.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/clock-format-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -112,7 +116,7 @@ const before = await (async () => {
     };
   }, { ASKED, ANSWERED, DONE });
 })();
-const ENTRY = { search: "clock", title: "Clock format", editor: "time" };
+const ENTRY = { search: "clock", title: "Clock & time zone", editor: "time" };
 async function openEditor() {
   if (!(await page.getByRole("searchbox", { name: "Search settings" }).isVisible())) {
     await page.getByRole("button", { name: "Settings and updates" }).click({ timeout: 10_000 });
@@ -136,6 +140,13 @@ const editorState = (editor) => editor.evaluate((el) => ({
 async function choose(clock) {
   const editor = await openEditor();
   await editor.locator(`input[name="time-clock-format"][value="${clock}"]`).check();
+  const state = await editorState(editor);
+  await closeSettings();
+  return state;
+}
+async function chooseZone(zone) {
+  const editor = await openEditor();
+  await editor.getByRole("combobox", { name: "Time zone" }).selectOption(zone);
   const state = await editorState(editor);
   await closeSettings();
   return state;
@@ -170,7 +181,7 @@ try {
   const saved24 = await choose("h24");
   assert.equal(saved24.checked, "h24");
   assert.equal(saved24.status, "Saved on this device");
-  assert.equal(await stored(), '{"clock":"h24"}');
+  assert.equal(await stored(), '{"clock":"h24","timeZone":null}');
   const h24 = await conversation();
   record("24-hour conversation", h24);
   assert.deepEqual(h24.marks.map((m) => m.label), ["21:05", "21:06"]);
@@ -205,7 +216,7 @@ try {
   assert.ok(refused.alert && /full/.test(refused.alert), refused.alert);
   const unsaved = await conversation();
   assert.deepEqual(unsaved.marks.map((m) => m.label), ["21:05", "21:06"]);
-  assert.equal(await stored(), '{"clock":"h12"}');
+  assert.equal(await stored(), '{"clock":"h12","timeZone":null}');
   await page.reload();
   await toConversation();
   assert.ok((await conversation()).marks.every((m) => H12.test(m.label)));
@@ -228,6 +239,31 @@ try {
   await toHome();
   assert.equal(await asOf(), before.asOf);
   check("Restore defaults removes this device's choice; times are written as before again");
+
+  // A time zone, chosen with the conversation open: 13:05 UTC is 9:05 in the
+  // morning in New York (EDT), and on 25 October in Kiritimati.
+  await toConversation();
+  const zoned = await chooseZone("America/New_York");
+  assert.equal(zoned.status, "Saved on this device");
+  assert.equal(await stored(), '{"clock":"system","timeZone":"America/New_York"}');
+  const newYork = await conversation();
+  record("New York conversation", newYork);
+  assert.ok(newYork.marks.every((m) => /^9:0[56]\sAM$/.test(m.label)), JSON.stringify(newYork.marks));
+  assert.match(newYork.footer, /^done 9:07\sAM$/);
+  assert.deepEqual(newYork.marks.map((m) => m.dateTime), unset.marks.map((m) => m.dateTime), "the times themselves are unchanged");
+  await toHome();
+  assert.match(await asOf(), /^Data as of Oct 24, 09:05\sAM$/);
+  await chooseZone("Pacific/Kiritimati");
+  const ahead = await asOf();
+  assert.match(ahead, /^Data as of Oct 25, 03:05\sAM$/);
+  await page.screenshot({ path: join(output, "home-kiritimati.png") });
+  const editor2 = await openEditor();
+  await editor2.getByRole("button", { name: "Restore defaults" }).click();
+  assert.equal((await editorState(editor2)).status, "Defaults restored on this device");
+  await closeSettings();
+  assert.equal(await stored(), null);
+  assert.equal(await asOf(), before.asOf);
+  check("a time zone rewrites the open conversation's and Home's times and dates at once, datetime unchanged; Restore defaults brings this device's back", { newYork: newYork.marks, ahead });
 
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpected, []);

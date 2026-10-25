@@ -23,7 +23,7 @@ import {
 import { api, errorText } from "../api";
 import { sourceTarget } from "../intelligent-ui/contract.ts";
 import { absolute, relative } from "./format";
-import { useClockFormat } from "../time-preferences";
+import { useTimeDisplay } from "../time-preferences";
 import "./repo-activity.css";
 
 export type RepoCommit = {
@@ -160,7 +160,7 @@ function Row({ href, label, children }: { href: string; label: string; children:
 const when = (at: string | null) => relative(at) || "time unknown";
 
 function Lists({ repo }: { repo: RepoActivityRepository }) {
-  const clock = useClockFormat();
+  const time = useTimeDisplay();
   const branch = repo.defaultBranch ? ` on ${repo.defaultBranch}` : "";
   const open = repo.pullsTotal ?? repo.pulls.length;
   return (
@@ -175,7 +175,7 @@ function Lists({ repo }: { repo: RepoActivityRepository }) {
             <li key={commit.sha}>
               <Row
                 href={commit.url}
-                label={`${commit.sha.slice(0, 7)} ${commit.title} · ${commit.author || "unknown author"} · ${absolute(commit.at, clock)}`}
+                label={`${commit.sha.slice(0, 7)} ${commit.title} · ${commit.author || "unknown author"} · ${absolute(commit.at, time)}`}
               >
                 <code>{commit.sha.slice(0, 7)}</code>
                 <span className="repo-row-title">{commit.title}</span>
@@ -231,7 +231,7 @@ function Lists({ repo }: { repo: RepoActivityRepository }) {
               <li key={run.id}>
                 <Row
                   href={run.url}
-                  label={`${run.name} · ${run.branch || "no branch"} · ${state.label} · ${absolute(run.at, clock)}`}
+                  label={`${run.name} · ${run.branch || "no branch"} · ${state.label} · ${absolute(run.at, time)}`}
                 >
                   <span className={`repo-state is-${state.tone}`}>
                     <Icon size={11} aria-hidden /> {state.label}
@@ -272,7 +272,7 @@ function Placeholder() {
 }
 
 function Head({ name, url, branch, observedAt }: { name: string; url: string; branch?: string; observedAt?: string | null }) {
-  const clock = useClockFormat();
+  const time = useTimeDisplay();
   const href = githubPage(url);
   return (
     <header>
@@ -286,7 +286,7 @@ function Head({ name, url, branch, observedAt }: { name: string; url: string; br
       )}
       {branch && <code className="repo-branch">{branch}</code>}
       {observedAt !== undefined && (
-        <small className="repo-asof" title={absolute(observedAt, clock)}>
+        <small className="repo-asof" title={absolute(observedAt, time)}>
           {observedAt ? `as of ${relative(observedAt)}` : "not read yet"}
         </small>
       )}

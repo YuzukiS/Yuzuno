@@ -70,20 +70,29 @@ test("streamed deltas never cause a read; only a change notice does", async () =
   sync.dispose();
 });
 
-// This device's clock format (T-189): the same loaded Turns, written with
-// another clock, are written again, not taken from the marks already made.
-test("another clock format writes the same loaded Turns' marks and ending again", () => {
+// This device's clock format and time zone (T-189): the same loaded Turns,
+// written with others, are written again, not taken from the marks already
+// made; another zone moves the time, not the moment.
+test("another clock format or time zone writes the same loaded Turns' marks and ending again", () => {
   const d = detail();
   d.turns[0].status = "completed";
   d.turns[0].completedAt = at(3) / 1000;
-  const written = (clock) => [...conversationTimeMarks(d.turns, clock).values()].map((mark) => mark.label);
-  const ending = (clock) => turnFooter(d.turns[0], null, clock).find((part) => part.kind === "time").moment.label;
-  const system = written("system");
-  assert.deepEqual(system, [new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(at(0, 5)))], "unset, as before");
-  assert.deepEqual(written("h24"), ["10:00"]);
-  assert.equal(ending("h24"), "10:03");
-  assert.match(written("h12")[0], /^10:00\s?AM$/);
-  assert.deepEqual(written("h24"), ["10:00"], "and back");
-  assert.equal(conversationTimeMarks(d.turns, "h24"), conversationTimeMarks(d.turns, "h24"), "one result per Turns and clock format");
-  assert.deepEqual(written("system"), system);
+  const shown = (clock, timeZone = null) => ({ clock, timeZone });
+  const [system, h12, h24] = [shown("system"), shown("h12"), shown("h24")];
+  const newYork = shown("h24", "America/New_York");
+  const written = (time) => [...conversationTimeMarks(d.turns, time).values()].map((mark) => mark.label);
+  const ending = (time) => turnFooter(d.turns[0], null, time).find((part) => part.kind === "time").moment;
+  const before = written(system);
+  assert.deepEqual(before, [new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(at(0, 5)))], "unset, as before");
+  assert.deepEqual(written(h24), ["10:00"]);
+  assert.equal(ending(h24).label, "10:03");
+  assert.match(written(h12)[0], /^10:00\s?AM$/);
+  // 02:00 UTC is 22:00 the evening before in New York.
+  assert.deepEqual(written(newYork), ["22:00"]);
+  assert.equal(ending(newYork).label, "22:03");
+  assert.match(ending(newYork).title, /October 13/);
+  assert.equal(ending(newYork).dateTime, ending(system).dateTime, "the moment itself is unchanged");
+  assert.deepEqual(written(h24), ["10:00"], "and back");
+  assert.equal(conversationTimeMarks(d.turns, h24), conversationTimeMarks(d.turns, h24), "one result per Turns and time display");
+  assert.deepEqual(written(system), before);
 });
