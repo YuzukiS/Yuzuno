@@ -180,8 +180,9 @@ async fn check_codex(ws: &Arc<Workspace>, id: &str, thread: &str) -> Option<usiz
 }
 
 /// Counts every page of the experimental `thread/backgroundTerminals/list`.
-/// It only reads; it never starts a turn or wakes the Agent.
-async fn list_codex(rpc: &Rpc, thread: &str) -> Result<usize> {
+/// It only reads; it never starts a turn or wakes the Agent. Disconnect
+/// (T-184) asks it about each sub-agent's thread too, recording nothing.
+pub(crate) async fn list_codex(rpc: &Rpc, thread: &str) -> Result<usize> {
     let mut count = 0;
     let mut cursor = Value::Null;
     for _ in 0..MAX_PAGES {

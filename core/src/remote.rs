@@ -373,7 +373,26 @@ pub(crate) fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+/// Library tests stand in for SSH and a machine (T-184): a machine ID
+/// listed here answers the helper with `answer`, and `connect` reaches a
+/// Codex app-server run here as `program` instead of tunnelling to one there.
+#[cfg(test)]
+pub(crate) struct StandIn {
+    pub answer: Arc<dyn Fn(&Value) -> Result<Value> + Send + Sync>,
+    pub program: String,
+}
+#[cfg(test)]
+pub(crate) static STAND_INS: std::sync::Mutex<Vec<(String, StandIn)>> = std::sync::Mutex::new(Vec::new());
+#[cfg(test)]
+fn stand_in(machine: &RemoteMachine) -> Option<(Arc<dyn Fn(&Value) -> Result<Value> + Send + Sync>, String)> {
+    STAND_INS.lock().unwrap().iter().find(|(id, _)| *id == machine.id).map(|(_, s)| (s.answer.clone(), s.program.clone()))
+}
+
 async fn helper(machine: &RemoteMachine, request: Value, maximum: usize) -> Result<Vec<u8>> {
+    #[cfg(test)]
+    if let Some((answer, _)) = stand_in(machine) {
+        return Ok(serde_json::to_vec(&answer(&request)?)?);
+    }
     validate_machine(machine)?;
     let operation = async {
         let mut child = ssh()
@@ -476,6 +495,27 @@ pub async fn stop_runtime(
         "root":machine.root()
     }), 16 * 1024).await?)?;
     anyhow::ensure!(result["stopped"] == true, "无法确认远程 Runtime 已停止；Agent 未关闭");
+    Ok(())
+}
+
+/// Stops exactly `runtime` for the user's Disconnect (T-184). Ok only when
+/// the helper found that instance in this Agent's own folder and saw it
+/// gone: its process exited and its socket no longer answers. A missing
+/// folder or metadata (which the helper also calls stopped), or another
+/// instance, is no such answer.
+pub async fn stop_runtime_instance(
+    machine: &RemoteMachine, workspace_key: &str, agent_id: &str, runtime: &RuntimeRef,
+) -> Result<()> {
+    let result: Value = serde_json::from_slice(&helper(machine, json!({
+        "action":"stop", "workspaceKey":workspace_key, "agentId":agent_id, "runtime":runtime,
+        "root":machine.root()
+    }), 16 * 1024).await?)?;
+    anyhow::ensure!(
+        result["stopped"] == true && result["instanceId"].as_str() == Some(runtime.instance_id.as_str()),
+        "the helper didn't confirm that runtime {} stopped: it answered {}",
+        runtime.instance_id,
+        result
+    );
     Ok(())
 }
 
@@ -713,6 +753,10 @@ pub async fn connect(
     runtime: &RuntimeRef,
     events: crate::backlog::EventSender,
 ) -> Result<Arc<Rpc>> {
+    #[cfg(test)]
+    if let Some((_, program)) = stand_in(machine) {
+        return Rpc::spawn(&program, &[], events).await;
+    }
     validate_machine(machine)?;
     if !runtime.socket.starts_with('/')
         || runtime.socket.contains(':')
