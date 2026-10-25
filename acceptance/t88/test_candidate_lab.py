@@ -60,16 +60,17 @@ class self_raises(contextlib.AbstractContextManager):
 
 class GuideTests(unittest.TestCase):
     def test_reads_the_guides_repository_key_and_update_source(self):
+        # The guide's gh prerequisite names no repository since it went public:
+        # any GitHub account can read it.
         self.assertEqual(guide_release_source(GUIDE), {
             'downloadRepository': 'YuzukiS/Yuzuno', 'publicKey': KEY,
-            'updateRepository': 'YuzukiS/Yuzuno', 'readAccessRepository': 'YuzukiS/Yuzuno'})
+            'updateRepository': 'YuzukiS/Yuzuno', 'readAccessRepository': None})
         self.assertEqual(guide_mismatches(spec(), guide_release_source(GUIDE)), [])
 
     def test_another_repository_or_key_is_named_for_each_place(self):
         problems = guide_mismatches(spec(repository='someone/public-yuzuno'), guide_release_source(GUIDE))
         self.assertEqual([p.split(' is ')[0] for p in problems],
-                         ["the guide's downloadRepository", "the guide's updateRepository",
-                          "the guide's readAccessRepository"])
+                         ["the guide's downloadRepository", "the guide's updateRepository"])
         other_key = 'RW' + 'A' * 54
         self.assertEqual(len(guide_mismatches(spec(publicKey=other_key), guide_release_source(GUIDE))), 1)
 
@@ -251,7 +252,7 @@ class EntryTests(unittest.TestCase):
                 self.assertEqual(candidate_lab.main(['check', '--spec', str(path), '--report', str(report)]), 1)
             result = json.loads(report.read_text())
             self.assertFalse(result['passed'])
-            self.assertEqual(len(result['checks'][0]['mismatches']), 3)
+            self.assertEqual(len(result['checks'][0]['mismatches']), 2)
             self.assertEqual(result['specSha256'], sha256(path))
 
     def test_check_stage_passes_for_the_guides_own_release_source(self):
