@@ -60,9 +60,9 @@ const CREDENTIALS: &str = "collaboration.mcp.agent.*";
 
 /// Folders Core keeps its own files in; what is copied from each is chosen
 /// by the database copy (`Named`).
-const INCLUDED: &[&str] = &["input-images", "brief-attachments", "pr-reviews", "jobs"];
+pub(crate) const INCLUDED: &[&str] = &["input-images", "brief-attachments", "pr-reviews", "jobs"];
 /// Names in the Workspace folder left out, with the reason the manifest gives.
-const EXCLUDED: &[(&str, &str)] = &[
+pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("workspace.lock", "The lock of the Core using the Workspace"),
     ("workspace.sqlite-wal", "Folded into the database copy"),
     ("workspace.sqlite-shm", "SQLite's index of the write-ahead log, which it rebuilds"),
@@ -81,7 +81,7 @@ const REVIEW_CACHE: &str = "A review's temporary Git object cache";
 const NOT_IN_COPY: &str = "Not named by the backup's database copy (made after it, or no longer named)";
 const RUNNING_REVIEW: &str = "A review still running in the database copy; its record restores as not finished";
 /// What a Workspace backup never holds: it is kept outside the Workspace.
-const NOT_COVERED: &[&str] = &[
+pub(crate) const NOT_COVERED: &[&str] = &[
     "Native CLI accounts, keys and configuration (Codex, Claude Code, OpenCode)",
     "Native session histories kept by Codex, Claude Code and OpenCode outside the Workspace",
     "Agents' working directories and repositories",

@@ -100,6 +100,20 @@ test("eight categories and bilingual search expose real scope, without fake cont
   assert.deepEqual(p.errors, []);
 });
 
+test("the data & storage overview is found with its scope and opened in place, reading nothing while browsing", async (t) => {
+  const p = mount(); t.after(p.close); p.w.renderSettings(p.props);
+  await until(() => p.doc.querySelector('[type="search"]'));
+  p.type(p.doc.querySelector('[type="search"]'), "存储 占用");
+  const card = await until(() => [...p.doc.querySelectorAll(".settings-catalog-card")].find((item) => item.querySelector("h4")?.textContent === "Data & storage overview"));
+  assert.match(card.textContent, /Scope: This device · Workspace service · native CLIs/);
+  assert.doesNotMatch(card.textContent, /Unavailable here/);
+  card.querySelector("button").click();
+  const editor = await until(() => p.doc.querySelector("#settings-editor-storage:not([hidden])"));
+  assert.equal(editor.textContent, "Existing storage editor");
+  assert.equal(p.doc.querySelector("#settings-tab-data").getAttribute("aria-selected"), "true");
+  assert.equal(p.calls.length, 0, "browsing the catalog reads nothing");
+});
+
 test("Workspace backup & restore opens its editor from search, not a fake control (T-192)", async (t) => {
   const p = mount(); t.after(p.close); p.w.renderSettings(p.props);
   await until(() => p.doc.querySelector('[type="search"]'));
