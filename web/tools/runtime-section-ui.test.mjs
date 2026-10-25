@@ -86,7 +86,9 @@ function mount(answers, { release = "core-20261024-c215011", desktop } = {}) {
   );
   const { window } = dom;
   window.fetch = async (url, init = {}) => {
-    const path = new URL(url, "http://isolated.test").pathname;
+    const where = new URL(url, "http://isolated.test");
+    // The two model catalogs differ only by their query.
+    const path = where.pathname + (where.pathname === "/api/models" ? where.search : "");
     calls.push(`${init.method ?? "GET"} ${path}`);
     const answer = answers[path];
     if (typeof answer === "function") {
@@ -144,12 +146,12 @@ test("it shows Core, this device and each machine's last check, each fact with w
   assert.deepEqual(page.facts(page.harness("Core host", "Codex")), {
     CLI: "Yes · Found · codex-cli 0.162.1 · /usr/bin/codex",
     "Signed in": "Yes · Signed in · person@example.test",
-    Models: "Unknown · Not checked here · Models are listed when you choose one for an Agent.",
+    Models: "Unknown · Not checked yet · Check models lists them from the Core host's CLIs, as the New Agent dialog does.",
   });
   assert.deepEqual(page.facts(page.harness("Core host", "Claude Code")), {
     CLI: "Yes · Found · 2.1.296 (Claude Code)",
     "Signed in": "Yes · Signed in · claude.ai",
-    Models: "Unknown · Not checked here · Models are listed when you choose one for an Agent.",
+    Models: "Unknown · Not checked yet · Check models lists them from the Core host's CLIs, as the New Agent dialog does.",
   });
   const box = page.machine("Build box");
   assert.equal(box.querySelector(".runtime-where").textContent, "builder@box.test");
@@ -162,7 +164,7 @@ test("it shows Core, this device and each machine's last check, each fact with w
   assert.deepEqual(page.facts(page.harness("Build box", "Codex")), {
     CLI: "Unknown · Not known · The last check didn't reach this machine.",
     "Signed in": "Unknown · Not known · Machine checks don't read Codex's sign-in; Core knows it only on its own host.",
-    Models: "Unknown · Not checked here · Models are listed when you choose one for an Agent.",
+    Models: "Unknown · Not checked here · An SSH machine's models are listed when an Agent there chooses one.",
   });
   assert.equal(page.facts().Compatibility,
     "Unknown · Not defined · Which versions work together isn't defined for this release, so it isn't guessed from version numbers.");
@@ -213,12 +215,12 @@ test("what can't be read or was never checked is Unknown, not guessed; a CLI Cor
   assert.deepEqual(page.facts(page.harness("Studio", "Codex")), {
     CLI: "No · Not found · codex: command not found",
     "Signed in": "Unknown · Not known · Machine checks don't read Codex's sign-in; Core knows it only on its own host.",
-    Models: "Unknown · Not checked here · Models are listed when you choose one for an Agent.",
+    Models: "Unknown · Not checked here · An SSH machine's models are listed when an Agent there chooses one.",
   });
   assert.deepEqual(page.facts(page.harness("Studio", "Claude Code")), {
     CLI: "No · Not usable · 2.1.296 (Claude Code) · Claude Code there is not logged in: run claude login on it",
     "Signed in": "Unknown · Not known · Checks of SSH machines don't report sign-in by itself; a sign-in problem shows on the CLI line.",
-    Models: "Unknown · Not checked here · Models are listed when you choose one for an Agent.",
+    Models: "Unknown · Not checked here · An SSH machine's models are listed when an Agent there chooses one.",
   });
   assert.equal(page.facts(page.machine("Studio").querySelector("dl"))["Managed Jobs"],
     "Yes · Record only · Saved before Job limits: nothing is held there.");
@@ -324,5 +326,31 @@ test("Read again reads the same again; nothing is read while closed; checks are 
   [...page.document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Check machines").click();
   assert.equal(page.window.machinesOpened, 1, "checking is the Machines page's");
   assert.ok(page.calls.every((c) => c.startsWith("GET ")), "nothing was sent");
+  page.close();
+});
+
+test("the Core host's models are listed only on Check models, with when; a failure says why; SSH machines stay not checked here", async () => {
+  const page = mount(core({
+    "/api/models": { models: [
+      { id: "gpt-6", model: "gpt-6", displayName: "GPT-6", isDefault: true },
+      { id: "gpt-6-mini", model: "gpt-6-mini", displayName: "GPT-6 mini" },
+    ] },
+    "/api/models?harness=claude": () => ({ status: 502, body: { error: "Claude Code could not start" } }),
+  }));
+  page.window.show();
+  await tick();
+  assert.ok(!page.calls.some((c) => c.includes("/api/models")), "opening lists no models");
+  const buttons = [...page.document.querySelectorAll("button")].filter((b) => b.textContent.trim() === "Check models");
+  assert.equal(buttons.length, 1, "only the Core host has one");
+  assert.ok(page.machine("Core host").contains(buttons[0]));
+  buttons[0].click();
+  await tick(80);
+  assert.match(page.facts(page.harness("Core host", "Codex")).Models, /^Yes · 2 models · Default GPT-6 · checked .+$/);
+  assert.match(page.facts(page.harness("Core host", "Claude Code")).Models, /^No · Couldn't list models · .*Claude Code could not start.* · checked .+$/);
+  assert.equal(page.facts(page.harness("Build box", "Codex")).Models,
+    "Unknown · Not checked here · An SSH machine's models are listed when an Agent there chooses one.");
+  // The dialog's two catalog reads, then the section reads again (a Codex
+  // failure would change its connection); nothing else, nothing sent.
+  assert.deepEqual([...page.calls].sort(), [...READS, ...READS, "GET /api/models", "GET /api/models?harness=claude"].sort());
   page.close();
 });

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, RefreshCw } from "lucide-react";
-import { readRuntime, runtimeView, type Fact, type MachineFacts, type RuntimeRead } from "./runtime-status";
+import { checkModels, readRuntime, runtimeView, type Fact, type MachineFacts, type ModelChecks, type RuntimeRead } from "./runtime-status";
 import { ClaudeMcpStatus } from "./ClaudeMcpStatus";
 import { CodexMcpStatus } from "./CodexMcpStatus";
 import type { Agent } from "./types";
@@ -27,7 +27,12 @@ function FactRow({ label, fact }: { label: string; fact: Fact }) {
   );
 }
 
-function MachineCard({ machine }: { machine: MachineFacts }) {
+function MachineCard({ machine, onCheckModels, checkingModels = false }: {
+  machine: MachineFacts;
+  /** The Core host's explicit model check; other machines have none here. */
+  onCheckModels?: () => void;
+  checkingModels?: boolean;
+}) {
   return (
     <article className="runtime-machine" aria-labelledby={`runtime-machine-${machine.id}`}>
       <header>
@@ -60,6 +65,16 @@ function MachineCard({ machine }: { machine: MachineFacts }) {
           </dl>
         </section>
       ))}
+      {onCheckModels && machine.kind === "local" && (
+        <p className="runtime-note runtime-models-check">
+          <button type="button" className="quiet-button" disabled={checkingModels} onClick={onCheckModels}>
+            {checkingModels ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}
+            {checkingModels ? "Checking models…" : "Check models"}
+          </button>
+          Lists the models of this host's Codex and Claude Code, as the New Agent dialog does when it opens. If Codex
+          can't list them, Core marks it not connected, as the dialog would.
+        </p>
+      )}
     </article>
   );
 }
@@ -120,7 +135,8 @@ function McpServices({ agents }: { agents: Agent[] }) {
  * Runtime & versions (T-191): what this Workspace runs on, as Core and this
  * client hold it, each fact with where and when it was observed. Read-only:
  * opening it, or Read again, signs nothing in, reconnects nothing, updates
- * nothing and runs no machine check. Checks are the Machines page's.
+ * nothing and runs no machine check. Checks are the Machines page's; the
+ * Core host's Check models makes only the New Agent dialog's catalog reads.
  */
 export function RuntimeSection({
   active = true,
@@ -134,6 +150,20 @@ export function RuntimeSection({
   const [read, setRead] = useState<RuntimeRead | null>(null);
   const [reading, setReading] = useState(false);
   const [again, setAgain] = useState(0);
+  const [models, setModels] = useState<ModelChecks>({});
+  const [checkingModels, setCheckingModels] = useState(false);
+  /** Only on the button: the dialog's own catalog reads. Afterwards the
+   * section reads again, since a Codex failure changes its connection. */
+  async function onCheckModels() {
+    if (checkingModels) return;
+    setCheckingModels(true);
+    try {
+      setModels(await checkModels());
+      setAgain((n) => n + 1);
+    } finally {
+      setCheckingModels(false);
+    }
+  }
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();
@@ -143,7 +173,7 @@ export function RuntimeSection({
       .finally(() => !controller.signal.aborted && setReading(false));
     return () => controller.abort();
   }, [active, again]);
-  const view = read ? runtimeView(read) : null;
+  const view = read ? runtimeView(read, undefined, models) : null;
   return (
     <section id="settings-runtime" className="settings-section runtime-section" aria-labelledby="settings-runtime-title" aria-busy={reading}>
       <header className="settings-section-heading">
@@ -211,7 +241,7 @@ export function RuntimeSection({
               </p>
             )}
             {view.machines.map((machine) => (
-              <MachineCard key={machine.id} machine={machine} />
+              <MachineCard key={machine.id} machine={machine} onCheckModels={onCheckModels} checkingModels={checkingModels} />
             ))}
           </section>
           {read?.agents && <McpServices agents={read.agents} />}
