@@ -4,8 +4,9 @@ import { api, errorText, NO_ANSWER_REPLY, respondToRequest } from "./api";
 import { AnswerAgain, DraftNotSaved, useUnconfirmedAnswer } from "./unconfirmed-answer";
 import { choiceAnswers, choiceEmpty, useRequestDraft } from "./request-draft";
 import { claudeCodeFacts } from "./claude-runtime";
-import { strings, useLanguage, useStrings } from "./i18n";
+import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { cardWords } from "./subagent-text";
+import { requestWords, shownError, type RequestWords } from "./request-text";
 import { callToward, formatUsage, turnSubAgents, type ClaudeSubAgentEntry, type ClaudeSubAgentRecord } from "./claude-subagents";
 import { Prose } from "./components";
 import { ConversationRows, useConversationDisclosure, useConversationTarget } from "./ConversationWindow";
@@ -16,13 +17,13 @@ import "./claude.css";
 type PermissionUpdate = { type?: string; behavior?: string; mode?: string; rules?: { toolName?: string; ruleContent?: string }[]; directories?: string[] };
 
 /** Describe the bridge's session offer; the bridge alone decides what it is. */
-function sessionGrant(offer: unknown): { grants: string[]; acceptEdits: boolean } {
+function sessionGrant(offer: unknown, t: RequestWords): { grants: string[]; acceptEdits: boolean } {
   const updates = Array.isArray(offer) ? (offer as PermissionUpdate[]) : [];
   const acceptEdits = updates.some(update => update?.type === "setMode") && !updates.some(update => update?.type === "addRules");
   const grants = updates.flatMap(update => {
     if (update?.type === "addRules") return (update.rules || []).map(rule => rule.ruleContent ? `${rule.toolName}(${rule.ruleContent})` : String(rule.toolName));
-    if (update?.type === "addDirectories") return (update.directories || []).map(directory => `access to ${directory}`);
-    if (update?.type === "setMode") return [`all file edits (switches to ${update.mode} mode)`];
+    if (update?.type === "addDirectories") return (update.directories || []).map(directory => t.accessTo(directory));
+    if (update?.type === "setMode") return [t.allEdits(update.mode)];
     return [];
   });
   return { grants, acceptEdits };
@@ -418,7 +419,7 @@ function ToolCall({ agentId, turnId, item, unconfirmed }: CallProps) {
 
 type Question = { question: string; header?: string; multiSelect?: boolean; options?: { label: string; description?: string }[] };
 
-function ProposedAction({ name, input }: { name: string; input: Record<string, unknown> }) {
+function ProposedAction({ name, input, t }: { name: string; input: Record<string, unknown>; t: RequestWords }) {
   if (name === "Bash" && typeof input.command === "string")
     return <pre className="claude-permission-input">{input.command}</pre>;
   if (["Write", "Edit", "MultiEdit"].includes(name) && typeof input.file_path === "string")
@@ -426,8 +427,8 @@ function ProposedAction({ name, input }: { name: string; input: Record<string, u
       <p className="mono-small">{input.file_path}</p>
       {typeof input.content === "string" ? <pre className="claude-permission-input">{input.content}</pre> :
         typeof input.old_string === "string" && typeof input.new_string === "string" ? <>
-          <span className="section-eyebrow">BEFORE</span><pre className="claude-permission-input">{input.old_string || "(empty)"}</pre>
-          <span className="section-eyebrow">AFTER</span><pre className="claude-permission-input">{input.new_string || "(empty)"}</pre>
+          <span className="section-eyebrow">{t.before}</span><pre className="claude-permission-input">{input.old_string || t.empty}</pre>
+          <span className="section-eyebrow">{t.after}</span><pre className="claude-permission-input">{input.new_string || t.empty}</pre>
         </> : <pre className="claude-permission-input">{JSON.stringify(input, null, 2)}</pre>}
     </div>;
   return <pre className="claude-permission-input">{JSON.stringify(input, null, 2)}</pre>;
@@ -439,6 +440,8 @@ export function ClaudePermission({ request, refresh, disabled, highlightSource, 
   request: PendingRequest; refresh: () => void; disabled: boolean; highlightSource?: boolean; permissionMode?: string | null; draftScope?: string | null;
 }) {
   const input = request.params.input || {};
+  const language = useLanguage();
+  const t = requestWords(language);
   const questions: Question[] = request.params.toolName === "AskUserQuestion" && Array.isArray(input.questions) ? input.questions : [];
   // An unsent answer to a question survives a refresh (T-170).
   const draft = useRequestDraft(questions.length ? draftScope : null, request, saved => choiceAnswers(saved, questions.map(q => q.question)));
@@ -455,7 +458,7 @@ export function ClaudePermission({ request, refresh, disabled, highlightSource, 
   useEffect(() => { draft.save(kept, choiceEmpty(kept)); }, [answers, free]);
   // Claude Code sends the plan it wants approved as input.plan.
   const plan = request.params.toolName === "ExitPlanMode" ? (typeof input.plan === "string" ? input.plan : "") : null;
-  const { grants: grant, acceptEdits } = questions.length ? { grants: [], acceptEdits: false } : sessionGrant(request.params.sessionPermissions);
+  const { grants: grant, acceptEdits } = questions.length ? { grants: [], acceptEdits: false } : sessionGrant(request.params.sessionPermissions, t);
   const reasonText = reason.trim();
   const reasonTooLong = new TextEncoder().encode(reasonText).length > 2000;
   const unconfirmedAnswer = useUnconfirmedAnswer(refresh, answering, draft.attempted);
@@ -481,70 +484,67 @@ export function ClaudePermission({ request, refresh, disabled, highlightSource, 
       setError(errorText(e));
     } finally { setSending(false); }
   }
-  const sessionLabel = plan !== null ? acceptEdits ? "Approve and allow edits for this session" : "Approve for this session"
-    : acceptEdits ? "Allow edits for this session" : "Allow for this session";
+  const sessionLabel = plan !== null ? acceptEdits ? t.approveEditsSession : t.approveSession
+    : acceptEdits ? t.editsSession : t.allowSession;
   return <section className={`pending-card claude-permission${plan !== null ? " claude-plan" : ""}${highlightSource ? " source-highlight" : ""}`}
-    id={`request-${request.id}`} tabIndex={-1}>
+    id={`request-${request.id}`} tabIndex={-1} lang={langTag(language)}>
     <div className="pending-heading">
       {questions.length ? <MessageSquare size={17} /> : plan !== null ? <ClipboardList size={17} /> : <ShieldCheck size={17} />}
-      <strong>{questions.length ? "Claude has a question" : plan !== null ? "Claude has a plan for you to review" : "Claude needs your permission"}</strong>
-      <span className="pending-tag">Needs you</span>
+      <strong>{questions.length ? t.claudeQuestion : plan !== null ? t.claudePlan : t.claudePermission}</strong>
+      <span className="pending-tag">{t.needsYou}</span>
     </div>
-    {request.stale && <p className="inline-error">This request belongs to a closed connection. Resume the session to continue.</p>}
-    {request.params._responseSent && <p className="field-hint">Response sent. Waiting for Claude.</p>}
+    {request.stale && <p className="inline-error">{t.staleClaude}</p>}
+    {request.params._responseSent && <p className="field-hint">{t.sentClaude}</p>}
     {questions.length ? <form onSubmit={e => { e.preventDefault(); void respond("allow"); }}>
       <fieldset disabled={locked} className="claude-question-fields">
         {questions.map(q => <fieldset key={q.question}>
-          <legend>{q.question}</legend>
-          {q.multiSelect && <p className="field-hint">Choose any that apply.</p>}
+          <legend lang="">{q.question}</legend>
+          {q.multiSelect && <p className="field-hint">{t.chooseAny}</p>}
           {q.options?.map(option => <label className="answer-option" key={option.label}>
             <input type={q.multiSelect ? "checkbox" : "radio"} name={`${request.id}-${q.question}`} checked={(answers[q.question] || []).includes(option.label)}
               onChange={e => { setAnswers(old => ({ ...old, [q.question]: q.multiSelect ? e.target.checked ? [...(old[q.question] || []), option.label] : (old[q.question] || []).filter(x => x !== option.label) : [option.label] })); if (!q.multiSelect) setFree(old => ({ ...old, [q.question]: "" })); }} />
-            <span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
+            <span lang=""><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
           </label>)}
-          <input aria-label={`Your answer: ${q.question}`} placeholder="Or write your own answer…" value={free[q.question] || ""}
+          <input aria-label={t.yourAnswer(q.question)} placeholder={t.ownAnswer} value={free[q.question] || ""}
             onChange={e => { setFree(old => ({ ...old, [q.question]: e.target.value })); if (!q.multiSelect) setAnswers(old => ({ ...old, [q.question]: [] })); }} />
         </fieldset>)}
       </fieldset>
       {draft.notSaved && <DraftNotSaved />}
       <div className="claude-permission-actions">
-        <button className="primary-button" disabled={locked || questions.some(q => !answer(q))}>{sending && <LoaderCircle size={14} className="spin" />}Send answer</button>
-        <button type="button" className="secondary-button" disabled={locked} onClick={() => void respond("deny")}>Decline</button>
+        <button className="primary-button" disabled={locked || questions.some(q => !answer(q))}>{sending && <LoaderCircle size={14} className="spin" />}{t.sendAnswer}</button>
+        <button type="button" className="secondary-button" disabled={locked} onClick={() => void respond("deny")}>{t.decline}</button>
       </div>
     </form> : plan !== null ? <>
-      {permissionMode && <p className="claude-plan-mode">Claude reports <strong>{modeName(permissionMode)}</strong> mode for this session.</p>}
+      {permissionMode && <p className="claude-plan-mode">{t.reportsBefore}<strong>{modeName(permissionMode)}</strong>{t.reportsAfter}</p>}
       <PlanText plan={plan} id={`plan-${request.id}`} />
       <PlanFile path={input.planFilePath} />
       <label className="claude-deny-reason">
-        <span>Feedback for Claude <small>· optional, sent only if you keep planning</small></span>
-        <input type="text" value={reason} disabled={locked} placeholder="e.g. Also cover the error cases" onChange={e => setReason(e.target.value)} />
+        <span>{t.feedback}<small>{t.feedbackNote}</small></span>
+        <input type="text" value={reason} disabled={locked} placeholder={t.feedbackExample} onChange={e => setReason(e.target.value)} />
       </label>
-      {reasonTooLong && <p role="alert" className="inline-error">Keep the feedback under 2000 bytes.</p>}
+      {reasonTooLong && <p role="alert" className="inline-error">{t.feedbackLong}</p>}
       <div className="claude-permission-actions">
-        <button className="primary-button" disabled={locked} onClick={() => void respond("allow")}>{sending && <LoaderCircle size={14} className="spin" />}Approve plan</button>
+        <button className="primary-button" disabled={locked} onClick={() => void respond("allow")}>{sending && <LoaderCircle size={14} className="spin" />}{t.approvePlan}</button>
         {grant.length > 0 && <button className="secondary-button" disabled={locked} onClick={() => void respond("allow", "session")}>{sessionLabel}</button>}
-        <button className="secondary-button" disabled={locked || reasonTooLong} onClick={() => void respond("deny")}>{reasonText ? "Keep planning with feedback" : "Keep planning"}</button>
+        <button className="secondary-button" disabled={locked || reasonTooLong} onClick={() => void respond("deny")}>{reasonText ? t.keepPlanningFeedback : t.keepPlanning}</button>
       </div>
-      <p className="field-hint">Approving lets Claude leave plan mode and start on this plan. The mode it switches to shows once Claude reports it{grant.length
-        ? <>; “{sessionLabel}” also allows {grant.join(", ")} until this Claude session restarts</> : ""}. Keep planning sends your feedback, and Claude stays in plan mode.</p>
+      <p className="field-hint">{t.planHint(sessionLabel, grant.length ? grant.join(t.grantsJoin) : null)}</p>
     </> : <>
-      <p>Review this <strong>{request.params.toolName || "tool"}</strong> action before it runs.</p>
-      <ProposedAction name={request.params.toolName} input={input} />
+      <p>{t.reviewBefore}<strong>{request.params.toolName || t.tool}</strong>{t.reviewAfter}</p>
+      <ProposedAction name={request.params.toolName} input={input} t={t} />
       <label className="claude-deny-reason">
-        <span>Reason for Claude <small>· optional, sent only if you deny</small></span>
-        <input type="text" value={reason} disabled={locked} placeholder="e.g. Use git status instead" onChange={e => setReason(e.target.value)} />
+        <span>{t.reason}<small>{t.reasonNote}</small></span>
+        <input type="text" value={reason} disabled={locked} placeholder={t.reasonExample} onChange={e => setReason(e.target.value)} />
       </label>
-      {reasonTooLong && <p role="alert" className="inline-error">Keep the reason under 2000 bytes.</p>}
+      {reasonTooLong && <p role="alert" className="inline-error">{t.reasonLong}</p>}
       <div className="claude-permission-actions">
-        <button className="primary-button" disabled={locked} onClick={() => void respond("allow")}>{sending && <LoaderCircle size={14} className="spin" />}Allow once</button>
+        <button className="primary-button" disabled={locked} onClick={() => void respond("allow")}>{sending && <LoaderCircle size={14} className="spin" />}{t.allowOnce}</button>
         {grant.length > 0 && <button className="secondary-button" disabled={locked} onClick={() => void respond("allow", "session")}>{sessionLabel}</button>}
-        <button className="secondary-button" disabled={locked || reasonTooLong} onClick={() => void respond("deny")}>{reasonText ? "Deny with reason" : "Deny"}</button>
+        <button className="secondary-button" disabled={locked || reasonTooLong} onClick={() => void respond("deny")}>{reasonText ? t.denyReason : t.deny}</button>
       </div>
-      <p className="field-hint">{grant.length
-        ? <>“{sessionLabel}” also allows {grant.join(", ")} until this Claude session restarts. Nothing is written to your settings files.</>
-        : "Applies only to this action. Your Claude permission rules stay in place."}</p>
+      <p className="field-hint">{grant.length ? t.grantHint(sessionLabel, grant.join(t.grantsJoin)) : t.onlyAction}</p>
     </>}
-    {error && !(unconfirmedAnswer.unconfirmed && request.params._responseSent) && <p role="alert" className="inline-error">{error}</p>}
+    {error && !(unconfirmedAnswer.unconfirmed && request.params._responseSent) && <p role="alert" className="inline-error">{shownError(error, t)}</p>}
     {unconfirmedAnswer.unconfirmed && !request.params._responseSent && <AnswerAgain onClick={() => { setError(""); unconfirmedAnswer.answerAgain(); }} />}
   </section>;
 }

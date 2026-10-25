@@ -8,7 +8,9 @@
 //    English key; the chosen Agent and the search kept; nothing sent;
 //  - back to English in another window: the frame is as it was;
 //  - Core refusing the workspace read, reloaded in Chinese: the connection
-//    banner is Chinese with Core's reason as it came, then English again.
+//    banner is Chinese with Core's reason as it came, and where the welcome
+//    would be, the Workspace is said to be unread, not empty (no "Create your
+//    first agent"); then English again.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/shell-language-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -183,11 +185,18 @@ try {
   assert.deepEqual([zhBanner.lang, zhBanner.text, zhBanner.retry], ["zh-Hans", "Core 更新失败", "重试"]);
   assert.equal(zhBanner.line, `Workspace 请求返回 HTTP 500（${REFUSAL}）。草稿会保留；下一次刷新会再试。`, "Core's reason as it came");
   assert.equal(await page.locator(".connection").getAttribute("data-core-status"), "Core update failed");
+  // Nothing was read, so not the welcome to a first Agent.
+  const unread = (title) => page.locator(".welcome-unread h1", { hasText: title }).waitFor({ timeout: 10_000 })
+    .then(() => page.locator(".main-panel").evaluate((el) => ({ lang: el.querySelector(".welcome-unread").getAttribute("lang"), detail: el.querySelector(".welcome-unread p").textContent, create: !!el.querySelector(".welcome-create") })));
+  const zhUnread = await unread("无法读取你的工作区。");
+  assert.deepEqual(zhUnread, { lang: "zh-Hans", detail: "目前还不知道其中是否有 Agent。上方的提示说明了原因，并可以重试。", create: false });
   await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "en" })));
   await page.locator(".core-connection-banner strong", { hasText: "Core update failed" }).waitFor({ timeout: 10_000 });
   const enBanner = await banner.evaluate((el) => el.querySelector("span").textContent);
   assert.equal(enBanner, `Workspace request returned HTTP 500. ${REFUSAL} Drafts are kept; the next refresh will try again.`);
-  check("Core refusing the workspace read: the banner in Chinese with Core's reason as it came, then English again", { zhBanner, enBanner });
+  const enUnread = await unread("Your Workspace couldn’t be read.");
+  assert.deepEqual(enUnread, { lang: "en", detail: "Whether it has any Agents isn’t known yet. The banner above says why and can try again.", create: false });
+  check("Core refusing the workspace read: the banner in Chinese with Core's reason as it came, the Workspace unread rather than empty, then English again", { zhBanner, enBanner, zhUnread, enUnread });
 
   assert.deepEqual(report.posts, [], "nothing sent at all");
   assert.deepEqual(report.errors, []);
