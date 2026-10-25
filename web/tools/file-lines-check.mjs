@@ -89,6 +89,9 @@ const server = createServer(async (request, response) => {
         JSON.stringify(
           url.pathname === "/api/workspace"
             ? {
+                // A real Core always says which Workspace this is, and the
+                // page keeps drafts per Workspace (T-195).
+                workspace: { id: "ws-file-lines" },
                 agents: [agent],
                 runtime: { connected: true },
                 defaultCwd: agent.cwd,
@@ -241,10 +244,12 @@ try {
       );
       assert.equal(await composer.inputValue(), draft);
       assert.equal(
-        await page.evaluate(
-          (id) => JSON.parse(localStorage.getItem("yuzuno.drafts"))[id],
-          agent.id,
-        ),
+        await page.evaluate((id) => {
+          const key = `yuzuno.composer.v1:${JSON.stringify(["ws-file-lines", id])}`;
+          return JSON.parse(localStorage.getItem(key) || "null")
+            ?.parts.map((part) => part.text)
+            .join("");
+        }, agent.id),
         draft,
       );
       assert.equal(

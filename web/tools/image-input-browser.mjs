@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { chromium } from "playwright-core";
-import { installConnectionFixture } from "./connection-fixture.mjs";
+import { installConnectionFixture, FIXTURE_WORKSPACE } from "./connection-fixture.mjs";
 const root = resolve(process.env.YUZUNO_UI_DIST || "../target/t31/ui");
 const remoteFixture = process.env.T31_REMOTE_FIXTURE === "1";
 const output = new URL(remoteFixture ? "../../target/t31/browser-remote/" : "../../target/t31/browser/", import.meta.url);
@@ -166,10 +166,10 @@ const choose = async (name = "test.png", bytes = png) => {
     () => !document.body.textContent.includes("Saving images…"),
   );
 };
+// Saved under the Workspace and the Agent it was written in (T-195).
+const draftKey = `yuzuno.composer.v1:${JSON.stringify([FIXTURE_WORKSPACE, "a"])}`;
 const saved = () =>
-  page.evaluate(() =>
-    JSON.parse(localStorage.getItem("yuzuno.composer.v1:a") || "{}"),
-  );
+  page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "{}"), draftKey);
 try {
   await page.goto(base);
   await input().waitFor();
@@ -185,9 +185,8 @@ try {
   await page.keyboard.press("Control+v");
   await page.waitForFunction(() => window.imageFixture.uploads.length === 1);
   await page.waitForFunction(
-    () =>
-      JSON.parse(localStorage.getItem("yuzuno.composer.v1:a") || "{}").images
-        ?.length === 1,
+    (key) => JSON.parse(localStorage.getItem(key) || "{}").images?.length === 1,
+    draftKey,
   );
   assert.equal(await images().count(), 1);
   report.checks.push("native PNG clipboard attaches once");
@@ -327,9 +326,8 @@ try {
   await input().fill("");
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   await page.waitForFunction(
-    () =>
-      !JSON.parse(localStorage.getItem("yuzuno.composer.v1:a") || "{}").images
-        ?.length,
+    (key) => !JSON.parse(localStorage.getItem(key) || "{}").images?.length,
+    draftKey,
   );
   assert.equal(
     await page.evaluate(() => window.imageFixture.sent.at(-1).text),

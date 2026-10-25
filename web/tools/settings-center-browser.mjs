@@ -30,7 +30,9 @@ page.on('console', (message) => { if (message.type() === 'error' && /TypeError|R
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png' };
 await context.addInitScript(() => {
   localStorage.setItem('yuzuno.selected', JSON.stringify('cedar'));
-  localStorage.setItem('yuzuno.composer.v1:cedar', JSON.stringify({ version: 1, parts: [{ kind: 'text', text: 'Keep this draft' }] }));
+  // Saved under the Workspace and the Agent it was written in (T-195); this
+  // fixture's /api/workspace says 'settings-fixture'.
+  localStorage.setItem('yuzuno.composer.v1:["settings-fixture","cedar"]', JSON.stringify({ version: 1, parts: [{ kind: 'text', text: 'Keep this draft' }] }));
 });
 await context.route('**/*', async (route) => {
   const request = route.request(), url = new URL(request.url());
@@ -183,7 +185,7 @@ try {
   assert.match(await appearance.getByRole('status').innerText(), /Using the defaults/);
   const protectedKeys = await page.evaluate(() => ({
     selected: localStorage.getItem('yuzuno.selected'),
-    draft: localStorage.getItem('yuzuno.composer.v1:cedar'),
+    draft: localStorage.getItem('yuzuno.composer.v1:["settings-fixture","cedar"]'),
   }));
   await page.evaluate(() => {
     const set = Storage.prototype.setItem, remove = Storage.prototype.removeItem;
@@ -222,7 +224,7 @@ try {
   assert.equal(await page.evaluate(() => localStorage.getItem('yuzuno.appearance')), null);
   assert.deepEqual(await page.evaluate(() => ({
     selected: localStorage.getItem('yuzuno.selected'),
-    draft: localStorage.getItem('yuzuno.composer.v1:cedar'),
+    draft: localStorage.getItem('yuzuno.composer.v1:["settings-fixture","cedar"]'),
   })), protectedKeys);
   check('appearance reset retry removes this override, preserves the selected Agent and draft, and never saves a defaults object');
   await closeDialog();

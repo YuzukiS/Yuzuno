@@ -39,9 +39,12 @@ const parts = { items: part(40, 3 * MiB), payloads: part(2, 12 * MiB), turns: pa
 const history = { format: 1, readAt: "2026-10-23T08:00:00+00:00", available: true, heldAgents: 1,
   agents: [{ agentId: "a", name: "Mori", unwrittenChanges: true, stored: true, layout: 1, ...parts }], total: parts };
 // A synthetic draft saved for this site, with one pasted text.
+// Saved under the Workspace and the Agent it was written in (T-195); this
+// file's /api/workspace says "ws-history-drafts-language".
+const mine = JSON.stringify(["ws-history-drafts-language", "a"]);
 const drafts = {
-  "yuzuno.composer.v1:a": JSON.stringify({ version: 1, nextNumber: 2, parts: [{ kind: "text", text: "Synthetic draft words " }, { kind: "paste", id: "p1", number: 1, bodyId: "b1" }] }),
-  "yuzuno.paste.v1:a:b1": "SYNTHETIC PASTED line one\nline two",
+  [`yuzuno.composer.v1:${mine}`]: JSON.stringify({ version: 1, nextNumber: 2, parts: [{ kind: "text", text: "Synthetic draft words " }, { kind: "paste", id: "p1", number: 1, bodyId: "b1" }] }),
+  [`yuzuno.paste.v1:${mine}:b1`]: "SYNTHETIC PASTED line one\nline two",
 };
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 
