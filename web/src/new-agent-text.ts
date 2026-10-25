@@ -6,7 +6,8 @@ import { strings, type Language } from "./i18n";
  * model names and descriptions, branch names, what a saved session holds
  * (titles, prompts, messages), and Codex's or Core's warnings and errors are
  * shown as they came. The default Agent names "Codex session" and "Claude
- * session" are data, not words of this dialog.
+ * session" are data, not words of this dialog. Codex's permission choices
+ * take the same language (CodexPermissions, #343).
  */
 export const newAgentText = strings({
   // The dialog.

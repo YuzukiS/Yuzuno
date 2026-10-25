@@ -244,6 +244,7 @@ export function ImportCodexSession({
                 catalog={preview.permissions}
                 disabled={disabled || busy}
                 onChange={setSettings}
+                language={language}
               />
               {!preview.permissions && (
                 <p className="remote-field-note">{t.readForPermissions}</p>

@@ -703,7 +703,7 @@ test("Existing Codex session follows a language change from another window; the 
     const kept = () => ({
       id: page.document.querySelector("#import-session-id").value,
       name: name.value,
-      permission: page.document.querySelector('[aria-label="Permissions"] input:checked')?.value,
+      permission: page.document.querySelector(".codex-permissions input:checked")?.value,
       folder: page.document.querySelector(".session-preview-folder").textContent,
       excerpt: page.document.querySelector(".session-preview-excerpt").textContent,
       warnings: [...page.document.querySelectorAll(".session-import-warnings p")].map((p) => p.textContent),
@@ -714,6 +714,11 @@ test("Existing Codex session follows a language change from another window; the 
     await language("zh-Hans");
     const text = page.document.body.textContent;
     assert.match(text, /欢迎回到你的工作.*Codex 会话 ID.*42 个 Turn.*gpt-6\.1 · high 推理.*添加到 Workspace/s);
+    assert.equal(
+      page.document.querySelector(".codex-permissions [role=\"radiogroup\"]").getAttribute("aria-label"),
+      "权限",
+      "Codex's permission choices follow too (CodexPermissions' own words)",
+    );
     assert.match(page.document.querySelector(".session-handoff-note").textContent, /^原客户端必须先释放此会话.*添加会话不会发送消息/);
     assert.deepEqual(kept(), english.kept, "the ID, name, chosen permission, folder, excerpt and Codex's warnings as they were");
     await language("en");
