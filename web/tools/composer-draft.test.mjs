@@ -366,7 +366,8 @@ test("explicit discard recovers missing or corrupt drafts, preserves other Agent
       storage = new DraftStorage(disk);
     storage.save("other", textDraft("keep"));
     disk.setItem("yuzuno.composer.v1:a", raw);
-    disk.setItem("yuzuno.drafts", JSON.stringify({ a: "do not resurrect" }));
+    const older = JSON.stringify({ a: "not this storage's to clear" });
+    disk.setItem("yuzuno.drafts", older);
     assert.throws(() => storage.load("a"));
     const set = disk.setItem;
     disk.setItem = () => {
@@ -377,6 +378,11 @@ test("explicit discard recovers missing or corrupt drafts, preserves other Agent
     disk.setItem = set;
     storage.discard("a");
     assert.equal(draftText(new DraftStorage(disk).load("a")), "");
+    assert.equal(
+      disk.getItem("yuzuno.drafts"),
+      older,
+      "Discarding this draft neither reads the older map nor clears it (T-195)",
+    );
     storage.save("a", textDraft("fresh"));
     assert.equal(draftText(new DraftStorage(disk).load("a")), "fresh");
     assert.equal(draftText(new DraftStorage(disk).load("other")), "keep");
