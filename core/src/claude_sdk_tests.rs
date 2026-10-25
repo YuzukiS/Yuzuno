@@ -470,7 +470,7 @@ fn each_copy_says_what_needs_it_and_only_one_no_release_needs_can_go() {
     std::os::unix::fs::symlink(at.cache.join(&at.orphan), at.cache.join(&link)).unwrap();
     write(&at.cache.join("notes.txt"), "x");
 
-    let view = copies(script(&at.current), Some(&at.cache));
+    let view = copies(script(&at.current), Ok(&at.cache));
     assert_eq!(view["state"], "ready", "{view}");
     assert_eq!(view["limited"], false);
     let copies = by_key(&view);
@@ -517,9 +517,9 @@ fn nothing_is_offered_or_removed_when_what_the_releases_need_cannot_be_told() {
     for (label, arrange, reason) in cases {
         let at = install();
         let bridge = arrange(&at);
-        let view = copies(Ok(bridge.clone()), Some(&at.cache));
+        let view = copies(Ok(bridge.clone()), Ok(&at.cache));
         assert_eq!((&view["state"], &view["reason"], &view["copies"]), (&json!("refused"), &json!(reason), &json!([])), "{label}");
-        let done = remove_chosen(Ok(bridge), Some(&at.cache), &[at.orphan.clone()]);
+        let done = remove_chosen(Ok(bridge), Ok(&at.cache), &[at.orphan.clone()]);
         assert_eq!((&done["state"], &done["reason"]), (&json!("refused"), &json!(reason)), "{label}");
         assert!(at.cache.join(&at.orphan).join(RECEIPT).is_file(), "{label}: nothing was removed");
     }
@@ -536,7 +536,7 @@ fn only_chosen_unneeded_copies_go_and_what_is_needed_is_read_again_first() {
     let again = content_key(&back).unwrap();
     prepare(&back, &at.cache, &at.node).unwrap();
     std::fs::rename(base.join("releases/core-1"), base.join("set-aside")).unwrap();
-    assert_eq!(by_key(&copies(script(&at.current), Some(&at.cache)))[&again]["removable"], true);
+    assert_eq!(by_key(&copies(script(&at.current), Ok(&at.cache)))[&again]["removable"], true);
     std::fs::rename(base.join("set-aside"), base.join("releases/core-1")).unwrap();
     // A release downloaded and waiting to be prepared (`incoming/`) needs its copy too.
     let waiting = distinct_release(base, "core-2");
@@ -544,13 +544,13 @@ fn only_chosen_unneeded_copies_go_and_what_is_needed_is_read_again_first() {
     prepare(&waiting, &at.cache, &at.node).unwrap();
     std::fs::create_dir_all(base.join("incoming")).unwrap();
     std::fs::rename(base.join("releases/core-2"), base.join("incoming/core-2")).unwrap();
-    assert_eq!(by_key(&copies(script(&at.current), Some(&at.cache)))[&downloaded]["usedBy"], "installedRelease");
+    assert_eq!(by_key(&copies(script(&at.current), Ok(&at.cache)))[&downloaded]["usedBy"], "installedRelease");
     let no_receipt = "1".repeat(32);
     write(&at.cache.join(&no_receipt).join("sdk.mjs"), "x");
     let missing = "4".repeat(32);
 
     let chosen = [at.orphan.clone(), again.clone(), current.clone(), previous.clone(), downloaded.clone(), missing.clone(), no_receipt.clone()];
-    let done = remove_chosen(script(&at.current), Some(&at.cache), &chosen);
+    let done = remove_chosen(script(&at.current), Ok(&at.cache), &chosen);
     assert_eq!(done["state"], "done", "{done}");
     let outcomes: BTreeMap<String, Value> = done["results"].as_array().unwrap().iter()
         .map(|result| (result["key"].as_str().unwrap().to_owned(), result.clone())).collect();
@@ -569,10 +569,9 @@ fn only_chosen_unneeded_copies_go_and_what_is_needed_is_read_again_first() {
 
     for keys in [vec![], vec![again.clone(), again.clone()], vec!["../escape".to_owned()], vec![at.orphan.to_uppercase()],
                  (0..65).map(|n| format!("{n:032x}")).collect::<Vec<_>>()] {
-        let done = remove_chosen(script(&at.current), Some(&at.cache), &keys);
+        let done = remove_chosen(script(&at.current), Ok(&at.cache), &keys);
         assert_eq!((&done["state"], &done["reason"]), (&json!("refused"), &json!("badChoice")), "{keys:?}");
     }
-    assert_eq!(remove_chosen(script(&at.current), None, &[again.clone()])["reason"], "cacheUnset");
 }
 
 /// Whether a folder made read-only refuses this process (not when run as root).
@@ -589,7 +588,7 @@ fn a_copy_that_cannot_be_moved_aside_stays_whole_and_one_partly_removed_is_never
     let at = install();
     // The cache refuses the rename: nothing changes.
     let refuses = read_only_refuses(&at.cache);
-    let done = remove_chosen(script(&at.current), Some(&at.cache), &[at.orphan.clone()]);
+    let done = remove_chosen(script(&at.current), Ok(&at.cache), &[at.orphan.clone()]);
     std::fs::set_permissions(&at.cache, std::fs::Permissions::from_mode(0o755)).unwrap();
     if !refuses {
         eprintln!("skipped: read-only folders don't refuse this user");
@@ -603,14 +602,14 @@ fn a_copy_that_cannot_be_moved_aside_stays_whole_and_one_partly_removed_is_never
     let stuck = at.cache.join(&at.orphan).join("stuck");
     write(&stuck.join("file"), "x");
     assert!(read_only_refuses(&stuck));
-    let done = remove_chosen(script(&at.current), Some(&at.cache), &[at.orphan.clone()]);
+    let done = remove_chosen(script(&at.current), Ok(&at.cache), &[at.orphan.clone()]);
     assert_eq!(done["results"][0]["outcome"], "partly", "{done}");
     assert!(done["results"][0].get("bytes").is_none(), "no space is claimed for it");
     let left = left_in(&at.cache);
     let aside = left.iter().find(|name| name.starts_with(&format!("{TEMPORARY}removing-{}", at.orphan))).expect("moved aside").clone();
     assert!(!left.contains(&at.orphan));
     // It is not listed, and no preparation copies from it; the next one clears it.
-    assert!(!by_key(&copies(script(&at.current), Some(&at.cache))).contains_key(&at.orphan));
+    assert!(!by_key(&copies(script(&at.current), Ok(&at.cache))).contains_key(&at.orphan));
     for entry in std::fs::read_dir(at.cache.join(&aside).join("stuck")).unwrap().flatten() {
         assert_eq!(entry.file_name(), "file");
     }
@@ -625,11 +624,72 @@ fn a_copy_that_cannot_be_moved_aside_stays_whole_and_one_partly_removed_is_never
 async fn a_removal_waits_while_a_runtime_is_being_prepared() {
     let at = install();
     let held = PREPARING.clone().lock_owned().await;
-    let removal = tokio::spawn(remove(script(&at.current), Some(at.cache.clone()), vec![at.orphan.clone()]));
+    let removal = tokio::spawn(remove(script(&at.current), Ok(at.cache.clone()), vec![at.orphan.clone()]));
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert!(!removal.is_finished());
     assert!(at.cache.join(&at.orphan).is_dir());
     drop(held);
     let done = removal.await.unwrap();
+    assert_eq!(done["results"][0]["outcome"], "removed", "{done}");
+}
+
+/// Every file under `dir` with its bytes, links as their targets: what a
+/// refusal must leave exactly as it was.
+fn contents(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+    let mut found = BTreeMap::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(here) = pending.pop() {
+        for entry in std::fs::read_dir(&here).unwrap().flatten() {
+            let path = entry.path();
+            let name = path.strip_prefix(dir).unwrap().to_string_lossy().into_owned();
+            let kind = entry.file_type().unwrap();
+            if kind.is_symlink() {
+                found.insert(name, std::fs::read_link(&path).unwrap().to_string_lossy().into_owned().into_bytes());
+            } else if kind.is_dir() {
+                pending.push(path);
+            } else {
+                found.insert(name, std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn only_this_workspaces_own_cache_is_offered_and_one_set_elsewhere_or_linked_is_left_as_it_is() {
+    let data = Path::new("/data/workspace");
+    let own = data.join("claude-runtime");
+    // Which cache a request may work in.
+    assert_eq!(removal_cache(None, Some(&own), data), Ok(own.clone()));
+    assert_eq!(removal_cache(Some("".into()), Some(&own), data), Ok(own.clone()), "an empty override is no override");
+    assert_eq!(removal_cache(Some("/shared/claude-runtime".into()), Some(&own), data), Err("cacheElsewhere"));
+    assert_eq!(removal_cache(None, Some(Path::new("/data/other/claude-runtime")), data), Err("cacheElsewhere"), "another Workspace's");
+    assert_eq!(removal_cache(None, None, data), Err("cacheUnset"));
+
+    let at = install();
+    let before = contents(at.base.path());
+    // A cache set elsewhere: nothing is offered, nothing removed.
+    let view = copies(script(&at.current), Err("cacheElsewhere"));
+    assert_eq!((&view["state"], &view["reason"], &view["copies"]), (&json!("refused"), &json!("cacheElsewhere"), &json!([])));
+    let done = remove_chosen(script(&at.current), Err("cacheElsewhere"), &[at.orphan.clone()]);
+    assert_eq!((&done["state"], &done["reason"], &done["results"]), (&json!("refused"), &json!("cacheElsewhere"), &json!([])));
+    assert_eq!(contents(at.base.path()), before, "not a byte changed");
+
+    // The cache folder itself a link: the same.
+    let real = at.base.path().join("real-cache");
+    std::fs::rename(&at.cache, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &at.cache).unwrap();
+    let before = contents(at.base.path());
+    let view = copies(script(&at.current), Ok(&at.cache));
+    assert_eq!((&view["state"], &view["reason"], &view["copies"]), (&json!("refused"), &json!("cacheLinked"), &json!([])));
+    let done = remove_chosen(script(&at.current), Ok(&at.cache), &[at.orphan.clone()]);
+    assert_eq!((&done["state"], &done["reason"]), (&json!("refused"), &json!("cacheLinked")));
+    assert_eq!(contents(at.base.path()), before, "not a byte changed");
+    assert!(real.join(&at.orphan).join(RECEIPT).is_file());
+
+    // Back as a plain folder, the same copy can go.
+    std::fs::remove_file(&at.cache).unwrap();
+    std::fs::rename(&real, &at.cache).unwrap();
+    let done = remove_chosen(script(&at.current), Ok(&at.cache), &[at.orphan.clone()]);
     assert_eq!(done["results"][0]["outcome"], "removed", "{done}");
 }

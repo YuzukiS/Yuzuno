@@ -300,6 +300,16 @@ test("prepared runtimes: a refusal is said and offers nothing; a removal Core re
   assert.equal(refused.doc.querySelectorAll('[data-copy] input[type="checkbox"]').length, 0);
   assert.equal(refused.button("Remove chosen…"), undefined);
 
+  // A cache set outside this Workspace's own folder is never offered (T-193).
+  const elsewhere = mount({}, { runtimes: { copies: () => ({ format: 1, readAt: "2026-10-25T20:00:00Z", state: "refused", reason: "cacheElsewhere", copies: [], limited: false }) } });
+  t.after(elsewhere.close);
+  elsewhere.w.renderStorage({ active: true, updates: managed });
+  await until(() => elsewhere.text().includes("Workspace database"));
+  elsewhere.button("Check prepared runtimes").click();
+  await until(() => elsewhere.doc.querySelector('[data-refused="cacheElsewhere"]'), "the refusal");
+  assert.match(elsewhere.text(), /These copies are kept in a folder set for Core outside this Workspace's own, which another Core may share, so removing them is not offered here\./);
+  assert.equal(elsewhere.button("Remove chosen…"), undefined);
+
   const late = mount({}, { runtimes: {
     copies: () => ready(listed),
     remove: () => ({ format: 1, state: "refused", reason: "releasesUnreadable", results: [] }),

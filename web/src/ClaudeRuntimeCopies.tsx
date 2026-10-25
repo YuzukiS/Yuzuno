@@ -25,6 +25,8 @@ const refusalsZh: Record<string, string> = {
   releasesUnreadable: "无法读取某个已安装或已下载发布版本的运行环境，因此无法判断它需要什么。没有可移除的项。",
   cacheUnreadable: "Core 无法读取保存这些副本的文件夹。",
   cacheUnset: "Core 还没有为这些副本设置文件夹。",
+  cacheElsewhere: "这些副本保存在为 Core 另设的文件夹中，不是这个 Workspace 自己的文件夹，可能与其他 Core 共用，因此这里不提供移除。",
+  cacheLinked: "保存这些副本的文件夹是一个链接，因此这里不提供移除。",
   badChoice: "这个选择无法移除。",
   interrupted: "移除被中断。请再次检查。",
 };
@@ -34,13 +36,15 @@ const refusals: Record<string, string> = {
   releasesUnreadable: "The runtime of an installed or downloaded release couldn't be read, so what it needs can't be told. Nothing is offered for removal.",
   cacheUnreadable: "Core couldn't read the folder these copies are kept in.",
   cacheUnset: "Core hasn't set up a folder for these copies.",
+  cacheElsewhere: "These copies are kept in a folder set for Core outside this Workspace's own, which another Core may share, so removing them is not offered here.",
+  cacheLinked: "The folder these copies are kept in is a link, so removing them is not offered here.",
   badChoice: "That choice can't be removed.",
   interrupted: "The removal was interrupted. Check again.",
 };
 
 const text = strings({
   title: "Claude runtimes Core prepared",
-  note: "Core prepares a copy of the Claude runtime, with the Claude Agent SDK in it, for each release that needs one, and keeps it in the Workspace's folder. A copy no installed or downloaded release needs can be removed. If a Core that needs it runs later, it prepares the copy again, which may download the SDK.",
+  note: "Core prepares a copy of the Claude runtime, with the Claude Agent SDK in it, for each release that needs one, normally in this Workspace's folder. A copy no installed or downloaded release needs can be removed. If a Core that needs it runs later, it prepares the copy again, which may download the SDK.",
   check: "Check prepared runtimes",
   checkAgain: "Check again",
   checking: "Checking…",
@@ -81,7 +85,7 @@ const text = strings({
   },
 }, {
   title: "Core 准备的 Claude 运行环境",
-  note: "Core 会为每个需要的发布版本准备一份包含 Claude Agent SDK 的 Claude 运行环境副本，保存在 Workspace 的文件夹中。没有任何已安装或已下载的发布版本需要的副本可以移除。之后如果有需要它的 Core 运行，会重新准备这份副本，可能需要下载 SDK。",
+  note: "Core 会为每个需要的发布版本准备一份包含 Claude Agent SDK 的 Claude 运行环境副本，通常保存在这个 Workspace 的文件夹中。没有任何已安装或已下载的发布版本需要的副本可以移除。之后如果有需要它的 Core 运行，会重新准备这份副本，可能需要下载 SDK。",
   check: "检查已准备的运行环境",
   checkAgain: "再次检查",
   checking: "正在检查…",

@@ -680,18 +680,61 @@ fn folder_bytes(dir: &Path) -> Option<u64> {
     Some(total)
 }
 
-async fn read_copies() -> Result<axum::Json<serde_json::Value>, crate::server::ApiError> {
-    let copies = tokio::task::spawn_blocking(|| copies(configured_bridge(std::env::var_os("YUZUNO_CLAUDE_BRIDGE")), cache().as_deref())).await?;
+/// The cache this can list and remove from: only the Workspace's own,
+/// `<data folder>/claude-runtime`, as `set_cache` made it for this process.
+/// A cache set elsewhere (YUZUNO_CLAUDE_RUNTIME_CACHE, or another
+/// Workspace's in this process) may be shared with another Core, which
+/// neither PREPARING nor this install's releases speak for: `cacheElsewhere`.
+/// Preparing still uses whichever `cache()` says.
+fn removal_cache(overridden: Option<OsString>, process: Option<&Path>, data_dir: &Path) -> std::result::Result<PathBuf, &'static str> {
+    if overridden.is_some_and(|dir| !dir.is_empty()) {
+        return Err("cacheElsewhere");
+    }
+    let process = process.ok_or("cacheUnset")?;
+    if process != data_dir.join("claude-runtime") {
+        return Err("cacheElsewhere");
+    }
+    Ok(process.to_path_buf())
+}
+
+/// The removal cache for a request to this Workspace.
+fn workspace_cache(ws: &crate::workspace::Workspace) -> std::result::Result<PathBuf, &'static str> {
+    removal_cache(std::env::var_os("YUZUNO_CLAUDE_RUNTIME_CACHE"), CACHE.get().map(PathBuf::as_path), &ws.data_dir)
+}
+
+/// Why the cache folder itself can't be worked in: a link (`cacheLinked`),
+/// or not a folder that can be read. Not there yet is fine: it holds nothing.
+fn cache_root_problem(cache: &Path) -> Option<&'static str> {
+    match std::fs::symlink_metadata(cache) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Ok(meta) if meta.file_type().is_symlink() => Some("cacheLinked"),
+        Ok(meta) if meta.is_dir() => None,
+        _ => Some("cacheUnreadable"),
+    }
+}
+
+async fn read_copies(axum::extract::State(ws): axum::extract::State<Arc<crate::workspace::Workspace>>) -> Result<axum::Json<serde_json::Value>, crate::server::ApiError> {
+    let cache = workspace_cache(&ws);
+    let copies = tokio::task::spawn_blocking(move || {
+        copies(configured_bridge(std::env::var_os("YUZUNO_CLAUDE_BRIDGE")), cache.as_deref().map_err(|reason| *reason))
+    })
+    .await?;
     Ok(axum::Json(copies))
 }
 
 /// The prepared copies in the cache, each with what is known of it and
 /// whether it can be removed. Read only; no path is said.
-fn copies(script: Result<PathBuf>, cache: Option<&Path>) -> serde_json::Value {
+fn copies(script: Result<PathBuf>, cache: std::result::Result<&Path, &'static str>) -> serde_json::Value {
     use serde_json::json;
     let read_at = crate::model::now();
     let refused = |reason: &str| json!({"format": 1, "readAt": read_at, "state": "refused", "reason": reason, "copies": [], "limited": false});
-    let Some(cache) = cache else { return refused("cacheUnset") };
+    let cache = match cache {
+        Ok(cache) => cache,
+        Err(reason) => return refused(reason),
+    };
+    if let Some(reason) = cache_root_problem(cache) {
+        return refused(reason);
+    }
     let needed = match needed(script, cache) {
         Ok(needed) => needed,
         Err(reason) => return refused(reason),
@@ -746,18 +789,21 @@ struct Removal {
     keys: Vec<String>,
 }
 
-async fn remove_copies(axum::Json(removal): axum::Json<Removal>) -> Result<axum::Json<serde_json::Value>, crate::server::ApiError> {
-    let done = remove(configured_bridge(std::env::var_os("YUZUNO_CLAUDE_BRIDGE")), cache(), removal.keys).await;
+async fn remove_copies(
+    axum::extract::State(ws): axum::extract::State<Arc<crate::workspace::Workspace>>,
+    axum::Json(removal): axum::Json<Removal>,
+) -> Result<axum::Json<serde_json::Value>, crate::server::ApiError> {
+    let done = remove(configured_bridge(std::env::var_os("YUZUNO_CLAUDE_BRIDGE")), workspace_cache(&ws), removal.keys).await;
     Ok(axum::Json(done))
 }
 
 /// Removes the chosen copies no release needs, while no runtime is
 /// being prepared (`PREPARING`), with what is needed read again first.
-async fn remove(script: Result<PathBuf>, cache: Option<PathBuf>, keys: Vec<String>) -> serde_json::Value {
+async fn remove(script: Result<PathBuf>, cache: std::result::Result<PathBuf, &'static str>, keys: Vec<String>) -> serde_json::Value {
     let held = PREPARING.clone().lock_owned().await;
     tokio::task::spawn_blocking(move || {
         let _held = held;
-        remove_chosen(script, cache.as_deref(), &keys)
+        remove_chosen(script, cache.as_deref().map_err(|reason| *reason), &keys)
     })
     .await
     .unwrap_or_else(|_| serde_json::json!({"format": 1, "state": "refused", "reason": "interrupted", "results": []}))
@@ -772,14 +818,20 @@ async fn remove(script: Result<PathBuf>, cache: Option<PathBuf>, keys: Vec<Strin
 /// - `failed`: it could not be moved aside, so it is as it was;
 /// - `protected`: a release needs it, or this Core uses it;
 /// - `notFound` or `unknown` (not a copy this can tell is one): kept.
-fn remove_chosen(script: Result<PathBuf>, cache: Option<&Path>, keys: &[String]) -> serde_json::Value {
+fn remove_chosen(script: Result<PathBuf>, cache: std::result::Result<&Path, &'static str>, keys: &[String]) -> serde_json::Value {
     use serde_json::json;
     let refused = |reason: &str| json!({"format": 1, "state": "refused", "reason": reason, "results": []});
     let unique: std::collections::BTreeSet<&String> = keys.iter().collect();
     if keys.is_empty() || keys.len() > COPIES_LISTED || unique.len() != keys.len() || !keys.iter().all(|key| copy_key(key)) {
         return refused("badChoice");
     }
-    let Some(cache) = cache else { return refused("cacheUnset") };
+    let cache = match cache {
+        Ok(cache) => cache,
+        Err(reason) => return refused(reason),
+    };
+    if let Some(reason) = cache_root_problem(cache) {
+        return refused(reason);
+    }
     let needed = match needed(script, cache) {
         Ok(needed) => needed,
         Err(reason) => return refused(reason),
