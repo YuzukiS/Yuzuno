@@ -1070,9 +1070,10 @@ fn a_stopped_automatic_pass_stays_stopped_and_says_what_it_had_removed() {
     assert_eq!(backups_in(&folder), vec!["b-2", "b-3"]);
 }
 
-/// An operation keeps its place until its end is written: the next starts,
-/// and writes, only after, so that write, copied before, can't land over the
-/// next one's (main CI 40175308220, where a backup's write landed over the
+/// An operation keeps its place until its end is written, and the write
+/// holds the journal from its copy until it has written: the next starts, and
+/// writes, only after, so that write's older copy can't land over the next
+/// one's (main CI 40175308220's failure fits a backup's write landing over the
 /// removal started right after it, so a restart didn't know the removal).
 #[tokio::test(flavor = "multi_thread")]
 async fn an_operation_keeps_its_place_until_its_end_is_written_so_the_next_stays_in_the_journal() {
@@ -1100,6 +1101,7 @@ async fn an_operation_keeps_its_place_until_its_end_is_written_so_the_next_stays
     end_first.send(()).unwrap();
     held.recv().unwrap();
     assert_eq!(backups.current().map(|op| op.id), Some(first.id.clone()), "still in its place while its end is written");
+    assert!(backups.writing.try_lock().is_err(), "its write holds the journal from its copy until it has written");
     let meanwhile = backups.start("check", "second", json!({"path": "/b"}), |_| None, |_| unreachable!("not while the first is in its place"));
     assert!(matches!(meanwhile, Err(Refusal::Busy(id)) if id == first.id), "nothing else starts meanwhile");
     release.send(()).unwrap();
