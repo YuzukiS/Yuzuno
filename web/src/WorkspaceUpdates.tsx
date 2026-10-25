@@ -17,6 +17,7 @@ import {
 import type { SettingsEditor } from "./settings-catalog";
 import { SettingsCenter, type SettingsNavigation } from "./SettingsCenter";
 import { RuntimeSection } from "./RuntimeSection";
+import { AboutSection } from "./AboutSection";
 import { AppearanceSection } from "./AppearanceSettings";
 import { InputPreferencesSection } from "./InputPreferences";
 import { ShortcutHelpSection } from "./ShortcutHelp";
@@ -26,6 +27,7 @@ import { DiagnosticsCopy } from "./RecoveryPage";
 import { HistoryComposition } from "./HistoryComposition";
 import { StorageOverview } from "./StorageOverview";
 import { ReviewSettings } from "./ReviewSettings";
+import { AgentDefaults } from "./AgentDefaults";
 import { HomePresentationSettings } from "./HomePresentationSettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { WorkspaceBackup } from "./WorkspaceBackup";
@@ -766,7 +768,7 @@ export function WorkspaceUpdates({
         navigation={navigation}
         onEditorChange={setActiveEditor}
         attention={stage === "running" || stage === "reload" || stage === "prepared" || stage === "local" || stage === "published"}
-        renderEditor={(tab, visible) => <>
+        renderEditor={(tab, visible, openEditor) => <>
           {tab === "updates" && (
             <section
               className="settings-section"
@@ -993,11 +995,13 @@ export function WorkspaceUpdates({
           {tab === "appearance" && <AppearanceSection />}
           {tab === "input" && <InputPreferencesSection />}
           {tab === "shortcuts" && <ShortcutHelpSection />}
+          {tab === "agent-defaults" && <AgentDefaults active={open} />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
           {tab === "notifications" && <NotificationSettings />}
           {tab === "backup" && <WorkspaceBackup active={open && visible} />}
           {tab === "remote" && <RemoteAccessSettings active={open && visible} />}
+          {tab === "about" && <AboutSection current={status?.current ?? null} openEditor={openEditor} />}
         </>}
       />
     </Modal>

@@ -1,0 +1,26 @@
+/* About & help (T-191): links in the help text, and license texts that open
+   in place. */
+.about-section .about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+.about-section .about-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.about-section .about-version code {
+  overflow-wrap: anywhere;
+}
+/* A license text's long unbroken lines (rules, URLs) wrap instead of
+   widening the row past a phone's width. */
+.about-section .settings-row-main {
+  grid-template-columns: minmax(0, 1fr);
+}
+.about-section .about-license-text {
+  max-height: 16rem;
+  overflow-wrap: anywhere;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
