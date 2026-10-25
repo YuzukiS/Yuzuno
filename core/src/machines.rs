@@ -30,8 +30,9 @@ pub struct HarnessCheck {
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Claude Code on the Core host only: what its own `claude auth status`
-    /// said, run as Core runs it. None where it was not asked.
+    /// Claude Code: what its own `claude auth status` said, on the Core host
+    /// run as Core runs it, on an SSH machine run as SSH runs it there (the
+    /// check's own probe). None where it was not asked or did not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sign_in: Option<SignIn>,
 }
@@ -314,6 +315,34 @@ fn claude_login_hint(method: Option<&str>) -> String {
     )
 }
 
+/// An SSH machine's Harness CLIs as the check's probe found them. Claude there
+/// runs Yuzuno's bridge on that machine's Node, with that machine's own
+/// installed and logged-in CLI. Its sign-in is what the probe's
+/// `claude auth status` said, run as SSH runs it: only whether it is signed in
+/// and the method's short name. A probe that didn't say (an older helper, or
+/// a CLI that didn't answer) leaves it unasked, never signed out.
+fn ssh_harnesses(info: &remote::RemoteInfo) -> Vec<HarnessCheck> {
+    let claude_error = info.claude_error.clone().or_else(|| {
+        info.node_error.as_ref().map(|_| "Claude Code was found, but node (needed by Yuzuno's Claude bridge) was not".to_owned())
+    }).or_else(|| (info.claude_logged_in == Some(false)).then(|| claude_login_hint(info.claude_auth_method.as_deref())));
+    // As on the Core host, sign-in is said only of a CLI that can run there:
+    // with another error (no Node, say), that error is the one that counts.
+    let runnable = info.claude_error.is_none() && info.node_error.is_none();
+    let ssh_sign_in = info.claude_logged_in.filter(|_| runnable).map(|signed_in| SignIn {
+        state: if signed_in { "signedIn" } else { "signedOut" }.into(),
+        method: info.claude_auth_method.clone().filter(|method| method.len() <= 40),
+        folder: None,
+        detail: None,
+    });
+    vec![HarnessCheck {
+        harness: "codex".into(), supported: true, found: info.codex_error.is_none() && info.codex.is_some(),
+        executable: info.codex.clone(), version: info.codex_version.clone(), error: info.codex_error.clone(), sign_in: None,
+    }, HarnessCheck {
+        harness: "claude".into(), supported: true, found: claude_error.is_none() && info.claude.is_some(),
+        executable: info.claude.clone(), version: info.claude_version.clone(), error: claude_error, sign_in: ssh_sign_in,
+    }]
+}
+
 /// Runs one check and stores it, whether it succeeds or fails. Unknown
 /// machines are an error; an unreachable machine is a recorded result.
 pub async fn check(ws: &Workspace, machine_id: &str) -> Result<MachineCheck> {
@@ -340,21 +369,10 @@ pub async fn check(ws: &Workspace, machine_id: &str) -> Result<MachineCheck> {
         match remote::probe(&machine).await {
             Ok(info) => {
                 result.reachable = true;
-                result.host = Some(HostFacts { hostname: info.hostname, platform: info.platform, home: info.home });
-                // Claude there runs Yuzuno's bridge on that machine's Node,
-                // with that machine's own installed and logged-in CLI.
-                let claude_error = info.claude_error.clone().or_else(|| {
-                    info.node_error.as_ref().map(|_| "Claude Code was found, but node (needed by Yuzuno's Claude bridge) was not".to_owned())
-                }).or_else(|| (info.claude_logged_in == Some(false)).then(|| claude_login_hint(info.claude_auth_method.as_deref())));
-                result.harnesses = vec![HarnessCheck {
-                    harness: "codex".into(), supported: true, found: info.codex_error.is_none() && info.codex.is_some(),
-                    executable: info.codex, version: info.codex_version, error: info.codex_error, sign_in: None,
-                }, HarnessCheck {
-                    harness: "claude".into(), supported: true, found: claude_error.is_none() && info.claude.is_some(),
-                    executable: info.claude, version: info.claude_version, error: claude_error, sign_in: None,
-                }];
+                result.harnesses = ssh_harnesses(&info);
                 result.default_folder = Some(FolderCheck {
                     path: machine.default_cwd.clone(), resolved: info.default_cwd, error: info.default_cwd_error });
+                result.host = Some(HostFacts { hostname: info.hostname, platform: info.platform, home: info.home });
             }
             Err(error) => {
                 result.error = Some(error.to_string().chars().take(2000).collect());
@@ -426,6 +444,46 @@ mod tests {
             ("unknown", Some("`claude auth status` did not answer within 300ms")));
         let missing = claude_sign_in(&tmp.path().join("gone").to_string_lossy(), wait).await;
         assert!(missing.detail.unwrap().starts_with("Could not run `claude auth status`"));
+    }
+
+    /// A probe's answer as the remote helper prints it (remote_helper.py).
+    fn probed(extra: serde_json::Value) -> remote::RemoteInfo {
+        let mut info = serde_json::json!({"hostname": "box", "platform": "linux", "home": "/home/u",
+            "codex": "/usr/bin/codex", "codexVersion": "codex-cli 0.162.1",
+            "node": "/usr/bin/node", "nodeVersion": "v22.23.2", "claude": "/usr/bin/claude", "claudeVersion": "2.1.296 (Claude Code)"});
+        info.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(info).unwrap()
+    }
+
+    #[test]
+    fn an_ssh_check_keeps_what_claude_auth_status_said_there_and_nothing_it_did_not() {
+        let claude = |info: &remote::RemoteInfo| ssh_harnesses(info).into_iter().find(|h| h.harness == "claude").unwrap();
+        let signed_in = claude(&probed(serde_json::json!({"claudeLoggedIn": true, "claudeAuthMethod": "claude.ai"})));
+        assert!(signed_in.found && signed_in.error.is_none(), "{signed_in:?}");
+        assert_eq!(signed_in.sign_in, Some(SignIn { state: "signedIn".into(), method: Some("claude.ai".into()), folder: None, detail: None }));
+        let json = serde_json::to_value(&signed_in).unwrap();
+        assert_eq!(json["signIn"], serde_json::json!({"state": "signedIn", "method": "claude.ai"}));
+        // Signed out: not usable, with where to sign in, and said as signed out.
+        let signed_out = claude(&probed(serde_json::json!({"claudeLoggedIn": false, "claudeAuthMethod": "none"})));
+        assert!(!signed_out.found);
+        assert!(signed_out.error.as_deref().unwrap().contains("not logged in for SSH sessions"), "{signed_out:?}");
+        assert_eq!(signed_out.sign_in.as_ref().map(|s| (s.state.as_str(), s.method.as_deref())), Some(("signedOut", Some("none"))));
+        // Not said (an older helper, or a CLI that didn't answer): unasked, still found.
+        let unsaid = claude(&probed(serde_json::json!({})));
+        assert!(unsaid.found && unsaid.sign_in.is_none(), "{unsaid:?}");
+        assert!(serde_json::to_value(&unsaid).unwrap().get("signIn").is_none());
+        // A method name past the bound is not kept; the state still is.
+        let long = claude(&probed(serde_json::json!({"claudeLoggedIn": true, "claudeAuthMethod": "x".repeat(41)})));
+        assert_eq!(long.sign_in.as_ref().map(|s| (s.state.as_str(), s.method.is_none())), Some(("signedIn", true)));
+        // Without Node there, the bridge can't run: that is the error, and no
+        // sign-in is said, whatever `claude auth status` answered.
+        for signed_in in [true, false] {
+            let no_node = claude(&probed(serde_json::json!({"nodeError": "找不到 node", "claudeLoggedIn": signed_in, "claudeAuthMethod": "none"})));
+            assert!(!no_node.found && no_node.sign_in.is_none(), "{no_node:?}");
+            assert!(no_node.error.as_deref().unwrap().contains("node (needed by Yuzuno's Claude bridge) was not"), "{no_node:?}");
+        }
+        // Codex there has no sign-in of its own in a machine check.
+        assert!(ssh_harnesses(&probed(serde_json::json!({"claudeLoggedIn": true}))).iter().all(|h| h.harness != "codex" || h.sign_in.is_none()));
     }
 
     #[test]
