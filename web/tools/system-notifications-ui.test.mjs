@@ -23,14 +23,19 @@ try {
     entry,
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
-import {useSystemNotifications} from ${JSON.stringify(path.join(root, "src/useSystemNotifications.ts"))};
+import {useSystemNotifications, useBackupRun} from ${JSON.stringify(path.join(root, "src/useSystemNotifications.ts"))};
 const root = createRoot(document.getElementById('root'));
 window.opened = [];
 function Probe({ workspaceId, agents, asks }) {
   useSystemNotifications(workspaceId, agents, asks, (notice) => window.opened.push(notice.home ? 'home' : notice.agentId || 'workspace'));
   return null;
 }
-window.read = (workspaceId, agents, asks = null) => root.render(<Probe workspaceId={workspaceId} agents={agents} asks={asks} />);`,
+window.read = (workspaceId, agents, asks = null) => root.render(<Probe workspaceId={workspaceId} agents={agents} asks={asks} />);
+function BackupProbe({ revision }) {
+  window.backupRun = useBackupRun(revision);
+  return null;
+}
+window.readBackup = (revision) => root.render(<BackupProbe revision={revision} />);`,
   );
   const result = await build({
     root,
@@ -47,7 +52,7 @@ window.read = (workspaceId, agents, asks = null) => root.render(<Probe workspace
 const tick = () => new Promise((resolve) => setTimeout(resolve, 25));
 
 /** A page whose system allows `permission`, with this device's saved choices. */
-function mount({ permission = "granted", saved = { enabled: true }, looking = false } = {}) {
+function mount({ permission = "granted", saved = { enabled: true }, looking = false, shell, answers = {} } = {}) {
   const errors = [];
   const vc = new VirtualConsole();
   vc.on("jsdomError", (e) => errors.push(e.message));
@@ -57,10 +62,12 @@ function mount({ permission = "granted", saved = { enabled: true }, looking = fa
     pretendToBeVisual: true,
     virtualConsole: vc,
   });
-  const page = { dom, errors, requests: [], asked: 0, shown: [], looking };
+  const page = { dom, errors, requests: [], asked: 0, shown: [], looking, invoked: [] };
   const { window } = dom;
   window.fetch = (url) => {
     page.requests.push(String(url));
+    const answer = answers[new URL(String(url), "https://isolated.test").pathname];
+    if (answer) return Promise.resolve({ ok: true, status: 200, json: async () => answer, text: async () => JSON.stringify(answer) });
     return Promise.reject(new Error("no request expected"));
   };
   if (!window.isSecureContext) Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
@@ -81,6 +88,21 @@ function mount({ permission = "granted", saved = { enabled: true }, looking = fa
   }
   window.Notification = Recorder;
   window.focus = () => {};
+  // The desktop app's command bridge (T-188), as in notification-settings-ui.
+  if (shell) {
+    window.__TAURI_INTERNALS__ = {};
+    window.__TAURI__ = {
+      core: {
+        invoke: async (command, args) => {
+          // Copied out of the page's realm, to compare with this one's values.
+          page.invoked.push(args === undefined ? [command] : [command, JSON.parse(JSON.stringify(args))]);
+          if (command === "desktop_notifications") return shell.answer;
+          if (command === "desktop_notify") return { handed: true };
+          throw `unexpected ${command}`;
+        },
+      },
+    };
+  }
   if (saved) window.localStorage.setItem("yuzuno.notifications", JSON.stringify(saved));
   window.eval(bundle);
   page.read = async (agents, asks = null, workspaceId = "ws-1") => {
@@ -89,9 +111,9 @@ function mount({ permission = "granted", saved = { enabled: true }, looking = fa
   };
   // window.opened is the page's own array: compared through Array.from (another realm).
   page.titles = () => page.shown.map((n) => n.title);
-  page.close = () => {
+  page.close = (requests = []) => {
     assert.deepEqual(errors, []);
-    assert.deepEqual(page.requests, [], "nothing reaches Core");
+    assert.deepEqual(page.requests, requests, "nothing else reaches Core");
     assert.equal(page.asked, 0, "the system is never asked from here");
     window.close();
   };
@@ -174,4 +196,45 @@ test("another Workspace starts afresh: its first read is no change", async () =>
   await page.read([result("a")], null, "ws-2");
   assert.deepEqual(page.shown, []);
   page.close();
+});
+
+// T-188: the desktop app that can notify here takes them instead of the webview.
+test("in the desktop app that can notify, a change read while away is handed to the app, not the webview; off, muted or an app that can't stays silent", async () => {
+  const windows = { supported: true, system: "windows" };
+  const page = mount({ shell: { answer: windows } });
+  await page.read([agent("a", { status: "working" })]);
+  await page.read([result("a")]);
+  assert.deepEqual(page.invoked, [["desktop_notifications"], ["desktop_notify", { title: "Mori finished", body: "The Turn finished.", whenAway: true }]], "for while away: the app decides from its window");
+  assert.deepEqual(page.shown, [], "not through the webview's own Notification");
+  await page.read([result("a")]);
+  assert.equal(page.invoked.length, 2, "the same state read again: nothing more");
+  page.close();
+  // The page says it is looked at, as a minimized window's page does in the Windows app: still
+  // handed to the app, which holds it back only while its window really is in front.
+  const front = mount({ shell: { answer: windows }, looking: true });
+  await front.read([agent("a", { status: "working" })]);
+  await front.read([result("a")]);
+  assert.deepEqual(front.invoked, [["desktop_notifications"], ["desktop_notify", { title: "Mori finished", body: "The Turn finished.", whenAway: true }]]);
+  front.close();
+  for (const options of [{ saved: null, shell: { answer: windows } }, { saved: { enabled: true, muted: true }, shell: { answer: windows } }, { shell: { answer: { supported: false, system: null } } }]) {
+    const other = mount(options);
+    await other.read([agent("a", { status: "working" })]);
+    await other.read([result("a")]);
+    assert.deepEqual(other.invoked, [["desktop_notifications"]], JSON.stringify(options));
+    assert.deepEqual(other.shown, []);
+    other.close();
+  }
+});
+
+test("in the desktop app that can notify, a daily backup's last run is read once the app says so, with nothing else rendering again", async () => {
+  const page = mount({
+    shell: { answer: { supported: true, system: "windows" } },
+    saved: { enabled: true, categories: { backupFailed: true } },
+    answers: { "/api/workspace/backup/last-run": { lastRun: null } },
+  });
+  page.dom.window.readBackup(1);
+  for (let i = 0; i < 40 && page.requests.length === 0; i++) await tick();
+  assert.deepEqual(page.invoked, [["desktop_notifications"]]);
+  assert.deepEqual(page.requests, ["/api/workspace/backup/last-run"], "read without another render");
+  page.close(["/api/workspace/backup/last-run"]);
 });

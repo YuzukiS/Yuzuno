@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, isNative } from "./api";
 import type { NeedsYouItem } from "./home/types";
-import { browserHost, notificationAccess, showSystemNotification } from "./notification-access";
+import { knownDesktopNotifier, readDesktopNotifier, useDesktopNotifier } from "./desktop-notifier";
+import { browserHost, notificationAccess, reachesSystem, showSystemNotification } from "./notification-access";
 import { agentNotices, askNotices, backupNotice, merged, type AgentState, type BackupRun, type Notice } from "./notification-events";
 import { notifies } from "./notification-prefs";
 import { useNotificationPrefs } from "./notification-store";
@@ -17,7 +18,10 @@ const away = () => document.visibilityState === "hidden" || !document.hasFocus()
  */
 export function useBackupRun(revision: number, enabled = true): BackupRun | null | undefined {
   const prefs = useNotificationPrefs();
-  const wanted = enabled && prefs.enabled && !prefs.muted && prefs.categories.backupFailed && notificationAccess(browserHost(isNative)).state === "allowed";
+  // In the desktop app, read again once it says whether it can notify (T-188).
+  const desktop = useDesktopNotifier();
+  const wanted =
+    enabled && prefs.enabled && !prefs.muted && prefs.categories.backupFailed && reachesSystem(notificationAccess(browserHost(isNative, desktop)));
   const [run, setRun] = useState<BackupRun | null | undefined>(undefined);
   useEffect(() => {
     if (!wanted) {
@@ -56,6 +60,8 @@ export function useSystemNotifications(
   prefs.current = chosen;
   const opener = useRef(open);
   opener.current = open;
+  // The desktop app says once whether it can notify here (T-188).
+  useEffect(() => void readDesktopNotifier(), []);
   // The last reads compared with, per Workspace: another one starts afresh.
   // `backup` is undefined until a read; `shown` holds the backup notices
   // this page showed, each once, whatever the reads after.
@@ -71,12 +77,16 @@ export function useSystemNotifications(
   const show = (notices: Notice[], inView = false) => {
     const now = prefs.current;
     if (!now.enabled || now.muted || !notices.length) return;
-    const host = browserHost(isNative);
+    const host = browserHost(isNative, knownDesktopNotifier());
     const access = notificationAccess(host);
     const wanted = notices.filter((notice) => notifies(now, access, notice.kind));
-    if (!wanted.length || (!inView && !away())) return;
+    // In the desktop app the page cannot tell whether it is looked at (a
+    // minimized window's page still says it is visible and focused): the
+    // app decides from its window, given `whenAway` (T-188).
+    const throughApp = access.state === "through-app";
+    if (!wanted.length || (!inView && !throughApp && !away())) return;
     for (const notice of merged(wanted))
-      void showSystemNotification(notice.title, { body: notice.body, tag: notice.tag }, host, { opened: () => opener.current(notice) });
+      void showSystemNotification(notice.title, { body: notice.body, tag: notice.tag }, host, { opened: () => opener.current(notice), whenAway: !inView });
   };
   useEffect(() => {
     if (!agents) return;

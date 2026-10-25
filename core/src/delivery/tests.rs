@@ -1030,3 +1030,24 @@ fn approval_with_notes_waits_for_ci_and_retains_candidate_and_policy_gates() {
         assert_eq!(get(&store, &task)["state"], "needs_judgment");
     }
 }
+
+/// A delivery reads, authorizes and starts the reviewer of its task's project,
+/// as a review requested directly does (T-190).
+#[test]
+fn a_delivery_uses_the_reviewer_of_its_tasks_project() {
+    let (_d, s, t) = setup();
+    let project = s.create_project("Delivered", Default::default()).unwrap().id;
+    crate::projects::set_task_project(&s.db.write().unwrap(), &internal(&s, &t), Some(&project)).unwrap();
+    s.save_project_review_settings(&project, &serde_json::from_value(claude(OPUS_ALIAS)).unwrap()).unwrap();
+    let read = s.collaboration_call(None, "delivery_get", json!({"taskId": t})).unwrap();
+    assert_eq!(read["settings"], claude(OPUS_ALIAS));
+    // The Workspace's (here the built-in) reviewer is not this task's: refused.
+    let refused = s.collaboration_call(None, "delivery_enable", input(&t)).unwrap_err().to_string();
+    assert!(refused.contains("The review settings for this task changed"), "{refused}");
+    let mut v = input(&t);
+    v["settings"] = claude(OPUS_ALIAS);
+    let f = s.collaboration_call(None, "delivery_enable", v).unwrap()["flow"].clone();
+    s.collaboration_call(None, "task_submit_result", result(&s, &t, Some(f["candidate"].clone()), "result")).unwrap();
+    let run = start(&s, &t, "review");
+    assert_eq!((run["requestedHarness"].clone(), run["requestedModel"].clone()), (json!("claude"), json!(OPUS_ALIAS)));
+}

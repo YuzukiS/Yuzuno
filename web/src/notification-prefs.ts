@@ -49,6 +49,7 @@ export function parseNotificationPrefs(saved: unknown): NotificationPrefs {
   };
 }
 
-/** Whether this kind goes to the system now: chosen, not muted, and allowed. */
+/** Whether this kind goes to the system now: chosen, not muted, and allowed
+ * (or, in the desktop app, handed to the system through it). */
 export const notifies = (prefs: NotificationPrefs, access: NotificationAccess, kind: NotificationCategory) =>
-  prefs.enabled && !prefs.muted && prefs.categories[kind] && access.state === "allowed";
+  prefs.enabled && !prefs.muted && prefs.categories[kind] && (access.state === "allowed" || access.state === "through-app");
