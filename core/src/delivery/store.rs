@@ -182,8 +182,10 @@ fn link(db: &Connection, f: &Flow) -> Result<Option<Value>> {
         .into_iter()
         .find(|l| l["id"] == f.link_id))
 }
-fn settings(db: &Connection) -> Result<Value> {
-    Ok(serde_json::to_value(crate::pr_review::settings::read(db)?)?)
+/// The reviewer a new review of `task` would get (T-190: its project's, the
+/// Workspace's or the built-in one), as a delivery authorizes it.
+fn settings(db: &Connection, task: &str) -> Result<Value> {
+    Ok(serde_json::to_value(crate::pr_review::settings::for_task(db, task)?)?)
 }
 fn writable(task: &collaboration::SharedTask, actor: &collaboration::TaskActor) -> Result<()> {
     ensure!(
@@ -213,7 +215,7 @@ pub(crate) fn call(
     if op == "delivery_get" {
         allowed(input, &["taskId"])?;
         return Ok(
-            json!({"flow":load(db,&id)?.map(|f| view(db,&f)).transpose()?,"settings":settings(db)?}),
+            json!({"flow":load(db,&id)?.map(|f| view(db,&f)).transpose()?,"settings":settings(db, &id)?}),
         );
     }
     let task = task(db, &id)?;
@@ -274,10 +276,10 @@ pub(crate) fn call(
             && linked["snapshot"]["headSha"] == head,
         "Refresh the linked PR; the candidate must match its current base and head"
     );
-    let config = settings(db)?;
+    let config = settings(db, &id)?;
     ensure!(
         input["settings"] == config,
-        "Workspace review settings changed; read delivery_get and authorize the actual settings"
+        "The review settings for this task changed; read delivery_get and authorize the actual settings"
     );
     let mut f = if op == "delivery_enable" {
         allowed(
@@ -866,10 +868,10 @@ impl Store {
             tx.commit()?;
             return Ok(None);
         }
-        if kind == "review" && settings(&tx)? != r.settings && r.review.id.is_none() {
+        if kind == "review" && settings(&tx, &f.task_id)? != r.settings && r.review.id.is_none() {
             let r = f.rounds.last_mut().unwrap();
             r.review.attempts = 3;
-            r.review.error = Some("Workspace review settings changed after authorization.".into());
+            r.review.error = Some("The review settings for this task changed after authorization.".into());
             save(&tx, &f)?;
             tx.commit()?;
             return Ok(None);
