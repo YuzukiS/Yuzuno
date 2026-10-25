@@ -314,13 +314,69 @@ export const recordedErrors = () => {
   }
 };
 
+/** The record as this browser stores it now: nothing, a record these rules
+ * read, or why it can't be read. Its text is never part of the reason. */
+function storedRecord(): { value: Record<string, unknown> | null } | { unreadable: string } {
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(STORE);
+  } catch {
+    return { unreadable: "this browser gives Yuzuno no storage here" };
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(raw ?? "null");
+  } catch {
+    return { unreadable: "the record saved here is not valid JSON" };
+  }
+  if (value === null) return { value: null };
+  return typeof value === "object" && Array.isArray((value as { errors?: unknown }).errors)
+    ? { value: value as Record<string, unknown> }
+    : { unreadable: "the record saved here is not an error record" };
+}
+
+/** Why the recorded errors can't be cleared here, or null. */
+export function errorRecordProblem() {
+  const now = storedRecord();
+  return "unreadable" in now ? now.unreadable : null;
+}
+
+/**
+ * Clears the errors recorded in this browser for this site, and only them:
+ * the record is stored again with its other fields (Core's and the desktop
+ * app's last reads) as they were, and no other key is touched. When storage
+ * can't be read, holds a record these rules can't read, or refuses the
+ * change, nothing is cleared, in this window either, and the stored record is
+ * left as it is. Errors after that are recorded as before.
+ */
+export function clearRecordedErrors(): { cleared: number } | { notCleared: string } {
+  const record = load();
+  const now = storedRecord();
+  if ("unreadable" in now) return { notCleared: now.unreadable };
+  if (now.value)
+    try {
+      localStorage.setItem(STORE, JSON.stringify({ ...now.value, errors: [] }));
+    } catch (error) {
+      return { notCleared: `this browser refused to save the change (${keptName((error as { name?: unknown } | null)?.name)})` };
+    }
+  const cleared = record.errors.length;
+  record.errors = [];
+  return { cleared };
+}
+
 let capturing = false;
-/** Uncaught errors and rejections in this window are recorded too. */
+/** Uncaught errors and rejections in this window are recorded too. When
+ * another window of this site changes or clears the stored record, this one
+ * reads it again before it records more, so it doesn't store again what was
+ * cleared there. */
 export function installErrorCapture() {
   if (capturing) return;
   capturing = true;
   window.addEventListener("error", (event) => recordError("error", event.error ?? event.message));
   window.addEventListener("unhandledrejection", (event) => recordError("rejection", event.reason));
+  window.addEventListener("storage", (event) => {
+    if (event.key === STORE || event.key === null) stored = null;
+  });
 }
 
 function within<T>(promise: Promise<T>, ms = READ_MS): Promise<T> {
