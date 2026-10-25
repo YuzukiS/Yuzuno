@@ -10,7 +10,95 @@ import type { ReviewRow } from "./ReviewJobs";
 import { reviewPassed } from "./review-outcome";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import type { Agent, ClaudeRuntime } from "./types";
+import { strings, useLanguage, type Language } from "./i18n";
 import "./statusbar.css";
+
+// The bottom bar's own words (T-189). Names of jobs, runs and machines, Core's
+// status values, and the plan windows' names and details (as the Agent
+// panels show them) are shown as they came.
+const words = strings({
+  specimen: "Visual specimen",
+  reconnecting: "Live updates reconnecting",
+  connecting: "Live updates connecting",
+  reviewsTitle: "Reviews in progress · open Jobs",
+  reviews: (count: number) => `${count} ${count === 1 ? "review" : "reviews"} running`,
+  ciTitle: (partial: boolean) => `GitHub Actions runs in progress${partial ? "; Core lists more runs than the status bar read, so there may be more" : ""} · open Jobs`,
+  ciUnread: "CI runs not all read",
+  ci: (count: number, partial: boolean) => `${count}${partial ? "+" : ""} CI ${count === 1 && !partial ? "run" : "runs"}`,
+  noticeTitle: (text: string, more: number) => `${text}${more ? ` · ${more} more after it` : ""} · open Jobs`,
+  review: (number: number, outcome: string) => `Review of PR #${number}: ${outcome}`,
+  noFindings: "no findings",
+  suggestions: "passed with suggestions",
+  run: (name: string, status: string) => `${name} run ${status}`,
+  job: (name: string, outcome: string) => `Job ${name} ${outcome}`,
+  finished: "finished",
+  failed: "failed",
+  memoryTitle: (machine: string, value: string, used: number, cpu: number, free: string | null) =>
+    `${machine}: jobs reserve ${value} of RAM and ${used} / ${cpu} CPU${free ? `; the host has ${free} free` : ""} · open Jobs`,
+  ram: "RAM",
+  ramLabel: "Job RAM reserved",
+  reserved: (value: string) => `${value} reserved`,
+  free: (value: string) => ` · ${value} free`,
+  planFor: (account: string) => `Claude plan usage for ${account}, as Claude Code last reported it`,
+  plan: "Claude plan usage, as Claude Code last reported it",
+  windowReset: (name: string) => `${name} reset`,
+  windowResetSince: (name: string) => `${name}: reset since`,
+  windowUsed: (name: string, percent: number | null, resets: string | null) => `${name}: ${percent}% used${resets ? `, resets ${resets}` : ""}`,
+  reported: (when: string) => `Reported ${when}.`,
+  limited: "The limit is reached.",
+  codexWaiting: "waiting",
+  codexUnknown: "unknown",
+  lastReport: " · last report",
+  codexTitle: (who: string, source: string) => `Codex plan usage${who ? ` for ${who}` : ""}, from ${source}`,
+  codexStale: "This is the last report; refresh it from the Agent's details.",
+  codexNotAllowed: "Ordinary usage is not allowed (reported).",
+  machines: (count: number, down: number) => `${count} ${count === 1 ? "machine" : "machines"}${down ? ` · ${down} unreachable` : ""}`,
+  checked: (reachable: boolean, when: string) => `${reachable ? "reachable" : "unreachable"} at its last check, ${when}`,
+  unchecked: "not checked yet",
+  machine: (name: string, check: string, off: number) => `${name}: ${check}${off ? `; ${off} Agent${off === 1 ? "" : "s"} disconnected` : ""}`,
+  openMachines: "Open Machines",
+}, {
+  specimen: "视觉样本",
+  reconnecting: "实时更新正在重新连接",
+  connecting: "实时更新正在连接",
+  reviewsTitle: "正在进行的审查 · 打开 Job",
+  reviews: (count) => `${count} 个审查进行中`,
+  ciTitle: (partial) => `正在进行的 GitHub Actions 运行${partial ? "；Core 列出的运行比状态栏读取的多，因此可能还有更多" : ""} · 打开 Job`,
+  ciUnread: "CI 运行未全部读取",
+  ci: (count, partial) => `${count}${partial ? "+" : ""} 个 CI 运行`,
+  noticeTitle: (text, more) => `${text}${more ? ` · 之后还有 ${more} 条` : ""} · 打开 Job`,
+  review: (number, outcome) => `PR #${number} 的审查：${outcome}`,
+  noFindings: "无发现",
+  suggestions: "通过，附建议",
+  run: (name, status) => `${name} 运行 ${status}`,
+  job: (name, outcome) => `Job ${name} ${outcome}`,
+  finished: "已完成",
+  failed: "已失败",
+  memoryTitle: (machine, value, used, cpu, free) => `${machine}：Job 预留 ${value} 内存和 ${used} / ${cpu} CPU${free ? `；主机空闲 ${free}` : ""} · 打开 Job`,
+  ram: "内存",
+  ramLabel: "Job 预留的内存",
+  reserved: (value) => `已预留 ${value}`,
+  free: (value) => ` · 空闲 ${value}`,
+  planFor: (account) => `${account} 的 Claude 套餐用量，按 Claude Code 上次的报告`,
+  plan: "Claude 套餐用量，按 Claude Code 上次的报告",
+  windowReset: (name) => `${name} 已重置`,
+  windowResetSince: (name) => `${name}：此后已重置`,
+  windowUsed: (name, percent, resets) => `${name}：已用 ${percent}%${resets ? `，${resets} 重置` : ""}`,
+  reported: (when) => `报告于 ${when}。`,
+  limited: "已达到限额。",
+  codexWaiting: "等待中",
+  codexUnknown: "未知",
+  lastReport: " · 上次报告",
+  codexTitle: (who, source) => `Codex 套餐用量${who ? `（${who}）` : ""}，来自 ${source}`,
+  codexStale: "这是上次的报告；请在 Agent 的详情中刷新。",
+  codexNotAllowed: "不允许普通用量（据报告）。",
+  machines: (count, down) => `${count} 台机器${down ? ` · ${down} 台无法连接` : ""}`,
+  checked: (reachable, when) => `上次检查时${reachable ? "可以连接" : "无法连接"}，${when}`,
+  unchecked: "尚未检查",
+  machine: (name, check, off) => `${name}：${check}${off ? `；${off} 个 Agent 已断开` : ""}`,
+  openMachines: "打开“机器”",
+});
+type Words = ReturnType<typeof words>;
 
 /**
  * The bottom bar: what runs in the background, and what the machine, the
@@ -44,19 +132,19 @@ export function StatusBar({
   codexAgent?: Agent | null;
   onMachines: () => void;
 }) {
-  const background = useBackground(revision, !previewMode);
-  const plan = usePlan(claudeRuntime);
-  const codex = useCodex(previewMode ? null : codexAgent ?? null, eventConnection === "open");
-  const machines = useMachines(machinesRevision, !previewMode, agents);
+  const language = useLanguage();
+  const t = words(language);
+  const background = useBackground(revision, !previewMode, language);
+  const plan = usePlan(claudeRuntime, language);
+  const codex = useCodex(previewMode ? null : codexAgent ?? null, eventConnection === "open", language);
+  const machines = useMachines(machinesRevision, !previewMode, agents, language);
   return (
     <footer className="statusbar">
       <div className="statusbar-start">
-        {previewMode && <span className="statusbar-item">Visual specimen</span>}
+        {previewMode && <span className="statusbar-item">{t.specimen}</span>}
         {!previewMode && eventConnection !== "open" && (
           <span className="statusbar-item event-connection-status" role="status">
-            {eventConnection === "reconnecting"
-              ? "Live updates reconnecting"
-              : "Live updates connecting"}
+            {eventConnection === "reconnecting" ? t.reconnecting : t.connecting}
           </span>
         )}
         {!previewMode && <CoreBacklog agents={agents} live={live} />}
@@ -64,24 +152,22 @@ export function StatusBar({
           <button
             type="button"
             className="statusbar-item"
-            title="Reviews in progress · open Jobs"
+            title={t.reviewsTitle}
             onClick={() => openJobs({ source: "reviews" })}
           >
             <GitPullRequest size={12} aria-hidden="true" />
-            {background.reviews} {background.reviews === 1 ? "review" : "reviews"} running
+            {t.reviews(background.reviews)}
           </button>
         )}
         {(background.ci > 0 || background.ciPartial) && (
           <button
             type="button"
             className="statusbar-item"
-            title={`GitHub Actions runs in progress${background.ciPartial ? "; Core lists more runs than the status bar read, so there may be more" : ""} · open Jobs`}
+            title={t.ciTitle(background.ciPartial)}
             onClick={() => openJobs({ source: "github_actions" })}
           >
             <Workflow size={12} aria-hidden="true" />
-            {background.ci === 0
-              ? "CI runs not all read"
-              : `${background.ci}${background.ciPartial ? "+" : ""} CI ${background.ci === 1 && !background.ciPartial ? "run" : "runs"}`}
+            {background.ci === 0 ? t.ciUnread : t.ci(background.ci, background.ciPartial)}
           </button>
         )}
         <span className="statusbar-notice" role="status" aria-live="polite">
@@ -89,7 +175,7 @@ export function StatusBar({
             <button
               type="button"
               className={`statusbar-item ${background.notice.ok ? "is-ok" : "is-failed"}`}
-              title={`${background.notice.text}${background.more ? ` · ${background.more} more after it` : ""} · open Jobs`}
+              title={t.noticeTitle(background.notice.text, background.more)}
               onClick={background.notice.open}
             >
               {background.notice.ok ? (
@@ -133,7 +219,7 @@ export function StatusBar({
             {machines.text}
           </button>
         )}
-        {background.budget && <Memory budget={background.budget} />}
+        {background.budget && <Memory budget={background.budget} t={t} />}
       </div>
     </footer>
   );
@@ -151,7 +237,12 @@ type Job = {
   status: string;
   finishedAt: string | null;
 };
-type Notice = { key: string; text: string; ok: boolean; open: () => void };
+/** An end to tell, kept as what ended and worded where it is shown. */
+type Ended =
+  | { kind: "review"; number: number; status: string; conclusion: string | null }
+  | { kind: "run"; name: string; status: string }
+  | { kind: "job"; name: string; status: string };
+type Notice = { key: string; what: Ended; ok: boolean; open: () => void };
 
 const gib = (miB: number) =>
   miB >= 1024 ? `${(miB / 1024).toFixed(1)} GiB` : `${Math.round(miB)} MiB`;
@@ -159,30 +250,28 @@ const share = (used: number, total: number) =>
   total > 0 ? Math.min(100, Math.max(0, (used / total) * 100)) : 0;
 
 /** Job memory reserved against its budget, and what the host has free. */
-function Memory({ budget }: { budget: Budget }) {
+function Memory({ budget, t }: { budget: Budget; t: Words }) {
   const used = share(budget.reserved.memoryMiB, budget.budget.memoryMiB);
-  const host =
-    budget.machine.memoryAvailableMiB == null
-      ? ""
-      : ` · ${gib(budget.machine.memoryAvailableMiB)} free`;
+  const free = budget.machine.memoryAvailableMiB == null ? null : gib(budget.machine.memoryAvailableMiB);
+  const host = free === null ? "" : t.free(free);
   const cpu = (millis: number) => Number((millis / 1000).toFixed(1));
   const value = `${gib(budget.reserved.memoryMiB)} / ${gib(budget.budget.memoryMiB)}`;
   return (
     <button
       type="button"
       className="statusbar-item statusbar-memory"
-      title={`${budget.machine.name}: jobs reserve ${value} of RAM and ${cpu(budget.reserved.cpuMillis)} / ${cpu(budget.budget.cpuMillis)} CPU${host ? `; the host has${host.slice(2)}` : ""} · open Jobs`}
+      title={t.memoryTitle(budget.machine.name, value, cpu(budget.reserved.cpuMillis), cpu(budget.budget.cpuMillis), free)}
       onClick={() => openJobs({ source: "local" })}
     >
-      <span>RAM</span>
+      <span>{t.ram}</span>
       <span
         className="statusbar-meter"
         role="meter"
-        aria-label="Job RAM reserved"
+        aria-label={t.ramLabel}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(used)}
-        aria-valuetext={`${value} reserved`}
+        aria-valuetext={t.reserved(value)}
       >
         <span style={{ width: `${used}%` }} />
       </span>
@@ -197,10 +286,22 @@ function Memory({ budget }: { budget: Budget }) {
 const stopped = new Set(["failed", "rejected", "interrupted", "unknown"]);
 const reviewActive = (r: ReviewRow) =>
   r.status === "preparing" || r.status === "running";
-const reviewOutcome = (r: ReviewRow) =>
-  r.status !== "completed"
-    ? { ok: false, text: r.status }
-    : { ok: reviewPassed(r), text: r.conclusion === "no_findings" ? "no findings" : r.conclusion === "approved_with_notes" ? "passed with suggestions" : (r.conclusion || "unknown").replace(/_/g, " ") };
+const reviewOk = (r: ReviewRow) => r.status === "completed" && reviewPassed(r);
+/** What an end says, in the bar's words; Core's status values as they came. */
+function endedText(what: Ended, t: Words): string {
+  if (what.kind === "run") return t.run(what.name, what.status);
+  if (what.kind === "job")
+    return t.job(what.name, what.status === "succeeded" ? t.finished : stopped.has(what.status) ? t.failed : what.status);
+  const outcome =
+    what.status !== "completed"
+      ? what.status
+      : what.conclusion === "no_findings"
+        ? t.noFindings
+        : what.conclusion === "approved_with_notes"
+          ? t.suggestions
+          : (what.conclusion || "unknown").replace(/_/g, " ");
+  return t.review(what.number, outcome);
+}
 
 const HOUR = 3_600_000;
 // How far back a review can still be going: a review ends, or turns unknown,
@@ -358,7 +459,7 @@ async function readRuns(known: RunsKnown | null, signal: AbortSignal) {
  * ones come after it; a job ends when it leaves Core's unfinished set, even
  * if another takes its place.
  */
-export function useBackground(revision: string, enabled: boolean) {
+export function useBackground(revision: string, enabled: boolean, language: Language = "en") {
   const [reviews, setReviews] = useState(0);
   const [ci, setCi] = useState(0);
   // The CI count may leave out runs the bounded read could not reach.
@@ -406,11 +507,10 @@ export function useBackground(revision: string, enabled: boolean) {
         for (const row of r.value) {
           if (reviewActive(row)) on.add(row.id);
           else if (was?.has(row.id) || after(row.finishedAt)) {
-            const outcome = reviewOutcome(row);
             tell({
               key: `review:${row.id}`,
-              ok: outcome.ok,
-              text: `Review of PR #${row.number}: ${outcome.text}`,
+              ok: reviewOk(row),
+              what: { kind: "review", number: row.number, status: row.status, conclusion: row.conclusion ?? null },
               open: () => openJobs({ source: "reviews", reviewId: row.id, taskId: row.taskId }),
             });
           }
@@ -427,7 +527,7 @@ export function useBackground(revision: string, enabled: boolean) {
             tell({
               key: `ci:${run.id}`,
               ok: run.status === "passed",
-              text: `${run.name} run ${run.status}`,
+              what: { kind: "run", name: run.name, status: run.status },
               open: () => openJobs({ source: "github_actions", runKey: run.id }),
             });
         }
@@ -458,7 +558,7 @@ export function useBackground(revision: string, enabled: boolean) {
             tell({
               key: `job:${job.id}`,
               ok: job.status === "succeeded",
-              text: `Job ${job.name} ${job.status === "succeeded" ? "finished" : stopped.has(job.status) ? "failed" : job.status}`,
+              what: { kind: "job", name: job.name, status: job.status },
               open: () => openJobs({ source: "local", jobId: job.id }),
             });
       }
@@ -470,7 +570,10 @@ export function useBackground(revision: string, enabled: boolean) {
       controller.abort();
     };
   }, [revision, enabled]);
-  return { reviews, ci, ciPartial, budget, notice: notices[0] ?? null, more: Math.max(0, notices.length - 1) };
+  // Worded now, so a language change rewords the end on show.
+  const first = notices[0];
+  const notice = first ? { ...first, text: endedText(first.what, words(language)) } : null;
+  return { reviews, ci, ciPartial, budget, notice, more: Math.max(0, notices.length - 1) };
 }
 
 const PLAN_KEY = "yuzuno.claude-plan";
@@ -487,7 +590,7 @@ type Plan = {
  * account, so the latest report from any Claude Agent stays shown while other
  * Agents are open, with whose account it is and when it came.
  */
-function usePlan(runtime?: ClaudeRuntime | null) {
+function usePlan(runtime?: ClaudeRuntime | null, language: Language = "en") {
   const [plan, setPlan] = useState<Plan | null>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(PLAN_KEY) || "null");
@@ -519,18 +622,15 @@ function usePlan(runtime?: ClaudeRuntime | null) {
   const info = plan.rateLimits || {};
   const live = typeof info.resetsAt !== "number" || info.resetsAt * 1000 > now;
   const limited = live && info.status === "rejected";
+  const t = words(language);
   return {
     limited,
-    text: windows.map((w) => (w.expired ? `${w.name} reset` : `${w.name} ${w.percent}%`)).join(" · "),
+    text: windows.map((w) => (w.expired ? t.windowReset(w.name) : `${w.name} ${w.percent}%`)).join(" · "),
     title: [
-      plan.account
-        ? `Claude plan usage for ${plan.account}, as Claude Code last reported it`
-        : "Claude plan usage, as Claude Code last reported it",
-      ...windows.map((w) =>
-        w.expired ? `${w.name}: reset since` : `${w.name}: ${w.percent}% used${w.resets ? `, resets ${w.resets}` : ""}`,
-      ),
-      `Reported ${new Date(plan.rateLimitsAt).toLocaleString()}.`,
-      limited ? "The limit is reached." : "",
+      plan.account ? t.planFor(plan.account) : t.plan,
+      ...windows.map((w) => (w.expired ? t.windowResetSince(w.name) : t.windowUsed(w.name, w.percent, w.resets || null))),
+      t.reported(new Date(plan.rateLimitsAt).toLocaleString()),
+      limited ? t.limited : "",
     ]
       .filter(Boolean)
       .join("\n"),
@@ -544,7 +644,7 @@ function usePlan(runtime?: ClaudeRuntime | null) {
  * reset time passes, the window waits for a new report; an unknown share is
  * not 0. Nothing shows until a report has windows.
  */
-export function useCodex(agent: Agent | null, streamConnected: boolean) {
+export function useCodex(agent: Agent | null, streamConnected: boolean, language: Language = "en") {
   const { usage, clock, connected } = useCodexUsage(agent, streamConnected, 15_000);
   if (!usage || !connected || !streamConnected) return null;
   const windows = usageWindows(usage, clock);
@@ -561,18 +661,19 @@ export function useCodex(agent: Agent | null, streamConnected: boolean) {
     !stale &&
     (usage.ordinaryUsageAllowed === false || windows.some((w) => !w.expired && w.percent !== null && w.percent >= 100));
   const who = [usage.account?.label || usage.account?.type, usage.account?.planType].filter(Boolean).join(" · ");
+  const t = words(language);
   return {
     stale,
     limited,
     text:
       windows
-        .map((w, i) => `${labels[i]} ${w.expired ? "waiting" : w.percent === null ? "unknown" : `${w.percent}%`}`)
-        .join(" · ") + (stale ? " · last report" : ""),
+        .map((w, i) => `${labels[i]} ${w.expired ? t.codexWaiting : w.percent === null ? t.codexUnknown : `${w.percent}%`}`)
+        .join(" · ") + (stale ? t.lastReport : ""),
     title: [
-      `Codex plan usage${who ? ` for ${who}` : ""}, from ${usage.source.label}`,
+      t.codexTitle(who, usage.source.label),
       ...windows.map((w) => w.detail.replace(/\s+/g, " ").trim()),
-      stale ? "This is the last report; refresh it from the Agent's details." : "",
-      usage.ordinaryUsageAllowed === false ? "Ordinary usage is not allowed (reported)." : "",
+      stale ? t.codexStale : "",
+      usage.ordinaryUsageAllowed === false ? t.codexNotAllowed : "",
     ]
       .filter(Boolean)
       .join("\n"),
@@ -585,7 +686,7 @@ export function useCodex(agent: Agent | null, streamConnected: boolean) {
  * have an Agent whose runtime is disconnected. A check is manual, so its age
  * is in the tip.
  */
-function useMachines(revision: string, enabled: boolean, agents: Agent[]) {
+function useMachines(revision: string, enabled: boolean, agents: Agent[], language: Language = "en") {
   const [machines, setMachines] = useState<WorkspaceMachine[]>([]);
   const remoteInUse = agents.some((a) => !a.closedAt && !!a.remote);
   useEffect(() => {
@@ -607,20 +708,21 @@ function useMachines(revision: string, enabled: boolean, agents: Agent[]) {
         (a) => !a.closedAt && a.remote?.machine.id === m.id && a.connectionState === "disconnected",
       ),
   );
+  const t = words(language);
   return {
     unreachable: down.length,
-    text: `${remote.length} ${remote.length === 1 ? "machine" : "machines"}${down.length ? ` · ${down.length} unreachable` : ""}`,
+    text: t.machines(remote.length, down.length),
     title: [
       ...remote.map((m) => {
         const check = m.lastCheck
-          ? `${m.lastCheck.reachable ? "reachable" : "unreachable"} at its last check, ${new Date(m.lastCheck.checkedAt).toLocaleString()}`
-          : "not checked yet";
+          ? t.checked(m.lastCheck.reachable, new Date(m.lastCheck.checkedAt).toLocaleString())
+          : t.unchecked;
         const off = agents.filter(
           (a) => !a.closedAt && a.remote?.machine.id === m.id && a.connectionState === "disconnected",
         ).length;
-        return `${m.name}: ${check}${off ? `; ${off} Agent${off === 1 ? "" : "s"} disconnected` : ""}`;
+        return t.machine(m.name, check, off);
       }),
-      "Open Machines",
+      t.openMachines,
     ].join("\n"),
   };
 }
