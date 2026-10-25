@@ -19,6 +19,7 @@ import { SettingsCenter, type SettingsNavigation } from "./SettingsCenter";
 import { RuntimeSection } from "./RuntimeSection";
 import { AboutSection } from "./AboutSection";
 import { AppearanceSection } from "./AppearanceSettings";
+import { SharedAppearanceSection } from "./SharedAppearance";
 import { InputPreferencesSection } from "./InputPreferences";
 import { TimePreferencesSection } from "./TimePreferences";
 import { ShortcutHelpSection } from "./ShortcutHelp";
@@ -996,7 +997,12 @@ export function WorkspaceUpdates({
               onOpenMachines={navigation && !navigation.disabled ? () => navigation.onNavigate({ kind: "machines" }) : undefined}
             />
           )}
-          {tab === "appearance" && <AppearanceSection />}
+          {tab === "appearance" && (
+            <>
+              <AppearanceSection />
+              <SharedAppearanceSection active={open && visible} />
+            </>
+          )}
           {tab === "input" && <InputPreferencesSection />}
           {tab === "time" && <TimePreferencesSection />}
           {tab === "shortcuts" && <ShortcutHelpSection />}

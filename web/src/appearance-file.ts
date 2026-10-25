@@ -54,23 +54,29 @@ function withField(appearance: Appearance, field: AppearanceField, value: FieldV
     : { ...appearance, [group]: value };
 }
 
+/** Each listed field of `appearance`, named, and nothing else: an export's
+ * Appearance settings, and a shared preset's (appearance-preset.ts). */
+export function appearanceSettings(appearance: Appearance) {
+  const { palette, theme, fontSize, agentList, projectGroups, dock, turnDock } = appearance;
+  return {
+    palette,
+    theme,
+    fontSize,
+    agentList,
+    projectGroups,
+    dock: { jobs: dock.jobs, actions: dock.actions, subAgents: dock.subAgents },
+    turnDock: { numbers: turnDock.numbers, bars: turnDock.bars },
+  };
+}
+
 /** The export of `appearance`: each listed field, named, and nothing else. */
 export function exportAppearance(appearance: Appearance, now = new Date()): string {
-  const { palette, theme, fontSize, agentList, projectGroups, dock, turnDock } = appearance;
   return `${JSON.stringify(
     {
       format: APPEARANCE_FILE,
       version: APPEARANCE_FILE_VERSION,
       exportedAt: now.toISOString(),
-      appearance: {
-        palette,
-        theme,
-        fontSize,
-        agentList,
-        projectGroups,
-        dock: { jobs: dock.jobs, actions: dock.actions, subAgents: dock.subAgents },
-        turnDock: { numbers: turnDock.numbers, bars: turnDock.bars },
-      },
+      appearance: appearanceSettings(appearance),
     },
     null,
     2,

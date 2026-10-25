@@ -454,6 +454,62 @@ function readText(file: File): Promise<string> {
   });
 }
 
+/** Each setting `contents` holds beside the one in effect, ticked in
+ * `chosen` where they differ: an Appearance file's, or the shared preset's
+ * (SharedAppearance.tsx). `from` names where the other value comes from. */
+export function AppearanceChoices({
+  appearance,
+  contents,
+  chosen,
+  onChosen,
+  from,
+}: {
+  appearance: Appearance;
+  contents: AppearanceFileContents;
+  chosen: readonly AppearanceField[];
+  onChosen: (update: (old: AppearanceField[]) => AppearanceField[]) => void;
+  from: string;
+}) {
+  return (
+    <ul>
+      {appearanceFields.map((field) => {
+        const value = contents.values[field];
+        const bad = contents.invalid.find((item) => item.field === field);
+        if (value === undefined && !bad) return null;
+        const now = fieldText(field, fieldValue(appearance, field));
+        if (value === undefined)
+          return (
+            <li key={field} data-state="invalid">
+              <span className="appearance-file-name">{fieldLabels[field]}</span>
+              <span>Now: {now}</span>
+              <span>
+                {from}: {bad!.value}, not a value Yuzuno accepts; kept as now
+              </span>
+            </li>
+          );
+        const same = value === fieldValue(appearance, field);
+        return (
+          <li key={field} data-state={same ? "same" : "differs"}>
+            <label className="appearance-file-name">
+              <input
+                type="checkbox"
+                disabled={same}
+                checked={!same && chosen.includes(field)}
+                onChange={(event) =>
+                  onChosen((old) => (event.target.checked ? [...old, field] : old.filter((f) => f !== field)))
+                }
+              />
+              {fieldLabels[field]}
+            </label>
+            <span>Now: {now}</span>
+            <span>{same ? `${from}: the same` : `${from}: ${fieldText(field, value)}`}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 /** Appearance to and from a file (T-194). Export writes the settings in
  * effect. Import shows each setting the file holds beside the one in effect,
  * ticked where they differ, and applies only the ticked ones, once saved on
@@ -561,40 +617,13 @@ function AppearanceFile({ appearance }: { appearance: Appearance }) {
             {exportedAt ? `, exported ${exportedAt}` : ""}. Ticked settings are taken from the file; the others stay as
             they are.
           </p>
-          <ul>
-            {appearanceFields.map((field) => {
-              const value = file.contents.values[field];
-              const bad = file.contents.invalid.find((item) => item.field === field);
-              if (value === undefined && !bad) return null;
-              const now = fieldText(field, fieldValue(appearance, field));
-              if (value === undefined)
-                return (
-                  <li key={field} data-state="invalid">
-                    <span className="appearance-file-name">{fieldLabels[field]}</span>
-                    <span>Now: {now}</span>
-                    <span>File: {bad!.value}, not a value Yuzuno accepts; kept as now</span>
-                  </li>
-                );
-              const same = !differs(field, file.contents);
-              return (
-                <li key={field} data-state={same ? "same" : "differs"}>
-                  <label className="appearance-file-name">
-                    <input
-                      type="checkbox"
-                      disabled={same}
-                      checked={!same && chosen.includes(field)}
-                      onChange={(event) =>
-                        setChosen((old) => (event.target.checked ? [...old, field] : old.filter((f) => f !== field)))
-                      }
-                    />
-                    {fieldLabels[field]}
-                  </label>
-                  <span>Now: {now}</span>
-                  <span>{same ? "File: the same" : `File: ${fieldText(field, value)}`}</span>
-                </li>
-              );
-            })}
-          </ul>
+          <AppearanceChoices
+            appearance={appearance}
+            contents={file.contents}
+            chosen={chosen}
+            onChosen={setChosen}
+            from="File"
+          />
           {file.contents.unknown.length > 0 && (
             <p className="settings-row-help">
               Not Appearance settings this version knows, so left out: {file.contents.unknown.join(", ")}
