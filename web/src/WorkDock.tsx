@@ -15,7 +15,23 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import { strings, useStrings } from "./i18n";
 import "./work-dock.css";
+
+// The dock's own words (T-189); labels and names come from its callers.
+const text = strings({
+  open: (label: string) => `${label} · open the list`,
+  openLabel: (label: string) => `${label}: open the list`,
+  moreTitle: (count: number) => `${count} more · open the list`,
+  moreLabel: (label: string, count: number) => `${label}: ${count} more, open the list`,
+  more: (count: number) => `${count} more`,
+}, {
+  open: (label) => `${label} · 打开列表`,
+  openLabel: (label) => `${label}：打开列表`,
+  moreTitle: (count) => `另有 ${count} 个 · 打开列表`,
+  moreLabel: (label, count) => `${label}：另有 ${count} 个，打开列表`,
+  more: (count) => `另有 ${count} 个`,
+});
 
 const marks: Record<string, LucideIcon> = {
   queued: Clock3,
@@ -86,13 +102,14 @@ export function WorkDockGroup({
   onOpen: (from: HTMLElement) => void;
   children: ReactNode;
 }) {
+  const t = useStrings(text);
   return (
     <div className="work-dock-group" role="group" aria-label={label}>
       <button
         type="button"
         className="work-dock-heading"
-        title={`${label} · open the list`}
-        aria-label={`${label}: open the list`}
+        title={t.open(label)}
+        aria-label={t.openLabel(label)}
         onClick={(event) => onOpen(event.currentTarget)}
       >
         <span className="work-dock-node" aria-hidden="true">
@@ -169,19 +186,20 @@ export function WorkDockMore({
   count: number;
   onOpen: (from: HTMLElement) => void;
 }) {
+  const t = useStrings(text);
   return (
     <button
       type="button"
       className="work-dock-more"
-      title={`${count} more · open the list`}
-      aria-label={`${label}: ${count} more, open the list`}
+      title={t.moreTitle(count)}
+      aria-label={t.moreLabel(label, count)}
       onClick={(event) => onOpen(event.currentTarget)}
     >
       <span className="work-dock-node" aria-hidden="true">
         +{count}
       </span>
       <span className="work-dock-label" aria-hidden="true">
-        <small>{count} more</small>
+        <small>{t.more(count)}</small>
       </span>
     </button>
   );

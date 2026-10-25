@@ -287,12 +287,12 @@ const queuedAndFinished = (job: Job, t: JobsText) =>
     [t.finishedAt, job.finishedAt],
   ]);
 /** Its latest moment, for the dock: finished, else started, else queued. */
-const latestMoment = (job: Job) =>
+const latestMoment = (job: Job, t: JobsText) =>
   job.finishedAt
-    ? moments([["Finished", job.finishedAt]])
+    ? moments([[t.finishedAt, job.finishedAt]])
     : job.startedAt
-      ? moments([["Started", job.startedAt]])
-      : moments([["Queued", job.createdAt]]);
+      ? moments([[t.startedAt, job.startedAt]])
+      : moments([[t.queuedAt, job.createdAt]]);
 const when = (job: Job, t: JobsText) =>
   [
     job.startedAt && t.started(new Date(job.startedAt).toLocaleString()),
@@ -323,6 +323,7 @@ export function ConversationJobs({
   /** More groups for the dock, after jobs and runs (the sub-agents). */
   children?: ReactNode;
 }) {
+  const t = useStrings(jobsText);
   const [jobs, setJobs] = useState<Job[]>(() => lastJobs.get(agentId) ?? []);
   useEffect(() => {
     if (disabled) return;
@@ -359,10 +360,10 @@ export function ConversationJobs({
   // Jobs, then CI, as marks on the conversation's left edge (WorkDock.tsx).
   // A kind set to 0 has no group here at all.
   return (
-    <WorkDock label="Jobs and CI in this conversation">
+    <WorkDock label={t.dock}>
       {jobs.length > 0 && dock.jobs > 0 && (
         <WorkDockGroup
-          label="Local jobs"
+          label={t.local}
           icon={<BriefcaseBusiness size={14} />}
           onOpen={() => openJobs({ agentId })}
         >
@@ -370,20 +371,20 @@ export function ConversationJobs({
             <WorkDockItem
               key={job.id}
               className="conversation-job"
-              status={stateOf(job).mark}
-              state={stateOf(job).name}
+              status={stateOf(job, t).mark}
+              state={stateOf(job, t).name}
               name={job.name}
-              sub={[stateOf(job).name, ranFor(job, now)]
+              sub={[stateOf(job, t).name, ranFor(job, now, t)]
                 .filter(Boolean)
                 .join(" · ")}
-              detail={`${job.taskRef} · ${job.exclusive ? "Exclusive" : "Normal"} · ${job.resources.cpuMillis / 1000} CPU · ${memory(job.resources.memoryMiB)}`}
-              when={latestMoment(job)}
+              detail={`${job.taskRef} · ${job.exclusive ? t.exclusive : t.normal} · ${job.resources.cpuMillis / 1000} CPU · ${memory(job.resources.memoryMiB)}`}
+              when={latestMoment(job, t)}
               onOpen={() => openJobs({ jobId: job.id, agentId })}
             />
           ))}
           {jobs.length > shown.length && (
             <WorkDockMore
-              label="Local jobs"
+              label={t.local}
               count={jobs.length - shown.length}
               onOpen={() => openJobs({ agentId })}
             />
