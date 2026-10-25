@@ -11,6 +11,7 @@
 //    before again;
 //  - a time zone rewrites the open conversation's and Home's times, and
 //    their dates (Kiritimati, UTC+14, is a day ahead), datetime unchanged;
+//    Defer, whose 9:00 is this device's, says so then and only then;
 //    Restore defaults brings this device's zone back.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/clock-format-check.mjs
 import assert from "node:assert/strict";
@@ -45,9 +46,12 @@ const markdown = (text) => ({ root: "body", elements: { body: { type: "BriefBody
 const section = { id: 1, key: "build", kind: "status", title: "Build", version: 1, owner: { agentId: "a", name: "Mori", state: "active" },
   updatedAt: ASKED, updatedTurnId: "t0", body: markdown("Every job passed."), attachments: [], refs: {}, seen: null, history: false,
   status: { asOf: ASKED, validFor: 10 * 365 * 86400, stale: false } };
+// An open question, so its card offers Defer.
+const ask = { ...section, id: 2, key: "ship", kind: "ask", title: "Ship it?", status: undefined, body: markdown("The build is green."),
+  ask: { question: "Ship it today?", state: "open", reply: { options: [{ id: "yes", label: "Ship" }, { id: "no", label: "Wait" }], freeText: true } } };
 const home = { generatedAt: ASKED, order: ["p1"], needsYou: [], projects: [{
   project: { id: "p1", name: "Yuzuno" }, agents: { working: 0, idle: 1, waiting: 0, error: 0, offline: 0, total: 1 },
-  errors: [], pending: [], jobs: [], unseen: 1, missing: [], brief: { version: 1, history: [], sections: [section], teamSections: [] } }] };
+  errors: [], pending: [], jobs: [], unseen: 2, missing: [], brief: { version: 1, history: [], sections: [section, ask], teamSections: [] } }] };
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
@@ -151,6 +155,16 @@ async function chooseZone(zone) {
   await closeSettings();
   return state;
 }
+/** Defer opened on the question's card: its choices and the note on whose 9:00 they are. */
+async function deferNote() {
+  const card = page.locator('.home-view [data-section-key="ship"]');
+  const toggle = card.getByRole("button", { name: "Defer" });
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+  await card.getByRole("group", { name: "Defer until" }).waitFor({ timeout: 10_000 });
+  const note = await card.locator(".home-defer-zone").allTextContents();
+  await toggle.click();
+  return note.map((t) => t.replace(/\s+/g, " ").trim());
+}
 const stored = () => page.evaluate(() => localStorage.getItem("yuzuno.time"));
 const refuseWrites = (refuse) => page.evaluate((refuse) => {
   const storage = Storage.prototype;
@@ -253,6 +267,8 @@ try {
   assert.deepEqual(newYork.marks.map((m) => m.dateTime), unset.marks.map((m) => m.dateTime), "the times themselves are unchanged");
   await toHome();
   assert.match(await asOf(), /^Data as of Oct 24, 09:05\sAM$/);
+  const deferZone = await deferNote();
+  assert.deepEqual(deferZone, ["Tomorrow and Next week are 9:00 in this device’s time zone, Asia/Shanghai."]);
   await chooseZone("Pacific/Kiritimati");
   const ahead = await asOf();
   assert.match(ahead, /^Data as of Oct 25, 03:05\sAM$/);
@@ -263,7 +279,8 @@ try {
   await closeSettings();
   assert.equal(await stored(), null);
   assert.equal(await asOf(), before.asOf);
-  check("a time zone rewrites the open conversation's and Home's times and dates at once, datetime unchanged; Restore defaults brings this device's back", { newYork: newYork.marks, ahead });
+  assert.deepEqual(await deferNote(), [], "this device's own zone: nothing to say");
+  check("a time zone rewrites the open conversation's and Home's times and dates at once, datetime unchanged; Restore defaults brings this device's back; Defer says its 9:00 is this device's only while another zone is shown", { newYork: newYork.marks, ahead, deferZone });
 
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpected, []);

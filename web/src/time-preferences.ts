@@ -38,6 +38,8 @@ const STORAGE_KEY = "yuzuno.time";
 
 /** This device's own time zone, as the browser names it. */
 export const systemTimeZone = () => new Intl.DateTimeFormat().resolvedOptions().timeZone;
+/** "America/New_York" as people read it: "America/New York". */
+export const timeZoneName = (zone: string) => zone.replace(/_/g, " ");
 
 /** Whether this browser can show times in `zone`. */
 export function knownTimeZone(zone: unknown): zone is string {

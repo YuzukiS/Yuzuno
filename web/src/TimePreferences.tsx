@@ -6,6 +6,7 @@ import {
   systemTimeZone,
   timeFormatter,
   timePreferencesStored,
+  timeZoneName as zoneName,
   timeZones,
   useTimePreferences,
   useTimePreferencesSave,
@@ -20,8 +21,6 @@ const sample = (clock: ClockFormat) => {
   evening.setHours(21, 5, 0, 0);
   return sampleTime({ clock, timeZone: null }).format(evening);
 };
-/** "America/New_York" as people read it: "America/New York". */
-const zoneName = (zone: string) => zone.replace(/_/g, " ");
 
 const choices: { value: ClockFormat; label: string; note: string }[] = [
   { value: "system", label: "System", note: "As this browser writes times for its language and region." },

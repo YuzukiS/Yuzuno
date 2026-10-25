@@ -1,5 +1,5 @@
 import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useTimeDisplay } from "../time-preferences";
+import { systemTimeZone, timeZoneName, useTimeDisplay } from "../time-preferences";
 import { CalendarClock, Check, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
 import { errorText } from "../api";
 import type { Agent } from "../types";
@@ -317,6 +317,13 @@ export const SectionCard = memo(function SectionCard({
                     </button>
                   ))}
                 </span>
+              )}
+              {/* Times here are shown in another zone, but Defer's 9:00 is
+                  this device's own (T-189): said where it is chosen. */}
+              {deferOpen && time.timeZone && time.timeZone !== systemTimeZone() && (
+                <p className="home-note home-defer-zone">
+                  Tomorrow and Next week are 9:00 in this device’s time zone, {timeZoneName(systemTimeZone())}.
+                </p>
               )}
             </div>
           )}
