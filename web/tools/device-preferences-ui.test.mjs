@@ -272,7 +272,7 @@ test("the help lists Return as the send key makes it, and the desktop app's shor
     w.showHelp();
     const text = w.document.querySelector(".shortcut-help").textContent;
     for (const title of ["Anywhere", "Writing a message", "Reading a conversation", "Home", "Lists and dialogs"]) assert.ok(text.includes(title), title);
-    assert.ok(text.includes("cannot be changed yet"), "rebinding is not offered");
+    assert.ok(text.includes("Three of them can take another letter here."), "three take another letter (T-189 P2)");
     // As this device's preference says: Ctrl or Cmd+Return sends.
     const writing = [...w.document.querySelectorAll(".shortcut-group")].find((group) => group.querySelector("h4")?.textContent === "Writing a message");
     const keys = (dt) => [...dt.querySelectorAll("kbd")].map((kbd) => kbd.textContent).join("+");
