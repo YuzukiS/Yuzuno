@@ -148,15 +148,15 @@ test("an Agent the user disconnected is listed but left out of Select all; ticke
   assert.equal(page.secondary().textContent, "Clear");
   page.toggle("B");
   await tick();
-  assert.deepEqual(page.rows().map((row) => row.split(" ")[1]), ["[x]", "[x]"], "the user can choose it");
+  assert.deepEqual(page.rows(), ["A [x] Offline", "B [x] Disconnected by you; tick it to reconnect it"], "the user can choose it");
   assert.equal(page.secondary().textContent, "Clear");
   page.secondary().click();
   await tick();
-  assert.deepEqual(page.rows().map((row) => row.split(" ")[1]), ["[ ]", "[ ]"], "Clear unchooses the one ticked by hand too");
+  assert.deepEqual(page.rows(), ["A [ ] Offline", "B [ ] Disconnected by you; tick it to reconnect it"], "Clear unchooses the one ticked by hand too");
   page.toggle("B");
   page.secondary().click();
   await tick();
-  assert.deepEqual(page.rows().map((row) => row.split(" ")[1]), ["[x]", "[x]"]);
+  assert.deepEqual(page.rows(), ["A [x] Offline", "B [x] Disconnected by you; tick it to reconnect it"]);
   page.primary().click();
   await tick();
   assert.deepEqual(page.sent().sort(), [reconnectUrl("a"), reconnectUrl("b")].sort());
