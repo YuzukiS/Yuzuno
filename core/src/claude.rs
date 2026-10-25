@@ -3,7 +3,7 @@
 //! Harness protocol. Claude session IDs are never Codex thread IDs.
 use crate::{
     conversation_time,
-    model::{ensure_agent_open, now, Agent, AgentDetail, ContextUsage, PendingRequest, RemoteAgent},
+    model::{ensure_agent_open, ensure_not_disconnected, now, Agent, AgentDetail, ContextUsage, PendingRequest, RemoteAgent},
     remote::RemoteMachine,
     rpc::OutcomeUnknown,
     workspace::Workspace,
@@ -684,7 +684,7 @@ impl Workspace {
             error: None,
             remote: machine.map(RemoteAgent::new),
             connection_state: "disconnected".into(),
-            closed_at: None,
+            closed_at: None, disconnected_at: None,
         };
         let detail = AgentDetail {
             agent: agent.clone(),
@@ -723,7 +723,9 @@ impl Workspace {
     pub(crate) async fn claude_ensure(self: &Arc<Self>, id: &str) -> Result<Connection> {
         // Only the Agent and its Turns' statuses are read (send_view): a long
         // record is not copied for a check (T-140).
-        ensure_agent_open(&self.send_view(id).await?.agent)?;
+        let agent = self.send_view(id).await?.agent;
+        ensure_agent_open(&agent)?;
+        ensure_not_disconnected(&agent)?;
         let existing = self.claudes.lock().unwrap().get(id).cloned();
         if let Some(c) = existing {
             return Ok(c);
@@ -1091,6 +1093,7 @@ impl Workspace {
         // statuses and pending requests, not a copy of every Item (T-140).
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
+        ensure_not_disconnected(&d.agent)?;
         if d.agent.connection_state == "connected"
             && (d.turns.iter().any(|t| t["status"] == "inProgress")
                 || d.pending.iter().any(|p| !p.stale))

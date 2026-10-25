@@ -1,5 +1,5 @@
 use crate::{
-    model::{ensure_agent_open, now, Agent, AgentDetail, AgentSettings, MessageInput, MessageReceipt, PendingRequest, RemoteAgent, ReviewTarget, SkillRef},
+    model::{ensure_agent_open, ensure_not_disconnected, now, Agent, AgentDetail, AgentSettings, MessageInput, MessageReceipt, PendingRequest, RemoteAgent, ReviewTarget, SkillRef},
     rpc::{OutcomeUnknown, Rpc, RpcError},
     store::Store,
     remote,
@@ -490,7 +490,7 @@ impl Workspace {
             opencode_session_id: None,
             thread_id: None,
             status: "offline".into(),
-            closed_at: None,
+            closed_at: None, disconnected_at: None,
             created_at: now(),
             updated_at: now(),
             unread_count: 0,
@@ -654,6 +654,7 @@ impl Workspace {
     async fn ensure_with_context(self: &Arc<Self>, id: &str, same_thread_only: bool) -> Result<Connection> {
         let a = self.send_view(id).await?.agent;
         ensure_agent_open(&a)?;
+        ensure_not_disconnected(&a)?;
         let agent = id.to_owned();
         anyhow::ensure!(!self.stored(move |store| store.codex_handoff_pending(&agent)).await?, "导入会话尚未接续；请结束原客户端当前 Turn，然后点击重新连接或发送消息");
         anyhow::ensure!(a.harness == "codex", "此操作需要 Codex 原生会话；不会为其他 Harness 创建 Codex 会话");
@@ -1120,6 +1121,8 @@ impl Workspace {
     /// Attach and reconcile only. This operation never sends a new model Turn.
     pub async fn reconnect(self: &Arc<Self>, id: &str) -> Result<AgentDetail> {
         let _permit = self.admission.enter_work()?;
+        // The user's Reconnect: one they disconnected may start again.
+        self.clear_disconnect(id).await?;
         self.reconnect_accepted(id, &_permit).await
     }
 
@@ -1143,6 +1146,7 @@ impl Workspace {
     /// Claude session's history check (T-140).
     pub async fn reconnect_summary(self: &Arc<Self>, id: &str) -> Result<crate::model::Agent> {
         let permit = self.admission.enter_work()?;
+        self.clear_disconnect(id).await?;
         self.reconnect_settled(id, &permit).await?;
         self.listed(id).await
     }
@@ -1272,6 +1276,7 @@ impl Workspace {
         }
         let closed = self.update_record(id, "agent/closed", json!({}), |d| {
             d.agent.closed_at = Some(now());
+            d.agent.disconnected_at = None;
             d.agent.status = "offline".into();
             d.agent.connection_state = "disconnected".into();
             d.pending.clear();
@@ -1320,6 +1325,7 @@ impl Workspace {
         if self.listed(id).await?.closed_at.is_none() { return Ok(false); }
         self.record_meta(id, "agent/reopened", json!({}), |m| {
             m.agent.closed_at = None;
+            m.agent.disconnected_at = None;
             m.agent.status = "offline".into();
             m.agent.connection_state = "disconnected".into();
         }).await?;
@@ -1371,7 +1377,7 @@ impl Workspace {
                 let agents = ws.stored(|store| store.agents()).await.unwrap_or_default();
                 for agent in agents {
                     let Ok(_permit) = ws.admission.enter_work() else { break; };
-                    if agent.closed_at.is_some() || agent.remote.is_none() || agent.thread_id.is_none() { continue; }
+                    if agent.closed_at.is_some() || agent.disconnected_at.is_some() || agent.remote.is_none() || agent.thread_id.is_none() { continue; }
                     if agent.connection_state == "connecting" { continue; }
                     let now = std::time::Instant::now();
                     if retry.get(&agent.id).is_some_and(|(next, _)| *next > now) { continue; }
@@ -1424,6 +1430,7 @@ impl Workspace {
         self.ensure_rewind_settled(id).await?;
         let detail = self.send_view(id).await?;
         ensure_agent_open(&detail.agent)?;
+        ensure_not_disconnected(&detail.agent)?;
         if detail.message_receipts.iter().any(|r| matches!(r.status.as_str(), "sending" | "uncertain")
             && Some(r.input.client_message_id.as_str()) != client_id) {
             bail!("上一条消息的结果尚未确认，请先重连核对；未发送新任务");
@@ -1579,6 +1586,7 @@ impl Workspace {
             crate::message_content::validate(&input)?;
             crate::codex_skills::check(&skills)?;
             ensure_agent_open(&detail.agent)?;
+            ensure_not_disconnected(&detail.agent)?;
             anyhow::ensure!(skills.is_empty() || (detail.agent.harness == "codex" && input.question.is_none() && input.clarification.is_none()),
                 "Skills are sent only to a Codex Agent, in a new or follow-up message");
             let claude = detail.agent.harness == "claude";

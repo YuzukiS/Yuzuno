@@ -157,6 +157,9 @@ pub(crate) fn cancel_reason(d: &AgentDetail, i: &Intent, enabled: bool) -> Optio
     if d.agent.closed_at.is_some() {
         return Some("The agent was closed");
     }
+    if d.agent.disconnected_at.is_some() {
+        return Some("You disconnected the agent");
+    }
     if d.agent.claude_session_id.as_deref() != Some(i.session_id.as_str()) {
         return Some("The Claude session changed");
     }
