@@ -93,6 +93,9 @@ async fn reconnecting_fills_in_what_claude_saved_once_and_keeps_every_source_its
 
     let d = ws.claude_reconnect(id).await.unwrap();
     assert_eq!(d.agent.connection_state, "connected");
+    // The terminal's turn below ended before the reconnect: nothing runs, so
+    // the Agent is idle and mail can start a Turn (T-184).
+    assert_eq!(d.agent.status, "idle");
     assert_eq!(d.claude_runtime.as_ref().and_then(|r| r.provenance.clone()), Some(provenance.clone()));
     assert_eq!(d.turns.iter().map(|t| t["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>(),
         vec![first.clone(), cut.clone(), format!("native-{TERMINAL}")]);

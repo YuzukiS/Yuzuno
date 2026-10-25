@@ -738,6 +738,32 @@ mod tests {
         assert!(plan(&d, &entries).steps.is_empty());
     }
 
+    /// What Claude saved while Core wasn't reading (a remote host goes on
+    /// without Core) says nothing about what the Agent does now: a backfill
+    /// leaves its status as it was, but for the Turns and requests still open.
+    #[test]
+    fn a_backfilled_turn_from_outside_leaves_the_agent_as_it_was() {
+        let base = || detail(json!([{"id":"t1","status":"completed","_claudeAssistantSeen":{"a1":true},"items":[
+            {"id":"t1:input","type":"userMessage","content":[{"type":"text","text":"Hi"}],"nativeUuid":"t1"},
+            {"id":"m1","type":"agentMessage","text":"Hello","_yuzunoCompletedText":"Hello"}]}]));
+        let head = vec![prompt("t1", "Hi"), said("a1", "m1", "Hello", "end_turn"), system("s1")];
+        let ended = vec![prompt("p2", "Mail arrived"), said("a2", "m2", "Done.", "end_turn"), system("s2")];
+        let cut = vec![prompt("p2", "Mail arrived"), calls("a2", "m2", "c2", None)];
+        // Ended as Claude saved it, or cut short: completed or unknown, and the Agent idle either way.
+        for (tail, status) in [(&ended, "completed"), (&cut, "outcomeUnknown")] {
+            let mut d = base();
+            backfill(&mut d, &[head.clone(), tail.clone()].concat(), &[]);
+            assert_eq!(turn(&d, "native-p2")["status"], status);
+            assert!(d.turns.iter().all(|t| t["status"] != "inProgress"));
+            assert_eq!(d.agent.status, "idle", "no Turn runs, so the Agent is not working ({status})");
+        }
+        // A status the backfill has no say in stays as it was.
+        let mut d = base();
+        d.agent.status = "uncertain".into();
+        backfill(&mut d, &[head.clone(), ended.clone()].concat(), &[]);
+        assert_eq!(d.agent.status, "uncertain");
+    }
+
     #[test]
     fn a_turn_sent_from_a_terminal_is_its_own_turn_and_a_denial_is_not_a_message() {
         let mut d = detail(json!([{"id":"t1","status":"completed","_claudeAssistantSeen":{"a1":true},"items":[
