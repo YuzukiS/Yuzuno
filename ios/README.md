@@ -51,10 +51,27 @@ Give each run its own output directory: it gets `screenshots/`, `frames.txt` and
 ### Your own iPhone
 
 Only you can do this, on your Mac, with your own Apple Account; nothing here is signed for you.
-1. Open the project: `cargo tauri ios build --open`, or `cargo tauri ios dev --open`.
-2. In Xcode, under **Settings → Apple Accounts**, sign in with your Apple Developer Program account or your personal Apple Account.
-3. In the app target's **Signing & Capabilities**, turn on automatic signing and choose your team. The bundle identifier `dev.yuzuno.ios` may need to be changed to one of your own, since it must be unique.
-4. Pair the iPhone with the Mac, choose it as the run destination, and run. Xcode registers the device and makes a development provisioning profile ([Apple](https://developer.apple.com/documentation/xcode/running-your-app-on-simulated-or-physical-devices)).
-5. On the iPhone, turn on **Developer Mode** under **Settings → Privacy & Security**. The iPhone restarts and asks for its passcode ([Apple](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device)).
+1. Pair the iPhone with the Mac and trust the Mac when the iPhone asks. Then turn on **Developer Mode** under **Settings → Privacy & Security**; the iPhone restarts and asks for its passcode ([Apple](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device)). Do this before the rest: until it is on, Xcode does not register the device, and no development provisioning profile is made for it.
+2. Open the project: `cargo tauri ios build --open`, or `cargo tauri ios dev --open`.
+3. In Xcode, under **Settings → Apple Accounts**, sign in with your Apple Developer Program account or your personal Apple Account.
+4. In the app target's **Signing & Capabilities**, turn on automatic signing and choose your team. The bundle identifier `dev.yuzuno.ios` may need to be changed to one of your own, since it must be unique.
+5. Build it from a terminal, not from Xcode:
+
+   ```sh
+   APPLE_DEVELOPMENT_TEAM=<your team id> cargo tauri ios build --target aarch64
+   ```
+
+   Running the app from Xcode instead fails: the project's **Build Rust Code** phase needs `tauri ios dev` or `tauri ios build` to be running, and ends with `failed to read … cli-options-server.json`. The team id is the **OU** field of your development certificate, not the number in its name; `security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject` prints both.
+6. Install what it built, and trust the developer on the iPhone under **Settings → General → VPN & Device Management**:
+
+   ```sh
+   xcrun devicectl device install app --device <udid> gen/apple/build/arm64/Yuzuno.ipa
+   ```
+
+`tauri ios dev` serves the frontend from the Mac over the local network: an app installed that way asks for local network permission and stops working away from the Mac. `tauri ios build` packs the connection page into the app instead, so it keeps working on its own.
+
+Signing uses a private key in your login keychain, so it has to run in your own graphical session. Over SSH on one Mac, `codesign` ended with `errSecInternalComponent` while `security` reported `User interaction is not allowed.`; installing the built app needs no keychain.
+
+An app signed with a free personal team stops launching after about seven days. Building and installing it again from the Mac is what brings it back.
 
 Installing on iPhones without your Mac (ad hoc or TestFlight) needs the paid Apple Developer Program ([Apple](https://developer.apple.com/documentation/xcode/distributing-your-app-to-registered-devices), [Tauri](https://v2.tauri.app/distribute/sign/ios/)).
