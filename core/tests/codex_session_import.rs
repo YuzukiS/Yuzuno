@@ -435,7 +435,8 @@ async fn a_turn_missing_from_native_history_is_ended_only_by_the_user_and_the_se
     assert!(!lab.calls().iter().any(|r| matches!(r["method"].as_str(), Some("thread/fork" | "thread/start" | "turn/steer"))));
     let kept = lab.ws.store.detail(&agent.id).unwrap();
     assert_eq!(kept.turns.iter().find(|t| t["id"] == "lost-turn").unwrap()["status"], "interrupted", "the ended Turn is kept");
-    lab.ws.close_agent(&agent.id).await.unwrap();
+    // The fixture's new Turn never finishes, so the Agent is left open: closing
+    // it would wait for an interrupt Codex never confirms.
 }
 
 /// T-198: while Codex says the session is running a Turn, or when a check
