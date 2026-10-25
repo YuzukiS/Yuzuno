@@ -1016,7 +1016,17 @@ export function Turn({
         )}
         {turn.status === "interrupted" && (
           <div className="turn-interrupted">
-            Turn interrupted · the conversation is still here.
+            {turn.missingNative ? (
+              <>
+                Ended by you{" "}
+                <time dateTime={turn.missingNative.endedAt}>
+                  {new Date(turn.missingNative.endedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}
+                </time>
+                : Codex never saved this turn, so its result is unknown. Anything it already did wasn’t undone.
+              </>
+            ) : (
+              "Turn interrupted · the conversation is still here."
+            )}
           </div>
         )}
         {footerAt < 0 && !running && (
