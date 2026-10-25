@@ -273,7 +273,7 @@ test("a default Codex model and effort come from the Core host's catalog, as a p
   await choose(page, "Codex model for new Agents", "m-big");
   assert.equal(select(page, "Codex reasoning effort for new Agents").value, "");
   button(page, "Save").click();
-  await until(() => posts(page).length === 2, "the new model");
+  await until(() => posts(page).length === 2 && /Set for this Workspace: m-big\./.test(text()), "the new model saved");
   assert.deepEqual(posts(page)[1].body, { codexModel: "m-big", codexReasoningEffort: null });
   button(page, "Use built-in for all").click();
   await until(() => posts(page).length === 3, "everything built in");
