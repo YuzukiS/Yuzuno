@@ -4,12 +4,15 @@ import { strings, useStrings } from "./i18n";
 import type { Model } from "./types";
 import "./pr-reviews.css";
 
-type Settings = {
-  harness: "codex" | "claude";
-  model: string;
-  /** Whether this Workspace chose the reviewer (T-190); older Cores don't say. */
-  source?: "workspace" | "builtin";
-  builtIn?: { harness: "codex" | "claude"; model: string };
+type Reviewer = { harness: "codex" | "claude"; model: string };
+type Source = "project" | "workspace" | "builtin";
+type Settings = Reviewer & {
+  /** Where the reviewer comes from (T-190); older Cores don't say. */
+  source?: Source;
+  builtIn?: Reviewer;
+  /** For a project: its own choice (none: it inherits), and what it inherits. */
+  saved?: Reviewer | null;
+  inherited?: Reviewer & { source: Source };
 };
 const reviewerName = (s: { harness: string; model: string }, label?: string) =>
   `${s.harness === "claude" ? "Claude Code" : "Codex"} · ${
@@ -21,8 +24,13 @@ const text = strings({
   section: "Code review settings",
   title: "Code review",
   intro: "Choose the reviewer for new PR reviews requested from tasks or by Agents. Running reviews keep their original settings.",
-  source: (source: "workspace" | "builtin", builtIn: string | null) =>
-    `${source === "workspace" ? "Set for this Workspace" : "Built in"}${builtIn ? `. Built in: ${builtIn}.` : "."}`,
+  source: (source: Source, builtIn: string | null) =>
+    `${source === "project" ? "Set for this project" : source === "workspace" ? "Set for this Workspace" : "Built in"}${builtIn ? `. Built in: ${builtIn}.` : "."}`,
+  projectSection: "Code review for this project",
+  projectIntro: "The reviewer for new reviews of this project’s tasks, whoever asks for them. With no choice here they use the Workspace’s reviewer, or the built-in one. Reviews already started keep theirs.",
+  inherits: (reviewer: string, source: Source) =>
+    `Inherits ${reviewer} (${source === "workspace" ? "set for this Workspace" : "built in"}).`,
+  inherit: "Inherit",
   inUse: "In use now",
   harness: "Harness",
   harnessHelp: "The runtime that reads the PR.",
@@ -40,7 +48,12 @@ const text = strings({
   section: "代码审查设置",
   title: "代码审查",
   intro: "为从任务或由 Agent 请求的新 PR 审查选择审查者。进行中的审查保留原来的设置。",
-  source: (source, builtIn) => `${source === "workspace" ? "已为此 Workspace 设置" : "内置"}${builtIn ? `。内置：${builtIn}。` : "。"}`,
+  source: (source, builtIn) =>
+    `${source === "project" ? "已为此项目设置" : source === "workspace" ? "已为此 Workspace 设置" : "内置"}${builtIn ? `。内置：${builtIn}。` : "。"}`,
+  projectSection: "此项目的代码审查",
+  projectIntro: "此项目中任务的新审查所用的审查者，无论由谁发起。这里没有选择时，使用 Workspace 的审查者或内置审查者。已开始的审查保留原来的审查者。",
+  inherits: (reviewer, source) => `继承 ${reviewer}（${source === "workspace" ? "为此 Workspace 设置" : "内置"}）。`,
+  inherit: "继承",
   inUse: "当前使用",
   harness: "Harness",
   harnessHelp: "读取 PR 的运行环境。",
@@ -56,8 +69,15 @@ const text = strings({
   save: "保存审查设置",
 });
 
-export function ReviewSettings({ active }: { active: boolean }) {
+/**
+ * The reviewer for new PR reviews (T-190): the Workspace's, or with
+ * `projectId` a project's own, which new reviews of its tasks use; with no
+ * choice a project inherits the Workspace's (or the built-in) reviewer.
+ * Harness and model are chosen together. Reviews already started keep theirs.
+ */
+export function ReviewSettings({ active, projectId, disabled = false }: { active: boolean; projectId?: string; disabled?: boolean }) {
   const t = useStrings(text);
+  const path = projectId ? `/projects/${encodeURIComponent(projectId)}/review-settings` : "/pr-reviews/settings";
   const [saved, setSaved] = useState<Settings | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
   const [models, setModels] = useState<Model[]>([]);
@@ -68,7 +88,7 @@ export function ReviewSettings({ active }: { active: boolean }) {
     if (!active) return;
     const controller = new AbortController();
     setError("");
-    void api<Settings>("/pr-reviews/settings", { signal: controller.signal })
+    void api<Settings>(path, { signal: controller.signal })
       .then((value) => {
         if (!controller.signal.aborted) {
           setSaved(value);
@@ -79,7 +99,7 @@ export function ReviewSettings({ active }: { active: boolean }) {
         if (!controller.signal.aborted) setError(errorText(e));
       });
     return () => controller.abort();
-  }, [active]);
+  }, [active, path]);
   useEffect(() => {
     if (!active || draft?.harness !== "claude") return;
     const controller = new AbortController();
@@ -116,7 +136,7 @@ export function ReviewSettings({ active }: { active: boolean }) {
     setError("");
     try {
       setSaved(
-        await api<Settings>("/pr-reviews/settings", {
+        await api<Settings>(path, {
           method: "POST",
           body: JSON.stringify({ harness: draft.harness, model: draft.model }),
         }),
@@ -127,13 +147,14 @@ export function ReviewSettings({ active }: { active: boolean }) {
       setSaving(false);
     }
   }
-  /** Deletes this Workspace's choice: new reviews use the built-in reviewer. */
+  /** Deletes this Workspace's (or project's) choice: new reviews use the
+   * built-in reviewer (or, for a project, what it inherits). */
   async function useBuiltIn() {
     if (saving) return;
     setSaving(true);
     setError("");
     try {
-      const value = await api<Settings>("/pr-reviews/settings", { method: "DELETE" });
+      const value = await api<Settings>(path, { method: "DELETE" });
       setSaved(value);
       setDraft(value);
     } catch (e) {
@@ -145,19 +166,24 @@ export function ReviewSettings({ active }: { active: boolean }) {
   const selected = models.find((m) => m.model === draft?.model);
   const changed =
     !!draft && (draft.harness !== saved?.harness || draft.model !== saved?.model);
+  // What can be cleared: this Workspace's choice, or the project's own.
+  const own = projectId ? !!saved?.saved : saved?.source === "workspace";
+  const locked = saving || disabled;
   return (
     <section
-      id="settings-review"
+      id={projectId ? undefined : "settings-review"}
       className="settings-section review-settings"
-      aria-label={t.section}
+      aria-label={projectId ? t.projectSection : t.section}
     >
       <header className="settings-section-heading">
         <div>
           <h3>{t.title}</h3>
-          <p>{t.intro}</p>
+          <p>{projectId ? t.projectIntro : t.intro}</p>
           {saved?.source && (
             <p className="settings-row-help review-settings-source" data-source={saved.source}>
-              {t.source(saved.source, saved.builtIn && saved.source === "workspace" ? reviewerName(saved.builtIn) : null)}
+              {projectId && saved.inherited && !saved.saved
+                ? t.inherits(reviewerName(saved.inherited), saved.inherited.source)
+                : t.source(saved.source, saved.builtIn && saved.source !== "builtin" ? reviewerName(saved.builtIn) : null)}
             </p>
           )}
         </div>
@@ -181,7 +207,7 @@ export function ReviewSettings({ active }: { active: boolean }) {
               className="settings-select"
               aria-label={t.harnessLabel}
               value={draft.harness}
-              disabled={saving}
+              disabled={locked}
               onChange={(e) => {
                 const harness = e.target.value as Settings["harness"];
                 setError("");
@@ -217,7 +243,7 @@ export function ReviewSettings({ active }: { active: boolean }) {
               className="settings-select"
               aria-label={t.modelLabel}
               value={draft.model}
-              disabled={saving || (draft.harness === "claude" && loading)}
+              disabled={locked || (draft.harness === "claude" && loading)}
               onChange={(e) => setDraft({ ...draft, model: e.target.value })}
             >
               {draft.harness === "codex" ? (
@@ -240,12 +266,12 @@ export function ReviewSettings({ active }: { active: boolean }) {
             </select>
           </label>
           {/* Saving is offered only once something has changed. */}
-          {(changed || saving || saved?.source === "workspace") && (
+          {(changed || saving || own) && (
             <div className="settings-row settings-row-end">
               <div className="settings-row-action">
-                {saved?.source === "workspace" && (
-                  <button type="button" className="secondary-button" disabled={saving} onClick={() => void useBuiltIn()}>
-                    {t.useBuiltIn}
+                {own && (
+                  <button type="button" className="secondary-button" disabled={locked} onClick={() => void useBuiltIn()}>
+                    {projectId ? t.inherit : t.useBuiltIn}
                   </button>
                 )}
                 {(changed || saving) && (
@@ -253,7 +279,7 @@ export function ReviewSettings({ active }: { active: boolean }) {
                     type="button"
                     className="primary-button"
                     disabled={
-                      saving ||
+                      locked ||
                       !draft.model ||
                       (draft.harness === "claude" && (loading || !selected))
                     }

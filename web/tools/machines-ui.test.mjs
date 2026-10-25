@@ -314,6 +314,36 @@ test("SSH machines are added, edited and removed here; the Core host is only che
   }
 });
 
+test("an edit Core saved shows its new values even if the list can't be read again (T-187)", async () => {
+  let saved = false;
+  const page = mount((url, init) => {
+    const method = init.method || "GET";
+    if (url.endsWith("/machines/mini") && method === "PUT") {
+      saved = true;
+      return { ...mini, ...JSON.parse(init.body), lastCheck: null };
+    }
+    if (url.endsWith("/machines") && saved)
+      return { ok: false, status: 503, text: async () => "Core is restarting", json: async () => ({}) };
+    return undefined;
+  });
+  try {
+    render(page);
+    await loaded(page);
+    page.document.querySelector('[aria-label="Edit Mac mini"]').click();
+    await until(() => field(page, "SSH destination") === "mac-mini", "the edit form");
+    type(page, "SSH destination", "mini.local");
+    await tick();
+    button(card(page, "mini"), "Save changes").click();
+    await until(() => /Couldn’t load machines: Core is restarting/.test(page.document.body.textContent), "the failed read is said");
+    assert.match(card(page, "mini").textContent, /SSH · mini\.local/, "the saved destination, not the old one");
+    assert.match(card(page, "mini").querySelector(".last-check").textContent, /Not checked yet/, "the old address's check is gone");
+    assert.equal(page.calls.filter((c) => c.method === "PUT").length, 1);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 test("a removal Core refuses says why and keeps the machine", async () => {
   const page = mount((url, init) =>
     init.method === "DELETE"

@@ -398,9 +398,13 @@ export function MachinesPage({
                   key={machine.id}
                   machine={machine}
                   onCancel={() => setChange(null)}
-                  onSaved={() => {
+                  onSaved={(saved) => {
                     setChange(null);
-                    // Core drops a check that described the old address.
+                    // What Core saved shows at once, as for an added machine,
+                    // so a failed read of the list after it doesn't show the
+                    // old values (T-187). Core drops a check that described
+                    // the old address.
+                    setMachines((list) => (list || []).map((m) => (m.id === saved.id ? saved : m)));
                     reload();
                   }}
                 />

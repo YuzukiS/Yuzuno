@@ -169,7 +169,7 @@ impl Store {
                     .optional()?;
                 let previous: Value = serde_json::from_str(&stored.context("No review with this previousReviewId belongs to this task's PR")?)?;
                 let head = input.head_sha.as_deref().or(linked["snapshot"]["headSha"].as_str());
-                let config = serde_json::to_value(super::settings::read(&tx)?)?;
+                let config = serde_json::to_value(super::settings::for_task(&tx, &task)?)?;
                 super::incremental::admit(&previous, head, &config).map_err(|refusal| anyhow::anyhow!("{refusal} No review was started."))?;
                 let started = started_rounds(&tx, &linked)?;
                 ensure!(
@@ -199,7 +199,8 @@ impl Store {
             .or(actor)
             .map(|id| crate::collaboration_store::agent_actor(self, &tx, id))
             .transpose()?;
-        let settings = super::settings::read(&tx)?;
+        // This task's reviewer (its project's, the Workspace's or the built-in), fixed now.
+        let settings = super::settings::for_task(&tx, &task)?;
         crate::delivery::store::attach_review(&tx,&task,link,input.base_sha.as_deref(),input.head_sha.as_deref(),&serde_json::to_value(&settings)?,&input.request_id,id)?;
         let mut data = json!({"requestId":input.request_id,"notificationRecipient":recipient,"requestedHarness":settings.harness,"actualHarness":null,"reviewId":id,"round":round,"requestedBy":author,"source":source,"id":id,"taskId":task,"linkId":link,"repository":linked["repository"],"repositoryId":linked["repositoryId"],"number":linked["number"],"url":linked["url"],"status":"preparing","phase":"Fetching fixed PR revision","requestedModel":settings.model,"actualModel":null,"requestedBaseSha":input.base_sha,"requestedHeadSha":input.head_sha,"baseSha":null,"headSha":null,"mergeBaseSha":null,"createdAt":now(),"finishedAt":null,"conclusion":"unknown","findings":[],"error":null,"policyVersion":super::policy::VERSION,"coveragePolicyVersion":super::source::COVERAGE_VERSION,"reasonCodes":[],"acknowledgedUnreviewable":input.acknowledge_unreviewable == Some(true),"ledger":{"version":super::continuation::LEDGER_VERSION}});
         let mut body = format!("Requested code review round {round} · {id}.");
@@ -273,7 +274,7 @@ impl Store {
                 parent["round"], used["round"], used["id"].as_str().unwrap_or_default(), used["status"].as_str().unwrap_or("unknown")
             );
         }
-        let settings = super::settings::read(&tx)?;
+        let settings = super::settings::for_task(&tx, &task)?;
         let config = serde_json::to_value(&settings)?;
         let admitted = super::continuation::admit(&parent, input, &config).map_err(|refusal| anyhow::anyhow!("{refusal} No continuation was started."))?;
         // At most two started rounds of this PR, the continuation included,
@@ -407,8 +408,11 @@ impl Store {
         }
         let has_more = records.len() > 20;
         records.truncate(20);
+        // What a new review of this task would use, and where it comes from (T-190).
+        let (settings, source) = super::settings::resolve(&db, &task)?;
+        let settings = super::settings::sourced(settings, source)?;
         Ok(
-            json!({"settings":super::settings::read(&db)?,"reviews":records,"hasMore":has_more,"nextBefore":records.last().map(|r|r["cursor"].clone())}),
+            json!({"settings":settings,"reviews":records,"hasMore":has_more,"nextBefore":records.last().map(|r|r["cursor"].clone())}),
         )
     }
 
