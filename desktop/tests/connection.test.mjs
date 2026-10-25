@@ -295,7 +295,10 @@ test('a workspace that answers as another one is refused, and nothing is opened'
   const calls = [];
   const refusal =
     '“Home” answered as a different workspace than the one saved under that name, so it was not opened. ' +
-    "Its conversations, drafts and reading places are that other workspace's.";
+    "Its conversations, drafts and reading places are that other workspace's. " +
+    'Give this workspace an address of its own: two workspaces at one address share what this app has stored ' +
+    'for that address. Removing the saved workspace only forgets the entry and any start profile saved for it; ' +
+    'it does not clear what is stored for that address.';
   const dom = await mount(async (command, args) => {
     calls.push({ command, args });
     if (command === 'connection_info') return twoSaved;
@@ -312,6 +315,11 @@ test('a workspace that answers as another one is refused, and nothing is opened'
     assert.equal(calls.filter((call) => call.command === 'connect_core').length, 1, 'asked once, not retried');
     // The list is still there to choose another; refusing is not forgetting.
     assert.equal(document.querySelectorAll('#saved-list li').length, 2);
+    // It must not offer removal as a way to separate two workspaces' data:
+    // removing forgets the entry and its start profile, and clears nothing
+    // this app has stored for that address.
+    assert.doesNotMatch(status.textContent, /forgets its drafts|clear.*drafts|removing .* drafts/i);
+    assert.match(status.textContent, /only forgets the entry/);
   } finally { dom.window.close(); }
 });
 

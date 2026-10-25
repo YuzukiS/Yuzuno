@@ -541,7 +541,7 @@ async fn open_core(
         entries::Opening::Open(answered) => answered,
         entries::Opening::Changed => {
             return Err(format!(
-                "“{named}” answered as a different workspace than the one saved under that name, so it was not opened. Its conversations, drafts and reading places are that other workspace's. Save it at an address of its own, or remove the saved workspace first — that forgets its drafts here along with it."
+                "“{named}” answered as a different workspace than the one saved under that name, so it was not opened. Its conversations, drafts and reading places are that other workspace's. Give this workspace an address of its own: two workspaces at one address share what this app has stored for that address. Removing the saved workspace only forgets the entry and any start profile saved for it; it does not clear what is stored for that address."
             ))
         }
         entries::Opening::Unverified => {
