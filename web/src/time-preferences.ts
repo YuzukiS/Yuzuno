@@ -167,3 +167,15 @@ export function restoreDefaultTimePreferences(): SaveOutcome {
   notify();
   return outcome;
 }
+
+/** Saves imported preferences on this device and only then applies them
+ * (T-194): unlike a choice made here, a refused write changes nothing, in
+ * storage or in what is in effect. */
+export function importTimePreferences(preferences: TimePreferences): SaveOutcome {
+  const outcome = saveDeviceValue(STORAGE_KEY, preferences);
+  if (!outcome.saved) return outcome;
+  current = preferences;
+  lastSave = { outcome, action: "save", attempt: ++attempts };
+  notify();
+  return outcome;
+}
