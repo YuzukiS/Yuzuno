@@ -14,9 +14,9 @@ import {
  * only, for this address (device-storage.ts, as Appearance and the clock
  * format are), apart from how times are written (time-preferences.ts).
  *
- * Its first part translates Settings: the directory, its search and shared
- * save messages, and this device's Language, Sending messages, Clock & time
- * zone and Keyboard shortcuts pages. Everything else stays in English, and a
+ * It translates parts of Settings: the directory, its search and shared save
+ * messages, and the pages translatedEditors (settings-catalog.ts) lists.
+ * Everything else stays in English, and a
  * string a table doesn't have is shown in English. What people and Agents
  * wrote, code, logs, names and identifiers are never translated.
  */

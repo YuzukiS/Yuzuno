@@ -29,7 +29,7 @@ const text = strings({
   chosen: "Whatever this browser’s language is.",
   coverage: (pages: string) =>
     `This version translates Settings’ directory, its search and save messages, and these pages: ${pages}. Other Settings pages and the rest of Yuzuno stay in English, as does anything a page has no translation for. What you and Agents write, code, logs and names are never translated. Times keep their own clock format and time zone.`,
-  list: (items: string[]) => items.join(", "),
+  list: (items: string[]) => items.map((item) => `“${item}”`).join(", "),
 }, {
   title: "界面语言",
   intro: "Yuzuno 界面使用的语言。只保存在此设备上。",
@@ -41,7 +41,7 @@ const text = strings({
   chosen: "无论此浏览器使用什么语言。",
   coverage: (pages) =>
     `此版本已翻译设置目录、搜索与保存提示，以及这些页面：${pages}。其他设置页面和 Yuzuno 的其余部分仍为英文，页面中没有译文的文字也显示为英文。你和 Agent 写下的内容、代码、日志与名称从不翻译。时间仍按各自的时钟格式与时区显示。`,
-  list: (items) => items.join("、"),
+  list: (items) => items.map((item) => `“${item}”`).join("、"),
 });
 
 /** A language tag as people read it, in `language`; the tag when the
