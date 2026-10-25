@@ -856,7 +856,11 @@ impl Workspace {
             let page = match crate::codex_sessions::recovery_page(&connection.rpc, &thread_id, &attempt.before).await {
                 Ok(page) => page,
                 Err(error) => {
-                    self.record_missing_turns(id, connection.generation, &thread_id, &result["thread"], &error).await?;
+                    // Keeping the finding is secondary: the check's own error
+                    // and the connection's cleanup come first.
+                    if let Err(write) = self.record_missing_turns(id, connection.generation, &thread_id, &result["thread"], &error).await {
+                        eprintln!("Workspace could not keep the missing-Turn finding for {id}: {write}");
+                    }
                     if !attempt.same_thread_only {
                         self.remove_connection(id, connection.generation).await;
                     }
@@ -1059,7 +1063,9 @@ impl Workspace {
             let page = match crate::codex_sessions::recovery_page(&connection.rpc, &thread, &d).await {
                 Ok(page) => page,
                 Err(error) => {
-                    self.record_missing_turns(id, connection.generation, &thread, &result["thread"], &error).await?;
+                    if let Err(write) = self.record_missing_turns(id, connection.generation, &thread, &result["thread"], &error).await {
+                        eprintln!("Workspace could not keep the missing-Turn finding for {id}: {write}");
+                    }
                     return Err(error);
                 }
             };
