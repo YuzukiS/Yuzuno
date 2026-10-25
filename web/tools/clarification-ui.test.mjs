@@ -178,3 +178,47 @@ test("IME does not submit, Escape stays inside the form, and uncertain receipts 
     page.close();
   }
 });
+
+// T-189: the form's own words follow the interface language, changed in
+// another window. The questions, options, answers, the Agent's name and
+// Core's words stay as written; nothing is sent by the change.
+test("the form's own words follow a language change; the answers stay and nothing is sent", async () => {
+  const page = mount();
+  const sent = [];
+  const speak = (language) => {
+    page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+    page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+  };
+  try {
+    page.render({ onSubmit: async (values) => void sent.push(values) });
+    await tick();
+    const input = page.document.querySelector("textarea");
+    Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(input, "/work/中文");
+    input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    await tick();
+    speak("zh-Hans");
+    await tick();
+    const text = page.document.body.textContent;
+    for (const words of ["Working directory必填", "Preview theme必填", "你的答案会在此会话中发给 Mori。"]) assert.ok(text.includes(words), words);
+    assert.ok(text.includes("Light") && text.includes("Dark"), "the options as written");
+    assert.ok(page.button("提交答案"));
+    assert.equal(page.document.querySelector("textarea").value, "/work/中文", "the answer stays");
+    assert.deepEqual(sent, [], "nothing is sent by the change");
+    page.render({ delivery: { status: "queued", input: {}, values: {} } });
+    await tick();
+    assert.ok(page.document.body.textContent.includes("已发送 · 等待 Mori 确认。"));
+    page.render({ delivery: { status: "uncertain", input: {}, values: {} }, onCheck: () => {} });
+    await tick();
+    assert.ok(page.document.body.textContent.includes("投递尚未确认。再次发送之前，请先查看会话。"));
+    assert.ok(page.button("检查投递"));
+    page.render({ blockedReason: "Core closed this Agent: archived" });
+    await tick();
+    assert.ok(page.document.body.textContent.includes("Core closed this Agent: archived"), "a reason given by the caller as it came");
+    speak("en");
+    await tick();
+    assert.ok(page.button("Submit answers"));
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});

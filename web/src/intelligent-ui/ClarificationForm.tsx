@@ -11,6 +11,43 @@ import {
   type ClarificationValues,
 } from "./clarification";
 import "./clarification.css";
+import { strings, useStrings } from "../i18n";
+
+// The form's own words in the interface language (T-189). The questions,
+// options, defaults, answers, the Agent's name, Core's and the browser's
+// errors and the validation messages are shown as they are.
+const formText = strings({
+  sent: (agent: string) => `Answers sent to ${agent}.`,
+  queued: (agent: string) => `Sent · waiting for ${agent} to confirm.`,
+  unconfirmed: "Delivery is unconfirmed. Check the conversation before sending anything again.",
+  onlyHere: "This draft is only in this window. Keep it open until your answers are sent.",
+  required: "Required",
+  optional: "Optional",
+  default: (source: string) => `Default: ${source}`,
+  clear: "Clear selection",
+  goesTo: (agent: string) => `Your answers go to ${agent} in this conversation.`,
+  sending: "Sending answers…",
+  answered: "Answers sent",
+  submit: "Submit answers",
+  check: "Check delivery",
+}, {
+  sent: (agent) => `答案已发送给 ${agent}。`,
+  queued: (agent) => `已发送 · 等待 ${agent} 确认。`,
+  unconfirmed: "投递尚未确认。再次发送之前，请先查看会话。",
+  onlyHere: "这份草稿只在此窗口中。在答案发送之前，请保持它打开。",
+  required: "必填",
+  optional: "可选",
+  default: (source) => `默认：${source}`,
+  clear: "清除选择",
+  goesTo: (agent) => `你的答案会在此会话中发给 ${agent}。`,
+  sending: "正在发送答案…",
+  answered: "答案已发送",
+  submit: "提交答案",
+  check: "检查投递",
+});
+// Said when shown, so it follows a language change; other storage errors
+// are the browser's own words.
+const ONLY_HERE = "only-in-this-window";
 
 type Props = {
   /** Authenticated source Agent + immutable published result ID. */
@@ -64,13 +101,14 @@ function Form({
     status === "uncertain" || status === "unknown" || status === "sending";
   const disabled =
     busy || accepted || uncertain || !!blockedReason || !onSubmit;
+  const t = useStrings(formText);
   const notice =
     status === "accepted"
-      ? `Answers sent to ${agentName}.`
+      ? t.sent(agentName)
       : status === "queued"
-        ? `Sent · waiting for ${agentName} to confirm.`
+        ? t.queued(agentName)
         : uncertain
-          ? "Delivery is unconfirmed. Check the conversation before sending anything again."
+          ? t.unconfirmed
           : blockedReason || delivery?.error || failure;
 
   function change(id: string, value: string | string[]) {
@@ -82,9 +120,7 @@ function Form({
       saveClarificationDraft(localStorage, key, next);
       setStorageError("");
     } catch {
-      setStorageError(
-        "This draft is only in this window. Keep it open until your answers are sent.",
-      );
+      setStorageError(ONLY_HERE);
     }
   }
   async function submit() {
@@ -149,11 +185,11 @@ function Form({
             >
               <legend>
                 {field.label}
-                <span>{field.required ? "Required" : "Optional"}</span>
+                <span>{field.required ? t.required : t.optional}</span>
               </legend>
               <div id={descriptionId} className="clarification-note">
                 {field.description && <p>{field.description}</p>}
-                {field.default && <p>Default: {field.default.source}</p>}
+                {field.default && <p>{t.default(field.default.source)}</p>}
               </div>
               {field.type === "text" ? (
                 <textarea
@@ -213,7 +249,7 @@ function Form({
                       className="text-button"
                       onClick={() => change(field.id, "")}
                     >
-                      Clear selection
+                      {t.clear}
                     </button>
                   )}
                 </div>
@@ -229,11 +265,11 @@ function Form({
         {errors.form && <p role="alert">{errors.form}</p>}
         {storageError && (
           <p role="alert" className="clarification-error">
-            {storageError}
+            {storageError === ONLY_HERE ? t.onlyHere : storageError}
           </p>
         )}
         <footer>
-          <small>Your answers go to {agentName} in this conversation.</small>
+          <small>{t.goesTo(agentName)}</small>
           <button
             type="button"
             className="primary-button"
@@ -247,11 +283,7 @@ function Form({
             ) : (
               <ArrowRight size={15} />
             )}
-            {busy
-              ? "Sending answers…"
-              : accepted
-                ? "Answers sent"
-                : "Submit answers"}
+            {busy ? t.sending : accepted ? t.answered : t.submit}
           </button>
         </footer>
         {notice && (
@@ -261,7 +293,7 @@ function Form({
         )}
         {uncertain && onCheck && (
           <button type="button" className="text-button" onClick={onCheck}>
-            Check delivery
+            {t.check}
           </button>
         )}
       </form>

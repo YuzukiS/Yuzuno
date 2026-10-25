@@ -97,3 +97,15 @@ test("in Chinese a refusal says why in Chinese, the Agent's name as it is; Engli
   assert.equal(handoffRefusal(message(), hana, "zh-Hans"), null);
   assert.equal(handoffRefusal(message(), mori, "en"), "This already comes from Mori’s conversation.");
 });
+
+test("App's handoff notices in Chinese name what was added and where, names as they are (T-189)", async () => {
+  const { handoffLabel, handoffNotices } = await import("../src/handoff.ts");
+  const task = { kind: "task", taskId: "T-7", title: "", status: "todo", assignee: null, version: 1, summary: "" };
+  assert.equal(handoffNotices("zh-Hans").added(handoffLabel(task, "zh-Hans"), "Hana"), "已加入 Hana 的草稿：任务 T-7。修改后再发送。");
+  assert.equal(handoffLabel(message({ excerpt: true }), "zh-Hans"), "Mori 的一段摘录");
+  assert.equal(handoffLabel(message(), "zh-Hans"), "Mori 会话中的一条消息");
+  assert.equal(handoffNotices("zh-Hans").needsRecovery("Hana"), "Hana 已保存的草稿需要先恢复；没有加入任何内容。打开 Hana 即可恢复。");
+  assert.equal(handoffNotices().added(handoffLabel(task), "Hana"), "Added task T-7 to Hana’s draft. Edit it, then send.");
+  // What goes into the draft is the message itself, in English whatever the language.
+  assert.match(handoffText(task, hana, now), /^For reference: task T-7/);
+});
