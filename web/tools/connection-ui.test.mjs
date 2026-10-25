@@ -31,7 +31,12 @@ async function mount({ deadlineMs = 180, before, settle = true, holdPoll = false
   w.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   w.HTMLElement.prototype.scrollIntoView = function() {};
   w.HTMLElement.prototype.scrollTo = function() {};
-  w.localStorage.setItem("yuzuno.drafts", JSON.stringify({ a: "保留我的草稿", b: "Keep Claude draft" }));
+  // A draft is saved under the Workspace and Agent it was written in (T-195).
+  for (const [agent, text] of [["a", "保留我的草稿"], ["b", "Keep Claude draft"]])
+    w.localStorage.setItem(
+      `yuzuno.composer.v1:${JSON.stringify(["ws-1", agent])}`,
+      JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text }] }),
+    );
   w.eval(`(${installConnectionFixture.toString()})({deadlineMs: ${deadlineMs}})`);
   before?.(w.connectionFixture);
   if (holdPoll) {

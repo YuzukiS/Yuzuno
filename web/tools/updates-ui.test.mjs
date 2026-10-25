@@ -118,9 +118,10 @@ async function mount(overrides = {}, shell, seed) {
   );
   const { window: w } = dom;
   w.localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
+  // Saved under the Workspace and Agent it was written in (T-195).
   w.localStorage.setItem(
-    "yuzuno.drafts",
-    JSON.stringify({ a: "中文 draft kept while updating" }),
+    `yuzuno.composer.v1:${JSON.stringify(["ws-1", "a"])}`,
+    JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "中文 draft kept while updating" }] }),
   );
   w.matchMedia = (media) => ({
     media,
