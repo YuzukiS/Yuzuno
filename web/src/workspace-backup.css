@@ -66,3 +66,26 @@
   flex: 0 0 auto;
   width: auto;
 }
+.workspace-backup .backup-retention-keep {
+  flex: 0 0 5.5em;
+}
+.backup-retention-result {
+  padding: 0 16px 14px;
+  overflow-wrap: anywhere;
+}
+.backup-retention-group h4 {
+  margin: 12px 0 4px;
+  font-size: 0.9em;
+}
+.backup-retention-group ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.backup-retention-group li {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+}

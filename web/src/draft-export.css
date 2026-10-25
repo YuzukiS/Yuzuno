@@ -1,0 +1,23 @@
+/* Settings → Drafts on this device (T-193). */
+.draft-export { display: grid; gap: 10px; }
+.draft-export-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.draft-export-rows li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-width: 0;
+}
+.draft-export-name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.draft-export-detail { grid-column: 1; color: var(--text-secondary); font-size: .88em; line-height: 1.45; overflow-wrap: anywhere; }
+.draft-export-rows button { grid-column: 2; grid-row: 1 / span 2; display: inline-flex; align-items: center; gap: 6px; }
+.draft-export-shown { display: grid; gap: 8px; justify-items: start; }
+.draft-export-shown textarea { width: 100%; }
+.draft-export-shown button { display: inline-flex; align-items: center; gap: 6px; }
+@media (max-width: 480px) {
+  .draft-export-rows li { grid-template-columns: minmax(0, 1fr); }
+  .draft-export-rows button { grid-column: 1; grid-row: auto; justify-self: start; }
+}

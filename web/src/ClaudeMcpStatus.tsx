@@ -35,14 +35,22 @@ const notices: Record<string, string> = {
   not_observed: "MCP status has not been checked for this connection.",
 };
 
+type Options = {
+  /** Open with what the last read found and ask Claude Code only on Refresh
+   * (Settings, T-191); the inspector asks once when nothing was read yet. */
+  cachedOnOpen?: boolean;
+  heading?: string;
+  headingLevel?: 2 | 5;
+};
+
 /** Remount before painting a different Agent/session/environment's observation. */
-export function ClaudeMcpStatus({ agent }: { agent: Agent }) {
+export function ClaudeMcpStatus({ agent, ...options }: { agent: Agent } & Options) {
   const identity = JSON.stringify([agent.id, agent.cwd, agent.claudeSessionId,
     agent.remote?.machine.id, agent.remote?.runtime?.instanceId, agent.connectionState, agent.closedAt]);
-  return <StatusPanel key={identity} agent={agent} />;
+  return <StatusPanel key={identity} agent={agent} {...options} />;
 }
 
-function StatusPanel({ agent }: { agent: Agent }) {
+function StatusPanel({ agent, cachedOnOpen = false, heading = "MCP services", headingLevel = 2 }: { agent: Agent } & Options) {
   const [view, setView] = useState<View | null>(null);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -61,7 +69,7 @@ function StatusPanel({ agent }: { agent: Agent }) {
     const timeout = window.setTimeout(() => abort.abort(), 45_000);
     setBusy(true);
     try {
-      const result = await api<View>(path, { signal: abort.signal,
+      const result = await api<View>(refresh || !cachedOnOpen ? path : `${path}?cached=true`, { signal: abort.signal,
         ...(refresh ? { method: "POST", body: "{}" } : {}) });
       if (active.current && sequence === request.current) {
         setView(result); setFailed(false); setNow(Date.now());
@@ -91,9 +99,10 @@ function StatusPanel({ agent }: { agent: Agent }) {
     ? (agent.closedAt ? notices.closed : agent.connectionState === "connecting" ? notices.initializing : notices.not_connected)
     : expired && view?.state === "ready" ? notices.expired : notices[view?.reason ?? ""];
   const hasAuth = observation?.servers.some(server => server.status === "needs-auth");
+  const Heading = headingLevel === 5 ? "h5" : "h2";
   return <section className="inspector-section claude-mcp-status" aria-label="Claude MCP services">
     <div className="section-title">
-      <h2><Plug size={14} />MCP services</h2>
+      <Heading><Plug size={14} />{heading}</Heading>
       <button type="button" className="icon-button" aria-label="Refresh MCP status" title="Refresh MCP status"
         disabled={busy || disconnected} onClick={() => void load(true)}>
         <RefreshCw size={13} className={busy ? "mcp-refreshing" : undefined} />

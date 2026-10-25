@@ -111,6 +111,12 @@ impl Backups {
         Some(op)
     }
 
+    /// Every operation in the journal, a running one with its live step.
+    pub fn all(&self) -> Vec<Operation> {
+        let ids: Vec<String> = self.state.lock().unwrap().iter().map(|op| op.id.clone()).collect();
+        ids.iter().filter_map(|id| self.get(id)).collect()
+    }
+
     pub fn recent(&self) -> Vec<Operation> {
         let ids: Vec<String> = self.state.lock().unwrap().iter().rev().take(10).map(|op| op.id.clone()).collect();
         ids.iter().filter_map(|id| self.get(id)).collect()
@@ -235,7 +241,7 @@ fn now() -> String {
 }
 
 /// An absolute path given by a client, as a path on the Core host.
-fn absolute(field: &str, value: &str) -> Result<PathBuf> {
+pub(crate) fn absolute(field: &str, value: &str) -> Result<PathBuf> {
     ensure!(!value.is_empty() && value.len() <= 4096 && !value.contains('\0'), "{field} must name a folder on the computer that runs Core");
     let path = PathBuf::from(value);
     ensure!(path.is_absolute(), "{field} must be an absolute path on the computer that runs Core");

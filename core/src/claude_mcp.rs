@@ -3,7 +3,7 @@
 use crate::{claude::Connection, model::Agent, server::ApiError, workspace::Workspace};
 use anyhow::Result;
 use axum::{
-    extract::{Path, State as ApiState},
+    extract::{Path, Query, State as ApiState},
     routing::get,
     Json, Router,
 };
@@ -218,6 +218,18 @@ impl Workspace {
         })
     }
 
+    /// What the last read found, without asking Claude Code even when it
+    /// has never been asked: an overview of several Agents reads this, and
+    /// only an explicit refresh asks (T-191).
+    pub async fn claude_mcp_status_cached(&self, id: &str) -> Result<View> {
+        let _permit = self.admission.enter_work()?;
+        let context = self.mcp_context(id).await?;
+        Ok(self
+            .claude_mcp
+            .entry(id, &context.scope)
+            .view(&context, Instant::now()))
+    }
+
     pub async fn claude_mcp_status(&self, id: &str, refresh: bool) -> Result<View> {
         let _permit = self.admission.enter_work()?;
         let started = Instant::now();
@@ -308,11 +320,23 @@ impl Workspace {
     }
 }
 
+#[derive(Deserialize)]
+struct ReadQuery {
+    /// Only what the last read found; never asks Claude Code.
+    #[serde(default)]
+    cached: bool,
+}
+
 async fn read(
     ApiState(ws): ApiState<Arc<Workspace>>,
     Path(id): Path<String>,
+    Query(query): Query<ReadQuery>,
 ) -> Result<Json<View>, ApiError> {
-    Ok(Json(ws.claude_mcp_status(&id, false).await?))
+    Ok(Json(if query.cached {
+        ws.claude_mcp_status_cached(&id).await?
+    } else {
+        ws.claude_mcp_status(&id, false).await?
+    }))
 }
 
 async fn refresh(
@@ -350,6 +374,23 @@ mod tests {
             serde_json::to_vec(&value).unwrap(),
         )
         .unwrap();
+    }
+
+    /// GET …/mcp-status?cached=true, as Settings asks it.
+    async fn cached_over_http(ws: &Arc<Workspace>, id: &str) -> serde_json::Value {
+        use tower::ServiceExt;
+        let response = router()
+            .with_state(ws.clone())
+            .oneshot(
+                axum::http::Request::get(format!("/api/agents/{id}/claude/mcp-status?cached=true"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
     }
 
     fn count(dir: &Path, name: &str) -> usize {
@@ -583,6 +624,14 @@ mod tests {
             .unwrap();
         let id = agent.id.as_str();
         until(|| ws.store.agent(id).unwrap().connection_state == "connected").await;
+        // T-191: an overview's cached read never asks the SDK, even before
+        // anything was read; it says nothing was observed.
+        let cached = cached_over_http(&ws, id).await;
+        assert_eq!(
+            (&cached["state"], &cached["reason"], &cached["observation"]),
+            (&json!("unknown"), &json!("not_observed"), &json!(null))
+        );
+        assert_eq!(count(path, "reads"), 0, "a cached read asks nothing");
         let first = ws.claude_mcp_status(id, false).await.unwrap();
         assert_eq!(first.state, "ready");
         assert_eq!(
@@ -617,6 +666,14 @@ mod tests {
             1,
             "mount/read does not repeatedly ask the SDK"
         );
+        let cached = cached_over_http(&ws, id).await;
+        assert_eq!(cached["state"], "ready");
+        assert_eq!(
+            cached["observation"]["observedAt"],
+            json!(first.observation.as_ref().unwrap().observed_at),
+            "the cached read is the last observation"
+        );
+        assert_eq!(count(path, "reads"), 1);
 
         mode(
             path,
@@ -699,6 +756,13 @@ mod tests {
         );
         assert_eq!(disconnected.observation.unwrap().servers[0].name, "fixture");
         let before = count(path, "reads");
+        // Offline is said as offline, with the old observation kept as stale.
+        let cached = cached_over_http(&ws, id).await;
+        assert_eq!(
+            (&cached["state"], &cached["reason"], &cached["stale"], &cached["observation"]["servers"][0]["name"]),
+            (&json!("unavailable"), &json!("not_connected"), &json!(true), &json!("fixture"))
+        );
+        assert_eq!(count(path, "reads"), before);
         assert_eq!(count(path, "starts"), 1, "status never starts a runtime");
         ws.claude_reconnect(id).await.unwrap();
         let reconnected = ws.claude_mcp_status(id, false).await.unwrap();
