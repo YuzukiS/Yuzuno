@@ -135,6 +135,21 @@ test("it lists only Agents that can be reconnected, chooses none of them, and is
   page.close();
 });
 
+test("one whose stop its SSH machine didn't confirm says so, and is left out of Select all too (T-184)", async () => {
+  const page = mount();
+  page.window.render([agent("a"), agent("b", { disconnectedAt: "2026-10-25T04:00:00Z", disconnectUnconfirmed: true })]);
+  await tick();
+  page.trigger().click();
+  await tick();
+  const row = "B [ ] Disconnected by you, stop not confirmed; nothing starts it automatically. Tick it to reconnect it";
+  assert.deepEqual(page.rows(), ["A [ ] Offline", row]);
+  page.secondary().click();
+  await tick();
+  assert.deepEqual(page.rows(), ["A [x] Offline", row], "Select all leaves it out");
+  assert.deepEqual(page.sent(), []);
+  page.close();
+});
+
 test("an Agent the user disconnected is listed but left out of Select all; ticked, it is reconnected too (T-184)", async () => {
   const page = mount();
   page.window.render([agent("a"), agent("b", { disconnectedAt: "2026-10-25T04:00:00Z" })]);

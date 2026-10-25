@@ -115,7 +115,7 @@ impl Workspace {
             error: None,
             remote: None,
             connection_state: "disconnected".into(),
-            closed_at: None, disconnected_at: None,
+            closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
         };
         let detail = AgentDetail {
             agent: agent.clone(),
