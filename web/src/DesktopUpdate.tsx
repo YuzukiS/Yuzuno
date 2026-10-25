@@ -7,6 +7,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { errorText, isTauri, openDesktopConnection } from "./api";
+import { strings, useStrings } from "./i18n";
 import { updateBytes } from "./updates";
 import "./desktop-update.css";
 
@@ -49,6 +50,50 @@ export const desktopShell = {
 
 const POLL_MS = 500;
 
+// The desktop shell's own words (why it can't update, its errors), versions
+// and release notes are shown as they came.
+const text = strings({
+  title: "Desktop app",
+  separately: "The Windows app is updated separately, from Settings in the app itself. The update above changes only the Workspace service it connects to.",
+  older: "This desktop version cannot update itself. Install a newer release by hand.",
+  choose: "Choose which Workspace service this window opens.",
+  connection: "Connection",
+  checks: "This Windows app checks the Workspace service it is connected to for a signed desktop release.",
+  installedNow: "Installed now",
+  version: (version: string) => `Version ${version}`,
+  available: (version: string) => `Version ${version} is available`,
+  current: "The desktop app is up to date.",
+  checking: "Checking for a desktop release…",
+  updates: "Desktop updates",
+  notInstaller: "This copy was not installed by the Yuzuno installer, so it cannot update itself. Install new releases by hand.",
+  whatsNew: "What’s new",
+  installNote: "Installing closes this window and reopens the new version. Drafts and the Workspace connection are kept; the Workspace service and its agents keep running.",
+  downloading: (received: string, total: string | null) => ` Downloading and verifying ${received}${total ? ` of ${total}` : ""}…`,
+  installing: " Installing. Yuzuno will reopen.",
+  check: "Check for desktop update",
+  install: (version: string) => `Download and install ${version}`,
+}, {
+  title: "桌面应用",
+  separately: "Windows 应用单独更新，需在该应用自己的设置中进行。上方的更新只会改变它所连接的 Workspace 服务。",
+  older: "此桌面版本无法自行更新。请手动安装更新的发行版。",
+  choose: "选择此窗口打开哪个 Workspace 服务。",
+  connection: "连接",
+  checks: "此 Windows 应用会向它所连接的 Workspace 服务检查已签名的桌面发行版。",
+  installedNow: "当前已安装",
+  version: (version) => `版本 ${version}`,
+  available: (version) => `版本 ${version} 可用`,
+  current: "桌面应用已是最新。",
+  checking: "正在检查桌面发行版…",
+  updates: "桌面更新",
+  notInstaller: "此副本不是由 Yuzuno 安装程序安装的，因此无法自行更新。请手动安装新的发行版。",
+  whatsNew: "新内容",
+  installNote: "安装会关闭此窗口并打开新版本。草稿和 Workspace 连接会保留；Workspace 服务及其 Agent 会继续运行。",
+  downloading: (received, total) => ` 正在下载并验证 ${received}${total ? ` / ${total}` : ""}…`,
+  installing: " 正在安装。Yuzuno 将重新打开。",
+  check: "检查桌面更新",
+  install: (version) => `下载并安装 ${version}`,
+});
+
 /**
  * The Desktop app's own updates, next to the Workspace service's. The desktop
  * checks the Core it is connected to, verifies what it downloads against the
@@ -60,6 +105,7 @@ export function DesktopUpdate({
 }: {
   preserveDrafts: () => void;
 }) {
+  const t = useStrings(text);
   const [status, setStatus] = useState<DesktopUpdateStatus | null>(null);
   const [shellError, setShellError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -123,7 +169,7 @@ export function DesktopUpdate({
 
   const connection = isTauri && (
     <button className="quiet-button" onClick={openDesktopConnection}>
-      Connection
+      {t.connection}
     </button>
   );
 
@@ -132,16 +178,12 @@ export function DesktopUpdate({
       <section
         id="settings-desktop"
         className="settings-section updates-desktop"
-        aria-label="Desktop app"
+        aria-label={t.title}
       >
         <header className="settings-section-heading">
           <div>
-            <h3>Desktop app</h3>
-            <p>
-              The Windows app is updated separately, from Settings in the app
-              itself. The update above changes only the Workspace service it
-              connects to.
-            </p>
+            <h3>{t.title}</h3>
+            <p>{t.separately}</p>
           </div>
         </header>
         {(shellError !== null || connection) && (
@@ -151,14 +193,10 @@ export function DesktopUpdate({
               <div className="settings-row-main">
                 {shellError !== null ? (
                   <p className="settings-row-help desktop-update-note">
-                    {/not (found|allowed)/i.test(shellError)
-                      ? "This desktop version cannot update itself. Install a newer release by hand."
-                      : shellError}
+                    {/not (found|allowed)/i.test(shellError) ? t.older : shellError}
                   </p>
                 ) : (
-                  <p className="settings-row-help">
-                    Choose which Workspace service this window opens.
-                  </p>
+                  <p className="settings-row-help">{t.choose}</p>
                 )}
               </div>
               {connection && <div className="settings-row-action">{connection}</div>}
@@ -178,19 +216,16 @@ export function DesktopUpdate({
     <section
       id="settings-desktop"
       className="settings-section updates-desktop desktop-update"
-      aria-label="Desktop app"
+      aria-label={t.title}
     >
       <header className="settings-section-heading">
         <div>
-          <h3>Desktop app</h3>
-          <p>
-            This Windows app checks the Workspace service it is connected to for a
-            signed desktop release.
-          </p>
+          <h3>{t.title}</h3>
+          <p>{t.checks}</p>
         </div>
         {status && (
-          <span className="settings-current desktop-update-version" title="Installed now">
-            Version {status.version}
+          <span className="settings-current desktop-update-version" title={t.installedNow}>
+            {t.version(status.version)}
           </span>
         )}
       </header>
@@ -200,19 +235,16 @@ export function DesktopUpdate({
           <div className="settings-row-main desktop-update-body">
             <span className="settings-row-title">
               {available
-                ? `Version ${available.version} is available`
+                ? t.available(available.version)
                 : status?.phase === "current"
-                  ? "The desktop app is up to date."
+                  ? t.current
                   : status?.phase === "checking"
-                    ? "Checking for a desktop release…"
-                    : "Desktop updates"}
+                    ? t.checking
+                    : t.updates}
             </span>
             {blocked && <p className="settings-row-help desktop-update-note">{blocked}</p>}
             {status && status.channel !== "installer" && !status.unavailable && (
-              <p className="settings-row-help desktop-update-note">
-                This copy was not installed by the Yuzuno installer, so it cannot
-                update itself. Install new releases by hand.
-              </p>
+              <p className="settings-row-help desktop-update-note">{t.notInstaller}</p>
             )}
             {available && (
               <div className="desktop-update-available">
@@ -220,31 +252,26 @@ export function DesktopUpdate({
                   <details className="updates-notes">
                     <summary>
                       <ChevronRight size={12} aria-hidden="true" />
-                      What’s new
+                      {t.whatsNew}
                     </summary>
                     <p className="updates-release-notes">{available.notes}</p>
                   </details>
                 )}
                 {canInstall && (
-                  <p className="settings-row-meta">
-                    Installing closes this window and reopens the new version.
-                    Drafts and the Workspace connection are kept; the Workspace
-                    service and its agents keep running.
-                  </p>
+                  <p className="settings-row-meta">{t.installNote}</p>
                 )}
               </div>
             )}
             {status?.phase === "downloading" && (
               <p className="settings-row-help desktop-update-state" role="status">
-                <LoaderCircle size={14} className="updates-spin" /> Downloading and
-                verifying {updateBytes(status.receivedBytes)}
-                {status.totalBytes ? ` of ${updateBytes(status.totalBytes)}` : ""}…
+                <LoaderCircle size={14} className="updates-spin" />
+                {t.downloading(updateBytes(status.receivedBytes), status.totalBytes ? updateBytes(status.totalBytes) : null)}
               </p>
             )}
             {status?.phase === "installing" && (
               <p className="settings-row-help desktop-update-state" role="status">
-                <LoaderCircle size={14} className="updates-spin" /> Installing.
-                Yuzuno will reopen.
+                <LoaderCircle size={14} className="updates-spin" />
+                {t.installing}
               </p>
             )}
             {(error ?? status?.error) && (
@@ -265,7 +292,7 @@ export function DesktopUpdate({
                 ) : (
                   <RefreshCw size={14} />
                 )}
-                Check for desktop update
+                {t.check}
               </button>
             )}
             {available && (
@@ -279,7 +306,7 @@ export function DesktopUpdate({
                 }
               >
                 <ArrowDownToLine size={14} />
-                Download and install {available.version}
+                {t.install(available.version)}
               </button>
             )}
             {connection}

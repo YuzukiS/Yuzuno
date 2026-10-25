@@ -1432,3 +1432,90 @@ test("a non-loopback Core or an older desktop explains the manual path", async (
     f.dom.window.close();
   }
 });
+
+// T-189: Workspace service in the interface language. The language changed
+// in another window: this window's own words change; versions, release IDs,
+// sources, names and what Core says stay as they came; nothing is checked,
+// downloaded, prepared, applied or cancelled for it, and the update in hand
+// and its stopped reason are kept.
+function changeLanguage(w, language) {
+  w.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+  w.dispatchEvent(new w.StorageEvent("storage", { key: "yuzuno.language" }));
+}
+const updatesSection = (w) => w.document.querySelector("#settings-editor-updates");
+const heading = (w) => updatesSection(w)?.querySelector("#settings-updates-title")?.textContent;
+const sent = (f) => f.calls.filter((c) => c.method === "POST" && c.url.includes("/api/updates/")).map((c) => c.url.replace(/^.*\/api/, ""));
+
+test("Workspace service in Chinese: a running wait, its steps, waits and details; a language change sends nothing and restores English as it was", async () => {
+  const f = await mount({
+    acceptingWork: false,
+    operation: { id: "wait", releaseId: "B", phase: "waiting", startedAt: "", updatedAt: "", deadline: "2026-10-13T23:00:00Z" },
+    waitNotices: [
+      { agentId: "a", name: "Mori", messageId: "pause-a", turnId: "turn-a", delivery: "delivered", active: true, idle: false },
+      { agentId: "idle", name: "Quiet Agent", messageId: "pause-idle", turnId: "old", delivery: "delivered", active: false, idle: true },
+    ],
+  });
+  try {
+    await f.open();
+    assert.ok(await until(() => heading(f.w) === "Workspace service" && !!updatesSection(f.w).querySelector(".updates-blockers")), "the running update in English");
+    const en = updatesSection(f.w).textContent;
+    changeLanguage(f.w, "zh-Hans");
+    assert.ok(await until(() => heading(f.w) === "Workspace 服务"), "shown in Chinese");
+    const section = updatesSection(f.w);
+    assert.equal(section.getAttribute("lang"), "zh-Hans");
+    assert.equal(section.querySelector(".update-card-title").textContent, "正在更新到 2026.10.B");
+    assert.match(section.textContent, /正在等待你的 Agent。活跃的 Agent 会被要求保存进度并完成当前 Turn。/);
+    assert.match(section.querySelector(".updates-deadline").textContent, /^等待截止于 \S/);
+    assert.deepEqual([...section.querySelectorAll(".update-step-label")].map((el) => el.textContent), ["下载", "验证", "准备", "等待 Agent", "安装"]);
+    assert.deepEqual([...section.querySelectorAll(".updates-blockers li")].map((li) => li.textContent),
+      ["MoriTurn is still running · 暂停请求已送达", "Quiet Agent空闲"], "Core's reason as it came, this window's words in Chinese");
+    assert.ok(f.button("取消更新"), "the update can still be cancelled");
+    assert.match(section.textContent, /版本详情/);
+    assert.match(section.textContent, /linux-x86_64 · API 1 · 数据 2 · 记录 1/);
+    assert.match(section.textContent, /Reviewed local build/, "the release's own source as written");
+    assert.match(section.textContent, /Core 主机上 \d+ MB · 已保留 1 个发行版 · 最多保留 3 个用于恢复/);
+    assert.match(section.querySelector("#settings-desktop").textContent, /^桌面应用Windows 应用单独更新/);
+    await polls(f);
+    assert.deepEqual(sent(f), [], "nothing is checked, cancelled or sent");
+    changeLanguage(f.w, "en");
+    assert.ok(await until(() => heading(f.w) === "Workspace service"), "back in English");
+    assert.equal(updatesSection(f.w).textContent, en, "as it was in English");
+    assert.deepEqual(sent(f), []);
+    assert.deepEqual(f.errors, []);
+  } finally {
+    f.w.close();
+  }
+});
+
+test("a stopped update is said in Chinese after a language change, with Core's reason as it came; the published release's card too", async () => {
+  const f = await mount({ candidates: [], releaseSource: published("B") });
+  const answer = f.w.fetch;
+  f.w.fetch = async (url, init = {}) => {
+    if (url.endsWith("/api/updates/download")) {
+      f.calls.push({ url, method: "POST", body: JSON.parse(init.body) });
+      return { ok: false, status: 409, text: async () => JSON.stringify({ error: "Available release changed; check again" }) };
+    }
+    return answer(url, init);
+  };
+  try {
+    await f.open();
+    assert.ok(await f.press("Update to 2026.10.B"), "Update can be pressed");
+    assert.ok(await until(() => /The update to 2026\.10\.B stopped\. Available release changed; check again/.test(updatesSection(f.w).textContent)));
+    const before = sent(f);
+    changeLanguage(f.w, "zh-Hans");
+    assert.ok(await until(() => heading(f.w) === "Workspace 服务"), "shown in Chinese");
+    const section = updatesSection(f.w);
+    assert.equal(section.querySelector('[role="alert"]').textContent, "到 2026.10.B 的更新已停止。Available release changed; check again");
+    assert.equal(section.querySelector(".update-card-title").textContent, "版本 2026.10.B 可用");
+    assert.match(section.textContent, /来自 owner\/repo 的已签名发行版 · \d+ MB/);
+    assert.match(section.textContent, /发布者签名已验证 · linux-x86_64/);
+    assert.match(section.textContent, /只需点击一次：在你的 Agent 完成当前 Turn 后，下载并验证它、准备它，然后切换。/);
+    assert.ok(f.button("更新到 2026.10.B"), "the release can be chosen again, in Chinese");
+    await polls(f);
+    assert.deepEqual(sent(f), before, "the language change sends nothing");
+    assert.equal(f.w.localStorage.getItem(intentKey), null, "nothing is chosen again");
+    assert.deepEqual(f.errors, []);
+  } finally {
+    f.w.close();
+  }
+});
