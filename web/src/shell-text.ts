@@ -76,7 +76,7 @@ export const shellText = strings({
   leftOff: "Where you left off",
   linked: "Linked message",
   original: "Original source",
-  readingIn: (where: "desktop" | "browser") =>
+  readingIn: (where: "desktop" | "browser"): string =>
     where === "desktop" ? "Where you were reading in the desktop app" : "Where you were reading in another browser",
   earlierSession: (name: string, latest: boolean) =>
     `This message was in an earlier native session of ${name}, not the current one. Showing ${latest ? "the latest messages" : "the conversation"}.`,

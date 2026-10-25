@@ -114,7 +114,8 @@ const controls = () => page.evaluate(() => {
     chipLabel: document.querySelector(".pasted-text-chip")?.getAttribute("aria-label"),
   };
 });
-// Fourteen lines, CRLF, with Chinese inside: folded into a block, never translated.
+// Fourteen line breaks (15 lines, the last empty), CRLF, with Chinese inside:
+// folded into a block, never translated.
 const PASTED = "  line\r\n\t中文 kept\r\n".repeat(7);
 
 try {
@@ -143,7 +144,7 @@ try {
   assert.ok(en.items.some((label) => label.startsWith("Synthetic training · ")), JSON.stringify(en.items));
   assert.equal(en.search, "Search conversation");
   assert.equal(en.composer, "Message Mori");
-  assert.match(en.chip, / · 14 lines$/);
+  assert.match(en.chip, / · 15 lines$/);
   const enSelection = await page.evaluate(() => getSelection().toString());
   check("in English: the dock, the search button, the composer and a draft with a paste block, 'note' selected", { en, enSelection });
 
@@ -155,7 +156,7 @@ try {
   assert.ok(zh.groups.every((label) => label.endsWith("：打开列表")), JSON.stringify(zh.groups));
   assert.ok(zh.items.some((label) => label.startsWith("Synthetic training · ")), "the job's name as it came");
   assert.equal(zh.composer, "给 Mori 发消息");
-  assert.equal(zh.chip, en.chip.replace(/ · 14 lines$/, " · 14 行"), "the block's label as it came");
+  assert.equal(zh.chip, en.chip.replace(/ · 15 lines$/, " · 15 行"), "the block's label as it came");
   assert.match(zh.chipLabel, /。查看并编辑$/);
   assert.equal(await savedDraft(page, "a"), draft, "the draft as it was");
   const zhSelection = await page.evaluate(() => getSelection().toString());
