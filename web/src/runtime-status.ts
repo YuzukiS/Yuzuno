@@ -85,6 +85,9 @@ export interface RuntimeRead {
   sdk?: { ok: true; value: ClaudeSdkStatus } | { ok: false; error: string };
   /** Null: not the desktop app. */
   desktop: null | { ok: true; value: DesktopUpdateStatus } | { ok: false; error: string };
+  /** What the iPhone app says of itself (T-191). Null or absent: not the
+   * iPhone app, or one that doesn't report it (an older one). */
+  iphone?: null | { ok: true; version: string } | { ok: false };
   /** The release this page was built from, if it says. */
   page: string | null;
 }
@@ -96,6 +99,18 @@ const settle = async <T>(read: () => Promise<T>) => {
     return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
   }
 };
+
+/**
+ * The version the iPhone app's window script gives every page it opens
+ * (ios/src/app_version.js): a value, read here with no request and no call
+ * into the app. Anything but a version is not taken for one.
+ */
+function iphoneApp(): RuntimeRead["iphone"] {
+  const app = (globalThis as { __YUZUNO_IPHONE_APP__?: unknown }).__YUZUNO_IPHONE_APP__;
+  if (app === undefined) return null;
+  const version = app !== null && typeof app === "object" ? (app as { version?: unknown }).version : undefined;
+  return typeof version === "string" && /^[0-9A-Za-z.+-]{1,64}$/.test(version) ? { ok: true, version } : { ok: false };
+}
 
 /** Every request is a GET (or the desktop app's local status); none starts
  * a machine check, a sign-in, a reconnect or an update. The four answers
@@ -114,7 +129,7 @@ export async function readRuntime(signal?: AbortSignal): Promise<RuntimeRead> {
     at: new Date().toISOString(), health, machines,
     runtime: workspace.ok ? { ok: true, value: workspace.value.runtime } : workspace,
     agents: workspace.ok ? workspace.value.agents ?? [] : null,
-    budget, sdk, desktop, page: loadedRelease(),
+    budget, sdk, desktop, iphone: iphoneApp(), page: loadedRelease(),
   };
 }
 
@@ -273,7 +288,9 @@ const words = strings({
   installer: "Installed by the Yuzuno installer; it updates from the Desktop app card.",
   notInstaller: "Not installed by the Yuzuno installer, so it can't update itself.",
   desktopDidNotSay: (error: string) => `The desktop app didn't say: ${error}`,
-  iphoneUnreported: "The iPhone app doesn't report its version to this page.",
+  iphoneBuilt: "As this iPhone app reports it: the version it was built as.",
+  notIphone: "This page isn't open in the iPhone app, or that app is older and doesn't report its version.",
+  iphoneUnreadable: "The iPhone app's report of its version couldn't be read.",
   reached: "Reached",
   notReachedText: "Not reached",
   connected: "Connected",
@@ -376,7 +393,9 @@ const words = strings({
   installer: "由 Yuzuno 安装程序安装；它从“桌面应用”卡片更新。",
   notInstaller: "不是由 Yuzuno 安装程序安装的，因此无法自行更新。",
   desktopDidNotSay: (error) => `桌面应用没有说明：${error}`,
-  iphoneUnreported: "iPhone 应用不会向此页面报告它的版本。",
+  iphoneBuilt: "由此 iPhone 应用报告：它构建时的版本。",
+  notIphone: "此页面不是在 iPhone 应用中打开的，或该应用较旧，不会报告它的版本。",
+  iphoneUnreadable: "无法读取 iPhone 应用报告的版本。",
   reached: "已连到",
   notReachedText: "未连到",
   connected: "已连接",
@@ -558,7 +577,12 @@ export function runtimeView(read: RuntimeRead, now = Date.now(), models: ModelCh
             read.desktop.value.unavailable ?? (read.desktop.value.channel === "installer" ? w.installer : w.notInstaller),
           )
         : fact("unknown", w.notKnown, w.desktopDidNotSay(read.desktop.error));
-  const iphone = fact("unknown", w.notReported, w.iphoneUnreported);
+  const iphone =
+    !read.iphone
+      ? fact("unknown", w.notKnownHere, w.notIphone)
+      : read.iphone.ok
+        ? fact("yes", read.iphone.version, w.iphoneBuilt)
+        : fact("unknown", w.notKnown, w.iphoneUnreadable);
 
   const machines = read.machines.ok
     ? read.machines.value.map((machine): MachineFacts => {

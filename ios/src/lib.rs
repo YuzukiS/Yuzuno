@@ -9,6 +9,8 @@ mod saved_core;
 // The desktop app's rule for recognizing a Core, shared as is.
 #[path = "../../desktop/src/health.rs"]
 mod health;
+// This app's version, for the pages its window opens (T-191).
+mod app_version;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -117,6 +119,9 @@ pub fn run() {
                 // Tauri opens no new window on iOS: a tap on a link that asks
                 // for one comes back as a `yuzuno-open:` navigation instead.
                 .initialization_script(include_str!("new_window_links.js"))
+                // Each page may read the version this app was built as: a
+                // value, not a command (app_version.js).
+                .initialization_script(app_version::script(&app.package_info().version.to_string()))
                 .on_navigation(move |url| {
                     let selected = navigation.lock().ok().and_then(|selected| selected.clone());
                     match core_url::destination(url, selected.as_ref()) {
