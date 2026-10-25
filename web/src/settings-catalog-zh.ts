@@ -40,7 +40,7 @@ export const entriesZh: Record<string, EntryText> = {
   budget: { title: "Core 主机 Job 预算", scope: "Core 执行机器", source: "由 Core 保存的托管 Job 的 CPU、内存、交换空间、磁盘与 GPU 限制。", effect: "新 Job 的准入使用此预算。运行中的 Job 保留各自的预留；原生后台任务不在其内。" },
   "remote-budget": { title: "远程机器 Job 预算", scope: "所选执行机器", source: "所选机器保存的 Job 预算及其报告的限制能力。", effect: "编辑前先选择机器。限制取决于该执行器的能力。" },
   storage: { title: "数据与存储概览", scope: "此设备 · Workspace 服务 · 原生 CLI", source: "此浏览器为此站点保存的数据，在这里读取；Core 的数据文件夹，由 Core 读取。原生会话历史只计数，不测量大小。", effect: "打开它只会读取。这里不测量文件夹大小，也不删除任何内容。" },
-  diagnostics: { title: "复制诊断信息", scope: "此客户端 · Workspace 服务", source: "按需收集、已脱敏的诊断报告。", effect: "复制报告不会自动上传它。" },
+  diagnostics: { title: "复制诊断信息", scope: "此客户端 · Workspace 服务", source: "按需收集、已脱敏的诊断报告。", effect: "复制报告不会自动上传它。清除只会删除此设备上记录的错误。" },
   history: { title: "历史与内存信息", scope: "Workspace 服务", source: "Core 报告的历史构成与内存信息。", effect: "只读信息；不会清除会话或原生会话。" },
   backup: { title: "Workspace 备份与恢复", scope: "Workspace 服务 · 其电脑上的一个文件夹", source: "此 Core 制作的备份：数据库、图片副本、Brief 附件、已完成的审查和 Job 文件夹，并附一份未包含内容的清单。更新恢复用的数据库副本不是它。", effect: "在 Core 运行且没有 Job 运行时备份；只恢复到新的或空的文件夹。原生会话与 CLI 账户从不在备份中。" },
   drafts: { title: "草稿存储", scope: "此设备 · 此站点", source: "由此浏览器或 WebView 保存的草稿，每个 Agent ID 一份；不记录草稿是在哪个 Workspace 中写的。粘贴的文本单独保存，只在你选择的草稿中打开。", effect: "显示草稿或把它保存为文本文件不会更改任何内容；图片只列出名称，不会保存。草稿只在此设备上，不跨设备同步。" },
