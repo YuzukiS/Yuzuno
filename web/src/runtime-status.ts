@@ -2,7 +2,7 @@ import { api } from "./api";
 import { desktopShell, type DesktopUpdateStatus } from "./DesktopUpdate";
 import { checkAge, harnessName, type HarnessCheck, type MachineCheck } from "./machine-checks";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
-import type { Model, Workspace } from "./types";
+import type { Agent, Model, Workspace } from "./types";
 import { loadedRelease } from "./updates";
 
 /**
@@ -46,6 +46,8 @@ export interface RuntimeRead {
   health: { ok: true; value: CoreHealth } | { ok: false; error: string };
   machines: { ok: true; value: WorkspaceMachine[] } | { ok: false; error: string };
   runtime: { ok: true; value: Workspace["runtime"] } | { ok: false; error: string };
+  /** The Workspace's Agents from the same answer; null when it failed. */
+  agents?: Agent[] | null;
   budget: { ok: true; value: JobsBudget } | { ok: false; error: string };
   /** Null: not the desktop app. */
   desktop: null | { ok: true; value: DesktopUpdateStatus } | { ok: false; error: string };
@@ -69,11 +71,16 @@ export async function readRuntime(signal?: AbortSignal): Promise<RuntimeRead> {
   const [health, machines, workspace, budget, desktop] = await Promise.all([
     settle(() => api<CoreHealth>("/health", { signal })),
     settle(async () => (await api<{ machines: WorkspaceMachine[] }>("/machines", { signal })).machines),
-    settle(async () => (await api<Workspace>("/workspace", { signal })).runtime),
+    settle(() => api<Workspace>("/workspace", { signal })),
     settle(() => api<JobsBudget>("/jobs/budget", { signal })),
     invoke ? settle(async () => (await invoke("desktop_update_status")) as DesktopUpdateStatus) : Promise.resolve(null),
   ]);
-  return { at: new Date().toISOString(), health, machines, runtime: workspace, budget, desktop, page: loadedRelease() };
+  return {
+    at: new Date().toISOString(), health, machines,
+    runtime: workspace.ok ? { ok: true, value: workspace.value.runtime } : workspace,
+    agents: workspace.ok ? workspace.value.agents ?? [] : null,
+    budget, desktop, page: loadedRelease(),
+  };
 }
 
 export interface HarnessFacts {

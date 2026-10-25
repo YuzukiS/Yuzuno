@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, RefreshCw } from "lucide-react";
 import { checkModels, readRuntime, runtimeView, type Fact, type MachineFacts, type ModelChecks, type RuntimeRead } from "./runtime-status";
+import { ClaudeMcpStatus } from "./ClaudeMcpStatus";
+import { CodexMcpStatus } from "./CodexMcpStatus";
+import type { Agent } from "./types";
 import "./runtime-section.css";
 
 const stateWord = { yes: "Yes", no: "No", unknown: "Unknown" } as const;
@@ -73,6 +76,58 @@ function MachineCard({ machine, onCheckModels, checkingModels = false }: {
         </p>
       )}
     </article>
+  );
+}
+
+/** MCP services as each Agent's harness reported them (T-191), one Agent at
+ * a time. Claude Code: opening shows its session's last report and asks
+ * nothing; only Refresh asks that session. Codex: the startup reports its
+ * connection received; reading asks Codex nothing. A harness without a
+ * report is named, not guessed. */
+function McpServices({ agents }: { agents: Agent[] }) {
+  const open = agents.filter((agent) => !agent.closedAt);
+  const listed = open.filter((agent) => agent.harness === "claude" || (agent.harness ?? "codex") === "codex");
+  const others = open.length - listed.length;
+  const [chosen, setChosen] = useState("");
+  const agent = listed.find((item) => item.id === chosen) ?? listed[0];
+  const where = (item: Agent) => (item.remote ? item.remote.machine.name : "Core host");
+  const label = (item: Agent) => `${item.name} · ${item.harness === "claude" ? "Claude Code" : "Codex"} · ${where(item)}`;
+  return (
+    <section className="runtime-group runtime-mcp" aria-labelledby="runtime-mcp">
+      <h4 id="runtime-mcp">MCP services</h4>
+      <p className="runtime-note">
+        As each Agent's harness reported them. Claude Code: its session's last report; Refresh asks that session
+        once. Codex: the startup reports its connection received; reading asks Codex nothing. Showing an Agent
+        asks nothing. Configuration and sign-in stay in each CLI.
+      </p>
+      {agent ? (
+        <>
+          <label className="runtime-mcp-agent">
+            <span>Agent</span>
+            <select className="settings-select" value={agent.id} onChange={(event) => setChosen(event.target.value)}>
+              {listed.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {label(item)}
+                </option>
+              ))}
+            </select>
+          </label>
+          {agent.harness === "claude" ? (
+            <ClaudeMcpStatus agent={agent} cachedOnOpen heading={label(agent)} headingLevel={5} />
+          ) : (
+            <CodexMcpStatus agent={agent} heading={label(agent)} headingLevel={5} anchor={false} />
+          )}
+        </>
+      ) : (
+        <p className="runtime-note">No open Claude Code or Codex Agents to report MCP services.</p>
+      )}
+      {others > 0 && (
+        <p className="runtime-note">
+          {others === 1 ? "1 OpenCode Agent" : `${others} OpenCode Agents`}: OpenCode doesn't report MCP status to
+          Yuzuno in this version.
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -189,6 +244,7 @@ export function RuntimeSection({
               <MachineCard key={machine.id} machine={machine} onCheckModels={onCheckModels} checkingModels={checkingModels} />
             ))}
           </section>
+          {read?.agents && <McpServices agents={read.agents} />}
           <dl className="runtime-group">
             <FactRow
               label="Compatibility"
