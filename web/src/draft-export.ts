@@ -3,6 +3,8 @@
 // cannot be written; nothing here changes, sends or clears a draft.
 import {
   DraftStorage,
+  draftIdentity,
+  unattributedDraftAgents,
   savedDraftAgents,
   savedDraftSummary,
   type ComposerDraft,
@@ -17,7 +19,7 @@ export type DraftRow = { agentId: string; name: string; closed: boolean; summary
 export type DraftProblem = { kind: "noStorage" } | { kind: "refused"; error: string } | { kind: "gone" } | { kind: "error"; error: string };
 export type DraftListing =
   | { available: false; why: DraftProblem }
-  | { available: true; rows: DraftRow[]; otherAgents: number };
+  | { available: true; rows: DraftRow[]; otherAgents: number; unattributed: number };
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /** Storage that can only be read: a slip that writes fails instead of changing a draft. */
@@ -33,24 +35,37 @@ export function readOnly(storage: Pick<Storage, "getItem">): Pick<Storage, "getI
   };
 }
 
-/** Drafts saved for the Agent IDs this Workspace lists, from manifests alone:
- * no paste body is read. A draft is keyed by Agent ID only (no Workspace is
- * recorded), so a match is by ID, not proof of the Workspace. Drafts for IDs
- * this Workspace doesn't list are only counted. */
+/**
+ * Drafts saved for the Agent IDs this Workspace lists, from manifests alone:
+ * no paste body is read.
+ *
+ * A draft now records which Workspace it belongs to (T-195), so a row here is
+ * this Workspace's own: an Agent ID that another Workspace also uses no
+ * longer matches. `otherAgents` counts drafts this Workspace saved for Agents
+ * it no longer lists. `unattributed` counts drafts from before Workspaces
+ * were recorded -- they say which Agent but not which Workspace, so they are
+ * counted and never shown as this Workspace's, nor read, rewritten or
+ * removed.
+ */
 export function listDrafts(
   storage: Pick<Storage, "getItem" | "key" | "length"> | null,
   agents: readonly { id: string; name: string; closedAt?: string | null }[],
+  workspaceId: string,
 ): DraftListing {
   if (!storage) return { available: false, why: { kind: "noStorage" } };
+  if (!workspaceId) return { available: true, rows: [], otherAgents: 0, unattributed: unattributedDraftAgents(storage).length };
   try {
     const rows: DraftRow[] = [];
     for (const agent of agents) {
-      const summary = savedDraftSummary(storage, agent.id);
+      const summary = savedDraftSummary(storage, draftIdentity(workspaceId, agent.id));
       if (summary.state !== "none") rows.push({ agentId: agent.id, name: agent.name || "Unnamed Agent", closed: !!agent.closedAt, summary });
     }
     const known = new Set(agents.map((agent) => agent.id));
-    const otherAgents = savedDraftAgents(storage).filter((id) => !known.has(id) && savedDraftSummary(storage, id).state !== "none").length;
-    return { available: true, rows, otherAgents };
+    const otherAgents = savedDraftAgents(storage, workspaceId).filter(
+      (id) => !known.has(id) && savedDraftSummary(storage, draftIdentity(workspaceId, id)).state !== "none",
+    ).length;
+    const unattributed = unattributedDraftAgents(storage).filter((agent) => savedDraftSummary(storage, agent).state !== "none").length;
+    return { available: true, rows, otherAgents, unattributed };
   } catch (error) {
     return { available: false, why: { kind: "refused", error: message(error) } };
   }
@@ -78,9 +93,9 @@ export function draftExportText(draft: ComposerDraft, agentName: string, at = ne
 }
 
 /** One Agent's saved draft, opened only when the user chooses it. */
-export function exportDraft(storage: Pick<Storage, "getItem">, agentId: string, agentName: string): { text: string } | { why: DraftProblem } {
+export function exportDraft(storage: Pick<Storage, "getItem">, workspaceId: string, agentId: string, agentName: string): { text: string } | { why: DraftProblem } {
   try {
-    return { text: draftExportText(new DraftStorage(readOnly(storage)).load(agentId), agentName) };
+    return { text: draftExportText(new DraftStorage(readOnly(storage)).load(draftIdentity(workspaceId, agentId)), agentName) };
   } catch (error) {
     return { why: { kind: "error", error: message(error) } };
   }
@@ -107,6 +122,7 @@ export type DraftsFailure = { agentId: string; name: string; why: DraftProblem }
  * longer saved, those are named and no file is made. */
 export function exportDrafts(
   storage: Pick<Storage, "getItem">,
+  workspaceId: string,
   rows: readonly DraftRow[],
   at = new Date(),
 ): { text: string; count: number } | { failed: DraftsFailure[] } {
@@ -117,12 +133,13 @@ export function exportDrafts(
     // Every read of this draft, its summary's included, is this draft's: a
     // read the browser refuses names it as a failure, like any other.
     try {
-      const now = savedDraftSummary(storage, row.agentId);
+      const identity = draftIdentity(workspaceId, row.agentId);
+      const now = savedDraftSummary(storage, identity);
       if (now.state === "none" || now.state === "damaged") {
         failed.push({ agentId: row.agentId, name: row.name, why: now.state === "none" ? { kind: "gone" } : { kind: "error", error: now.reason } });
         continue;
       }
-      const draft = read.load(row.agentId);
+      const draft = read.load(identity);
       drafts.push({
         agentId: row.agentId,
         name: row.name,

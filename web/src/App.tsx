@@ -360,7 +360,10 @@ export function App() {
   const [artifact, setArtifact] = useState<ArtifactPreview | null>(null);
   // An image being marked for Point & Fix (T-167).
   const [pointFix, setPointFix] = useState<PointFixSource | null>(null);
-  const { draft, getDraft, setDraft, clearIfUnchanged, preserveDrafts, removeDraft, copyDraft, discardSavedDraft, draftError, draftBlocked } = useComposerDraft(selected);
+  // Which Workspace this window is in. Empty until /api/workspace answers,
+  // and the drafts below are neither read nor written while it is (T-195).
+  const workspaceId = workspace?.workspace?.id || "";
+  const { draft, getDraft, setDraft, clearIfUnchanged, preserveDrafts, removeDraft, copyDraft, discardSavedDraft, draftError, draftBlocked } = useComposerDraft(workspaceId, selected);
   const [interrupting, setInterrupting] = useState(false);
   const [actionError, setActionError] = useState("");
   const [notice, setNotice] = useState("");
@@ -632,7 +635,6 @@ export function App() {
     if (!phone || listShown || inspectorShown) setPhoneDock(null);
   }, [phone, listShown, inspectorShown]);
   const projects = workspace?.projects || [];
-  const workspaceId = workspace?.workspace?.id || "";
   // Read when Core announces a save, the events reset or reconnect; never polled.
   useAppearanceFollow(previewMode ? "" : workspaceId, eventConnection, presetRevision);
   const readingPositions = useMemo(
@@ -3373,6 +3375,7 @@ export function App() {
         openAt={settingsAt}
         onNeedsReloadChange={setUpdatesNeedReload}
         navigation={{ agents: workspace?.agents || [], projects, disabled: previewMode, onNavigate: openSettingsDestination }}
+        workspaceId={previewMode ? "" : workspaceId}
         preserveDrafts={() => { if (imageUploads.hasPending()) throw new Error("Wait for images to finish saving before updating."); preserveDrafts(); }}
       />
       <CollaborationBoard

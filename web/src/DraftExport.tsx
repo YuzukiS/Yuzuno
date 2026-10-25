@@ -138,7 +138,7 @@ function saveFile(name: string, text: string, type: string): string | null {
  * several ticked are read only when saved together, as one file. Nothing
  * here changes, sends or clears a draft.
  */
-export function DraftExport({ active, agents }: { active: boolean; agents: { id: string; name: string; closedAt?: string | null }[] | null }) {
+export function DraftExport({ active, agents, workspaceId }: { active: boolean; agents: { id: string; name: string; closedAt?: string | null }[] | null; workspaceId: string }) {
   const t = useStrings(words);
   const [listing, setListing] = useState<DraftListing | null>(null);
   const [shown, setShown] = useState<Shown | null>(null);
@@ -162,7 +162,7 @@ export function DraftExport({ active, agents }: { active: boolean; agents: { id:
       wasActive.current = active;
       return;
     }
-    const next = listDrafts(readStorage(), listed);
+    const next = listDrafts(readStorage(), listed, workspaceId);
     setListing(next);
     const open = shownNow.current;
     if (!wasActive.current || !open || !listed.some((agent) => agent.id === open.agentId)) {
@@ -181,7 +181,7 @@ export function DraftExport({ active, agents }: { active: boolean; agents: { id:
     const storage = readStorage();
     setSave(null);
     if (!storage) return setShown({ agentId: row.agentId, name: row.name, why: { kind: "noStorage" } });
-    setShown({ agentId: row.agentId, name: row.name, ...exportDraft(storage, row.agentId, row.name) });
+    setShown({ agentId: row.agentId, name: row.name, ...exportDraft(storage, workspaceId, row.agentId, row.name) });
   }
 
   function download() {
@@ -208,7 +208,7 @@ export function DraftExport({ active, agents }: { active: boolean; agents: { id:
     if (!rows.length) return;
     const storage = readStorage();
     if (!storage) return setMany({ state: "notSaved", why: { kind: "noStorage" } });
-    const made = exportDrafts(storage, rows);
+    const made = exportDrafts(storage, workspaceId, rows);
     if ("failed" in made) return setMany({ state: "failed", failed: made.failed, of: rows.length });
     const name = draftsFileName();
     const why = saveFile(name, made.text, "application/json;charset=utf-8");
