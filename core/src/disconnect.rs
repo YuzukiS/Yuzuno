@@ -434,6 +434,15 @@ process.stdin.on('end', () => process.exit(0));
             .collect()
     }
 
+    /// A Core restart: the old Workspace, and with it the Store's lock, is
+    /// let go of by everything else first (a closed connection's event loop
+    /// ends a little after the connection), then the same folder is opened.
+    async fn reopen(ws: Arc<Workspace>, dir: &std::path::Path) -> Arc<Workspace> {
+        until("the old Workspace and its Store to be let go", || Arc::strong_count(&ws) == 1 && Arc::strong_count(&ws.store) == 1).await;
+        drop(ws);
+        Workspace::new(dir.join("data"), dir.to_string_lossy().into(), "unused".into()).unwrap()
+    }
+
     /// Ends the stand-in's process, if this generation is still open.
     async fn close(ws: &Workspace) {
         let open = ws.claudes.lock().unwrap().remove("a");
@@ -502,8 +511,7 @@ process.stdin.on('end', () => process.exit(0));
             assert!(agent.disconnected_at.is_some() && agent.disconnect_unconfirmed, "{mode}: held, unconfirmed");
             assert!(ws.send("a", "not now".into()).await.is_err(), "{mode}: a send");
             assert!(ws.claude_ensure("a").await.is_err(), "{mode}: a mail Start or recovery");
-            drop(ws);
-            let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+            let ws = reopen(ws, dir.path()).await;
             let restarted = ws.store.detail("a").unwrap().agent;
             assert!(restarted.disconnected_at.is_some() && restarted.disconnect_unconfirmed, "{mode}: after a restart");
             assert!(ws.claude_ensure("a").await.is_err(), "{mode}: after a restart");
