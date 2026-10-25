@@ -3,8 +3,74 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, Plus, Server } from "lucide-react";
 import { api, errorText, post } from "./api";
+import { strings, type Language } from "./i18n";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import "./remote.css";
+
+// The editor's own words, in the language its page passes (T-189): Machines
+// passes the interface language; New agent, not yet translated, keeps
+// English. What the user types and Core's errors are shown as they are.
+const text = strings({
+  editTitle: (name: string) => `Edit ${name}`,
+  addTitle: "A place for remote work",
+  editNote: "Changes apply to new agents and checks. Agents already on this machine keep the connection they started with.",
+  addNote: "Uses the SSH setup on your Core host.",
+  name: "Machine name",
+  target: "SSH destination",
+  targetPlaceholder: "mac-mini or you@hostname",
+  targetHint: "An alias from your SSH config, or user@hostname.",
+  folder: "Default working folder",
+  codex: "Codex executable",
+  codexHint: "Use a full path if Codex isn’t on the remote SSH PATH.",
+  jobsNote: "Jobs on this machine. Empty fields use the defaults: two at once and no CPU or RAM budget. Saving changes only jobs that have not started.",
+  maxJobs: "Jobs at once",
+  maxJobsPlaceholder: "Default (2)",
+  cpu: "Jobs CPU budget (CPUs)",
+  memory: "Jobs RAM budget (MiB)",
+  noBudget: "No budget",
+  memoryHint: "What jobs there may reserve together. Each job still declares its own CPU and RAM.",
+  mode: "A limit this machine can’t enforce",
+  strict: "Refuse the job (strict)",
+  limited: "Run it and say what isn’t enforced",
+  legacy: "Hold no limits: record resources only, as before",
+  legacyHint: "Jobs there run as they did before limits: their CPU and RAM are recorded, not held. Choose strict or limited to hold them.",
+  missing: "Add a name, an SSH destination, and a working folder.",
+  noOptions: "Use an SSH alias or user@hostname, without SSH options.",
+  budgetPair: "Give the Jobs budget both CPU and RAM, or leave both empty.",
+  cancel: "Cancel",
+  saveChanges: "Save changes",
+  saveMachine: "Save machine",
+}, {
+  editTitle: (name) => `编辑 ${name}`,
+  addTitle: "远程工作的地方",
+  editNote: "更改用于新的 Agent 和检查。已在此机器上的 Agent 保留它们启动时的连接。",
+  addNote: "使用你的 Core 主机上的 SSH 配置。",
+  name: "机器名称",
+  target: "SSH 目标",
+  targetPlaceholder: "mac-mini 或 you@hostname",
+  targetHint: "SSH 配置中的别名，或 user@hostname。",
+  folder: "默认工作文件夹",
+  codex: "Codex 可执行文件",
+  codexHint: "如果 Codex 不在远程 SSH 的 PATH 中，请使用完整路径。",
+  jobsNote: "此机器上的 Job。留空则使用默认值：同时运行两个，不设 CPU 或内存预算。保存只影响尚未开始的 Job。",
+  maxJobs: "同时运行的 Job 数",
+  maxJobsPlaceholder: "默认（2）",
+  cpu: "Job CPU 预算（CPU 数）",
+  memory: "Job 内存预算（MiB）",
+  noBudget: "不设预算",
+  memoryHint: "该机器上的 Job 合计可预留的量。每个 Job 仍各自声明 CPU 和内存。",
+  mode: "此机器无法强制执行的限制",
+  strict: "拒绝该 Job（严格）",
+  limited: "运行它，并说明哪些未被强制执行",
+  legacy: "不设限制：只记录资源，与以前一样",
+  legacyHint: "该机器上的 Job 按设限之前的方式运行：只记录 CPU 和内存，不预留。选择严格或受限才会预留。",
+  missing: "请填写名称、SSH 目标和工作文件夹。",
+  noOptions: "请使用 SSH 别名或 user@hostname，不要带 SSH 选项。",
+  budgetPair: "Job 预算请同时填写 CPU 和内存，或都留空。",
+  cancel: "取消",
+  saveChanges: "保存更改",
+  saveMachine: "保存机器",
+});
 
 export function MachineEditor({
   id,
@@ -13,6 +79,7 @@ export function MachineEditor({
   onSaved,
   onCancel,
   onBusyChange,
+  language = "en",
 }: {
   id?: string;
   /** The machine to edit; without one, a new machine is added. */
@@ -21,7 +88,10 @@ export function MachineEditor({
   onSaved: (saved: WorkspaceMachine) => void;
   onCancel: () => void;
   onBusyChange?: (busy: boolean) => void;
+  /** The language of its own words; English where a page doesn't pass one. */
+  language?: Language;
 }) {
+  const t = text(language);
   const [name, setName] = useState(machine?.name || "");
   const [target, setTarget] = useState(machine?.target || "");
   const [folder, setFolder] = useState(machine?.defaultCwd || "");
@@ -47,15 +117,15 @@ export function MachineEditor({
   async function save() {
     if (disabled || saving) return;
     if (!name.trim() || !target.trim() || !folder.trim()) {
-      setError("Add a name, an SSH destination, and a working folder.");
+      setError(t.missing);
       return;
     }
     if (/^\-|\s/.test(target.trim())) {
-      setError("Use an SSH alias or user@hostname, without SSH options.");
+      setError(t.noOptions);
       return;
     }
     if (!cpu.trim() !== !memory.trim()) {
-      setError("Give the Jobs budget both CPU and RAM, or leave both empty.");
+      setError(t.budgetPair);
       return;
     }
     setSaving(true);
@@ -93,15 +163,13 @@ export function MachineEditor({
     <div id={id} className="remote-machine-editor create-form remote-create">
       <div className="remote-editor-heading">
         <Server size={17} />
-        <strong>{machine ? `Edit ${machine.name}` : "A place for remote work"}</strong>
+        <strong>{machine ? t.editTitle(machine.name) : t.addTitle}</strong>
       </div>
       <p className="remote-field-note">
-        {machine
-          ? "Changes apply to new agents and checks. Agents already on this machine keep the connection they started with."
-          : "Uses the SSH setup on your Core host."}
+        {machine ? t.editNote : t.addNote}
       </p>
       <label>
-        Machine name
+        {t.name}
         <input
           autoFocus
           value={name}
@@ -111,21 +179,19 @@ export function MachineEditor({
         />
       </label>
       <label>
-        SSH destination
+        {t.target}
         <input
           value={target}
           onChange={(e) => setTarget(e.target.value)}
-          placeholder="mac-mini or you@hostname"
+          placeholder={t.targetPlaceholder}
           spellCheck={false}
           autoCapitalize="none"
           autoCorrect="off"
         />
-        <span className="field-hint">
-          An alias from your SSH config, or user@hostname.
-        </span>
+        <span className="field-hint">{t.targetHint}</span>
       </label>
       <label>
-        Default working folder
+        {t.folder}
         <input
           value={folder}
           onChange={(e) => setFolder(e.target.value)}
@@ -136,7 +202,7 @@ export function MachineEditor({
         />
       </label>
       <label>
-        Codex executable
+        {t.codex}
         <input
           value={codex}
           onChange={(e) => setCodex(e.target.value)}
@@ -145,16 +211,11 @@ export function MachineEditor({
           autoCapitalize="none"
           autoCorrect="off"
         />
-        <span className="field-hint">
-          Use a full path if Codex isn’t on the remote SSH PATH.
-        </span>
+        <span className="field-hint">{t.codexHint}</span>
       </label>
-      <p className="remote-field-note">
-        Jobs on this machine. Empty fields use the defaults: two at once and no
-        CPU or RAM budget. Saving changes only jobs that have not started.
-      </p>
+      <p className="remote-field-note">{t.jobsNote}</p>
       <label>
-        Jobs at once
+        {t.maxJobs}
         <input
           type="number"
           min={1}
@@ -162,47 +223,41 @@ export function MachineEditor({
           step="1"
           value={maxJobs}
           onChange={(e) => setMaxJobs(e.target.value)}
-          placeholder="Default (2)"
+          placeholder={t.maxJobsPlaceholder}
         />
       </label>
       <label>
-        Jobs CPU budget (CPUs)
+        {t.cpu}
         <input
           type="number"
           min="0.1"
           step="0.1"
           value={cpu}
           onChange={(e) => setCpu(e.target.value)}
-          placeholder="No budget"
+          placeholder={t.noBudget}
         />
       </label>
       <label>
-        Jobs RAM budget (MiB)
+        {t.memory}
         <input
           type="number"
           min="64"
           step="1"
           value={memory}
           onChange={(e) => setMemory(e.target.value)}
-          placeholder="No budget"
+          placeholder={t.noBudget}
         />
-        <span className="field-hint">
-          What jobs there may reserve together. Each job still declares its own
-          CPU and RAM.
-        </span>
+        <span className="field-hint">{t.memoryHint}</span>
       </label>
       <label>
-        A limit this machine can’t enforce
+        {t.mode}
         <select value={mode} onChange={(e) => setMode(e.target.value)}>
-          <option value="strict">Refuse the job (strict)</option>
-          <option value="limited">Run it and say what isn’t enforced</option>
-          <option value="legacy">Hold no limits: record resources only, as before</option>
+          <option value="strict">{t.strict}</option>
+          <option value="limited">{t.limited}</option>
+          <option value="legacy">{t.legacy}</option>
         </select>
         {mode === "legacy" && (
-          <span className="field-hint">
-            Jobs there run as they did before limits: their CPU and RAM are
-            recorded, not held. Choose strict or limited to hold them.
-          </span>
+          <span className="field-hint">{t.legacyHint}</span>
         )}
       </label>
       {error && (
@@ -217,7 +272,7 @@ export function MachineEditor({
           disabled={saving}
           onClick={onCancel}
         >
-          Cancel
+          {t.cancel}
         </button>
         <button
           type="button"
@@ -230,7 +285,7 @@ export function MachineEditor({
           ) : (
             !machine && <Plus size={14} />
           )}
-          {machine ? "Save changes" : "Save machine"}
+          {machine ? t.saveChanges : t.saveMachine}
         </button>
       </div>
     </div>
