@@ -57,7 +57,8 @@ function exampleError(name) {
   const [, status, body] = /^(\d+) (.*)$/.exec(examples.errors[name]);
   return { status: Number(status), body: JSON.parse(body) };
 }
-const STORE = "yuzuno.remoteAccess.pending";
+// A request is kept per Workspace (T-195); the page here is in this one.
+const STORE = "yuzuno.remoteAccess.pending:ws-a";
 
 /** `handler(url, method, body)` answers `{status, body}`, or throws a
  * TypeError for an answer that never arrives. */
@@ -84,7 +85,7 @@ function mount(handler, { url = "http://isolated.test/", storage = {} } = {}) {
     return { ok: status < 400, status, json: async () => structuredClone(answer), text: async () => text };
   };
   dom.window.eval(bundle);
-  dom.window.renderSettings({ active: true });
+  dom.window.renderSettings({ active: true, workspaceId: "ws-a" });
   const doc = dom.window.document;
   return {
     window: dom.window, doc, calls, copied,
@@ -539,6 +540,31 @@ test("a request ID Core already used for another change is dropped, and the next
     button(p, "Save and apply").click();
     await waitFor(() => p.applies().length === 2, "the next try");
     assert.notEqual(p.applies()[1].body.requestId, "remote-bbbbbbbbbbbbbbbbbbbbbbbb");
+  } finally {
+    p.close();
+  }
+});
+
+test("another Workspace's request, or one saved before requests were kept per Workspace, is neither shown nor asked again, and is left as it was (T-195)", async () => {
+  const theirs = { requestId: "remote-bbbbbbbbbbbbbbbbbbbbbbbb", draft: { enabled: true, servePort: 9443, login: "other@example.com" } };
+  const older = { requestId: "remote-cccccccccccccccccccccccc", draft: { enabled: true, servePort: 9443, login: "other@example.com" } };
+  let current = example("environmentNotRecorded");
+  const p = mount((url, method, body) => {
+    if (method === "GET") return { body: current };
+    current = view({ operation: op("succeeded", "done", { requestId: body.requestId, kind: "disable" }) });
+    return { status: 202, body: { operation: current.operation } };
+  }, { storage: { "yuzuno.remoteAccess.pending:ws-b": theirs, "yuzuno.remoteAccess.pending": older } });
+  try {
+    await waitFor(() => p.states().length === 4, "the states");
+    assert.notEqual(p.doc.querySelector('input[aria-label="Serve port"]').value, "9443", "their draft is not this Workspace's");
+    assert.notEqual(p.doc.querySelector('input[aria-label="Allowed login"]').value, "other@example.com");
+    button(p, "Turn off").click();
+    await waitFor(() => p.applies().length === 1, "turned off");
+    const sent = p.applies()[0].body.requestId;
+    assert.ok(![theirs.requestId, older.requestId].includes(sent), "a new request, never theirs");
+    await waitFor(() => /Turned off\./.test(p.text()), "turned off");
+    assert.equal(p.window.localStorage.getItem("yuzuno.remoteAccess.pending:ws-b"), JSON.stringify(theirs), "kept for its Workspace");
+    assert.equal(p.window.localStorage.getItem("yuzuno.remoteAccess.pending"), JSON.stringify(older), "the older request is left where it is");
   } finally {
     p.close();
   }

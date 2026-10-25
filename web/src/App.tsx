@@ -3503,8 +3503,9 @@ export function App() {
       />
       {agent && !isClaude && !isOpenCode && (
         <ForkCodexDialog
-          key={`fork-${agent.id}`}
+          key={`fork-${workspaceId}-${agent.id}`}
           agent={agent}
+          workspaceId={previewMode ? "" : workspaceId}
           open={forkOpen}
           onOpenChange={setForkOpen}
           projectLabel={(id) => projectName(id, projects)}

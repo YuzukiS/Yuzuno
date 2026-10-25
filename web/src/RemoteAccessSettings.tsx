@@ -258,8 +258,10 @@ function outcome(op: RemoteAccessOperation, language: Language): string | null {
  * Serve, for a Workspace Core in WSL with Tailscale on Windows. Opening it
  * only reads; Check reads Tailscale and Serve now; Save and apply and Turn
  * off are Core's own operations, each with a request ID kept in this browser
- * so that asking again after a lost answer is the same request. */
-export function RemoteAccessSettings({ active }: { active: boolean }) {
+ * so that asking again after a lost answer is the same request, kept for
+ * this Workspace only (T-195). Its parent gives each Workspace its own
+ * instance, so nothing typed or asked in one is carried to another. */
+export function RemoteAccessSettings({ active, workspaceId }: { active: boolean; workspaceId: string }) {
   const language = useLanguage();
   const t = text(language);
   const labels = stepLabels(language);
@@ -274,7 +276,7 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
   const errorLine = useRef<HTMLParagraphElement>(null);
   const [copied, setCopied] = useState(false);
   const pending = useRef<Pending | null>(null);
-  if (pending.current === null) pending.current = loadPending();
+  if (pending.current === null) pending.current = loadPending(workspaceId);
 
   const accept = useCallback((next: RemoteAccessView) => {
     setView(next);
@@ -284,11 +286,11 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
     const op = next.operation;
     if (pending.current && op?.requestId === pending.current.requestId && !running(op)) {
       pending.current = null;
-      savePending(null);
+      savePending(workspaceId, null);
     }
     // What is typed is never replaced by a later read.
     setFields((old) => old ?? fieldsOf(pending.current?.draft.enabled ? pending.current.draft : undefined, next));
-  }, []);
+  }, [workspaceId]);
 
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
@@ -364,7 +366,9 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
   }
 
   async function send(enabled: boolean) {
-    if (!fields || sending || busy) return;
+    // Until this window knows its Workspace, no change is asked: its request
+    // could not be kept for asking again after a lost answer.
+    if (!fields || sending || busy || !workspaceId) return;
     const draft = enabled ? draftOf(fields) : { enabled: false };
     if ("badPort" in draft) return say({ kind: "port", field: draft.badPort });
     // The same change asked again is the same request; anything else is new.
@@ -373,7 +377,7 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
         ? pending.current
         : { requestId: newRequestId(), draft };
     pending.current = request;
-    savePending(request);
+    savePending(workspaceId, request);
     setSending(true);
     setError(null);
     try {
@@ -385,7 +389,7 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
       // A change Core has already ended needs no retry key.
       if (!running(started)) {
         pending.current = null;
-        savePending(null);
+        savePending(workspaceId, null);
       }
     } catch (e) {
       if (refusal(e) === "remote_access_busy" || (e instanceof HttpError && e.status === 409)) {
@@ -393,7 +397,7 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
       } else if (refusal(e) === "idempotency_conflict") {
         // This request ID names another change in Core: the next try is new.
         pending.current = null;
-        savePending(null);
+        savePending(workspaceId, null);
         say({ kind: "newRequest", detail: readable(e) });
       } else if (e instanceof NetworkError) {
         say({ kind: "lost" });
@@ -640,13 +644,13 @@ export function RemoteAccessSettings({ active }: { active: boolean }) {
                     type="button"
                     className="primary-button"
                     title={checked ? undefined : t.checkFirst}
-                    disabled={!checked || sending || busy}
+                    disabled={!checked || sending || busy || !workspaceId}
                     onClick={() => void send(true)}
                   >
                     {sending ? t.starting : t.apply}
                   </button>
                   {enabledNow && (
-                    <button type="button" className="secondary-button" disabled={sending || busy} onClick={() => void send(false)}>
+                    <button type="button" className="secondary-button" disabled={sending || busy || !workspaceId} onClick={() => void send(false)}>
                       {t.turnOff}
                     </button>
                   )}

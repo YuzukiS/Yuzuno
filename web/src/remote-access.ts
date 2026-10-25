@@ -285,23 +285,30 @@ export function qrPath(qr: { size: number; rows: string[] }): string {
 }
 
 /** What the page keeps across a reload: the change it asked for and its
- * request, so asking again after a lost answer is the same request. */
-const STORE = "yuzuno.remoteAccess.pending";
+ * request, so asking again after a lost answer is the same request. Kept per
+ * Workspace (T-195): the Core at this address may later answer as another
+ * Workspace, and one Workspace's request is never asked of another's Core.
+ * An empty Workspace (not known yet) keeps none. A request saved before
+ * requests were kept per Workspace, under `yuzuno.remoteAccess.pending`
+ * alone, is left where it is and never asked again. */
+const store = (workspace: string) => `yuzuno.remoteAccess.pending:${encodeURIComponent(workspace)}`;
 export type Pending = { requestId: string; draft: RemoteAccessDraft };
 
-export function loadPending(): Pending | null {
+export function loadPending(workspace: string): Pending | null {
+  if (!workspace) return null;
   try {
-    const value = JSON.parse(window.localStorage.getItem(STORE) || "null");
+    const value = JSON.parse(window.localStorage.getItem(store(workspace)) || "null");
     return value && typeof value.requestId === "string" && value.draft ? value : null;
   } catch {
     return null;
   }
 }
 
-export function savePending(pending: Pending | null) {
+export function savePending(workspace: string, pending: Pending | null) {
+  if (!workspace) return;
   try {
-    if (pending) window.localStorage.setItem(STORE, JSON.stringify(pending));
-    else window.localStorage.removeItem(STORE);
+    if (pending) window.localStorage.setItem(store(workspace), JSON.stringify(pending));
+    else window.localStorage.removeItem(store(workspace));
   } catch {
     // Storage may be unavailable; the operation itself is Core's record.
   }

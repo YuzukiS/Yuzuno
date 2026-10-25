@@ -260,10 +260,20 @@ export type UpdateIntent = {
   owner?: string;
 };
 
-const intentKey = "yuzuno.update-intent";
-export function savedUpdateIntent(): UpdateIntent | null {
+/**
+ * One Workspace's chosen release (T-195). The Core at this address may later
+ * answer as another Workspace -- a restored backup, or another Core reusing
+ * the address -- and a choice made for one must never download, prepare or
+ * apply on the other. An empty Workspace (not known yet) has no choice and
+ * saves none. A choice saved before choices were kept per Workspace, under
+ * `yuzuno.update-intent` alone, says nothing about which Workspace it was
+ * made in: it is left exactly where it is and carries nothing out.
+ */
+export const updateIntentKey = (workspace: string) => `yuzuno.update-intent:${encodeURIComponent(workspace)}`;
+export function savedUpdateIntent(workspace: string): UpdateIntent | null {
+  if (!workspace) return null;
   try {
-    const saved = JSON.parse(localStorage.getItem(intentKey) || "null");
+    const saved = JSON.parse(localStorage.getItem(updateIntentKey(workspace)) || "null");
     return saved && typeof saved.releaseId === "string" &&
       typeof saved.requestId === "string"
       ? saved
@@ -272,13 +282,17 @@ export function savedUpdateIntent(): UpdateIntent | null {
     return null;
   }
 }
-/** Throws when storage refuses: an update must not start without the
- * identity that lets it resume and keeps Apply from repeating. */
-export function saveUpdateIntent(intent: UpdateIntent | null) {
-  if (intent) localStorage.setItem(intentKey, JSON.stringify(intent));
-  else localStorage.removeItem(intentKey);
+/** Throws when storage refuses, or when the Workspace is not known yet: an
+ * update must not start without the identity that lets it resume and keeps
+ * Apply from repeating. */
+export function saveUpdateIntent(workspace: string, intent: UpdateIntent | null) {
+  if (!workspace) {
+    if (intent) throw new Error("This window doesn’t know its Workspace yet, so no update was chosen.");
+    return;
+  }
+  if (intent) localStorage.setItem(updateIntentKey(workspace), JSON.stringify(intent));
+  else localStorage.removeItem(updateIntentKey(workspace));
 }
-export const updateIntentKey = intentKey;
 
 /** Whether a status was read after the choice's last request ended, so it
  * shows what Core did with that request. */

@@ -65,7 +65,7 @@ const preview = {
 };
 const forkAgent = { ...source, id: "agent-b", threadId: "019a1234-5678-4321-bbbb-123456789abc" };
 
-function mount(forkResponse) {
+function mount(forkResponse, storage = {}) {
   const calls = [];
   const errors = [];
   const virtualConsole = new VirtualConsole();
@@ -77,6 +77,7 @@ function mount(forkResponse) {
     virtualConsole,
   });
   const { window } = dom;
+  for (const [key, value] of Object.entries(storage)) window.localStorage.setItem(key, value);
   window.fetch = async (url, init = {}) => {
     calls.push({ url, body: init.body && JSON.parse(init.body) });
     if (url.endsWith("/codex/fork/preview"))
@@ -93,9 +94,10 @@ const forks = (page) => page.calls.filter((c) => c.url.endsWith("/codex/fork"));
 function button(page, label) {
   return [...page.document.querySelectorAll("button")].find((node) => node.textContent.trim() === label);
 }
-async function openDialog(page, events = {}) {
+async function openDialog(page, events = {}, workspaceId = "ws-a") {
   page.window.renderDialog({
     agent: source,
+    workspaceId,
     open: true,
     projectLabel: (id) => (id === "project-1" ? "Night work" : "Unknown"),
     onOpenChange: (open) => (events.open = open),
@@ -235,4 +237,45 @@ test("a lost response keeps the request so the next click settles it", async () 
   assert.equal(first, second);
   assert.equal(events.forked.connected, false);
   page.close();
+});
+
+test("a lost fork's request is kept for its own Workspace only: the same Agent id elsewhere asks anew, and an older entry is never used (T-195)", async () => {
+  const lost = () => new Error("Failed to fetch");
+  const stored = (page) => JSON.parse(page.window.localStorage.getItem("yuzuno.codexForkRequests") || "{}");
+  // In Workspace A the answer is lost: its request is kept.
+  const a = mount(lost);
+  await openDialog(a, {}, "ws-a");
+  button(a, "Fork and continue").click();
+  await tick();
+  await tick();
+  const first = forks(a)[0].body.requestId;
+  const kept = stored(a);
+  a.close();
+  // The same address now answers as Workspace B, whose Agent has the same
+  // id; an entry from before requests were kept per Workspace is there too.
+  const older = `${source.id}:turn-12`;
+  const b = mount(() => ({ state: "completed", requestId: "b", agent: forkAgent, connected: true, message: null, warnings: [] }), {
+    "yuzuno.codexForkRequests": JSON.stringify({ ...kept, [older]: "older-request" }),
+  });
+  await openDialog(b, {}, "ws-b");
+  button(b, "Fork and continue").click();
+  await tick();
+  await tick();
+  const second = forks(b)[0].body.requestId;
+  assert.notEqual(second, first, "B never retries A's attempt");
+  assert.notEqual(second, "older-request", "an entry without a Workspace is never used");
+  const after = stored(b);
+  assert.equal(after[older], "older-request", "the older entry is left where it is");
+  assert.equal(after[JSON.stringify(["ws-a", source.id, "turn-12"])], first, "A's attempt is still kept");
+  b.close();
+  // Back in A, the next click settles A's own attempt.
+  const again = mount(() => ({ state: "completed", requestId: first, agent: forkAgent, connected: true, message: null, warnings: [] }), {
+    "yuzuno.codexForkRequests": JSON.stringify(after),
+  });
+  await openDialog(again, {}, "ws-a");
+  button(again, "Fork and continue").click();
+  await tick();
+  await tick();
+  assert.equal(forks(again)[0].body.requestId, first);
+  again.close();
 });

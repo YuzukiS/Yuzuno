@@ -111,13 +111,14 @@ const state = () => page.evaluate(() => {
     buttons: texts(".update-card-action button"),
     details: texts(".update-details dt, .update-details dd"),
     desktop: box.querySelector("#settings-desktop").textContent,
-    intent: localStorage.getItem("yuzuno.update-intent"),
+    intent: localStorage.getItem("yuzuno.update-intent:ws-updates-language"),
   };
 });
 
 try {
   await other.goto(`https://${HOST}/other.html`);
-  await other.evaluate((intent) => localStorage.setItem("yuzuno.update-intent", JSON.stringify(intent)), intent);
+  // The choice is kept per Workspace (T-195): this fixture's.
+  await other.evaluate((intent) => localStorage.setItem("yuzuno.update-intent:ws-updates-language", JSON.stringify(intent)), intent);
   await page.goto(`https://${HOST}/`);
   await page.getByRole("button", { name: "Settings and updates" }).click({ timeout: 10_000 });
   // Settings opens on Workspace service.
