@@ -32,7 +32,12 @@ export function projectColour(id: string) {
  * project. Each group keeps the list's own order. Null when the Agents all
  * share one group, which needs no heading.
  */
-export function groupAgents(agents: Agent[], projects: Project[]): ProjectGroup[] | null {
+export function groupAgents(
+  agents: Agent[],
+  projects: Project[],
+  // The two groups this window names itself, in the interface language.
+  names: { unknown: string; none: string } = { unknown: "Unknown project", none: "No project" },
+): ProjectGroup[] | null {
   const byProject = new Map<string, Agent[]>();
   const unassigned: Agent[] = [];
   for (const agent of agents) {
@@ -49,14 +54,14 @@ export function groupAgents(agents: Agent[], projects: Project[]): ProjectGroup[
   const unlisted = [...byProject].map(([id, list]) => ({
     key: id,
     projectId: id,
-    name: projects.find((project) => project.id === id)?.name || "Unknown project",
+    name: projects.find((project) => project.id === id)?.name || names.unknown,
     agents: list,
     colour: projectColour(id),
     creatable: false,
   }));
   groups.push(...unlisted.sort((a, b) => a.name.localeCompare(b.name)));
   if (unassigned.length)
-    groups.push({ key: NO_PROJECT_KEY, projectId: null, name: "No project", agents: unassigned, colour: null, creatable: true });
+    groups.push({ key: NO_PROJECT_KEY, projectId: null, name: names.none, agents: unassigned, colour: null, creatable: true });
   return groups.length > 1 ? groups : null;
 }
 

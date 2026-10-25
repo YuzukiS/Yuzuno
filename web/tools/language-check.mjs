@@ -85,14 +85,14 @@ async function open(locale, label) {
     }
   });
   await page.goto(`https://${HOST}/`);
-  await page.getByRole("button", { name: "Settings and updates" }).waitFor({ timeout: 10_000 });
+  await page.locator("button.workspace-settings").waitFor({ timeout: 10_000 });
   return { context, page };
 }
 
 const dialog = (page) => page.getByRole("dialog");
 async function openSettings(page) {
   if (await page.locator(".settings-search input").isVisible()) return;
-  await page.getByRole("button", { name: "Settings and updates" }).click({ timeout: 10_000 });
+  await page.locator("button.workspace-settings").click({ timeout: 10_000 });
   await page.locator(".settings-search input").waitFor({ timeout: 10_000 });
 }
 async function closeSettings(page) {
@@ -220,7 +220,7 @@ try {
     // Kept after a reload.
     await closeSettings(page);
     await page.reload();
-    await page.getByRole("button", { name: "Settings and updates" }).waitFor({ timeout: 10_000 });
+    await page.locator("button.workspace-settings").waitFor({ timeout: 10_000 });
     await openSettings(page);
     assert.deepEqual((await shell(page)).tabs, ZH_TABS);
     check("the choice is kept after a reload");
@@ -240,7 +240,7 @@ try {
     await page.screenshot({ path: join(output, "language-refused.png") });
     await closeSettings(page);
     await page.reload();
-    await page.getByRole("button", { name: "Settings and updates" }).waitFor({ timeout: 10_000 });
+    await page.locator("button.workspace-settings").waitFor({ timeout: 10_000 });
     await openSettings(page);
     assert.deepEqual((await shell(page)).tabs, EN_TABS, "gone after a reload");
     check("a choice the browser refuses applies in this window, is said not saved in Chinese, and is gone after a reload", { alert: refused.alert });
