@@ -22,14 +22,15 @@ import {
   CODEX_PRESETS,
   type AgentDefaultsView,
   claudeModeText,
+  claudeModelText,
   codexModelText,
   codexPermissionText,
   readAgentDefaults,
   sourceText,
 } from "./agent-defaults";
 
-/** The dialog's choice of Codex's own default model, sent as `model: null` (T-190). */
-const CODEX_OWN_MODEL = "(Codex’s own default)";
+/** The dialog's choice of the harness's own default model, sent as `model: null` (T-190). */
+const OWN_MODEL = "(the harness’s own default)";
 import "./remote.css";
 
 export interface WorkspaceMachine {
@@ -287,20 +288,24 @@ export function RemoteCreateAgent({
     return () => controller.abort();
   }, [open, disabled, mode, projectId]);
   const known = defaults && defaults !== "unknown" ? defaults : null;
-  // A default model and effort: Codex on the Core host only, from a Core that reports them.
+  // A default model: Codex (with an effort) and Claude Code on the Core host
+  // only, from a Core that reports them.
   const localCodex = harness === "codex" && !remote;
-  const defaultModel = localCodex ? known?.effective.codexModel : undefined;
-  const namedModel = localCodex && model && model !== CODEX_OWN_MODEL ? models.find((m) => (m.model || m.id) === model) : undefined;
+  const localClaude = harness === "claude" && !remote;
+  const defaultModel = localCodex ? known?.effective.codexModel : localClaude ? known?.effective.claudeModel : undefined;
+  const modelText = localClaude ? claudeModelText : codexModelText;
+  const namedModel = localCodex && model && model !== OWN_MODEL ? models.find((m) => (m.model || m.id) === model) : undefined;
   useEffect(() => {
-    // An effort belongs to the model chosen with it; Codex's own model is the Core host's.
+    // An effort belongs to the model chosen with it; the harness's own model is the Core host's.
     setEffort("");
-    if (!localCodex && model === CODEX_OWN_MODEL) setModel("");
-  }, [model, localCodex]);
+    if (!localCodex && !localClaude && model === OWN_MODEL) setModel("");
+  }, [model, localCodex, localClaude]);
   const defaultPermission =
     harness === "claude"
       ? known && { text: claudeModeText(known.effective.claudePermissionMode.value), source: known.effective.claudePermissionMode.source }
       : known && { text: codexPermissionText(known.effective.codexPermissionPreset.value), source: known.effective.codexPermissionPreset.source };
-  const chosenModel = models.find((m) => (m.model || m.id) === model);
+  // The model this Agent gets: its own, or the default it inherits.
+  const chosenModel = models.find((m) => (m.model || m.id) === (model || (localClaude ? defaultModel?.value : "")));
   // Auto mode needs a model that supports it; where Core's catalog says this
   // one doesn't, a default of Auto mode is not sent for it.
   const autoUnavailable = harness === "claude" && !remote && chosenModel?.supportsAutoMode === false;
@@ -376,7 +381,7 @@ export function RemoteCreateAgent({
           machineId: machine.id,
           harness,
           // Left out, the default for new Agents; null, Codex's own default (T-190).
-          ...(model === CODEX_OWN_MODEL ? { model: null } : model.trim() ? { model: model.trim() } : {}),
+          ...(model === OWN_MODEL ? { model: null } : model.trim() ? { model: model.trim() } : {}),
           ...(effort && namedModel ? { reasoningEffort: effort } : {}),
           // Only this Agent's own choice; Core applies the default otherwise.
           ...(permission && harness === "codex" ? { permissionPreset: permission } : {}),
@@ -659,10 +664,10 @@ export function RemoteCreateAgent({
                 onChange={setModel}
                 choices={[
                   defaultModel
-                    ? { value: "", label: `Default · ${codexModelText(defaultModel.value)}`, note: sourceText(defaultModel.source) }
+                    ? { value: "", label: `Default · ${modelText(defaultModel.value)}`, note: sourceText(defaultModel.source) }
                     : { value: "", label: "Harness default" },
                   // Only where it differs from the default: Codex's own, whatever is inherited.
-                  ...(defaultModel?.value ? [{ value: CODEX_OWN_MODEL, label: "Codex’s own default" }] : []),
+                  ...(defaultModel?.value ? [{ value: OWN_MODEL, label: modelText(null) }] : []),
                   ...models.map((m) => ({
                     value: m.model || m.id,
                     label: m.displayName,
@@ -733,7 +738,7 @@ export function RemoteCreateAgent({
             {remote && (
               <p className="remote-field-note">
                 Leave the model empty to use {harnessName(harness)}’s default on {machine.name}.
-                {harness === "codex" && known?.effective.codexModel?.value
+                {(harness === "codex" ? known?.effective.codexModel?.value : harness === "claude" ? known?.effective.claudeModel?.value : null)
                   ? " The default model for new Agents applies only on the Core host."
                   : ""}
               </p>

@@ -11,6 +11,8 @@ export type SavedDefaults = {
   /** Codex on the Core host only: a model of its catalog, and one of its efforts. */
   codexModel?: string;
   codexReasoningEffort?: string;
+  /** Claude Code on the Core host only: a model of its catalog. */
+  claudeModel?: string;
 };
 type Valued = { value: string | null; source: DefaultSource };
 export type EffectiveDefaults = {
@@ -22,12 +24,14 @@ export type EffectiveDefaults = {
   codexModel?: Valued;
   /** null: the model's own effort. */
   codexReasoningEffort?: Valued;
+  /** null: Claude Code's own default on the Core host. Left out by a Core without it. */
+  claudeModel?: Valued;
 };
 export type AgentDefaultsView = {
   /** The Workspace's own choices. */
   saved: SavedDefaults;
-  builtIn: { harness: NewAgentHarness; codexPermissionPreset: null; claudePermissionMode: string; codexModel?: null; codexReasoningEffort?: null };
-  /** Where a default model and effort apply (Codex on the Core host only). */
+  builtIn: { harness: NewAgentHarness; codexPermissionPreset: null; claudePermissionMode: string; codexModel?: null; codexReasoningEffort?: null; claudeModel?: null };
+  /** Where a default model and effort apply (Codex and Claude Code on the Core host). */
   modelAppliesTo?: string;
   /** What a new Agent gets now: in a project, with its overrides. */
   effective: EffectiveDefaults;
@@ -41,6 +45,7 @@ export type AgentDefaultsChange = Partial<{
   claudePermissionMode: string | null;
   codexModel: string | null;
   codexReasoningEffort: string | null;
+  claudeModel: string | null;
 }>;
 
 /** The Workspace's defaults; with a project, as an Agent created in it gets them. */
@@ -73,3 +78,5 @@ export const sourceText = (source: DefaultSource | undefined) =>
           : "Not reported by this Core";
 /** A Codex model on the Core host, said: null is Codex's own default there. */
 export const codexModelText = (model: string | null | undefined) => model || "Codex’s own default";
+/** A Claude Code model on the Core host, said: null is Claude Code's own default there. */
+export const claudeModelText = (model: string | null | undefined) => model || "Claude Code’s own default";
