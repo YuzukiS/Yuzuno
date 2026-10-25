@@ -104,7 +104,9 @@ async function mount({
   liveJobs,
   liveCI,
   workspaceIdentity,
-  // An older Core that does not say which Workspace this is (T-195).
+  // An older Core that does not say which Workspace this is (T-195). Held in
+  // a box so a test can let the Workspace arrive later, as one does when the
+  // metadata read follows the Agent list.
   noWorkspaceId = false,
   models,
   modelsResponse,
@@ -118,6 +120,7 @@ async function mount({
   codexHandoff,
 } = {}) {
   const calls = [];
+  const core = { noWorkspaceId };
   const eventUrls = [];
   const eventSources = [];
   const metrics = { detailInFlight: 0, maxDetailInFlight: 0 };
@@ -175,7 +178,7 @@ async function mount({
         // A real Core always says which Workspace this is, and the page keeps
         // drafts, unsent messages and reading places per Workspace (T-195),
         // so the fixture says it too.
-        ...(noWorkspaceId ? {} : { workspace: { id: workspaceIdentity || "ci-fixture" } }),
+        ...(core.noWorkspaceId ? {} : { workspace: { id: workspaceIdentity || "ci-fixture" } }),
         agents: agents.map((a) =>
           a.id === "a"
             ? {
@@ -336,6 +339,7 @@ async function mount({
     window,
     document: window.document,
     calls,
+    core,
     eventUrls,
     eventSources,
     metrics,
@@ -2497,6 +2501,89 @@ test("an Agent link is copied from its menu and opens that Agent only, changing 
     assert.equal(savedDraftText(page.window.localStorage, "a"), "draft for Mori");
     assert.equal(savedDraftText(page.window.localStorage, "b"), "draft for Hana");
     assert.deepEqual(changes(page), [], "nothing was sent, reconnected or changed");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+// T-195, from #347's review: the Workspace can arrive after this window has
+// been typed in -- an older Core that answers with agents and no
+// workspace.id, or an Agent put on screen before the metadata read returns.
+// What was typed here then is this window's own work and belongs to the
+// first Workspace it turns out to be in; it must not be dropped when the
+// identity lands.
+test("a draft typed before the Workspace was known is kept and saved under it when it arrives", async () => {
+  const page = await mount({ noWorkspaceId: true, workspaceIdentity: "ws-later" });
+  try {
+    const field = page.document.querySelector("[data-composer-input]");
+    const keys = () =>
+      Object.keys(page.window.localStorage).filter((key) => key.startsWith("yuzuno.composer.v1:"));
+    const said = () =>
+      [...page.document.querySelectorAll('.inline-error[role="alert"]')].map((p) => p.textContent);
+
+    setValue(page.window, field, "typed before the Workspace was known");
+    await pause();
+    assert.equal(composerText(field), "typed before the Workspace was known");
+    assert.deepEqual(keys(), [], "nothing is saved while no Workspace owns it");
+    assert.equal(
+      said().filter((text) => /kept in this window only/.test(text ?? "")).length,
+      1,
+      "and it says so",
+    );
+
+    // The Workspace arrives: /api/workspace now names it, and the page reads
+    // it again on the event Core sends for that.
+    page.core.noWorkspaceId = false;
+    page.eventSources.at(-1).onmessage?.({
+      data: JSON.stringify({ type: "workspace.changed", scope: "runtime" }),
+    });
+    await until(
+      () => keys().length === 1,
+      "the draft is saved once the Workspace is known",
+    );
+
+    assert.equal(
+      composerText(field),
+      "typed before the Workspace was known",
+      "what was typed is still on screen",
+    );
+    assert.deepEqual(
+      keys(),
+      [`yuzuno.composer.v1:${JSON.stringify(["ws-later", "a"])}`],
+      "saved under the Workspace it turned out to be in, and nowhere else",
+    );
+    assert.equal(
+      savedDraftText(page.window.localStorage, "a"),
+      "typed before the Workspace was known",
+      "with the text it had",
+    );
+    assert.deepEqual(
+      said().filter((text) => /kept in this window only/.test(text ?? "")),
+      [],
+      "and it no longer says it is only in this window",
+    );
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("an Agent only read before the Workspace was known reads that Workspace's own saved draft", async () => {
+  // Nothing was typed, so there is nothing of this window's to carry: the
+  // Workspace's own saved draft is what opens.
+  const page = await mount({
+    noWorkspaceId: true,
+    workspaceIdentity: "ws-later",
+    stored: { [`yuzuno.composer.v1:${JSON.stringify(["ws-later", "a"])}`]: linkDraft("saved for this Workspace") },
+  });
+  try {
+    const field = page.document.querySelector("[data-composer-input]");
+    assert.equal(composerText(field), "", "no Workspace, no Workspace's draft");
+    page.core.noWorkspaceId = false;
+    page.eventSources.at(-1).onmessage?.({
+      data: JSON.stringify({ type: "workspace.changed", scope: "runtime" }),
+    });
+    await until(
+      () => composerText(field) === "saved for this Workspace",
+      "its own saved draft once it is known",
+    );
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
