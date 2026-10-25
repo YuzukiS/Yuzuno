@@ -104,6 +104,10 @@ async function mount({
   liveJobs,
   liveCI,
   workspaceIdentity,
+  // An older Core that does not say which Workspace this is (T-195). Held in
+  // a box so a test can let the Workspace arrive later, as one does when the
+  // metadata read follows the Agent list.
+  noWorkspaceId = false,
   models,
   modelsResponse,
   claudeRuntime,
@@ -116,6 +120,7 @@ async function mount({
   codexHandoff,
 } = {}) {
   const calls = [];
+  const core = { noWorkspaceId };
   const eventUrls = [];
   const eventSources = [];
   const metrics = { detailInFlight: 0, maxDetailInFlight: 0 };
@@ -170,7 +175,10 @@ async function mount({
     if (url.includes("/history?") && historyPage) body = historyPage;
     else if (url.endsWith("/api/workspace"))
       body = {
-        ...(liveCI || workspaceIdentity ? { workspace: { id: workspaceIdentity || "ci-fixture" } } : {}),
+        // A real Core always says which Workspace this is, and the page keeps
+        // drafts, unsent messages and reading places per Workspace (T-195),
+        // so the fixture says it too.
+        ...(core.noWorkspaceId ? {} : { workspace: { id: workspaceIdentity || "ci-fixture" } }),
         agents: agents.map((a) =>
           a.id === "a"
             ? {
@@ -331,6 +339,7 @@ async function mount({
     window,
     document: window.document,
     calls,
+    core,
     eventUrls,
     eventSources,
     metrics,
@@ -827,7 +836,7 @@ test("claude: a follow-up while your turn runs is sent once, as queued and not y
   for (const known of [true, false]) {
     const page = await mount({ harness: "claude", status: "working", messageResponse: reply,
       receipts: known ? [{ ...unknown, agentId: "a" }] : [],
-      stored: { "yuzuno.outbox": JSON.stringify({ "a:composer": lost }) } });
+      stored: { "yuzuno.outbox": JSON.stringify({ "ci-fixture": { "a:composer": lost } }) } });
     try {
       const field = page.document.querySelector("[data-composer-input]");
       setValue(page.window, field, lost.text);
@@ -924,7 +933,7 @@ test("a new Claude message shows once while Claude's bridge holds it, with its n
 test("an unconfirmed delivery preview can be hidden without marking it sent or sending it again (T-65)", async () => {
   const lost = { clientMessageId: "lost-delivery", text: "Is it done?", expectedTurnId: "t1", question: null };
   const receipts = [{ agentId: "a", input: lost, status: "uncertain", turnId: null, error: "Response lost" }];
-  const outbox = JSON.stringify({ "a:composer": lost });
+  const outbox = JSON.stringify({ "ci-fixture": { "a:composer": lost } });
   const page = await mount({ harness: "claude", status: "working", receipts, stored: { "yuzuno.outbox": outbox } });
   let hidden;
   try {
@@ -1167,8 +1176,8 @@ test("Continue appends CRLF/CR result text at the actual normalized document end
 });
 
 test("broken drafts require explicit discard confirmation; cancel and storage failure preserve saved data", async () => {
-  const key = "yuzuno.composer.v1:a", raw = JSON.stringify({ version: 1, nextNumber: 2, parts: [{ kind: "paste", id: "p", number: 1, bodyId: "missing" }] });
-  const page = await mount({ stored: { [key]: raw, "yuzuno.composer.v1:b": JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "other" }] }) } });
+  const key = `yuzuno.composer.v1:${JSON.stringify(["ci-fixture", "a"])}`, raw = JSON.stringify({ version: 1, nextNumber: 2, parts: [{ kind: "paste", id: "p", number: 1, bodyId: "missing" }] });
+  const page = await mount({ stored: { [key]: raw, [`yuzuno.composer.v1:${JSON.stringify(["ci-fixture", "b"])}`]: JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "other" }] }) } });
   try {
     const field = page.document.querySelector("[data-composer-input]");
     assert.equal(field.getAttribute("contenteditable"), "false");
@@ -2449,7 +2458,7 @@ test("an Agent link is copied from its menu and opens that Agent only, changing 
   const page = await mount({
     workspaceIdentity: "ws-1",
     otherAgentFields: { threadId: "thread-b" },
-    stored: { "yuzuno.selected": JSON.stringify("a"), "yuzuno.composer.v1:a": linkDraft("draft for Mori"), "yuzuno.composer.v1:b": linkDraft("draft for Hana") },
+    stored: { "yuzuno.selected": JSON.stringify("a"), [`yuzuno.composer.v1:${JSON.stringify(["ws-1", "a"])}`]: linkDraft("draft for Mori"), [`yuzuno.composer.v1:${JSON.stringify(["ws-1", "b"])}`]: linkDraft("draft for Hana") },
   });
   try {
     const shown = () => page.document.querySelector(".agent-row.selected")?.dataset.agentId;
@@ -2496,12 +2505,124 @@ test("an Agent link is copied from its menu and opens that Agent only, changing 
   } finally { page.close(); }
 });
 
+// T-195, from #347's review: the Workspace can arrive after this window has
+// been typed in -- an older Core that answers with agents and no
+// workspace.id, or an Agent put on screen before the metadata read returns.
+// What was typed here then is this window's own work and belongs to the
+// first Workspace it turns out to be in; it must not be dropped when the
+// identity lands.
+test("a draft typed before the Workspace was known is kept and saved under it when it arrives", async () => {
+  const page = await mount({ noWorkspaceId: true, workspaceIdentity: "ws-later" });
+  try {
+    const field = page.document.querySelector("[data-composer-input]");
+    const keys = () =>
+      Object.keys(page.window.localStorage).filter((key) => key.startsWith("yuzuno.composer.v1:"));
+    const said = () =>
+      [...page.document.querySelectorAll('.inline-error[role="alert"]')].map((p) => p.textContent);
+
+    setValue(page.window, field, "typed before the Workspace was known");
+    await pause();
+    assert.equal(composerText(field), "typed before the Workspace was known");
+    assert.deepEqual(keys(), [], "nothing is saved while no Workspace owns it");
+    assert.equal(
+      said().filter((text) => /kept in this window only/.test(text ?? "")).length,
+      1,
+      "and it says so",
+    );
+
+    // The Workspace arrives: /api/workspace now names it, and the page reads
+    // it again on the event Core sends for that.
+    page.core.noWorkspaceId = false;
+    page.eventSources.at(-1).onmessage?.({
+      data: JSON.stringify({ type: "workspace.changed", scope: "runtime" }),
+    });
+    await until(
+      () => keys().length === 1,
+      "the draft is saved once the Workspace is known",
+    );
+
+    assert.equal(
+      composerText(field),
+      "typed before the Workspace was known",
+      "what was typed is still on screen",
+    );
+    assert.deepEqual(
+      keys(),
+      [`yuzuno.composer.v1:${JSON.stringify(["ws-later", "a"])}`],
+      "saved under the Workspace it turned out to be in, and nowhere else",
+    );
+    assert.equal(
+      savedDraftText(page.window.localStorage, "a"),
+      "typed before the Workspace was known",
+      "with the text it had",
+    );
+    assert.deepEqual(
+      said().filter((text) => /kept in this window only/.test(text ?? "")),
+      [],
+      "and it no longer says it is only in this window",
+    );
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("an Agent only read before the Workspace was known reads that Workspace's own saved draft", async () => {
+  // Nothing was typed, so there is nothing of this window's to carry: the
+  // Workspace's own saved draft is what opens.
+  const page = await mount({
+    noWorkspaceId: true,
+    workspaceIdentity: "ws-later",
+    stored: { [`yuzuno.composer.v1:${JSON.stringify(["ws-later", "a"])}`]: linkDraft("saved for this Workspace") },
+  });
+  try {
+    const field = page.document.querySelector("[data-composer-input]");
+    assert.equal(composerText(field), "", "no Workspace, no Workspace's draft");
+    page.core.noWorkspaceId = false;
+    page.eventSources.at(-1).onmessage?.({
+      data: JSON.stringify({ type: "workspace.changed", scope: "runtime" }),
+    });
+    await until(
+      () => composerText(field) === "saved for this Workspace",
+      "its own saved draft once it is known",
+    );
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+// T-195: a Core that does not say which Workspace this is. A draft has no
+// Workspace to be saved under, so it is kept in this window and said to be,
+// rather than quietly not saved or shown as saved.
+test("against a Core that names no Workspace, a draft is kept in this window and says so", async () => {
+  const page = await mount({ noWorkspaceId: true });
+  try {
+    const field = page.document.querySelector("[data-composer-input]");
+    setValue(page.window, field, "typed with no Workspace to save it under");
+    await pause();
+    assert.equal(
+      composerText(field),
+      "typed with no Workspace to save it under",
+      "what was typed is on screen",
+    );
+    const said = [...page.document.querySelectorAll('.inline-error[role="alert"]')].map((p) => p.textContent);
+    assert.deepEqual(
+      said.filter((text) => /kept in this window only/.test(text ?? "")),
+      ["This draft is kept in this window only: Core has not said which Workspace this is, so there is nothing to save it under. Copy it before reloading."],
+    );
+    assert.deepEqual(
+      Object.keys(page.window.localStorage).filter((key) => key.startsWith("yuzuno.composer.v1:") || key.startsWith("yuzuno.paste.v1:")),
+      [],
+      "and it is not written under a key that an Agent alone would name",
+    );
+    assert.deepEqual(changes(page), [], "nothing was sent");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("an Agent link in the address opens a closed Agent's conversation and says nothing was reopened (T-184)", async () => {
   const page = await mount({
     url: "http://127.0.0.1:4317/#/agent?w=ws-1&a=b",
     workspaceIdentity: "ws-1",
     otherAgentFields: { threadId: "thread-b", status: "offline", connectionState: "disconnected", closedAt: "2026-10-25T00:00:00Z" },
-    stored: { "yuzuno.selected": JSON.stringify("a"), "yuzuno.composer.v1:a": linkDraft("draft for Mori") },
+    stored: { "yuzuno.selected": JSON.stringify("a"), [`yuzuno.composer.v1:${JSON.stringify(["ws-1", "a"])}`]: linkDraft("draft for Mori") },
   });
   try {
     const toast = () => page.document.querySelector(".toast")?.textContent || "";
@@ -5193,7 +5314,7 @@ const handoffDraft = (page, name) =>
 const hanaNote = JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "Hana's own note." }] });
 
 test("Send to Agent adds a reply after another Agent's existing draft and opens it, without sending or dispatching", async () => {
-  const page = await mount({ stored: { "yuzuno.composer.v1:b": hanaNote } });
+  const page = await mount({ stored: { [`yuzuno.composer.v1:${JSON.stringify(["ci-fixture", "b"])}`]: hanaNote } });
   try {
     const send = await until(() => page.document.querySelector(".final-message .send-to-agent-button"), "the reply offers Send to Agent");
     send.click();
@@ -5306,7 +5427,8 @@ test("selected text dragged out of a reply keeps the browser's text and lands as
 });
 
 test("the Send to Agent menu closes on Escape with nothing added, and a damaged draft is never overwritten", async () => {
-  const page = await mount({ stored: { "yuzuno.composer.v1:b": "{damaged" } });
+  const damagedKey = `yuzuno.composer.v1:${JSON.stringify(["ci-fixture", "b"])}`;
+  const page = await mount({ stored: { [damagedKey]: "{damaged" } });
   try {
     const send = await until(() => page.document.querySelector(".final-message .send-to-agent-button"), "the reply offers Send to Agent");
     send.click();
@@ -5321,7 +5443,7 @@ test("the Send to Agent menu closes on Escape with nothing added, and a damaged 
     page.document.querySelector('[role="menu"] [role="menuitem"]').click();
     await pause();
     assert.match(page.document.querySelector(".toast").textContent, /Hana’s saved draft needs recovering first; nothing was added/);
-    assert.equal(page.window.localStorage.getItem("yuzuno.composer.v1:b"), "{damaged");
+    assert.equal(page.window.localStorage.getItem(damagedKey), "{damaged");
     assert.ok(page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), "Mori stays open");
     assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
   } finally { page.close(); }

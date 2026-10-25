@@ -5,9 +5,19 @@ import { watchBrowserNetwork } from "./browser-offline";
 import { readSnapshot } from "./snapshot-request";
 import type { AgentDetail } from "./types";
 
-/** The shown Agent's detail, read once and then kept current from the event
- * stream (see DetailSync). `sync` takes streamed changes and refetches. */
-export function useAgentDetail(agentId: string | null) {
+/**
+ * The shown Agent's detail, read once and then kept current from the event
+ * stream (see DetailSync). `sync` takes streamed changes and refetches.
+ *
+ * `workspaceId` is part of what is shown, not only which Agent (T-195). An
+ * Agent id can name a different Agent in another Workspace at this address,
+ * so when the Workspace changes this is selected again: the conversation on
+ * screen is dropped, the read in flight is abandoned, and the new Workspace
+ * is read. Without that, the same id across a change left one Workspace's
+ * conversation on screen as the other's, where the outbox and published
+ * forms would reconcile against it.
+ */
+export function useAgentDetail(workspaceId: string, agentId: string | null) {
   const windowQuery = useRef<Record<string, string>>({});
   const windowGeneration = useRef(0);
   const [windowLoading, setWindowLoading] = useState(false);
@@ -49,7 +59,7 @@ export function useAgentDetail(agentId: string | null) {
     missingQuery.current = null;
     setMissing(null);
     sync.select(agentId);
-  }, [sync, agentId]);
+  }, [sync, agentId, workspaceId]);
   useEffect(() => () => sync.dispose(), [sync]);
   // Back online, a read that failed while away is tried again at once,
   // rather than after the retry delay (T-170).

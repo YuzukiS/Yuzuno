@@ -21,7 +21,7 @@ import ${JSON.stringify(path.join(root,'src/appearance.css'))};
 const harness=new URLSearchParams(location.search).get('harness')||'codex';
 const a={id:'fixture',harness,name:'Fixture',status:'idle',color:'sage',model:'fixture',cwd:'/fixture',connectionState:'connected'};
 const t={id:'turn-2',status:'completed',startedAt:1000,completedAt:1150,durationMs:150000,items:[{id:'u',type:'userMessage',nativeUuid:'11111111-1111-4111-8111-111111111111',content:[{type:'text',text:'Original fixture input'}]},{id:'a',type:'agentMessage',phase:'final_answer',text:'Completed fixture reply.'}]};
-function WindowFixture(){const h=useAgentDetail('fixture');return <><button onClick={()=>h.navigate({turnId:'removed'})}>Pin removed turn</button><button onClick={()=>h.sync.refetch({now:true})}>Refetch</button><output>{h.detail?.turns.map(t=>t.id).join(',')}</output><aside>{String(h.error||'')}</aside></>;}
+function WindowFixture(){const h=useAgentDetail('ws-rewind','fixture');return <><button onClick={()=>h.navigate({turnId:'removed'})}>Pin removed turn</button><button onClick={()=>h.sync.refetch({now:true})}>Refetch</button><output>{h.detail?.turns.map(t=>t.id).join(',')}</output><aside>{String(h.error||'')}</aside></>;}
 window.drafts=[];createRoot(document.getElementById('root')).render(harness==='window'?<WindowFixture/>:<div style={{padding:24,maxWidth:900}}><Turn turn={t} index={1} agent={a} onFile={()=>{}} onRewindDraft={(id,text)=>window.drafts.push({id,text})}/></div>);`);
 let server,browser,page;
 try{

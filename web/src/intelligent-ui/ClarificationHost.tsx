@@ -6,6 +6,9 @@ import { clarificationMessage, type ClarificationProps } from "./clarification";
 import { useResult } from "./ResultContext";
 
 type Host = {
+  /** The Workspace this window is in, "" until /api/workspace answers. Unsent
+   * answers are attributed to it, and saved nowhere while it is unknown. */
+  workspaceId: string;
   detail: AgentDetail | null;
   outgoing: OutgoingMessage[];
   pendingInputs: Record<string, MessageInput>;
@@ -54,6 +57,11 @@ export function PublishedClarification({ form }: { form: ClarificationProps }) {
   return (
     <Clarification
       identity={`${agent?.id || "read-only"}:${identity}`}
+      draftIdentity={
+        host?.workspaceId && agent
+          ? JSON.stringify([host.workspaceId, agent.id, identity])
+          : null
+      }
       form={form}
       agentName={agent?.name || "the Agent"}
       blockedReason={blockedReason}
