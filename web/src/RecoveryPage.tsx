@@ -1,7 +1,75 @@
 import { Component, Fragment, useState, type ReactNode } from "react";
 import { Copy, Download, Eye, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
 import { clearRecordedErrors, diagnosticsText, errorRecordProblem, gatherFacts, recordError, recordedErrors } from "./diagnostics";
+import { strings, TranslatedPart, useStrings } from "./i18n";
 import "./diagnostics.css";
+
+// Diagnostics' words in the interface language (T-189). The report itself
+// (its text, fields and redaction), what is copied or saved, and what this
+// browser says of an error stay as they are; the reasons this code words
+// itself are said in the language shown.
+const recordProblemZh = (reason: string) => {
+  const fixed: Record<string, string> = {
+    "this browser gives Yuzuno no storage here": "此浏览器不给 Yuzuno 在这里存储",
+    "the record saved here is not valid JSON": "这里保存的记录不是有效的 JSON",
+    "the record saved here is not an error record": "这里保存的记录不是错误记录",
+  };
+  const refused = /^this browser refused to save the change \((.*)\)$/.exec(reason);
+  return fixed[reason] ?? (refused ? `此浏览器拒绝保存这次更改（${refused[1]}）` : reason);
+};
+const words = strings({
+  copied: "Copied. Nothing was sent anywhere; paste it where you report the problem.",
+  select: "This window can't use the clipboard. Select the text below and copy it.",
+  textLabel: "Diagnostics",
+  title: "Diagnostics",
+  intro: (errors: number) =>
+    `Versions, connection and the errors this window recorded (${errors === 0 ? "none" : errors}), to paste into a report. No conversations, drafts or credentials. Preview it first: nothing is copied, saved or sent until you choose.`,
+  preview: (again: boolean) => (again ? "Preview again" : "Preview diagnostics"),
+  gathering: "Gathering…",
+  shown: "This is the whole text. Nothing has been copied, saved or sent.",
+  saving: (name: string) => `Your browser was asked to save ${name}. If no file appears, select the text below and copy it.`,
+  notSaved: (why: string) => `The download could not start (${why}). Select the text below and copy it.`,
+  beforeClear: "This text was gathered before the recorded errors were cleared. Preview again for the record as it is now.",
+  copy: "Copy",
+  download: "Download .txt",
+  record: (problem: string | null, errors: number) =>
+    `${
+      problem
+        ? `The recorded errors can't be cleared here: ${problem}.`
+        : errors === 0
+          ? "No errors are recorded in this browser for this site."
+          : `${errors} recorded ${errors === 1 ? "error is" : "errors are"} kept in this browser for this site.`
+    } Clearing removes only these error records and can't be undone. Core's and the desktop app's last-read versions stay, and so do drafts, settings, conversations and Core's logs. Errors after that are recorded as before.`,
+  clear: "Clear recorded errors",
+  cleared: (count: number) => `Cleared ${count} recorded ${count === 1 ? "error" : "errors"} from this browser for this site.`,
+  notCleared: (reason: string) => `Nothing was cleared: ${reason}. The recorded errors are kept as they were.`,
+}, {
+  copied: "已复制。没有发送到任何地方；请粘贴到你报告问题的地方。",
+  select: "此窗口无法使用剪贴板。请选择下方文本并复制。",
+  textLabel: "诊断信息",
+  title: "诊断信息",
+  intro: (errors) =>
+    `版本、连接，以及此窗口记录的错误（${errors === 0 ? "无" : errors}），可粘贴到问题报告中。不含会话、草稿或凭据。请先预览：在你选择之前，不会复制、保存或发送任何内容。`,
+  preview: (again) => (again ? "重新预览" : "预览诊断信息"),
+  gathering: "正在收集…",
+  shown: "这就是全部文本。尚未复制、保存或发送任何内容。",
+  saving: (name) => `已请浏览器保存 ${name}。如果没有出现文件，请选择下方文本并复制。`,
+  notSaved: (why) => `无法开始下载（${why}）。请选择下方文本并复制。`,
+  beforeClear: "此文本是在清除已记录的错误之前收集的。重新预览可查看当前的记录。",
+  copy: "复制",
+  download: "下载 .txt",
+  record: (problem, errors) =>
+    `${
+      problem
+        ? `此处无法清除已记录的错误：${recordProblemZh(problem)}。`
+        : errors === 0
+          ? "此浏览器没有为此站点记录任何错误。"
+          : `此浏览器为此站点保存了 ${errors} 条已记录的错误。`
+    }清除只会删除这些错误记录，且无法撤销。Core 和桌面应用最近读取的版本会保留，草稿、设置、会话和 Core 的日志也都保留。之后的错误照常记录。`,
+  clear: "清除已记录的错误",
+  cleared: (count) => `已从此浏览器为此站点清除 ${count} 条已记录的错误。`,
+  notCleared: (reason) => `没有清除任何内容：${recordProblemZh(reason)}。已记录的错误保持原样。`,
+});
 
 /**
  * Copies this window's diagnostics (diagnostics.ts). Where the clipboard can't
@@ -34,22 +102,23 @@ function useDiagnosticsCopy() {
 }
 
 function DiagnosticsText({ text, state }: { text: string | null; state: string }) {
+  const t = useStrings(words);
   return (
     <>
       {state === "copied" && (
         <p className="diagnostics-note" role="status">
-          Copied. Nothing was sent anywhere; paste it where you report the problem.
+          {t.copied}
         </p>
       )}
       {state === "select" && (
         <p className="diagnostics-note" role="status">
-          This window can't use the clipboard. Select the text below and copy it.
+          {t.select}
         </p>
       )}
       {text !== null && (
         <textarea
           className="diagnostics-text"
-          aria-label="Diagnostics"
+          aria-label={t.textLabel}
           readOnly
           rows={10}
           value={text}
@@ -64,7 +133,9 @@ function DiagnosticsText({ text, state }: { text: string | null; state: string }
 function RecoveryPage({ failures, onRetry }: { failures: number; onRetry: () => void }) {
   const { text, state, copy } = useDiagnosticsCopy();
   return (
-    <main className="app-recovery" aria-labelledby="app-recovery-title">
+    // Not translated in this version: English throughout, its shared parts too.
+    <main className="app-recovery" aria-labelledby="app-recovery-title" lang="en">
+      <TranslatedPart value={false}>
       <div className="app-recovery-card">
         <h1 id="app-recovery-title">Yuzuno couldn't show this screen</h1>
         <p>
@@ -90,6 +161,7 @@ function RecoveryPage({ failures, onRetry }: { failures: number; onRetry: () => 
         </div>
         <DiagnosticsText text={text} state={state} />
       </div>
+      </TranslatedPart>
     </main>
   );
 }
@@ -193,82 +265,70 @@ function useDiagnosticsPreview() {
 
 /** The same diagnostics while the app works: in Settings, next to the versions. */
 export function DiagnosticsCopy() {
+  const t = useStrings(words);
   const { text, state, saved, why, cleared, beforeClear, preview, copy, download, clear } = useDiagnosticsPreview();
   const errors = recordedErrors().length;
   const problem = errorRecordProblem();
   return (
-    <section id="settings-diagnostics" className="settings-section diagnostics-section" aria-label="Diagnostics">
+    <section id="settings-diagnostics" className="settings-section diagnostics-section" aria-label={t.title}>
       <header className="settings-section-heading">
         <div>
-          <h3>Diagnostics</h3>
-          <p>
-            Versions, connection and the errors this window recorded ({errors === 0 ? "none" : errors}), to paste
-            into a report. No conversations, drafts or credentials. Preview it first: nothing is copied, saved or
-            sent until you choose.
-          </p>
+          <h3>{t.title}</h3>
+          <p>{t.intro(errors)}</p>
         </div>
         <button type="button" className="secondary-button" onClick={() => void preview()} disabled={state === "reading"}>
-          <Eye size={14} aria-hidden="true" /> {text === null ? "Preview diagnostics" : "Preview again"}
+          <Eye size={14} aria-hidden="true" /> {t.preview(text !== null)}
         </button>
       </header>
       {state === "reading" && (
         <p className="diagnostics-note" role="status">
-          Gathering…
+          {t.gathering}
         </p>
       )}
       {state === "shown" && (
         <p className="diagnostics-note" role="status">
-          This is the whole text. Nothing has been copied, saved or sent.
+          {t.shown}
         </p>
       )}
       {state === "saving" && (
         <p className="diagnostics-note" role="status">
-          Your browser was asked to save {saved}. If no file appears, select the text below and copy it.
+          {t.saving(saved)}
         </p>
       )}
       {state === "notSaved" && (
         <p className="diagnostics-note" role="alert">
-          The download could not start ({why}). Select the text below and copy it.
+          {t.notSaved(why)}
         </p>
       )}
       {beforeClear && (
         <p className="diagnostics-note" role="status">
-          This text was gathered before the recorded errors were cleared. Preview again for the record as it is now.
+          {t.beforeClear}
         </p>
       )}
       <DiagnosticsText text={text} state={state} />
       {text !== null && (
         <div className="diagnostics-actions">
           <button type="button" className="secondary-button" onClick={() => void copy()} disabled={state === "reading"}>
-            <Copy size={14} aria-hidden="true" /> Copy
+            <Copy size={14} aria-hidden="true" /> {t.copy}
           </button>
           <button type="button" className="secondary-button" onClick={download} disabled={state === "reading"}>
-            <Download size={14} aria-hidden="true" /> Download .txt
+            <Download size={14} aria-hidden="true" /> {t.download}
           </button>
         </div>
       )}
       <div className="diagnostics-clear">
-        <p className="diagnostics-note">
-          {problem
-            ? `The recorded errors can't be cleared here: ${problem}.`
-            : errors === 0
-              ? "No errors are recorded in this browser for this site."
-              : `${errors} recorded ${errors === 1 ? "error is" : "errors are"} kept in this browser for this site.`}{" "}
-          Clearing removes only these error records and can't be undone. Core's and the desktop app's last-read
-          versions stay, and so do drafts, settings, conversations and Core's logs. Errors after that are recorded as
-          before.
-        </p>
+        <p className="diagnostics-note">{t.record(problem, errors)}</p>
         <button type="button" className="secondary-button" onClick={clear} disabled={!!problem || errors === 0 || state === "reading"}>
-          <Trash2 size={14} aria-hidden="true" /> Clear recorded errors
+          <Trash2 size={14} aria-hidden="true" /> {t.clear}
         </button>
         {cleared && "cleared" in cleared && (
           <p className="diagnostics-note" role="status">
-            Cleared {cleared.cleared} recorded {cleared.cleared === 1 ? "error" : "errors"} from this browser for this site.
+            {t.cleared(cleared.cleared)}
           </p>
         )}
         {cleared && "notCleared" in cleared && (
           <p className="diagnostics-note" role="alert">
-            Nothing was cleared: {cleared.notCleared}. The recorded errors are kept as they were.
+            {t.notCleared(cleared.notCleared)}
           </p>
         )}
       </div>
