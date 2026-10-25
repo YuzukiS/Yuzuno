@@ -137,6 +137,31 @@ test("a stop with automatic continue off says nothing continues, and offers it",
   }
 });
 
+test("a saved default whose view can't be read again says it is saved, not that it failed (T-187)", async () => {
+  const current = view({ agent: null, enabled: false, intent: null, stopped: null });
+  let reads = 0;
+  const page = mount((url, init) => {
+    if (url.endsWith("/api/claude/auto-continue")) return { enabled: JSON.parse(init.body).enabled };
+    // The first read works; the one after saving the default fails.
+    if (++reads > 1) throw new Error("Core is restarting");
+    return current;
+  });
+  try {
+    page.window.renderSetting({ detail, disabled: false });
+    await tick();
+    const select = page.document.querySelector('[aria-label="After Claude’s usage limit resets"]');
+    assert.equal(select.selectedOptions[0].textContent, "Default · wait for you");
+    button(page, "Make the default: continue").click();
+    await tick();
+    assert.equal(reads, 2);
+    assert.equal(select.selectedOptions[0].textContent, "Default · continue", "the default Core confirmed");
+    assert.ok(button(page, "Make the default: wait for you"), "the next choice follows the saved default");
+    assert.match(page.document.querySelector('[role="alert"]').textContent, /^The default is saved, but this agent’s view couldn’t be read again/);
+  } finally {
+    page.close();
+  }
+});
+
 test("the setting is this agent's choice or the workspace default", async () => {
   let current = view({ agent: null, enabled: false, intent: null, stopped: null });
   const page = mount((url, init) => {
