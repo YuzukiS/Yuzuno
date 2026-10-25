@@ -24,6 +24,7 @@ import {
 } from "./machine-checks";
 import { MachineEditor } from "./MachineEditor";
 import { strings, useLanguage, type Language } from "./i18n";
+import { shellText } from "./shell-text";
 import { machineIdOf, projectName } from "./projects";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import type { Agent, Project } from "./types";
@@ -166,10 +167,10 @@ export function LastCheck({
   );
 }
 
-// The page's own words (T-189). Machine and Agent names, SSH destinations,
-// paths, host facts and Core's errors are shown as they are.
+// The page's own words (T-189); an Agent's state is said as the Agent list
+// says it (shellText). Machine and Agent names, SSH destinations, paths,
+// host facts and Core's errors are shown as they are.
 const text = strings({
-  states: { idle: "Ready", working: "Working", waiting: "Waiting", offline: "Offline", error: "Needs a look", uncertain: "Check result" } as Record<Agent["status"], string>,
   title: "Machines",
   description: "Where your agents run. A check shows what Core could reach at that moment; nothing checks in the background.",
   add: "Add SSH machine",
@@ -196,14 +197,12 @@ const text = strings({
   agentsHere: "Agents here now",
   openAgent: (name: string, cwd: string) => `Open ${name}\n${cwd}`,
   noProject: "No project",
-  closed: "Closed",
   connected: "Connected",
   connecting: "Connecting",
   notConnected: "Not connected",
   noAgents: "No agents on this machine yet.",
   footnote: "Agent states come from their own sessions, not from these checks. An old check does not mean a machine is offline, and a found CLI does not mean it is signed in.",
 }, {
-  states: { idle: "就绪", working: "工作中", waiting: "等待中", offline: "离线", error: "需要查看", uncertain: "需核对结果" },
   title: "机器",
   description: "你的 Agent 运行的地方。一次检查只说明 Core 在那一刻能访问到什么；后台不会自动检查。",
   add: "添加 SSH 机器",
@@ -228,7 +227,6 @@ const text = strings({
   agentsHere: "当前在此的 Agent",
   openAgent: (name, cwd) => `打开 ${name}\n${cwd}`,
   noProject: "无项目",
-  closed: "已关闭",
   connected: "已连接",
   connecting: "正在连接",
   notConnected: "未连接",
@@ -254,6 +252,7 @@ export function MachinesPage({
 }) {
   const language = useLanguage();
   const t = text(language);
+  const shell = shellText(language);
   const [machines, setMachines] = useState<WorkspaceMachine[] | null>(null);
   const [loadError, setLoadError] = useState("");
   const [checking, setChecking] = useState<Record<string, boolean>>({});
@@ -559,7 +558,7 @@ export function MachinesPage({
                             </small>
                           </span>
                           <span className="machine-agent-state">
-                            {agent.closedAt ? t.closed : t.states[agent.status]}
+                            {agent.closedAt ? shell.closed : shell.status[agent.status]}
                             {agent.remote && !agent.closedAt
                               ? ` · ${agent.connectionState === "connected" ? t.connected : agent.connectionState === "connecting" ? t.connecting : t.notConnected}`
                               : ""}
