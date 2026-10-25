@@ -57,8 +57,6 @@ pub struct Backups {
     file: PathBuf,
     state: Mutex<Vec<Operation>>,
     running: Mutex<Option<(String, Arc<Control>)>>,
-    /// Held while the journal is written, so writes happen one at a time.
-    pub(super) writing: Mutex<()>,
     /// Runs once, in the next write, between its copy of the operations and
     /// writing them: a test holds a write there.
     #[cfg(test)]
@@ -103,7 +101,6 @@ impl Backups {
             file,
             state: Mutex::new(operations),
             running: Mutex::new(None),
-            writing: Mutex::new(()),
             #[cfg(test)]
             between_copy_and_write: Mutex::new(None),
         };
@@ -113,13 +110,10 @@ impl Backups {
         backups
     }
 
-    /// Writes the journal as it is now. One write at a time, each of the
-    /// operations as they are when it writes: an operation that ends releases
-    /// its place before it writes, so another may start and write meanwhile,
-    /// and an earlier copy must never land over a later one (main CI
-    /// 40175308220).
+    /// Writes the journal as it is now. Only for the operation in the place
+    /// (start, finish) or before anything starts (open), so writes happen one
+    /// at a time: an earlier copy never lands over a later one.
     fn save(&self) -> Result<()> {
-        let _writing = self.writing.lock().unwrap();
         let operations = self.state.lock().unwrap().clone();
         #[cfg(test)]
         {
@@ -258,12 +252,14 @@ impl Backups {
                 }
             }
         }
+        // Its end is written before it lets go of its place: the next
+        // operation starts, and writes, only after (main CI 40175308220,
+        // where this write, copied before a removal started, landed over it).
+        let _ = self.save();
         let mut running = self.running.lock().unwrap();
         if running.as_ref().is_some_and(|(r, _)| r == id) {
             *running = None;
         }
-        drop(running);
-        let _ = self.save();
     }
 }
 
