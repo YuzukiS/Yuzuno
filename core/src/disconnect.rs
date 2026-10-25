@@ -21,6 +21,13 @@
 //! stop makes it an ordinary Disconnect; anything else (no answer, SSH lost,
 //! a stop the host can't confirm, a Core restart) leaves it held, unconfirmed,
 //! until the user's Reconnect.
+//!
+//! A Codex Agent on an SSH machine is checked as a local one, then detached
+//! as the update detach does, which keeps the runtime there; then the helper
+//! stops exactly the runtime instance the Agent recorded (remote_helper.py
+//! `stop`, as Close uses it). Only the helper's word that it found that
+//! instance and saw it gone confirms it; anything after asking leaves the
+//! Agent held, unconfirmed, as above.
 use crate::{
     model::{now, Agent, AgentDetail},
     store::Activity,
@@ -47,9 +54,6 @@ pub(crate) fn refusal(detail: &AgentDetail) -> Option<String> {
     }
     if !matches!(agent.harness.as_str(), "codex" | "claude") {
         return Some("only Codex and Claude Code Agents can be disconnected in this version: processes an OpenCode tool started can outlive OpenCode".into());
-    }
-    if agent.remote.is_some() && agent.harness != "claude" {
-        return Some("a Codex Agent on an SSH machine can't be disconnected yet: its runtime there is stopped another way".into());
     }
     if agent.connection_state != "connected" {
         return Some("this Agent isn't connected, so there is no native session to stop".into());
@@ -139,9 +143,13 @@ impl Workspace {
                     None => bail!("Not disconnected: Codex didn't say whether background terminals are running. Nothing changed."),
                 }
                 self.codex_children_at_rest(&connection, &detail).await?;
-                self.detach_idle_codex(id, &connection)
-                    .await
-                    .map_err(|error| anyhow!("Not disconnected: {error}. The connection was kept if it could be."))?;
+                match &detail.agent.remote {
+                    Some(remote) => self.detach_remote_codex(id, &connection, remote).await?,
+                    None => self
+                        .detach_idle_codex(id, &connection)
+                        .await
+                        .map_err(|error| anyhow!("Not disconnected: {error}. The connection was kept if it could be."))?,
+                }
             }
             "claude" => {
                 let connection = self
@@ -216,14 +224,7 @@ impl Workspace {
         if let Some(count) = self.background_shells.claude_active(id, connection.generation).filter(|count| *count > 0) {
             bail!("Not disconnected: {count} Claude background task(s) are still running. Nothing changed.");
         }
-        let at = now();
-        self.record_meta(id, "agent/disconnectRequested", json!({"at": at}), move |m| {
-            m.agent.disconnected_at = Some(at);
-            m.agent.disconnect_unconfirmed = true;
-        })
-        .await
-        .map_err(kept)?;
-        self.changed(id);
+        self.hold_unconfirmed(id).await.map_err(kept)?;
         let reason = |answer: &Value| answer["reason"].as_str().unwrap_or("no reason given").to_owned();
         // None: it stopped. Some(Ok(why)): it refused, and nothing stopped.
         // Some(Err(why)): whether it stopped isn't known.
@@ -243,13 +244,7 @@ impl Workspace {
             None => None,
             Some(Err(why)) => Some(why),
             Some(Ok(why)) => {
-                self.record_meta(id, "agent/disconnectRefused", json!({}), |m| {
-                    m.agent.disconnected_at = None;
-                    m.agent.disconnect_unconfirmed = false;
-                })
-                .await
-                .map_err(|error| anyhow!("Not disconnected: {why}, but your choice couldn't be withdrawn ({error}); it stays disconnected until you press Reconnect"))?;
-                self.changed(id);
+                self.withdraw_hold(id, &why).await?;
                 bail!("Not disconnected: {why}. Nothing changed.");
             }
         };
@@ -273,6 +268,60 @@ impl Workspace {
         Ok(())
     }
 
+    /// For a Codex Agent on an SSH machine: detached as the update detach
+    /// does (idle by Codex, drained, this generation closed; the runtime there
+    /// kept), then exactly the runtime instance it recorded is stopped. The
+    /// user's choice is recorded first, unconfirmed: a failed detach (nothing
+    /// was stopped) withdraws it; only the helper's confirmation returns Ok;
+    /// any other answer, error or lost reply after asking keeps it held.
+    async fn detach_remote_codex(self: &Arc<Self>, id: &str, connection: &Connection, remote: &crate::model::RemoteAgent) -> Result<()> {
+        let machine = &remote.machine;
+        let runtime = remote.runtime.as_ref().with_context(|| {
+            format!("Not disconnected: this Agent's Codex runtime on {} isn't recorded, so it can't be stopped exactly. Nothing changed.", machine.name)
+        })?;
+        let workspace = self.stored(|store| store.workspace_id()).await.map_err(|error| anyhow!("Not disconnected: {error}. Nothing changed."))?;
+        self.hold_unconfirmed(id).await.map_err(|error| anyhow!("Not disconnected: {error}. Nothing changed."))?;
+        if let Err(error) = self.detach_idle_codex(id, connection).await {
+            let why = error.to_string();
+            self.withdraw_hold(id, &why).await?;
+            bail!("Not disconnected: {why}. The connection was kept if it could be.");
+        }
+        if let Err(error) = crate::remote::stop_runtime_instance(machine, &workspace, id, runtime).await {
+            self.changed(id);
+            bail!(
+                "Not confirmed: Codex on {} didn't confirm its runtime stopped ({error}). Yuzuno closed its connection and keeps this Agent disconnected: nothing starts it until you press Reconnect.",
+                machine.name
+            );
+        }
+        Ok(())
+    }
+
+    /// The user's choice, recorded before an SSH machine is asked to stop:
+    /// disconnected, unconfirmed, so nothing starts it meanwhile or after a
+    /// Core restart.
+    async fn hold_unconfirmed(&self, id: &str) -> Result<()> {
+        let at = now();
+        self.record_meta(id, "agent/disconnectRequested", json!({"at": at}), move |m| {
+            m.agent.disconnected_at = Some(at);
+            m.agent.disconnect_unconfirmed = true;
+        })
+        .await?;
+        self.changed(id);
+        Ok(())
+    }
+
+    /// Withdraws the choice once it is known that nothing was stopped.
+    async fn withdraw_hold(&self, id: &str, why: &str) -> Result<()> {
+        self.record_meta(id, "agent/disconnectRefused", json!({}), |m| {
+            m.agent.disconnected_at = None;
+            m.agent.disconnect_unconfirmed = false;
+        })
+        .await
+        .map_err(|error| anyhow!("Not disconnected: {why}, but your choice couldn't be withdrawn ({error}); it stays disconnected until you press Reconnect"))?;
+        self.changed(id);
+        Ok(())
+    }
+
     /// Every sub-agent this Codex Agent started is at rest, read from Codex
     /// now on its own connection; one that is running, or that Codex doesn't
     /// answer for, refuses.
@@ -292,6 +341,16 @@ impl Workspace {
             };
             if !codex_thread_at_rest(&status) {
                 bail!("Not disconnected: Codex sub-agent {child} is {status}. Nothing changed.");
+            }
+            // A thread Codex hasn't loaded runs nothing in this runtime; a
+            // loaded one, even at rest, may have left terminals running.
+            if status == "notLoaded" {
+                continue;
+            }
+            match crate::background_shells::list_codex(&connection.rpc, &child).await {
+                Ok(0) => {}
+                Ok(count) => bail!("Not disconnected: Codex sub-agent {child} has {count} background terminal(s) running. Nothing changed."),
+                Err(error) => bail!("Not disconnected: Codex didn't say whether sub-agent {child}'s background terminals are running ({error}). Nothing changed."),
             }
         }
         Ok(())
@@ -328,7 +387,6 @@ mod tests {
         let cases: Vec<(&str, Box<dyn Fn(&mut AgentDetail)>)> = vec![
             ("closed", Box::new(|d| d.agent.closed_at = Some("x".into()))),
             ("already disconnected", Box::new(|d| d.agent.disconnected_at = Some("x".into()))),
-            ("ssh", Box::new(|d| d.agent.remote = Some(crate::model::RemoteAgent::new(crate::remote::RemoteMachine { name: "lab".into(), ..Default::default() })))),
             ("opencode", Box::new(|d| d.agent.harness = "opencode".into())),
             ("not connected", Box::new(|d| d.agent.connection_state = "disconnected".into())),
             ("connecting", Box::new(|d| d.agent.connection_state = "connecting".into())),
@@ -346,9 +404,11 @@ mod tests {
             change(&mut d);
             assert!(refusal(&d).is_some(), "{what} must refuse");
         }
-        let mut ssh_claude = detail("claude");
-        ssh_claude.agent.remote = Some(crate::model::RemoteAgent::new(crate::remote::RemoteMachine { name: "lab".into(), ..Default::default() }));
-        assert_eq!(refusal(&ssh_claude), None, "a Claude Agent on an SSH machine goes on to its host's checks");
+        for harness in ["claude", "codex"] {
+            let mut ssh = detail(harness);
+            ssh.agent.remote = Some(crate::model::RemoteAgent::new(crate::remote::RemoteMachine { name: "lab".into(), ..Default::default() }));
+            assert_eq!(refusal(&ssh), None, "a {harness} Agent on an SSH machine goes on to its machine's checks");
+        }
         let mut claude = detail("claude");
         claude.turns[0]["items"] = json!([{"id": "call", "subAgent": {"status": "running"}}]);
         assert!(refusal(&claude).is_some(), "a Claude sub-agent still running refuses");
@@ -524,6 +584,181 @@ process.stdin.on('end', () => process.exit(0));
             assert_eq!(starts.len(), 2, "{mode}");
             assert_eq!(starts[1]["sessionId"], "session-1", "{mode}: the same session resumes");
             close(&ws).await;
+        }
+    }
+
+    /// SSH Codex (T-184), over stand-ins for the machine's helper and its
+    /// app-server (remote::STAND_INS).
+    #[cfg(unix)]
+    mod ssh_codex {
+        use super::*;
+
+        /// A Codex app-server standing in for one on an SSH machine: thread
+        /// `native-thread` idle (active while `busy` exists in its folder), no
+        /// background terminals; logs every call.
+        const CODEX: &str = r#"#!/usr/bin/python3
+import json, sys, pathlib
+root = pathlib.Path(__file__).parent
+for line in sys.stdin:
+    req = json.loads(line)
+    with (root / 'calls.jsonl').open('a') as log: log.write(json.dumps(req) + '\n')
+    if 'id' not in req: continue
+    method, params = req.get('method'), req.get('params', {})
+    status = 'active' if (root / 'busy').exists() else 'idle'
+    result = {}
+    if method in ['thread/resume', 'thread/read']:
+        result = {'thread': {'id': 'native-thread', 'status': {'type': status}, 'turns': []}, 'model': 'test'}
+    elif method == 'thread/backgroundTerminals/list':
+        result = {'data': [], 'nextCursor': None}
+    print(json.dumps({'id': req['id'], 'result': result}), flush=True)
+"#;
+
+        /// The machine's helper as a stand-in: `ensure` gives a new runtime
+        /// instance each time; `stop` answers as `stop` says now: `ok` (that
+        /// instance stopped), `missing` (no folder or metadata), `other` (another
+        /// instance) or `error`. Every request is kept.
+        struct Machine {
+            id: &'static str,
+            stop: Arc<std::sync::Mutex<&'static str>>,
+            requests: Arc<std::sync::Mutex<Vec<Value>>>,
+        }
+
+        impl Machine {
+            fn new(dir: &std::path::Path, id: &'static str, stop: &'static str) -> Self {
+                let script = dir.join("codex.py");
+                std::fs::write(&script, CODEX).unwrap();
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+                let machine = Machine { id, stop: Arc::new(std::sync::Mutex::new(stop)), requests: Default::default() };
+                let (mode, requests) = (machine.stop.clone(), machine.requests.clone());
+                let answer = move |request: &Value| -> Result<Value> {
+                    let mut seen = requests.lock().unwrap();
+                    seen.push(request.clone());
+                    let ensured = seen.iter().filter(|r| r["action"] == "ensure").count();
+                    match request["action"].as_str() {
+                        Some("ensure") => Ok(json!({"root": "/r", "socket": "/r/rpc.sock", "pid": 4242, "codex": "/c", "instanceId": format!("inst-{ensured}")})),
+                        Some("stop") => match *mode.lock().unwrap() {
+                            "ok" => Ok(json!({"stopped": true, "instanceId": request["runtime"]["instanceId"]})),
+                            "missing" => Ok(json!({"stopped": true})),
+                            "other" => Ok(json!({"stopped": true, "instanceId": "inst-other"})),
+                            _ => Err(anyhow!("远程 Runtime 尚未退出；Agent 未关闭")),
+                        },
+                        other => Err(anyhow!("unexpected helper action {other:?}")),
+                    }
+                };
+                crate::remote::STAND_INS.lock().unwrap().push((id.into(), crate::remote::StandIn {
+                    answer: Arc::new(answer),
+                    program: script.to_string_lossy().into_owned(),
+                }));
+                machine
+            }
+
+            fn actions(&self) -> Vec<String> {
+                self.requests.lock().unwrap().iter().map(|r| r["action"].as_str().unwrap_or_default().to_owned()).collect()
+            }
+        }
+
+        /// A connected, idle Codex Agent on `machine`, thread `native-thread`.
+        async fn ssh_codex(dir: &std::path::Path, machine: &Machine) -> Arc<Workspace> {
+            let ws = Workspace::new(dir.join("data"), dir.to_string_lossy().into(), dir.join("codex.py").to_string_lossy().into()).unwrap();
+            let mut d = detail("codex");
+            d.agent.thread_id = Some("native-thread".into());
+            d.agent.connection_state = "disconnected".into();
+            d.agent.status = "offline".into();
+            d.agent.remote = Some(crate::model::RemoteAgent::new(crate::remote::RemoteMachine { id: machine.id.into(), name: "Mac mini".into(), target: "tester@192.0.2.10".into(), ..Default::default() }));
+            ws.store.insert(&d).unwrap();
+            ws.reconnect("a").await.unwrap();
+            assert_eq!(ws.store.detail("a").unwrap().agent.connection_state, "connected");
+            ws
+        }
+
+        fn codex_calls(dir: &std::path::Path, method: &str) -> Vec<Value> {
+            std::fs::read_to_string(dir.join("calls.jsonl")).unwrap_or_default().lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap()).filter(|c| c["method"] == method).collect()
+        }
+
+        /// T-184: an SSH Codex Agent is detached as the update detach does, then
+        /// exactly the runtime instance it recorded is stopped; only the helper's
+        /// word that it found that instance and saw it gone makes it disconnected.
+        /// Reconnect resumes the same thread on a runtime started anew.
+        #[tokio::test]
+        async fn an_ssh_codex_agent_is_disconnected_once_its_recorded_runtime_is_confirmed_stopped() {
+            let dir = tempfile::tempdir().unwrap();
+            let machine = Machine::new(dir.path(), "t184-codex-ok", "ok");
+            let ws = ssh_codex(dir.path(), &machine).await;
+            let agent = ws.disconnect_agent("a").await.unwrap();
+            assert!(agent.disconnected_at.is_some() && !agent.disconnect_unconfirmed);
+            assert_eq!((agent.status.as_str(), agent.connection_state.as_str()), ("offline", "disconnected"));
+            assert!(ws.rpcs.lock().unwrap().get("a").is_none(), "this generation is closed");
+            let stops: Vec<Value> = machine.requests.lock().unwrap().iter().filter(|r| r["action"] == "stop").cloned().collect();
+            assert_eq!(stops.len(), 1);
+            assert_eq!(stops[0]["runtime"]["instanceId"], "inst-1", "only the instance it recorded");
+            assert_eq!(stops[0]["agentId"], "a");
+            assert!(ws.send("a", "not now".into()).await.is_err());
+            assert_eq!(machine.actions(), ["ensure", "stop"], "nothing started it again");
+            let reconnected = ws.reconnect("a").await.unwrap().agent;
+            assert!(reconnected.disconnected_at.is_none());
+            assert_eq!(reconnected.thread_id.as_deref(), Some("native-thread"));
+            assert_eq!(machine.actions(), ["ensure", "stop", "ensure"]);
+            assert!(codex_calls(dir.path(), "thread/resume").iter().all(|c| c["params"]["threadId"] == "native-thread"));
+            assert!(codex_calls(dir.path(), "thread/start").is_empty() && codex_calls(dir.path(), "turn/start").is_empty());
+        }
+
+        /// No folder or metadata, another instance, or an error after asking:
+        /// not a confirmed stop. The Agent is held, unconfirmed, through a send,
+        /// a mail Start or recovery (ensure) and a Core restart; nothing asks the
+        /// machine again until the user's Reconnect, which resumes the thread.
+        #[tokio::test]
+        async fn an_ssh_codex_stop_the_helper_doesnt_confirm_holds_the_agent_until_the_users_reconnect() {
+            for (id, stop) in [("t184-codex-missing", "missing"), ("t184-codex-other", "other"), ("t184-codex-error", "error")] {
+                let dir = tempfile::tempdir().unwrap();
+                let machine = Machine::new(dir.path(), id, stop);
+                let ws = ssh_codex(dir.path(), &machine).await;
+                let error = ws.disconnect_agent("a").await.unwrap_err().to_string();
+                assert!(error.starts_with("Not confirmed: Codex on Mac mini didn't confirm its runtime stopped"), "{stop}: {error}");
+                let agent = ws.store.detail("a").unwrap().agent;
+                assert!(agent.disconnected_at.is_some() && agent.disconnect_unconfirmed, "{stop}: held, unconfirmed");
+                assert_eq!(agent.connection_state, "disconnected", "{stop}");
+                assert!(ws.send("a", "not now".into()).await.is_err(), "{stop}: a send");
+                assert!(ws.ensure("a").await.is_err(), "{stop}: a mail Start or recovery");
+                let ws = reopen(ws, dir.path()).await;
+                let restarted = ws.store.detail("a").unwrap().agent;
+                assert!(restarted.disconnected_at.is_some() && restarted.disconnect_unconfirmed, "{stop}: after a restart");
+                assert!(ws.ensure("a").await.is_err(), "{stop}: after a restart");
+                assert_eq!(machine.actions(), ["ensure", "stop"], "{stop}: nothing asked the machine again");
+                assert!(codex_calls(dir.path(), "turn/start").is_empty(), "{stop}: nothing was sent");
+                let reconnected = ws.reconnect("a").await.unwrap().agent;
+                assert!(reconnected.disconnected_at.is_none() && !reconnected.disconnect_unconfirmed, "{stop}");
+                assert_eq!(reconnected.thread_id.as_deref(), Some("native-thread"), "{stop}");
+                assert_eq!(machine.actions(), ["ensure", "stop", "ensure"], "{stop}");
+            }
+        }
+
+        /// No runtime recorded, or Codex not idle when it is detached: nothing
+        /// was asked of the machine, so the choice is withdrawn and nothing changed.
+        #[tokio::test]
+        async fn an_ssh_codex_disconnect_that_cant_name_its_runtime_or_finds_it_busy_changes_nothing() {
+            let dir = tempfile::tempdir().unwrap();
+            let machine = Machine::new(dir.path(), "t184-codex-unnamed", "ok");
+            let ws = ssh_codex(dir.path(), &machine).await;
+            ws.store.update("a", "test/forgotten", &json!({}), |d| {
+                if let Some(remote) = &mut d.agent.remote { remote.runtime = None; }
+            }).unwrap();
+            let error = ws.disconnect_agent("a").await.unwrap_err().to_string();
+            assert!(error.contains("Codex runtime on Mac mini isn't recorded") && error.ends_with("Nothing changed."), "{error}");
+            let agent = ws.store.detail("a").unwrap().agent;
+            assert!(agent.disconnected_at.is_none() && !agent.disconnect_unconfirmed);
+            assert_eq!(agent.connection_state, "connected");
+
+            let dir = tempfile::tempdir().unwrap();
+            let machine = Machine::new(dir.path(), "t184-codex-busy", "ok");
+            let ws = ssh_codex(dir.path(), &machine).await;
+            std::fs::write(dir.path().join("busy"), "").unwrap();
+            let error = ws.disconnect_agent("a").await.unwrap_err().to_string();
+            assert!(error.starts_with("Not disconnected:") && error.contains("has not confirmed idle"), "{error}");
+            let agent = ws.store.detail("a").unwrap().agent;
+            assert!(agent.disconnected_at.is_none() && !agent.disconnect_unconfirmed, "withdrawn");
+            assert_eq!(machine.actions(), ["ensure"], "the machine was not asked to stop anything");
         }
     }
 
