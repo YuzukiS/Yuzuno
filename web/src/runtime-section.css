@@ -128,3 +128,25 @@ dl.runtime-group {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+/* MCP services: the inspector's panel, without its inspector frame. */
+.runtime-mcp-agent {
+  display: grid;
+  gap: 4px;
+  max-width: 28rem;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  color: var(--text-secondary);
+}
+.runtime-mcp .claude-mcp-status {
+  padding: 0;
+  border-top: 0;
+}
+.runtime-mcp .claude-mcp-status .section-title {
+  margin-bottom: 0;
+}
+.runtime-mcp .claude-mcp-status h5 {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 550;
+}
