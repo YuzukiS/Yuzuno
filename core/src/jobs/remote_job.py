@@ -209,6 +209,13 @@ def all_pids():
     failed, not that nothing is running. Returning [] for that would report a
     live process group as gone: its reservation would be let go and its
     outcome written while its processes still ran."""
+    # A test hook, inert unless the variable is set, in the shape of the ones
+    # this helper already reads: while that file exists this machine cannot be
+    # asked. It is the only way to reach, on any host, the failure that in
+    # truth only proc_listpids produces.
+    refuse = os.environ.get("YUZUNO_JOBS_PIDS_UNREADABLE_FILE")
+    if refuse and os.path.exists(refuse):
+        raise Unclear("this machine's processes could not be listed")
     if not DARWIN:
         return [int(name) for name in os.listdir("/proc") if name.isdigit()]
     size = LIBPROC.proc_listpids(DARWIN_PROC_ALL_PIDS, 0, None, 0)
@@ -896,6 +903,9 @@ try:
 except OSError:
     pass
 why = None
+# Whether the stop this supervisor asked for was confirmed; nothing to stop
+# yet counts as settled.
+stopped = True
 seen = {}
 sampled = 0.0
 thawed = None
@@ -916,7 +926,12 @@ while True:
             # A paused job is thawed first, so its processes can act on TERM.
             thawed = thaw_for_stop(root, intent) if held else None
             # Until nothing of the group is left; the leader is then a zombie.
-            stop(group)
+            stopped = stop(group)
+    elif not stopped:
+        # Last time this machine could not be asked, so nothing was
+        # signalled. A group that was never reached is not a stopped one:
+        # keep trying while the command is still being waited on.
+        stopped = stop(group)
     time.sleep(0.2)
 # The command has exited; nothing of its group may outlive it, and the
 # outcome is written only once nothing is left.
@@ -925,7 +940,7 @@ remaining = live(group)
 leftovers = None if remaining is None else len(remaining)
 if held and leftovers != 0:
     thawed = thaw_for_stop(root, intent) or thawed
-stop(group)
+settled = stop(group)
 reader.join(5)
 if held:
     # Its keeper still holds the scope: the final accounting, then let it go.
@@ -965,7 +980,18 @@ if plan:
     extra = {"limits": used}
 if thawed:
     extra = dict(extra or {}, thawedToStop=thawed)
-if why == "cancel" or (root / "cancel.json").exists():
+if not settled:
+    # Stopping was never confirmed: this machine could not be asked whether
+    # anything of the group is left. Nothing terminal is written here, and
+    # saying so in an outcome would not help -- an outcome releases the
+    # attempt's reservation while its processes may still be running. Instead
+    # this supervisor leaves no result.json and ends, which is the state Core
+    # already reads as lost: it keeps the slot and checks this same attempt
+    # again, and once the machine can be asked the existing recovery settles
+    # it. Before this, an unbounded stop() could only return once the group
+    # was empty, so the outcome below was safe to write unconditionally.
+    pass
+elif why == "cancel" or (root / "cancel.json").exists():
     outcome(root, intent, "cancelled", "Cancelled; its process group was stopped", code, signum, extra)
 elif why == "timeout":
     outcome(root, intent, "failed", "timeout after %d s; its process group was stopped" % spec["timeoutSeconds"],

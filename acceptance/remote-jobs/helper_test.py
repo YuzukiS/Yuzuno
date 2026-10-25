@@ -33,6 +33,19 @@ USER_MANAGER = _FACTS if _FACTS["manager"] and _FACTS["busctl"] and "memory" in 
 USER_MANAGER_BUSCTL = shutil.which("busctl") or "busctl"
 
 
+def alive_supervisor(folder):
+    """Whether the supervisor recorded in this attempt's folder still runs."""
+    try:
+        pid = json.loads((folder / "supervisor.json").read_text())["pid"]
+    except (OSError, ValueError, KeyError):
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 def host_of(machine_id):
     return hashlib.sha256(b"yuzuno-jobs-host-v1:" + machine_id.encode()).hexdigest()[:32]
 
@@ -140,6 +153,45 @@ class HelperTests(unittest.TestCase):
                              capture_output=True, text=True, env=env, timeout=60)
         # A malformed nonce is never echoed: the line carries no nonce Core would accept.
         self.assertTrue(out.stdout.startswith(remote_job.MARK + "{"), out.stdout)
+
+    def test_a_stop_it_could_not_confirm_writes_no_outcome_and_the_same_attempt_settles_later(self):
+        """The supervisor's own final decision, not just the primitives it
+        uses (T-186). While this machine cannot be asked for its processes,
+        the command's exit must not be turned into a terminal result: that
+        would release the attempt's reservation while its group may still be
+        running. Once it can be asked again, the same attempt settles."""
+        unreadable = Path(self.tmp.name) / "pids-unreadable"
+        unreadable.write_text("while this exists, the machine cannot be asked\n")
+        attempt = self.attempt("exit 0")
+        blind_env = {"YUZUNO_JOBS_PIDS_UNREADABLE_FILE": str(unreadable)}
+        # The supervisor inherits this, so its own checks fail too.
+        started = self.call(dict(attempt, action="start"), env_extra=blind_env)
+        self.assertEqual(started["status"], "started",
+                         "the attempt starts: the failure is in checking its group, not in running it")
+        folder = self.folder(attempt)
+        result = folder / "result.json"
+        # Long enough that the supervisor has waited on the command, given up
+        # on BLIND_LIMIT seconds of failed enumeration, and ended.
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and (folder / "supervisor.json").exists() and not result.exists():
+            if not alive_supervisor(folder):
+                break
+            time.sleep(0.2)
+        self.assertFalse(result.exists(),
+                         "no outcome is written for a group this machine could not be asked about")
+        # And the attempt is not reported as settled either.
+        blind = self.call(self.bound(attempt, "status"), env_extra=blind_env)
+        self.assertEqual(blind["status"], "unclear", blind)
+
+        # The machine can be asked again: the same attempt converges on the
+        # recovery path that already exists, rather than needing a new one.
+        unreadable.unlink()
+        lost = self.call(self.bound(attempt, "status"))
+        self.assertEqual(lost["status"], "lost", lost)
+        self.assertEqual(lost["processes"], 0, lost)
+        self.call(self.bound(attempt, "cancel"))
+        settled = self.settle(attempt)
+        self.assertEqual(settled["result"]["status"], "cancelled", settled)
 
     def attempt(self, script, timeout=60, workspace="ws-1", limits=None):
         spec = {"argv": ["/bin/sh", "-c", script], "cwd": str(self.work), "env": {"PATH": "/usr/bin:/bin"},
