@@ -412,6 +412,8 @@ const STATUS_MANIFEST_BYTES: u64 = 1 << 20;
 const STATUS_SMALL_BYTES: u64 = 64 << 10;
 /// The most top-level entries of the prepared copies' folder it looks at.
 const STATUS_COPIES: usize = 64;
+/// What the status says of a manifest that `parse_manifest` refuses.
+const UNUSABLE_MANIFEST: &str = "claude-agent-sdk.json 不是可用的 Claude Agent SDK 清单";
 
 pub(crate) fn router() -> axum::Router<Arc<crate::workspace::Workspace>> {
     axum::Router::new().route("/api/claude-sdk", axum::routing::get(read_status))
@@ -440,12 +442,18 @@ fn status_of(script: Result<PathBuf>, cache: Option<&Path>) -> serde_json::Value
     };
     let runtime = release_of(&root).map_or_else(|| json!({"kind": "other"}), |release| json!({"kind": "release", "release": release}));
     let (sdk, copy) = if root.join(MANIFEST).is_file() {
-        match read_bounded(&root.join(MANIFEST), STATUS_MANIFEST_BYTES).and_then(|bytes| parse_manifest(&bytes)) {
+        // read_bounded's reasons name only the file; a manifest the checks
+        // refuse gets a fixed reason, since their errors can quote what it
+        // lists (a path), which the status never says.
+        let manifest = read_bounded(&root.join(MANIFEST), STATUS_MANIFEST_BYTES)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| parse_manifest(&bytes).map_err(|_| UNUSABLE_MANIFEST.to_owned()));
+        match manifest {
             Ok(manifest) => (
                 json!({"state": "locked", "version": word(&manifest.version), "registry": registry_host(&manifest.resolved)}),
                 copy_status(&root, cache, &manifest),
             ),
-            Err(error) => (json!({"state": "unreadable", "reason": error.to_string()}), json!({"state": "unknown"})),
+            Err(reason) => (json!({"state": "unreadable", "reason": reason}), json!({"state": "unknown"})),
         }
     } else if let Ok(bytes) = read_bounded(&root.join(PACKAGE).join("package.json"), STATUS_SMALL_BYTES) {
         // The runtime carries the SDK itself and is run as it is: the version

@@ -368,7 +368,7 @@ fn a_damaged_manifest_or_no_runtime_is_said_and_a_registry_is_named_by_its_host_
     let root = release(base.path(), "core-new", &integrity(&package()));
     write(&root.join(MANIFEST), "{damaged");
     let status = status_of(Ok(root.join("bridge.mjs")), Some(&cache));
-    assert_eq!(status["sdk"], json!({"state": "unreadable", "reason": "claude-agent-sdk.json 无法读取"}));
+    assert_eq!(status["sdk"], json!({"state": "unreadable", "reason": UNUSABLE_MANIFEST}));
     assert_eq!(status["copy"], json!({"state": "unknown"}));
     write(&root.join(MANIFEST), vec![b' '; STATUS_MANIFEST_BYTES as usize + 1]);
     let status = status_of(Ok(root.join("bridge.mjs")), Some(&cache));
@@ -386,4 +386,19 @@ fn a_damaged_manifest_or_no_runtime_is_said_and_a_registry_is_named_by_its_host_
     assert_eq!((&none["runtime"], &none["sdk"], &none["copy"]),
         (&json!({"kind": "missing"}), &json!({"state": "unknown"}), &json!({"state": "unknown"})));
     assert!(!cache.exists(), "reading prepares nothing");
+}
+
+#[test]
+fn a_manifest_the_checks_refuse_is_said_by_a_fixed_reason_never_by_what_it_lists() {
+    let base = tempfile::tempdir().unwrap();
+    let root = release(base.path(), "core-new", &integrity(&package()));
+    let mut listed: Value = serde_json::from_slice(&std::fs::read(root.join(MANIFEST)).unwrap()).unwrap();
+    listed["files"]["../../home/person/PrivatePathSentinel/key"] = json!({"sha256": hex("x"), "bytes": 1});
+    write(&root.join(MANIFEST), listed.to_string());
+    // Preparing still says which path it refused; the status doesn't.
+    assert!(manifest(&root).err().unwrap().to_string().contains("PrivatePathSentinel"));
+    let status = status_of(Ok(root.join("bridge.mjs")), None);
+    assert_eq!(status["sdk"], json!({"state": "unreadable", "reason": UNUSABLE_MANIFEST}));
+    assert_eq!(status["copy"], json!({"state": "unknown"}));
+    assert!(!status.to_string().contains("PrivatePathSentinel"), "{status}");
 }
