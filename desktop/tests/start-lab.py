@@ -48,6 +48,25 @@ def load(name, path):
     return module
 
 
+# The saved list in the lab identity's own core.json (T-195): named entries,
+# at most one of which holds this computer's WSL start profile for its own
+# address. These read it the way the desktop writes it.
+def saved_list(path):
+    record = json.loads(path.read_text())
+    assert record.get("version") == 1 and isinstance(record.get("entries"), list), record
+    return record
+
+
+def entry_at(record, url):
+    found = [entry for entry in record["entries"] if entry["url"] == url]
+    assert len(found) == 1, (url, record)
+    return found[0]
+
+
+def starts_held(record):
+    return [entry["id"] for entry in record["entries"] if "start" in entry]
+
+
 # A Core stand-in for 9b: it answers health and a start profile it is
 # given, and a page; nothing else.
 STAND_IN = r"""
@@ -313,12 +332,15 @@ def main():
         desktop = windows("Launch", CoreUrl=url, CdpPort=args.cdp_port)["pid"]
         until(lambda: devtools(args.cdp_port), 60, "the lab window's DevTools")
         connected = window("connected")
-        saved = json.loads(saved_path.read_text())
-        # Saved, but not confirmed: only the Core has said where it is.
-        assert saved == {"coreUrl": url + "/", "start": {"wslDistro": profile["wslDistro"], "user": profile["user"],
-                                                          "installDir": str(managed), "workspaceId": workspace,
-                                                          "confirmed": False}}, saved
-        step("connected-and-saved", url=connected["url"], saved=saved)
+        record = saved_list(saved_path)
+        saved = entry_at(record, url + "/")
+        # Saved as the selected entry, its start for its own address, but not
+        # confirmed: only the Core has said where it is.
+        assert record["selected"] == saved["id"] and saved["workspaceId"] == workspace, record
+        assert saved["start"] == {"coreUrl": url + "/", "wslDistro": profile["wslDistro"], "user": profile["user"],
+                                  "installDir": str(managed), "workspaceId": workspace, "confirmed": False}, saved
+        assert starts_held(record) == [saved["id"]], record
+        step("connected-and-saved", url=connected["url"], saved=record)
 
         # 3. Core stops; the page offers the start, which starts it through wsl.exe.
         stop(first.pid, managed)
@@ -337,7 +359,7 @@ def main():
         keeping = observe()
         assert keeping["wsl"] and len(keeping["helpers"]) == 1, keeping
         # This computer's start entry accepted the installation: confirmed.
-        assert json.loads(saved_path.read_text())["start"]["confirmed"] is True
+        assert entry_at(saved_list(saved_path), url + "/")["start"]["confirmed"] is True
         step("started-from-the-window", seconds=started["seconds"], offered=started["connectError"],
              during=started["duringStart"], core=facts, keeping=keeping, confirmed=True)
 
@@ -365,7 +387,7 @@ def main():
         window("connected")
         # Reopened (an app restart, not a Windows one) and connected again to
         # the same Core: still confirmed.
-        assert json.loads(saved_path.read_text())["start"]["confirmed"] is True
+        assert entry_at(saved_list(saved_path), url + "/")["start"]["confirmed"] is True
 
         # 5. A Core that answers is opened, never started again.
         running = window("running")
@@ -436,8 +458,8 @@ def main():
             windows("Kill", DesktopProcessId=desktop)
             desktop = None
             until(lambda: not devtools(args.cdp_port), 60, "the closed window's DevTools to go")
-            changed = json.loads(saved_path.read_text())
-            changed["start"] = {**saved["start"], **change}
+            changed = saved_list(saved_path)
+            entry_at(changed, url + "/")["start"] = {**saved["start"], **change}
             saved_path.write_text(json.dumps(changed))
             desktop = windows("Launch", CdpPort=args.cdp_port)["pid"]
             until(lambda: devtools(args.cdp_port), 60, "the lab window's DevTools")
@@ -445,7 +467,7 @@ def main():
             assert refused["startShown"] and refused["error"].startswith("WSL could not run Yuzuno's start"), refused
             assert listener(args.port) is None and not observe()["cores"]
             # WSL's own failure is not "not installed here": kept as it was.
-            assert json.loads(saved_path.read_text())["start"] == changed["start"]
+            assert entry_at(saved_list(saved_path), url + "/")["start"] == entry_at(changed, url + "/")["start"]
             step(name, label=refused["startLabel"], error=refused["error"])
 
         # 9b. A Core reached at a loopback address that is not this computer's,
@@ -468,8 +490,13 @@ def main():
             desktop = windows("Launch", CoreUrl=remote_url, CdpPort=args.cdp_port)["pid"]
             until(lambda: devtools(args.cdp_port), 60, "the lab window's DevTools")
             window("connected", remote_url)
-            remembered = json.loads(saved_path.read_text())
-            assert remembered["coreUrl"] == remote_url + "/" and remembered["start"]["confirmed"] is False, remembered
+            remembered = saved_list(saved_path)
+            # The stand-in's entry is selected and holds the start, for its own
+            # address and unconfirmed; only one entry may, so the lab Core's
+            # entry no longer does.
+            remote = entry_at(remembered, remote_url + "/")
+            assert remembered["selected"] == remote["id"] and remote["start"]["confirmed"] is False, remembered
+            assert starts_held(remembered) == [remote["id"]], remembered
         finally:
             stand_in.terminate()
             stand_in.wait(10)
@@ -477,8 +504,8 @@ def main():
         not_here = window("not-here", remote_url)
         assert not_here["startLabel"] == "Start in this computer's WSL", not_here
         assert "no matching installation" in not_here["error"] and not not_here["startShownAfter"], not_here
-        forgotten = json.loads(saved_path.read_text())
-        assert forgotten == {"coreUrl": remote_url + "/"}, forgotten
+        forgotten = saved_list(saved_path)
+        assert "start" not in entry_at(forgotten, remote_url + "/") and starts_held(forgotten) == [], forgotten
         assert starts() == before_starts and not observe()["cores"]
         step("remote-stand-in-not-here", label=not_here["startLabel"], hint=not_here["startHint"], error=not_here["error"])
         # 10. With no Core left, the start that kept WSL running ends within

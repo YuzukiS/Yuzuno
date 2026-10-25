@@ -85,6 +85,20 @@ This is the build that ships: `desktop.ps1 -Release -BuildOnly` under the lab id
 - **`r6`** found no `web/node_modules` in a new worktree, so nothing ran.
 - **`r7`** passed steps 1–7, then counted the earlier start's `wsl.exe` as the new one's. It killed the window before that window had begun its start, so nothing started and nothing was stopped, as in `r1`. The lab now waits for a `wsl.exe` whose parent is that window.
 
+## The saved Workspaces list (2026-10-25 UTC)
+
+Since T-195 (#280, #310) the lab identity's `core.json` is a list of named Workspaces. At most one entry holds this computer's WSL start profile, and only for its own address. The lab now reads that list:
+- **Step 2** checks the lab Core's entry: it is selected, has the Workspace, and holds a start profile for its own address, not yet confirmed. No other entry holds one.
+- **Steps 3 and 5** check that this entry's start is confirmed: after the start, and after the window is reopened.
+- **Step 10** changes this entry's start in the file to point at a missing distribution, then a missing installation.
+- **Step 10's stand-in:** opening it gives the stand-in's entry the start, so the lab Core's entry loses its own. After the refusal, no entry holds a start.
+
+**Run `r10`** passed every step, with step 11 included. It ran the release build under the lab identity, built from `desktop/` tree `f8fc4f4` (main `24231a5`, and unchanged at `003cf00`). The executable is 16,861,184 bytes, SHA-256 `0360f425cadfaee92ca1291463f999624494ece110c11581a1b29ee3ea1d66e5`. The Core fixture was a release build of the same tree.
+- **The start** took 2.4 s from the click to the opened Workspace, and the profile was then confirmed.
+- **Two starts at once:** one Core, and *Core is already being started.*
+- **Refusals:** a held port, a missing distribution, a missing installation and the stand-in each gave the same messages as `r8`.
+- **Step 11:** the start that stayed ended 100.9 s after the last Core.
+
 ## Not covered
 
 - **WSL not running before the click.** The distribution was running: stopping it would stop the daily Core and its Agents. `wsl.exe` starts a stopped distribution itself; that path, and how long it takes, is unchecked. For the same reason, whether WSL would end the distribution without the start that stays was not observed: other `wsl.exe` clients were attached throughout.
