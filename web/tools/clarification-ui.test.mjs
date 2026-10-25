@@ -417,3 +417,38 @@ test("the form's own words follow a language change; the answers stay and nothin
     page.close();
   }
 });
+
+test("answers carried to a Workspace that can't be saved say so in the interface language, and follow a change (T-189)", async () => {
+  const page = mount();
+  const speak = (language) => {
+    page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+    page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+  };
+  const setItem = page.window.Storage.prototype.setItem;
+  try {
+    speak("zh-Hans");
+    page.render({ draftIdentity: null, onSubmit: async () => {} });
+    await tick();
+    const input = page.document.querySelector("textarea");
+    Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(input, "typed before the Workspace was known");
+    input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    await tick();
+    // The browser refuses to save when the Workspace becomes known.
+    page.window.Storage.prototype.setItem = function () {
+      throw new page.window.DOMException("The quota has been exceeded.", "QuotaExceededError");
+    };
+    page.render({ onSubmit: async () => {} });
+    await tick();
+    const note = () => page.document.querySelector(".clarification-error")?.textContent;
+    assert.equal(note(), "这份草稿只在此窗口中。在答案发送之前，请保持它打开。");
+    assert.equal(page.document.querySelector("textarea").value, "typed before the Workspace was known", "what was typed stays");
+    page.window.Storage.prototype.setItem = setItem;
+    speak("en");
+    await tick();
+    assert.equal(note(), "This draft is only in this window. Keep it open until your answers are sent.");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.window.Storage.prototype.setItem = setItem;
+    page.close();
+  }
+});

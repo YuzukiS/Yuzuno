@@ -149,11 +149,7 @@ function Form({
       }
       setStorageError("");
     } catch (error) {
-      setStorageError(
-        carry
-          ? "This draft is only in this window. Keep it open until your answers are sent."
-          : String(error),
-      );
+      setStorageError(carry ? ONLY_HERE : String(error));
     }
   }, [key, form, values]);
   const status = delivery?.status;
