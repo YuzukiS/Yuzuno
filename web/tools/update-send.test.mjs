@@ -243,11 +243,13 @@ test("a record saved after coming back to a Workspace survives the send that was
   // records can be added after a move away and back. Settling the first send
   // must not write the records as they were before the return.
   const f = await fixture(t, { workspace: "ws-here", outbox: {} });
-  let answerA;
+  // One resolver per request: a second send must not take the first's, or
+  // answering "the first" would answer the wrong one.
+  const answers = [];
   globalThis.fetch = async (url, init) => {
     f.calls.push({ url, body: JSON.parse(init.body) });
     return new Promise((resolve) => {
-      answerA = (receipt) => resolve({ ok: true, json: async () => receipt });
+      answers.push((receipt) => resolve({ ok: true, json: async () => receipt }));
     });
   };
   let sendingA;
@@ -271,7 +273,7 @@ test("a record saved after coming back to a Workspace survives the send that was
   );
   // a's send finishes now.
   await act(async () => {
-    answerA({ input: inputA, status: "accepted", turnId: "t1", error: null });
+    answers[0]({ input: inputA, status: "accepted", turnId: "t1", error: null });
     await sendingA;
   });
   assert.deepEqual(
@@ -284,7 +286,12 @@ test("a record saved after coming back to a Workspace survives the send that was
     { "b:composer": inputB },
     "and what the window holds says the same",
   );
-  void sendingB;
+  // Let b's send finish too, so the test leaves nothing in flight.
+  await act(async () => {
+    answers[1]({ input: inputB, status: "accepted", turnId: "t2", error: null });
+    await sendingB;
+  });
+  assert.deepEqual(outboxFile(), {}, "both settled, nothing left on disk");
 });
 
 test("sending one Workspace's Agent leaves the same Agent id in another free to send", async (t) => {
