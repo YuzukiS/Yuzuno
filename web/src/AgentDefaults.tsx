@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { errorText } from "./api";
+import { api, errorText } from "./api";
+import type { Model } from "./types";
 import {
   CLAUDE_MODES,
   CODEX_PRESETS,
@@ -9,6 +10,7 @@ import {
   changeAgentDefaults,
   changeProjectAgentDefaults,
   claudeModeText,
+  codexModelText,
   codexPermissionText,
   harnessName,
   readAgentDefaults,
@@ -17,13 +19,16 @@ import {
 
 /** One choice in the editor: "" is no choice here (built in for the
  * Workspace; inherited for a project). */
-type Draft = { harness: string; codexPermissionPreset: string; claudePermissionMode: string };
+type Draft = { harness: string; codexPermissionPreset: string; claudePermissionMode: string; codexModel: string; codexReasoningEffort: string };
 const draftFrom = (saved: SavedDefaults): Draft => ({
   harness: saved.harness ?? "",
   codexPermissionPreset: saved.codexPermissionPreset ?? "",
   claudePermissionMode: saved.claudePermissionMode ?? "",
+  codexModel: saved.codexModel ?? "",
+  codexReasoningEffort: saved.codexReasoningEffort ?? "",
 });
-const FIELDS = ["harness", "codexPermissionPreset", "claudePermissionMode"] as const;
+const FIELDS = ["harness", "codexPermissionPreset", "claudePermissionMode", "codexModel", "codexReasoningEffort"] as const;
+const modelName = (m: Model) => m.model || m.id;
 
 /**
  * New Agent defaults (T-190): the Workspace's own choice of harness and of
@@ -42,6 +47,9 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
+  // The Core host's Codex catalog, for a default model and effort (T-190).
+  const [models, setModels] = useState<Model[] | null>(null);
+  const [catalogError, setCatalogError] = useState("");
   const own = (from: AgentDefaultsView) => (projectId ? from.project?.saved ?? {} : from.saved);
   const draftOf = (from: AgentDefaultsView) => draftFrom(own(from));
   const adopt = (next: AgentDefaultsView) => {
@@ -62,6 +70,21 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, projectId]);
+  // Only from a Core that has model defaults: an older one doesn't report them.
+  const modelDefaults = !!view?.effective.codexModel;
+  useEffect(() => {
+    if (!active || !modelDefaults) return;
+    const controller = new AbortController();
+    setCatalogError("");
+    void api<{ models: Model[] }>("/models", { signal: controller.signal })
+      .then((result) => {
+        if (!controller.signal.aborted) setModels(result.models || []);
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted) setCatalogError(errorText(e));
+      });
+    return () => controller.abort();
+  }, [active, modelDefaults]);
   const savedDraft = view ? draftOf(view) : null;
   const changes: AgentDefaultsChange = {};
   if (draft && savedDraft) {
@@ -70,6 +93,9 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
     }
   }
   const changed = Object.keys(changes).length > 0;
+  const chosenModel = draft?.codexModel ? models?.find((m) => modelName(m) === draft.codexModel) : undefined;
+  // A saved model the Core host no longer offers: shown, and said.
+  const stale = !!draft?.codexModel && models !== null && !chosenModel;
   const anySaved = !!savedDraft && FIELDS.some((field) => savedDraft[field]);
   async function save(change: AgentDefaultsChange) {
     if (saving) return;
@@ -98,7 +124,17 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
   const locked = saving || disabled;
   const set = (field: keyof Draft) => (event: React.ChangeEvent<HTMLSelectElement>) => {
     setStatus("");
-    setDraft((old) => (old ? { ...old, [field]: event.target.value } : old));
+    const value = event.target.value;
+    setDraft((old) => {
+      if (!old) return old;
+      const next = { ...old, [field]: value };
+      // An effort belongs to its model: one the new model doesn't offer goes.
+      if (field === "codexModel") {
+        const offered = models?.find((m) => modelName(m) === value)?.supportedReasoningEfforts?.some((e) => e.reasoningEffort === old.codexReasoningEffort);
+        if (!offered) next.codexReasoningEffort = "";
+      }
+      return next;
+    });
   };
   return (
     <section
@@ -205,15 +241,86 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
               ))}
             </select>
           </label>
-          <div className="settings-row">
-            <span className="settings-row-main">
-              <span className="settings-row-title">Model and reasoning</span>
-              <span className="settings-row-help">
-                Chosen for each Agent when it is created. Model lists differ per machine, so there is no Workspace
-                default for them yet.
+          {effective.codexModel ? (
+            <>
+              <label className="settings-row">
+                <span className="settings-row-main">
+                  <span className="settings-row-title">Codex model on the Core host</span>
+                  <span className="settings-row-help agent-default-source" data-source={effective.codexModel.source}>
+                    {sourceText(effective.codexModel.source)}: {codexModelText(effective.codexModel.value)}
+                    {effective.codexReasoningEffort?.value ? `, reasoning effort ${effective.codexReasoningEffort.value}` : ""}.
+                  </span>
+                  <span className="settings-row-help">
+                    {view.modelAppliesTo ??
+                      "Codex Agents created on the Core host. SSH machines, Claude Code and OpenCode keep their own model and effort."}
+                  </span>
+                  {catalogError && (
+                    <span className="settings-row-help updates-error" role="alert">
+                      Couldn’t read this Core host’s Codex models: {catalogError}. A model can’t be chosen now.
+                    </span>
+                  )}
+                  {stale && (
+                    <span className="settings-row-help updates-error" role="alert">
+                      {draft.codexModel} is no longer offered by this Core host’s Codex, so new Agents can’t use it.
+                      Choose another, or {projectId ? "inherit" : "Built in"}.
+                    </span>
+                  )}
+                </span>
+                <select
+                  className="settings-select"
+                  aria-label="Codex model for new Agents"
+                  value={draft.codexModel}
+                  disabled={locked}
+                  onChange={set("codexModel")}
+                >
+                  <option value="">
+                    {none(codexModelText(inherited ? inherited.codexModel?.value : null), inherited?.codexModel?.source)}
+                  </option>
+                  {stale && <option value={draft.codexModel}>{draft.codexModel} (no longer offered)</option>}
+                  {catalogError && draft.codexModel && !models && <option value={draft.codexModel}>{draft.codexModel}</option>}
+                  {(models ?? []).map((m) => (
+                    <option key={modelName(m)} value={modelName(m)}>
+                      {m.displayName || modelName(m)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="settings-row">
+                <span className="settings-row-main">
+                  <span className="settings-row-title">Codex reasoning effort</span>
+                  <span className="settings-row-help">
+                    One the chosen model offers; with none chosen, the model’s own. Choose a model first.
+                  </span>
+                </span>
+                <select
+                  className="settings-select"
+                  aria-label="Codex reasoning effort for new Agents"
+                  value={draft.codexReasoningEffort}
+                  disabled={locked || !chosenModel}
+                  onChange={set("codexReasoningEffort")}
+                >
+                  <option value="">
+                    Model’s own{chosenModel?.defaultReasoningEffort ? ` · ${chosenModel.defaultReasoningEffort}` : ""}
+                  </option>
+                  {(chosenModel?.supportedReasoningEfforts ?? []).map((e) => (
+                    <option key={e.reasoningEffort} value={e.reasoningEffort}>
+                      {e.reasoningEffort}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </>
+          ) : (
+            <div className="settings-row">
+              <span className="settings-row-main">
+                <span className="settings-row-title">Model and reasoning</span>
+                <span className="settings-row-help">
+                  Chosen for each Agent when it is created. Model lists differ per machine, so there is no Workspace
+                  default for them yet.
+                </span>
               </span>
-            </span>
-          </div>
+            </div>
+          )}
           {(changed || saving || anySaved) && (
             <div className="settings-row settings-row-end">
               <div className="settings-row-action">
@@ -222,7 +329,15 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
                     type="button"
                     className="secondary-button"
                     disabled={locked}
-                    onClick={() => void save({ harness: null, codexPermissionPreset: null, claudePermissionMode: null })}
+                    onClick={() =>
+                      void save({
+                        harness: null,
+                        codexPermissionPreset: null,
+                        claudePermissionMode: null,
+                        // Only to a Core that has them: an older one refuses fields it doesn't know.
+                        ...(modelDefaults ? { codexModel: null, codexReasoningEffort: null } : {}),
+                      })
+                    }
                   >
                     {projectId ? "Inherit all" : "Use built-in for all"}
                   </button>

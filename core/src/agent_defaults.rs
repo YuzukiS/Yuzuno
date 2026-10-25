@@ -11,8 +11,16 @@
 //! override; the project then inherits again. It is kept beside the
 //! Workspace's (`workspace_meta`), not in the project's record, which older
 //! Cores rewrite without the fields they don't know.
+//!
+//! Codex on the Core host also takes a default model and reasoning effort,
+//! from that host's catalog (`model/list`): the same chain, as one pair, so
+//! an effort is always one its model offers. Nowhere else: SSH machines have
+//! no catalog here, and Claude Code and OpenCode keep their own path. A
+//! create request that leaves the model out inherits it; `null` asks for
+//! Codex's own default and so overrides what would be inherited; an empty
+//! string, as older clients send, is not taken as a choice.
 use crate::{model::AgentSettings, server::ApiError, store::Store, workspace::Workspace};
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Context, Result};
 use axum::{extract::{Path, Query, State}, routing::{get, post}, Json, Router};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -44,10 +52,22 @@ pub struct AgentDefaults {
     pub codex_permission_preset: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_permission_mode: Option<String>,
+    /// Codex on the Core host only: a model of its catalog; unset is Codex's
+    /// own default there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_model: Option<String>,
+    /// One of that model's reasoning efforts; unset is the model's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_reasoning_effort: Option<String>,
 }
 
 impl AgentDefaults {
     fn validate(&self) -> Result<()> {
+        for name in [&self.codex_model, &self.codex_reasoning_effort].into_iter().flatten() {
+            ensure!(!name.trim().is_empty() && name.len() <= 200 && !name.chars().any(char::is_control),
+                "A model or reasoning effort is a name from the Codex catalog");
+        }
+        ensure!(self.codex_reasoning_effort.is_none() || self.codex_model.is_some(), "Choose the Codex model the reasoning effort is for");
         if let Some(harness) = self.harness.as_deref().filter(|h| !HARNESSES.contains(h)) {
             bail!("A new Agent's harness can be Codex or Claude Code, not {harness}");
         }
@@ -71,10 +91,120 @@ struct Change {
     codex_permission_preset: Option<Option<String>>,
     #[serde(default, deserialize_with = "present")]
     claude_permission_mode: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    codex_model: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    codex_reasoning_effort: Option<Option<String>>,
 }
 
-fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
+/// Left out (`None`), `null` (`Some(None)`) or a value.
+pub(crate) fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
     Option::<String>::deserialize(d).map(Some)
+}
+
+/// A create request's model (Codex on the Core host reads all three).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum ModelAsk {
+    /// Left out, or an empty string as older clients send: not a choice.
+    #[default]
+    Inherit,
+    /// `null`: Codex's own default, whatever a default for new Agents says.
+    Native,
+    Named(String),
+}
+
+impl ModelAsk {
+    /// As the request's model was read before: a name, or the harness's own default.
+    pub fn as_before(&self) -> String {
+        match self {
+            ModelAsk::Named(model) => model.clone(),
+            _ => String::new(),
+        }
+    }
+}
+
+pub fn model_ask<'de, D: Deserializer<'de>>(d: D) -> Result<ModelAsk, D::Error> {
+    Ok(match Option::<String>::deserialize(d)? {
+        None => ModelAsk::Native,
+        Some(model) if model.trim().is_empty() => ModelAsk::Inherit,
+        Some(model) => ModelAsk::Named(model.trim().to_owned()),
+    })
+}
+
+/// A model and effort as this Core host's Codex catalog (`{"models":[…]}`)
+/// offers them: the model's name there, or why not.
+pub fn check_in_catalog(catalog: &Value, model: &str, effort: Option<&str>) -> Result<String> {
+    let models = catalog["models"].as_array().context("The Codex model list is not one this Core reads")?;
+    let entry = models.iter().find(|m| m["model"].as_str() == Some(model) || m["id"].as_str() == Some(model))
+        .with_context(|| format!("{model} is not among this Core host's Codex models"))?;
+    if let Some(effort) = effort {
+        let offered = entry["supportedReasoningEfforts"].as_array().is_some_and(|all| all.iter().any(|e| e["reasoningEffort"] == effort));
+        ensure!(offered, "{model} doesn't offer the reasoning effort {effort}");
+    }
+    Ok(entry["model"].as_str().or_else(|| entry["id"].as_str()).unwrap_or(model).to_owned())
+}
+
+/// The model and effort a Codex Agent on the Core host gets, with where each
+/// came from, and what must be checked against the catalog first.
+#[derive(Debug, PartialEq)]
+pub struct ModelPlan {
+    /// "" is Codex's own default on the Core host.
+    pub model: String,
+    pub effort: Option<String>,
+    /// A default's model and effort, or the request's model when it asks for
+    /// an effort, with the source to name if the check fails.
+    pub check: Option<(String, Option<String>, &'static str)>,
+    pub sources: (&'static str, &'static str),
+}
+
+/// The request's own model first (`null` included), then the project's,
+/// then the Workspace's, then Codex's own default; an effort with the model
+/// it came with. `None` where this doesn't apply: the request's model is then
+/// used as before, and an effort is refused.
+pub fn resolve_model(
+    defaults: &AgentDefaults,
+    project: Option<&AgentDefaults>,
+    local_codex: bool,
+    asked: &ModelAsk,
+    effort: Option<Option<&str>>,
+) -> Result<Option<ModelPlan>> {
+    if !local_codex {
+        ensure!(effort.is_none(), "A reasoning effort can be chosen at creation only for Codex on the Core host");
+        return Ok(None);
+    }
+    let asked_effort = effort.flatten().map(str::to_owned);
+    let effort_source = |value: &Option<String>, layer: &'static str| if effort.is_some() { "request" } else if value.is_some() { layer } else { "builtin" };
+    Ok(Some(match asked {
+        ModelAsk::Named(model) => ModelPlan {
+            model: model.clone(),
+            check: asked_effort.as_ref().map(|e| (model.clone(), Some(e.clone()), "request")),
+            sources: ("request", effort_source(&asked_effort, "request")),
+            effort: asked_effort,
+        },
+        ModelAsk::Native => {
+            ensure!(asked_effort.is_none(), "Codex's own default model takes its own reasoning effort; choose a model to choose an effort");
+            ModelPlan { model: String::new(), effort: None, check: None, sources: ("request", effort_source(&None, "request")) }
+        }
+        ModelAsk::Inherit => {
+            ensure!(asked_effort.is_none(), "Choose the Codex model the reasoning effort is for");
+            let none = AgentDefaults::default();
+            let project = project.unwrap_or(&none);
+            match [(project, "project"), (defaults, "workspace")].into_iter().find(|(layer, _)| layer.codex_model.is_some()) {
+                Some((layer, source)) => {
+                    let model = layer.codex_model.clone().unwrap_or_default();
+                    // `null` asks for the model's own effort instead of the default's.
+                    let effort_value = if effort.is_some() { None } else { layer.codex_reasoning_effort.clone() };
+                    ModelPlan {
+                        check: Some((model.clone(), effort_value.clone(), source)),
+                        sources: (source, effort_source(&effort_value, source)),
+                        model,
+                        effort: effort_value,
+                    }
+                }
+                None => ModelPlan { model: String::new(), effort: None, check: None, sources: ("builtin", effort_source(&None, "builtin")) },
+            }
+        }
+    }))
 }
 
 impl Change {
@@ -82,7 +212,18 @@ impl Change {
         if let Some(value) = self.harness { defaults.harness = value; }
         if let Some(value) = self.codex_permission_preset { defaults.codex_permission_preset = value; }
         if let Some(value) = self.claude_permission_mode { defaults.claude_permission_mode = value; }
+        if let Some(value) = self.codex_model {
+            // Back to Codex's own model: its effort goes too, unless named.
+            if value.is_none() && self.codex_reasoning_effort.is_none() { defaults.codex_reasoning_effort = None; }
+            defaults.codex_model = value;
+        }
+        if let Some(value) = self.codex_reasoning_effort { defaults.codex_reasoning_effort = value; }
         defaults
+    }
+
+    /// A change that names a model or effort, which the catalog must confirm.
+    fn names_a_model(&self) -> bool {
+        matches!(self.codex_model, Some(Some(_))) || matches!(self.codex_reasoning_effort, Some(Some(_)))
     }
 }
 
@@ -204,10 +345,20 @@ fn effective(saved: &AgentDefaults, project: &AgentDefaults) -> Value {
         let (value, source) = layered(None, project.as_deref(), saved.as_deref());
         json!({"value": value.or(built_in), "source": source})
     };
+    // The model and its effort come from one layer, together.
+    let (model, effort) = match [(project, "project"), (saved, "workspace")].into_iter().find(|(layer, _)| layer.codex_model.is_some()) {
+        Some((layer, source)) => (
+            json!({"value": layer.codex_model, "source": source}),
+            json!({"value": layer.codex_reasoning_effort, "source": if layer.codex_reasoning_effort.is_some() { source } else { "builtin" }}),
+        ),
+        None => (json!({"value": null, "source": "builtin"}), json!({"value": null, "source": "builtin"})),
+    };
     json!({
         "harness": field(&project.harness, &saved.harness, Some(BUILT_IN_HARNESS)),
         "codexPermissionPreset": field(&project.codex_permission_preset, &saved.codex_permission_preset, None),
         "claudePermissionMode": field(&project.claude_permission_mode, &saved.claude_permission_mode, Some(BUILT_IN_CLAUDE_MODE)),
+        "codexModel": model,
+        "codexReasoningEffort": effort,
     })
 }
 
@@ -219,9 +370,10 @@ fn view(saved: &AgentDefaults, project: Option<(&str, &AgentDefaults)>) -> Value
     let none = AgentDefaults::default();
     let mut view = json!({
         "saved": saved,
-        "builtIn": {"harness":BUILT_IN_HARNESS,"codexPermissionPreset":null,"claudePermissionMode":BUILT_IN_CLAUDE_MODE},
+        "builtIn": {"harness":BUILT_IN_HARNESS,"codexPermissionPreset":null,"claudePermissionMode":BUILT_IN_CLAUDE_MODE,"codexModel":null,"codexReasoningEffort":null},
         "effective": effective(saved, project.map_or(&none, |(_, own)| own)),
         "appliesTo": "Agents created from now on; existing Agents keep their own settings.",
+        "modelAppliesTo": "Codex Agents created on the Core host. SSH machines, Claude Code and OpenCode keep their own model and effort.",
     });
     if let Some((id, own)) = project {
         view["project"] = json!({"id": id, "saved": own, "inherited": effective(saved, &none)});
@@ -251,12 +403,26 @@ async fn get_defaults(State(ws): State<Arc<Workspace>>, Query(query): Query<ForP
     Ok(Json(answer))
 }
 
+/// A change applied to `current` and validated; a model or effort it names
+/// confirmed by this Core host's Codex catalog, as the catalog names it.
+async fn checked(ws: &Arc<Workspace>, current: AgentDefaults, change: Change) -> Result<AgentDefaults> {
+    let names_a_model = change.names_a_model();
+    let mut next = change.apply(current);
+    next.validate()?;
+    if let (true, Some(model)) = (names_a_model, next.codex_model.clone()) {
+        let catalog = ws.catalog().await.map_err(|e| anyhow::anyhow!("Can't read this Core host's Codex models: {e:#}; nothing was saved"))?;
+        let named = check_in_catalog(&catalog, &model, next.codex_reasoning_effort.as_deref()).map_err(|e| anyhow::anyhow!("{e:#}; nothing was saved"))?;
+        next.codex_model = Some(named);
+    }
+    Ok(next)
+}
+
 async fn set_defaults(State(ws): State<Arc<Workspace>>, Json(change): Json<Value>) -> Result<Json<Value>, ApiError> {
     let _permit = ws.admission.enter_work()?;
     let change: Change = serde_json::from_value(change).map_err(|e| anyhow::anyhow!("Invalid defaults: {e}"))?;
+    let current = ws.stored(|s| s.agent_defaults()).await?;
+    let next = checked(&ws, current, change).await?;
     let saved = ws.stored(move |s| {
-        let next = change.apply(s.agent_defaults()?);
-        next.validate()?;
         s.save_agent_defaults(&next)?;
         Ok(next)
     }).await?;
@@ -269,11 +435,15 @@ async fn set_defaults(State(ws): State<Arc<Workspace>>, Json(change): Json<Value
 async fn set_project_defaults(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(change): Json<Value>) -> Result<Json<Value>, ApiError> {
     let _permit = ws.admission.enter_work()?;
     let change: Change = serde_json::from_value(change).map_err(|e| anyhow::anyhow!("Invalid defaults: {e}"))?;
+    let project = id.clone();
+    // As other changes to a project: an archived one is not changed (review 404bdbd3).
+    let current = ws.stored(move |s| {
+        s.ensure_project_assignable(&project)?;
+        s.project_agent_defaults(&project)
+    }).await?;
+    let next = checked(&ws, current, change).await?;
     let answer = ws.stored(move |s| {
-        // As other changes to a project: an archived one is not changed (review 404bdbd3).
         s.ensure_project_assignable(&id)?;
-        let next = change.apply(s.project_agent_defaults(&id)?);
-        next.validate()?;
         s.save_project_agent_defaults(&id, &next)?;
         Ok(view(&s.agent_defaults()?, Some((&id, &next))))
     }).await?;
@@ -403,5 +573,85 @@ mod tests {
         let rows: i64 = store.db.read().unwrap()
             .query_row("SELECT COUNT(*) FROM workspace_meta WHERE key LIKE 'agents.defaults.project:%'", [], |r| r.get(0)).unwrap();
         assert_eq!(rows, 0);
+    }
+
+    #[derive(Deserialize)]
+    struct Asked {
+        #[serde(default, deserialize_with = "model_ask")]
+        model: ModelAsk,
+    }
+
+    #[test]
+    fn a_requests_model_left_out_or_empty_inherits_and_null_is_codexs_own() {
+        let asked = |value: Value| serde_json::from_value::<Asked>(value).unwrap().model;
+        assert_eq!(asked(json!({})), ModelAsk::Inherit);
+        assert_eq!(asked(json!({"model":""})), ModelAsk::Inherit, "an empty string is not taken as a choice");
+        assert_eq!(asked(json!({"model":null})), ModelAsk::Native);
+        assert_eq!(asked(json!({"model":" m-big "})), ModelAsk::Named("m-big".into()));
+        assert_eq!((ModelAsk::Inherit.as_before(), ModelAsk::Named("m".into()).as_before()), (String::new(), "m".into()));
+    }
+
+    fn catalog() -> Value {
+        json!({"models":[
+            {"id":"m-small","model":"m-small","defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"}]},
+            {"id":"m-big","model":"m-big","supportedReasoningEfforts":[{"reasoningEffort":"high"}]},
+        ]})
+    }
+
+    #[test]
+    fn a_model_and_effort_must_be_ones_the_core_hosts_catalog_offers_together() {
+        assert_eq!(check_in_catalog(&catalog(), "m-small", Some("low")).unwrap(), "m-small");
+        assert_eq!(check_in_catalog(&catalog(), "m-big", None).unwrap(), "m-big");
+        assert!(check_in_catalog(&catalog(), "m-small", Some("high")).unwrap_err().to_string().contains("doesn't offer the reasoning effort high"));
+        assert!(check_in_catalog(&catalog(), "gone", None).unwrap_err().to_string().contains("not among this Core host's Codex models"));
+        assert!(check_in_catalog(&json!({}), "m-big", None).is_err(), "no list: nothing confirmed");
+        // Stored: an effort needs its model in the same place; null model clears its effort.
+        let saved = AgentDefaults { codex_model: Some("m-small".into()), codex_reasoning_effort: Some("low".into()), ..Default::default() };
+        assert!(change(json!({"codexModel":null,"codexReasoningEffort":"low"})).apply(saved.clone()).validate().is_err());
+        let cleared = change(json!({"codexModel":null})).apply(saved);
+        assert_eq!((cleared.codex_model, cleared.codex_reasoning_effort), (None, None));
+        assert!(change(json!({"codexModel":"m-big"})).names_a_model());
+        assert!(!change(json!({"codexModel":null,"harness":"codex"})).names_a_model());
+    }
+
+    #[test]
+    fn codex_on_the_core_host_takes_its_model_and_effort_from_the_request_then_project_then_workspace() {
+        let workspace = AgentDefaults { codex_model: Some("m-big".into()), codex_reasoning_effort: Some("high".into()), ..Default::default() };
+        let project = AgentDefaults { codex_model: Some("m-small".into()), ..Default::default() };
+        let plan = |project: Option<&AgentDefaults>, asked: ModelAsk, effort: Option<Option<&str>>| resolve_model(&workspace, project, true, &asked, effort);
+        // Nothing asked: the Workspace's pair, checked against the catalog first.
+        let inherited = plan(None, ModelAsk::Inherit, None).unwrap().unwrap();
+        assert_eq!((inherited.model.as_str(), inherited.effort.as_deref(), inherited.sources), ("m-big", Some("high"), ("workspace", "workspace")));
+        assert_eq!(inherited.check, Some(("m-big".into(), Some("high".into()), "workspace")));
+        // In the project: its model, with its own (none) effort, not the Workspace's.
+        let in_project = plan(Some(&project), ModelAsk::Inherit, None).unwrap().unwrap();
+        assert_eq!((in_project.model.as_str(), in_project.effort, in_project.sources), ("m-small", None, ("project", "builtin")));
+        // Codex's own default asked for: it overrides what would be inherited.
+        let native = plan(Some(&project), ModelAsk::Native, None).unwrap().unwrap();
+        assert_eq!((native.model.as_str(), native.effort, native.check, native.sources), ("", None, None, ("request", "builtin")));
+        // A model named: its own effort unless one is named, checked only then (older requests as before).
+        let named = plan(None, ModelAsk::Named("m-small".into()), None).unwrap().unwrap();
+        assert_eq!((named.effort, named.check, named.sources), (None, None, ("request", "builtin")));
+        let with_effort = plan(None, ModelAsk::Named("m-small".into()), Some(Some("low"))).unwrap().unwrap();
+        assert_eq!(with_effort.check, Some(("m-small".into(), Some("low".into()), "request")));
+        // An effort without the model it is for, or for Codex's own model: refused.
+        assert!(plan(None, ModelAsk::Inherit, Some(Some("low"))).is_err());
+        assert!(plan(None, ModelAsk::Native, Some(Some("low"))).is_err());
+        // No default anywhere: Codex's own, exactly as before.
+        let none = resolve_model(&AgentDefaults::default(), None, true, &ModelAsk::Inherit, None).unwrap().unwrap();
+        assert_eq!((none.model.as_str(), none.effort, none.check, none.sources), ("", None, None, ("builtin", "builtin")));
+    }
+
+    #[test]
+    fn elsewhere_the_model_is_as_before_and_an_effort_is_refused() {
+        let workspace = AgentDefaults { codex_model: Some("m-big".into()), ..Default::default() };
+        // SSH machine, Claude Code or OpenCode: no model default applies.
+        assert_eq!(resolve_model(&workspace, None, false, &ModelAsk::Inherit, None).unwrap(), None);
+        assert_eq!(resolve_model(&workspace, None, false, &ModelAsk::Named("x".into()), None).unwrap(), None);
+        assert!(resolve_model(&workspace, None, false, &ModelAsk::Named("x".into()), Some(Some("high"))).is_err());
+        let shown = view(&workspace, None);
+        assert_eq!(shown["effective"]["codexModel"], json!({"value":"m-big","source":"workspace"}));
+        assert_eq!(shown["effective"]["codexReasoningEffort"], json!({"value":null,"source":"builtin"}));
+        assert!(shown["modelAppliesTo"].as_str().unwrap().contains("SSH machines, Claude Code and OpenCode keep their own"));
     }
 }

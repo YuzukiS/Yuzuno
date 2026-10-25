@@ -63,7 +63,7 @@ const claudeModels = [
   { id: "haiku", model: "haiku", displayName: "Haiku", supportsAutoMode: false },
 ];
 
-function mount(defaults) {
+function mount(defaults, { codexModels = [{ id: "gpt", model: "gpt", displayName: "GPT" }] } = {}) {
   const calls = [];
   const errors = [];
   const virtualConsole = new VirtualConsole();
@@ -83,7 +83,7 @@ function mount(defaults) {
     }
     if (url.endsWith("/machines")) return answer(200, { machines: [local] });
     if (url.endsWith("/models?harness=claude")) return answer(200, { models: claudeModels });
-    if (url.endsWith("/models")) return answer(200, { models: [{ id: "gpt", model: "gpt", displayName: "GPT" }] });
+    if (url.endsWith("/models")) return answer(200, { models: codexModels });
     if (url.endsWith("/agents") && init.method === "POST") return answer(200, { id: "new", ...body });
     return answer(200, {});
   };
@@ -258,4 +258,53 @@ test("a project's overrides come in when it is chosen: the harness follows unles
   assert.equal(chosen.harness, "codex");
   assert.equal("permissionPreset" in chosen || "permissionMode" in chosen, false);
   assert.deepEqual(again.errors, []);
+});
+
+test("Codex on the Core host: the default model shows with its source; Codex's own default and an effort are this Agent's own choices", async () => {
+  const codexModels = [
+    { id: "m-small", model: "m-small", displayName: "Small", defaultReasoningEffort: "medium", supportedReasoningEfforts: [{ reasoningEffort: "low", description: "" }, { reasoningEffort: "medium", description: "" }] },
+    { id: "m-big", model: "m-big", displayName: "Big", supportedReasoningEfforts: [{ reasoningEffort: "high", description: "" }] },
+  ];
+  const base = view({});
+  const defaults = {
+    ...base,
+    effective: { ...base.effective, codexModel: { value: "m-big", source: "workspace" }, codexReasoningEffort: { value: "high", source: "workspace" } },
+  };
+  const labels = (page, label) => [...group(page, label).querySelectorAll("label")].map((l) => l.textContent.replace(/\s+/g, " ").trim());
+  // Nothing chosen: the default is Core's to apply; nothing about the model is sent.
+  const inherit = mount(defaults, { codexModels });
+  await inherit.open();
+  await until(() => group(inherit, "Model")?.querySelectorAll("input").length === 4, "the model choices");
+  assert.match(labels(inherit, "Model")[0], /^Default · m-big.*Set for this Workspace/);
+  assert.equal(labels(inherit, "Model")[1], "Codex’s own default");
+  assert.match(inherit.document.body.textContent, /Reasoning effort with it: high/);
+  assert.equal(group(inherit, "Reasoning effort"), null, "an effort is chosen with a model");
+  await type(inherit, "Name", "Inherit");
+  const inherited = await submit(inherit);
+  assert.equal("model" in inherited || "reasoningEffort" in inherited, false);
+  // Codex's own default, chosen: sent as null, so it overrides the default.
+  const own = mount(defaults, { codexModels });
+  await own.open();
+  await until(() => group(own, "Model")?.querySelectorAll("input").length === 4, "the model choices");
+  await pick(own, "Model", "(Codex’s own default)");
+  await type(own, "Name", "Own");
+  const ownBody = await submit(own);
+  assert.equal(ownBody.model, null);
+  assert.equal("reasoningEffort" in ownBody, false);
+  // A model named: its efforts to choose from, sent with it.
+  const named = mount(defaults, { codexModels });
+  await named.open();
+  await until(() => group(named, "Model")?.querySelectorAll("input").length === 4, "the model choices");
+  await pick(named, "Model", "m-small");
+  await until(() => group(named, "Reasoning effort"), "the model's efforts");
+  assert.deepEqual(labels(named, "Reasoning effort"), ["Model’s own · medium", "low", "medium"]);
+  await pick(named, "Reasoning effort", "low");
+  await type(named, "Name", "Named");
+  const namedBody = await submit(named);
+  assert.deepEqual([namedBody.model, namedBody.reasoningEffort], ["m-small", "low"]);
+  // Claude Code keeps its own path: no Codex default, no effort chosen here.
+  await pick(named, "Harness", "claude");
+  await until(() => labels(named, "Model")[0] === "Harness default", "Claude's models");
+  assert.equal(group(named, "Reasoning effort"), null);
+  for (const page of [inherit, own, named]) assert.deepEqual(page.errors, []);
 });

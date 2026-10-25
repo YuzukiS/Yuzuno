@@ -152,3 +152,98 @@ async fn a_projects_overrides_reach_only_new_agents_in_it_and_null_inherits_agai
     assert_eq!(still["project"]["saved"], json!({"harness":"codex"}), "unchanged: {still}");
     assert_eq!(ws.store.agents().unwrap().len(), 4, "refused requests created nothing");
 }
+
+/// A stub Codex app-server: its model list is read from `models.json` beside
+/// it on each request, so a test can change what the Core host offers.
+fn stub_codex(dir: &std::path::Path, models: &Value) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(dir.join("models.json"), models.to_string()).unwrap();
+    let script = dir.join("codex.py");
+    std::fs::write(&script, r#"#!/usr/bin/python3
+import json, os, sys
+root = os.path.dirname(os.path.abspath(__file__))
+for line in sys.stdin:
+    r = json.loads(line)
+    if 'id' not in r: continue
+    m = r.get('method')
+    result = {}
+    if m == 'model/list':
+        with open(os.path.join(root, 'models.json')) as f: result = {'data': json.load(f), 'nextCursor': None}
+    elif m in ['thread/start', 'thread/resume', 'thread/read']:
+        result = {'thread': {'id': 'thread', 'status': {'type': 'idle'}, 'turns': []}, 'model': 'm-big'}
+    elif m == 'config/read':
+        result = {'config': {}}
+    print(json.dumps({'id': r['id'], 'result': result}), flush=True)
+"#).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    script.to_string_lossy().into_owned()
+}
+
+/// A default model and effort (T-190): Codex on the Core host only, from its
+/// catalog, as one pair; a request that leaves the model out (or sends "")
+/// inherits it, `null` asks for Codex's own default; a default the catalog no
+/// longer offers is said, not used. Elsewhere an effort is refused.
+#[tokio::test]
+async fn codex_on_the_core_host_takes_a_default_model_and_effort_its_catalog_offers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().to_string_lossy().into_owned();
+    let small = json!({"id":"m-small","model":"m-small","defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"}]});
+    let big = json!({"id":"m-big","model":"m-big","supportedReasoningEfforts":[{"reasoningEffort":"high"}]});
+    let codex = stub_codex(tmp.path(), &json!([small, big]));
+    let ws = Workspace::new(tmp.path().join("data"), cwd.clone(), codex).unwrap();
+    let router = server::router_on_port(ws.clone(), tmp.path().join("assets"), 4317);
+    let created = |agent: &Value| (agent["model"].clone(), agent["settings"]["reasoningEffort"].clone(), agent["defaultSources"]["model"].clone(), agent["defaultSources"]["effort"].clone());
+
+    // No default: as before.
+    let (status, plain) = call(&router, "POST", "/api/agents", Some(json!({"name":"Plain","cwd":cwd}))).await;
+    assert_eq!(status, StatusCode::OK, "{plain}");
+    assert_eq!(created(&plain), (json!(""), Value::Null, json!("builtin"), json!("builtin")));
+
+    // Only what the catalog offers is saved, as a pair.
+    let (status, refused) = call(&router, "POST", "/api/agent-defaults", Some(json!({"codexModel":"gone"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(refused["error"].as_str().unwrap().contains("not among this Core host's Codex models") && refused["error"].as_str().unwrap().ends_with("nothing was saved"), "{refused}");
+    let (status, _) = call(&router, "POST", "/api/agent-defaults", Some(json!({"codexModel":"m-small","codexReasoningEffort":"high"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "an effort its model doesn't offer");
+    let (status, saved) = call(&router, "POST", "/api/agent-defaults", Some(json!({"codexModel":"m-big","codexReasoningEffort":"high"}))).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!((saved["effective"]["codexModel"].clone(), saved["effective"]["codexReasoningEffort"].clone()),
+        (json!({"value":"m-big","source":"workspace"}), json!({"value":"high","source":"workspace"})));
+
+    let (_, inherit) = call(&router, "POST", "/api/agents", Some(json!({"name":"Inherit","cwd":cwd}))).await;
+    assert_eq!(created(&inherit), (json!("m-big"), json!("high"), json!("workspace"), json!("workspace")), "{inherit}");
+    let (_, older) = call(&router, "POST", "/api/agents", Some(json!({"name":"Older","cwd":cwd,"model":""}))).await;
+    assert_eq!(created(&older).0, json!("m-big"), "an empty model is not a choice: {older}");
+    let (_, native) = call(&router, "POST", "/api/agents", Some(json!({"name":"Native","cwd":cwd,"model":null}))).await;
+    assert_eq!(created(&native), (json!(""), Value::Null, json!("request"), json!("builtin")), "{native}");
+    let (_, own) = call(&router, "POST", "/api/agents", Some(json!({"name":"Own","cwd":cwd,"model":"m-small","reasoningEffort":"low"}))).await;
+    assert_eq!(created(&own), (json!("m-small"), json!("low"), json!("request"), json!("request")), "{own}");
+    for (body, why) in [
+        (json!({"name":"Wrong","cwd":cwd,"model":"m-small","reasoningEffort":"high"}), "doesn't offer the reasoning effort high"),
+        (json!({"name":"Wrong","cwd":cwd,"reasoningEffort":"high"}), "Choose the Codex model"),
+        (json!({"name":"Wrong","cwd":cwd,"harness":"claude","reasoningEffort":"high"}), "only for Codex on the Core host"),
+    ] {
+        let (status, refused) = call(&router, "POST", "/api/agents", Some(body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert!(refused["error"].as_str().unwrap().contains(why), "{refused}");
+    }
+
+    // A project's model comes with its own effort (none), not the Workspace's.
+    let (_, project) = call(&router, "POST", "/api/projects", Some(json!({"name":"Lab"}))).await;
+    let id = project["id"].as_str().unwrap().to_owned();
+    let (status, set) = call(&router, "POST", &format!("/api/projects/{id}/agent-defaults"), Some(json!({"codexModel":"m-small"}))).await;
+    assert_eq!(status, StatusCode::OK, "{set}");
+    let (_, in_project) = call(&router, "POST", "/api/agents", Some(json!({"name":"In project","cwd":cwd,"projectId":id}))).await;
+    assert_eq!(created(&in_project), (json!("m-small"), Value::Null, json!("project"), json!("builtin")), "{in_project}");
+
+    // The Core host stops offering the Workspace's model: the next Agent is refused, and says so.
+    std::fs::write(tmp.path().join("models.json"), json!([small]).to_string()).unwrap();
+    let (status, stale) = call(&router, "POST", "/api/agents", Some(json!({"name":"Stale","cwd":cwd}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{stale}");
+    let why = stale["error"].as_str().unwrap();
+    assert!(why.contains("default Codex model set for this Workspace can't be used now") && why.contains("Choose a model for this Agent"), "{stale}");
+    // Agents already created keep theirs.
+    let kept = ws.store.agent(inherit["id"].as_str().unwrap()).unwrap();
+    assert_eq!((kept.model.as_str(), kept.settings.reasoning_effort.as_deref()), ("m-big", Some("high")));
+    assert_eq!(ws.store.agents().unwrap().len(), 6, "refused requests created nothing");
+}
