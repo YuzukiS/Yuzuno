@@ -29,7 +29,8 @@
   gap: 10px;
 }
 .app-recovery-actions button,
-.diagnostics-section .settings-section-heading button {
+.diagnostics-section .settings-section-heading button,
+.diagnostics-actions button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -54,5 +55,10 @@
 }
 .diagnostics-section {
   display: grid;
+  gap: 10px;
+}
+.diagnostics-actions {
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
 }

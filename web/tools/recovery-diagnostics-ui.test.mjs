@@ -155,6 +155,14 @@ async function openSettingsEditor(p, title, selector) {
 }
 const openDiagnostics = (p) => openSettingsEditor(p, "Copy diagnostics", "#settings-diagnostics");
 const shownText = (p) => p.doc.querySelector('textarea[aria-label="Diagnostics"]')?.value;
+// Settings shows the text first (T-193): Preview copies nothing; Copy then takes that text.
+async function previewAndCopy(p) {
+  const section = p.doc.querySelector("#settings-diagnostics");
+  p.button("Preview diagnostics", section).click();
+  await waitFor(() => shownText(p), "the diagnostics are shown");
+  assert.equal(p.copied.length, 0, "previewing copies nothing");
+  p.button("Copy", section).click();
+}
 const allStorage = (w) => Object.fromEntries(Array.from({ length: w.localStorage.length }, (_, i) => [w.localStorage.key(i), w.localStorage.getItem(w.localStorage.key(i))]));
 
 test("a render error no part of the app handles shows the recovery page; trying again draws the app, and nothing stored is cleared", async () => {
@@ -223,7 +231,7 @@ test("no text an error carries is kept: messages, string rejections, and names, 
     }
     for (let i = 0; i < 30; i++) fail(new p.w.TypeError("Cannot read properties of undefined (reading 'x')"));
     await openDiagnostics(p);
-    p.button("Copy diagnostics", p.doc.querySelector("#settings-diagnostics")).click();
+    await previewAndCopy(p);
     await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
     const text = p.copied[0];
     assert.match(text, /^Recent errors on this device: 12 \(newest first, at most 12 kept\)$/m);
@@ -267,7 +275,7 @@ test("no text an error carries is kept: messages, string rejections, and names, 
     leaky.stack = "Error: leaky\n    at loadPrivate (/workspace/other-project/tool.js:1:2)\n    at D:\\work\\other\\x.js:3:4";
     for (let i = 0; i < 3; i++) fail(leaky);
     await openDiagnostics(q);
-    q.button("Copy diagnostics", q.doc.querySelector("#settings-diagnostics")).click();
+    await previewAndCopy(q);
     await waitFor(() => q.copied.length === 1, "the diagnostics are copied");
     const text = q.copied[0];
     const kept = q.w.localStorage.getItem("yuzuno.diagnostics.v1");
@@ -362,7 +370,7 @@ test("a record kept by an earlier version is shown by the same rules and stored 
   try {
     await waitFor(() => railShows(p, "Mori"), "the app is drawn");
     await openDiagnostics(p);
-    p.button("Copy diagnostics", p.doc.querySelector("#settings-diagnostics")).click();
+    await previewAndCopy(p);
     await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
     const text = p.copied[0];
     const kept = p.w.localStorage.getItem("yuzuno.diagnostics.v1");
@@ -386,7 +394,7 @@ test("Copy diagnostics adds Core's memory counters, read only for the text: numb
     await waitFor(() => railShows(p, "Mori"), "the app is drawn");
     assert.equal(p.calls.filter((c) => c.url.endsWith("/api/diagnostics/memory")).length, 0, "nothing reads it until the text is made");
     await openDiagnostics(p);
-    p.button("Copy diagnostics", p.doc.querySelector("#settings-diagnostics")).click();
+    await previewAndCopy(p);
     await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
     const text = p.copied[0];
     assert.match(text, /^Core: 2026\.10\.18-core\.11 /m, "Core's health is still read");
@@ -424,7 +432,7 @@ test("when Core's memory can't be read, the text says why and everything else is
   try {
     await waitFor(() => railShows(q, "Mori"), "the app is drawn");
     await openDiagnostics(q);
-    q.button("Copy diagnostics", q.doc.querySelector("#settings-diagnostics")).click();
+    await previewAndCopy(q);
     await waitFor(() => q.copied.length === 1, "the diagnostics are copied");
     const text = q.copied[0];
     assert.match(text, /^ {2}Process: not available on this Core$/m, "a platform without the counts says so, never 0");
@@ -459,7 +467,7 @@ test("the held Agents' stored history is read only when Measure is pressed: a ch
     assert.match(section.textContent, /stored bytes, not the memory Core uses/);
     assert.ok(!section.querySelector("table"), "nothing is shown before it is read");
     await openDiagnostics(p);
-    p.button("Copy diagnostics", p.doc.querySelector("#settings-diagnostics")).click();
+    await previewAndCopy(p);
     await waitFor(() => p.copied.length === 1, "the diagnostics are copied");
     assert.equal(historyCalls(p), 0, "the diagnostics text does not read it");
     assert.ok(!p.copied[0].includes("Stored history"), "nor include it");
@@ -522,5 +530,89 @@ test("when Core does not measure the stored history, the section says why and gi
     } finally {
       p.close();
     }
+  }
+});
+
+// Settings' diagnostics (T-193): the text is shown before anything leaves the
+// window. Copy and Download then take exactly that text.
+function watchSaves(p) {
+  const saves = { blobs: [], links: [], fail: null };
+  p.w.URL.createObjectURL = (blob) => {
+    if (saves.fail) throw new p.w.Error(saves.fail);
+    saves.blobs.push(blob);
+    return "blob:http://127.0.0.1:4317/fixture";
+  };
+  p.w.URL.revokeObjectURL = () => {};
+  p.w.HTMLAnchorElement.prototype.click = function () { saves.links.push({ href: this.getAttribute("href"), download: this.getAttribute("download") }); };
+  return saves;
+}
+const blobText = (p, blob) => new Promise((resolve) => {
+  const reader = new p.w.FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.readAsText(blob);
+});
+
+test("Settings shows the diagnostics first: Preview copies, saves and sends nothing; Copy and Download take exactly that text", async () => {
+  const p = await mount();
+  try {
+    await waitFor(() => railShows(p, "Mori"), "the app is drawn");
+    const saves = watchSaves(p);
+    const section = await openDiagnostics(p);
+    assert.equal(shownText(p), undefined, "nothing is gathered until asked");
+    const before = p.calls.length;
+    p.button("Preview diagnostics", section).click();
+    await waitFor(() => shownText(p), "the diagnostics are shown");
+    assert.match(section.textContent, /This is the whole text\. Nothing has been copied, saved or sent\./);
+    assert.deepEqual([p.copied.length, saves.blobs.length, saves.links.length], [0, 0, 0], "previewing copies and saves nothing");
+    assert.deepEqual(p.calls.slice(before).filter((c) => c.method && c.method !== "GET"), [], "and sends nothing");
+    const text = shownText(p);
+    assert.match(text, /^Recent errors on this device: /m);
+    p.button("Copy", section).click();
+    await waitFor(() => /Copied\. Nothing was sent anywhere/.test(section.textContent), "the copy is said");
+    assert.deepEqual(p.copied, [text], "exactly the shown text is copied");
+    assert.match(text, /^Gathered: \S+$/m, "the text says when it was gathered, not that it was copied");
+    p.button("Download .txt", section).click();
+    await waitFor(() => saves.links.length === 1, "a download is asked for");
+    assert.match(saves.links[0].download, /^yuzuno-diagnostics-[\dTZ-]+\.txt$/);
+    assert.equal(await blobText(p, saves.blobs[0]), text, "the file holds the shown text");
+    assert.match(section.textContent, /Your browser was asked to save yuzuno-diagnostics-[\dTZ-]+\.txt\. If no file appears, select the text below and copy it\./);
+    assert.equal(p.copied.length, 1, "downloading does not copy");
+    // While Preview again gathers (Core's health read held open), the shown text is about
+    // to change: Copy and Download wait.
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const answer = p.w.fetch;
+    p.w.fetch = async (url, init) => { if (String(url).endsWith("/api/health")) await held; return answer(url, init); };
+    p.button("Preview again", section).click();
+    await waitFor(() => p.button("Copy", section).disabled, "Copy waits while the text is gathered again");
+    assert.equal(p.button("Download .txt", section).disabled, true);
+    release();
+    await waitFor(() => !p.button("Copy", section).disabled, "the new text is shown");
+    assert.deepEqual([p.copied.length, saves.links.length], [1, 1], "nothing left while it gathered");
+  } finally {
+    p.close();
+  }
+});
+
+test("a refused clipboard says to select the text, and a download that cannot start says so; neither claims success", async () => {
+  const p = await mount({ clipboard: "denied" });
+  try {
+    await waitFor(() => railShows(p, "Mori"), "the app is drawn");
+    const saves = watchSaves(p);
+    const section = await openDiagnostics(p);
+    p.button("Preview diagnostics", section).click();
+    await waitFor(() => shownText(p), "the diagnostics are shown");
+    p.button("Copy", section).click();
+    await waitFor(() => /can't use the clipboard\. Select the text below and copy it\./.test(section.textContent), "the refusal is said");
+    assert.doesNotMatch(section.textContent, /Copied\./);
+    saves.fail = "Blob URLs are blocked here";
+    p.button("Download .txt", section).click();
+    await waitFor(() => section.querySelector('[role="alert"]'), "the failed download is said");
+    assert.match(section.querySelector('[role="alert"]').textContent, /^The download could not start \(Blob URLs are blocked here\)\. Select the text below and copy it\.$/);
+    assert.doesNotMatch(section.textContent, /asked to save/);
+    assert.equal(saves.links.length, 0);
+    assert.ok(shownText(p), "the text stays to select");
+  } finally {
+    p.close();
   }
 });
