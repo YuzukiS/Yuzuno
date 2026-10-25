@@ -819,9 +819,10 @@ function OperationView({ op, canStop }: { op: Operation; canStop: boolean }) {
           : op.state === "succeeded"
             ? `${kindName(op)} finished`
             : op.state === "stopped"
-              ? `${kindName(op)} stopped; nothing it was writing was kept`
+              ? // A removal writes nothing to keep: what it had removed is in its error below.
+                `${kindName(op)} stopped${op.kind === "remove" ? "" : "; nothing it was writing was kept"}`
               : op.state === "interrupted"
-                ? `${kindName(op)} interrupted when Core stopped; nothing it was writing was kept`
+                ? `${kindName(op)} interrupted when Core stopped${op.kind === "remove" ? "" : "; nothing it was writing was kept"}`
                 : `${kindName(op)} failed at “${steps[op.step] ?? op.step}”`}
       </p>
       {canStop && (

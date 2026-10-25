@@ -750,4 +750,22 @@ test("after a run, automatic removal is said apart from its backup, and its oper
   } finally {
     q.close();
   }
+  // Stopped part way: said as a stop, with what it had removed, never "nothing … was kept" (review e252fc4d).
+  const stoppedError = "Stopped; before it, 1 backup was removed (yuzuno-backup-20261020T0300Z); the rest are left as they are: Stopped on request";
+  let ended = false;
+  const r = mount((url) => {
+    if (url.endsWith("/api/workspace/backup")) return { body: view({ schedule: { ...DAILY, retention }, current: ended ? null : auto, recent: [] }) };
+    if (url.endsWith("/api/workspace/backup/operations/op10")) {
+      ended = true;
+      return { body: { ...auto, state: "stopped", step: "recheck", finishedAt: "2026-10-28T03:02:00Z", error: stoppedError } };
+    }
+    assert.fail(`unexpected ${url}`);
+  });
+  try {
+    await waitFor(() => r.text().includes("Automatic removal stopped"), "the stopped automatic removal");
+    assert.ok(r.text().includes(stoppedError), "what it had removed is said");
+    assert.doesNotMatch(r.text(), /nothing it was writing was kept/);
+  } finally {
+    r.close();
+  }
 });

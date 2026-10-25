@@ -1046,3 +1046,26 @@ async fn a_daily_backup_that_succeeds_runs_its_cleanup_once_through_the_removal_
     assert_eq!((op.kind.as_str(), op.request["automatic"].clone()), ("remove", json!(true)));
     planner.tick(&backups, at("2026-10-26T09:00:00Z"), |_, _| unreachable!(), |_, _, _| unreachable!("once per run")).unwrap();
 }
+
+#[test]
+fn a_stopped_automatic_pass_stays_stopped_and_says_what_it_had_removed() {
+    use retention::{prune, Rule, PASS_LIMIT};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let root = tempfile::tempdir().unwrap();
+    let (folder, me, _) = three_backups(root.path());
+    // Stop is asked for once b-1 has gone: at the second check before a removal.
+    let ctl = Arc::new(Control::named("auto5"));
+    let (weak, seen) = (Arc::downgrade(&ctl), AtomicUsize::new(0));
+    *ctl.at_step.lock().unwrap() = Some(Box::new(move |at| {
+        if at == "recheck" && seen.fetch_add(1, Ordering::SeqCst) == 1 {
+            if let Some(ctl) = weak.upgrade() {
+                ctl.stop();
+            }
+        }
+    }));
+    let error = prune(&folder, Rule { keep: 1, budget_bytes: None }, &me, Vec::new, &ctl, 500, PASS_LIMIT).unwrap_err();
+    assert!(error.chain().any(|e| e.is::<Stopped>()), "still a stop, so the operation is stopped: {error:#}");
+    let said = format!("{error:#}");
+    assert!(said.contains("before it, 1 backup was removed (b-1)") && said.contains("the rest are left as they are"), "{said}");
+    assert_eq!(backups_in(&folder), vec!["b-2", "b-3"]);
+}

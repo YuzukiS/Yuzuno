@@ -45,7 +45,7 @@
 //!
 //! Only on Core's own port: it lists folders on the computer that runs Core.
 use super::online::{self, Operation};
-use super::Control;
+use super::{Control, Stopped};
 use crate::{server::ApiError, workspace::Workspace};
 use anyhow::{bail, ensure, Result};
 use axum::{extract::State, response::Response, routing::post, Json, Router};
@@ -519,17 +519,13 @@ pub(crate) fn prune(folder: &Path, rule: Rule, workspace: &str, operations: impl
     answer["keptCheckedName"] = json!(checked.name);
     let (mut removed, mut skipped) = (Vec::new(), Vec::new());
     for target in &offered {
-        ctl.at("recheck")?;
+        ctl.at("recheck").map_err(|error| ended(error, &removed))?;
         let sha256 = target.manifest_sha256.as_deref().unwrap_or_default();
         let judged = judge(folder, rule, &target.name, sha256, workspace, &operations(), limit);
         let still_kept = |preview: &Preview| preview.entries.iter().any(|e| e.name == checked.name && e.verdict == "keep" && e.manifest_sha256 == checked.manifest_sha256);
         match judged {
             Ok((preview, target)) if still_kept(&preview) => {
-                if let Err(error) = move_aside_and_remove(folder, &target, ctl) {
-                    let error = if error.is::<NotMoved>() { format!("{:#}", error.root_cause()) } else { format!("{error:#}") };
-                    let done = if removed.is_empty() { "nothing was removed before it".to_string() } else { format!("before it, {}", names(&removed)) };
-                    bail!("{error}; {done}; the rest are left as they are");
-                }
+                move_aside_and_remove(folder, &target, ctl).map_err(|error| ended(error, &removed))?;
                 removed.push(json!({"name": target.name, "path": target.path, "backedUpAt": target.created_at, "freedEstimateBytes": target.estimate_bytes}));
             }
             Ok(_) => bail!("{} is no longer kept as it was when it was read back; {}; the rest are left as they are",
@@ -542,6 +538,18 @@ pub(crate) fn prune(folder: &Path, rule: Rule, workspace: &str, operations: impl
     answer["skipped"] = json!(skipped);
     answer["removedEstimateBytes"] = json!(declared);
     Ok(answer)
+}
+
+/// How a pass that ends early says so: what it had removed before, and that
+/// the rest are left. A stop stays a stop (the operation is `stopped`); a
+/// failure says what failed.
+fn ended(error: anyhow::Error, removed: &[Value]) -> anyhow::Error {
+    let done = if removed.is_empty() { "nothing was removed before it".to_string() } else { format!("before it, {}", names(removed)) };
+    if error.chain().any(|e| e.is::<Stopped>()) {
+        return if removed.is_empty() { error } else { error.context(format!("Stopped; {done}; the rest are left as they are")) };
+    }
+    let text = if error.is::<NotMoved>() { format!("{:#}", error.root_cause()) } else { format!("{error:#}") };
+    anyhow::anyhow!("{text}; {done}; the rest are left as they are")
 }
 
 /// "1 backup was removed (b-1)", "2 backups were removed (b-1, b-2)".
