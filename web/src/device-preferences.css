@@ -53,7 +53,8 @@
   min-width: 0;
 }
 .input-send-choice strong,
-.shortcut-group h4 {
+.shortcut-group h4,
+.shortcut-keys h4 {
   color: var(--ink);
   font-size: calc(11px + var(--font-adjust, 3px));
   font-weight: 550;
@@ -61,6 +62,7 @@
 .input-send-choice small,
 .input-preferences-fixed,
 .shortcut-note,
+.shortcut-refused,
 .shortcut-group dd {
   color: var(--text-secondary);
   font-size: calc(10px + var(--font-adjust, 3px));
@@ -90,7 +92,8 @@
 .shortcut-group dd {
   margin: 0;
 }
-.shortcut-group kbd {
+.shortcut-group kbd,
+.shortcut-keys kbd {
   display: inline-block;
   min-width: 1.6em;
   padding: 1px 6px;
@@ -119,4 +122,29 @@
   .shortcut-group dt {
     white-space: normal;
   }
+}
+
+/* The three this device may change (T-189 P2): settings rows, each a letter. */
+.shortcut-keys h4 {
+  margin: 0;
+  padding: 14px 16px 0;
+}
+.shortcut-keys > .shortcut-note {
+  margin: 6px 0 0;
+  padding: 0 16px 4px;
+}
+.shortcut-key-choice {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-quiet);
+}
+.shortcut-key-choice .settings-select {
+  width: auto;
+}
+.shortcut-refused {
+  margin: 0;
+  padding: 0 16px 14px;
+  color: var(--danger, #b55d53);
 }

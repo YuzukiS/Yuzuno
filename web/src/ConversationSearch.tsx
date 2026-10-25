@@ -8,6 +8,7 @@ import {
 } from "./conversation-search";
 import type { NativeTurn } from "./types";
 import { langTag, strings, useLanguage } from "./i18n";
+import { pressed, shortcutKeys, useShortcutKeys } from "./shortcut-keys";
 import "./conversation-search.css";
 
 // Kept as this English sentence and said in the language shown (T-189).
@@ -16,7 +17,7 @@ const GONE = "This message is no longer available in the loaded conversation.";
 const text = strings({
   gone: GONE,
   search: "Search conversation",
-  searchTitle: (key: string) => `Search this conversation (${key}+F)`,
+  searchTitle: (modifier: string, key: string) => `Search this conversation (${modifier}+${key})`,
   saved: "Core-saved messages, including unloaded history. Up to 50 results.",
   loaded: "Loaded messages only.",
   nativePages: " Native history is searched only in pages you have loaded.",
@@ -38,7 +39,7 @@ const text = strings({
 }, {
   gone: "已载入的会话中不再有这条消息。",
   search: "搜索会话",
-  searchTitle: (key) => `搜索此会话（${key}+F）`,
+  searchTitle: (modifier, key) => `搜索此会话（${modifier}+${key}）`,
   saved: "Core 保存的消息，包括未载入的历史。最多 50 条结果。",
   loaded: "仅限已载入的消息。",
   nativePages: "原生历史只在你已载入的页面中搜索。",
@@ -85,6 +86,7 @@ export function ConversationSearch({
   const [error, setError] = useState("");
   const language = useLanguage();
   const t = text(language);
+  const keys = useShortcutKeys();
   const inputId = useId();
   const input = useRef<HTMLInputElement>(null);
   const destination = useRef<ConversationMatch | null>(null);
@@ -136,8 +138,8 @@ export function ConversationSearch({
         disabled
       )
         return;
-      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "f")
-        return;
+      // This device's letter for it (shortcut-keys.ts), read as pressed.
+      if (!pressed(event, shortcutKeys().search)) return;
       // Leave shortcuts in file previews and other dialogs to their own context.
       if (!open && document.querySelector('[role="dialog"]')) return;
       event.preventDefault();
@@ -178,7 +180,7 @@ export function ConversationSearch({
         <button
           className="conversation-action conversation-search-trigger"
           aria-label={t.search}
-          title={t.searchTitle(shortcutModifier)}
+          title={t.searchTitle(shortcutModifier, keys.search)}
           aria-keyshortcuts="Control+F Meta+F"
           disabled={disabled}
         >

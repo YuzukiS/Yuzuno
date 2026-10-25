@@ -23,7 +23,7 @@ type EntryText = Partial<Pick<SettingEntry, "title" | "scope" | "source" | "effe
 export const entriesZh: Record<string, EntryText> = {
   appearance: { title: "主题、文字与布局", scope: "此设备 · 此站点", source: "保存在此浏览器或 WebView 中的偏好；未设置时使用内置默认值。", effect: "更改会立即预览。存储成功后，重新打开仍会保留。可导出为文件，预览后再导入。" },
   "send-key": { title: "发送消息", scope: "此设备 · 此站点", source: "保存在此浏览器或 WebView 中的选择；未设置时为“自动”。", effect: "立即作用于会话的输入框。存储成功后，重新打开仍会保留。" },
-  shortcuts: { title: "键盘快捷键", scope: "此设备", source: "此版本已有的快捷键，按它们在此设备上的实际效果列出。", effect: "仅供查看。此版本还不能改用其他按键。" },
+  shortcuts: { title: "键盘快捷键", scope: "此设备 · 此站点", source: "此版本已有的快捷键，按它们在此设备上的实际效果列出，包括此设备为“查找 Agent”“新建 Agent”和“搜索此会话”选择的字母；未设置时使用原来的字母。", effect: "新字母立即生效；如果三者中另一个已在使用它，会被拒绝。存储成功后，重新打开时仍会保留。其他快捷键保持原来的按键。" },
   transfer: { title: "把偏好移到另一台设备", scope: "此设备 · 你保存的文件", source: "此设备当前生效的外观、发送键、时间显示、界面语言和通知选择。不含 Workspace、账户或权限的任何内容；此设备是否发送通知仍由它自己决定。", effect: "导出会写出一个文件。导入会把每组设置与你现有的并排显示；每组单独应用，只在保存到此设备后才生效。它不会在设备之间同步。" },
   "appearance-preset": { title: "共享外观预设", scope: "此 Workspace · 在此设备上应用", source: "此 Workspace 的 Core 保存的一个外观预设，由你选择时从某台设备保存；在那之前没有。", effect: "保存只在它自你读取后未被更改时才会替换它。应用会把每项设置与你的并排显示，并保存到此设备上。只有在你开启后，设备才会单向跟随它；它不是双向同步。" },
   clock: { title: "时钟与时区", scope: "此设备 · 此站点", source: "保存在此浏览器或 WebView 中的选择；未设置时为“系统”和此设备的时区。", effect: "立即改写会话和 Home 中的时间及其日期。保存的时间与相对时间不变。存储成功后，重新打开仍会保留。" },

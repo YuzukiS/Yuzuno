@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { Plus, Search } from "lucide-react";
 import { strings, useStrings } from "./i18n";
+import { useShortcutKeys } from "./shortcut-keys";
 
 const text = strings({
   heading: "YOUR AGENTS",
@@ -71,6 +72,7 @@ export function RailHeading({
     return () => observer?.disconnect();
   }, []);
   const t = useStrings(text);
+  const keys = useShortcutKeys();
   return (
     <div
       ref={heading}
@@ -99,7 +101,7 @@ export function RailHeading({
         <button
           className="icon-button"
           aria-label={t.search}
-          title={`${t.search} · ${shortcut} K`}
+          title={`${t.search} · ${shortcut} ${keys.find}`}
           onClick={onSearch}
         >
           <Search size={14} />
@@ -107,7 +109,7 @@ export function RailHeading({
         <button
           className="icon-button"
           aria-label={t.create}
-          title={`${t.create} · ${shortcut} N`}
+          title={`${t.create} · ${shortcut} ${keys.newAgent}`}
           onClick={onCreate}
         >
           <Plus size={16} />

@@ -63,6 +63,7 @@ import {
 import { nativeControl } from "./slash-commands";
 import { touchKeyboard } from "./touch-input";
 import { returnSends, useDevicePreferences } from "./device-preferences";
+import { pressed, shortcutKeys, useShortcutKeys } from "./shortcut-keys";
 import {
   ArtifactModal,
   Avatar,
@@ -280,6 +281,8 @@ export function App() {
   const appearance = useAppearance();
   // Which key sends, on this device (T-189); unset, as before.
   const { sendKey } = useDevicePreferences();
+  // The letters shown beside New agent, as this device has them.
+  const boundKeys = useShortcutKeys();
   const [updatesOpen, setUpdatesOpen] = useState(false);
   // Settings opened at one editor, as a backup notification's click does (T-196).
   const [settingsAt, setSettingsAt] = useState<{ editor: SettingsEditor; nonce: number } | null>(null);
@@ -1242,11 +1245,12 @@ export function App() {
         event.preventDefault();
         void interrupt();
       }
-      if ((event.metaKey || event.ctrlKey) && event.key === "n") {
+      // This device's letters for them (shortcut-keys.ts), read as pressed.
+      if (pressed(event, shortcutKeys().newAgent)) {
         event.preventDefault();
         setCreateOpen(true);
       }
-      if ((event.metaKey || event.ctrlKey) && event.key === "k") {
+      if (pressed(event, shortcutKeys().find)) {
         event.preventDefault();
         setSearchOpen((v) => !v);
         setRailOpen(true);
@@ -2324,7 +2328,7 @@ export function App() {
           {/* Last in the list, so it scrolls with the agents. */}
           <button className="add-agent" onClick={() => setCreateOpen(true)}>
             <Plus size={15} />
-            {shell.newAgent}<span>{shortcutModifier} N</span>
+            {shell.newAgent}<span>{shortcutModifier} {boundKeys.newAgent}</span>
           </button>
         </nav>
         {outsidePending > 0 && (
