@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Check, CircleAlert, Info, RotateCcw } from "lucide-react";
 import { STORAGE_BLOCKED, type DeviceValueState, type SaveOutcome } from "./device-storage";
-import { strings, useStrings } from "./i18n";
+import { strings, useStrings, type Language } from "./i18n";
 import "./save-status.css";
 
 // In the interface language (T-189). The browser's own words for a refusal
@@ -36,6 +36,10 @@ const text = strings({
   invalid: (scope) => `${scope}上保存的选择无法读取，因此使用默认值。重新选择会保存一个新的。`,
   none: (scope) => `正在使用默认值；${scope}上还没有保存任何选择`,
 });
+
+/** Why the browser refused a write, in `language` (T-189): what a refused
+ * save says here and an import's refusal says too. */
+export const saveRefusalReason = (failed: Extract<SaveOutcome, { saved: false }>, language: Language) => text(language).reason(failed);
 
 /**
  * Whether a preference is saved where it says (T-187). "Saved" only after a

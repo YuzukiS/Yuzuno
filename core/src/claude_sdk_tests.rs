@@ -299,3 +299,106 @@ async fn bridges_start_and_ssh_uploads_come_from_the_prepared_runtime() {
     assert_eq!(uploaded[&format!("{PACKAGE}/package.json")], SDK[0].1, "the SDK goes to SSH machines, not the placeholder");
     assert_eq!(uploaded[&format!("{PACKAGE}/sdk.mjs")], SDK[1].1);
 }
+
+// Runtime & versions (T-191): what the status says, and that reading it
+// prepares, copies and downloads nothing.
+
+#[tokio::test]
+async fn the_status_names_the_locked_sdk_and_its_copy_without_preparing_anything() {
+    let base = tempfile::tempdir().unwrap();
+    let archive = base.path().join("package.tgz");
+    write(&archive, package());
+    let root = release(base.path(), "core-new", &integrity(&package()));
+    let (node, count) = node(base.path(), &archive, "0");
+    let cache = base.path().join("cache");
+    let script = || -> Result<PathBuf> { Ok(root.join("bridge.mjs")) };
+    let status = status_of(script(), Some(&cache));
+    assert_eq!(status["format"], 1);
+    assert!(status["readAt"].is_string());
+    assert_eq!(status["runtime"], json!({"kind": "release", "release": "core-new"}));
+    assert_eq!(status["sdk"], json!({"state": "locked", "version": "0.3.296", "registry": "registry.example"}));
+    assert_eq!(status["copy"], json!({"state": "none", "limited": false}));
+    assert!(!cache.exists(), "reading prepares nothing");
+    assert_eq!(runs(&count), 0, "and downloads nothing");
+    // A copy an earlier run left is found by its receipt; another SDK's, a
+    // damaged receipt and one deeper down are not counted.
+    let copy = prepare(&root, &cache, &node).unwrap();
+    write(&cache.join("other").join(RECEIPT), json!({"name": NAME, "integrity": "sha512-other", "version": "0.1.0",
+        "source": "release core-x", "at": "2026-01-01T00:00:00Z"}).to_string());
+    write(&cache.join("damaged").join(RECEIPT), "{");
+    write(&cache.join("deeper/inside").join(RECEIPT), std::fs::read(copy.join(RECEIPT)).unwrap());
+    let status = status_of(script(), Some(&cache));
+    assert_eq!(status["copy"]["state"], "found", "{status}");
+    assert_eq!(status["copy"]["copies"], 1);
+    assert_eq!(status["copy"]["newest"]["version"], "0.3.296");
+    assert_eq!(status["copy"]["newest"]["source"], json!({"from": "registry", "host": "registry.example"}));
+    assert_eq!(status["copy"]["newest"]["at"], receipt(&copy)["at"]);
+    // Once this run of Core uses a copy, that copy is the one said.
+    assert_eq!(runtime(&root, Some(cache.clone()), node.clone()).await.unwrap(), copy);
+    let status = status_of(script(), Some(&cache));
+    assert_eq!(status["copy"]["state"], "inUse", "{status}");
+    assert_eq!(status["copy"]["copy"]["version"], "0.3.296");
+    assert_eq!(status["copy"]["copy"]["source"], json!({"from": "registry", "host": "registry.example"}));
+    assert_eq!(runs(&count), 1, "the one download was the preparation's");
+    assert!(!status.to_string().contains(&*base.path().to_string_lossy()), "no path is said: {status}");
+}
+
+#[test]
+fn a_runtime_with_the_sdk_itself_says_its_version_and_needs_no_copy() {
+    let base = tempfile::tempdir().unwrap();
+    let older = older_release(base.path(), "core-old");
+    let status = status_of(Ok(older.join("bridge.mjs")), Some(&base.path().join("cache")));
+    assert_eq!(status["runtime"], json!({"kind": "release", "release": "core-old"}));
+    assert_eq!(status["sdk"], json!({"state": "inRuntime", "version": "0.3.296"}));
+    assert_eq!(status["copy"], json!({"state": "notNeeded"}));
+    // A source checkout's runtime is no release's; one with neither the SDK
+    // nor its manifest says so.
+    let checkout = base.path().join("src/runtimes/claude");
+    write(&checkout.join("bridge.mjs"), BRIDGE);
+    let status = status_of(Ok(checkout.join("bridge.mjs")), None);
+    assert_eq!(status["runtime"], json!({"kind": "other"}));
+    assert_eq!(status["sdk"], json!({"state": "none"}));
+    assert_eq!(status["copy"], json!({"state": "notNeeded"}));
+}
+
+#[test]
+fn a_damaged_manifest_or_no_runtime_is_said_and_a_registry_is_named_by_its_host_only() {
+    let base = tempfile::tempdir().unwrap();
+    let cache = base.path().join("cache");
+    let root = release(base.path(), "core-new", &integrity(&package()));
+    write(&root.join(MANIFEST), "{damaged");
+    let status = status_of(Ok(root.join("bridge.mjs")), Some(&cache));
+    assert_eq!(status["sdk"], json!({"state": "unreadable", "reason": UNUSABLE_MANIFEST}));
+    assert_eq!(status["copy"], json!({"state": "unknown"}));
+    write(&root.join(MANIFEST), vec![b' '; STATUS_MANIFEST_BYTES as usize + 1]);
+    let status = status_of(Ok(root.join("bridge.mjs")), Some(&cache));
+    assert_eq!(status["sdk"]["state"], "unreadable", "a manifest past the bound is not read: {status}");
+    // A registry URL that signs in is named by its host alone.
+    let signed = release(base.path(), "core-signed", &integrity(&package()));
+    let mut manifest: Value = serde_json::from_slice(&std::fs::read(signed.join(MANIFEST)).unwrap()).unwrap();
+    manifest["resolved"] = json!("https://person:SecretToken@registry.example:8443/claude-agent-sdk.tgz");
+    write(&signed.join(MANIFEST), manifest.to_string());
+    let status = status_of(Ok(signed.join("bridge.mjs")), Some(&cache));
+    assert_eq!(status["sdk"]["registry"], "registry.example:8443");
+    assert!(!status.to_string().contains("SecretToken"), "{status}");
+    // No runtime: nothing known, nothing guessed.
+    let none = status_of(Err(anyhow::anyhow!("no bridge configured")), Some(&cache));
+    assert_eq!((&none["runtime"], &none["sdk"], &none["copy"]),
+        (&json!({"kind": "missing"}), &json!({"state": "unknown"}), &json!({"state": "unknown"})));
+    assert!(!cache.exists(), "reading prepares nothing");
+}
+
+#[test]
+fn a_manifest_the_checks_refuse_is_said_by_a_fixed_reason_never_by_what_it_lists() {
+    let base = tempfile::tempdir().unwrap();
+    let root = release(base.path(), "core-new", &integrity(&package()));
+    let mut listed: Value = serde_json::from_slice(&std::fs::read(root.join(MANIFEST)).unwrap()).unwrap();
+    listed["files"]["../../home/person/PrivatePathSentinel/key"] = json!({"sha256": hex("x"), "bytes": 1});
+    write(&root.join(MANIFEST), listed.to_string());
+    // Preparing still says which path it refused; the status doesn't.
+    assert!(manifest(&root).err().unwrap().to_string().contains("PrivatePathSentinel"));
+    let status = status_of(Ok(root.join("bridge.mjs")), None);
+    assert_eq!(status["sdk"], json!({"state": "unreadable", "reason": UNUSABLE_MANIFEST}));
+    assert_eq!(status["copy"], json!({"state": "unknown"}));
+    assert!(!status.to_string().contains("PrivatePathSentinel"), "{status}");
+}

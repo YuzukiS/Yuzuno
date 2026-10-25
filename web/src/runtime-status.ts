@@ -38,6 +38,37 @@ export interface JobsBudget {
   windows?: { available: boolean; reason?: string | null };
 }
 
+/** Where a prepared copy's SDK files came from, as its receipt says. */
+export type SdkSource =
+  | { from: "registry"; host: string | null }
+  | { from: "release"; release: string | null }
+  | { from: "preparedCopy" }
+  | { from: "unknown" };
+export interface SdkCopy {
+  version: string | null;
+  source: SdkSource;
+  at: string | null;
+}
+/** GET /api/claude-sdk (T-191): the Claude Agent SDK Core's Claude bridge
+ * runs, read by Core without preparing, copying or downloading anything. */
+export interface ClaudeSdkStatus {
+  format: number;
+  readAt: string;
+  runtime: { kind: "release"; release: string | null } | { kind: "other" } | { kind: "missing" };
+  sdk:
+    | { state: "locked"; version: string | null; registry: string | null }
+    | { state: "inRuntime"; version: string | null }
+    | { state: "none" }
+    | { state: "unreadable"; reason: string }
+    | { state: "unknown" };
+  copy:
+    | { state: "inUse"; copy: SdkCopy | null }
+    | { state: "found"; copies: number; newest: SdkCopy; limited: boolean }
+    | { state: "none"; limited: boolean }
+    | { state: "notNeeded" }
+    | { state: "unknown" };
+}
+
 /** What one read gathered, each with whether it could be read. */
 export interface RuntimeRead {
   /** When this client had all four answers, by its own clock; each was
@@ -49,6 +80,8 @@ export interface RuntimeRead {
   /** The Workspace's Agents from the same answer; null when it failed. */
   agents?: Agent[] | null;
   budget: { ok: true; value: JobsBudget } | { ok: false; error: string };
+  /** The Claude Agent SDK, as Core says it; absent from reads made before it. */
+  sdk?: { ok: true; value: ClaudeSdkStatus } | { ok: false; error: string };
   /** Null: not the desktop app. */
   desktop: null | { ok: true; value: DesktopUpdateStatus } | { ok: false; error: string };
   /** The release this page was built from, if it says. */
@@ -68,18 +101,19 @@ const settle = async <T>(read: () => Promise<T>) => {
  * come separately: `at` is when this client had them all, not one snapshot. */
 export async function readRuntime(signal?: AbortSignal): Promise<RuntimeRead> {
   const invoke = desktopShell.invoke();
-  const [health, machines, workspace, budget, desktop] = await Promise.all([
+  const [health, machines, workspace, budget, sdk, desktop] = await Promise.all([
     settle(() => api<CoreHealth>("/health", { signal })),
     settle(async () => (await api<{ machines: WorkspaceMachine[] }>("/machines", { signal })).machines),
     settle(() => api<Workspace>("/workspace", { signal })),
     settle(() => api<JobsBudget>("/jobs/budget", { signal })),
+    settle(() => api<ClaudeSdkStatus>("/claude-sdk", { signal })),
     invoke ? settle(async () => (await invoke("desktop_update_status")) as DesktopUpdateStatus) : Promise.resolve(null),
   ]);
   return {
     at: new Date().toISOString(), health, machines,
     runtime: workspace.ok ? { ok: true, value: workspace.value.runtime } : workspace,
     agents: workspace.ok ? workspace.value.agents ?? [] : null,
-    budget, desktop, page: loadedRelease(),
+    budget, sdk, desktop, page: loadedRelease(),
   };
 }
 
@@ -108,7 +142,7 @@ export interface MachineFacts {
 }
 export interface RuntimeView {
   at: string;
-  core: { version: Fact; release: Fact; ready: Fact };
+  core: { version: Fact; release: Fact; ready: Fact; sdk: Fact; sdkCopy: Fact };
   client: { page: Fact; desktop: Fact; iphone: Fact };
   machines: MachineFacts[];
   machinesError?: string;
@@ -199,6 +233,73 @@ function jobsFact(machine: WorkspaceMachine, budget: RuntimeRead["budget"]): Fac
   return fact("yes", "Record only", "Saved before Job limits: nothing is held there.");
 }
 
+const when = (iso: string | null) => {
+  const at = iso ? new Date(iso) : null;
+  return at && !Number.isNaN(at.getTime()) ? at.toLocaleString() : "at a time it doesn't say";
+};
+function sourceText(source: SdkSource) {
+  if (source.from === "registry") return source.host ? `downloaded from ${source.host}` : "downloaded from its registry";
+  if (source.from === "release") return source.release ? `copied from release ${source.release}` : "copied from another release";
+  if (source.from === "preparedCopy") return "copied from another prepared copy";
+  return "from a source its receipt doesn't name";
+}
+const copyText = (copy: SdkCopy) =>
+  `${copy.version ? `SDK ${copy.version}, ` : ""}${sourceText(copy.source)}, prepared ${when(copy.at)}`;
+
+/** The SDK Core's Claude bridge runs (T-191): the version its runtime locks
+ * or declares, and the copy it runs from. The bridge has no version of its
+ * own, and Claude Code's CLI is another program (under Machines). */
+function sdkFacts(read: RuntimeRead["sdk"]): { sdk: Fact; sdkCopy: Fact } {
+  if (!read) return { sdk: fact("unknown", "Not read"), sdkCopy: fact("unknown", "Not read") };
+  if (!read.ok) return { sdk: fact("unknown", "Not known", `Core didn't say: ${read.error}`), sdkCopy: fact("unknown", "Not known") };
+  const status = read.value;
+  if (status.format !== 1) return { sdk: fact("unknown", "Not known", "Core answered in a form this page doesn't read."), sdkCopy: fact("unknown", "Not known") };
+  const checked = `Core read it ${when(status.readAt)}.`;
+  if (status.runtime.kind === "missing")
+    return { sdk: fact("unknown", "Not known", `Core has no Claude runtime set up, so no SDK is known. ${checked}`), sdkCopy: fact("unknown", "Not known") };
+  const runtime = status.runtime.kind === "release" && status.runtime.release ? `release ${status.runtime.release}` : "this Core's runtime (not an installed release's)";
+  const sdk = status.sdk;
+  const sdkFact =
+    sdk.state === "locked"
+      ? sdk.version
+        ? fact("yes", `Locked ${sdk.version}`, `As claude-agent-sdk.json in ${runtime} locks it${sdk.registry ? `, from ${sdk.registry}` : ""}. ${checked}`)
+        : fact("unknown", "Locked, version not readable", `claude-agent-sdk.json in ${runtime} names no version this page shows. ${checked}`)
+      : sdk.state === "inRuntime"
+        ? sdk.version
+          ? fact("yes", `${sdk.version} · in the runtime`, `The version the SDK package in ${runtime} declares: that runtime carries the SDK itself. ${checked}`)
+          : fact("unknown", "In the runtime, version not declared", `The SDK package in ${runtime} doesn't declare a version. ${checked}`)
+        : sdk.state === "none"
+          ? fact("no", "Not in the runtime", `Neither the SDK nor claude-agent-sdk.json is in ${runtime}. ${checked}`)
+          : sdk.state === "unreadable"
+            ? fact("unknown", "Can't be read", `claude-agent-sdk.json in ${runtime}: ${sdk.reason}. ${checked}`)
+            : fact("unknown", "Not known", checked);
+  const copy = status.copy;
+  const sdkCopy =
+    copy.state === "notNeeded"
+      ? sdk.state === "none"
+        ? fact("no", "Nothing to prepare", "Core runs this runtime as it is, and it has no SDK for its Claude bridge.")
+        : fact("yes", "Not needed", "The runtime carries the SDK, so Core runs it as it is.")
+      : copy.state === "inUse"
+        ? fact("yes", "In use", `${copy.copy ? `${copyText(copy.copy)}. ` : ""}Core prepared or found this copy in this run; its Claude bridges run from it.`)
+        : copy.state === "found"
+          ? fact(
+              "unknown",
+              "Not used yet in this run",
+              `${copy.copies === 1 ? "A copy" : `${copy.copies} copies`} of this SDK on the Core host, the newest ${copyText(copy.newest)}. ` +
+                "Core checks it when a Claude Agent first starts." +
+                (copy.limited ? " Only the first copies were looked at." : ""),
+            )
+          : copy.state === "none"
+            ? fact(
+                "no",
+                "Not prepared",
+                "Core prepares a copy when a Claude Agent first starts: from another installed release, or by downloading the locked package. Reading this downloads nothing." +
+                  (copy.limited ? " Only the first copies were looked at." : ""),
+              )
+            : fact("unknown", "Not known", sdk.state === "unreadable" ? "Not known while claude-agent-sdk.json can't be read." : undefined);
+  return { sdk: sdkFact, sdkCopy };
+}
+
 /** The facts to show, from one read, at `now`. */
 export function runtimeView(read: RuntimeRead, now = Date.now(), models: ModelChecks = {}): RuntimeView {
   const health = read.health;
@@ -225,6 +326,7 @@ export function runtimeView(read: RuntimeRead, now = Date.now(), models: ModelCh
         release: fact("unknown", "Not known"),
         ready: fact("unknown", "Not known"),
       };
+  const sdk = sdkFacts(read.sdk);
   const page =
     !read.page
       ? fact("unknown", "This page doesn't say which release it is")
@@ -300,7 +402,7 @@ export function runtimeView(read: RuntimeRead, now = Date.now(), models: ModelCh
     : [];
   return {
     at: read.at,
-    core,
+    core: { ...core, ...sdk },
     client: { page, desktop, iphone },
     machines,
     ...(read.machines.ok ? {} : { machinesError: read.machines.error }),

@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { shortcutModifier } from "./api";
 import { importAppearance, useAppearance } from "./appearance";
 import { appearanceFields, fieldValue, importedAppearance, type AppearanceField } from "./appearance-file";
-import { fieldLabels, fieldText } from "./AppearanceSettings";
+import { fieldLabel, fieldText } from "./AppearanceSettings";
+import type { FileRefusal } from "./appearance-file";
+import type { SaveOutcome } from "./device-storage";
+import { strings, useLanguage } from "./i18n";
+import { saveRefusalReason } from "./SaveStatus";
 import { importPreferences, useDevicePreferences, type SendKey } from "./device-preferences";
 import {
   DEVICE_FILE,
@@ -12,26 +16,123 @@ import {
   readDeviceFile,
   type DeviceFileContents,
   type DeviceGroup,
+  type GroupRefusal,
 } from "./device-transfer-file";
 import { importTimePreferences, timeZoneName, useTimePreferences, type ClockFormat } from "./time-preferences";
 import "./appearance.css";
 import "./device-transfer.css";
 
-const groupTitles: Record<DeviceGroup, string> = {
-  appearance: "Appearance",
-  sending: "Sending messages",
-  time: "Time display",
-};
-const sendKeyText: Record<SendKey, string> = {
-  auto: "Automatic",
-  enter: "Return sends",
-  modEnter: `${shortcutModifier}+Return sends`,
-};
-const clockText: Record<ClockFormat, string> = { system: "System", h12: "12-hour", h24: "24-hour" };
-const zoneText = (zone: string | null) => (zone ? timeZoneName(zone) : "This device’s own");
+/** What a line said last, as what happened, so it is worded in the language
+ * shown, also after a switch (T-189). */
+type Message =
+  | { kind: "tooLarge"; name: string }
+  | { kind: "unreadable"; name: string }
+  | { kind: "refused"; refusal: FileRefusal }
+  | { kind: "applied"; group: DeviceGroup }
+  | { kind: "notApplied"; group: DeviceGroup; outcome: Extract<SaveOutcome, { saved: false }> };
+
+// Key names (Return, ⌘, Ctrl), time zones (IANA's) and file names are written
+// as they are; what a file holds is shown as it holds it.
+const text = strings({
+  groups: { appearance: "Appearance", sending: "Sending messages", time: "Time display" } as Record<DeviceGroup, string>,
+  sendKeys: (modifier: string): Record<SendKey, string> => ({ auto: "Automatic", enter: "Return sends", modEnter: `${modifier}+Return sends` }),
+  clocks: { system: "System", h12: "12-hour", h24: "24-hour" } as Record<ClockFormat, string>,
+  ownZone: "This device’s own",
+  sendKey: "Send key",
+  clock: "Clock",
+  timeZone: "Time zone",
+  invalid: "not a value Yuzuno accepts; kept as now",
+  title: "Move preferences to another device",
+  intro: "One file of this device’s Appearance, how messages are sent and how times are shown. Accounts, permissions, folders, conversations and drafts are never in it, and nothing in the Workspace changes. Importing shows each group beside yours, and you apply each group on its own. This copies a file; it doesn’t sync devices.",
+  fileGroup: "Preferences file",
+  help: "Exports the settings in effect. An Appearance export from this settings page can be imported here too. Language and keyboard shortcuts aren’t in the file.",
+  export: "Export to a file",
+  import: "Import from a file…",
+  choose: "Choose a preferences file",
+  preview: "Import preview",
+  from: (name: string, exportedAt: string | null, appearanceOnly: boolean) =>
+    `From ${name}${exportedAt ? `, exported ${exportedAt}` : ""}${appearanceOnly ? ", an Appearance export: only Appearance is in it" : ""}. Each group applies on its own; the others stay as they are.`,
+  cannot: (refusal: GroupRefusal) => `Can’t be applied: the file holds ${refusal.refused}. Kept as now.`,
+  now: (value: string) => `Now: ${value}`,
+  same: "File: the same",
+  file: (value: string | null, invalid?: string) => (invalid ? `File: ${value}, ${invalid}` : `File: ${value}`),
+  apply: (group: string, pending: number) => (pending ? `Apply ${group}` : "Nothing to apply"),
+  unknown: (names: string) => `Not preferences this version knows, so left out: ${names}`,
+  close: "Close",
+  message: (message: Message, groups: Record<DeviceGroup, string>): string => {
+    switch (message.kind) {
+      case "tooLarge":
+        return `${message.name} is larger than 16 KiB, too large for a preferences export, so it was not read. Nothing was changed.`;
+      case "unreadable":
+        return `${message.name} could not be read. Nothing was changed.`;
+      case "refused":
+        return `${message.refusal.error}. Nothing was changed.`;
+      case "applied":
+        return `${groups[message.group]} applied and saved on this device.`;
+      case "notApplied":
+        return `${groups[message.group]} not applied: ${message.outcome.detail}. It stays as it is.`;
+    }
+  },
+}, {
+  groups: { appearance: "外观", sending: "发送消息", time: "时间显示" },
+  sendKeys: (modifier) => ({ auto: "自动", enter: "Return 发送", modEnter: `${modifier}+Return 发送` }),
+  clocks: { system: "系统", h12: "12 小时制", h24: "24 小时制" },
+  ownZone: "此设备自己的时区",
+  sendKey: "发送键",
+  clock: "时钟",
+  timeZone: "时区",
+  invalid: "不是 Yuzuno 接受的值；保持当前",
+  title: "把偏好移到另一台设备",
+  intro: "一个文件，包含此设备的外观、消息的发送方式和时间的显示方式。账户、权限、文件夹、会话和草稿从不在其中，Workspace 中的任何内容也不会改变。导入时会把每组与你的并排显示，由你逐组应用。这是复制一个文件，不会在设备之间同步。",
+  fileGroup: "偏好文件",
+  help: "导出当前生效的设置。在此设置页导出的外观文件也可以在这里导入。界面语言和键盘快捷键不在文件中。",
+  export: "导出到文件",
+  import: "从文件导入…",
+  choose: "选择偏好文件",
+  preview: "导入预览",
+  from: (name, exportedAt, appearanceOnly) =>
+    `来自 ${name}${exportedAt ? `，导出于 ${exportedAt}` : ""}${appearanceOnly ? "，这是外观导出文件：其中只有外观" : ""}。每组单独应用，其他组保持不变。`,
+  cannot: (refusal) =>
+    `无法应用：${
+      {
+        notSettings: `文件中的内容不是设置：${refusal.value}`,
+        sendKey: `文件中是此版本没有的发送键：${refusal.value}`,
+        clock: `文件中是此版本没有的时钟格式：${refusal.value}`,
+        timeZone: `文件中是此浏览器不认识的时区：${refusal.value}`,
+      }[refusal.reason] ?? refusal.refused
+    }。保持当前。`,
+  now: (value) => `当前：${value}`,
+  same: "文件：相同",
+  file: (value, invalid) => (invalid ? `文件：${value}，${invalid}` : `文件：${value}`),
+  apply: (group, pending) => (pending ? `应用${group}` : "没有可应用的"),
+  unknown: (names) => `此版本不认识的偏好，因此未包含：${names}`,
+  close: "关闭",
+  message: (message, groups) => {
+    switch (message.kind) {
+      case "tooLarge":
+        return `${message.name} 大于 16 KiB，作为偏好导出文件太大，因此没有读取。没有更改任何内容。`;
+      case "unreadable":
+        return `无法读取 ${message.name}。没有更改任何内容。`;
+      case "refused":
+        return `${
+          {
+            notJson: "此文件不是 JSON，因此不是偏好导出文件",
+            notExport: "此文件不是 Yuzuno 的偏好或外观导出文件",
+            newer: `此文件来自更新的 Yuzuno（文件版本 ${message.refusal.version}），此版本只能读取版本 ${message.refusal.reads}`,
+            unknownVersion: "此文件的版本不是 Yuzuno 认识的版本",
+            empty: "此文件不含这些偏好中的任何一项",
+          }[message.refusal.code] ?? message.refusal.error
+        }。没有更改任何内容。`;
+      case "applied":
+        return `${groups[message.group]}已应用并保存到此设备。`;
+      case "notApplied":
+        return `${groups[message.group]}未应用：${saveRefusalReason(message.outcome, "zh-Hans")}。它保持不变。`;
+    }
+  },
+});
 
 type Row = { key: string; label: string; now: string; file: string | null; differs: boolean; invalid?: string };
-type Said = { error: boolean; text: string };
+type Said = { error: boolean; message: Message };
 
 function readText(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -51,6 +152,10 @@ function readText(file: File): Promise<string> {
  * nothing here syncs between devices.
  */
 export function DeviceTransferSection() {
+  const language = useLanguage();
+  const t = text(language);
+  const sendKeyText = t.sendKeys(shortcutModifier);
+  const zoneText = (zone: string | null) => (zone ? timeZoneName(zone) : t.ownZone);
   const appearance = useAppearance();
   const sending = useDevicePreferences();
   const time = useTimePreferences();
@@ -66,30 +171,30 @@ export function DeviceTransferSection() {
         const value = read.values[field];
         const bad = read.invalid.find((item) => item.field === field);
         if (value === undefined && !bad) return [];
-        const now = fieldText(field, fieldValue(appearance, field));
+        const now = fieldText(field, fieldValue(appearance, field), language);
         if (value === undefined)
-          return [{ key: field, label: fieldLabels[field], now, file: bad!.value, differs: false, invalid: "not a value Yuzuno accepts; kept as now" }];
-        return [{ key: field, label: fieldLabels[field], now, file: fieldText(field, value), differs: value !== fieldValue(appearance, field) }];
+          return [{ key: field, label: fieldLabel(field, language), now, file: bad!.value, differs: false, invalid: t.invalid }];
+        return [{ key: field, label: fieldLabel(field, language), now, file: fieldText(field, value, language), differs: value !== fieldValue(appearance, field) }];
       });
     }
     if (group === "sending") {
       const read = contents.sending;
       if (!read || "refused" in read || read.value.sendKey === undefined) return [];
       const value = read.value.sendKey;
-      return [{ key: "sendKey", label: "Send key", now: sendKeyText[sending.sendKey], file: sendKeyText[value], differs: value !== sending.sendKey }];
+      return [{ key: "sendKey", label: t.sendKey, now: sendKeyText[sending.sendKey], file: sendKeyText[value], differs: value !== sending.sendKey }];
     }
     const read = contents.time;
     if (!read || "refused" in read) return [];
     const out: Row[] = [];
     if (read.value.clock !== undefined)
-      out.push({ key: "clock", label: "Clock", now: clockText[time.clock], file: clockText[read.value.clock], differs: read.value.clock !== time.clock });
+      out.push({ key: "clock", label: t.clock, now: t.clocks[time.clock], file: t.clocks[read.value.clock], differs: read.value.clock !== time.clock });
     if (read.value.timeZone !== undefined)
-      out.push({ key: "timeZone", label: "Time zone", now: zoneText(time.timeZone), file: zoneText(read.value.timeZone), differs: read.value.timeZone !== time.timeZone });
+      out.push({ key: "timeZone", label: t.timeZone, now: zoneText(time.timeZone), file: zoneText(read.value.timeZone), differs: read.value.timeZone !== time.timeZone });
     return out;
   };
   const refusal = (group: DeviceGroup, contents: DeviceFileContents) => {
     const read = contents[group];
-    return read && "refused" in read ? read.refused : null;
+    return read && "refused" in read ? read : null;
   };
 
   function exportFile() {
@@ -108,19 +213,19 @@ export function DeviceTransferSection() {
     setFile(null);
     if (!picked) return;
     if (picked.size > MAX_DEVICE_FILE_BYTES) {
-      setSaid({ file: { error: true, text: `${picked.name} is larger than 16 KiB, too large for a preferences export, so it was not read. Nothing was changed.` } });
+      setSaid({ file: { error: true, message: { kind: "tooLarge", name: picked.name } } });
       return;
     }
     let text: string;
     try {
       text = await readText(picked);
     } catch {
-      setSaid({ file: { error: true, text: `${picked.name} could not be read. Nothing was changed.` } });
+      setSaid({ file: { error: true, message: { kind: "unreadable", name: picked.name } } });
       return;
     }
     const read = readDeviceFile(text);
     if ("error" in read) {
-      setSaid({ file: { error: true, text: `${read.error}. Nothing was changed.` } });
+      setSaid({ file: { error: true, message: { kind: "refused", refusal: read } } });
       return;
     }
     setFile({ name: picked.name, contents: read.contents });
@@ -151,8 +256,8 @@ export function DeviceTransferSection() {
     setSaid((old) => ({
       ...old,
       [group]: outcome.saved
-        ? { error: false, text: `${groupTitles[group]} applied and saved on this device.` }
-        : { error: true, text: `${groupTitles[group]} not applied: ${outcome.detail}. It stays as it is.` },
+        ? { error: false, message: { kind: "applied", group } }
+        : { error: true, message: { kind: "notApplied", group, outcome } },
     }));
   }
   // A group's line says what its last Apply did, until another file is read.
@@ -168,36 +273,29 @@ export function DeviceTransferSection() {
     <section id="settings-transfer" className="settings-section device-transfer" aria-labelledby="settings-transfer-title">
       <header className="settings-section-heading">
         <div>
-          <h3 id="settings-transfer-title">Move preferences to another device</h3>
-          <p>
-            One file of this device’s Appearance, how messages are sent and how times are shown. Accounts, permissions,
-            folders, conversations and drafts are never in it, and nothing in the Workspace changes. Importing shows
-            each group beside yours, and you apply each group on its own. This copies a file; it doesn’t sync devices.
-          </p>
+          <h3 id="settings-transfer-title">{t.title}</h3>
+          <p>{t.intro}</p>
         </div>
       </header>
-      <div className="settings-group appearance-file" aria-label="Preferences file">
+      <div className="settings-group appearance-file" aria-label={t.fileGroup}>
         <div className="settings-row">
           <span className="settings-row-main">
-            <span className="settings-row-title">Preferences file</span>
-            <span className="settings-row-help">
-              Exports the settings in effect. An Appearance export from this settings page can be imported here too.
-              Language and keyboard shortcuts aren’t in the file.
-            </span>
+            <span className="settings-row-title">{t.fileGroup}</span>
+            <span className="settings-row-help">{t.help}</span>
           </span>
           <span className="settings-row-action appearance-file-buttons">
             <button type="button" onClick={exportFile}>
-              Export to a file
+              {t.export}
             </button>
             <button type="button" onClick={() => picker.current?.click()}>
-              Import from a file…
+              {t.import}
             </button>
             <input
               ref={picker}
               type="file"
               accept="application/json,.json"
               hidden
-              aria-label="Choose a preferences file"
+              aria-label={t.choose}
               onChange={(event) => {
                 const picked = event.target.files?.[0];
                 event.target.value = "";
@@ -207,13 +305,9 @@ export function DeviceTransferSection() {
           </span>
         </div>
         {file && (
-          <div className="appearance-file-preview device-transfer-preview" role="group" aria-label="Import preview">
-            <p>
-              From {file.name}
-              {exportedAt ? `, exported ${exportedAt}` : ""}
-              {file.contents.kind === "appearance" ? ", an Appearance export: only Appearance is in it" : ""}. Each group
-              applies on its own; the others stay as they are.
-            </p>
+          <div className="appearance-file-preview device-transfer-preview" role="group" aria-label={t.preview}>
+            {/* The file's name, as the system wrote it, is never translated. */}
+            <p>{t.from(file.name, exportedAt, file.contents.kind === "appearance")}</p>
             {deviceGroups.map((group) => {
               if (!file.contents[group]) return null;
               const refused = refusal(group, file.contents);
@@ -221,49 +315,47 @@ export function DeviceTransferSection() {
               const pending = list.filter((row) => row.differs).length;
               const line = said[group];
               return (
-                <section key={group} className="device-transfer-group" aria-label={groupTitles[group]}>
-                  <h4>{groupTitles[group]}</h4>
+                <section key={group} className="device-transfer-group" aria-label={t.groups[group]}>
+                  <h4>{t.groups[group]}</h4>
                   {refused ? (
-                    <p className="appearance-file-error">Can’t be applied: the file holds {refused}. Kept as now.</p>
+                    <p className="appearance-file-error">{t.cannot(refused)}</p>
                   ) : (
                     <ul>
                       {list.map((row) => (
                         <li key={row.key} data-state={row.invalid ? "invalid" : row.differs ? "differs" : "same"}>
                           <span className="appearance-file-name">{row.label}</span>
-                          <span>Now: {row.now}</span>
-                          <span>{row.invalid ? `File: ${row.file}, ${row.invalid}` : row.differs ? `File: ${row.file}` : "File: the same"}</span>
+                          <span>{t.now(row.now)}</span>
+                          <span>{row.invalid || row.differs ? t.file(row.file, row.invalid) : t.same}</span>
                         </li>
                       ))}
                     </ul>
                   )}
                   {!refused && (
                     <button type="button" disabled={!pending} onClick={() => apply(group)}>
-                      {pending ? `Apply ${groupTitles[group]}` : "Nothing to apply"}
+                      {t.apply(t.groups[group], pending)}
                     </button>
                   )}
                   {line && (
                     <p className={line.error ? "appearance-file-error" : "appearance-file-done"} role={line.error ? "alert" : "status"}>
-                      {line.text}
+                      {t.message(line.message, t.groups)}
                     </p>
                   )}
                 </section>
               );
             })}
             {file.contents.unknown.length > 0 && (
-              <p className="settings-row-help">
-                Not preferences this version knows, so left out: {file.contents.unknown.join(", ")}
-              </p>
+              <p className="settings-row-help">{t.unknown(file.contents.unknown.join(", "))}</p>
             )}
             <div className="appearance-file-buttons">
               <button type="button" onClick={() => setFile(null)}>
-                Close
+                {t.close}
               </button>
             </div>
           </div>
         )}
         {said.file && (
           <p className={said.file.error ? "appearance-file-error" : "appearance-file-done"} role={said.file.error ? "alert" : "status"}>
-            {said.file.text}
+            {t.message(said.file.message, t.groups)}
           </p>
         )}
       </div>

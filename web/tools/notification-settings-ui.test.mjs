@@ -194,11 +194,26 @@ test("kinds, preview and mute are this device's choices; muting keeps them", asy
   page.box("Show what was written").click();
   page.box("Mute on this device").click();
   await until(() => page.saved().muted, "muted");
-  assert.deepEqual(page.saved(), { enabled: true, categories: { needsYou: true, failed: true, finished: false }, preview: true, muted: true });
+  assert.deepEqual(page.saved(), { enabled: true, categories: { needsYou: true, failed: true, finished: false, backupFailed: false }, preview: true, muted: true });
   assert.match(page.doc.querySelector(".settings-current").textContent, /Muted/);
   page.box("Mute on this device").click();
   await until(() => !page.saved().muted, "unmuted");
   assert.equal(page.saved().categories.finished, false, "the choices were kept");
+  page.close();
+});
+
+test("a daily backup's failure is off until ticked, with an Agent's failure on; it says when it can't arrive (T-196)", async () => {
+  const page = await mount({ permission: "granted" });
+  page.box("Notify me on this device").click();
+  await until(() => page.saved()?.enabled, "on");
+  assert.equal(page.box("A Turn failed").checked, true);
+  assert.equal(page.box("A daily backup failed").checked, false, "not turned on with the others");
+  const row = [...page.doc.querySelectorAll("label.settings-row")].find((r) => r.textContent.includes("A daily backup failed")).textContent;
+  assert.match(row, /never while the page is closed, and possibly late after the computer sleeps/);
+  assert.match(row, /names no folder or error; Settings → Backup shows the last run and why/);
+  page.box("A daily backup failed").click();
+  await until(() => page.saved().categories.backupFailed === true, "chosen");
+  assert.deepEqual(page.saved().categories, { needsYou: true, failed: true, finished: true, backupFailed: true });
   page.close();
 });
 

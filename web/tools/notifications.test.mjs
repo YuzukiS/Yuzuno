@@ -109,10 +109,60 @@ test("this device's choices: off until turned on; a saved value keeps what it ho
     assert.deepEqual(prefs.parseNotificationPrefs(saved), prefs.defaultNotificationPrefs, JSON.stringify(saved));
   assert.deepEqual(prefs.parseNotificationPrefs({ enabled: true, categories: { finished: false, other: true }, muted: true, extra: 1 }), {
     enabled: true,
-    categories: { needsYou: true, failed: true, finished: false },
+    categories: { needsYou: true, failed: true, finished: false, backupFailed: false },
     preview: false,
     muted: true,
   });
+});
+
+test("a daily backup's failure is a kind of its own, off until chosen, also where an Agent's failure is on (T-196)", () => {
+  assert.equal(prefs.defaultNotificationPrefs.categories.backupFailed, false);
+  // Choices saved before this kind existed: it stays off.
+  const earlier = prefs.parseNotificationPrefs({ enabled: true, categories: { needsYou: true, failed: true, finished: true } });
+  assert.equal(earlier.categories.backupFailed, false);
+  assert.equal(prefs.notifies(earlier, { state: "allowed" }, "failed"), true);
+  assert.equal(prefs.notifies(earlier, { state: "allowed" }, "backupFailed"), false);
+  const chosen = prefs.parseNotificationPrefs({ enabled: true, categories: { backupFailed: true } });
+  assert.equal(prefs.notifies(chosen, { state: "allowed" }, "backupFailed"), true);
+  for (const state of [{ state: "not-requested" }, { state: "denied" }, { state: "unsupported", reason: "app" }])
+    assert.equal(prefs.notifies(chosen, state, "backupFailed"), false, JSON.stringify(state));
+  assert.equal(prefs.notifies({ ...chosen, muted: true }, { state: "allowed" }, "backupFailed"), false);
+});
+
+test("a backup notice only for a run newly known to have failed, once, naming no folder or error (T-196)", () => {
+  const run = (state, extra = {}) => ({ slot: "2026-10-26T03:00:00Z", operationId: "op-26", state, to: "/backups/daily/yuzuno-backup-20261026T0300Z",
+    error: state === "failed" ? "Not enough space in /backups/daily: needs 2 GiB more" : null, ...extra });
+  // The first read has nothing to compare with.
+  assert.equal(events.backupNotice("ws-1", undefined, run("failed")), null);
+  const failed = events.backupNotice("ws-1", run("running"), run("failed"));
+  assert.deepEqual(failed, {
+    kind: "backupFailed",
+    tag: "yuzuno:backupFailed:ws-1:op-26",
+    title: "The daily backup failed",
+    body: "The backup due at 2026-10-26 03:00 UTC did not finish. Open Settings → Backup to see why.",
+    backup: { workspaceId: "ws-1" },
+  });
+  assert.doesNotMatch(JSON.stringify(failed), /backups\/daily|Not enough space|GiB/);
+  // Read again (a reconnect, another notice): nothing more.
+  assert.equal(events.backupNotice("ws-1", run("failed"), run("failed")), null);
+  // Started, waiting, succeeded, stopped by someone, or a state not known: nothing.
+  for (const state of ["running", "", "succeeded", "stopped", "queued", "toString"])
+    assert.equal(events.backupNotice("ws-1", run("running"), run(state)), null, state);
+  assert.equal(events.backupNotice("ws-1", null, null), null);
+  // Cut off by Core stopping, found once Core is back.
+  assert.equal(events.backupNotice("ws-1", run("running"), run("interrupted")).title, "The daily backup was interrupted");
+  // A run that could not begin has no operation: its slot names it.
+  const notStarted = events.backupNotice("ws-1", null, run("not_started", { operationId: null, error: "Cannot back up to /backups/daily: its folder does not exist" }));
+  assert.deepEqual([notStarted.title, notStarted.tag, notStarted.body], [
+    "The daily backup didn’t start",
+    "yuzuno:backupFailed:ws-1:2026-10-26T03:00:00Z",
+    "The backup due at 2026-10-26 03:00 UTC could not begin. Open Settings → Backup to see why.",
+  ]);
+  // The next day's run failing after this one did: a notice of its own.
+  const next = events.backupNotice("ws-1", run("failed"), run("failed", { slot: "2026-10-27T03:00:00Z", operationId: "op-27" }));
+  assert.equal(next.tag, "yuzuno:backupFailed:ws-1:op-27");
+  // Another Workspace's Core: another tag.
+  assert.equal(events.backupNotice("ws-2", run("running"), run("failed")).tag, "yuzuno:backupFailed:ws-2:op-26");
 });
 
 test("a kind is shown only when chosen, not muted and allowed: the choice alone is not permission", () => {
