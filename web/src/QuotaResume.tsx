@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Clock, LoaderCircle, Play, X } from "lucide-react";
 import { api, errorText, post } from "./api";
+import { strings, useStrings } from "./i18n";
 import type { AgentDetail } from "./types";
 import "./recovery.css";
 import "./quota-resume.css";
@@ -220,6 +221,14 @@ export function QuotaResumeNotice({
   );
 }
 
+/** Open Agent panels and Settings hear a Workspace default saved in any of
+ * them (T-190): Core sends no Agent event for it when nothing waits or is
+ * armed. The one that saved it is not told again. */
+type HearDefault = (value: WorkspaceDefault) => void;
+const workspaceDefaultSaved = new Set<HearDefault>();
+const tellWorkspaceDefault = (value: WorkspaceDefault, from: HearDefault | null) =>
+  workspaceDefaultSaved.forEach((hear) => hear !== from && hear(value));
+
 /** "At a glance": this agent's choice, or the workspace default. */
 export function AutoContinueSetting({
   detail,
@@ -229,11 +238,25 @@ export function AutoContinueSetting({
   disabled: boolean;
 }) {
   const agentId = detail.agent.id;
-  const { view, setView, error, setError } = useAutoContinue(
+  const { view, setView, error, setError, reload } = useAutoContinue(
     agentId,
     detail.agent.status,
   );
   const [busy, setBusy] = useState(false);
+  // Core confirmed it, so it is shown at once; the rest of this Agent's
+  // view (an armed or cancelled continue) is read again.
+  const heard = useRef<HearDefault | null>(null);
+  useEffect(() => {
+    const hear = ({ enabled }: WorkspaceDefault) => {
+      setView((current) => current && { ...current, workspace: enabled, enabled: current.agent ?? enabled });
+      void reload();
+    };
+    heard.current = hear;
+    workspaceDefaultSaved.add(hear);
+    return () => {
+      workspaceDefaultSaved.delete(hear);
+    };
+  }, [agentId]);
   if (!view) return <div id="agent-auto-continue" tabIndex={-1} className="auto-continue-setting">
     <dt>Usage limit</dt>
     <dd role={error ? "alert" : "status"}>{error || "Loading this Agent’s usage-limit policy…"}</dd>
@@ -259,10 +282,11 @@ export function AutoContinueSetting({
     setBusy(true);
     setError("");
     try {
-      const saved = await post<{ enabled: boolean }>("/claude/auto-continue", { enabled });
+      const saved = await post<WorkspaceDefault>("/claude/auto-continue", { enabled });
       // Core confirmed the default; the rest of the view is read again, and
       // a failed read must not read as a failed save (T-187).
       setView((current) => current && { ...current, workspace: saved.enabled });
+      tellWorkspaceDefault(saved, heard.current);
       try {
         setView(
           await api<AutoContinueView>(
@@ -312,5 +336,182 @@ export function AutoContinueSetting({
         )}
       </dd>
     </div>
+  );
+}
+
+/** What Core says of the Workspace default (T-190): what applies, and what
+ * is saved (`null`: nothing, so the built-in off). An older Core says only
+ * what applies. */
+interface WorkspaceDefault {
+  enabled: boolean;
+  saved?: boolean | null;
+}
+
+// The editor's own words (T-189); Core's errors are shown as they come.
+const defaultText = strings({
+  section: "Continue after a usage limit: Workspace default",
+  title: "Continue after a usage limit",
+  intro: "When Claude’s usage limit stops a Claude Code Agent on the Core host, Yuzuno can wait for the reset and then send one message to continue the task in the same session. This is the Workspace’s default for that.",
+  applies: "It applies at once to every such Agent without its own choice, existing ones included. Turned on, an Agent the limit has stopped, with its reset still ahead, continues after it; turned off, a continue that is waiting is cancelled. An Agent’s own choice, under Usage limit in its panel, stays as it is. Agents on SSH machines are not continued.",
+  source: (saved: boolean | null | undefined) =>
+    saved === undefined
+      ? "This Core doesn’t say whether a default is saved."
+      : saved === null
+        ? "Built in: wait for you."
+        : `Set for this Workspace: ${saved ? "continue after the reset" : "wait for you"}.`,
+  inUse: "In effect now",
+  label: "After a usage limit resets",
+  help: "For Agents that haven’t chosen for themselves.",
+  wait: "Wait for you",
+  resume: "Continue after the reset",
+  save: "Save default",
+  saving: "Saving…",
+  useBuiltIn: "Use built-in",
+}, {
+  section: "用量限额后继续：Workspace 默认值",
+  title: "用量限额后继续",
+  intro: "当 Claude 的用量限额让 Core 主机上的 Claude Code Agent 停下时，Yuzuno 可以等到额度重置，再发送一条消息，在同一会话中继续任务。这里是它的 Workspace 默认值。",
+  applies: "它立即作用于所有未自行选择的此类 Agent，包括现有 Agent。开启后，已被限额停下且重置时间尚未到的 Agent 会在重置后继续；关闭后，正在等待的继续会被取消。Agent 在其面板“用量限额”中的自身选择保持不变。SSH 机器上的 Agent 不会自动继续。",
+  source: (saved) =>
+    saved === undefined
+      ? "此 Core 未说明是否保存了默认值。"
+      : saved === null
+        ? "内置：等你处理。"
+        : `已为此 Workspace 设置：${saved ? "重置后继续" : "等你处理"}。`,
+  inUse: "当前生效",
+  label: "用量限额重置后",
+  help: "用于未自行选择的 Agent。",
+  wait: "等你处理",
+  resume: "重置后继续",
+  save: "保存默认值",
+  saving: "正在保存…",
+  useBuiltIn: "使用内置",
+});
+
+/**
+ * The Workspace default for continuing after a usage limit (T-94), in
+ * Settings (T-190): no Agent need be chosen, or exist. It is a chain
+ * (an Agent's own choice, else this, else off), so a change applies to the
+ * Agents that follow it now, existing ones included. What is shown after a
+ * save is Core's own answer to it, never read again, so a saved change is
+ * not reported as failed; only a refused or failed save says so. Open
+ * Agent panels are told, and read their own view again; a default saved
+ * from a panel is shown here too.
+ */
+export function AutoContinueDefault({ active }: { active: boolean }) {
+  const t = useStrings(defaultText);
+  const [view, setView] = useState<WorkspaceDefault | null>(null);
+  const [draft, setDraft] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const heard = useRef<HearDefault | null>(null);
+  useEffect(() => {
+    const hear = (value: WorkspaceDefault) => {
+      setView(value);
+      setDraft(value.enabled);
+    };
+    heard.current = hear;
+    workspaceDefaultSaved.add(hear);
+    return () => {
+      workspaceDefaultSaved.delete(hear);
+    };
+  }, []);
+  useEffect(() => {
+    if (!active) return;
+    const controller = new AbortController();
+    setError("");
+    void api<WorkspaceDefault>("/claude/auto-continue", { signal: controller.signal })
+      .then((value) => {
+        if (controller.signal.aborted) return;
+        setView(value);
+        setDraft(value.enabled);
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted) setError(errorText(e));
+      });
+    return () => controller.abort();
+  }, [active]);
+  async function save(enabled: boolean | null) {
+    if (saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      const value = await post<WorkspaceDefault>("/claude/auto-continue", { enabled });
+      setView(value);
+      setDraft(value.enabled);
+      tellWorkspaceDefault(value, heard.current);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+  const changed = !!view && draft !== view.enabled;
+  // Only a saved default can be deleted; an older Core can't say.
+  const own = view?.saved === true || view?.saved === false;
+  return (
+    <section className="settings-section auto-continue-default" aria-label={t.section}>
+      <header className="settings-section-heading">
+        <div>
+          <h3>{t.title}</h3>
+          <p>{t.intro}</p>
+          <p>{t.applies}</p>
+          {view && (
+            <p className="settings-row-help auto-continue-source" data-saved={String(view.saved)}>
+              {t.source(view.saved)}
+            </p>
+          )}
+        </div>
+        {view && (
+          <span className="settings-current" title={t.inUse}>
+            {view.enabled ? t.resume : t.wait}
+          </span>
+        )}
+      </header>
+      {view && (
+        <div className="settings-group">
+          <label className="settings-row">
+            <span className="settings-row-main">
+              <span className="settings-row-title">{t.label}</span>
+              <span className="settings-row-help">{t.help}</span>
+            </span>
+            <select
+              className="settings-select"
+              aria-label={t.label}
+              value={draft ? "on" : "off"}
+              disabled={saving}
+              onChange={(e) => {
+                setError("");
+                setDraft(e.target.value === "on");
+              }}
+            >
+              <option value="off">{t.wait}</option>
+              <option value="on">{t.resume}</option>
+            </select>
+          </label>
+          {(changed || saving || own) && (
+            <div className="settings-row settings-row-end">
+              <div className="settings-row-action">
+                {own && (
+                  <button type="button" className="secondary-button" disabled={saving} onClick={() => void save(null)}>
+                    {t.useBuiltIn}
+                  </button>
+                )}
+                {(changed || saving) && (
+                  <button type="button" className="primary-button" disabled={saving} onClick={() => void save(draft)}>
+                    {saving ? t.saving : t.save}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {error && (
+        <p className="updates-error github-error" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
   );
 }
