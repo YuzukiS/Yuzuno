@@ -76,7 +76,11 @@ function mount(defaults) {
     const body = init.body && JSON.parse(init.body);
     calls.push({ url, method: init.method || "GET", body });
     const answer = (status, value) => ({ ok: status < 400, status, json: async () => value, text: async () => JSON.stringify(value) });
-    if (url.endsWith("/agent-defaults")) return defaults === null ? answer(404, { error: "Not found" }) : answer(200, defaults);
+    if (url.includes("/agent-defaults")) {
+      // A function answers per project (T-190: `?projectId=`).
+      const value = typeof defaults === "function" ? defaults(new URL(url, "http://isolated.test/").searchParams.get("projectId")) : defaults;
+      return value === null ? answer(404, { error: "Not found" }) : answer(200, value);
+    }
     if (url.endsWith("/machines")) return answer(200, { machines: [local] });
     if (url.endsWith("/models?harness=claude")) return answer(200, { models: claudeModels });
     if (url.endsWith("/models")) return answer(200, { models: [{ id: "gpt", model: "gpt", displayName: "GPT" }] });
@@ -85,8 +89,8 @@ function mount(defaults) {
   };
   window.eval(bundle);
   const page = { window, document: window.document, calls, errors, created: [] };
-  page.open = async () => {
-    window.renderCreate({ open: true, close() {}, defaultCwd: "/workspace", disabled: false, onCreated: (agent) => page.created.push(agent) });
+  page.open = async (extra = {}) => {
+    window.renderCreate({ open: true, close() {}, defaultCwd: "/workspace", disabled: false, onCreated: (agent) => page.created.push(agent), ...extra });
     await tick();
     await tick();
   };
@@ -205,4 +209,53 @@ test("a Core that doesn't report defaults: the dialog works as before and says t
   await type(page, "Name", "Ume");
   const body = await submit(page);
   assert.deepEqual([body.harness, "permissionPreset" in body], ["codex", false]);
+});
+
+test("a project's overrides come in when it is chosen: the harness follows unless this Agent chose one, and only its own choice is sent", async () => {
+  const workspace = view({ harness: "claude", claudePermissionMode: "auto" });
+  // As Core answers for a project (agent_defaults::view): its harness and Codex permissions.
+  const lab = {
+    ...workspace,
+    effective: {
+      harness: { value: "codex", source: "project" },
+      codexPermissionPreset: { value: "full", source: "project" },
+      claudePermissionMode: { value: "auto", source: "workspace" },
+    },
+    project: { id: "p1", saved: { harness: "codex", codexPermissionPreset: "full" }, inherited: workspace.effective },
+  };
+  const projects = [{ id: "p1", name: "Lab", defaultDirs: {}, archivedAt: null, createdAt: "", updatedAt: "" }];
+  const page = mount((project) => (project === "p1" ? lab : workspace));
+  await page.open({ projects });
+  await until(() => picked(page, "Harness") === "claude", "the Workspace's default harness");
+  await pick(page, "Project", "p1");
+  await until(() => picked(page, "Harness") === "codex", "the project's harness");
+  assert.ok(page.calls.some((c) => c.url.includes("/agent-defaults?projectId=p1")), "read for that project");
+  assert.match(page.document.body.textContent, /Set for this project: Codex for new/);
+  assert.match(group(page, "Permissions").textContent, /Default · /);
+  await type(page, "Name", "Lab agent");
+  const inLab = await submit(page);
+  assert.equal(inLab.harness, "codex");
+  assert.equal(inLab.projectId, "p1");
+  assert.equal("permissionPreset" in inLab, false, "the project's default is Core's to apply");
+  assert.deepEqual(page.errors, []);
+  // A harness this Agent chose (a change, not a click on the one shown) stays when the project
+  // changes, and that project's Claude Code mode is not carried over to it.
+  const claudeLab = {
+    ...workspace,
+    effective: { ...workspace.effective, harness: { value: "claude", source: "project" }, claudePermissionMode: { value: "auto", source: "project" } },
+    project: { id: "p1", saved: { harness: "claude", claudePermissionMode: "auto" }, inherited: workspace.effective },
+  };
+  const again = mount((project) => (project === "p1" ? claudeLab : workspace));
+  await again.open({ projects });
+  await until(() => picked(again, "Harness") === "claude", "the Workspace's default harness");
+  await pick(again, "Harness", "codex");
+  await pick(again, "Project", "p1");
+  await until(() => again.calls.some((c) => c.url.includes("/agent-defaults?projectId=p1")), "read for the project");
+  await tick();
+  assert.equal(picked(again, "Harness"), "codex", "this Agent's own choice stays");
+  await type(again, "Name", "Chosen");
+  const chosen = await submit(again);
+  assert.equal(chosen.harness, "codex");
+  assert.equal("permissionPreset" in chosen || "permissionMode" in chosen, false);
+  assert.deepEqual(again.errors, []);
 });

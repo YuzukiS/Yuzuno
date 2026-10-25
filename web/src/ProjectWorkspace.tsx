@@ -34,6 +34,7 @@ import type { Agent, Project, ProjectUsage } from "./types";
 import "./projects.css";
 import { GitHubLinks } from "./GitHubLinks";
 import { ProjectServices } from "./ProjectServices";
+import { AgentDefaults } from "./AgentDefaults";
 import { HomeContentEditors } from "./home/HomeContentEditors";
 
 function useOutsideClose(
@@ -593,6 +594,7 @@ function ProjectDetail({
       <GitHubLinks key={project.id} projectId={project.id} disabled={archived} />
       <ProjectServices key={`services:${project.id}`} projectId={project.id} machines={machines} disabled={archived} />
       <HomeContentEditors key={`editors:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
+      <AgentDefaults key={`defaults:${project.id}`} active projectId={project.id} disabled={archived} />
       {archived && (
         <p className="project-note project-archived-note">
           <Archive size={14} /> Archived. Its agents and tasks stay where they

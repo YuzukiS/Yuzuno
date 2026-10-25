@@ -251,11 +251,13 @@ export function RemoteCreateAgent({
     return () => controller.abort();
   }, [open, disabled, remote, harness, modelReload, mode]);
 
-  // Read on each opening, so a change in Settings or another client shows.
+  // Read on each opening, so a change in Settings or another client shows,
+  // and again for the project chosen: its overrides come before the
+  // Workspace's (T-190).
   useEffect(() => {
     if (!open || disabled || mode !== "new") return;
     const controller = new AbortController();
-    void readAgentDefaults(controller.signal)
+    void readAgentDefaults(controller.signal, projectId || undefined)
       .then((view) => {
         if (controller.signal.aborted) return;
         const fallback = view?.effective?.harness?.value;
@@ -277,7 +279,7 @@ export function RemoteCreateAgent({
         if (!controller.signal.aborted) setDefaults("unknown");
       });
     return () => controller.abort();
-  }, [open, disabled, mode]);
+  }, [open, disabled, mode, projectId]);
   const known = defaults && defaults !== "unknown" ? defaults : null;
   const defaultPermission =
     harness === "claude"
