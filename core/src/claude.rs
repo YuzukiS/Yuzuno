@@ -1988,7 +1988,7 @@ pub(crate) fn settle_open_tools(turn: &mut Value) {
     }
 }
 
-fn refresh_status(d: &mut AgentDetail) {
+pub(crate) fn refresh_status(d: &mut AgentDetail) {
     refresh_meta_status(&d.turns, &mut d.agent, &d.pending);
 }
 

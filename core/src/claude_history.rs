@@ -431,6 +431,10 @@ pub(crate) struct Applied {
 /// the record holds by now is skipped, so applying twice adds nothing.
 /// `messages`: the saved messages by offset (`history_messages`).
 pub(crate) fn apply(d: &mut AgentDetail, plan: &Plan, entries: &[Entry], messages: &HashMap<usize, Value>, now: DateTime<Utc>) -> Applied {
+    // What Claude saved says nothing about what the Agent does now. Projecting
+    // a turn from outside shows it in progress for a moment, which reads as
+    // working; the Agent's own status is put back below (T-184).
+    let status = d.agent.status.clone();
     let mut applied = Applied::default();
     let by_offset: HashMap<usize, &Entry> = entries.iter().map(|e| (e.offset, e)).collect();
     let mut touched: Vec<String> = Vec::new();
@@ -541,6 +545,9 @@ pub(crate) fn apply(d: &mut AgentDetail, plan: &Plan, entries: &[Entry], message
             claude::settle_open_tools(t);
         }
     }
+    // As it was, but for what is still open: a Turn in progress, a request.
+    d.agent.status = status;
+    claude::refresh_status(d);
     applied.turns = touched;
     applied
 }
@@ -736,6 +743,32 @@ mod tests {
         d.turns[0]["status"] = "completed".into();
         let (entries, _) = saved(&[prompt("t1", "List files"), calls("a1", "m1", "c1", None)], &[]);
         assert!(plan(&d, &entries).steps.is_empty());
+    }
+
+    /// What Claude saved while Core wasn't reading (a remote host goes on
+    /// without Core) says nothing about what the Agent does now: a backfill
+    /// leaves its status as it was, but for the Turns and requests still open.
+    #[test]
+    fn a_backfilled_turn_from_outside_leaves_the_agent_as_it_was() {
+        let base = || detail(json!([{"id":"t1","status":"completed","_claudeAssistantSeen":{"a1":true},"items":[
+            {"id":"t1:input","type":"userMessage","content":[{"type":"text","text":"Hi"}],"nativeUuid":"t1"},
+            {"id":"m1","type":"agentMessage","text":"Hello","_yuzunoCompletedText":"Hello"}]}]));
+        let head = vec![prompt("t1", "Hi"), said("a1", "m1", "Hello", "end_turn"), system("s1")];
+        let ended = vec![prompt("p2", "Mail arrived"), said("a2", "m2", "Done.", "end_turn"), system("s2")];
+        let cut = vec![prompt("p2", "Mail arrived"), calls("a2", "m2", "c2", None)];
+        // Ended as Claude saved it, or cut short: completed or unknown, and the Agent idle either way.
+        for (tail, status) in [(&ended, "completed"), (&cut, "outcomeUnknown")] {
+            let mut d = base();
+            backfill(&mut d, &[head.clone(), tail.clone()].concat(), &[]);
+            assert_eq!(turn(&d, "native-p2")["status"], status);
+            assert!(d.turns.iter().all(|t| t["status"] != "inProgress"));
+            assert_eq!(d.agent.status, "idle", "no Turn runs, so the Agent is not working ({status})");
+        }
+        // A status the backfill has no say in stays as it was.
+        let mut d = base();
+        d.agent.status = "uncertain".into();
+        backfill(&mut d, &[head.clone(), ended.clone()].concat(), &[]);
+        assert_eq!(d.agent.status, "uncertain");
     }
 
     #[test]
