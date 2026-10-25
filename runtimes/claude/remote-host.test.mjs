@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.YUZUNO_HOST_POLL_MS = '50';
-const { RemoteHost, DENY_MESSAGE, busy } = await import('./remote-host.mjs');
+process.env.YUZUNO_HOST_EXIT_MS = '300';
+process.env.YUZUNO_HOST_KILL_MS = '300';
+const { RemoteHost, DENY_MESSAGE, busy, idle } = await import('./remote-host.mjs');
 
 // A scripted bridge, run as a real child process: it accepts one start, a
 // send opens a turn that asks for approval (or works for `ms` without one),
@@ -45,11 +47,17 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       reply({ interrupted: true });
       end({ interrupted: true });
       return;
-    case 'status': return reply({ ready: started, turnId: turn, pendingCount: pending.size });
+    case 'status':
+      if (process.env.FAKE_STATUS === 'silent') return;
+      return reply({ ready: started, turnId: turn, pendingCount: pending.size, configuring: false, interrupting: false });
     default: return reply({});
   }
 });
-process.stdin.on('end', () => process.exit(0));
+// FAKE_STUBBORN: 1 ignores the end of stdin (SIGTERM still ends it), 2 also
+// ignores SIGTERM.
+if (process.env.FAKE_STUBBORN === '2') process.on('SIGTERM', () => {});
+if (process.env.FAKE_STUBBORN) setInterval(() => {}, 1000);
+else process.stdin.on('end', () => process.exit(0));
 `;
 
 function setup(t) {
@@ -107,6 +115,15 @@ test('busy() is true only while the bridge has work', () => {
   assert.equal(busy({ turnId: 't1', pendingCount: 0 }), true);
   assert.equal(busy({ turnId: null, pendingCount: 1 }), true);
   assert.equal(busy({ turnId: null, pendingCount: 0, interrupting: true }), true);
+});
+
+test('idle() is true only for a started bridge that said it has no work', () => {
+  const quiet = { ready: true, turnId: null, pendingCount: 0, configuring: false, interrupting: false };
+  assert.equal(idle(quiet), true);
+  assert.equal(idle(null), false, 'no answer is not idle');
+  for (const change of [{ ready: false }, { turnId: 't1' }, { pendingCount: 1 }, { configuring: true }, { interrupting: true }, { configuring: undefined }]) {
+    assert.equal(idle({ ...quiet, ...change }), false, JSON.stringify(change));
+  }
 });
 
 test('its own state is published before its socket accepts anyone, replacing what an earlier host left (T-156)', async t => {
@@ -233,4 +250,94 @@ test('another client while the bridge is idle replaces the first, with a fresh b
   const response = await second.next(f => f.id === '1');
   assert.ok(response.result?.started, 'a fresh bridge accepted the second start');
   assert.equal(received().filter(command => command.op === 'start').length, 2);
+});
+
+test('host_stop on an idle host closes the bridge, waits for its exit and says so; the host exits once the client closes (T-184)', async t => {
+  const { host, root, stopped, received, log } = setup(t);
+  await host.listen();
+  const c = await client(host.socketPath);
+  c.send({ op: 'start', id: '1', cwd: '/tmp' });
+  await c.next(f => f.id === '1');
+  c.send({ op: 'host_stop', id: '2' });
+  const answer = await c.next(f => f.id === '2');
+  assert.deepEqual(answer.result, { stopped: true, exit: { code: 0, signal: null } });
+  assert.equal(host.bridge, null);
+  assert.ok(!received().some(command => command.op === 'host_stop'), 'the host answers it; the bridge never sees it');
+  // Stopping: a reconnect waits rather than attach (remote_helper.py claude_ensure).
+  assert.equal(JSON.parse(readFileSync(join(root, 'state.json'), 'utf8')).stopping, true);
+  const late = await client(host.socketPath);
+  await late.closed;
+  assert.equal(late.frames.length, 0, 'no new client is taken');
+  c.send({ op: 'send', id: '3', ms: 10 });
+  assert.match((await c.next(f => f.id === '3')).error, /stopping/);
+  c.send({ op: 'host_stop', id: '4' });
+  assert.deepEqual((await c.next(f => f.id === '4')).result, { stopped: null, reason: 'this Claude host is already stopping' }, 'not a refusal: a stop has begun');
+  c.socket.end();
+  assert.equal(await stopped, 0);
+  const stopping = log().filter(entry => entry.event === 'stopping');
+  assert.deepEqual(stopping.map(entry => entry.reason), ['disconnected by the user']);
+  assert.equal(log().find(entry => entry.event === 'bridgeClosed').exited, true);
+  assert.equal(JSON.parse(readFileSync(join(root, 'state.json'), 'utf8')).stopped, true);
+});
+
+test('host_stop while a turn runs or an approval waits is refused and changes nothing (T-184)', async t => {
+  const { host, received } = setup(t);
+  await host.listen();
+  const c = await client(host.socketPath);
+  c.send({ op: 'start', id: '1', cwd: '/tmp' });
+  await c.next(f => f.id === '1');
+  c.send({ op: 'send', id: '2', ms: 400 });
+  await c.next(f => f.id === '2');
+  c.send({ op: 'host_stop', id: '3' });
+  assert.deepEqual((await c.next(f => f.id === '3')).result, { stopped: false, reason: 'Claude on this machine is not idle' });
+  await c.next(f => f.type === 'event');
+  c.send({ op: 'send', id: '4', ask: true });
+  await c.next(f => f.type === 'permission');
+  c.send({ op: 'host_stop', id: '5' });
+  assert.equal((await c.next(f => f.id === '5')).result.stopped, false);
+  assert.equal(host.stopping, false);
+  assert.ok(host.bridge, 'the bridge is kept');
+  // The same client goes on as before.
+  c.send({ op: 'respond', id: '6', requestId: 'r1', decision: 'allow' });
+  await c.next(f => f.id === '6');
+  assert.deepEqual(received().filter(command => command.op === 'respond').map(command => command.decision), ['allow']);
+});
+
+test('host_stop before the bridge has started, or when it does not answer its status, stops nothing and is not called a refusal (T-184)', async t => {
+  // This bridge never answers a status question (it reads the variable as it starts).
+  process.env.FAKE_STATUS = 'silent';
+  t.after(() => { delete process.env.FAKE_STATUS; });
+  const { host } = setup(t);
+  await host.listen();
+  const c = await client(host.socketPath);
+  c.send({ op: 'host_stop', id: '1' });
+  assert.deepEqual((await c.next(f => f.id === '1')).result, { stopped: null, reason: "Claude on this machine didn't answer whether it is idle" }, 'nothing started: no status to trust');
+  c.send({ op: 'start', id: '2', cwd: '/tmp' });
+  await c.next(f => f.id === '2');
+  c.send({ op: 'host_stop', id: '3' });
+  assert.deepEqual((await c.next(f => f.id === '3', 15000)).result, { stopped: null, reason: "Claude on this machine didn't answer whether it is idle" });
+  assert.equal(host.stopping, false);
+  assert.ok(host.bridge);
+  delete process.env.FAKE_STATUS;
+});
+
+test('a bridge that only ends after SIGTERM, or not at all, is an unconfirmed stop, never stopped (T-184)', async t => {
+  const forced = { stopped: null, reason: 'the Claude bridge on this machine only ended after SIGTERM, so its Claude CLI may not have stopped' };
+  const never = { stopped: null, reason: "the Claude bridge on this machine didn't exit, even after SIGTERM" };
+  for (const [stubborn, expected] of [['1', forced], ['2', never]]) {
+    process.env.FAKE_STUBBORN = stubborn;
+    t.after(() => { delete process.env.FAKE_STUBBORN; });
+    const { host, stopped } = setup(t);
+    await host.listen();
+    const c = await client(host.socketPath);
+    c.send({ op: 'start', id: '1', cwd: '/tmp' });
+    await c.next(f => f.id === '1');
+    const pid = host.bridge.pid;
+    t.after(() => { try { process.kill(pid, 'SIGKILL'); } catch {} });
+    c.send({ op: 'host_stop', id: '2' });
+    assert.deepEqual((await c.next(f => f.id === '2')).result, expected);
+    c.socket.end();
+    assert.equal(await stopped, 0);
+    delete process.env.FAKE_STUBBORN;
+  }
 });

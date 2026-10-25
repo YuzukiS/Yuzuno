@@ -128,6 +128,18 @@ export function saveLanguagePreferences(preferences: LanguagePreferences): SaveO
   return outcome;
 }
 
+/** A choice taken from a preferences file (T-194): saved on this device
+ * first, and in effect only once saved. A refused save changes nothing,
+ * here or in this window. */
+export function importLanguagePreferences(preferences: LanguagePreferences): SaveOutcome {
+  const outcome = saveDeviceValue(STORAGE_KEY, preferences);
+  if (!outcome.saved) return outcome;
+  current = preferences;
+  lastSave = { outcome, action: "save", attempt: ++attempts };
+  notify();
+  return outcome;
+}
+
 /** Tries this visit's last write again, as it was. */
 export function retryLanguageWrite(): SaveOutcome {
   return lastSave?.action === "reset"
