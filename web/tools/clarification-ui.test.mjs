@@ -69,9 +69,13 @@ function mount() {
     document: window.document,
     errors,
     close: () => window.close(),
-    render: (props) =>
+    // A form is shown for one source in one Workspace, and saves its unsent
+    // answers under both (T-195); a test that needs another Workspace, or no
+    // Workspace yet, passes its own draftIdentity.
+    render: ({ identity = "a:result1", ...props } = {}) =>
       window.renderForm({
-        identity: "a:result1",
+        identity,
+        draftIdentity: JSON.stringify(["ws-1", identity]),
         form: clarificationExample,
         agentName: "Mori",
         ...props,
@@ -130,6 +134,77 @@ test("explicit submit sends the exact values once, rejected delivery preserves d
     page.close();
   }
 });
+// T-195: two saved Workspaces can sit at one address and their Agents can
+// share an id, so a key of the source alone handed each the other's answers.
+test("the same form source in two Workspaces keeps two sets of unsent answers", async () => {
+  const page = mount();
+  const type = (text) => {
+    const input = page.document.querySelector("textarea");
+    Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(input, text);
+    input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+  };
+  const submit = async () => {};
+  try {
+    page.render({ onSubmit: submit });
+    await tick();
+    type("written here");
+    await tick();
+    // The same source, read by the same page in another Workspace.
+    page.render({ draftIdentity: JSON.stringify(["ws-other", "a:result1"]), onSubmit: submit });
+    await tick();
+    assert.equal(
+      page.document.querySelector("textarea").value,
+      "/home/me/project",
+      "the other Workspace sees the form as it was published, not these answers",
+    );
+    type("written there");
+    await tick();
+    page.render({ onSubmit: submit });
+    await tick();
+    assert.equal(page.document.querySelector("textarea").value, "written here");
+    const keys = Object.keys(page.window.localStorage).filter((key) => key.startsWith("yuzuno.clarification.v1:"));
+    assert.equal(keys.length, 2, "one saved draft each, apart");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("answers typed before this window knows its Workspace are kept, reach disk once it does, and overwrite nothing", async () => {
+  const page = mount();
+  const submit = async () => {};
+  try {
+    // A form shown before /api/workspace answers has no Workspace to be
+    // attributed to, so nothing is read or written for it.
+    page.render({ draftIdentity: null, onSubmit: submit });
+    await tick();
+    const input = page.document.querySelector("textarea");
+    Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(input, "typed before the Workspace was known");
+    input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    await tick();
+    assert.deepEqual(
+      Object.keys(page.window.localStorage).filter((key) => key.startsWith("yuzuno.clarification.v1:")),
+      [],
+      "nothing is saved where no Workspace owns it",
+    );
+    // The Workspace arrives. What is on screen is the person's own newer
+    // answer: it stays, and is what reaches disk.
+    page.render({ onSubmit: submit });
+    await tick();
+    assert.equal(
+      page.document.querySelector("textarea").value,
+      "typed before the Workspace was known",
+      "what was typed is not thrown away",
+    );
+    const keys = Object.keys(page.window.localStorage).filter((key) => key.startsWith("yuzuno.clarification.v1:"));
+    assert.equal(keys.length, 1);
+    assert.match(page.window.localStorage.getItem(keys[0]), /typed before the Workspace was known/);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 test("IME does not submit, Escape stays inside the form, and uncertain receipts prevent another send", async () => {
   const page = mount();
   let escaped = 0;

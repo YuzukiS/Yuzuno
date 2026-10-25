@@ -68,30 +68,36 @@ function Form({
   });
   const [values, setValues] = useState(initial.values);
   const [storageError, setStorageError] = useState(initial.error);
-  // Whether these answers have reached disk, or been decided not to. The
-  // Workspace may arrive after this form is shown: then answers saved before
-  // are read back, unless something has been typed here since -- that is the
-  // person's own newer answer, and it is saved rather than overwritten.
-  const settled = useRef(!!key);
+  const [errors, setErrors] = useState<ClarificationErrors>({});
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState("");
+  // Which key the answers on screen belong to. Learning the Workspace after
+  // this form was shown (none -> a key) keeps what is on screen, which is the
+  // person's own newer answer, and saves it. Moving to a different
+  // Workspace's key is a different Workspace's form: its own saved answers
+  // are read, and nothing carries over from the one before it (T-195).
+  const belongTo = useRef(key);
   const typed = useRef(false);
   useEffect(() => {
-    if (!key || settled.current) return;
-    settled.current = true;
+    if (!key || belongTo.current === key) return;
+    const carry = belongTo.current === null && typed.current;
+    belongTo.current = key;
     try {
-      if (typed.current) saveClarificationDraft(localStorage, key, values);
-      else setValues(readClarificationDraft(localStorage, key, form));
+      if (carry) saveClarificationDraft(localStorage, key, values);
+      else {
+        typed.current = false;
+        setValues(readClarificationDraft(localStorage, key, form));
+        setErrors({});
+      }
       setStorageError("");
     } catch (error) {
       setStorageError(
-        typed.current
+        carry
           ? "This draft is only in this window. Keep it open until your answers are sent."
           : String(error),
       );
     }
   }, [key, form, values]);
-  const [errors, setErrors] = useState<ClarificationErrors>({});
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState("");
   const status = delivery?.status;
   const accepted = status === "accepted" || status === "queued";
   const uncertain =
