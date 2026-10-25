@@ -1,5 +1,10 @@
 // Synthetic, local-only fault injection shared by JSDOM and the isolated lab.
 // The production app does not import this module. No requests reach a Core.
+/** The Workspace this fixture's Core answers as. Session-private state is
+ * kept per Workspace (T-195), so a script that seeds or reads a draft, an
+ * unsent message or saved answers needs this id. */
+export const FIXTURE_WORKSPACE = "ws-connection";
+
 export function installConnectionFixture(options = {}) {
   const timer = window.setTimeout.bind(window);
   if (options.deadlineMs) {
@@ -78,6 +83,11 @@ export function installConnectionFixture(options = {}) {
     };
     let body = {};
     if (path === "/api/workspace") body = {
+      // A real Core always says which Workspace this is, and the page keeps
+      // drafts and unsent messages per Workspace (T-195).
+      // FIXTURE_WORKSPACE; spelled here because this function's source is
+      // what runs in the page, with no module scope around it.
+      workspace: { id: "ws-connection" },
       agents: agents.map(a => ({ ...a })), defaultCwd: "/fixture",
       runtime: { connected: !state.catalogError, ...(state.catalogError ? { error: "Simulated Codex catalog failure" } : {}) },
     };

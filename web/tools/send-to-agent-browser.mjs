@@ -7,7 +7,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { preview } from "vite";
 import { chromium } from "playwright-core";
-import { installConnectionFixture } from "./connection-fixture.mjs";
+import { installConnectionFixture, FIXTURE_WORKSPACE } from "./connection-fixture.mjs";
 
 const web = fileURLToPath(new URL("..", import.meta.url));
 const output = new URL("../../target/t152/browser/", import.meta.url);
@@ -25,10 +25,11 @@ try {
   await context.route("**/api/**", (route) => route.abort());
   await context.addInitScript(installConnectionFixture);
   // The other Agent already has a draft, which must be kept.
-  await context.addInitScript(() => {
-    if (!localStorage.getItem("yuzuno.composer.v1:b"))
-      localStorage.setItem("yuzuno.composer.v1:b", JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "Existing note for b." }] }));
-  });
+  // Saved under the Workspace and the Agent it was written in (T-195).
+  await context.addInitScript((key) => {
+    if (!localStorage.getItem(key))
+      localStorage.setItem(key, JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "Existing note for b." }] }));
+  }, `yuzuno.composer.v1:${JSON.stringify([FIXTURE_WORKSPACE, "b"])}`);
   // The Tasks board's reads (slice 2). A call that would change a task or send
   // a message is recorded as a write, never answered as done.
   await context.addInitScript(() => {
@@ -61,7 +62,8 @@ try {
   const reply = page.locator(".final-message", { hasText: "Codex fixture: initial fixture reply" });
   await reply.waitFor();
   const send = reply.locator(".send-to-agent-button");
-  const drafts = () => page.evaluate(() => JSON.parse(localStorage.getItem("yuzuno.composer.v1:b") || '{"parts":[]}').parts.map((p) => p.text).join(""));
+  const draftKey = `yuzuno.composer.v1:${JSON.stringify([FIXTURE_WORKSPACE, "b"])}`;
+  const drafts = () => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || '{"parts":[]}').parts.map((p) => p.text).join(""), draftKey);
 
   // The menu, from the keyboard.
   await send.click();
@@ -120,7 +122,7 @@ try {
   await page.mouse.up();
   const composer = page.locator('[data-composer-input][aria-label="Message Claude fixture"]');
   await composer.waitFor();
-  await page.waitForFunction(() => (localStorage.getItem("yuzuno.composer.v1:b") || "").includes("Forwarded from"));
+  await page.waitForFunction((key) => (localStorage.getItem(key) || "").includes("Forwarded from"), draftKey);
   check("the opened draft shows the existing note and the handoff", (await composer.textContent()).includes("Existing note for b.") && (await composer.textContent()).includes("initial fixture reply"));
   const first = await drafts();
   check("the drop added the reply after that Agent's existing draft and opened it", first.startsWith("Existing note for b.\n\nForwarded from Codex fixture’s conversation: Codex fixture’s reply") && first.endsWith("> Codex fixture: initial fixture reply"), first);
@@ -150,10 +152,10 @@ try {
   await page.mouse.move(...(await centre(row("b"))), { steps: 10 });
   await page.waitForTimeout(100);
   await page.mouse.up();
-  await page.waitForFunction((before) => {
-    const parts = JSON.parse(localStorage.getItem("yuzuno.composer.v1:b") || '{"parts":[]}').parts;
+  await page.waitForFunction(({ key, before }) => {
+    const parts = JSON.parse(localStorage.getItem(key) || '{"parts":[]}').parts;
     return parts.map((p) => p.text).join("").length > before;
-  }, first.length);
+  }, { key: draftKey, before: first.length });
   const second = await drafts();
   check("selected text lands as an excerpt after the earlier draft", second.startsWith(first + "\n\n") && second.includes(": an excerpt of Codex fixture’s reply") && second.endsWith("> initial fixture"), second.slice(first.length));
 
@@ -178,10 +180,10 @@ try {
   });
   await page.screenshot({ path: fileURLToPath(new URL("strip.png", output)) });
   await page.mouse.up();
-  await page.waitForFunction((length) => {
-    const parts = JSON.parse(localStorage.getItem("yuzuno.composer.v1:b") || '{"parts":[]}').parts;
+  await page.waitForFunction(({ key, length }) => {
+    const parts = JSON.parse(localStorage.getItem(key) || '{"parts":[]}').parts;
     return parts.map((p) => p.text).join("").length > length;
-  }, before.length);
+  }, { key: draftKey, length: before.length });
   const third = await drafts();
   check("the task lands after the draft as a reference, not an assignment", third.startsWith(before + "\n\nFor reference: task T-7 “Tidy the rail”") && third.includes("This does not assign it to you."), third.slice(before.length));
   check("the board closed and the strip is gone", (await page.locator(".collaboration").count()) === 0 && (await page.locator(".handoff-strip").count()) === 0);

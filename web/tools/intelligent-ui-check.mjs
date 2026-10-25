@@ -121,11 +121,16 @@ await page.addInitScript(() => {
       "yuzuno.appearance",
       JSON.stringify({ theme: "light", fontSize: 20, palette: "garden" }),
     );
-  if (!localStorage.getItem("yuzuno.drafts"))
-    localStorage.setItem(
-      "yuzuno.drafts",
-      JSON.stringify({ a: "保留这段原草稿。", b: "Hana's own draft." }),
-    );
+  // A draft is saved under the Workspace and the Agent it was written in
+  // (T-195); this fixture's /api/workspace says "fixture".
+  for (const [agent, text] of [["a", "保留这段原草稿。"], ["b", "Hana's own draft."]]) {
+    const key = `yuzuno.composer.v1:${JSON.stringify(["fixture", agent])}`;
+    if (!localStorage.getItem(key))
+      localStorage.setItem(
+        key,
+        JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text }] }),
+      );
+  }
 });
 await page.route("**/*", async (route) => {
   const request = route.request();
@@ -564,20 +569,23 @@ try {
     .click();
   const afterPressure = await composerDraft(composer);
   assert.ok(afterPressure.startsWith(storageDraft + "\n\n"));
-  // Saved where the composer keeps drafts since T-33, paste blocks included.
-  await page.waitForFunction((text) => {
-    const saved = localStorage.getItem("yuzuno.composer.v1:a");
+  // Saved where the composer keeps drafts since T-33, paste blocks included,
+  // under the Workspace and the Agent it was written in (T-195); this
+  // fixture's /api/workspace says "fixture".
+  const mine = JSON.stringify(["fixture", "a"]);
+  await page.waitForFunction(({ text, identity }) => {
+    const saved = localStorage.getItem("yuzuno.composer.v1:" + identity);
     return (
       !!saved &&
       JSON.parse(saved)
         .parts.map((part) =>
           part.kind === "text"
             ? part.text
-            : localStorage.getItem("yuzuno.paste.v1:a:" + part.bodyId),
+            : localStorage.getItem("yuzuno.paste.v1:" + identity + ":" + part.bodyId),
         )
         .join("") === text
     );
-  }, afterPressure);
+  }, { text: afterPressure, identity: mine });
   await page.reload();
   await page.locator(".interactive-result").waitFor();
   assert.equal(await composerDraft(composer), afterPressure);

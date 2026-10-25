@@ -124,9 +124,10 @@ async function mount(overrides = {}, shell, seed) {
   );
   const { window: w } = dom;
   w.localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
+  // Saved under the Workspace and Agent it was written in (T-195).
   w.localStorage.setItem(
-    "yuzuno.drafts",
-    JSON.stringify({ a: "中文 draft kept while updating" }),
+    `yuzuno.composer.v1:${JSON.stringify(["fixture-workspace", "a"])}`,
+    JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "中文 draft kept while updating" }] }),
   );
   w.matchMedia = (media) => ({
     media,
@@ -516,7 +517,7 @@ function draftReportContext(f, action, clickedAt, readsBefore, refused) {
       .map(({ request, count }) => (count > 1 ? `${request} ×${count}` : request)),
     // Each body write this test refused, in ms from the click (negative: before it).
     refusedBodyWrites: refused.map((at) => at - clickedAt),
-    savedDraftParts: read("yuzuno.composer.v1:a", (draft) => draft.parts.map((part) => part.kind)),
+    savedDraftParts: read(`yuzuno.composer.v1:${JSON.stringify(["fixture-workspace", "a"])}`, (draft) => draft.parts.map((part) => part.kind)),
     pastedChips: f.w.document.querySelectorAll(".pasted-text-chip").length,
     choice: read(intentKey, (intent) => ({
       from: intent.from,
@@ -644,9 +645,11 @@ test("Apply and Reload never republish a clean stale draft after another window 
         assert.equal(savedDraftText(f.w.localStorage, "a"), oldBody);
 
         // Independent writer shares storage, while this window retains its
-        // already-saved snapshot and makes no further local edits.
+        // already-saved snapshot and makes no further local edits. It writes
+        // the key this Workspace's Agent is saved under (T-195): another
+        // Workspace's key would be a different draft, not this one edited.
         new DraftStorage(f.w.localStorage).save(
-          "a",
+          JSON.stringify(["fixture-workspace", "a"]),
           external === "edit"
             ? { version: 1, nextNumber: 2, parts: [pastedText(newBody, 1)] }
             : emptyDraft(),
