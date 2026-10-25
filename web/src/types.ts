@@ -155,6 +155,9 @@ export interface NativeTurn {
   status: string;
   items: NativeItem[];
   error?: unknown;
+  /** Set when you ended this Turn because Codex's own history didn't have it
+   * (T-198): when it was found missing and when you ended it. */
+  missingNative?: { checkedAt: string; endedAt: string } | null;
   /** Native turn start and completion, in Unix seconds. */
   startedAt?: number | null;
   completedAt?: number | null;

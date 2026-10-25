@@ -3689,6 +3689,26 @@ test("a turn Codex never saved is ended only after confirming, from the notice o
     page.close();
   }
 });
+test("a turn you ended because Codex never saved it says so, with when (T-198)", async () => {
+  const page = await mount({ turnStatus: "interrupted" });
+  try {
+    await until(() => page.document.querySelector(".turn-interrupted"), "the interrupted turn");
+    assert.equal(page.document.querySelector(".turn-interrupted").textContent, "Turn interrupted · the conversation is still here.");
+  } finally {
+    page.close();
+  }
+  const ended = await mount({
+    extraTurns: [{ id: "lost", status: "interrupted", missingNative: { checkedAt: "2026-10-25T01:00:00Z", endedAt: "2026-10-25T01:05:00Z" },
+      items: [{ id: "lost-u", type: "userMessage", content: [{ type: "text", text: "Before the power cut." }] }] }],
+  });
+  try {
+    const note = await until(() => [...ended.document.querySelectorAll(".turn-interrupted")].find((n) => n.querySelector("time")), "the ended turn's note");
+    assert.match(note.textContent, /^Ended by you .+: Codex never saved this turn, so its result is unknown\. Anything it already did wasn’t undone\.$/);
+    assert.equal(note.querySelector("time").getAttribute("datetime"), "2026-10-25T01:05:00Z");
+  } finally {
+    ended.close();
+  }
+});
 test("while Codex said the session was running a turn, ending it can't be confirmed (T-198)", async () => {
   const page = await mount({
     status: "error",
