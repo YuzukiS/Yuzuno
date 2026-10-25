@@ -50,7 +50,7 @@ window.showSettings = () => { initializeAppearance(); root.render(<WorkspaceUpda
   await rm(fixture, { recursive: true, force: true });
 }
 
-const KEYS = { appearance: "yuzuno.appearance", sending: "yuzuno.preferences", time: "yuzuno.time" };
+const KEYS = { appearance: "yuzuno.appearance", sending: "yuzuno.preferences", time: "yuzuno.time", language: "yuzuno.language", notifications: "yuzuno.notifications" };
 const tick = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(check, what) {
   for (let i = 0; i < 200; i++) {
@@ -62,12 +62,25 @@ async function until(check, what) {
 }
 const deviceFile = (groups, over = {}) => ({ format: "yuzuno-device-preferences", version: 1, exportedAt: "2026-10-25T01:00:00.000Z", ...groups, ...over });
 
-function mount({ saved = {}, settings = false } = {}) {
+function mount({ saved = {}, settings = false, browserLanguages = ["en-US"] } = {}) {
   const dom = new JSDOM('<!doctype html><html><head><meta name="theme-color" content=""></head><body><div id="root"></div></body></html>', {
     url: "http://isolated.test/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole: new VirtualConsole(),
   });
   const { window } = dom;
   window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  Object.defineProperty(window.navigator, "languages", { configurable: true, value: browserLanguages });
+  // Nothing here may ask for permission or show a notification (T-194).
+  const notified = [];
+  window.Notification = class {
+    static permission = "default";
+    static requestPermission() {
+      notified.push("requestPermission");
+      return Promise.resolve("default");
+    }
+    constructor(title) {
+      notified.push(`notification: ${title}`);
+    }
+  };
   window.HTMLElement.prototype.scrollIntoView = function () {};
   for (const [key, value] of Object.entries(saved)) window.localStorage.setItem(KEYS[key], JSON.stringify(value));
   window.fetch = async (url) => {
@@ -91,7 +104,7 @@ function mount({ saved = {}, settings = false } = {}) {
   const section = () => document.querySelector("#settings-transfer");
   const group = (title) => section()?.querySelector(`.device-transfer-group[aria-label="${title}"]`);
   return {
-    window, document, exported,
+    window, document, exported, notified,
     stored: (key) => window.localStorage.getItem(KEYS[key]),
     /** The browser refuses to save `key` only. */
     refuse(key) {
@@ -126,7 +139,7 @@ test("the export is one versioned file of Appearance, the send key and time disp
   page.button(page.section(), "Export to a file").click();
   await until(() => page.exported.length === 1, "an export");
   const data = JSON.parse(await page.read(page.exported[0]));
-  assert.deepEqual(Object.keys(data).sort(), ["appearance", "exportedAt", "format", "sending", "time", "version"]);
+  assert.deepEqual(Object.keys(data).sort(), ["appearance", "exportedAt", "format", "language", "notifications", "sending", "time", "version"]);
   assert.deepEqual([data.format, data.version], ["yuzuno-device-preferences", 1]);
   assert.deepEqual(data.sending, { sendKey: "enter" });
   assert.deepEqual(data.time, { clock: "h24", timeZone: "UTC" });
@@ -189,11 +202,11 @@ test("an Appearance export reads as its Appearance group; a newer file, an unusa
   assert.match(page.section().querySelector("[role=alert]").textContent, /newer Yuzuno \(file version 2\).*Nothing was changed/);
   assert.equal(page.stored("sending"), null);
 
-  page.pick(JSON.stringify(deviceFile({ sending: { sendKey: "shout" }, time: { clock: "h24", extra: 1 } }, { language: "ja" })));
+  page.pick(JSON.stringify(deviceFile({ sending: { sendKey: "shout" }, time: { clock: "h24", extra: 1 } }, { keybindings: "ja" })));
   await until(() => page.group("Time display"), "the preview");
   assert.match(page.group("Sending messages").textContent, /Can’t be applied: the file holds a send key this version doesn’t have: "shout"\. Kept as now\./);
   assert.ok(!page.button(page.group("Sending messages"), "Apply Sending messages"), "it offers no Apply");
-  assert.match(page.section().textContent, /Not preferences this version knows, so left out: language, time\.extra/);
+  assert.match(page.section().textContent, /Not preferences this version knows, so left out: keybindings, time\.extra/);
   page.button(page.group("Time display"), "Apply Time display").click();
   await until(() => page.stored("time"), "time display saved");
   assert.deepEqual(JSON.parse(page.stored("time")), { clock: "h24", timeZone: null });
@@ -207,5 +220,87 @@ test("Settings → Appearance & interaction offers it, and its editor opens in p
   const open = await until(() => [...page.document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Open Move preferences to another device"), "the card");
   open.click();
   await until(() => page.document.querySelector("#settings-editor-transfer:not([hidden]) #settings-transfer"), "the editor");
+  page.close();
+});
+
+
+test("the language goes as chosen and notifications without whether the device notifies; each is applied on its own, and nothing asks for permission", async () => {
+  // A Chinese browser, the language left at System: the file says System, not Chinese.
+  const saved = { notifications: { enabled: false, categories: { needsYou: true, failed: true, finished: true, backupFailed: false }, preview: false, muted: false } };
+  const page = mount({ saved, browserLanguages: ["zh-CN"] });
+  const exportedFrom = mount({ saved: { notifications: { enabled: true, categories: { finished: false }, preview: true, muted: false } }, browserLanguages: ["zh-CN"] });
+  exportedFrom.button(exportedFrom.section(), "导出到文件").click();
+  await until(() => exportedFrom.exported.length === 1, "an export");
+  const data = JSON.parse(await exportedFrom.read(exportedFrom.exported[0]));
+  assert.deepEqual(data.language, { language: "system" }, "the choice, not what System resolved to");
+  assert.deepEqual(data.notifications, { categories: { needsYou: true, failed: true, finished: false, backupFailed: false }, preview: true, muted: false });
+  assert.ok(!("enabled" in data.notifications), "whether a device notifies is never in the file");
+  exportedFrom.close();
+
+  page.pick(JSON.stringify(deviceFile({
+    language: { language: "en" },
+    notifications: { enabled: true, categories: { finished: false, backupFailed: true, madeUp: true }, preview: true, muted: true },
+  })));
+  await until(() => page.group("通知"), "the preview");
+  assert.match(page.row("界面语言", "界面语言").textContent, /当前：系统.*文件：English/);
+  assert.match(page.row("通知", "Turn 完成").textContent, /当前：开.*文件：关/);
+  assert.match(page.row("通知", "每日备份失败").textContent, /当前：关.*文件：开/);
+  assert.match(page.row("通知", "显示所写的内容").textContent, /当前：关.*文件：开/);
+  assert.match(page.row("通知", "在此设备上静音").textContent, /当前：关.*文件：开/);
+  assert.match(page.group("通知").textContent, /此设备是否发送通知，以及此浏览器的权限，都保持不变/);
+  assert.match(page.section().textContent, /此版本不认识的偏好，因此未包含：notifications\.enabled, notifications\.categories\.madeUp/);
+  assert.equal(page.stored("language"), null, "a preview saves nothing");
+
+  // A refused save: not applied, and what is in effect stays.
+  page.refuse("notifications");
+  page.button(page.group("通知"), "应用通知").click();
+  await until(() => page.group("通知").querySelector("[role=alert]"), "the refusal");
+  assert.match(page.group("通知").querySelector("[role=alert]").textContent, /通知未应用：.*它保持不变。/);
+  assert.deepEqual(JSON.parse(page.stored("notifications")), saved.notifications, "nothing of it saved");
+  assert.match(page.row("通知", "Turn 完成").textContent, /当前：开/, "still in effect as it was");
+  page.allow();
+
+  page.button(page.group("通知"), "应用通知").click();
+  await until(() => JSON.parse(page.stored("notifications")).muted, "notifications saved");
+  assert.deepEqual(JSON.parse(page.stored("notifications")), {
+    enabled: false,
+    categories: { needsYou: true, failed: true, finished: false, backupFailed: true },
+    preview: true,
+    muted: true,
+  }, "the kinds, previews and mute; whether this device notifies stays its own");
+  assert.equal(page.stored("language"), null, "the language group stays");
+
+  // The language: applied on its own, and the page is then shown in it.
+  page.refuse("language");
+  page.button(page.group("界面语言"), "应用界面语言").click();
+  await until(() => page.group("界面语言").querySelector("[role=alert]"), "the language refusal");
+  assert.equal(page.stored("language"), null);
+  assert.match(page.row("界面语言", "界面语言").textContent, /当前：系统/, "still Chinese, as System gives");
+  page.allow();
+  page.button(page.group("界面语言"), "应用界面语言").click();
+  await until(() => page.group("Language"), "the page in English");
+  assert.deepEqual(JSON.parse(page.stored("language")), { language: "en" });
+  assert.match(page.group("Language").textContent, /Language applied and saved on this device\./);
+  assert.deepEqual(page.notified, [], "no permission asked, no notification shown");
+  page.close();
+});
+
+test("language and notification values must be ones this version has: anything else leaves the group as it is", async () => {
+  const page = mount();
+  page.pick(JSON.stringify(deviceFile({
+    language: { language: "fr" },
+    notifications: { categories: { failed: 1 }, preview: true },
+    time: { clock: "h24" },
+  })));
+  await until(() => page.group("Notifications"), "the preview");
+  assert.match(page.group("Language").textContent, /Can’t be applied: the file holds a language choice this version doesn’t have: "fr"\. Kept as now\./);
+  assert.match(page.group("Notifications").textContent, /Can’t be applied: the file holds not on or off for failed: 1\. Kept as now\./);
+  assert.ok(!page.button(page.group("Language"), "Apply Language") && !page.button(page.group("Notifications"), "Apply Notifications"), "no Apply for them");
+  page.pick(JSON.stringify(deviceFile({ notifications: { muted: "true" } })));
+  await until(() => page.group("Notifications")?.textContent.includes('"true"'), "a string is not on or off");
+  page.pick(JSON.stringify(deviceFile({ notifications: ["muted"] })));
+  await until(() => page.group("Notifications")?.textContent.includes("not settings"), "a list is not settings");
+  assert.deepEqual([page.stored("language"), page.stored("notifications")], [null, null], "nothing taken from them");
+  assert.deepEqual(page.notified, []);
   page.close();
 });
