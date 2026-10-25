@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, NetworkError } from "./api";
+import { BackupRetention } from "./BackupRetention";
 import "./workspace-backup.css";
 
 /** T-192: Settings → Backup. Core backs up its own Workspace, checks a
@@ -379,6 +380,14 @@ export function WorkspaceBackup({ active }: { active: boolean }) {
 
       {/* Keyed by operation: the next one starts with its own Stop. */}
       {watched && <OperationView key={watched.id} op={watched} canStop={canChange && running} />}
+
+      {canChange && (
+        <BackupRetention
+          defaultFolder={view?.schedule?.folder ?? null}
+          busy={busy}
+          onCheck={(path) => void send({ path: "/workspace/backups/check", body: { requestId: requestId(), path } })}
+        />
+      )}
 
       {view && view.recent.filter((op) => op.id !== watched?.id).length > 0 && (
         <div className="workspace-backup-recent">

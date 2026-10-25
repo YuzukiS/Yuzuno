@@ -597,3 +597,83 @@ async fn a_scheduled_run_is_an_ordinary_checked_backup_and_leaves_the_schedule_o
     assert_eq!(manifest.database.agents, 2);
     assert!(manifest.excluded.iter().any(|e| e.path == schedule::FILE), "a restored copy starts with no schedule");
 }
+
+/// Every path under `dir` with its kind, size and modification time, links
+/// not followed: what a read-only pass must leave exactly as it was.
+fn listing(dir: &Path) -> Vec<(String, bool, u64, std::time::SystemTime)> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, bool, u64, std::time::SystemTime)>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let meta = fs::symlink_metadata(&path).unwrap();
+            out.push((path.strip_prefix(root).unwrap().display().to_string(), meta.is_dir(), meta.len(), meta.modified().unwrap()));
+            if meta.is_dir() {
+                walk(root, &path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+fn operation(kind: &str, state: &str, request: Value, finished_at: Option<&str>) -> online::Operation {
+    serde_json::from_value(json!({"id": format!("{kind}-{state}"), "requestId": "r", "kind": kind, "state": state, "step": "files",
+        "request": request, "startedAt": "2026-10-24T00:00:00Z", "finishedAt": finished_at, "error": null, "result": null})).unwrap()
+}
+
+#[test]
+fn a_retention_preview_keeps_the_latest_protects_what_it_cannot_judge_and_deletes_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let (_data, made, manifest) = backed_up(root.path());
+    let me = manifest.workspace_id.clone();
+    let folder = root.path().join("backups");
+    fs::create_dir(&folder).unwrap();
+    for (name, at) in [("b-1", "2026-10-21T03:00:00Z"), ("b-2", "2026-10-22T03:00:00Z"), ("b-3", "2026-10-23T03:00:00Z")] {
+        let dir = copy_of(&made, &folder.join(name));
+        rewrite_manifest(&dir, |m| m["createdAt"] = json!(at));
+    }
+    let other = copy_of(&made, &folder.join("other"));
+    rewrite_manifest(&other, |m| m["workspaceId"] = json!("ws-someone-else"));
+    let damaged = copy_of(&made, &folder.join("damaged"));
+    fs::write(damaged.join(MANIFEST), "{not json").unwrap();
+    let newer = copy_of(&made, &folder.join("newer"));
+    rewrite_manifest(&newer, |m| m["version"] = json!(VERSION + 1));
+    fs::create_dir(folder.join("photos")).unwrap();
+    fs::write(folder.join("notes.txt"), "a file").unwrap();
+    fs::create_dir(folder.join(".b-4.partial-cafe0123")).unwrap();
+    std::os::unix::fs::symlink(&made, folder.join("linked")).unwrap();
+    let before = listing(&folder);
+
+    let preview = retention::preview(&folder, 2, &me, &[]).unwrap();
+    let verdict = |p: &retention::Preview, name: &str| p.entries.iter().find(|e| e.name == name).map(|e| (e.verdict, e.reason.clone())).unwrap();
+    assert_eq!([verdict(&preview, "b-3").0, verdict(&preview, "b-2").0, verdict(&preview, "b-1").0], ["keep", "keep", "remove"]);
+    assert_eq!(verdict(&preview, "other"), ("protected", "A backup of another Workspace".into()));
+    assert_eq!(verdict(&preview, "damaged").0, "unknown");
+    assert!(verdict(&preview, "newer").1.contains("format version"), "{:?}", verdict(&preview, "newer"));
+    assert_eq!(verdict(&preview, "newer").0, "unknown");
+    assert_eq!([verdict(&preview, "photos").0, verdict(&preview, "notes.txt").0], ["ignored", "ignored"]);
+    assert_eq!(verdict(&preview, ".b-4.partial-cafe0123").0, "protected");
+    assert_eq!(verdict(&preview, "linked"), ("unknown", "A link; not followed".into()));
+    let b1 = preview.entries.iter().find(|e| e.name == "b-1").unwrap();
+    assert_eq!(preview.removable_estimate_bytes, b1.estimate_bytes.unwrap(), "the removable ones' declared sizes");
+    assert!(b1.estimate_bytes.unwrap() > 0 && b1.last_checked_at.is_none());
+
+    // A running restore reading b-1 protects it.
+    let restoring = operation("restore", "running", json!({"from": folder.join("b-1"), "to": "/restored"}), None);
+    assert_eq!(verdict(&retention::preview(&folder, 2, &me, &[restoring]).unwrap(), "b-1"), ("protected", "A running restore uses it".into()));
+    // The only backup with a successful check on record is kept, until one of the latest is checked.
+    let checked_old = operation("check", "succeeded", json!({"path": folder.join("b-1")}), Some("2026-10-24T01:00:00Z"));
+    let with_check = retention::preview(&folder, 2, &me, &[checked_old.clone()]).unwrap();
+    assert_eq!(verdict(&with_check, "b-1").0, "protected");
+    assert_eq!(with_check.removable_estimate_bytes, 0);
+    let mut checked_new = operation("check", "succeeded", json!({"path": folder.join("b-3")}), Some("2026-10-24T02:00:00Z"));
+    checked_new.id = "check-new".into();
+    assert_eq!(verdict(&retention::preview(&folder, 2, &me, &[checked_old, checked_new]).unwrap(), "b-1").0, "remove");
+    // Keeping more than there are removes nothing; out-of-range counts and a linked folder are refused.
+    assert!(retention::preview(&folder, 5, &me, &[]).unwrap().entries.iter().all(|e| e.verdict != "remove"));
+    assert!(retention::preview(&folder, 0, &me, &[]).is_err());
+    assert!(retention::preview(&folder, retention::MAX_KEEP + 1, &me, &[]).is_err());
+    assert!(retention::preview(&folder.join("linked"), 2, &me, &[]).unwrap_err().to_string().contains("not followed"));
+    assert_eq!(listing(&folder), before, "a preview deletes and changes nothing");
+}

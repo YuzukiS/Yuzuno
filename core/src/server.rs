@@ -64,6 +64,8 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         .route("/api/desktop/start-profile", get(start_profile))
         // Backups and restores start only from Core's own port (T-192).
         .merge(crate::workspace_backup::online::changes())
+        // A preview of keeping the latest backups lists host folders (T-196).
+        .merge(crate::workspace_backup::retention::changes())
         // Only on Core's own port: a phone cannot change its own access.
         .merge(crate::remote_access::changes())
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
