@@ -15,7 +15,8 @@ export type SettingsNavigation = {
 export function SettingsCenter({ attention, navigation, renderEditor, onEditorChange }: {
   attention: boolean;
   navigation?: SettingsNavigation;
-  renderEditor: (editor: SettingsEditor, visible: boolean) => ReactNode;
+  /** `open` shows another editor, as its card would. */
+  renderEditor: (editor: SettingsEditor, visible: boolean, open: (editor: SettingsEditor) => void) => ReactNode;
   onEditorChange?: (editor: SettingsEditor | null) => void;
 }) {
   const [category, setCategory] = useState<SettingsCategory>("updates");
@@ -46,6 +47,10 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
     setQuery("");
     showEditor(entry.target.editor);
     setFocusEditor((old) => old + 1);
+  }
+  function openEditor(next: SettingsEditor) {
+    const entry = settingsCatalog.find((item) => item.target.kind === "editor" && item.target.editor === next);
+    if (entry) open(entry);
   }
   useEffect(() => {
     if (!focusEditor || !editor) return;
@@ -101,7 +106,7 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
             failed saves and unfinished compound inputs must not disappear. */}
         {visited.map((id) => <div key={id} hidden={searching || id !== editor} className="settings-editor"
           id={`settings-editor-${id}`} tabIndex={-1}>
-          {renderEditor(id, !searching && id === editor)}
+          {renderEditor(id, !searching && id === editor, openEditor)}
         </div>)}
       </div>
     </div>
