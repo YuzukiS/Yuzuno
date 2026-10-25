@@ -15,7 +15,9 @@ use yuzuno_workspace::{model::{AgentDetail, MessageInput}, workspace::Workspace}
 
 /// The fake Codex app-server, as agent_lifecycle.rs's, which also lists
 /// background terminals (`terminals.json`, failing while `terminals-fail`
-/// exists) and reads sub-agents (`children.json`: thread id to status).
+/// exists; a sub-agent's are `terminals-<thread>.json` and
+/// `terminals-fail-<thread>`) and reads sub-agents (`children.json`: thread
+/// id to status).
 const NATIVE: &str = r#"#!/usr/bin/python3
 import json, sys, pathlib, os
 root = pathlib.Path(__file__).parent
@@ -38,10 +40,11 @@ for line in sys.stdin:
         result = {'thread': {'id': child, 'parentThreadId': 'native-thread', 'status': {'type': read('children.json', {}).get(child, 'notLoaded')}}}
     elif method in ['thread/start','thread/resume','thread/read']: result = {'thread':thread(), 'model':'test'}
     elif method == 'thread/backgroundTerminals/list':
-        if (root / 'terminals-fail').exists():
+        suffix = '' if params.get('threadId') in (None, 'native-thread') else '-' + params['threadId']
+        if (root / ('terminals-fail' + suffix)).exists():
             emit({'id':req['id'],'error':{'code':-32603,'message':'list failed'}})
             continue
-        result = {'data': read('terminals.json', []), 'nextCursor': None}
+        result = {'data': read('terminals' + suffix + '.json', []), 'nextCursor': None}
     elif method == 'turn/start':
         t = thread()
         turn = {'id':'turn-1','status':'inProgress','error':None,'items':[{'id':'input','type':'userMessage','content':params['input']}]}
@@ -161,6 +164,16 @@ async fn work_or_doubt_refuses_a_codex_disconnect_and_changes_nothing() {
     refuse(ws.disconnect_agent("a").await.unwrap_err(), "sub-agent c1");
     kept(&ws, dir.path());
     std::fs::write(dir.path().join("children.json"), r#"{"c1":"idle"}"#).unwrap();
+
+    // A sub-agent at rest may still have left a terminal running.
+    std::fs::write(dir.path().join("terminals-c1.json"), r#"[{"id":"tail -f build.log"}]"#).unwrap();
+    refuse(ws.disconnect_agent("a").await.unwrap_err(), "sub-agent c1 has 1 background terminal");
+    kept(&ws, dir.path());
+    std::fs::remove_file(dir.path().join("terminals-c1.json")).unwrap();
+    std::fs::write(dir.path().join("terminals-fail-c1"), "").unwrap();
+    refuse(ws.disconnect_agent("a").await.unwrap_err(), "whether sub-agent c1's background terminals");
+    kept(&ws, dir.path());
+    std::fs::remove_file(dir.path().join("terminals-fail-c1")).unwrap();
 
     ws.send("a", "a task that runs".into()).await.unwrap();
     refuse(ws.disconnect_agent("a").await.unwrap_err(), "running");
