@@ -110,6 +110,7 @@ import { CodexGoalDialog } from "./CodexGoal";
 import { CodexPlanChip, CodexPlanDialog } from "./CodexPlan";
 import { RecoveryNotice, recoveryReason } from "./RecoveryNotice";
 import { EndMissingTurnDialog } from "./EndMissingTurn";
+import { DisconnectAgentDialog } from "./DisconnectAgent";
 import { AutoContinueSetting, QuotaResumeNotice } from "./QuotaResume";
 import { ClaudeRuntimeFacts } from "./ClaudeControls";
 import { ClaudeMcpStatus } from "./ClaudeMcpStatus";
@@ -315,6 +316,7 @@ export function App() {
   const [forkOpen, setForkOpen] = useState(false);
   // The Agent whose Turns missing from the native history are being ended (T-198).
   const [endMissingFor, setEndMissingFor] = useState<string | null>(null);
+  const [disconnectFor, setDisconnectFor] = useState<string | null>(null);
   // `/changes`: the record of one turn's file edits, that turn fixed when asked.
   const [changesRequest, setChangesRequest] = useState<{ agentId: string; turnId: string | null; nonce: number } | null>(null);
   // `/diff`: Git's diff of the Agent's folder, read when it opens.
@@ -782,7 +784,9 @@ export function App() {
   // draft waits until reconnecting has checked it. Claude resumes on send.
   const recovery =
     currentDetail && !previewMode ? recoveryReason(currentDetail) : null;
-  const holdForRecovery = (recovery === "running" && !isClaude) || recovery === "collaboration" || recovery === "missing";
+  // One the user disconnected is started only by their Reconnect (T-184).
+  const holdForRecovery =
+    (recovery === "running" && !isClaude) || recovery === "collaboration" || recovery === "missing" || recovery === "disconnected";
   // The one line under the draft that asks something of you; otherwise the
   // line stays quiet and shows the keys only while you type.
   const composerNotice = busy
@@ -794,7 +798,9 @@ export function App() {
         ? "Reconnect above to check the workspace connection; your draft is kept"
         : recovery === "missing"
           ? "End the unconfirmed turn above, or check again; your draft is kept"
-          : "Reconnect above to check the last turn; your draft is kept"
+          : recovery === "disconnected"
+            ? "You disconnected this agent. Reconnect above to send; your draft is kept"
+            : "Reconnect above to check the last turn; your draft is kept"
       : agent?.status === "uncertain"
         ? "Send to check the previous result first"
         : agent?.status === "offline"
@@ -1354,6 +1360,7 @@ export function App() {
       showAgent(id);
       setEndMissingFor(id);
     },
+    disconnect: (id) => setDisconnectFor(id),
   };
   useEffect(() => {
     if (!settingsFor || settingsFor !== selected) return;
@@ -3090,7 +3097,9 @@ export function App() {
                                 ? "Reconnect and check the workspace connection first"
                                 : recovery === "missing"
                                   ? "End the unconfirmed turn, or check again, first"
-                                  : "Reconnect and check the last turn first"
+                                  : recovery === "disconnected"
+                                    ? "Reconnect it first: you disconnected this agent"
+                                    : "Reconnect and check the last turn first"
                               : sendTurnId && !isClaude
                               ? "Add input to the current turn"
                               : "Send message"
@@ -3432,6 +3441,15 @@ export function App() {
           }}
         />
       )}
+      <DisconnectAgentDialog
+        agent={workspace?.agents.find((candidate) => candidate.id === disconnectFor) ?? null}
+        open={!!disconnectFor}
+        onOpenChange={(open) => { if (!open) setDisconnectFor(null); }}
+        onDone={(name) => {
+          setNotice(`${name} is disconnected. Nothing starts it again until you reconnect it.`);
+          refresh();
+        }}
+      />
       {agent && !isClaude && !isOpenCode && (
         <ForkCodexDialog
           key={`fork-${agent.id}`}
