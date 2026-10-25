@@ -3161,6 +3161,17 @@ export function App() {
             <LoaderCircle className="spin" size={22} />
             Opening your workspace…
           </div>
+        ) : !workspace ? (
+          // No Workspace was read, so it isn't known to have no Agents; the
+          // banner above has the error and Retry.
+          <div className="welcome welcome-unread" lang={langTag(language)}>
+            <div className="welcome-art">
+              <Yuzu size={142} />
+              <span className="welcome-ground" />
+            </div>
+            <h1>{shell.workspaceUnread}</h1>
+            <p>{shell.workspaceUnreadDetail}</p>
+          </div>
         ) : (
           <div className="welcome">
             <div className="welcome-eyebrow">

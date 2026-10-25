@@ -169,6 +169,9 @@ export const shellText = strings({
   openedSaved: (name: string) => `Opened ${name}’s saved conversation.`,
   created: (name: string) => `${name} has a little space of their own.`,
   projectReady: (name: string) => `${name} is ready. Add agents or tasks to it.`,
+  // In place of the welcome while no Workspace has been read.
+  workspaceUnread: "Your Workspace couldn’t be read.",
+  workspaceUnreadDetail: "Whether it has any Agents isn’t known yet. The banner above says why and can try again.",
 }, {
   status: {
     idle: "就绪",
@@ -317,6 +320,8 @@ export const shellText = strings({
   openedSaved: (name) => `已打开 ${name} 的已保存会话。`,
   created: (name) => `${name} 有了属于自己的小空间。`,
   projectReady: (name) => `${name} 已就绪。可以向其中添加 Agent 或任务。`,
+  workspaceUnread: "无法读取你的工作区。",
+  workspaceUnreadDetail: "目前还不知道其中是否有 Agent。上方的提示说明了原因，并可以重试。",
 });
 
 /** The shell's words in one language. */
