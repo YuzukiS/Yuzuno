@@ -28,6 +28,7 @@ import {AgentDefaults} from ${src("AgentDefaults.tsx")};
 import {ReviewSettings} from ${src("ReviewSettings.tsx")};
 const root=createRoot(document.getElementById('root'));
 window.renderDefaults=()=>root.render(<AgentDefaults active/>);
+window.renderProjectDefaults=(id,disabled=false)=>root.render(<AgentDefaults active projectId={id} disabled={disabled}/>);
 window.renderReview=()=>root.render(<ReviewSettings active/>);`,
   );
   const result = await build({
@@ -61,6 +62,17 @@ const view = (saved) => ({
     claudePermissionMode: { value: saved.claudePermissionMode ?? "default", source: saved.claudePermissionMode ? "workspace" : "builtin" },
   },
 });
+
+// As Core answers for a project: the Workspace's choices, the project's own, what it inherits.
+const projectView = (workspace, own) => {
+  const inherited = view(workspace).effective;
+  const pick = (field, built) => (own[field] !== undefined ? { value: own[field], source: "project" } : inherited[field] ?? built);
+  return {
+    ...view(workspace),
+    effective: { harness: pick("harness"), codexPermissionPreset: pick("codexPermissionPreset"), claudePermissionMode: pick("claudePermissionMode") },
+    project: { id: "p1", saved: own, inherited },
+  };
+};
 
 function mount(route) {
   const calls = [];
@@ -167,4 +179,51 @@ test("Code review from a Core that doesn't say where its reviewer comes from sho
   await until(() => page.document.querySelector("#settings-review .settings-current"), "the reviewer");
   assert.doesNotMatch(page.document.querySelector("#settings-review").textContent, /Set for this Workspace|Built in:/);
   assert.equal(button(page, "Use built-in"), undefined);
+});
+
+test("a project's defaults inherit until set there; saving goes to the project, and null inherits again", async () => {
+  const workspace = { harness: "claude", claudePermissionMode: "auto" };
+  let own = {};
+  const page = mount((url, method, body) => {
+    if (method === "POST") {
+      assert.match(url, /\/projects\/p1\/agent-defaults$/, "the project's own route, not the Workspace's");
+      own = Object.fromEntries(Object.entries({ ...own, ...body }).filter(([, v]) => v !== null));
+    } else {
+      assert.match(url, /\/agent-defaults\?projectId=p1$/);
+    }
+    return [200, projectView(workspace, own)];
+  });
+  page.window.renderProjectDefaults("p1");
+  await until(() => select(page, "Harness for new Agents"), "the project editor");
+  const section = () => page.document.querySelector('[aria-label="New Agent defaults for this project"]');
+  const text = () => section()?.textContent ?? "";
+  assert.match(text(), /For Agents created in this project/);
+  assert.match(text(), /Set for this Workspace: Claude Code/, "inherited, and from where");
+  const options = (label) => [...select(page, label).options].map((o) => o.textContent.trim());
+  assert.equal(options("Harness for new Agents")[0], "Inherit · Claude Code (Set for this Workspace)");
+  assert.equal(options("Codex permissions for new Agents")[0], "Inherit · Ask for approval (Built in)");
+  await choose(page, "Harness for new Agents", "codex");
+  await choose(page, "Codex permissions for new Agents", "auto");
+  button(page, "Save").click();
+  await until(() => posts(page).length === 1 && /Set for this project: Codex/.test(text()), "the project's choice");
+  assert.deepEqual(posts(page)[0].body, { harness: "codex", codexPermissionPreset: "auto" });
+  assert.match(text(), /Saved for this project/);
+  // Back to inherit: only that field is sent, as null; the other stays.
+  await choose(page, "Harness for new Agents", "");
+  button(page, "Save").click();
+  await until(() => posts(page).length === 2 && /Set for this Workspace: Claude Code/.test(text()), "inherited again");
+  assert.deepEqual(posts(page)[1].body, { harness: null });
+  assert.deepEqual(own, { codexPermissionPreset: "auto" });
+  button(page, "Inherit all").click();
+  await until(() => posts(page).length === 3, "all inherited");
+  assert.deepEqual(posts(page)[2].body, { harness: null, codexPermissionPreset: null, claudePermissionMode: null });
+  assert.deepEqual(page.errors, []);
+});
+
+test("an archived project's defaults are shown but can't be changed", async () => {
+  const page = mount(() => [200, projectView({}, { harness: "claude" })]);
+  page.window.renderProjectDefaults("p1", true);
+  await until(() => select(page, "Harness for new Agents"), "the project editor");
+  assert.equal(select(page, "Harness for new Agents").disabled, true);
+  assert.equal(button(page, "Inherit all").disabled, true);
 });

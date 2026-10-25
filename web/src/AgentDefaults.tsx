@@ -5,7 +5,9 @@ import {
   CODEX_PRESETS,
   type AgentDefaultsChange,
   type AgentDefaultsView,
+  type SavedDefaults,
   changeAgentDefaults,
+  changeProjectAgentDefaults,
   claudeModeText,
   codexPermissionText,
   harnessName,
@@ -13,12 +15,13 @@ import {
   sourceText,
 } from "./agent-defaults";
 
-/** One choice in the editor: "" is the built-in behaviour (no Workspace choice). */
+/** One choice in the editor: "" is no choice here (built in for the
+ * Workspace; inherited for a project). */
 type Draft = { harness: string; codexPermissionPreset: string; claudePermissionMode: string };
-const draftOf = (view: AgentDefaultsView): Draft => ({
-  harness: view.saved.harness ?? "",
-  codexPermissionPreset: view.saved.codexPermissionPreset ?? "",
-  claudePermissionMode: view.saved.claudePermissionMode ?? "",
+const draftFrom = (saved: SavedDefaults): Draft => ({
+  harness: saved.harness ?? "",
+  codexPermissionPreset: saved.codexPermissionPreset ?? "",
+  claudePermissionMode: saved.claudePermissionMode ?? "",
 });
 const FIELDS = ["harness", "codexPermissionPreset", "claudePermissionMode"] as const;
 
@@ -28,13 +31,19 @@ const FIELDS = ["harness", "codexPermissionPreset", "claudePermissionMode"] as c
  * is no choice at all; choosing it deletes the Workspace's value rather than
  * copying Yuzuno's. Existing Agents keep their own settings, and a machine
  * still decides at start whether it allows a permission.
+ *
+ * With `projectId`, the same fields for Agents created in that project: no
+ * choice there inherits the Workspace's (or the built-in), and clearing one
+ * deletes only that project's override.
  */
-export function AgentDefaults({ active }: { active: boolean }) {
+export function AgentDefaults({ active, projectId, disabled = false }: { active: boolean; projectId?: string; disabled?: boolean }) {
   const [view, setView] = useState<AgentDefaultsView | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
+  const own = (from: AgentDefaultsView) => (projectId ? from.project?.saved ?? {} : from.saved);
+  const draftOf = (from: AgentDefaultsView) => draftFrom(own(from));
   const adopt = (next: AgentDefaultsView) => {
     setView(next);
     setDraft(draftOf(next));
@@ -43,7 +52,7 @@ export function AgentDefaults({ active }: { active: boolean }) {
     if (!active) return;
     const controller = new AbortController();
     setError("");
-    void readAgentDefaults(controller.signal)
+    void readAgentDefaults(controller.signal, projectId)
       .then((value) => {
         if (!controller.signal.aborted) adopt(value);
       })
@@ -51,7 +60,8 @@ export function AgentDefaults({ active }: { active: boolean }) {
         if (!controller.signal.aborted) setError(errorText(e));
       });
     return () => controller.abort();
-  }, [active]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, projectId]);
   const savedDraft = view ? draftOf(view) : null;
   const changes: AgentDefaultsChange = {};
   if (draft && savedDraft) {
@@ -67,8 +77,12 @@ export function AgentDefaults({ active }: { active: boolean }) {
     setError("");
     setStatus("");
     try {
-      adopt(await changeAgentDefaults(change));
-      setStatus("Saved. Agents created from now on use these; existing Agents keep their settings.");
+      adopt(await (projectId ? changeProjectAgentDefaults(projectId, change) : changeAgentDefaults(change)));
+      setStatus(
+        projectId
+          ? "Saved for this project. Agents created in it from now on use these; existing Agents keep their settings."
+          : "Saved. Agents created from now on use these; existing Agents keep their settings.",
+      );
     } catch (e) {
       // The choice stays as made, to save again or change.
       setError(errorText(e));
@@ -77,22 +91,28 @@ export function AgentDefaults({ active }: { active: boolean }) {
     }
   }
   const effective = view?.effective;
+  // What "no choice here" means: the built-in for the Workspace, what the project inherits for a project.
+  const inherited = projectId ? view?.project?.inherited : undefined;
+  const none = (text: string, source?: Parameters<typeof sourceText>[0]) =>
+    projectId ? `Inherit · ${text} (${sourceText(source)})` : `Built in · ${text}`;
+  const locked = saving || disabled;
   const set = (field: keyof Draft) => (event: React.ChangeEvent<HTMLSelectElement>) => {
     setStatus("");
     setDraft((old) => (old ? { ...old, [field]: event.target.value } : old));
   };
   return (
     <section
-      id="settings-agent-defaults"
+      id={projectId ? undefined : "settings-agent-defaults"}
       className="settings-section agent-defaults-settings"
-      aria-label="New Agent defaults"
+      aria-label={projectId ? "New Agent defaults for this project" : "New Agent defaults"}
     >
       <header className="settings-section-heading">
         <div>
           <h3>New Agent defaults</h3>
           <p>
-            Used when an Agent is created, here or by another client. Existing Agents keep their own settings; change
-            those from each Agent.
+            {projectId
+              ? "For Agents created in this project. A setting left to inherit uses the Workspace’s choice, or the built-in. Existing Agents keep their own settings."
+              : "Used when an Agent is created, here or by another client. Existing Agents keep their own settings; change those from each Agent."}
           </p>
         </div>
         {effective && (
@@ -118,10 +138,12 @@ export function AgentDefaults({ active }: { active: boolean }) {
               className="settings-select"
               aria-label="Harness for new Agents"
               value={draft.harness}
-              disabled={saving}
+              disabled={locked}
               onChange={set("harness")}
             >
-              <option value="">Built in · {harnessName(view.builtIn.harness)}</option>
+              <option value="">
+                {none(harnessName(inherited?.harness.value ?? view.builtIn.harness), inherited?.harness.source)}
+              </option>
               <option value="codex">Codex</option>
               <option value="claude">Claude Code</option>
             </select>
@@ -142,10 +164,12 @@ export function AgentDefaults({ active }: { active: boolean }) {
               className="settings-select"
               aria-label="Codex permissions for new Agents"
               value={draft.codexPermissionPreset}
-              disabled={saving}
+              disabled={locked}
               onChange={set("codexPermissionPreset")}
             >
-              <option value="">Built in · {codexPermissionText(null)}</option>
+              <option value="">
+                {none(codexPermissionText(inherited ? inherited.codexPermissionPreset.value : null), inherited?.codexPermissionPreset.source)}
+              </option>
               {CODEX_PRESETS.map((preset) => (
                 <option key={preset} value={preset}>
                   {codexPermissionText(preset)}
@@ -168,10 +192,12 @@ export function AgentDefaults({ active }: { active: boolean }) {
               className="settings-select"
               aria-label="Claude Code permissions for new Agents"
               value={draft.claudePermissionMode}
-              disabled={saving}
+              disabled={locked}
               onChange={set("claudePermissionMode")}
             >
-              <option value="">Built in · {claudeModeText(view.builtIn.claudePermissionMode)}</option>
+              <option value="">
+                {none(claudeModeText(inherited?.claudePermissionMode.value ?? view.builtIn.claudePermissionMode), inherited?.claudePermissionMode.source)}
+              </option>
               {CLAUDE_MODES.map((mode) => (
                 <option key={mode} value={mode}>
                   {claudeModeText(mode)}
@@ -195,14 +221,14 @@ export function AgentDefaults({ active }: { active: boolean }) {
                   <button
                     type="button"
                     className="secondary-button"
-                    disabled={saving}
+                    disabled={locked}
                     onClick={() => void save({ harness: null, codexPermissionPreset: null, claudePermissionMode: null })}
                   >
-                    Use built-in for all
+                    {projectId ? "Inherit all" : "Use built-in for all"}
                   </button>
                 )}
                 {changed && (
-                  <button type="button" className="primary-button" disabled={saving} onClick={() => void save(changes)}>
+                  <button type="button" className="primary-button" disabled={locked} onClick={() => void save(changes)}>
                     {saving ? "Saving…" : "Save"}
                   </button>
                 )}
