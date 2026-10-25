@@ -58,7 +58,7 @@ const noticeText = strings({
   default: (workspace: boolean) => `Default · ${workspace ? "continue" : "wait for you"}`,
   resume: "Continue after reset",
   wait: "Wait for you",
-  makeDefault: (workspace: boolean) => (workspace ? "Make the default: wait for you" : "Make the default: continue"),
+  makeDefault: (workspace: boolean): string => (workspace ? "Make the default: wait for you" : "Make the default: continue"),
   savedUnread: (error: string) => `The default is saved, but this agent’s view couldn’t be read again: ${error}`,
 }, {
   limits: { five_hour: "5 小时", seven_day: "每周", seven_day_opus: "每周 Opus", seven_day_sonnet: "每周 Sonnet" },

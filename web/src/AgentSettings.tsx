@@ -21,7 +21,7 @@ const COMPACT_EXCEEDS = "The compaction threshold cannot exceed the configured w
 // descriptions, and Core's errors are shown as they came.
 const text = strings({
   button: "Agent settings",
-  buttonTitle: (claude: boolean) => (claude ? "Claude Code model, reasoning effort and approvals" : "Model, reasoning and permissions"),
+  buttonTitle: (claude: boolean): string => (claude ? "Claude Code model, reasoning effort and approvals" : "Model, reasoning and permissions"),
   model: "Model",
   andWhat: (claude: boolean) => ` & ${claude ? "approvals" : "reasoning"}`,
   title: (name: string) => `${name} · Agent settings`,
