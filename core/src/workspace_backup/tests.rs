@@ -787,3 +787,121 @@ fn a_removal_cut_off_says_what_is_left_and_nothing_finishes_it_on_its_own() {
     assert!(op.error.unwrap().contains("may be partly removed"));
     assert!(aside.is_dir(), "nothing is removed on restart");
 }
+
+/// Sets what `name`'s manifest declares: its database `bytes`, its files none.
+fn declare(folder: &Path, name: &str, bytes: u64) {
+    rewrite_manifest(&folder.join(name), |m| {
+        m["database"]["bytes"] = json!(bytes);
+        for file in m["files"].as_array_mut().unwrap() {
+            file["bytes"] = json!(0);
+        }
+    });
+}
+
+#[test]
+fn a_space_budget_keeps_only_what_fits_and_says_what_stays_and_why() {
+    use retention::{preview, Rule};
+    let root = tempfile::tempdir().unwrap();
+    let (folder, me, _) = three_backups(root.path());
+    let newest = preview(&folder, 3, &me, &[]).unwrap().entries.iter().find(|e| e.name == "b-3").unwrap().estimate_bytes.unwrap();
+    declare(&folder, "b-2", 10 << 20);
+    declare(&folder, "b-1", 1 << 20);
+    let budget = |bytes: u64| Rule { keep: 3, budget_bytes: Some(bytes) };
+    fn verdicts(p: &retention::Preview) -> Vec<(&str, &'static str)> {
+        p.entries.iter().map(|e| (e.name.as_str(), e.verdict)).collect()
+    }
+    let before = listing(&folder);
+
+    // No budget: the count alone, as before; the sizes are said to be declared ones.
+    let count = preview(&folder, 3, &me, &[]).unwrap();
+    assert_eq!(verdicts(&count), [("b-3", "keep"), ("b-2", "keep"), ("b-1", "keep")]);
+    assert!(count.budget.is_none());
+    assert!(count.size_basis.contains("manifest declares") && count.size_basis.contains("nothing is measured on disk"));
+    // Room for all three.
+    let roomy = preview(&folder, budget(newest + (11 << 20)), &me, &[]).unwrap();
+    assert_eq!(verdicts(&roomy), [("b-3", "keep"), ("b-2", "keep"), ("b-1", "keep")]);
+    assert_eq!(roomy.budget.as_ref().unwrap().state, "met");
+    // b-2 doesn't fit: it goes, and b-1 with it, small as it is; the newest stays.
+    let tight = preview(&folder, budget(newest + (5 << 20)), &me, &[]).unwrap();
+    assert_eq!(verdicts(&tight), [("b-3", "keep"), ("b-2", "remove"), ("b-1", "remove")]);
+    assert!(tight.entries[1].reason.starts_with("Beyond the space budget"), "{:?}", tight.entries[1]);
+    assert_eq!(tight.entries[2].reason, "Older than a backup beyond the space budget");
+    assert_eq!(tight.removable_estimate_bytes, 11 << 20);
+    let met = tight.budget.as_ref().unwrap();
+    assert_eq!((met.state, met.kept_estimate_bytes), ("met", newest));
+    // The count still caps what a budget keeps.
+    let capped = preview(&folder, Rule { keep: 1, budget_bytes: Some(1 << 40) }, &me, &[]).unwrap();
+    assert_eq!(verdicts(&capped), [("b-3", "keep"), ("b-2", "remove"), ("b-1", "remove")]);
+    // The newest alone over the budget: kept, and the budget is said to be out of reach.
+    let over = preview(&folder, budget(1), &me, &[]).unwrap();
+    assert_eq!(verdicts(&over), [("b-3", "keep"), ("b-2", "remove"), ("b-1", "remove")]);
+    let out = over.budget.as_ref().unwrap();
+    assert_eq!(out.state, "over");
+    assert!(out.reason.contains("the newest backup, always kept, declares"), "{}", out.reason);
+    // The only checked backup stays protected, and counts against the budget.
+    let checked = operation("check", "succeeded", json!({"path": folder.join("b-1")}), Some("2026-10-24T00:00:00Z"));
+    let protected = preview(&folder, budget(newest + (512 << 10)), &me, &[checked]).unwrap();
+    assert_eq!(verdicts(&protected), [("b-3", "keep"), ("b-2", "remove"), ("b-1", "protected")]);
+    let out = protected.budget.as_ref().unwrap();
+    assert_eq!(out.state, "over");
+    assert!(out.reason.contains("1 protected backup declares 1.0 MiB"), "{}", out.reason);
+    // A size that can't be trusted: that one and the older ones can't be judged, nor the budget.
+    declare(&folder, "b-2", 0);
+    let untrusted = preview(&folder, budget(1 << 40), &me, &[]).unwrap();
+    assert_eq!(verdicts(&untrusted), [("b-3", "keep"), ("b-2", "unknown"), ("b-1", "unknown")]);
+    let out = untrusted.budget.as_ref().unwrap();
+    assert_eq!(out.state, "unknown");
+    assert!(out.reason.starts_with("1 that stays has no size that can be trusted"), "{}", out.reason);
+    // Without a budget the count does not need sizes: unchanged.
+    assert_eq!(verdicts(&preview(&folder, 3, &me, &[]).unwrap()), [("b-3", "keep"), ("b-2", "keep"), ("b-1", "keep")]);
+    let error = preview(&folder, budget(0), &me, &[]).unwrap_err().to_string();
+    assert!(error.contains("A space budget must be more than 0"), "{error}");
+    // A preview, nothing more: only the manifests this test rewrote changed.
+    assert_eq!(listing(&folder).len(), before.len());
+}
+
+#[test]
+fn a_removal_under_a_space_budget_is_judged_again_under_that_budget() {
+    use retention::{preview, remove, Rule};
+    let root = tempfile::tempdir().unwrap();
+    let (folder, me, _) = three_backups(root.path());
+    let newest = preview(&folder, 3, &me, &[]).unwrap().entries.iter().find(|e| e.name == "b-3").unwrap().estimate_bytes.unwrap();
+    declare(&folder, "b-2", 10 << 20);
+    let rule = Rule { keep: 3, budget_bytes: Some(newest + (5 << 20)) };
+    let shown = preview(&folder, rule, &me, &[]).unwrap();
+    let sha = shown.entries.iter().find(|e| e.name == "b-2").unwrap().manifest_sha256.clone().unwrap();
+    // The count alone keeps b-2: removing it that way is refused, and nothing changes.
+    let refused = remove(&folder, 3, "b-2", &sha, &me, Vec::new, &Control::named("count"), retention::MAX_ENTRIES).unwrap_err().to_string();
+    assert!(refused.contains("not one that could be removed now: One of the latest 3"), "{refused}");
+    assert!(folder.join("b-2").is_dir());
+    // Under the budget it was previewed with, it is removed, after the newest was read back whole.
+    let done = remove(&folder, rule, "b-2", &sha, &me, Vec::new, &Control::named("budget"), retention::MAX_ENTRIES).unwrap();
+    assert_eq!(done["keptCheckedName"], "b-3");
+    assert!(!folder.join("b-2").exists() && folder.join("b-1").is_dir() && folder.join("b-3").is_dir());
+}
+
+#[test]
+fn a_space_budget_sets_aside_what_stays_before_sharing_it_out() {
+    use retention::{preview, Rule};
+    fn verdicts(p: &retention::Preview) -> Vec<(&str, &'static str)> {
+        p.entries.iter().map(|e| (e.name.as_str(), e.verdict)).collect()
+    }
+    let root = tempfile::tempdir().unwrap();
+    let (folder, me, _) = three_backups(root.path());
+    let newest = preview(&folder, 3, &me, &[]).unwrap().entries.iter().find(|e| e.name == "b-3").unwrap().estimate_bytes.unwrap();
+    declare(&folder, "b-2", 2 << 20);
+    declare(&folder, "b-1", 1 << 20);
+    // The newest and b-2 fit in it, but not with b-1, the only checked one, which stays:
+    // b-2 goes, and what stays fits (review 1900f874).
+    let rule = Rule { keep: 3, budget_bytes: Some(newest + (5 << 19)) };
+    let checked = operation("check", "succeeded", json!({"path": folder.join("b-1")}), Some("2026-10-24T00:00:00Z"));
+    let shared = preview(&folder, rule, &me, &[checked]).unwrap();
+    assert_eq!(verdicts(&shared), [("b-3", "keep"), ("b-2", "remove"), ("b-1", "protected")]);
+    let budget = shared.budget.as_ref().unwrap();
+    assert_eq!((budget.state, budget.kept_estimate_bytes), ("met", newest + (1 << 20)), "{}", budget.reason);
+    // A backup of this Workspace whose time can't be read stays too, and is set aside the same way.
+    rewrite_manifest(&folder.join("b-1"), |m| m["createdAt"] = json!("not a time"));
+    let undated = preview(&folder, rule, &me, &[]).unwrap();
+    assert_eq!(verdicts(&undated), [("b-1", "unknown"), ("b-3", "keep"), ("b-2", "remove")]);
+    assert_eq!(undated.budget.as_ref().unwrap().state, "met");
+}

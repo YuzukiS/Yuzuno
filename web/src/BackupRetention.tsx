@@ -7,7 +7,10 @@ import { api, errorText } from "./api";
  * one. Nothing removes backups on its own. Core reads each manifest and
  * checks no files for the preview, so sizes are estimates and no backup is
  * called verified; Check reads one back, as Check a backup does. A removal is
- * judged again by Core, which first reads another backup back whole. */
+ * judged again by Core, which first reads another backup back whole.
+ * (Slice 5) A space budget is optional: of the latest, Core keeps only as many
+ * as fit in it, by the sizes manifests declare, and says when what stays is
+ * over it; the count is unchanged without one. */
 
 type Verdict = "keep" | "remove" | "protected" | "unknown" | "ignored";
 type Entry = {
@@ -21,13 +24,29 @@ type Entry = {
   lastCheckedAt?: string;
   manifestSha256?: string;
 };
-export type RemoveTarget = { folder: string; keep: number; name: string; manifestSha256: string };
+export type RemoveTarget = { folder: string; keep: number; budgetBytes?: number; name: string; manifestSha256: string };
+type Budget = {
+  bytes: number;
+  /** met; over: what stays can't be brought within it; unknown: a size can't be trusted. */
+  state: "met" | "over" | "unknown";
+  reason: string;
+  keptEstimateBytes: number;
+};
 type Preview = {
   folder: string;
   keep: number;
   entries: Entry[];
   unreadableNames: number;
   removableEstimateBytes: number;
+  removableUnknownSizes: number;
+  sizeBasis: string;
+  budget?: Budget;
+};
+const GIB = 1024 ** 3;
+const budgetSaid: Record<Budget["state"], string> = {
+  met: "Within the space budget",
+  over: "The space budget can't be reached",
+  unknown: "Whether the space budget is met can't be told",
 };
 
 const groups: { verdict: Verdict; title: string }[] = [
@@ -63,6 +82,8 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
 }) {
   const [folder, setFolder] = useState(defaultFolder ?? "");
   const [keep, setKeep] = useState("7");
+  /** In GiB; empty is no budget, the count alone. */
+  const [budget, setBudget] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState("");
   const [reading, setReading] = useState(false);
@@ -70,7 +91,10 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
   const [confirming, setConfirming] = useState<Entry | null>(null);
   const [started, setStarted] = useState("");
   const count = Number(keep);
-  const valid = folder.trim() !== "" && Number.isInteger(count) && count >= 1 && count <= 100;
+  const gib = Number(budget);
+  const budgetBytes = budget.trim() === "" ? undefined : Math.max(1, Math.round(gib * GIB));
+  const budgetValid = budget.trim() === "" || (Number.isFinite(gib) && gib > 0 && gib <= 1024 * 1024);
+  const valid = folder.trim() !== "" && Number.isInteger(count) && count >= 1 && count <= 100 && budgetValid;
 
   async function run() {
     setReading(true);
@@ -81,7 +105,7 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
     try {
       setPreview(await api<Preview>("/workspace/backup/retention/preview", {
         method: "POST",
-        body: JSON.stringify({ folder: folder.trim(), keep: count }),
+        body: JSON.stringify({ folder: folder.trim(), keep: count, ...(budgetBytes === undefined ? {} : { budgetBytes }) }),
       }));
     } catch (e) {
       setError(errorText(e));
@@ -100,6 +124,10 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
           <span className="settings-row-help">
             What keeping only the latest backups in one folder would keep, and what it could remove. A backup is removed
             only when you confirm that one; nothing removes backups on its own.
+          </span>
+          <span className="settings-row-help">
+            A space budget is optional. With one, of the latest only as many are kept as fit in it together, by the sizes
+            their manifests declare; the newest is always kept, and the count still limits how many.
           </span>
         </span>
       </div>
@@ -120,6 +148,16 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
           value={keep}
           onChange={(e) => setKeep(e.target.value)}
         />
+        <input
+          className="settings-input backup-retention-keep"
+          type="number"
+          min={0}
+          step="any"
+          aria-label="Space budget in GiB (optional)"
+          placeholder="No budget"
+          value={budget}
+          onChange={(e) => setBudget(e.target.value)}
+        />
         <button type="button" disabled={!valid || reading} onClick={() => void run()}>
           Preview
         </button>
@@ -137,17 +175,24 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
       {preview && (
         <div className="backup-retention-result" role="region" aria-label="Retention preview">
           <p role="status">
-            Keeping the latest {preview.keep}: {shown.filter((e) => e.verdict === "keep").length} kept,{" "}
-            {shown.filter((e) => e.verdict === "remove").length} could be removed (about{" "}
-            {size(preview.removableEstimateBytes)}, as their manifests declare),{" "}
+            Keeping the latest {preview.keep}
+            {preview.budget && ` within ${size(preview.budget.bytes)}`}: {shown.filter((e) => e.verdict === "keep").length}{" "}
+            kept, {shown.filter((e) => e.verdict === "remove").length} could be removed (about{" "}
+            {size(preview.removableEstimateBytes)}, as their manifests declare
+            {preview.removableUnknownSizes > 0 && `; ${preview.removableUnknownSizes} more of a size that can't be trusted`}),{" "}
             {shown.filter((e) => e.verdict === "protected" || e.verdict === "unknown").length} protected or can't be
             judged.
             {ignored > 0 && ` ${ignored} other ${ignored === 1 ? "entry is" : "entries are"} not a backup.`}
             {preview.unreadableNames > 0 && ` ${preview.unreadableNames} ${preview.unreadableNames === 1 ? "name" : "names"} can't be read, so nothing in this folder can be removed.`}
           </p>
+          {preview.budget && (
+            <p className={preview.budget.state === "met" ? "workspace-backup-note" : "workspace-backup-error"} data-budget={preview.budget.state}>
+              {budgetSaid[preview.budget.state]}: {preview.budget.reason}.
+            </p>
+          )}
           <p className="settings-row-help">
             The preview reads each backup's manifest only; no backup's files were checked. Check one to read every file
-            back. Remove… removes one backup, after you confirm it.
+            back. Remove… removes one backup, after you confirm it. {preview.sizeBasis}
           </p>
           {groups.map(({ verdict, title }) => {
             const items = shown.filter((e) => e.verdict === verdict);
@@ -193,7 +238,9 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
                               type="button"
                               disabled={busy}
                               onClick={() => {
-                                onRemove({ folder: preview.folder, keep: preview.keep, name: e.name, manifestSha256: e.manifestSha256! });
+                                // Judged again by Core under the same count and budget.
+                                const rule = preview.budget ? { keep: preview.keep, budgetBytes: preview.budget.bytes } : { keep: preview.keep };
+                                onRemove({ folder: preview.folder, ...rule, name: e.name, manifestSha256: e.manifestSha256! });
                                 // The preview is from before the removal; it is read again once that has ended.
                                 setPreview(null);
                                 setConfirming(null);

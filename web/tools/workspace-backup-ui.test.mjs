@@ -548,3 +548,74 @@ test("removing one backup asks first, names exactly that one, and sends one remo
     p.close();
   }
 });
+
+test("a space budget is optional: sent only when given, what stays is said against it, and a removal carries it", async () => {
+  const sent = [];
+  const backup = (day, verdict, reason, extra = {}) => ({
+    name: `yuzuno-backup-202610${day}T0300Z`, path: `/backups/daily/yuzuno-backup-202610${day}T0300Z`, verdict, reason,
+    workspaceId: "ws-synthetic", createdAt: `2026-10-${day}T03:00:05+00:00`, estimateBytes: 400 * 1024 * 1024, manifestSha256: `sha-${day}`, ...extra,
+  });
+  const basis = "Sizes are what each backup's manifest declares for its database and files. Disk use can differ (the file system's blocks, compression, links); nothing is measured on disk.";
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/workspace/backup")) return { body: view() };
+    if (url.endsWith("/retention/preview")) {
+      sent.push(["preview", body]);
+      if (body.budgetBytes === undefined) {
+        return { body: { folder: body.folder, keep: body.keep, unreadableNames: 0, removableEstimateBytes: 0, removableUnknownSizes: 0, sizeBasis: basis,
+          entries: [backup("24", "keep", "One of the latest 3"), backup("23", "keep", "One of the latest 3")] } };
+      }
+      return { body: { folder: body.folder, keep: body.keep, unreadableNames: 0, removableEstimateBytes: 400 * 1024 * 1024, removableUnknownSizes: 1, sizeBasis: basis,
+        budget: { bytes: body.budgetBytes, state: "over", keptEstimateBytes: 800 * 1024 * 1024,
+          reason: "what stays declares 800 MiB, more than 512 MiB (the newest backup, always kept, declares 400 MiB; 1 protected backup declares 400 MiB). Nothing protected or always kept is offered instead" },
+        entries: [
+          backup("24", "keep", "The newest backup: kept whatever the space budget"),
+          backup("23", "remove", "Beyond the space budget: with what stays, it would declare more than 512 MiB"),
+          backup("22", "protected", "The only backup with a successful check on record; kept until one of the latest is checked"),
+        ] } };
+    }
+    if (url.endsWith("/retention/remove")) {
+      sent.push(["remove", body]);
+      return { status: 202, body: { operation: op({ id: "op9", kind: "remove", step: "preview", requestId: body.requestId, request: { folder: body.folder, name: body.name } }) } };
+    }
+    if (url.endsWith("/operations/op9")) return { body: op({ id: "op9", kind: "remove", step: "verify", request: { name: "yuzuno-backup-20261023T0300Z" } }) };
+    assert.fail(`unexpected ${method} ${url}`);
+  });
+  try {
+    const group = () => p.doc.querySelector('[aria-label="Keep the latest backups"]');
+    const result = () => group().querySelector('[aria-label="Retention preview"]');
+    await waitFor(() => group(), "the retention controls");
+    assert.match(group().textContent, /A space budget is optional\. With one, of the latest only as many are kept as fit in it together/);
+    type(p, "Folder holding backups", "/backups/daily");
+    type(p, "Backups to keep", "3");
+    // No budget: the request is the one it always was.
+    await waitFor(() => !button(p, "Preview").disabled, "Preview offered");
+    button(p, "Preview").click();
+    await waitFor(() => result(), "the count preview");
+    assert.deepEqual(sent.at(-1), ["preview", { folder: "/backups/daily", keep: 3 }]);
+    assert.equal(result().querySelector("[data-budget]") === null, true, "no budget, nothing said about one");
+    assert.match(result().textContent, /nothing is measured on disk/);
+    // A budget that can't be a size: not offered.
+    type(p, "Space budget in GiB (optional)", "-1");
+    await waitFor(() => button(p, "Preview").disabled, "Preview held back");
+    type(p, "Space budget in GiB (optional)", "0.5");
+    await waitFor(() => !button(p, "Preview").disabled, "Preview offered again");
+    button(p, "Preview").click();
+    await waitFor(() => result()?.querySelector("[data-budget]"), "the budget preview");
+    assert.deepEqual(sent.at(-1), ["preview", { folder: "/backups/daily", keep: 3, budgetBytes: 512 * 1024 * 1024 }]);
+    assert.match(result().querySelector('[role="status"]').textContent,
+      /^Keeping the latest 3 within 512 MiB: 1 kept, 1 could be removed \(about 400 MiB, as their manifests declare; 1 more of a size that can't be trusted\)/);
+    const said = result().querySelector("[data-budget]");
+    assert.equal(said.dataset.budget, "over");
+    assert.match(said.textContent, /^The space budget can't be reached: what stays declares 800 MiB, more than 512 MiB \(the newest backup, always kept/);
+    // A removal is judged again under the same count and budget.
+    button(p, "Remove…").click();
+    await waitFor(() => button(p, "Remove this backup"), "the confirmation");
+    button(p, "Remove this backup").click();
+    await waitFor(() => sent.some(([kind]) => kind === "remove"), "the removal");
+    const removal = sent.find(([kind]) => kind === "remove")[1];
+    assert.deepEqual({ ...removal, requestId: "r" },
+      { requestId: "r", folder: "/backups/daily", keep: 3, budgetBytes: 512 * 1024 * 1024, name: "yuzuno-backup-20261023T0300Z", manifestSha256: "sha-23" });
+  } finally {
+    p.close();
+  }
+});
