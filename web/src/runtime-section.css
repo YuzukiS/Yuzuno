@@ -128,3 +128,10 @@ dl.runtime-group {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+/* The Core host's explicit model check (T-191). */
+.runtime-models-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}

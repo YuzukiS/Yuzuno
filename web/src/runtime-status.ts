@@ -2,7 +2,7 @@ import { api } from "./api";
 import { desktopShell, type DesktopUpdateStatus } from "./DesktopUpdate";
 import { checkAge, harnessName, type HarnessCheck, type MachineCheck } from "./machine-checks";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
-import type { Workspace } from "./types";
+import type { Model, Workspace } from "./types";
 import { loadedRelease } from "./updates";
 
 /**
@@ -108,6 +108,34 @@ export interface RuntimeView {
 }
 
 const HARNESSES = ["codex", "claude"] as const;
+
+/** One explicit model check on the Core host (T-191): the catalog requests
+ * the New Agent dialog makes when it opens, nothing else. */
+export type ModelCheck = { at: string } & ({ ok: true; count: number; defaultName?: string } | { ok: false; error: string });
+export type ModelChecks = Partial<Record<(typeof HARNESSES)[number], ModelCheck>>;
+
+export async function checkModels(): Promise<ModelChecks> {
+  const one = async (path: string): Promise<ModelCheck> => {
+    try {
+      const models = (await api<{ models?: Model[] }>(path)).models ?? [];
+      const preset = models.find((m) => m.isDefault);
+      return { at: new Date().toISOString(), ok: true, count: models.length, ...(preset ? { defaultName: preset.displayName || preset.model } : {}) };
+    } catch (error) {
+      return { at: new Date().toISOString(), ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const [codex, claude] = await Promise.all([one("/models"), one("/models?harness=claude")]);
+  return { codex, claude };
+}
+
+function modelsFact(machine: WorkspaceMachine, check: ModelCheck | undefined): Fact {
+  if (machine.kind !== "local") return fact("unknown", "Not checked here", "An SSH machine's models are listed when an Agent there chooses one.");
+  if (!check) return fact("unknown", "Not checked yet", "Check models lists them from the Core host's CLIs, as the New Agent dialog does.");
+  const when = `checked ${new Date(check.at).toLocaleTimeString()}`;
+  if (!check.ok) return fact("no", "Couldn't list models", `${check.error} · ${when}`);
+  if (!check.count) return fact("no", "No models listed", when);
+  return fact("yes", `${check.count} ${check.count === 1 ? "model" : "models"}`, `${check.defaultName ? `Default ${check.defaultName} · ` : ""}${when}`);
+}
 function cliFact(check: HarnessCheck | undefined, machineCheck: MachineCheck | null | undefined): Fact {
   if (!machineCheck) return fact("unknown", "Not checked yet", "Check the machine on the Machines page.");
   // A check that didn't reach the machine says nothing about its CLIs, even
@@ -165,7 +193,7 @@ function jobsFact(machine: WorkspaceMachine, budget: RuntimeRead["budget"]): Fac
 }
 
 /** The facts to show, from one read, at `now`. */
-export function runtimeView(read: RuntimeRead, now = Date.now()): RuntimeView {
+export function runtimeView(read: RuntimeRead, now = Date.now(), models: ModelChecks = {}): RuntimeView {
   const health = read.health;
   const core = health.ok
     ? {
@@ -230,7 +258,7 @@ export function runtimeView(read: RuntimeRead, now = Date.now()): RuntimeView {
             name: harnessName(harness),
             cli: cliFact(harnessCheck, check),
             signedIn: signInFact(harness, harnessCheck, machine, read.runtime),
-            models: fact("unknown", "Not checked here", "Models are listed when you choose one for an Agent."),
+            models: modelsFact(machine, models[harness]),
           };
         });
         const codexConnection =
