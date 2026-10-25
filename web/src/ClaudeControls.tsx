@@ -4,6 +4,7 @@ import { api, errorText, NO_ANSWER_REPLY, respondToRequest } from "./api";
 import { AnswerAgain, DraftNotSaved, useUnconfirmedAnswer } from "./unconfirmed-answer";
 import { choiceAnswers, choiceEmpty, useRequestDraft } from "./request-draft";
 import { claudeCodeFacts } from "./claude-runtime";
+import { strings, useStrings } from "./i18n";
 import { callToward, formatUsage, turnSubAgents, type ClaudeSubAgentEntry, type ClaudeSubAgentRecord } from "./claude-subagents";
 import { Prose } from "./components";
 import { ConversationRows, useConversationDisclosure, useConversationTarget } from "./ConversationWindow";
@@ -52,8 +53,41 @@ export function limitWindows(info: ClaudeRuntime["rateLimits"], now: number) {
   });
 }
 
+// The rows' own words (T-189). Window names, modes, effort levels, the
+// account and what Claude Code says of its version are shown as reported.
+const factsText = strings({
+  limitReached: (window: string) => ` · ${window}limit reached`,
+  nearingLimit: (window: string) => ` · ${window}nearing limit`,
+  reportedAt: (when: string) => `Reported by Claude Code ${when}.`,
+  mode: "Mode",
+  modeTitle: "Reported by Claude Code for this session, including modes Claude switches to itself, such as plan. Your choice is in Agent settings.",
+  reported: " · reported",
+  effort: "Effort",
+  effortTitle: "Reported by Claude Code for the last turn it finished. Your choice is in Agent settings.",
+  account: "Account",
+  planUsage: "Plan usage",
+  windowWaiting: (name: string, resets: string | null) => `${name}: reset ${resets}; waiting for a new report`,
+  windowUsed: (name: string, percent: number, resets: string | null) => `${name}: ${percent}% used${resets ? `, resets ${resets}` : ""}`,
+  windowReset: (name: string) => `${name} reset`,
+}, {
+  limitReached: (window) => ` · ${window}已达限额`,
+  nearingLimit: (window) => ` · ${window}接近限额`,
+  reportedAt: (when) => `由 Claude Code 于 ${when} 报告。`,
+  mode: "模式",
+  modeTitle: "由 Claude Code 为此会话报告，包括 Claude 自行切换的模式（例如 plan）。你的选择在 Agent 设置中。",
+  reported: " · 已报告",
+  effort: "推理强度",
+  effortTitle: "由 Claude Code 为它完成的上一个 Turn 报告。你的选择在 Agent 设置中。",
+  account: "账户",
+  planUsage: "套餐用量",
+  windowWaiting: (name, resets) => `${name}：已于 ${resets} 重置；正在等待新的报告`,
+  windowUsed: (name, percent, resets) => `${name}：已用 ${percent}%${resets ? `，${resets} 重置` : ""}`,
+  windowReset: (name) => `${name} 已重置`,
+});
+
 /** Account and plan usage rows for the agent's information list. */
 export function ClaudeRuntimeFacts({ runtime }: { runtime?: ClaudeRuntime | null }) {
+  const t = useStrings(factsText);
   const account = runtime?.account;
   const who = [account?.email || account?.organization, account?.subscriptionType].filter(Boolean).join(" · ");
   const now = Date.now();
@@ -62,20 +96,20 @@ export function ClaudeRuntimeFacts({ runtime }: { runtime?: ClaudeRuntime | null
   // A warning belongs to the window it reports, and only until that resets.
   const statusLive = typeof info?.resetsAt !== "number" || info.resetsAt * 1000 > now;
   const statusWindow = info?.rateLimitType ? `${windowName(info.rateLimitType)} ` : "";
-  const status = !statusLive ? "" : info?.status === "rejected" ? ` · ${statusWindow}limit reached` : info?.status === "allowed_warning" ? ` · ${statusWindow}nearing limit` : "";
-  const reported = runtime?.rateLimitsAt ? `Reported by Claude Code ${new Date(runtime.rateLimitsAt).toLocaleString()}.` : "";
+  const status = !statusLive ? "" : info?.status === "rejected" ? t.limitReached(statusWindow) : info?.status === "allowed_warning" ? t.nearingLimit(statusWindow) : "";
+  const reported = runtime?.rateLimitsAt ? t.reportedAt(new Date(runtime.rateLimitsAt).toLocaleString()) : "";
   const cli = claudeCodeFacts(runtime);
   return <>
-    {runtime?.permissionMode && <div><dt>Mode</dt>
-      <dd title="Reported by Claude Code for this session, including modes Claude switches to itself, such as plan. Your choice is in Agent settings.">{modeName(runtime.permissionMode)} · reported</dd>
+    {runtime?.permissionMode && <div><dt>{t.mode}</dt>
+      <dd title={t.modeTitle}>{modeName(runtime.permissionMode)}{t.reported}</dd>
     </div>}
-    {runtime?.effort?.level && <div><dt>Effort</dt>
-      <dd title="Reported by Claude Code for the last turn it finished. Your choice is in Agent settings.">{runtime.effort.level} · reported</dd>
+    {runtime?.effort?.level && <div><dt>{t.effort}</dt>
+      <dd title={t.effortTitle}>{runtime.effort.level}{t.reported}</dd>
     </div>}
-    {who && <div><dt>Account</dt><dd title={[who, runtime?.version && `Claude Code ${runtime.version}`].filter(Boolean).join("\n")}>{who}</dd></div>}
-    {limits.length > 0 && <div><dt>Plan usage</dt>
-      <dd title={[...limits.map(l => l.expired ? `${l.name}: reset ${l.resets}; waiting for a new report` : `${l.name}: ${l.percent}% used${l.resets ? `, resets ${l.resets}` : ""}`), reported].filter(Boolean).join("\n")}>
-        {limits.map(l => l.expired ? `${l.name} reset` : `${l.name} ${l.percent}%`).join(" · ")}{status}
+    {who && <div><dt>{t.account}</dt><dd title={[who, runtime?.version && `Claude Code ${runtime.version}`].filter(Boolean).join("\n")}>{who}</dd></div>}
+    {limits.length > 0 && <div><dt>{t.planUsage}</dt>
+      <dd title={[...limits.map(l => l.expired ? t.windowWaiting(l.name, l.resets) : t.windowUsed(l.name, l.percent, l.resets)), reported].filter(Boolean).join("\n")}>
+        {limits.map(l => l.expired ? t.windowReset(l.name) : `${l.name} ${l.percent}%`).join(" · ")}{status}
       </dd>
     </div>}
     {cli && <div><dt>Claude Code</dt><dd title={cli.title}>{cli.text}</dd></div>}

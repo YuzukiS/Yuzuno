@@ -7,7 +7,7 @@ import {
   type ConversationMatch,
 } from "./conversation-search";
 import type { NativeTurn } from "./types";
-import { strings, useStrings } from "./i18n";
+import { langTag, strings, useLanguage } from "./i18n";
 import "./conversation-search.css";
 
 // Kept as this English sentence and said in the language shown (T-189).
@@ -83,7 +83,8 @@ export function ConversationSearch({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
-  const t = useStrings(text);
+  const language = useLanguage();
+  const t = text(language);
   const inputId = useId();
   const input = useRef<HTMLInputElement>(null);
   const destination = useRef<ConversationMatch | null>(null);
@@ -188,6 +189,7 @@ export function ConversationSearch({
         <Dialog.Overlay className="modal-overlay" />
         <Dialog.Content
           className="modal conversation-search-dialog"
+          lang={langTag(language)}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
             input.current?.focus();

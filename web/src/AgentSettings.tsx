@@ -4,9 +4,10 @@ import { api, errorText, post } from "./api";
 import { Modal } from "./components";
 import { ChoiceChips } from "./ChoiceChips";
 import type { Agent, AgentSettings as Settings, ContextUsage, Model, PermissionCatalog } from "./types";
-import { CodexContextSettings, tokenSetting } from "./CodexContextSettings";
+import { CodexContextSettings, TOKEN_INVALID, tokenSetting } from "./CodexContextSettings";
 import type { CodexContextSettings as ContextSettings } from "./types";
 import { CodexPermissions } from "./CodexPermissions";
+import { langTag, strings, useLanguage } from "./i18n";
 import "./agent-settings.css";
 
 const defaults: Settings = {
@@ -14,6 +15,100 @@ const defaults: Settings = {
   approvalPolicy: "on-request",
   sandbox: "workspace-write",
 };
+// Thrown in English and said in the language shown (T-189).
+const COMPACT_EXCEEDS = "The compaction threshold cannot exceed the configured window.";
+// The dialog's own words (T-189). Names, models, effort levels and their
+// descriptions, and Core's errors are shown as they came.
+const text = strings({
+  button: "Agent settings",
+  buttonTitle: (claude: boolean): string => (claude ? "Claude Code model, reasoning effort and approvals" : "Model, reasoning and permissions"),
+  model: "Model",
+  andWhat: (claude: boolean) => ` & ${claude ? "approvals" : "reasoning"}`,
+  title: (name: string) => `${name} · Agent settings`,
+  claudeDescription: "The model and reasoning effort apply from the next turn; a running turn keeps its own, and this conversation stays together. Approvals apply to Claude’s next permission check, including in a running turn.",
+  codexDescription: "Model, effort and permissions apply to new turns. The current turn and pending requests keep their existing permissions. Context settings need a separate safe reload while the conversation is idle.",
+  machine: (name: string | null) => `Execution machine: ${name || "Core host"}`,
+  loading: "Loading this agent’s model catalog…",
+  harnessDefault: "Harness default",
+  current: "current",
+  default: "default",
+  effort: "Reasoning effort",
+  claudeDefault: "Claude Code default",
+  notForModel: "not available for this model",
+  effortRefused: "This model does not take the saved effort. Choose another, or Claude Code default.",
+  noEffort: "This model does not take a reasoning effort.",
+  effortNext: "Claude runs at this effort from the next turn.",
+  effortDecides: "Claude Code decides: the model’s default, or the effort in your Claude settings when a session starts.",
+  effortReported: (level: string, latest: boolean) =>
+    `Claude Code reported ${level} for ${latest ? "the latest turn" : "an earlier turn"}.`,
+  approvals: "Approvals",
+  askBefore: "Ask before actions",
+  autoMode: "Auto mode",
+  autoNote: "Claude Code’s classifier approves or blocks each action. It still asks when it cannot decide, and for questions.",
+  askNote: "Claude asks before any action its permission rules do not already allow.",
+  sessionMode: (mode: string) => `This session is currently in ${mode} mode. Saving applies the mode chosen here to it now.`,
+  chooseModel: "Choose a model to see its reasoning efforts.",
+  retry: "Retry models",
+  saving: "Saving…",
+  save: "Save",
+  closeDialog: "Close dialog",
+  unknownModel: (wanted: string, claude: boolean) =>
+    `“${wanted}” is not a model this Agent's ${claude ? "Claude Code" : "Codex"} offers; choose one below.`,
+  effortBack: (name: string, effort: string) =>
+    `${name || "This model"} does not take reasoning effort ${effort}; it is back to Claude Code default.`,
+  contextReset: "Context overrides reset to automatic for the new model. Save, then apply when idle.",
+  savedApply: "Saved. Apply them when this conversation is idle.",
+  savedUnread: (error: string) => `Saved, but the context status couldn’t be read again (${error}). Refresh it before applying.`,
+  reloadRequested: "Reload requested for this same conversation. The available window above updates when Codex reports it.",
+  overridesCleared: "Saved context overrides cleared. Reconnect to use your Codex configuration, or apply when available and idle.",
+  compactExceeds: COMPACT_EXCEEDS,
+  tokenInvalid: TOKEN_INVALID,
+}, {
+  button: "Agent 设置",
+  buttonTitle: (claude) => (claude ? "Claude Code 的模型、推理强度与审批" : "模型、推理与权限"),
+  model: "模型",
+  andWhat: (claude) => ` 与${claude ? "审批" : "推理"}`,
+  title: (name) => `${name} · Agent 设置`,
+  claudeDescription: "模型和推理强度从下一个 Turn 起生效；正在运行的 Turn 保持自己的设置，此会话也不会被拆开。审批设置对 Claude 的下一次权限检查生效，包括正在运行的 Turn。",
+  codexDescription: "模型、推理强度和权限对新的 Turn 生效。当前 Turn 和待处理的请求保留原有权限。上下文设置需要在会话空闲时另行安全地重新载入。",
+  machine: (name) => `执行机器：${name || "Core 主机"}`,
+  loading: "正在载入此 Agent 的模型目录…",
+  harnessDefault: "Harness 默认",
+  current: "当前",
+  default: "默认",
+  effort: "推理强度",
+  claudeDefault: "Claude Code 默认",
+  notForModel: "此模型不可用",
+  effortRefused: "此模型不接受已保存的推理强度。请另选一个，或使用 Claude Code 默认。",
+  noEffort: "此模型不接受推理强度。",
+  effortNext: "Claude 从下一个 Turn 起按此强度运行。",
+  effortDecides: "由 Claude Code 决定：模型的默认值，或会话开始时你在 Claude 设置中的推理强度。",
+  effortReported: (level, latest) => `Claude Code 报告${latest ? "最近一个 Turn" : "较早的一个 Turn"}的推理强度为 ${level}。`,
+  approvals: "审批",
+  askBefore: "操作前询问",
+  autoMode: "自动模式",
+  autoNote: "Claude Code 的分类器会批准或阻止每个操作。无法判断时以及遇到问题时，它仍会询问。",
+  askNote: "对于权限规则尚未允许的任何操作，Claude 都会先询问。",
+  sessionMode: (mode) => `此会话当前处于 ${mode} 模式。保存后会立即把这里选择的模式应用到它。`,
+  chooseModel: "选择一个模型以查看其推理强度。",
+  retry: "重新读取模型",
+  saving: "正在保存…",
+  save: "保存",
+  closeDialog: "关闭对话框",
+  unknownModel: (wanted, claude) => `“${wanted}”不是此 Agent 的 ${claude ? "Claude Code" : "Codex"} 提供的模型；请在下方选择一个。`,
+  effortBack: (name, effort) => `${name || "此模型"}不接受推理强度 ${effort}，已恢复为 Claude Code 默认。`,
+  contextReset: "已为新模型把上下文覆盖设置恢复为自动。请先保存，再在空闲时应用。",
+  savedApply: "已保存。请在此会话空闲时应用。",
+  savedUnread: (error) => `已保存，但无法重新读取上下文状态（${error}）。请先刷新再应用。`,
+  reloadRequested: "已请求重新载入此会话。上方的可用窗口会在 Codex 报告后更新。",
+  overridesCleared: "已清除保存的上下文覆盖设置。重新连接即可使用你的 Codex 配置，或在可用且空闲时应用。",
+  compactExceeds: "压缩阈值不能超过所设置的窗口。",
+  tokenInvalid: "请输入正整数，或留空以使用自动值。",
+});
+type Words = ReturnType<typeof text>;
+/** A note or error: as Core gave it, or worded on show from this dialog's words. */
+type Said = string | ((t: Words) => string);
+
 const chosenMode = (agent: Agent) =>
   agent.settings?.permissionMode === "auto" ? "auto" : "default";
 export function AgentSettings({
@@ -42,6 +137,13 @@ export function AgentSettings({
   onRequestOpened?: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const language = useLanguage();
+  const t = text(language);
+  const say = (said: Said) =>
+    typeof said === "function" ? said(t)
+      : said === COMPACT_EXCEEDS ? t.compactExceeds
+        : said === TOKEN_INVALID ? t.tokenInvalid
+          : said;
   const requested = useRef("");
   // A request made before this mount (for another Agent) is not this one's.
   const seen = useRef(request?.agentId === agent.id ? undefined : request?.nonce);
@@ -54,7 +156,7 @@ export function AgentSettings({
   const [context, setContext] = useState<ContextSettings>();
   const [contextWindow, setContextWindow] = useState("");
   const [compactLimit, setCompactLimit] = useState("");
-  const [contextNote, setContextNote] = useState("");
+  const [contextNote, setContextNote] = useState<Said>("");
   const [model, setModel] = useState(agent.model);
   const [settings, setSettings] = useState<Settings>(
     agent.settings || defaults,
@@ -65,8 +167,8 @@ export function AgentSettings({
   const [permissionMode, setPermissionMode] = useState(currentMode);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const [effortNote, setEffortNote] = useState("");
+  const [error, setError] = useState<Said>("");
+  const [effortNote, setEffortNote] = useState<Said>("");
   useEffect(() => {
     if (!open) return;
     let valid = true;
@@ -97,7 +199,7 @@ export function AgentSettings({
             selectModel(row.model || row.id, models, agent.settings?.reasoningEffort || "");
             return;
           }
-          if (!row) setError(`“${wanted}” is not a model this Agent's ${agent.harness === "claude" ? "Claude Code" : "Codex"} offers; choose one below.`);
+          if (!row) setError(() => (t: Words) => t.unknownModel(wanted, agent.harness === "claude"));
         }
         // A Claude effort is only ever the user's choice; no default fills it.
         if (agent.harness === "claude") return;
@@ -174,14 +276,13 @@ export function AgentSettings({
       const row = catalog.find((r) => (r.model || r.id) === (value || "default"));
       if (effort && !levelsFor(row).includes(effort)) {
         setSettings((s) => ({ ...s, reasoningEffort: null }));
-        setEffortNote(
-          `${row?.displayName || value || "This model"} does not take reasoning effort ${effort}; it is back to Claude Code default.`,
-        );
+        const name = row?.displayName || value;
+        setEffortNote(() => (t: Words) => t.effortBack(name, effort));
       } else setEffortNote("");
       return;
     }
     setContextWindow(""); setCompactLimit("");
-    setContextNote("Context overrides reset to automatic for the new model. Save, then apply when idle.");
+    setContextNote(() => (t: Words) => t.contextReset);
     setSettings((s) => ({
       ...s,
       reasoningEffort: catalog.find((m) => (m.model || m.id) === value)?.defaultReasoningEffort || null,
@@ -195,7 +296,7 @@ export function AgentSettings({
     try {
       const window = claude ? null : tokenSetting(contextWindow);
       const compact = claude ? null : tokenSetting(compactLimit);
-      if (window !== null && compact !== null && compact > window) throw new Error("The compaction threshold cannot exceed the configured window.");
+      if (window !== null && compact !== null && compact > window) throw new Error(COMPACT_EXCEEDS);
       const contextChanged = !claude && (window !== (agent.settings?.contextWindow ?? null) || compact !== (agent.settings?.autoCompactTokenLimit ?? null));
       await post(`/agents/${encodeURIComponent(agent.id)}/settings`, {
         model,
@@ -209,12 +310,13 @@ export function AgentSettings({
       if (contextChanged) {
         // Saved. What follows only reads the context status again, which
         // needs Codex; its failure must not read as a failed save (T-187).
-        setContextNote("Saved. Apply them when this conversation is idle.");
+        setContextNote(() => (t: Words) => t.savedApply);
         try {
           const updated = await api<{ context: ContextSettings }>(`/agents/${encodeURIComponent(agent.id)}/models`);
           setContext(updated.context);
         } catch (e) {
-          setContextNote(`Saved, but the context status couldn’t be read again (${errorText(e)}). Refresh it before applying.`);
+          const failed = errorText(e);
+          setContextNote(() => (t: Words) => t.savedUnread(failed));
         }
         return;
       }
@@ -231,7 +333,7 @@ export function AgentSettings({
     setSaving(true); setError("");
     try {
       const applied = await post<ContextSettings>(`/agents/${encodeURIComponent(agent.id)}/context/apply`, {});
-      setContext(applied); setContextNote("Reload requested for this same conversation. The available window above updates when Codex reports it.");
+      setContext(applied); setContextNote(() => (t: Words) => t.reloadRequested);
       onSaved();
     } catch (e) { setError(errorText(e)); }
     finally { setSaving(false); }
@@ -246,7 +348,7 @@ export function AgentSettings({
       });
       setContextWindow(""); setCompactLimit("");
       setContext((current) => current && ({ ...current, requestedWindowTokens: null, settingsSubmitted: false, observedStale: true }));
-      setContextNote("Saved context overrides cleared. Reconnect to use your Codex configuration, or apply when available and idle.");
+      setContextNote(() => (t: Words) => t.overridesCleared);
       onSaved();
     } catch (e) { setError(errorText(e)); }
     finally { setSaving(false); }
@@ -265,12 +367,8 @@ export function AgentSettings({
       <button
         type="button"
         className="conversation-action agent-settings-button"
-        aria-label="Agent settings"
-        title={
-          claude
-            ? "Claude Code model, reasoning effort and approvals"
-            : "Model, reasoning and permissions"
-        }
+        aria-label={t.button}
+        title={t.buttonTitle(claude)}
         aria-haspopup="dialog"
         aria-expanded={open}
         disabled={disabled}
@@ -278,23 +376,18 @@ export function AgentSettings({
       >
         <Settings2 size={16} />
         <span>
-          Model
-          <span className="reasoning-label">
-            {" "}
-            &amp; {claude ? "approvals" : "reasoning"}
-          </span>
+          {t.model}
+          <span className="reasoning-label">{t.andWhat(claude)}</span>
         </span>
         <ChevronDown size={12} className="settings-chevron" />
       </button>
       <Modal
         open={open}
         onOpenChange={changeOpen}
-        title={`${agent.name} · Agent settings`}
-        description={
-          claude
-            ? "The model and reasoning effort apply from the next turn; a running turn keeps its own, and this conversation stays together. Approvals apply to Claude’s next permission check, including in a running turn."
-            : "Model, effort and permissions apply to new turns. The current turn and pending requests keep their existing permissions. Context settings need a separate safe reload while the conversation is idle."
-        }
+        title={t.title(agent.name)}
+        description={claude ? t.claudeDescription : t.codexDescription}
+        lang={langTag(language)}
+        closeLabel={t.closeDialog}
       >
         <form
           ref={form}
@@ -304,33 +397,30 @@ export function AgentSettings({
             void save();
           }}
         >
-          <p className="agent-settings-location">
-            Execution machine: {agent.remote?.machine.name || "Core host"}
-          </p>
+          <p className="agent-settings-location">{t.machine(agent.remote?.machine.name || null)}</p>
           {loading && (
             <p role="status">
-              <LoaderCircle size={14} className="spin" /> Loading this agent’s
-              model catalog…
+              <LoaderCircle size={14} className="spin" /> {t.loading}
             </p>
           )}
           <div className="agent-setting">
             <ChoiceChips
-              label="Model"
+              label={t.model}
               name="agent-model"
               value={model}
               disabled={loading || saving}
               onChange={(value) => selectModel(value, models, claudeEffort)}
               choices={[
-                ...(claude ? [{ value: "", label: "Harness default" }] : []),
+                ...(claude ? [{ value: "", label: t.harnessDefault }] : []),
                 // The model in use stays shown while the catalog loads, or
                 // when the catalog no longer lists it.
                 ...(!selected && model
-                  ? [{ value: model, label: model, note: "current" }]
+                  ? [{ value: model, label: model, note: t.current }]
                   : []),
                 ...models.map((m) => ({
                   value: m.model || m.id,
                   label: m.displayName,
-                  note: m.isDefault ? "default" : undefined,
+                  note: m.isDefault ? t.default : undefined,
                   title: m.description || undefined,
                 })),
               ]}
@@ -342,7 +432,7 @@ export function AgentSettings({
           {claude && (
             <div className="agent-setting">
               <ChoiceChips
-                label="Reasoning effort"
+                label={t.effort}
                 name="agent-effort"
                 value={claudeEffort}
                 disabled={loading || saving}
@@ -354,15 +444,13 @@ export function AgentSettings({
                   }));
                 }}
                 choices={[
-                  { value: "", label: "Claude Code default" },
+                  { value: "", label: t.claudeDefault },
                   ...(effortUnlisted
                     ? [
                         {
                           value: claudeEffort,
                           label: claudeEffort,
-                          note: effortRefused
-                            ? "not available for this model"
-                            : undefined,
+                          note: effortRefused ? t.notForModel : undefined,
                         },
                       ]
                     : []),
@@ -371,59 +459,47 @@ export function AgentSettings({
               />
               <small>
                 {effortRefused
-                  ? "This model does not take the saved effort. Choose another, or Claude Code default."
+                  ? t.effortRefused
                   : claudeEffortRow && !claudeEffortRow.supportsEffort
-                    ? "This model does not take a reasoning effort."
+                    ? t.noEffort
                     : claudeEffort
-                      ? "Claude runs at this effort from the next turn."
-                      : "Claude Code decides: the model’s default, or the effort in your Claude settings when a session starts."}
+                      ? t.effortNext
+                      : t.effortDecides}
               </small>
               {effortNote && (
                 <small className="model-catalog-note" role="status">
-                  {effortNote}
+                  {say(effortNote)}
                 </small>
               )}
               {observedEffort && (
-                <small className="model-catalog-note">
-                  Claude Code reported {observedEffort.level} for{" "}
-                  {observedEffort.latest ? "the latest turn" : "an earlier turn"}
-                  .
-                </small>
+                <small className="model-catalog-note">{t.effortReported(observedEffort.level, observedEffort.latest)}</small>
               )}
             </div>
           )}
           {claude && (
             <div className="agent-setting">
               <ChoiceChips
-                label="Approvals"
+                label={t.approvals}
                 name="agent-approvals"
                 value={permissionMode}
                 disabled={saving}
                 onChange={setPermissionMode}
                 choices={[
-                  { value: "default", label: "Ask before actions" },
+                  { value: "default", label: t.askBefore },
                   {
                     value: "auto",
-                    label: "Auto mode",
+                    label: t.autoMode,
                     disabled: selected?.supportsAutoMode === false,
-                    note:
-                      selected?.supportsAutoMode === false
-                        ? "not available for this model"
-                        : undefined,
+                    note: selected?.supportsAutoMode === false ? t.notForModel : undefined,
                   },
                 ]}
               />
               <small>
-                {permissionMode === "auto"
-                  ? "Claude Code’s classifier approves or blocks each action. It still asks when it cannot decide, and for questions."
-                  : "Claude asks before any action its permission rules do not already allow."}
+                {permissionMode === "auto" ? t.autoNote : t.askNote}
               </small>
               {observedPermissionMode &&
                 observedPermissionMode !== currentMode && (
-                  <small className="model-catalog-note">
-                    This session is currently in {observedPermissionMode} mode.
-                    Saving applies the mode chosen here to it now.
-                  </small>
+                  <small className="model-catalog-note">{t.sessionMode(observedPermissionMode)}</small>
                 )}
             </div>
           )}
@@ -431,7 +507,7 @@ export function AgentSettings({
             <>
               <div className="agent-setting">
                 <ChoiceChips
-                  label="Reasoning effort"
+                  label={t.effort}
                   name="agent-effort"
                   value={settings.reasoningEffort || ""}
                   disabled={loading || saving || !efforts.length}
@@ -451,7 +527,7 @@ export function AgentSettings({
                           {
                             value: settings.reasoningEffort,
                             label: settings.reasoningEffort,
-                            note: "current",
+                            note: t.current,
                           },
                         ]
                       : []),
@@ -465,11 +541,11 @@ export function AgentSettings({
                   {efforts.find(
                     (e) => e.reasoningEffort === settings.reasoningEffort,
                   )?.description ||
-                    (!efforts.length && !loading ? "Choose a model to see its reasoning efforts." : "")}
+                    (!efforts.length && !loading ? t.chooseModel : "")}
                 </small>
               </div>
               <CodexContextSettings context={context} window={contextWindow} compact={compactLimit}
-                disabled={loading || saving} note={contextNote} onWindow={setContextWindow} onCompact={setCompactLimit}
+                disabled={loading || saving} note={say(contextNote)} onWindow={setContextWindow} onCompact={setCompactLimit}
                 onApply={() => void applyContext()} onRefresh={() => void refreshContext()}
                 onReset={agent.settings?.contextWindow != null || agent.settings?.autoCompactTokenLimit != null
                   ? () => void resetContext() : undefined} />
@@ -478,19 +554,20 @@ export function AgentSettings({
                 catalog={permissions}
                 disabled={loading || saving}
                 onChange={setSettings}
+                language={language}
               />
             </>
           )}
           {error && (
             <div role="alert" className="inline-error model-catalog-error">
-              <span>{error}</span>
+              <span>{say(error)}</span>
               <button
                 className="quiet-button"
                 type="button"
                 disabled={loading || saving}
                 onClick={() => setReload((n) => n + 1)}
               >
-                Retry models
+                {t.retry}
               </button>
             </div>
           )}
@@ -509,7 +586,7 @@ export function AgentSettings({
                     ))
               }
             >
-              {saving ? "Saving…" : "Save"}
+              {saving ? t.saving : t.save}
             </button>
           </div>
         </form>
