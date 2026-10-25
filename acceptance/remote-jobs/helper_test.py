@@ -1481,6 +1481,29 @@ class EnumerationFailureTests(unittest.TestCase):
             raise remote_job.Unclear("this machine's processes could not be listed")
         remote_job.all_pids = refuse
 
+    def test_all_pids_raises_rather_than_reporting_an_empty_machine(self):
+        """The failure injected at libproc, the single call all_pids makes, so
+        the raise itself is checked and not just its callers. DARWIN is forced
+        on so this runs on a host that has no libproc at all."""
+        answers = []
+
+        class Refusing:
+            def proc_listpids(self, flavour, typeinfo, buf, size):
+                answers.append(size)
+                return 0 if len(answers) > len(given) else given[len(answers) - 1]
+
+        was_darwin, was_libproc = remote_job.DARWIN, remote_job.LIBPROC
+        remote_job.DARWIN, remote_job.LIBPROC = True, Refusing()
+        try:
+            for case, given in (("the size probe fails", []), ("the read fails", [4096])):
+                with self.subTest(case):
+                    answers.clear()
+                    with self.assertRaises(remote_job.Unclear):
+                        self.real_pids()
+                    self.assertEqual(len(answers), len(given) + 1, "it stops at the failing call")
+        finally:
+            remote_job.DARWIN, remote_job.LIBPROC = was_darwin, was_libproc
+
     def test_members_says_unknown_rather_than_no_processes(self):
         # It really asks before the failure is injected: the check would pass
         # vacuously if members() returned early on the boot or leader check.
