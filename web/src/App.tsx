@@ -1501,7 +1501,7 @@ export function App() {
     }
     const owner = workspace.agents.find((a) => a.id === link.agentId);
     if (!owner) {
-      setNotice(shell.linkGone);
+      setNotice(shell.linkAgentGone);
       return;
     }
     openCatchupSource(
@@ -1524,7 +1524,7 @@ export function App() {
     }
     const owner = workspace.agents.find((a) => a.id === link.agentId);
     if (!owner) {
-      setNotice(shell.linkGone);
+      setNotice(shell.linkAgentGone);
       return;
     }
     openFromList(owner.id);
@@ -2510,7 +2510,7 @@ export function App() {
                         setNotice(
                           moved.projectId
                             ? shell.movedTo(moved.name, projectName(moved.projectId, projects))
-                            : shell.noProject(moved.name),
+                            : shell.leftProject(moved.name),
                         );
                         refresh();
                       }}

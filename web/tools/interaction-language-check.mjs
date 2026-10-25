@@ -108,7 +108,8 @@ const shownCard = (id) => card(id).evaluate((el) => ({
   buttons: [...el.querySelectorAll("button")].map((b) => b.textContent.trim()).filter(Boolean),
   command: el.querySelector(".claude-permission-input")?.textContent,
 }));
-const mailbox = () => page.locator(".mailbox-notice summary").getAttribute("aria-label");
+// The notice's own summary, not the delivery note's inside it.
+const mailbox = () => page.locator(".mailbox-notice > summary").getAttribute("aria-label");
 
 try {
   await other.goto(`https://${HOST}/other.html`);
