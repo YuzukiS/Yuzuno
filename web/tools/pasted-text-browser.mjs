@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium } from "playwright-core";
 import { installConnectionFixture } from "./connection-fixture.mjs";
+import { draftIdentityInPage } from "./browser-fixtures.mjs";
 
 const base = process.env.T33_UI_URL || "http://127.0.0.1:4485";
 const output = new URL("../../target/t33/browser-r2-final/", import.meta.url);
@@ -120,31 +121,54 @@ const input = () => page.locator("[data-composer-input]");
 const chips = () => page.locator(".pasted-text-chip");
 const ids = () =>
   chips().evaluateAll((els) => els.map((el) => el.dataset.pasteId));
-const saved = (id = "a") =>
-  page.evaluate((id) => {
+// A draft is saved under the Workspace and the Agent (T-195). The key is
+// found by the Agent it names (draftIdentityInPage), so no Workspace id is
+// spelled here and a fixture may call its own whatever it likes.
+const identityOf = (id) => page.evaluate(draftIdentityInPage, id);
+const saved = async (id = "a") =>
+  page.evaluate((identity) => {
     const draft = JSON.parse(
-      localStorage.getItem("yuzuno.composer.v1:" + id) || '{"parts":[]}',
+      (identity && localStorage.getItem("yuzuno.composer.v1:" + identity)) || '{"parts":[]}',
     );
     return draft.parts
       .map((p) =>
         p.kind === "text"
           ? p.text
-          : localStorage.getItem("yuzuno.paste.v1:" + id + ":" + p.bodyId),
+          : localStorage.getItem("yuzuno.paste.v1:" + identity + ":" + p.bodyId),
       )
       .join("");
-  }, id);
+  }, await identityOf(id));
 async function settled(expected, id = "a") {
+  // The key is looked up inside the waited function: this Agent's draft may
+  // not be saved yet when the wait begins (T-195). Spelled out here rather
+  // than passed in, so nothing depends on the page allowing new Function.
   await page.waitForFunction(
     ({ expected, id }) => {
+      const prefix = "yuzuno.composer.v1:";
+      let identity = null;
+      for (let index = 0; index < localStorage.length; index++) {
+        const key = localStorage.key(index);
+        if (!key || !key.startsWith(prefix)) continue;
+        let parsed;
+        try {
+          parsed = JSON.parse(key.slice(prefix.length));
+        } catch {
+          continue;
+        }
+        if (Array.isArray(parsed) && parsed.length === 2 && parsed[1] === id) {
+          identity = key.slice(prefix.length);
+          break;
+        }
+      }
       const draft = JSON.parse(
-        localStorage.getItem("yuzuno.composer.v1:" + id) || '{"parts":[]}',
+        (identity && localStorage.getItem("yuzuno.composer.v1:" + identity)) || '{"parts":[]}',
       );
       return (
         draft.parts
           .map((p) =>
             p.kind === "text"
               ? p.text
-              : localStorage.getItem("yuzuno.paste.v1:" + id + ":" + p.bodyId),
+              : localStorage.getItem("yuzuno.paste.v1:" + identity + ":" + p.bodyId),
           )
           .join("") === expected
       );
@@ -348,10 +372,11 @@ try {
           await settled("");
           assert.equal(
             await page.evaluate(
-              () =>
+              (identity) =>
                 Object.keys(localStorage).filter((k) =>
-                  k.startsWith("yuzuno.paste.v1:a:"),
+                  k.startsWith("yuzuno.paste.v1:" + identity + ":"),
                 ).length,
+              await identityOf("a"),
             ),
             0,
           );
@@ -374,44 +399,44 @@ try {
     "missing body recovery requires confirmation, survives reload and leaves other Agents intact",
     async () => {
       const kept = await saved("b");
-      const manifest = await page.evaluate(() =>
-        localStorage.getItem("yuzuno.composer.v1:a"),
-      );
-      await page.evaluate(() => {
+      // The key this Agent's draft is saved under, found by the Agent it
+      // names (T-195); its paste bodies use the same identity.
+      const mine = await identityOf("a");
+      const read = () =>
+        page.evaluate(
+          (identity) => localStorage.getItem("yuzuno.composer.v1:" + identity),
+          mine,
+        );
+      const manifest = await read();
+      await page.evaluate((identity) => {
         for (const key of Object.keys(localStorage))
-          if (key.startsWith("yuzuno.paste.v1:a:"))
+          if (key.startsWith("yuzuno.paste.v1:" + identity + ":"))
             localStorage.removeItem(key);
-      });
+      }, mine);
       await page.reload();
       await page.getByRole("button", { name: "Reset saved draft…" }).waitFor();
       assert.equal(await input().getAttribute("contenteditable"), "false");
       await page.getByRole("button", { name: "Reset saved draft…" }).click();
       await page.getByRole("button", { name: "Cancel", exact: true }).click();
-      assert.equal(
-        await page.evaluate(() => localStorage.getItem("yuzuno.composer.v1:a")),
-        manifest,
-      );
+      assert.equal(await read(), manifest);
       await page.getByRole("button", { name: "Reset saved draft…" }).click();
       await page.screenshot({
         path: new URL("recovery-confirmation.png", output).pathname,
       });
-      await page.evaluate(() => {
+      await page.evaluate((identity) => {
         window.restoreStorageSet = Storage.prototype.setItem;
         Storage.prototype.setItem = function (key, value) {
-          if (key === "yuzuno.composer.v1:a")
+          if (key === "yuzuno.composer.v1:" + identity)
             throw new Error("Fixture denied reset");
           return window.restoreStorageSet.call(this, key, value);
         };
-      });
+      }, mine);
       await page
         .getByRole("button", { name: "Discard saved draft", exact: true })
         .click();
       await page.locator('[role="dialog"] [role="alert"]').waitFor();
       assert.equal(await input().getAttribute("contenteditable"), "false");
-      assert.equal(
-        await page.evaluate(() => localStorage.getItem("yuzuno.composer.v1:a")),
-        manifest,
-      );
+      assert.equal(await read(), manifest);
       await page.screenshot({
         path: new URL("recovery-failure.png", output).pathname,
       });

@@ -43,6 +43,32 @@ export const noReviews = { reviews: [], hasMore: false, nextBefore: null };
 /** /api/jobs/live (T-70) when no Agent is waiting on a job. */
 export const noLiveJobs = { agents: {} };
 
+/**
+ * Runs in the page: the key a draft is saved under, found by the Agent it
+ * names (T-195). A draft is saved under the Workspace and the Agent, and a
+ * fixture page is in one Workspace, so this needs no Workspace id and stays
+ * right whatever a fixture calls its own. Returns the identity -- the part
+ * after the prefix, which the paste bodies' keys also use -- or null.
+ *
+ * Pass it to `page.evaluate(draftIdentityInPage, agentId)`.
+ */
+export function draftIdentityInPage(agent) {
+  const prefix = "yuzuno.composer.v1:";
+  for (let index = 0; index < localStorage.length; index++) {
+    const key = localStorage.key(index);
+    if (!key || !key.startsWith(prefix)) continue;
+    const identity = key.slice(prefix.length);
+    let parsed;
+    try {
+      parsed = JSON.parse(identity);
+    } catch {
+      continue;
+    }
+    if (Array.isArray(parsed) && parsed.length === 2 && parsed[1] === agent) return identity;
+  }
+  return null;
+}
+
 /** The draft saved for Agent `id`, pasted blocks included, or null when it
  * has none. Since long pastes became blocks (T-33) the composer saves
  * `yuzuno.composer.v1:<identity>`, and since T-195 that identity is the

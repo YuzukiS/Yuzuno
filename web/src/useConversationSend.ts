@@ -76,11 +76,6 @@ export function useConversationSend(
   // this window's alone, so it is kept across a Workspace that goes unknown;
   // only what reaches or comes from disk is bound to a Workspace.
   const loadedFor = useRef("");
-  useEffect(() => {
-    if (!workspaceId || loadedFor.current === workspaceId) return;
-    loadedFor.current = workspaceId;
-    outbox.current = load(workspaceId);
-  }, [workspaceId, outbox]);
   // Which Workspace this window is in now, for a send that is still running
   // from the one before it.
   const current = useRef(workspaceId);
@@ -91,6 +86,20 @@ export function useConversationSend(
   // Once a native message is observed, discard its delivery preview. Keeping
   // it hidden only while its Turn is loaded would resurrect it after paging.
   const synchronized = useRef(new Set<string>());
+  useEffect(() => {
+    if (!workspaceId || loadedFor.current === workspaceId) return;
+    const first = !loadedFor.current;
+    loadedFor.current = workspaceId;
+    outbox.current = load(workspaceId);
+    if (first) return;
+    // The Core at this address now answers as another Workspace. A delivery
+    // of a send made in the one before it is not this Workspace's to show,
+    // and an Agent id can be the same in both. The sends themselves are not
+    // cancelled and not sent again; their durable receipts stay with the
+    // Workspace that has them, and are read from it (T-195).
+    setOutgoing((messages) => (messages.length ? [] : messages));
+    synchronized.current.clear();
+  }, [workspaceId, outbox]);
   useEffect(() => {
     if (!detail || detail.agent.id !== agentId) return;
     const ids = new Set<string>(detail.conversation?.nativeClientIds || []);

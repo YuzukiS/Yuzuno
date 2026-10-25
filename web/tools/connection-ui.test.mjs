@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { composerText } from "./composer-driver.mjs";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
-import { installConnectionFixture } from "./connection-fixture.mjs";
+import { installConnectionFixture, FIXTURE_WORKSPACE } from "./connection-fixture.mjs";
 import { build } from "vite";
 
 const dist = pathToFileURL(resolve(process.env.YUZUNO_UI_DIST || "dist") + "/");
@@ -34,7 +34,7 @@ async function mount({ deadlineMs = 180, before, settle = true, holdPoll = false
   // A draft is saved under the Workspace and Agent it was written in (T-195).
   for (const [agent, text] of [["a", "保留我的草稿"], ["b", "Keep Claude draft"]])
     w.localStorage.setItem(
-      `yuzuno.composer.v1:${JSON.stringify(["ws-connection", agent])}`,
+      `yuzuno.composer.v1:${JSON.stringify([FIXTURE_WORKSPACE, agent])}`,
       JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text }] }),
     );
   w.eval(`(${installConnectionFixture.toString()})({deadlineMs: ${deadlineMs}})`);

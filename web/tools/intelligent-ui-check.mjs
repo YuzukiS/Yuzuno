@@ -569,20 +569,23 @@ try {
     .click();
   const afterPressure = await composerDraft(composer);
   assert.ok(afterPressure.startsWith(storageDraft + "\n\n"));
-  // Saved where the composer keeps drafts since T-33, paste blocks included.
-  await page.waitForFunction((text) => {
-    const saved = localStorage.getItem("yuzuno.composer.v1:a");
+  // Saved where the composer keeps drafts since T-33, paste blocks included,
+  // under the Workspace and the Agent it was written in (T-195); this
+  // fixture's /api/workspace says "fixture".
+  const mine = JSON.stringify(["fixture", "a"]);
+  await page.waitForFunction(({ text, identity }) => {
+    const saved = localStorage.getItem("yuzuno.composer.v1:" + identity);
     return (
       !!saved &&
       JSON.parse(saved)
         .parts.map((part) =>
           part.kind === "text"
             ? part.text
-            : localStorage.getItem("yuzuno.paste.v1:a:" + part.bodyId),
+            : localStorage.getItem("yuzuno.paste.v1:" + identity + ":" + part.bodyId),
         )
         .join("") === text
     );
-  }, afterPressure);
+  }, { text: afterPressure, identity: mine });
   await page.reload();
   await page.locator(".interactive-result").waitFor();
   assert.equal(await composerDraft(composer), afterPressure);
