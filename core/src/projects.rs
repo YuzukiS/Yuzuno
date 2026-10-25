@@ -261,6 +261,8 @@ impl Store {
             project.name
         );
         tx.execute("DELETE FROM projects WHERE id=?1", [id])?;
+        // Its new-Agent defaults go with it (T-190).
+        tx.execute("DELETE FROM workspace_meta WHERE key=?1", [crate::agent_defaults::project_key(id)])?;
         tx.commit()?;
         Ok(())
     }

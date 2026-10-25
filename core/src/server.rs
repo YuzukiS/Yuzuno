@@ -614,9 +614,14 @@ mod defaults_create_tests {
 }
 async fn create(State(ws): State<Arc<Workspace>>, Json(p): Json<Create>) -> ApiResult<Json<Value>> {
     let project = p.project_id.clone();
-    // Defaults apply only here, to the Agent being created (T-190).
-    let defaults = ws.stored(|store| store.agent_defaults()).await?;
-    let new = crate::agent_defaults::resolve(&defaults, p.harness.as_deref(), p.permission_preset.as_deref(), p.permission_mode.as_deref())?;
+    // Defaults apply only here, to the Agent being created (T-190): its
+    // project's overrides, when it is created in one, before the Workspace's.
+    let in_project = project.clone();
+    let (defaults, project_defaults) = ws.stored(move |store| {
+        let own = match in_project.as_deref() { Some(id) => Some(store.project_agent_defaults(id)?), None => None };
+        Ok((store.agent_defaults()?, own))
+    }).await?;
+    let new = crate::agent_defaults::resolve(&defaults, project_defaults.as_ref(), p.harness.as_deref(), p.permission_preset.as_deref(), p.permission_mode.as_deref())?;
     let agent = match new.harness.as_str() {
         "codex" => ws.create_on_with(p.name, p.goal, p.cwd, p.model, p.machine_id, p.project_id, new.settings).await?,
         "claude" => ws.claude_create_on_with(p.name, p.goal, p.cwd, p.model, p.machine_id, p.project_id, new.settings).await?,
