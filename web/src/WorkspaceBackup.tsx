@@ -861,14 +861,15 @@ function OperationView({ op, canStop }: { op: Operation; canStop: boolean }) {
 
 function Result({ op }: { op: Operation }) {
   const result = op.result!;
-  if (op.kind === "remove" && Array.isArray(result.removed)) {
-    return (
-      <div className="workspace-backup-result">
-        <p>{passText(result as unknown as Pass)}</p>
-      </div>
-    );
-  }
   if (op.kind === "remove") {
+    // An automatic removal lists what it removed (T-196, slice 6).
+    if (Array.isArray(result.removed)) {
+      return (
+        <div className="workspace-backup-result">
+          <p>{passText(result as unknown as Pass)}</p>
+        </div>
+      );
+    }
     return (
       <div className="workspace-backup-result">
         <p>
