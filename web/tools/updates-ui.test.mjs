@@ -265,13 +265,14 @@ async function mount(overrides = {}, shell, seed) {
     assert.ok(await until(() => !!w.document.querySelector('[role="dialog"]')), "Settings opens");
   };
   // Settings shows one category at a time and opens on Updates, which holds
-  // the desktop app's updates after the Workspace service's.
-  const openDesktop = async () => {
+  // the desktop app's updates after the Workspace service's. In the desktop
+  // window the section is drawn before the shell answers its status (or
+  // refuses), so a test waits for what that answer shows: `shown`.
+  const desktopSection = () => w.document.querySelector('#settings-panel-updates [aria-label="Desktop app"]');
+  const openDesktop = async (shown) => {
     await open();
-    assert.ok(
-      await until(() => !!w.document.querySelector('#settings-panel-updates [aria-label="Desktop app"]')),
-      "the desktop app shows under Updates",
-    );
+    assert.ok(await until(() => !!desktopSection()), "the desktop app shows under Updates");
+    if (shown) assert.ok(await until(() => shown.test(desktopSection()?.textContent ?? "")), `the desktop app shows ${shown}`);
     assert.ok(!w.document.querySelector("#settings-tab-desktop"), "no Desktop app category of its own");
   };
   const close = async () => {
@@ -1309,7 +1310,7 @@ test("the desktop checks its Core, installs only when asked, and saves drafts fi
   const proto = f.w.Storage.prototype,
     set = proto.setItem;
   try {
-    await f.openDesktop();
+    await f.openDesktop(/Version 0\.1\.0/);
     const desktop = () => f.w.document.querySelector('[aria-label="Desktop app"]');
     assert.match(desktop().textContent, /Version 0\.1\.0/);
     assert.ok(f.button("Connection"), "the connection page stays reachable");
@@ -1373,7 +1374,7 @@ for (const managed of [false, true]) {
     const d = desktopShell();
     const f = await mount({ managed, releaseSource: { configured: false, phase: "unavailable", reason: "No Core publisher key" } }, d.shell);
     try {
-      await f.openDesktop();
+      await f.openDesktop(/Version 0\.1\.0/);
       assert.equal(f.button("Check for desktop update").disabled, false);
       f.button("Check for desktop update").click();
       await wait();
@@ -1394,7 +1395,7 @@ test("a copy not installed by the Yuzuno installer can check but not install", a
   const d = desktopShell({ channel: "unknown" });
   const f = await mount({}, d.shell);
   try {
-    await f.openDesktop();
+    await f.openDesktop(/not installed by the Yuzuno installer/);
     const desktop = f.w.document.querySelector('[aria-label="Desktop app"]');
     assert.match(desktop.textContent, /not installed by the Yuzuno installer/);
     f.button("Check for desktop update").click();
@@ -1412,7 +1413,7 @@ test("a non-loopback Core or an older desktop explains the manual path", async (
   });
   let f = await mount({}, remote.shell);
   try {
-    await f.openDesktop();
+    await f.openDesktop(/Core on this computer/);
     assert.match(f.w.document.body.textContent, /Core on this computer/);
     assert.equal(f.button("Check for desktop update").disabled, true);
   } finally {
@@ -1422,7 +1423,7 @@ test("a non-loopback Core or an older desktop explains the manual path", async (
     throw `Command ${command} not found`;
   });
   try {
-    await f.openDesktop();
+    await f.openDesktop(/cannot update itself/);
     const desktop = f.w.document.querySelector('[aria-label="Desktop app"]');
     assert.match(desktop.textContent, /cannot update itself\. Install a newer release by hand/);
     assert.ok(f.button("Check for desktop update") === undefined, "no desktop check button");
