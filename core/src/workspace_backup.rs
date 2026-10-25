@@ -41,6 +41,7 @@ use std::{
 };
 
 pub mod online;
+pub mod retention;
 #[cfg(test)]
 mod tests;
 

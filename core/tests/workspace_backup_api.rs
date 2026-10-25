@@ -107,3 +107,37 @@ async fn settings_back_up_check_and_restore_only_from_cores_own_port() {
     let (status, relative) = call(&local, "POST", "/api/workspace/backups", Some(json!({"requestId":"b2","to":"relative/path"})), false).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{relative}");
 }
+
+/// The retention preview (T-196, slice 2): only from Core's own port, read
+/// only, and refusing a relative folder or a count out of range.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retention_preview_lists_a_folder_only_from_cores_own_port_and_changes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    let ws = Workspace::new(data.clone(), "/tmp".into(), "unused-codex".into()).unwrap();
+    let remote = server::remote_router(ws.clone(), tmp.path().join("assets"), None, RemoteEntry::new(ORIGIN, LOGIN).unwrap());
+    let local = server::router(ws, tmp.path().join("assets"));
+    let folder = tmp.path().join("backups");
+    std::fs::create_dir(&folder).unwrap();
+    let (status, started) = call(&local, "POST", "/api/workspace/backups", Some(json!({"requestId":"b1","to":folder.join("first")})), false).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    assert_eq!(finished(&local, started["operation"]["id"].as_str().unwrap()).await["state"], "succeeded");
+    std::fs::create_dir(folder.join("photos")).unwrap();
+
+    let request = json!({"folder": folder, "keep": 1});
+    let (status, _) = call(&remote, "POST", "/api/workspace/backup/retention/preview", Some(request.clone()), true).await;
+    assert!(unrouted(status), "a phone cannot list host folders: {status}");
+    let (status, preview) = call(&local, "POST", "/api/workspace/backup/retention/preview", Some(request), false).await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    let verdicts: Vec<(String, String)> = preview["entries"].as_array().unwrap().iter()
+        .map(|e| (e["name"].as_str().unwrap().to_owned(), e["verdict"].as_str().unwrap().to_owned())).collect();
+    assert!(verdicts.contains(&("first".into(), "keep".into())) && verdicts.contains(&("photos".into(), "ignored".into())), "{preview}");
+    assert_eq!(preview["removableEstimateBytes"], json!(0));
+    let (status, relative) = call(&local, "POST", "/api/workspace/backup/retention/preview", Some(json!({"folder":"backups","keep":1})), false).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(relative["error"].as_str().unwrap().contains("absolute"), "{relative}");
+    let (status, zero) = call(&local, "POST", "/api/workspace/backup/retention/preview", Some(json!({"folder":folder,"keep":0})), false).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(zero["error"].as_str().unwrap().contains("Keep at least 1"), "{zero}");
+    assert!(folder.join("first/manifest.json").is_file() && folder.join("photos").is_dir(), "nothing was removed");
+}
