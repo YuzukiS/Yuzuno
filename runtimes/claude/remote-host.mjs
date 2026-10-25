@@ -241,29 +241,32 @@ export class RemoteHost {
   }
 
   /**
-   * The user's Disconnect (T-184), asked by the attached client. Refused, with
-   * nothing changed, unless the bridge itself says it is idle, and that
-   * answer is about the same client and bridge. Commands this client sends
-   * meanwhile are refused. Then the host takes no more clients, closes the
-   * bridge, and answers `stopped: true` only if it exited by itself within
-   * BRIDGE_EXIT_MS with code 0; otherwise `stopped: null` (unconfirmed),
-   * with why. It exits once the client has closed (or a while after).
+   * The user's Disconnect (T-184), asked by the attached client. It goes on
+   * only if the bridge itself says it is idle, and that answer is about the
+   * same client and bridge; commands this client sends meanwhile are refused.
+   * Then the host takes no more clients, closes the bridge, and answers
+   * `stopped: true` only if it exited by itself within BRIDGE_EXIT_MS with
+   * code 0. `stopped: false` means only that the bridge said it has work: no
+   * stop began, and this client and bridge are as they were. Anything else
+   * is `stopped: null`, with why: not known to have stopped, nor not to have.
+   * It exits once the client has closed (or a while after).
    */
   async stopFor(socket, id) {
     const answer = result => { if (!socket.destroyed) socket.write(JSON.stringify({ type: 'response', id, result }) + '\n'); };
-    if (this.stopAsked || this.stopping) return answer({ stopped: false, reason: 'this Claude host is already stopping' });
+    if (this.stopAsked || this.stopping) return answer({ stopped: null, reason: 'this Claude host is already stopping' });
     this.stopAsked = true;
     const bridge = this.bridge;
     const status = await this.status();
-    const refused = socket !== this.client ? 'another connection took this Claude host over'
+    const doubt = socket !== this.client ? 'another connection took this Claude host over'
       : this.stopping ? 'this Claude host is already stopping'
       : !bridge || this.bridge !== bridge ? 'the Claude bridge on this machine changed while it was asked'
-      : !status ? "Claude on this machine didn't answer whether it is idle"
-      : !idle(status) || this.pending.size ? 'Claude on this machine is not idle' : null;
-    if (refused) {
+      : !status ? "Claude on this machine didn't answer whether it is idle" : null;
+    const busyNow = !doubt && (!idle(status) || this.pending.size > 0);
+    if (doubt || busyNow) {
       this.stopAsked = false;
-      this.log('stopRefused', { reason: refused });
-      return answer({ stopped: false, reason: refused });
+      const reason = doubt || 'Claude on this machine is not idle';
+      this.log('stopRefused', { reason });
+      return answer({ stopped: doubt ? null : false, reason });
     }
     this.stopping = true;
     clearTimeout(this.firstClient);

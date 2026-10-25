@@ -270,6 +270,8 @@ test('host_stop on an idle host closes the bridge, waits for its exit and says s
   assert.equal(late.frames.length, 0, 'no new client is taken');
   c.send({ op: 'send', id: '3', ms: 10 });
   assert.match((await c.next(f => f.id === '3')).error, /stopping/);
+  c.send({ op: 'host_stop', id: '4' });
+  assert.deepEqual((await c.next(f => f.id === '4')).result, { stopped: null, reason: 'this Claude host is already stopping' }, 'not a refusal: a stop has begun');
   c.socket.end();
   assert.equal(await stopped, 0);
   const stopping = log().filter(entry => entry.event === 'stopping');
@@ -301,7 +303,7 @@ test('host_stop while a turn runs or an approval waits is refused and changes no
   assert.deepEqual(received().filter(command => command.op === 'respond').map(command => command.decision), ['allow']);
 });
 
-test('host_stop before the bridge has started, or when it does not answer its status, is refused (T-184)', async t => {
+test('host_stop before the bridge has started, or when it does not answer its status, stops nothing and is not called a refusal (T-184)', async t => {
   // This bridge never answers a status question (it reads the variable as it starts).
   process.env.FAKE_STATUS = 'silent';
   t.after(() => { delete process.env.FAKE_STATUS; });
@@ -309,11 +311,11 @@ test('host_stop before the bridge has started, or when it does not answer its st
   await host.listen();
   const c = await client(host.socketPath);
   c.send({ op: 'host_stop', id: '1' });
-  assert.equal((await c.next(f => f.id === '1')).result.stopped, false, 'nothing started: no status to trust');
+  assert.deepEqual((await c.next(f => f.id === '1')).result, { stopped: null, reason: "Claude on this machine didn't answer whether it is idle" }, 'nothing started: no status to trust');
   c.send({ op: 'start', id: '2', cwd: '/tmp' });
   await c.next(f => f.id === '2');
   c.send({ op: 'host_stop', id: '3' });
-  assert.deepEqual((await c.next(f => f.id === '3', 15000)).result, { stopped: false, reason: "Claude on this machine didn't answer whether it is idle" });
+  assert.deepEqual((await c.next(f => f.id === '3', 15000)).result, { stopped: null, reason: "Claude on this machine didn't answer whether it is idle" });
   assert.equal(host.stopping, false);
   assert.ok(host.bridge);
   delete process.env.FAKE_STATUS;

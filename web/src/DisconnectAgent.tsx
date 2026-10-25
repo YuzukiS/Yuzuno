@@ -6,12 +6,14 @@ import type { Agent } from "./types";
 import "./recovery.css";
 
 /**
- * Disconnecting an Agent (T-184): its native session on this computer
- * stops, and stays stopped until the user reconnects it. Unlike Close the
- * Agent stays open, with its conversation, settings, tasks and drafts, and
- * its Jobs go on. Core disconnects it only if it can confirm the Agent is
- * idle; otherwise it says why and nothing changes. Nothing happens until
- * the user confirms here.
+ * Disconnecting an Agent (T-184): its native session on this computer, or on
+ * its SSH machine once that machine confirms it, stops, and nothing starts
+ * it until the user reconnects it. An SSH machine that can't confirm the
+ * stop leaves it held as disconnected, and Core answers with an error.
+ * Unlike Close the Agent stays open, with its conversation, settings, tasks
+ * and drafts, and its Jobs go on. Core disconnects it only if it can confirm
+ * the Agent is idle; otherwise it says why and nothing changes. Nothing
+ * happens until the user confirms here.
  */
 export function DisconnectAgentDialog({
   agent,

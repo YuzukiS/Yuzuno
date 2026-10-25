@@ -275,9 +275,10 @@ pub struct Agent {
     pub status: String,
     #[serde(default)]
     pub closed_at: Option<String>,
-    /// When the user disconnected this open Agent (T-184): its native session
-    /// was stopped, and nothing starts it again (mail, auto-continue,
-    /// recovery, a send) until their Reconnect, Close or Reopen clears this.
+    /// When the user disconnected this open Agent (T-184): nothing starts its
+    /// native session again (mail, auto-continue, recovery, a send) until
+    /// their Reconnect, Close or Reopen clears this. Its stop was confirmed
+    /// unless `disconnect_unconfirmed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disconnected_at: Option<String>,
     /// The user disconnected this Agent, but its stop was not confirmed (an

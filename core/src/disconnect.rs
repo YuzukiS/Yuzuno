@@ -108,7 +108,8 @@ fn codex_thread_at_rest(status: &Value) -> bool {
 impl Workspace {
     /// Disconnects this Agent as the user asked, or refuses with why. On
     /// success its native session is stopped, it is offline and disconnected,
-    /// and `disconnectedAt` records the user's choice.
+    /// and `disconnectedAt` records the user's choice. A stop an SSH machine
+    /// can't confirm fails, and leaves the choice held, unconfirmed.
     pub async fn disconnect_agent(self: &Arc<Self>, id: &str) -> Result<Agent> {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
@@ -378,8 +379,8 @@ mod tests {
     /// Stands in for SSH and a machine's Claude host (remote-host.mjs) behind
     /// it: answers as an idle bridge, and `host_stop` as `mode` says: `ok`,
     /// `busy`, `older` (an earlier host passes it on and its bridge refuses),
-    /// `rejected` (another refusal), `unconfirmed`, or `lost` (SSH ends with
-    /// no answer). Logs every op.
+    /// `rejected` (another refusal), `stopping` (a stop has begun),
+    /// `unconfirmed`, or `lost` (SSH ends with no answer). Logs every op.
     const HOST: &str = r#"
 const [log, mode] = process.argv.slice(2);
 const fs = require('node:fs');
@@ -396,6 +397,7 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
   if (mode === 'older') return out({ type: 'response', id: c.id, error: 'Unknown operation' });
   if (mode === 'rejected') return out({ type: 'response', id: c.id, error: 'Runtime is closed' });
   if (mode === 'unconfirmed') return reply({ stopped: null, reason: 'the Claude bridge on this machine only ended after SIGTERM' });
+  if (mode === 'stopping') return reply({ stopped: null, reason: 'this Claude host is already stopping' });
   process.exit(0);
 });
 process.stdin.on('end', () => process.exit(0));
@@ -490,7 +492,7 @@ process.stdin.on('end', () => process.exit(0));
     /// Reconnect resumes the same session.
     #[tokio::test]
     async fn an_unconfirmed_ssh_claude_stop_holds_the_agent_until_the_users_reconnect() {
-        for (machine, mode) in [("t184-ssh-unconfirmed", "unconfirmed"), ("t184-ssh-rejected", "rejected"), ("t184-ssh-lost", "lost")] {
+        for (machine, mode) in [("t184-ssh-unconfirmed", "unconfirmed"), ("t184-ssh-rejected", "rejected"), ("t184-ssh-stopping", "stopping"), ("t184-ssh-lost", "lost")] {
             let dir = tempfile::tempdir().unwrap();
             let Some(ws) = ssh_claude(dir.path(), machine, mode).await else { return };
             let error = ws.disconnect_agent("a").await.unwrap_err().to_string();
