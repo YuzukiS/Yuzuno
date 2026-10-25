@@ -19,7 +19,8 @@ def turns():
     count = 0 if (root/'empty').exists() else 12 + (int((root/'extra').read_text() or '1') if (root/'extra').exists() else 0)
     return [{'id':f't-{i}','status':'completed','items':[{'id':f'item-{i}','type':'agentMessage','phase':'final_answer','text':f'Native result {i}'}]} for i in range(count)]
 def thread():
-    return {'id':thread_id,'cwd':str(root),'name':'Original native session','preview':'Original task','model':'native-model','reasoningEffort':'ultra','updatedAt':1700000000,'status':{'type':'idle'},'historyMode':'paginated'}
+    status = {'type':'active','activeFlags':[]} if (root/'active').exists() else {'type':'idle'}
+    return {'id':thread_id,'cwd':str(root),'name':'Original native session','preview':'Original task','model':'native-model','reasoningEffort':'ultra','updatedAt':1700000000,'status':status,'historyMode':'paginated'}
 for line in sys.stdin:
     req = json.loads(line)
     with (root/'calls.jsonl').open('a') as log: log.write(json.dumps(dict(req,pid=os.getpid()))+'\n')
@@ -368,4 +369,99 @@ async fn pasted_receipt_identity_survives_core_restart_reconnect_and_full_native
     assert_eq!(after.agent.last_seq,seq,"history projection stays read-only");
     assert!(after.turns.iter().all(|t|t["id"]!="t-8"));
     ws.close_agent(&agent.id).await.unwrap();
+}
+
+/// T-198: a power cut left Core holding an unfinished Turn the native
+/// history never got. Reconnecting can't confirm it and says so; only the
+/// user's explicit end makes that Turn interrupted with its result unknown,
+/// after which the same Agent and session go on, nothing sent again.
+#[tokio::test]
+async fn a_turn_missing_from_native_history_is_ended_only_by_the_user_and_the_session_goes_on() {
+    let lab = Lab::new();
+    let agent = lab.ws.import_codex_session(lab.input()).await.unwrap();
+    lab.ws.start_collaboration(4399);
+    let lost = json!({"id":"lost-turn","status":"inProgress","items":[
+        {"id":"lost-user","type":"userMessage","content":[{"type":"text","text":"the input before the power cut"}]},
+        {"id":"lost-tool","type":"commandExecution","command":"make","status":"inProgress"}]});
+    lab.ws.store.update(&agent.id, "test/powerCut", &json!({}), move |d| d.turns.push(lost)).unwrap();
+
+    // Reconnecting can't confirm it, says so, and keeps what it found.
+    let error = lab.ws.reconnect(&agent.id).await.unwrap_err().to_string();
+    assert!(error.contains("原生历史未包含"), "{error}");
+    let d = lab.ws.store.detail(&agent.id).unwrap();
+    let found = d.codex_handoff.as_ref().and_then(|h| h.missing_turns.clone()).expect("the finding is kept");
+    assert_eq!((found.turn_ids.clone(), found.native_status.as_str(), found.thread_id.as_str()),
+        (vec!["lost-turn".to_owned()], "idle", THREAD));
+    assert_eq!(d.turns.iter().find(|t| t["id"] == "lost-turn").unwrap()["status"], "inProgress", "nothing ends it by itself");
+    assert_ne!(d.agent.connection_state, "connected");
+    // Checking again finds the same, on its own connection.
+    let _ = lab.ws.reconnect(&agent.id).await.unwrap_err();
+    let found = lab.ws.store.detail(&agent.id).unwrap().codex_handoff.unwrap().missing_turns.unwrap();
+
+    // Misuse is refused and changes nothing: other Turns, an earlier connection.
+    assert!(lab.ws.end_missing_native_turns(&agent.id, &["t-3".into()], found.generation).await.is_err());
+    assert!(lab.ws.end_missing_native_turns(&agent.id, &["lost-turn".into()], found.generation - 1).await.is_err());
+    let before = lab.ws.store.detail(&agent.id).unwrap();
+    assert_eq!(before.turns.iter().find(|t| t["id"] == "lost-turn").unwrap()["status"], "inProgress");
+
+    // The user's end: only that Turn, interrupted with its result unknown.
+    let ended = lab.ws.end_missing_native_turns(&agent.id, &["lost-turn".into()], found.generation).await.unwrap();
+    assert_eq!((ended.connection_state.as_str(), ended.status.as_str()), ("disconnected", "offline"));
+    assert_eq!(ended.thread_id.as_deref(), Some(THREAD), "the same session");
+    let seq = lab.ws.store.detail(&agent.id).unwrap().agent.last_seq;
+    lab.ws.end_missing_native_turns(&agent.id, &["lost-turn".into()], found.generation).await.unwrap();
+    let after = lab.ws.store.detail(&agent.id).unwrap();
+    assert_eq!(after.agent.last_seq, seq, "ending it again writes nothing");
+    let turn = after.turns.iter().find(|t| t["id"] == "lost-turn").unwrap();
+    assert_eq!(turn["status"], "interrupted");
+    assert!(turn["missingNative"]["endedAt"].is_string() && turn["missingNative"]["checkedAt"].is_string(), "{turn}");
+    let was = before.turns.iter().find(|t| t["id"] == "lost-turn").unwrap();
+    assert_eq!(turn["items"], was["items"], "what it recorded stays: a tool it ran is not called not run");
+    for other in before.turns.iter().filter(|t| t["id"] != "lost-turn") {
+        assert!(after.turns.iter().any(|t| t == other), "every other Turn stays as it was");
+    }
+    assert!(after.codex_handoff.as_ref().unwrap().missing_turns.is_none());
+    assert_eq!(serde_json::to_value(&after.agent.settings).unwrap(), serde_json::to_value(&before.agent.settings).unwrap(), "permissions and settings stay");
+
+    // The same Agent and session go on; only the new message is sent.
+    lab.ws.reconnect(&agent.id).await.unwrap();
+    assert_eq!(lab.ws.store.agent(&agent.id).unwrap().connection_state, "connected");
+    lab.ws.send(&agent.id, "the next message".into()).await.unwrap();
+    let starts: Vec<Value> = lab.calls().into_iter().filter(|r| r["method"] == "turn/start").collect();
+    assert_eq!(starts.len(), 1, "one new Turn, nothing replayed");
+    assert_eq!(starts[0]["params"]["threadId"], THREAD);
+    let sent = serde_json::to_string(&starts[0]["params"]).unwrap();
+    assert!(sent.contains("the next message") && !sent.contains("the input before the power cut"));
+    assert!(!lab.calls().iter().any(|r| matches!(r["method"].as_str(), Some("thread/fork" | "thread/start" | "turn/steer"))));
+    let kept = lab.ws.store.detail(&agent.id).unwrap();
+    assert_eq!(kept.turns.iter().find(|t| t["id"] == "lost-turn").unwrap()["status"], "interrupted", "the ended Turn is kept");
+    lab.ws.close_agent(&agent.id).await.unwrap();
+}
+
+/// T-198: while Codex says the session is running a Turn, or when a check
+/// failed for another reason, the local record is not ended.
+#[tokio::test]
+async fn a_missing_turn_is_not_ended_while_codex_runs_one_or_when_the_check_failed_otherwise() {
+    let lab = Lab::new();
+    let agent = lab.ws.import_codex_session(lab.input()).await.unwrap();
+    lab.ws.store.update(&agent.id, "test/powerCut", &json!({}), |d|
+        d.turns.push(json!({"id":"lost-turn","status":"inProgress","items":[]}))).unwrap();
+    lab.mark("active");
+    assert!(lab.ws.reconnect(&agent.id).await.is_err());
+    let found = lab.ws.store.detail(&agent.id).unwrap().codex_handoff.unwrap().missing_turns.unwrap();
+    assert_eq!(found.native_status, "active");
+    let refused = lab.ws.end_missing_native_turns(&agent.id, &["lost-turn".into()], found.generation).await.unwrap_err();
+    assert!(refused.to_string().contains("正在运行"), "{refused}");
+    assert_eq!(lab.ws.store.detail(&agent.id).unwrap().turns.iter().find(|t| t["id"] == "lost-turn").unwrap()["status"], "inProgress");
+
+    // Another Agent whose check failed for another reason (its rollout is gone): no finding, no end.
+    let other = Lab::new();
+    let agent = other.ws.import_codex_session(other.input()).await.unwrap();
+    other.ws.store.update(&agent.id, "test/powerCut", &json!({}), |d|
+        d.turns.push(json!({"id":"lost-turn","status":"inProgress","items":[]}))).unwrap();
+    other.mark("missing");
+    assert!(other.ws.reconnect(&agent.id).await.is_err());
+    assert!(other.ws.store.detail(&agent.id).unwrap().codex_handoff.and_then(|h| h.missing_turns).is_none());
+    assert!(other.ws.end_missing_native_turns(&agent.id, &["lost-turn".into()], 1).await.is_err());
+    assert_eq!(other.ws.store.detail(&agent.id).unwrap().turns.iter().find(|t| t["id"] == "lost-turn").unwrap()["status"], "inProgress");
 }

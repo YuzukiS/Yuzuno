@@ -168,6 +168,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/agents/{id}/codex/review",post(codex_review))
         .route("/api/agents/{id}/tasks/{task_id}/stop",post(stop_task))
         .route("/api/agents/{id}/reconnect",post(reconnect))
+        .route("/api/agents/{id}/codex/missing-turns/end",post(end_missing_turns))
         .route("/api/agents/{id}/review",post(review))
         .route("/api/requests/{id}/respond",post(respond))
         .route("/api/models",get(models))
@@ -856,6 +857,17 @@ async fn reconnect(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Que
         Some("summary") => Ok(Json(json!({"agent": ws.reconnect_summary(&id).await?}))),
         Some(other) => Err(anyhow::anyhow!("Unknown reconnect view {other:?}: use view=summary, or no view for the whole record").into()),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EndMissingTurns {
+    turn_ids: Vec<String>,
+    generation: u64,
+}
+/// The user's explicit end of Turns the native history doesn't have (T-198).
+async fn end_missing_turns(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(p): Json<EndMissingTurns>) -> ApiResult<Json<Value>> {
+    Ok(Json(json!({"agent": ws.end_missing_native_turns(&id, &p.turn_ids, p.generation).await?})))
 }
 
 /// Large tool fields arrive as bounded previews; see client_view. A record

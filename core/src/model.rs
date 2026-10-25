@@ -342,6 +342,26 @@ pub struct CodexHandoff {
     /// The Agent and session this fork was created from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forked_from: Option<ForkLink>,
+    /// Turns Core holds as unfinished that the native history, read to its
+    /// end, doesn't have (T-198): Codex never saved them, a power cut for
+    /// one, so their result is unknown and no reconnect can confirm them.
+    /// Only the user ends them (`Workspace::end_missing_native_turns`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_turns: Option<MissingTurns>,
+}
+
+/// One check's finding of `CodexHandoff::missing_turns`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingTurns {
+    /// Sorted, as compared with what the user confirms.
+    pub turn_ids: Vec<String>,
+    pub thread_id: String,
+    /// The connection whose check found them.
+    pub generation: u64,
+    /// What Codex said the thread was doing then: `idle`, `active`, ...
+    pub native_status: String,
+    pub checked_at: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -856,6 +856,7 @@ impl Workspace {
             let page = match crate::codex_sessions::recovery_page(&connection.rpc, &thread_id, &attempt.before).await {
                 Ok(page) => page,
                 Err(error) => {
+                    self.record_missing_turns(id, connection.generation, &thread_id, &result["thread"], &error).await?;
                     if !attempt.same_thread_only {
                         self.remove_connection(id, connection.generation).await;
                     }
@@ -895,8 +896,9 @@ impl Workspace {
                 |d| {
                     d.agent.thread_id = Some(thread_id);
                     d.agent.connection_state = "connected".into();
-                    // Yuzuno now owns the writer; an earlier conflict is resolved.
-                    if let Some(handoff) = &mut d.codex_handoff { handoff.writer_conflict_at = None; }
+                    // Yuzuno now owns the writer; an earlier conflict is resolved,
+                    // and a check that found every Turn has nothing missing.
+                    if let Some(handoff) = &mut d.codex_handoff { handoff.writer_conflict_at = None; handoff.missing_turns = None; }
                     if let Some(history) = imported_history { d.history = Some(history); }
                     match page_turns {
                         Some(turns) => apply_snapshot_turns(d, thread, Some(turns), &changes),
@@ -940,6 +942,86 @@ impl Workspace {
         Ok(connection)
     }
 
+    /// When a check's error is the native history's own answer that it
+    /// lacks Turns Core holds as unfinished (T-198), keep that finding with
+    /// the connection and what Codex said the thread was doing, so the user
+    /// can end them. Any other error leaves the record as it was.
+    async fn record_missing_turns(&self, id: &str, generation: u64, thread_id: &str, thread: &Value, error: &anyhow::Error) -> Result<()> {
+        let Some(missing) = error.downcast_ref::<crate::codex_sessions::MissingNativeTurns>() else { return Ok(()) };
+        let found = crate::model::MissingTurns {
+            turn_ids: missing.turn_ids.clone(),
+            thread_id: thread_id.to_owned(),
+            generation,
+            native_status: thread["status"]["type"].as_str().unwrap_or("unknown").to_owned(),
+            checked_at: crate::model::now(),
+        };
+        self.record_update(id, "codex/missingTurns", serde_json::to_value(&found)?, move |d| {
+            d.codex_handoff.get_or_insert_with(Default::default).missing_turns = Some(found);
+        }).await?;
+        self.changed(id);
+        Ok(())
+    }
+
+    /// The user's explicit end of Turns the last check found missing from
+    /// the native history (T-198). Only those Turns, still unfinished, from
+    /// the connection that found them, while Codex said the thread was not
+    /// running anything: each becomes interrupted with its result unknown,
+    /// and the decision and its time are kept on the Turn and in the
+    /// journal. Nothing is sent, replayed, forked or written to the native
+    /// history, and nothing the Turn may have done is undone or called not
+    /// done. Ending the same Turns again answers the same.
+    pub async fn end_missing_native_turns(self: &Arc<Self>, id: &str, turn_ids: &[String], generation: u64) -> Result<crate::model::Agent> {
+        let _permit = self.admission.enter_work()?;
+        let gate = self.gate(id).await;
+        let _held = gate.lock().await;
+        let d = self.send_view(id).await?;
+        ensure_agent_open(&d.agent)?;
+        anyhow::ensure!(d.agent.harness == "codex", "只有 Codex Agent 会有原生历史缺失的 Turn");
+        let mut wanted = turn_ids.to_vec();
+        wanted.sort();
+        wanted.dedup();
+        anyhow::ensure!(!wanted.is_empty(), "没有指定要结束的 Turn");
+        let ended = |tid: &str| d.turns.iter().any(|t| t["id"] == tid && t["status"] == "interrupted" && t["missingNative"]["endedAt"].is_string());
+        let Some(found) = d.codex_handoff.as_ref().and_then(|h| h.missing_turns.clone()) else {
+            // Already ended by an earlier request: the same answer.
+            if wanted.iter().all(|tid| ended(tid)) { return self.listed(id).await; }
+            bail!("没有核对到原生历史缺失的 Turn；请先重新连接核对");
+        };
+        anyhow::ensure!(found.turn_ids == wanted, "核对到的缺失 Turn 已变化；请重新连接核对后再确认");
+        anyhow::ensure!(found.generation == generation, "这次核对之后连接已变化；请重新连接核对后再确认");
+        anyhow::ensure!(matches!(found.native_status.as_str(), "idle" | "systemError"),
+            "Codex 核对时报告这个会话{}；不会结束本地记录",
+            if found.native_status == "active" { "仍有正在运行的 Turn" } else { "的状态未知" });
+        let current = self.rpcs.lock().unwrap().get(id).map(|c| c.generation);
+        anyhow::ensure!(current.is_none_or(|g| g == found.generation), "已有新的连接；请重新连接核对后再确认");
+        for tid in &wanted {
+            anyhow::ensure!(d.turns.iter().any(|t| t["id"] == tid.as_str() && t["status"] == "inProgress"),
+                "Turn {tid} 已不再是未完成状态；请重新连接核对");
+        }
+        let connected = current.is_some();
+        let ended_at = crate::model::now();
+        let data = json!({"turnIds":wanted,"threadId":found.thread_id,"generation":generation,
+            "nativeStatus":found.native_status,"checkedAt":found.checked_at,"endedAt":ended_at});
+        let message = crate::codex_sessions::MissingNativeTurns { turn_ids: vec![] }.to_string();
+        self.record_update(id, "codex/missingTurnsEnded", data, move |d| {
+            for turn in d.turns.iter_mut() {
+                let mine = turn["id"].as_str().is_some_and(|tid| wanted.iter().any(|w| w == tid));
+                if mine && turn["status"] == "inProgress" {
+                    turn["status"] = "interrupted".into();
+                    turn["missingNative"] = json!({"checkedAt":found.checked_at,"endedAt":ended_at});
+                }
+            }
+            if let Some(handoff) = &mut d.codex_handoff { handoff.missing_turns = None; }
+            if d.agent.error.as_deref() == Some(message.as_str()) { d.agent.error = None; }
+            if !connected {
+                d.agent.connection_state = "disconnected".into();
+                d.agent.status = "offline".into();
+            }
+        }).await?;
+        self.changed(id);
+        self.listed(id).await
+    }
+
     pub(crate) fn collaboration_generation(&self, id: &str) -> Option<u64> {
         let codex = self.rpcs.lock().unwrap().get(id).map(|c| c.generation);
         codex.or_else(|| self.claudes.lock().unwrap().get(id).map(|c| c.generation))
@@ -974,7 +1056,13 @@ impl Workspace {
             .await?;
         anyhow::ensure!(result["thread"]["id"].as_str() == Some(thread.as_str()), "Codex 核对返回了不同会话；原会话未确认");
         let imported_history = if imported {
-            let page = crate::codex_sessions::recovery_page(&connection.rpc, &thread, &d).await?;
+            let page = match crate::codex_sessions::recovery_page(&connection.rpc, &thread, &d).await {
+                Ok(page) => page,
+                Err(error) => {
+                    self.record_missing_turns(id, connection.generation, &thread, &result["thread"], &error).await?;
+                    return Err(error);
+                }
+            };
             let history = crate::model::HistoryWindow { loaded_count: page.turns.len(), has_more: page.has_more, next_cursor: page.next_cursor };
             result["thread"]["turns"] = page.turns.into();
             Some(history)
@@ -997,6 +1085,7 @@ impl Workspace {
                 |current| {
                     current.agent.connection_state = "connected".into();
                     if let Some(history) = imported_history { current.history = Some(history); }
+                    if let Some(handoff) = &mut current.codex_handoff { handoff.missing_turns = None; }
                     apply_snapshot_turns(current, &result["thread"], turns, &changes);
                     current.confirm_message_receipts();
                     if !has_new_error { clear_transport_error(current, &result["thread"]); }
