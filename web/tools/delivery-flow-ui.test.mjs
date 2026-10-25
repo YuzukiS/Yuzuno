@@ -258,3 +258,106 @@ test("terminal flows retain evidence and offer no new candidate or stop action",
     }
   }
 });
+
+// T-189: delivery follows the interface language, changed in another window.
+const speak = (h, language) => {
+  h.dom.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+  h.dom.window.dispatchEvent(new h.dom.window.StorageEvent("storage", { key: "yuzuno.language" }));
+};
+const select = (h, label) =>
+  [...h.dom.window.document.querySelectorAll("label")].find((l) => l.textContent.startsWith(label)).querySelector("select");
+const choose = (h, element, value) => {
+  element.value = value;
+  element.dispatchEvent(new h.dom.window.Event("change", { bubbles: true }));
+};
+test("a language change keeps the chosen PR, the cap, the open setup and the request identity, and starts nothing", async () => {
+  const second = {
+    ...linked,
+    id: "7:pull:2",
+    number: 2,
+    url: "https://github.com/o/r/pull/2",
+    snapshot: { title: "第二个 change", baseSha: "c".repeat(40), headSha: "d".repeat(40) },
+  };
+  const enables = [];
+  const h = mount((url, body) => {
+    if (url.endsWith("/github_links")) return { links: [linked, second] };
+    if (url.endsWith("/delivery_enable")) {
+      enables.push(body);
+      if (enables.length === 1) throw new h.dom.window.Error("Core is busy: try again");
+      return { flow: flow() };
+    }
+    return { settings, flow: enables.length > 1 ? flow() : null };
+  });
+  try {
+    h.render();
+    await tick();
+    await tick();
+    h.button("Set up delivery").click();
+    await tick();
+    choose(h, select(h, "Pull request"), second.id);
+    choose(h, select(h, "Maximum paid review attempts"), "2");
+    await tick();
+    h.button("Enable this delivery").click();
+    await tick();
+    await tick();
+    assert.equal(enables.length, 1);
+    assert.match(h.text(), /Core is busy: try again/);
+    const before = h.calls.length;
+    speak(h, "zh-Hans");
+    await tick();
+    await tick();
+    const text = h.text();
+    for (const words of ["自动交付", "拉取请求", "付费审查次数上限", "最多 2 次审查 · 需要明确继续", "在提交匹配的结果后开始。", "启用此交付"])
+      assert.ok(text.includes(words), words);
+    // As written: Core's reason, the PR's title, harness and model, commits.
+    assert.ok(text.includes("Core is busy: try again"));
+    assert.ok(text.includes("#2 · 第二个 change"));
+    assert.ok(text.includes("为 cccccccc → dddddddd 授权 codex / gpt-6.1-sol。"));
+    assert.equal(select(h, "拉取请求").value, second.id);
+    assert.equal(select(h, "付费审查次数上限").value, "2");
+    // Nothing asked of Core: no delivery_get, github_links or delivery_enable.
+    assert.deepEqual(h.calls.slice(before).map((c) => c.url), []);
+    h.button("启用此交付").click();
+    await tick();
+    await tick();
+    assert.equal(enables.length, 2);
+    assert.equal(enables[1].requestId, enables[0].requestId, "the same request, asked again");
+    assert.equal(enables[1].linkId, second.id);
+    assert.equal(enables[1].maxRounds, 2);
+    assert.match(h.text(), /等待结果/);
+  } finally {
+    h.dom.window.close();
+  }
+});
+test("a running flow follows the language; Core's reason, the review's outcome, CI runs and identities stay as written", async () => {
+  const f = flow("ready_to_merge");
+  f.reviewEvidence = { id: "original", status: "completed", conclusion: "no_findings", actualModel: "gpt-6.1-sol", finishedAt: null };
+  f.ciEvidence = {
+    watch: { observedAt: new Date().toISOString(), error: null },
+    runs: [{ id: "run-1", name: "CI", conclusion: "success", status: "completed", url: "https://github.com/o/r/actions/runs/1" }],
+  };
+  f.rounds[0].review.id = "review-1";
+  const h = mount((url) => (url.endsWith("/github_links") ? { links: [linked] } : { settings, flow: f }));
+  try {
+    h.dom.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+    h.render();
+    await tick();
+    await tick();
+    const text = h.text();
+    for (const words of ["可以决定是否合并", "已链接的 PR ↗", "审查 1 / 2", "审查模型：gpt-6.1-sol", "原始审查证据 ↗", "CI 观察于", "授权与操作标识", "第 1 轮 · codex / gpt-6.1-sol", "结果：未提交", "审查：review-1", "CI：未订阅", "授权下一个候选…", "停止自动交付"])
+      assert.ok(text.includes(words), words);
+    for (const kept of ["Explicit delivery candidate", "completed · no findings", "CI · success ↗", "fixed-review", "fixed-ci", "aaaaaaaa", "bbbbbbbb"])
+      assert.ok(text.includes(kept), kept);
+    assert.equal(h.dom.window.document.querySelector(".delivery-flow").getAttribute("aria-label"), "任务交付");
+    h.button("授权下一个候选").click();
+    await tick();
+    assert.ok(h.button("授权下一个审查候选"));
+    speak(h, "en");
+    await tick();
+    assert.ok(h.button("Authorize next review candidate"), "the open setup stays open");
+    assert.ok(h.text().includes("Ready for merge decision"));
+    assert.ok(h.calls.every((c) => c.url.endsWith("delivery_get") || c.url.endsWith("github_links")));
+  } finally {
+    h.dom.window.close();
+  }
+});

@@ -103,3 +103,46 @@ test('failed link keeps draft; switching tasks discards late replies',async()=>{
   [...panel(p).querySelectorAll('button')].find(b=>b.textContent.trim()==='Link a PR or Issue').click();await pause();assert.equal(panel(p).querySelector('.github-link-form input').value,'');assert.deepEqual(p.errors,[]);
  }finally{p.close();}
 });
+// T-189: a task's links follow the interface language, changed in another
+// window. What GitHub and Core said, titles, branches, commits and check
+// names stay as written; the typed URL, the open checks and the notice stay.
+async function speak(p,language){p.w.localStorage.setItem('yuzuno.language',JSON.stringify({language}));p.w.dispatchEvent(new p.w.StorageEvent('storage',{key:'yuzuno.language'}));await pause(100);}
+const taskPanel=p=>p.doc.querySelector('.collab-delivery .github-panel');
+test('a task\'s links follow a language change; the draft, open checks and notice stay and nothing is requested',async()=>{
+ const stale={...object(9),stale:true,error:'unavailable: offline'};
+ const p=await mount({links:[object(8),stale]});try{
+  await openTask(p);await manage(p);
+  await type(p,panel(p).querySelector('.github-link-form input'),'https://github.com/owner/repo/pull/10');
+  panel(p).querySelector('button[type="submit"]').click();await pause(100);
+  assert.match(panel(p).querySelector('.github-notice').textContent,/^Linked\./);
+  const checks=panel(p).querySelector('.github-checks');checks.open=true;
+  await type(p,panel(p).querySelector('.github-link-form input'),'https://github.com/owner/repo/pull/11 草稿');
+  const before=p.calls.length;
+  await speak(p,'zh-Hans');
+  const zh=taskPanel(p);
+  assert.equal(zh.getAttribute('aria-label'),'GitHub 交付');
+  const text=zh.textContent;
+  for(const words of ['拉取请求和 Issue','开放','检查通过','同步于','检查观察于','已过时','上次已知：检查通过','aaaaaaaa 上的 1 项检查','Issue 或拉取请求的 URL'])assert.ok(text.includes(words),words);
+  // As written: the PR's title, branches, commit, check name and GitHub's reason.
+  for(const kept of ['修复 GitHub integration','feature → main','aaaaaaaa','unavailable: offline · 已保留上次成功的快照。'])assert.ok(text.includes(kept),kept);
+  assert.equal(zh.querySelector('.github-checks div span').textContent,'Core');
+  assert.ok([...zh.querySelectorAll('button')].some(b=>b.textContent==='监视 aaaaaaaa 的 Actions…'));
+  const unlink=zh.querySelector('[aria-label="取消链接 owner/repo#8"]');assert.ok(unlink&&unlink.title==='只移除关联');
+  assert.equal(zh.querySelector('.github-notice').textContent,'已链接。GitHub 与任务状态彼此独立。');
+  assert.equal(zh.querySelector('.github-link-form input').value,'https://github.com/owner/repo/pull/11 草稿');
+  assert.ok(zh.querySelector('.github-checks').open,'the checks stay open');
+  // The task's card: its summary too, the repository and number as they are.
+  const summary=p.doc.querySelector('.github-summary');
+  assert.equal(summary.getAttribute('aria-label'),'已链接的 GitHub 工作');
+  assert.match(summary.textContent,/repo#8开放检查通过.*repo#9开放上次已知：检查通过/);
+  // Nothing asked of Core or GitHub: no github_links, github_refresh,
+  // task_list, task_get or task_update, and no link or unlink.
+  assert.deepEqual(p.calls.slice(before).map(c=>c.url),[]);
+  await speak(p,'en');
+  assert.equal(taskPanel(p).getAttribute('aria-label'),'GitHub delivery');
+  assert.match(taskPanel(p).querySelector('.github-notice').textContent,/^Linked\./);
+  assert.equal(taskPanel(p).querySelector('.github-link-form input').value,'https://github.com/owner/repo/pull/11 草稿');
+  assert.equal(p.calls.length,before);
+  assert.deepEqual(p.errors,[]);
+ }finally{p.close();}
+});
