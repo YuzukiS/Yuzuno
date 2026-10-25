@@ -492,7 +492,7 @@ const coreLine = (read: CoreRead) =>
 
 /** The text the user copies. Unknown is said as unknown. */
 export function diagnosticsText(facts: Facts | null) {
-  const lines = ["Yuzuno diagnostics", `Copied: ${new Date().toISOString()}`];
+  const lines = ["Yuzuno diagnostics", `Gathered: ${new Date().toISOString()}`];
   lines.push(`Page: loaded ${pageLoadedAt}; web UI ${webBuild()}; from ${pageOrigin()}; browser ${navigator.onLine ? "online" : "offline"}`);
   if (!facts) lines.push("Core: not read");
   else if (facts.core.now) lines.push(`Core: ${coreLine(facts.core.now)}; read ${facts.core.now.at}`);
