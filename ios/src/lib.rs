@@ -75,10 +75,18 @@ async fn connect_core(
     let workspace = check_health(&state.client, &core).await?;
     let saved = read_profiles(&app);
     let mut profiles = saved.profiles().to_vec();
-    let known = profile
-        .as_deref()
-        .and_then(|id| profiles.iter().find(|kept| kept.id == id))
-        .cloned();
+    // The saved Workspace this is: the one the page named, or, when it named
+    // none, whichever is saved at this same address. Looking the address up
+    // is what makes the check below hold: the page drops the profile it was
+    // about as soon as the field differs from the saved address by so much as
+    // a trailing slash, and typing a saved address by hand never named one at
+    // all. Keyed on the id alone, the refusal was skipped in exactly those
+    // cases -- the other Workspace opened in the very origin it guards -- and
+    // each connect wrote another profile for an address already saved.
+    let known = match profile.as_deref() {
+        Some(id) => profiles.iter().find(|kept| kept.id == id).cloned(),
+        None => profiles.iter().find(|kept| kept.url == core).cloned(),
+    };
     // The Workspace this profile was last opened at, against the one that
     // just answered. Only a profile that already knows one can disagree.
     if let Some(known) = known.as_ref() {
@@ -229,10 +237,12 @@ async fn check_health(client: &reqwest::Client, core: &Url) -> Result<Option<Str
     if !health::is_core(product, application) {
         return Err("This address is reachable, but it is not a Yuzuno Workspace.".into());
     }
+    // Bounded like the record's other fields: a Core names a Workspace, and
+    // a record this app writes has to stay small enough to read back.
     Ok(health
         .get("workspaceId")
         .and_then(serde_json::Value::as_str)
-        .filter(|workspace| !workspace.is_empty())
+        .filter(|workspace| !workspace.is_empty() && workspace.len() <= core_profiles::WORKSPACE_LIMIT)
         .map(str::to_owned))
 }
 

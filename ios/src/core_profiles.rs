@@ -31,6 +31,9 @@ pub const PROFILE_LIMIT: usize = 16;
 /// The longest name this app keeps. Longer is refused rather than cut, so a
 /// name is never silently something else than what was typed.
 pub const NAME_LIMIT: usize = 60;
+/// The longest `workspaceId` this app keeps. A Core's health answer is read
+/// up to 64 KiB, far more than a record this app can read back holds.
+pub const WORKSPACE_LIMIT: usize = 200;
 
 /// One named Workspace.
 #[derive(Debug, Clone, PartialEq)]
@@ -70,7 +73,13 @@ impl Profile {
             url,
             workspace_id: match value.get("workspaceId") {
                 None | Some(serde_json::Value::Null) => None,
-                Some(workspace) => Some(workspace.as_str()?.to_owned()),
+                Some(workspace) => {
+                    let workspace = workspace.as_str()?;
+                    if workspace.is_empty() || workspace.len() > WORKSPACE_LIMIT {
+                        return None;
+                    }
+                    Some(workspace.to_owned())
+                }
             },
         })
     }
@@ -224,18 +233,26 @@ fn save_with(
     if profiles.len() > PROFILE_LIMIT {
         return Err(io::Error::other(format!("this app keeps up to {PROFILE_LIMIT} Workspaces")));
     }
-    if let Some(folder) = path.parent() {
-        std::fs::create_dir_all(folder)?;
-    }
     let record = serde_json::json!({
         "version": 1,
         "profiles": profiles.iter().map(Profile::to_json).collect::<Vec<_>>(),
         "selected": selected,
     });
+    let text = record.to_string();
+    // Never write what this app could not read back. `read` would answer
+    // Unreadable, and a later connect starts from no profiles at all and
+    // writes only the Workspace it just opened, losing every other one.
+    // Refusing leaves the old record, which is still the one read.
+    if text.len() as u64 > LIMIT {
+        return Err(io::Error::other("this record is larger than this app reads back"));
+    }
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder)?;
+    }
     let staged = path.with_extension("json.new");
     let saved = std::fs::File::create(&staged)
         .and_then(|mut file| {
-            file.write_all(record.to_string().as_bytes())?;
+            file.write_all(text.as_bytes())?;
             file.sync_all()
         })
         .and_then(|()| rename(&staged, path));
@@ -367,6 +384,49 @@ mod tests {
     }
 
     #[test]
+    fn the_largest_record_these_bounds_allow_still_reads_back() {
+        let (dir, path) = folder();
+        // Every field at its bound, as many profiles as this app keeps. What
+        // matters is that this app cannot write a record it would then read
+        // as Unreadable: that answer makes a later connect start from no
+        // profiles and write only the Workspace it opened, losing the rest.
+        let full: Vec<Profile> = (0..PROFILE_LIMIT)
+            .map(|n| {
+                profile(
+                    &format!("core-{n}"),
+                    &"n".repeat(NAME_LIMIT),
+                    &format!("https://{}{n}.example.ts.net", "a".repeat(60)),
+                    Some(&"w".repeat(WORKSPACE_LIMIT)),
+                )
+            })
+            .collect();
+        save(&path, &full, Some("core-0")).unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() <= LIMIT, "written within what read accepts");
+        assert_eq!(
+            read(&path),
+            Saved::Profiles { profiles: full, selected: Some("core-0".into()) },
+            "read back whole, so no later connect starts from an empty list"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_workspace_name_longer_than_this_app_keeps_makes_that_entry_unusable() {
+        let (dir, path) = folder();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let long = "w".repeat(WORKSPACE_LIMIT + 1);
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"profiles\":[{{\"id\":\"core-1\",\"name\":\"Home\",\"url\":\"https://one.example.ts.net\",\"workspaceId\":\"{long}\"}}]}}"
+            ),
+        )
+        .unwrap();
+        assert_eq!(read(&path), Saved::Unreadable("one of its Workspaces is not one this app opens".into()));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn a_record_that_cannot_be_used_is_not_a_first_launch_and_is_kept() {
         let (dir, path) = folder();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -440,6 +500,34 @@ mod tests {
         // A Core too old to name its Workspace: still a Core, still unknown.
         assert_eq!(identity(Some("w-one"), None), Identity::Unknown);
         assert_eq!(identity(None, None), Identity::Unknown);
+    }
+
+    /// What `connect_core` does when the page names no profile: the saved
+    /// Workspace at this same address, if one is saved there. Keyed on the id
+    /// alone, a saved address typed by hand named no profile, so the identity
+    /// check never ran and another profile was written for an address already
+    /// saved.
+    fn at_address<'a>(profiles: &'a [Profile], core: &Url) -> Option<&'a Profile> {
+        profiles.iter().find(|kept| kept.url == *core)
+    }
+
+    #[test]
+    fn a_saved_address_is_found_by_its_address_when_no_profile_is_named() {
+        let kept = vec![
+            profile("core-1", "Home", "https://one.example.ts.net", Some("w-one")),
+            profile("core-2", "Studio", "https://two.example.ts.net:8444", Some("w-two")),
+        ];
+        // As the page sends it, with and without the trailing slash the app
+        // writes: core_url::parse normalises both to the saved URL.
+        for typed in ["https://one.example.ts.net", "https://one.example.ts.net/"] {
+            let found = at_address(&kept, &core(typed)).expect(typed);
+            assert_eq!(found.id, "core-1", "{typed}");
+            assert_eq!(found.workspace_id.as_deref(), Some("w-one"), "so the identity check has something to compare");
+        }
+        // A port is part of the address: another port is another Workspace.
+        assert_eq!(at_address(&kept, &core("https://two.example.ts.net:8444")).map(|p| &*p.id), Some("core-2"));
+        assert!(at_address(&kept, &core("https://two.example.ts.net")).is_none());
+        assert!(at_address(&kept, &core("https://three.example.ts.net")).is_none(), "an address not saved is new");
     }
 
     #[test]

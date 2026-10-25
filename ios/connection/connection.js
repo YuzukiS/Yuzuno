@@ -48,6 +48,11 @@ function askAboutIdentity(result) {
     'workspace first — that forgets its drafts here along with it.';
 }
 
+// Two addresses that differ only by a trailing slash are one address. The
+// app is what parses and normalises them; this is the page's own comparison.
+const sameAddress = (typed, saved) =>
+  typed.trim().replace(/\/+$/, '') === String(saved).replace(/\/+$/, '');
+
 // Which saved Workspace the form is about: one of them, or none, which saves
 // a new one. The form says which, so Connect is never ambiguous.
 let editing = null;
@@ -202,7 +207,12 @@ unsaved.addEventListener('click', () => {
 address.addEventListener('input', () => {
   offerUnsaved(null);
   askAboutIdentity(null);
-  if (editing && address.value.trim() !== editing.url) {
+  // The saved address as the app writes it ends in "/", and what is typed
+  // may not: a difference of only that is the same address, and dropping the
+  // profile over it used to mean the app was asked about no profile at all.
+  // The app looks the address up either way; this only keeps the form honest
+  // about which Workspace it is about.
+  if (editing && !sameAddress(address.value, editing.url)) {
     const was = editing;
     editing = null;
     about.hidden = true;
