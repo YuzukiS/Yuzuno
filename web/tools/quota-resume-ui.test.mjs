@@ -321,3 +321,29 @@ test("an open Agent panel shows the Workspace default Settings saved, and reads 
   }
 });
 
+test("a Workspace default saved from an Agent panel shows in open Settings too (T-190 R1)", async () => {
+  const core = { saved: null };
+  const page = mount((url, init) => {
+    if (url.endsWith("/api/claude/auto-continue")) {
+      if (init.method === "POST") core.saved = JSON.parse(init.body).enabled;
+      return { enabled: core.saved ?? false, saved: core.saved };
+    }
+    return { workspace: core.saved ?? false, agent: null, enabled: core.saved ?? false, intent: null, stopped: null };
+  });
+  try {
+    page.window.renderBoth({ detail, disabled: false });
+    await tick();
+    assert.match(text(page), /Built in: wait for you\./);
+    button(page, "Make the default: continue").click();
+    await tick();
+    assert.match(text(page), /Set for this Workspace: continue after the reset\./, "Settings shows what the panel saved");
+    assert.equal(inEffect(page), "Continue after the reset");
+    assert.ok(button(page, "Use built-in"), "and it can be cleared there");
+    const reads = page.calls.filter((c) => c.url === "/api/agents/a/claude/auto-continue" && c.method === "GET").length;
+    assert.equal(reads, 2, "the panel reads its own view again once, not again for its own notice");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+

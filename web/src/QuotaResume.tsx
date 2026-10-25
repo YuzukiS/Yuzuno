@@ -221,9 +221,13 @@ export function QuotaResumeNotice({
   );
 }
 
-/** Open Agent panels hear a Workspace default saved in Settings (T-190):
- * Core sends no Agent event for it when nothing waits or is armed. */
-const workspaceDefaultSaved = new Set<(enabled: boolean) => void>();
+/** Open Agent panels and Settings hear a Workspace default saved in any of
+ * them (T-190): Core sends no Agent event for it when nothing waits or is
+ * armed. The one that saved it is not told again. */
+type HearDefault = (value: WorkspaceDefault) => void;
+const workspaceDefaultSaved = new Set<HearDefault>();
+const tellWorkspaceDefault = (value: WorkspaceDefault, from: HearDefault | null) =>
+  workspaceDefaultSaved.forEach((hear) => hear !== from && hear(value));
 
 /** "At a glance": this agent's choice, or the workspace default. */
 export function AutoContinueSetting({
@@ -241,11 +245,13 @@ export function AutoContinueSetting({
   const [busy, setBusy] = useState(false);
   // Core confirmed it, so it is shown at once; the rest of this Agent's
   // view (an armed or cancelled continue) is read again.
+  const heard = useRef<HearDefault | null>(null);
   useEffect(() => {
-    const hear = (enabled: boolean) => {
+    const hear = ({ enabled }: WorkspaceDefault) => {
       setView((current) => current && { ...current, workspace: enabled, enabled: current.agent ?? enabled });
       void reload();
     };
+    heard.current = hear;
     workspaceDefaultSaved.add(hear);
     return () => {
       workspaceDefaultSaved.delete(hear);
@@ -276,10 +282,11 @@ export function AutoContinueSetting({
     setBusy(true);
     setError("");
     try {
-      const saved = await post<{ enabled: boolean }>("/claude/auto-continue", { enabled });
+      const saved = await post<WorkspaceDefault>("/claude/auto-continue", { enabled });
       // Core confirmed the default; the rest of the view is read again, and
       // a failed read must not read as a failed save (T-187).
       setView((current) => current && { ...current, workspace: saved.enabled });
+      tellWorkspaceDefault(saved, heard.current);
       try {
         setView(
           await api<AutoContinueView>(
@@ -387,8 +394,9 @@ const defaultText = strings({
  * (an Agent's own choice, else this, else off), so a change applies to the
  * Agents that follow it now, existing ones included. What is shown after a
  * save is Core's own answer to it, never read again, so a saved change is
- * not reported as failed; only a refused or failed save says so. An open
- * Agent panel is told, and reads its own view again.
+ * not reported as failed; only a refused or failed save says so. Open
+ * Agent panels are told, and read their own view again; a default saved
+ * from a panel is shown here too.
  */
 export function AutoContinueDefault({ active }: { active: boolean }) {
   const t = useStrings(defaultText);
@@ -396,6 +404,18 @@ export function AutoContinueDefault({ active }: { active: boolean }) {
   const [draft, setDraft] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const heard = useRef<HearDefault | null>(null);
+  useEffect(() => {
+    const hear = (value: WorkspaceDefault) => {
+      setView(value);
+      setDraft(value.enabled);
+    };
+    heard.current = hear;
+    workspaceDefaultSaved.add(hear);
+    return () => {
+      workspaceDefaultSaved.delete(hear);
+    };
+  }, []);
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();
@@ -419,7 +439,7 @@ export function AutoContinueDefault({ active }: { active: boolean }) {
       const value = await post<WorkspaceDefault>("/claude/auto-continue", { enabled });
       setView(value);
       setDraft(value.enabled);
-      workspaceDefaultSaved.forEach((hear) => hear(value.enabled));
+      tellWorkspaceDefault(value, heard.current);
     } catch (e) {
       setError(errorText(e));
     } finally {
