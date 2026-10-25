@@ -101,18 +101,24 @@ export function useConversationSend(
   };
   const loadedFor = useRef("");
   /**
-   * Which Workspace a send belongs to, by number rather than by name (T-195).
+   * Which Workspace each running send belongs to (T-195).
    *
    * A send can start before /api/workspace has answered. That is not another
-   * Workspace: it is this connection, not yet named. When the name arrives it
-   * is this send's, so the number does not change -- its receipt is drawn
-   * here, its page is read again, and the record that stops it being sent
-   * twice becomes that Workspace's. Only the Core at this address answering
-   * as a *different* Workspace is a move, and that takes a new number, so
-   * what the send before it does settles nothing here.
+   * Workspace: it is this connection, not yet named. When the name arrives
+   * it is this send's, so its owner is filled in rather than replaced -- its
+   * receipt is drawn, its page is read again, and the record that stops it
+   * being sent twice becomes that Workspace's.
+   *
+   * The owner is a Workspace, not a count of changes: going to another
+   * Workspace and back must find this send again, so that this Agent is
+   * still shown as sending and a second one is still refused. A send is
+   * drawn only while the Workspace it belongs to is the one on screen.
    */
-  const generation = useRef(0);
-  const named = useRef<string[]>([""]);
+  const owners = useRef(new Set<{ workspace: string }>());
+  const current = useRef(workspaceId);
+  current.current = workspaceId;
+  /** `<workspace>\n<agent>`: one send at a time for one Agent of one
+   * Workspace. The same Agent id in another Workspace is another Agent. */
   const inFlight = useRef(new Set<string>());
   const [sendingFor, setSendingFor] = useState<string[]>([]);
   const [outgoing, setOutgoing] = useState<OutgoingMessage[]>([]);
@@ -131,7 +137,15 @@ export function useConversationSend(
       // the same key on disk -- saved, and the sends still running for them
       // settle here. Nothing written by an earlier version or another window
       // is claimed this way; `load("")` reads nothing.
-      named.current[generation.current] = workspaceId;
+      // Every send still running under the unnamed connection is this
+      // Workspace's, and so is the lock that keeps its Agent to one send.
+      for (const owner of owners.current) if (!owner.workspace) owner.workspace = workspaceId;
+      for (const lock of [...inFlight.current])
+        if (lock.startsWith("\n")) {
+          inFlight.current.delete(lock);
+          inFlight.current.add(workspaceId + lock);
+        }
+      setSendingFor([...inFlight.current]);
       const unnamed = buckets.current.get("");
       buckets.current.delete("");
       if (unnamed && Object.keys(unnamed).length) {
@@ -146,8 +160,6 @@ export function useConversationSend(
     // and an Agent id can be the same in both. The sends themselves are not
     // cancelled and not sent again; their durable receipts stay with the
     // Workspace that has them, and are read from it (T-195).
-    generation.current += 1;
-    named.current[generation.current] = workspaceId;
     setOutgoing((messages) => (messages.length ? [] : messages));
     synchronized.current.clear();
   }, [workspaceId]);
@@ -173,14 +185,14 @@ export function useConversationSend(
       return remaining.length === messages.length ? messages : remaining;
     });
   }, [agentId, detail]);
-  // `era` is which Workspace the send belongs to (see `generation`). A send
-  // that outlives a move to another Workspace does not draw its delivery
-  // there: the preview would be of a message no one in this Workspace sent,
-  // under an Agent id that can be the same in both (T-195). The request is
-  // not cancelled -- it may already have been delivered -- and it is not
+  // A send that outlives a move to another Workspace does not draw its
+  // delivery there: the preview would be of a message no one in this
+  // Workspace sent, under an Agent id that can be the same in both (T-195).
+  // Coming back to the Workspace it belongs to shows it again. The request
+  // is not cancelled -- it may already have been delivered -- and it is not
   // sent again.
-  const showReceipt = (receipt: MessageReceipt, era: number) =>
-    generation.current === era &&
+  const showReceipt = (receipt: MessageReceipt, owner: { workspace: string }) =>
+    owner.workspace === current.current &&
     setOutgoing((messages) => {
       if (
         synchronized.current.has(`${agentId}:${receipt.input.clientMessageId}`)
@@ -203,16 +215,15 @@ export function useConversationSend(
     // Native pending approvals use their own respond endpoint and stay usable.
     if (detail?.collaboration?.ready === false)
       throw new Error(detail.collaboration.error || "Reconnect to confirm the workspace collaboration connection. Your text is kept.");
-    // This send belongs to the Workspace it starts in -- by number, so that
-    // Workspace being named after it starts is still its own -- and to that
-    // Workspace's records, whatever this window moves to while it runs.
-    // Sending, and the refusal of a second send, are per Workspace and Agent
-    // together: the same Agent id in another Workspace is another Agent, and
-    // neither its composer nor its spinner is this send's business.
-    const era = generation.current;
-    const workspaceThen = () => named.current[era] ?? "";
-    const busy = `${era}\n${agentId}`;
-    if (inFlight.current.has(busy))
+    // This send belongs to the Workspace it starts in -- filled in if that
+    // Workspace is named after it starts -- and to that Workspace's records,
+    // whatever this window moves to while it runs. Sending, and the refusal
+    // of a second send, are per Workspace and Agent together: the same Agent
+    // id in another Workspace is another Agent, and neither its composer nor
+    // its spinner is this send's business.
+    const owner = { workspace: workspaceId };
+    const lock = () => `${owner.workspace}\n${agentId}`;
+    if (inFlight.current.has(lock()))
       throw new Error("A message is already being sent.");
     if (harness === "claude" && question)
       throw new Error("Claude answers in the conversation; reply with a new message.");
@@ -220,7 +231,15 @@ export function useConversationSend(
     // Resolved when it is used, not captured: a send that starts before this
     // connection is named settles the records of the Workspace it turns out
     // to be in.
-    const kept = () => records(workspaceThen());
+    const kept = () => records(owner.workspace);
+    // Removed only if it is still this send's record. Another send for the
+    // same Agent and slot may have replaced it, and that one is not this
+    // send's to settle.
+    const settle = () => {
+      const bucket = kept();
+      if (bucket[key]?.clientMessageId === input.clientMessageId) delete bucket[key];
+      persist(bucket, owner.workspace);
+    };
     // A message whose delivery became unknown is never sent again; sending
     // the same text after that is a new message with its own id.
     const previousInput = kept()[key];
@@ -247,10 +266,11 @@ export function useConversationSend(
             ...(clarification ? { clarification: structuredClone(clarification) } : {}),
           };
     kept()[key] = input;
-    persist(kept(), workspaceThen());
-    inFlight.current.add(busy);
+    persist(kept(), owner.workspace);
+    owners.current.add(owner);
+    inFlight.current.add(lock());
     setSendingFor([...inFlight.current]);
-    showReceipt({ input, status: "sending", turnId: null, error: null }, era);
+    showReceipt({ input, status: "sending", turnId: null, error: null }, owner);
     let received = false;
     try {
       const receipt = await postWithin<MessageReceipt>(
@@ -258,16 +278,15 @@ export function useConversationSend(
         input,
       );
       received = true;
-      showReceipt(receipt, era);
+      showReceipt(receipt, owner);
       // Only this Workspace's page is read again for it.
-      if (generation.current === era) refresh();
+      if (owner.workspace === current.current) refresh();
       // Queued at Claude is sent (not yet read): the preview shows which.
       const sent = receipt.status === "accepted" || receipt.status === "queued";
       // Rejected and unknown are final: the draft stays, and sending it
       // again is a new message.
       if (sent || receipt.status === "rejected" || receipt.status === "unknown") {
-        delete kept()[key];
-        persist(kept(), workspaceThen());
+        settle();
       }
       if (!sent)
         throw new Error(
@@ -278,9 +297,8 @@ export function useConversationSend(
     } catch (error) {
       if (!received && error instanceof HttpError && error.code === "message_not_submitted") {
         received = true;
-        delete kept()[key];
-        persist(kept(), workspaceThen());
-        if (generation.current === era) {
+        settle();
+        if (owner.workspace === current.current) {
           setOutgoing(messages => messages.filter(m =>
             m.agentId !== agentId || m.receipt.input.clientMessageId !== input.clientMessageId));
           refresh();
@@ -299,9 +317,8 @@ export function useConversationSend(
             status: "rejected",
             turnId: null,
             error: error.message,
-          }, era);
-          delete kept()[key];
-          persist(kept(), workspaceThen());
+          }, owner);
+          settle();
         } else {
           showReceipt({
             input,
@@ -309,7 +326,7 @@ export function useConversationSend(
             turnId: null,
             error:
               "This retry paused for an update. The earlier delivery still needs confirmation; your draft is kept.",
-          }, era);
+          }, owner);
           throw new Error(
             "The update paused this retry. Reconnect afterward to confirm the earlier delivery; it has not been sent again.",
           );
@@ -321,16 +338,17 @@ export function useConversationSend(
           status: "uncertain",
           turnId: null,
           error: "Reconnect to confirm delivery. Your draft is kept.",
-        }, era);
+        }, owner);
       throw error;
     } finally {
-      inFlight.current.delete(busy);
+      owners.current.delete(owner);
+      inFlight.current.delete(lock());
       setSendingFor([...inFlight.current]);
     }
   }
   return {
     submit,
-    sending: sendingFor.includes(`${generation.current}\n${agentId}`),
+    sending: sendingFor.includes(`${workspaceId}\n${agentId}`),
     outgoing,
     pendingInputs: records(workspaceId),
   };

@@ -369,6 +369,77 @@ test("an uncertain send started before the name arrives keeps one client message
   assert.deepEqual(outboxFile(), {}, "and the record is settled");
 });
 
+// T-195, raised by Dev Lead: the lock that keeps one Agent to one send is a
+// Workspace's, not a count of changes. Going to another Workspace and back
+// must find the send that is still running, or a second POST would go out
+// for the same slot and the first one's settling would remove the record the
+// second had just saved.
+test("coming back to a Workspace still finds the send it left running", async (t) => {
+  const f = await fixture(t, { workspace: "ws-here", outbox: {} });
+  let answer;
+  globalThis.fetch = async (url, init) => {
+    f.calls.push({ url, body: JSON.parse(init.body) });
+    return new Promise((resolve) => {
+      answer = (receipt) => resolve({ ok: true, json: async () => receipt });
+    });
+  };
+  let sending;
+  await act(async () => {
+    sending = f.hook().submit("still running in ws-here");
+  });
+  const input = f.calls[0].body;
+  await f.move("ws-there");
+  assert.equal(f.hook().sending, false, "the other Workspace's Agent of the same id is free");
+  await f.move("ws-here");
+  assert.equal(
+    f.hook().sending,
+    true,
+    "back here, this Agent is still shown as sending",
+  );
+  await assert.rejects(
+    () => f.hook().submit("a second one, which must not go out"),
+    /already being sent/,
+    "and a second send for it is still refused",
+  );
+  assert.equal(f.calls.length, 1, "nothing was posted twice");
+  assert.deepEqual(
+    outbox("ws-here"),
+    { "a:composer": input },
+    "its record is untouched",
+  );
+  await act(async () => {
+    answer({ input, status: "accepted", turnId: "t1", error: null });
+    await sending;
+  });
+  assert.deepEqual(
+    f.hook().outgoing.map((m) => m.receipt.status),
+    ["accepted"],
+    "and its delivery is shown in the Workspace it belongs to",
+  );
+  assert.deepEqual(outboxFile(), {}, "with its record settled");
+});
+
+test("a send settles only its own record, never one that replaced it", async (t) => {
+  // If a second send for the same slot ever does start, the first one
+  // finishing must not take the second's record with it.
+  const f = await fixture(t, { workspace: "ws-here", outbox: {} });
+  globalThis.fetch = async (url, init) => {
+    f.calls.push({ url, body: JSON.parse(init.body) });
+    throw new Error("connection lost");
+  };
+  assert.match((await f.submit("the first attempt")).message, /connection lost/);
+  const first = outbox("ws-here")["a:composer"];
+  // Another input replaces the record: a different message, its own id.
+  globalThis.fetch = async (url, init) => {
+    f.calls.push({ url, body: JSON.parse(init.body) });
+    throw new Error("connection lost");
+  };
+  assert.match((await f.submit("a different text")).message, /connection lost/);
+  const second = outbox("ws-here")["a:composer"];
+  assert.notEqual(second.clientMessageId, first.clientMessageId);
+  assert.equal(second.text, "a different text");
+});
+
 test("sending one Workspace's Agent leaves the same Agent id in another free to send", async (t) => {
   const f = await fixture(t, { workspace: "ws-here", outbox: {} });
   let release;
