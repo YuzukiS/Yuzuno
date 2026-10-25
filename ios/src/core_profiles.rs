@@ -989,6 +989,23 @@ mod tests {
         for left in [vec![a.clone(), c.clone()], vec![b.clone(), c.clone()]] {
             assert_eq!(keeps_conflicts(&saved, &left), Err(here.clone()), "an ordinary edit may not clear it");
         }
+        // Retarget is checked on both sides: moving a disagreeing label away
+        // leaves the address holding one identity, which is the same winner
+        // by another route, so it is refused for the *source* address even
+        // though the address being opened is a different one.
+        let moved = profile("core-2", "Home again", "https://three.example.ts.net", Some("w-b"));
+        assert_eq!(
+            keeps_conflicts(&saved, &[a.clone(), moved.clone(), c.clone()]),
+            Err(here.clone()),
+            "moving one away may not clear the address it left"
+        );
+        // Nor the other way round: moving the label that stayed.
+        let other_moved = profile("core-1", "Home", "https://three.example.ts.net", Some("w-a"));
+        assert_eq!(
+            keeps_conflicts(&saved, &[other_moved, b.clone(), c.clone()]),
+            Err(here.clone()),
+            "whichever label moves, the address it left keeps its protection"
+        );
         // And `settle` neither flattens it nor hands either label a binding.
         let (profiles, remembered) = settle(&saved, saved.profiles());
         assert!(read(record_bytes(&path, &profiles, &remembered)).conflicted(&here), "settle keeps it");
