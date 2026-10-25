@@ -23,6 +23,13 @@ async function mount(invoke, prepare) {
   return dom;
 }
 
+// One saved Workspace, as `saved_cores` answers it.
+const one = (url, workspaceId) => ({
+  state: 'saved',
+  selected: 'core-1',
+  profiles: [{ id: 'core-1', name: 'Home', url, ...(workspaceId ? { workspaceId } : {}) }],
+});
+
 const submit = (dom) =>
   dom.window.document.querySelector('form').dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
 
@@ -30,14 +37,14 @@ test('the last Workspace is filled in, not opened, until Connect', async () => {
   const calls = [];
   const dom = await mount(async (command, args) => {
     calls.push({ command, args });
-    if (command === 'saved_core') return { state: 'saved', url: 'https://core.example.ts.net/' };
+    if (command === 'saved_cores') return one('https://core.example.ts.net/');
     if (command === 'connect_core') return { url: args.url.trim(), saved: true };
   });
   try {
     const document = dom.window.document;
     assert.equal(document.querySelector('#core-url').value, 'https://core.example.ts.net/');
     assert.match(document.querySelector('[role="status"]').textContent, /last workspace/);
-    assert.deepEqual(calls.map((call) => call.command), ['saved_core'], 'nothing is connected by itself');
+    assert.deepEqual(calls.map((call) => call.command), ['saved_cores'], 'nothing is connected by itself');
     submit(dom);
     await settle();
     // The arguments are made in JSDOM's own realm: compare their fields.
@@ -51,7 +58,7 @@ test('a refused address keeps the field to correct, and the next try sends what 
   const calls = [];
   const dom = await mount(async (command, args) => {
     calls.push({ command, args });
-    if (command === 'saved_core') return { state: 'never' };
+    if (command === 'saved_cores') return { state: 'never', profiles: [] };
     throw "Use your Workspace's HTTPS address. This app does not connect over plain HTTP.";
   });
   try {
@@ -80,7 +87,7 @@ test('a second Connect while one is checking sends nothing more', async () => {
   const calls = [];
   const dom = await mount(async (command, args) => {
     calls.push({ command, args });
-    if (command === 'saved_core') return { state: 'saved', url: 'https://core.example.ts.net/' };
+    if (command === 'saved_cores') return one('https://core.example.ts.net/');
     return new Promise((resolve) => { finish = resolve; });
   });
   try {
@@ -127,8 +134,8 @@ test('the status bar backdrop follows the visual viewport the keyboard scrolls',
 
 test('a saved address that cannot be used is said so, not taken for a first launch', async () => {
   for (const answer of [
-    async (command) => { if (command === 'saved_core') return { state: 'unreadable', reason: 'it is not a saved Workspace address' }; },
-    async (command) => { if (command === 'saved_core') throw 'the app did not answer'; },
+    async (command) => { if (command === 'saved_cores') return { state: 'unreadable', reason: 'it is not a saved Workspace record', profiles: [] }; },
+    async (command) => { if (command === 'saved_cores') throw 'the app did not answer'; },
   ]) {
     const calls = [];
     const dom = await mount(async (command, args) => { calls.push({ command, args }); return answer(command); });
@@ -136,10 +143,10 @@ test('a saved address that cannot be used is said so, not taken for a first laun
       const document = dom.window.document;
       const status = document.querySelector('[role="status"]');
       assert.equal(document.querySelector('#core-url').value, '', 'nothing is filled in');
-      assert.match(status.textContent, /saved on this iPhone could not be used \((it is not a saved Workspace address|the app did not answer)\)/);
+      assert.match(status.textContent, /saved on this iPhone could not be used \((it is not a saved Workspace record|the app did not answer)\)/);
       assert.doesNotMatch(status.textContent, /to begin/);
       assert.equal(status.dataset.error, 'true');
-      assert.deepEqual(calls.map((call) => call.command), ['saved_core'], 'nothing is connected by itself');
+      assert.deepEqual(calls.map((call) => call.command), ['saved_cores'], 'nothing is connected by itself');
     } finally { dom.window.close(); }
   }
 });
@@ -149,7 +156,7 @@ test('a Workspace that answered but could not be saved says so, keeps its addres
   let save = false;
   const dom = await mount(async (command, args) => {
     calls.push({ command, args });
-    if (command === 'saved_core') return { state: 'never' };
+    if (command === 'saved_cores') return { state: 'never', profiles: [] };
     return save ? { url: args.url.trim(), saved: true }
       : { url: args.url.trim(), saved: false, saveError: 'No space left on device (os error 28)' };
   });
@@ -193,5 +200,173 @@ test('a Workspace that answered but could not be saved says so, keeps its addres
     assert.equal(calls.at(-1).args.url, 'https://core.example.ts.net/');
     assert.match(status.textContent, /Found it. Opening your workspace/);
     assert.equal(unsaved.hidden, true);
+  } finally { dom.window.close(); }
+});
+
+// T-195: the named Workspaces this iPhone keeps. Two of them are two, even
+// when they share a name or an address; what tells them apart is the
+// workspaceId their Core answers with.
+const two = {
+  state: 'saved',
+  selected: 'core-1',
+  profiles: [
+    { id: 'core-1', name: 'Home', url: 'https://one.example.ts.net/', workspaceId: 'w-one' },
+    { id: 'core-2', name: 'Home', url: 'https://two.example.ts.net/', workspaceId: 'w-two' },
+  ],
+};
+
+test('two saved Workspaces are listed apart, by workspace, though they share a name', async () => {
+  const dom = await mount(async (command) => {
+    if (command === 'saved_cores') return two;
+  });
+  try {
+    const document = dom.window.document;
+    const items = [...document.querySelectorAll('#saved-list li')];
+    assert.equal(items.length, 2);
+    assert.deepEqual(
+      items.map((item) => item.querySelector('.saved-name').textContent),
+      ['Home', 'Home'],
+      'the same name on both: a name is a label, not an identity',
+    );
+    assert.deepEqual(items.map((item) => item.querySelector('.saved-url').textContent), [
+      'https://one.example.ts.net/',
+      'https://two.example.ts.net/',
+    ]);
+    assert.deepEqual(items.map((item) => item.querySelector('.saved-workspace').textContent), [
+      'workspace w-one',
+      'workspace w-two',
+    ]);
+    // Saved is not reachable: the list says nothing about either answering.
+    assert.doesNotMatch(document.querySelector('#saved-cores').textContent, /reachable|online|connected/i);
+    assert.match(document.querySelector('#saved-cores .hint').textContent, /known only when you open it/);
+  } finally { dom.window.close(); }
+});
+
+test('a saved Workspace that answers as another one opens nothing until that is answered', async () => {
+  const calls = [];
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'saved_cores') return two;
+    if (command === 'connect_core') {
+      // The address still answers, as a different Workspace than the one
+      // saved under this name.
+      if (!args.accept)
+        return {
+          url: args.url,
+          opened: false,
+          identity: 'changed',
+          profileName: 'Home',
+          savedWorkspaceId: 'w-one',
+          workspaceId: 'w-other',
+        };
+      return { url: args.url, opened: true, identity: 'known', saved: true, workspaceId: 'w-other' };
+    }
+  });
+  try {
+    const document = dom.window.document;
+    const status = document.querySelector('[role="status"]');
+    const identity = document.querySelector('#identity-check');
+    assert.equal(identity.hidden, true);
+    document.querySelector('#saved-list li .saved-open').click();
+    await settle();
+
+    // Nothing was opened, and why is said in the Workspace's own terms.
+    assert.equal(identity.hidden, false);
+    assert.match(status.textContent, /not the workspace saved under that name/);
+    assert.equal(status.dataset.error, 'true');
+    assert.doesNotMatch(status.textContent, /Opening your workspace|Found it/);
+    assert.match(document.querySelector('#identity-text').textContent, /drafts and reading places/);
+    assert.equal(calls.filter((call) => call.command === 'connect_core').length, 1, 'asked once, not retried');
+    assert.equal(calls.at(-1).args.profile, 'core-1', 'asked as the saved Workspace it was meant to be');
+    assert.notEqual(calls.at(-1).args.accept, true);
+
+    // Leaving it closed opens nothing and keeps the profile.
+    document.querySelector('#identity-cancel').click();
+    assert.equal(identity.hidden, true);
+    assert.match(status.textContent, /Left closed/);
+    assert.equal(calls.filter((call) => call.command === 'connect_core').length, 1);
+
+    // Opening it anyway is a separate, explicit choice.
+    document.querySelector('#saved-list li .saved-open').click();
+    await settle();
+    document.querySelector('#identity-open').click();
+    await settle();
+    const connects = calls.filter((call) => call.command === 'connect_core');
+    assert.equal(connects.at(-1).args.accept, true);
+    assert.match(status.textContent, /Found it. Opening your workspace/);
+  } finally { dom.window.close(); }
+});
+
+test('renaming and removing change this iPhone only, and removing asks first', async () => {
+  const calls = [];
+  let record = two;
+  const dom = await mount(
+    async (command, args) => {
+      calls.push({ command, args });
+      if (command === 'saved_cores') return record;
+      if (command === 'rename_core') {
+        record = { ...two, profiles: [{ ...two.profiles[0], name: args.name.trim() }, two.profiles[1]] };
+        return record;
+      }
+      if (command === 'remove_core') {
+        record = { ...two, selected: null, profiles: two.profiles.filter((p) => p.id !== args.profile) };
+        return record;
+      }
+    },
+    (window) => {
+      window.prompt = () => ' Studio ';
+      window.confirm = () => true;
+    },
+  );
+  try {
+    const document = dom.window.document;
+    document.querySelector('#saved-list li .saved-rename').click();
+    await settle();
+    assert.equal(calls.at(-1).command, 'rename_core');
+    assert.equal(calls.at(-1).args.name, ' Studio ', 'what was typed is sent; the app trims and bounds it');
+    assert.equal(document.querySelector('#saved-list li .saved-name').textContent, 'Studio');
+    assert.match(document.querySelector('[role="status"]').textContent, /the workspace itself is unchanged/);
+
+    document.querySelector('#saved-list li .saved-remove').click();
+    await settle();
+    assert.equal(calls.at(-1).command, 'remove_core');
+    assert.equal(document.querySelectorAll('#saved-list li').length, 1, 'the other one stays');
+    assert.match(document.querySelector('[role="status"]').textContent, /no longer saved on this iPhone/);
+  } finally { dom.window.close(); }
+});
+
+test('removing is not done when it is not confirmed', async () => {
+  const calls = [];
+  const dom = await mount(
+    async (command) => {
+      calls.push(command);
+      if (command === 'saved_cores') return two;
+    },
+    (window) => { window.confirm = () => false; },
+  );
+  try {
+    dom.window.document.querySelector('#saved-list li .saved-remove').click();
+    await settle();
+    assert.equal(calls.filter((command) => command === 'remove_core').length, 0);
+    assert.equal(dom.window.document.querySelectorAll('#saved-list li').length, 2);
+  } finally { dom.window.close(); }
+});
+
+test('a Workspace that cannot be reached is said so, and the list is still there to try another', async () => {
+  const dom = await mount(async (command) => {
+    if (command === 'saved_cores') return two;
+    if (command === 'connect_core') throw 'Your workspace is not reachable. Check its address, and that this iPhone is connected to your private network.';
+  });
+  try {
+    const document = dom.window.document;
+    document.querySelector('#saved-list li .saved-open').click();
+    await settle();
+    const status = document.querySelector('[role="status"]');
+    assert.match(status.textContent, /not reachable/);
+    assert.equal(status.dataset.error, 'true');
+    // Recoverable: the saved Workspaces are still listed and still openable.
+    assert.equal(document.querySelectorAll('#saved-list li').length, 2);
+    assert.equal(document.querySelector('#saved-list li .saved-open').disabled, false);
+    assert.equal(document.querySelector('#connect-button').disabled, false);
   } finally { dom.window.close(); }
 });

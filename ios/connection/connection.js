@@ -174,7 +174,7 @@ async function connect(accept = false) {
       return;
     }
     show(
-      `Your workspace answered, but this iPhone could not save it (${result.saveError}). Connect to try saving again, or open it without saving: next time you would enter the address again.`,
+      `Your workspace answered, but this iPhone could not save its address (${result.saveError}). Connect to try saving again, or open it without saving: next time you would enter the address again.`,
       true,
     );
     offerUnsaved(result.url);
