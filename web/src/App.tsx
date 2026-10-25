@@ -108,6 +108,7 @@ import { CodexReviewDialog, startCodexReview } from "./CodexReview";
 import { CodexGoalDialog } from "./CodexGoal";
 import { CodexPlanChip, CodexPlanDialog } from "./CodexPlan";
 import { RecoveryNotice, recoveryReason } from "./RecoveryNotice";
+import { EndMissingTurnDialog } from "./EndMissingTurn";
 import { AutoContinueSetting, QuotaResumeNotice } from "./QuotaResume";
 import { ClaudeRuntimeFacts } from "./ClaudeControls";
 import { ClaudeMcpStatus } from "./ClaudeMcpStatus";
@@ -305,6 +306,8 @@ export function App() {
     return () => cancelAnimationFrame(frame);
   }, [inspectorFocus]);
   const [forkOpen, setForkOpen] = useState(false);
+  // The Agent whose Turns missing from the native history are being ended (T-198).
+  const [endMissingFor, setEndMissingFor] = useState<string | null>(null);
   // `/changes`: the record of one turn's file edits, that turn fixed when asked.
   const [changesRequest, setChangesRequest] = useState<{ agentId: string; turnId: string | null; nonce: number } | null>(null);
   // `/diff`: Git's diff of the Agent's folder, read when it opens.
@@ -765,7 +768,7 @@ export function App() {
   // draft waits until reconnecting has checked it. Claude resumes on send.
   const recovery =
     currentDetail && !previewMode ? recoveryReason(currentDetail) : null;
-  const holdForRecovery = (recovery === "running" && !isClaude) || recovery === "collaboration";
+  const holdForRecovery = (recovery === "running" && !isClaude) || recovery === "collaboration" || recovery === "missing";
   // The one line under the draft that asks something of you; otherwise the
   // line stays quiet and shows the keys only while you type.
   const composerNotice = busy
@@ -775,7 +778,9 @@ export function App() {
     : holdForRecovery
       ? recovery === "collaboration"
         ? "Reconnect above to check the workspace connection; your draft is kept"
-        : "Reconnect above to check the last turn; your draft is kept"
+        : recovery === "missing"
+          ? "End the unconfirmed turn above, or check again; your draft is kept"
+          : "Reconnect above to check the last turn; your draft is kept"
       : agent?.status === "uncertain"
         ? "Send to check the previous result first"
         : agent?.status === "offline"
@@ -1319,6 +1324,10 @@ export function App() {
     manage: (id) => {
       showAgent(id);
       setRequestActions((v) => ({ agentId: id, sequence: (v?.sequence || 0) + 1 }));
+    },
+    endMissing: (id) => {
+      showAgent(id);
+      setEndMissingFor(id);
     },
   };
   useEffect(() => {
@@ -2448,7 +2457,8 @@ export function App() {
                     />
                   }
                 />
-                <AgentActionsMenu agent={agent} handlers={agentActions} className="conversation-action" label="Conversation actions" />
+                <AgentActionsMenu agent={agent} handlers={agentActions} className="conversation-action" label="Conversation actions"
+                  missingTurns={!!currentDetail?.codexHandoff?.missingTurns} />
               </div>
             </div>
             {!closed && (
@@ -2852,6 +2862,7 @@ export function App() {
                       disabled={closed || !!workspaceError}
                       hasDraft={hasDraft}
                       onRecovered={refresh}
+                      onEndMissing={() => setEndMissingFor(currentDetail.agent.id)}
                     />
                   )}
                   {currentDetail?.agent.harness === "claude" && !currentDetail.agent.remote && (
@@ -3052,7 +3063,9 @@ export function App() {
                             : holdForRecovery
                               ? recovery === "collaboration"
                                 ? "Reconnect and check the workspace connection first"
-                                : "Reconnect and check the last turn first"
+                                : recovery === "missing"
+                                  ? "End the unconfirmed turn, or check again, first"
+                                  : "Reconnect and check the last turn first"
                               : sendTurnId && !isClaude
                               ? "Add input to the current turn"
                               : "Send message"
@@ -3379,6 +3392,18 @@ export function App() {
           agent={agent}
           open
           onOpenChange={(open) => { if (!open) setDiffRequest(null); }}
+        />
+      )}
+      {currentDetail?.codexHandoff?.missingTurns && (
+        <EndMissingTurnDialog
+          key={`end-missing-${currentDetail.agent.id}`}
+          detail={currentDetail}
+          open={endMissingFor === currentDetail.agent.id}
+          onOpenChange={(open) => setEndMissingFor(open ? currentDetail.agent.id : null)}
+          onEnded={() => {
+            setNotice("Ended as interrupted, result unknown. Reconnect to go on in the same session.");
+            refresh();
+          }}
         />
       )}
       {agent && !isClaude && !isOpenCode && (

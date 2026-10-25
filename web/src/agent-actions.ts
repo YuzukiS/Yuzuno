@@ -2,7 +2,7 @@ import { nativeSession } from "./machine-checks";
 import type { Agent } from "./types";
 
 /** What an Agent's action menu can offer (T-184), in its order. */
-export type AgentMenuAction = "reconnect" | "check" | "interrupt" | "settings" | "manage";
+export type AgentMenuAction = "reconnect" | "check" | "endMissing" | "interrupt" | "settings" | "manage";
 
 /** One entry of the menu: what it does and whether it can run now. */
 export interface AgentMenuItem {
@@ -18,6 +18,9 @@ export interface AgentActionHandlers {
   interrupt: (id: string) => Promise<unknown>;
   settings: (id: string) => void;
   manage: (id: string) => void;
+  /** Opens the confirmation that ends Turns missing from the native history
+   * (T-198); offered only where a check found them. */
+  endMissing?: (id: string) => void;
 }
 
 /**
@@ -45,12 +48,14 @@ export function interruptible(agent: Agent): boolean {
 
 /** The menu for `agent` as it is now: few entries, only those that apply.
  * Opening the Agent is its row's own click, not an entry. */
-export function agentMenuItems(agent: Agent): AgentMenuItem[] {
+export function agentMenuItems(agent: Agent, { missingTurns = false }: { missingTurns?: boolean } = {}): AgentMenuItem[] {
   const items: AgentMenuItem[] = [];
   const reconnect = reconnectOffer(agent);
   if (reconnect === "check") items.push({ action: "check", label: "Reconnect and check" });
   else if (reconnect === "reconnect") items.push({ action: "reconnect", label: "Reconnect" });
   else if (reconnect === "connecting") items.push({ action: "reconnect", label: "Reconnecting…", disabled: true });
+  if (missingTurns && !agent.closedAt && agent.connectionState !== "connected")
+    items.push({ action: "endMissing", label: "End unconfirmed turn…" });
   if (interruptible(agent)) items.push({ action: "interrupt", label: "Interrupt current turn" });
   if (!agent.closedAt && agent.harness !== "opencode") items.push({ action: "settings", label: "Agent settings…" });
   items.push({ action: "manage", label: "Manage…" });

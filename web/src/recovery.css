@@ -28,3 +28,20 @@
   margin: 0;
   color: var(--error-ink, #94342a);
 }
+/* Ending Turns missing from Codex's own history (T-198). */
+.recovery-notice .primary-button {
+  white-space: nowrap;
+}
+.end-missing-dialog {
+  display: grid;
+  gap: 10px;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  line-height: 1.55;
+}
+.end-missing-dialog p,
+.end-missing-dialog ul {
+  margin: 0;
+}
+.end-missing-dialog ul {
+  padding-left: 1.2em;
+}
