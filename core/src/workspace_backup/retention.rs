@@ -527,13 +527,13 @@ pub(crate) fn prune(folder: &Path, rule: Rule, workspace: &str, operations: impl
             Ok((preview, target)) if still_kept(&preview) => {
                 if let Err(error) = move_aside_and_remove(folder, &target, ctl) {
                     let error = if error.is::<NotMoved>() { format!("{:#}", error.root_cause()) } else { format!("{error:#}") };
-                    let done = if removed.is_empty() { "nothing was removed before it".to_string() } else { format!("before it, {} removed", names(&removed)) };
+                    let done = if removed.is_empty() { "nothing was removed before it".to_string() } else { format!("before it, {}", names(&removed)) };
                     bail!("{error}; {done}; the rest are left as they are");
                 }
                 removed.push(json!({"name": target.name, "path": target.path, "backedUpAt": target.created_at, "freedEstimateBytes": target.estimate_bytes}));
             }
             Ok(_) => bail!("{} is no longer kept as it was when it was read back; {}; the rest are left as they are",
-                checked.name, if removed.is_empty() { "nothing was removed".to_string() } else { format!("{} removed before that", names(&removed)) }),
+                checked.name, if removed.is_empty() { "nothing was removed".to_string() } else { format!("{} before that", names(&removed)) }),
             Err(error) => skipped.push(json!({"name": target.name, "reason": format!("{error:#}")})),
         }
     }
@@ -544,9 +544,11 @@ pub(crate) fn prune(folder: &Path, rule: Rule, workspace: &str, operations: impl
     Ok(answer)
 }
 
+/// "1 backup was removed (b-1)", "2 backups were removed (b-1, b-2)".
 fn names(removed: &[Value]) -> String {
     let all: Vec<&str> = removed.iter().filter_map(|r| r["name"].as_str()).collect();
-    format!("{} ({})", if all.len() == 1 { "1 backup was".to_string() } else { format!("{} backups were", all.len()) }, all.join(", "))
+    let what = if all.len() == 1 { "1 backup was".to_string() } else { format!("{} backups were", all.len()) };
+    format!("{what} removed ({})", all.join(", "))
 }
 
 /// The preview route: on Core's own port only.
