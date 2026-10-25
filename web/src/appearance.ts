@@ -70,50 +70,55 @@ const dockLimit = (value: unknown, fallback: number) =>
 
 export function readAppearance(): Appearance {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-    return {
-      palette: palettes.includes(saved?.palette)
-        ? saved.palette
-        : defaultAppearance.palette,
-      theme: ["light", "dark", "system"].includes(saved?.theme)
-        ? saved.theme
-        : defaultAppearance.theme,
-      fontSize:
-        Number.isInteger(saved?.fontSize) &&
-        saved.fontSize >= MIN_FONT_SIZE &&
-        saved.fontSize <= MAX_FONT_SIZE
-          ? saved.fontSize
-          : defaultAppearance.fontSize,
-      agentList: ["detailed", "compact"].includes(saved?.agentList)
-        ? saved.agentList
-        : defaultAppearance.agentList,
-      projectGroups: projectGroupStyles.includes(saved?.projectGroups)
-        ? saved.projectGroups
-        : defaultAppearance.projectGroups,
-      dock: {
-        jobs: dockLimit(saved?.dock?.jobs, defaultAppearance.dock.jobs),
-        actions: dockLimit(saved?.dock?.actions, defaultAppearance.dock.actions),
-        subAgents: dockLimit(
-          saved?.dock?.subAgents,
-          defaultAppearance.dock.subAgents,
-        ),
-      },
-      turnDock: {
-        numbers: count(
-          saved?.turnDock?.numbers,
-          MAX_TURN_NUMBERS,
-          defaultAppearance.turnDock.numbers,
-        ),
-        bars: count(
-          saved?.turnDock?.bars,
-          MAX_TURN_BARS,
-          defaultAppearance.turnDock.bars,
-        ),
-      },
-    };
+    return appearanceFrom(JSON.parse(localStorage.getItem(STORAGE_KEY) || "null"));
   } catch {
     return defaultAppearance;
   }
+}
+
+/** Appearance as this device reads a saved value: each field it accepts,
+ * the default for any other. An imported file is checked the same way. */
+export function appearanceFrom(saved: any): Appearance {
+  return {
+    palette: palettes.includes(saved?.palette)
+      ? saved.palette
+      : defaultAppearance.palette,
+    theme: ["light", "dark", "system"].includes(saved?.theme)
+      ? saved.theme
+      : defaultAppearance.theme,
+    fontSize:
+      Number.isInteger(saved?.fontSize) &&
+      saved.fontSize >= MIN_FONT_SIZE &&
+      saved.fontSize <= MAX_FONT_SIZE
+        ? saved.fontSize
+        : defaultAppearance.fontSize,
+    agentList: ["detailed", "compact"].includes(saved?.agentList)
+      ? saved.agentList
+      : defaultAppearance.agentList,
+    projectGroups: projectGroupStyles.includes(saved?.projectGroups)
+      ? saved.projectGroups
+      : defaultAppearance.projectGroups,
+    dock: {
+      jobs: dockLimit(saved?.dock?.jobs, defaultAppearance.dock.jobs),
+      actions: dockLimit(saved?.dock?.actions, defaultAppearance.dock.actions),
+      subAgents: dockLimit(
+        saved?.dock?.subAgents,
+        defaultAppearance.dock.subAgents,
+      ),
+    },
+    turnDock: {
+      numbers: count(
+        saved?.turnDock?.numbers,
+        MAX_TURN_NUMBERS,
+        defaultAppearance.turnDock.numbers,
+      ),
+      bars: count(
+        saved?.turnDock?.bars,
+        MAX_TURN_BARS,
+        defaultAppearance.turnDock.bars,
+      ),
+    },
+  };
 }
 
 export function applyAppearance(appearance: Appearance) {
@@ -228,6 +233,19 @@ export function retryAppearanceWrite(): SaveOutcome {
   return lastSave?.action === "reset"
     ? restoreDefaultAppearance()
     : saveAppearance(current ?? readAppearance());
+}
+
+/** Saves an imported `appearance` on this device and only then applies it
+ * (T-194): unlike a choice made here, a refused write changes nothing, in
+ * storage or in what is in effect. */
+export function importAppearance(appearance: Appearance): SaveOutcome {
+  const outcome = saveDeviceValue(STORAGE_KEY, appearance);
+  if (!outcome.saved) return outcome;
+  applyAppearance(appearance);
+  current = appearance;
+  lastSave = { outcome, action: "save", attempt: ++attempts };
+  listeners.forEach((listener) => listener());
+  return outcome;
 }
 
 /** Back to the defaults on this device: its saved choice is removed. */
