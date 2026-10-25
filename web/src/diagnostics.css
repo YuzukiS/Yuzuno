@@ -30,7 +30,8 @@
 }
 .app-recovery-actions button,
 .diagnostics-section .settings-section-heading button,
-.diagnostics-actions button {
+.diagnostics-actions button,
+.diagnostics-clear button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -61,4 +62,12 @@
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+/* Clearing the recorded errors sits apart from what copies or saves the text. */
+.diagnostics-clear {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line, #cfc5b6);
 }
