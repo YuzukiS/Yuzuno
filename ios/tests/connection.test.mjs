@@ -215,6 +215,9 @@ const two = {
   ],
 };
 
+// These two are at addresses of their own. That they are listed apart says
+// nothing about two Workspaces at ONE address, which is the case the app has
+// to refuse: JSDOM does not navigate, so no test here opens either origin.
 test('two saved Workspaces are listed apart, by workspace, though they share a name', async () => {
   const dom = await mount(async (command) => {
     if (command === 'saved_cores') return two;
@@ -289,6 +292,48 @@ test('a saved Workspace that answers as another one is refused, not offered', as
     assert.equal(identity.hidden, true);
     assert.match(status.textContent, /Left closed/);
     assert.equal(calls.filter((call) => call.command === 'connect_core').length, 1);
+  } finally { dom.window.close(); }
+});
+
+// The case the refusal exists for: one saved address, a different Workspace
+// answering there now. The app opens the Core's own origin in its one
+// WebView, so this is the same storage as the saved Workspace's.
+const sameAddress = {
+  state: 'saved',
+  selected: 'core-1',
+  profiles: [{ id: 'core-1', name: 'Home', url: 'https://one.example.ts.net/', workspaceId: 'w-one' }],
+};
+
+test('a different Workspace at a saved address is refused, and nothing is opened there', async () => {
+  const calls = [];
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'saved_cores') return sameAddress;
+    if (command === 'connect_core')
+      return {
+        url: 'https://one.example.ts.net/',
+        opened: false,
+        identity: 'changed',
+        profileName: 'Home',
+        savedWorkspaceId: 'w-one',
+        workspaceId: 'w-two',
+      };
+  });
+  try {
+    const document = dom.window.document;
+    document.querySelector('#saved-list li .saved-open').click();
+    await settle();
+    // Asked at that one address, as that one profile.
+    assert.equal(calls.at(-1).args.url, 'https://one.example.ts.net/');
+    assert.equal(calls.at(-1).args.profile, 'core-1');
+    // Refused, with no second call and no way to proceed.
+    assert.equal(document.querySelector('#identity-check').hidden, false);
+    assert.equal(document.querySelector('#identity-open'), null);
+    assert.equal(calls.filter((call) => call.command === 'connect_core').length, 1);
+    assert.doesNotMatch(document.querySelector('[role="status"]').textContent, /Opening|Found it/);
+    // The profile is still saved: refusing is not forgetting.
+    assert.equal(document.querySelectorAll('#saved-list li').length, 1);
+    assert.equal(document.querySelector('.saved-url').textContent, 'https://one.example.ts.net/');
   } finally { dom.window.close(); }
 });
 
