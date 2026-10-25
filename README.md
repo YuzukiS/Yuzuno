@@ -57,12 +57,12 @@ Local CPU and RAM budgets are enforced through Linux cgroups. GPU admission rese
 
 **Signed Core releases for Linux x86_64 are published on the [Releases page](https://github.com/YuzukiS/Yuzuno/releases),** starting with core.13 and core.14 on 2026-10-21. The [install guide](docs/independent-core.md) installs one without a source checkout; it also covers first startup and connecting from another computer. You can instead build and run Core from a checkout, as [below](#run-from-source), and use it in a browser.
 
-The Windows desktop installer exists so far only in the private development repository; the desktop app can be [built from source](desktop/README.md).
+The Windows desktop installer is published there too, from `desktop-0.3.0`; the [desktop app](desktop/README.md) can also be built from source.
 
 | Part | Current support |
 | --- | --- |
 | **Core host** | Linux x86_64, including WSL2; release bundles require glibc 2.35+. macOS Core is planned. |
-| **Client** | Chromium-based browsers. The Windows desktop app can be [built from source](desktop/README.md); it has no public installer yet. Native Linux/macOS desktop releases are not available. |
+| **Client** | Chromium-based browsers; the Windows desktop app ([installer](https://github.com/YuzukiS/Yuzuno/releases) or [built from source](desktop/README.md)); a phone's browser through the [phone entry](docs/independent-core.md#connect-from-a-phone-tailscale-serve). The Mac and iPhone apps are built from source only; there is no Linux desktop app. |
 | **Agent runtimes** | Installed, authenticated Codex CLI and/or Claude Code through the Claude Agent SDK bridge. |
 | **Remote Agents** | Codex and Claude on prepared Linux/macOS SSH hosts, using each host's files and CLI login. |
 | **Local Jobs** | A systemd user manager and delegated cgroup v2 resources on the Linux Core host. Jobs execute as the Core OS user, outside the Agent sandbox. |
