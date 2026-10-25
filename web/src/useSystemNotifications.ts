@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, isNative } from "./api";
 import type { NeedsYouItem } from "./home/types";
-import { knownDesktopNotifier, readDesktopNotifier } from "./desktop-notifier";
+import { knownDesktopNotifier, readDesktopNotifier, useDesktopNotifier } from "./desktop-notifier";
 import { browserHost, notificationAccess, reachesSystem, showSystemNotification } from "./notification-access";
 import { agentNotices, askNotices, backupNotice, merged, type AgentState, type BackupRun, type Notice } from "./notification-events";
 import { notifies } from "./notification-prefs";
@@ -18,8 +18,10 @@ const away = () => document.visibilityState === "hidden" || !document.hasFocus()
  */
 export function useBackupRun(revision: number, enabled = true): BackupRun | null | undefined {
   const prefs = useNotificationPrefs();
+  // In the desktop app, read again once it says whether it can notify (T-188).
+  const desktop = useDesktopNotifier();
   const wanted =
-    enabled && prefs.enabled && !prefs.muted && prefs.categories.backupFailed && reachesSystem(notificationAccess(browserHost(isNative, knownDesktopNotifier())));
+    enabled && prefs.enabled && !prefs.muted && prefs.categories.backupFailed && reachesSystem(notificationAccess(browserHost(isNative, desktop)));
   const [run, setRun] = useState<BackupRun | null | undefined>(undefined);
   useEffect(() => {
     if (!wanted) {

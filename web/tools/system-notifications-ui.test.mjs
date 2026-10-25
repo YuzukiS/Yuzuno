@@ -23,14 +23,19 @@ try {
     entry,
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
-import {useSystemNotifications} from ${JSON.stringify(path.join(root, "src/useSystemNotifications.ts"))};
+import {useSystemNotifications, useBackupRun} from ${JSON.stringify(path.join(root, "src/useSystemNotifications.ts"))};
 const root = createRoot(document.getElementById('root'));
 window.opened = [];
 function Probe({ workspaceId, agents, asks }) {
   useSystemNotifications(workspaceId, agents, asks, (notice) => window.opened.push(notice.home ? 'home' : notice.agentId || 'workspace'));
   return null;
 }
-window.read = (workspaceId, agents, asks = null) => root.render(<Probe workspaceId={workspaceId} agents={agents} asks={asks} />);`,
+window.read = (workspaceId, agents, asks = null) => root.render(<Probe workspaceId={workspaceId} agents={agents} asks={asks} />);
+function BackupProbe({ revision }) {
+  window.backupRun = useBackupRun(revision);
+  return null;
+}
+window.readBackup = (revision) => root.render(<BackupProbe revision={revision} />);`,
   );
   const result = await build({
     root,
@@ -47,7 +52,7 @@ window.read = (workspaceId, agents, asks = null) => root.render(<Probe workspace
 const tick = () => new Promise((resolve) => setTimeout(resolve, 25));
 
 /** A page whose system allows `permission`, with this device's saved choices. */
-function mount({ permission = "granted", saved = { enabled: true }, looking = false, shell } = {}) {
+function mount({ permission = "granted", saved = { enabled: true }, looking = false, shell, answers = {} } = {}) {
   const errors = [];
   const vc = new VirtualConsole();
   vc.on("jsdomError", (e) => errors.push(e.message));
@@ -61,6 +66,8 @@ function mount({ permission = "granted", saved = { enabled: true }, looking = fa
   const { window } = dom;
   window.fetch = (url) => {
     page.requests.push(String(url));
+    const answer = answers[new URL(String(url), "https://isolated.test").pathname];
+    if (answer) return Promise.resolve({ ok: true, status: 200, json: async () => answer, text: async () => JSON.stringify(answer) });
     return Promise.reject(new Error("no request expected"));
   };
   if (!window.isSecureContext) Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
@@ -104,9 +111,9 @@ function mount({ permission = "granted", saved = { enabled: true }, looking = fa
   };
   // window.opened is the page's own array: compared through Array.from (another realm).
   page.titles = () => page.shown.map((n) => n.title);
-  page.close = () => {
+  page.close = (requests = []) => {
     assert.deepEqual(errors, []);
-    assert.deepEqual(page.requests, [], "nothing reaches Core");
+    assert.deepEqual(page.requests, requests, "nothing else reaches Core");
     assert.equal(page.asked, 0, "the system is never asked from here");
     window.close();
   };
@@ -210,4 +217,17 @@ test("in the desktop app that can notify, a change read while away is handed to 
     assert.deepEqual(other.shown, []);
     other.close();
   }
+});
+
+test("in the desktop app that can notify, a daily backup's last run is read once the app says so, with nothing else rendering again", async () => {
+  const page = mount({
+    shell: { answer: { supported: true, system: "windows" } },
+    saved: { enabled: true, categories: { backupFailed: true } },
+    answers: { "/api/workspace/backup/last-run": { lastRun: null } },
+  });
+  page.dom.window.readBackup(1);
+  for (let i = 0; i < 40 && page.requests.length === 0; i++) await tick();
+  assert.deepEqual(page.invoked, [["desktop_notifications"]]);
+  assert.deepEqual(page.requests, ["/api/workspace/backup/last-run"], "read without another render");
+  page.close(["/api/workspace/backup/last-run"]);
 });
