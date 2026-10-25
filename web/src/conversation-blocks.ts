@@ -1,5 +1,6 @@
 import { isSubAgentCall, subAgentCalls } from "./claude-subagents.ts";
 import type { NativeItem, NativeTurn } from "./types";
+import type { Language } from "./i18n.ts";
 
 export type ConversationBlock =
   | { kind: "user" | "message" | "preview"; item: NativeItem }
@@ -98,9 +99,22 @@ const activityNames: Record<string, string> = {
   enteredReviewMode: "Review",
   plan: "Proposed plan",
 };
+// In Chinese (T-189); a tool's own name stays as the harness gives it.
+const activityNamesZh: Record<string, string> = {
+  commandExecution: "Shell",
+  fileChange: "编辑",
+  webSearch: "网页搜索",
+  imageView: "查看图片",
+  imageGeneration: "生成图片",
+  reasoning: "推理",
+  contextCompaction: "压缩",
+  enteredReviewMode: "审查",
+  plan: "提议的计划",
+};
 
 /** Count native calls, not output chunks or files touched by a single edit. */
-export function toolActivityCounts(items: readonly NativeItem[]) {
+export function toolActivityCounts(items: readonly NativeItem[], language: Language = "en") {
+  const names = language === "zh-Hans" ? activityNamesZh : activityNames;
   const counts = new Map<
     string,
     { key: string; label: string; count: number }
@@ -127,7 +141,7 @@ export function toolActivityCounts(items: readonly NativeItem[]) {
           : "";
     const label = name
       ? [namespace, name].filter(Boolean).join("/")
-      : activityNames[item.type] ||
+      : names[item.type] ||
         item.type
           .replace(/([A-Z])/g, " $1")
           .replace(/^./, (c) => c.toUpperCase());

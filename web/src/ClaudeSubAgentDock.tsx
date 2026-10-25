@@ -1,20 +1,13 @@
 import { useMemo } from "react";
 import { ClaudeAwayFromTurn, ClaudeSubAgentDetail, ClaudeSubAgentScope } from "./ClaudeControls";
 import { StopTaskButton } from "./ClaudeBackgroundTasks";
-import { claudeSubAgents, type ClaudeSubAgentEntry } from "./claude-subagents";
+import { claudeSubAgents } from "./claude-subagents";
 import { SubAgentDock, type DockSubAgent } from "./SubAgentPanels";
 import type { Agent, NativeTurn, RunningSubAgent } from "./types";
 import { withRunningCalls } from "./running-calls";
 import { useAppearance } from "./appearance";
-
-/** A few words under a Claude sub-agent's name on the dock. */
-const dockSub: Record<ClaudeSubAgentEntry["status"], string> = {
-  running: "Running",
-  succeeded: "Completed",
-  failed: "Failed",
-  cancelled: "Stopped",
-  unknown: "Unconfirmed",
-};
+import { useLanguage, type Language } from "./i18n";
+import { cardWords } from "./subagent-text";
 
 const NONE: readonly DockSubAgent[] = [];
 
@@ -24,9 +17,11 @@ const NONE: readonly DockSubAgent[] = [];
  * its parent's call is outside the loaded window (Core pages a Turn's Items).
  * The card shows what Claude reported, already in the Turn, and its own calls.
  */
-export function claudeDockEntries(agentId: string, turns: readonly NativeTurn[], live: boolean): DockSubAgent[] {
+export function claudeDockEntries(agentId: string, turns: readonly NativeTurn[], live: boolean, language: Language = "en"): DockSubAgent[] {
+  // A few words under a Claude sub-agent's name on the dock.
+  const t = cardWords(language);
   const byId = new Map(turns.map((turn) => [turn.id, turn]));
-  const all = claudeSubAgents(turns, live);
+  const all = claudeSubAgents(turns, live, language);
   const loaded = new Set(all.map((entry) => `${entry.turnId}\n${entry.key}`));
   return all
     .filter((entry) => !entry.parentKey || !loaded.has(`${entry.turnId}\n${entry.parentKey}`))
@@ -38,7 +33,7 @@ export function claudeDockEntries(agentId: string, turns: readonly NativeTurn[],
       // a Codex child's is; the dock's "unknown" is a run that went missing.
       status: entry.status === "unknown" ? "unconfirmed" : entry.status,
       state: entry.state,
-      sub: entry.status === "running" && entry.record?.background ? "Background" : dockSub[entry.status],
+      sub: entry.status === "running" && entry.record?.background ? t.background : t.claudeSub[entry.status],
       detail: entry.sub || undefined,
       // Not yet known to have ended: still running, or its end unconfirmed.
       waiting: entry.status === "running" || entry.status === "unknown",
@@ -72,9 +67,10 @@ export function ConversationSubAgentDock({ agent, turns, running, onNavigate }: 
   onNavigate: (turnId: string) => void;
 }) {
   const live = agent.connectionState === "connected";
+  const language = useLanguage();
   const entries = useMemo(
-    () => (agent.harness === "claude" ? claudeDockEntries(agent.id, withRunningCalls(turns, running), live) : NONE),
-    [agent.id, agent.harness, turns, running, live],
+    () => (agent.harness === "claude" ? claudeDockEntries(agent.id, withRunningCalls(turns, running), live, language) : NONE),
+    [agent.id, agent.harness, turns, running, live, language],
   );
   // As many as Settings allows (Appearance, Conversation dock).
   const { dock } = useAppearance();

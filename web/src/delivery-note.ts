@@ -1,5 +1,6 @@
 import { isCompacting } from "./conversation-blocks.ts";
 import type { AgentDetail, MessageReceipt } from "./types";
+import type { Language } from "./i18n.ts";
 
 /** Where a message Codex accepted into a running Turn (turn/steer) stands:
  * Codex answers the steer at once but adds the message to the conversation
@@ -71,7 +72,9 @@ export function deliveryNote(
   harness: string | null,
   steer: "waiting" | "endedUnconfirmed" | null = null,
   compaction = false,
+  language: Language = "en",
 ) {
+  if (language === "zh-Hans") return deliveryNoteZh(status, harness, steer, compaction);
   const name = harness ?? "the harness";
   if (steer === "waiting") return `Received by ${name} · added when its Turn continues`;
   if (steer === "endedUnconfirmed") return `Received by ${name} · Turn ended; message not yet confirmed in conversation`;
@@ -83,5 +86,25 @@ export function deliveryNote(
     rejected: "Not sent · draft kept",
     uncertain: "Delivery unconfirmed · draft kept",
     unknown: `Not confirmed by ${name} · not sent again`,
+  }[status];
+}
+/** deliveryNote in Chinese (T-189); the harness's name as it is. */
+function deliveryNoteZh(
+  status: MessageReceipt["status"],
+  harness: string | null,
+  steer: "waiting" | "endedUnconfirmed" | null,
+  compaction: boolean,
+) {
+  const name = harness ?? "该 harness";
+  if (steer === "waiting") return `${name} 已收到 · 在其 Turn 继续时加入`;
+  if (steer === "endedUnconfirmed") return `${name} 已收到 · Turn 已结束；消息尚未在会话中确认`;
+  if (compaction && status === "accepted") return `${name} 已收到 · 正在压缩会话`;
+  return {
+    sending: "正在发送…",
+    queued: `已发送 · 等待 ${name} 确认`,
+    accepted: harness ? `${harness} 已收到 · 正在同步会话` : "已发送 · 正在同步会话",
+    rejected: "未发送 · 草稿已保留",
+    uncertain: "送达未确认 · 草稿已保留",
+    unknown: `${name} 未确认 · 不会重新发送`,
   }[status];
 }

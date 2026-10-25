@@ -4,7 +4,7 @@ import { ArrowUpRight, Bot, ChevronLeft, LoaderCircle, RefreshCw, X } from "luci
 import { api, errorText } from "./api";
 import {
   conversationSubAgents,
-  stateLabels,
+  stateLabel,
   threadStatusLabel,
   turnStatusLabel,
   type ConversationSubAgent,
@@ -14,6 +14,8 @@ import {
 import type { NativeItem } from "./types";
 import { useConversationTarget, useConversationWindowed } from "./ConversationWindow";
 import { StatusMark, WorkDockGroup, WorkDockItem, WorkDockMore } from "./WorkDock";
+import { useLanguage, useStrings, type Language } from "./i18n";
+import { cardWords } from "./subagent-text";
 import "./subagents.css";
 
 /**
@@ -57,12 +59,6 @@ const dockStatus: Record<SubAgentState, string> = {
   interrupted: "interrupted",
   unknown: "unconfirmed",
 };
-const dockSub: Record<SubAgentState, string> = {
-  started: "Started",
-  ended: "Ended",
-  interrupted: "Interrupted",
-  unknown: "Status unknown",
-};
 
 /** At most this many on the dock unless a caller says otherwise: Settings
  * sets it for sub-agents; Claude's background tasks keep this one. */
@@ -92,15 +88,16 @@ export type DockSubAgent = {
   details: (onNavigate: (turnId: string) => void) => ReactNode;
 };
 
-/** Codex's sub-agents, as the dock shows them. */
-function codexEntries(agentId: string, children: ConversationSubAgent[]): DockSubAgent[] {
+/** Codex's sub-agents, as the dock shows them, in `language`. */
+function codexEntries(agentId: string, children: ConversationSubAgent[], language: Language): DockSubAgent[] {
+  const t = cardWords(language);
   return children.map((child) => ({
     key: child.threadId,
     turnId: child.turnId,
     label: child.label,
     status: dockStatus[child.state],
-    state: stateLabels[child.state],
-    sub: dockSub[child.state],
+    state: stateLabel(child.state, language),
+    sub: t.codexSub[child.state],
     detail: [child.path, child.model].filter(Boolean).join(" · "),
     waiting: child.state === "started",
     details: (onNavigate) => (
@@ -112,7 +109,11 @@ const NO_ENTRIES: readonly DockSubAgent[] = [];
 
 /** A dock group's names: its heading, one of its entries, and its icon. */
 export type DockGroup = { label: string; one: string; icon: (size: number) => ReactNode };
-const SUBAGENTS: DockGroup = { label: "Sub-agents", one: "Sub-agent", icon: (size) => <Bot size={size} /> };
+// The Codex and Claude sub-agents' group, in the language shown.
+const subAgentsGroup = (language: Language): DockGroup => {
+  const t = cardWords(language);
+  return { label: t.subAgents, one: t.subAgent, icon: (size) => <Bot size={size} /> };
+};
 
 /**
  * The conversation's sub-agents as a group of the left dock, under its jobs
@@ -125,7 +126,7 @@ export function SubAgentDock({
   turns,
   entries = NO_ENTRIES,
   onNavigate,
-  group = SUBAGENTS,
+  group: given,
   limit = SHOWN,
 }: {
   agentId: string;
@@ -137,8 +138,10 @@ export function SubAgentDock({
   /** At most this many on the dock; 0 leaves the group off it. */
   limit?: number;
 }) {
+  const language = useLanguage();
+  const group = given ?? subAgentsGroup(language);
   const codex = useMemo(() => conversationSubAgents(turns), [turns]);
-  const all = useMemo(() => [...codexEntries(agentId, codex), ...entries], [agentId, codex, entries]);
+  const all = useMemo(() => [...codexEntries(agentId, codex, language), ...entries], [agentId, codex, entries, language]);
   const [card, setCard] = useState<{ key: string | null; from: HTMLElement } | null>(null);
   if (!all.length || limit <= 0) return null;
   const shown = all
@@ -210,6 +213,7 @@ function SubAgentCard({
   onClose: () => void;
 }) {
   const card = useRef<HTMLDivElement>(null);
+  const t = useStrings(cardWords);
   // The latest callback, so closing never re-runs the focus handling below.
   const close = useRef(onClose);
   close.current = onClose;
@@ -278,20 +282,20 @@ function SubAgentCard({
       ref={card}
       className="subagent-card"
       role="dialog"
-      aria-label={child ? `${group.one} ${child.label}` : `${group.label} in this conversation`}
+      aria-label={child ? `${group.one} ${child.label}` : t.inConversation(group.label)}
       tabIndex={-1}
       style={place ? { left: place.left, top: place.top } : { visibility: "hidden" }}
     >
       <header className="subagent-card-heading">
         {child && all.length > 1 ? (
-          <button type="button" className="icon-button" aria-label={`All ${group.label.toLowerCase()}`} onClick={() => onChoose(null)}>
+          <button type="button" className="icon-button" aria-label={t.all(group.label)} onClick={() => onChoose(null)}>
             <ChevronLeft size={15} />
           </button>
         ) : (
           <span className="subagent-card-icon" aria-hidden="true">{group.icon(15)}</span>
         )}
         <strong>{child ? child.label : `${group.label} · ${all.length}`}</strong>
-        <button type="button" className="icon-button" aria-label="Close" onClick={onClose}>
+        <button type="button" className="icon-button" aria-label={t.close} onClick={onClose}>
           <X size={15} />
         </button>
       </header>
@@ -328,6 +332,8 @@ function SubAgentDetails({
   const [detail, setDetail] = useState<SubAgentDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const language = useLanguage();
+  const t = cardWords(language);
   async function load() {
     setLoading(true);
     setError(null);
@@ -351,12 +357,12 @@ function SubAgentDetails({
     <div className="subagent-detail">
       <p className="subagent-card-state">
         <StatusMark status={dockStatus[child.state]} />
-        {stateLabels[child.state]}
+        {stateLabel(child.state, language)}
         {child.path && <code>{child.path}</code>}
       </p>
       {loading && (
         <p className="subagent-note">
-          <LoaderCircle size={13} className="updates-spin" aria-hidden /> Reading from Codex…
+          <LoaderCircle size={13} className="updates-spin" aria-hidden /> {t.reading}
         </p>
       )}
       {error && (
@@ -364,52 +370,53 @@ function SubAgentDetails({
           {error}
         </p>
       )}
-      {detail && <Detail detail={detail} />}
+      {detail && <Detail detail={detail} language={language} />}
       <div className="subagent-card-actions">
         <button type="button" className="quiet-button" disabled={loading} onClick={() => void load()}>
-          <RefreshCw size={12} aria-hidden /> Read again
+          <RefreshCw size={12} aria-hidden /> {t.readAgain}
         </button>
         <button type="button" className="quiet-button" onClick={() => onNavigate(child.turnId)}>
-          <ArrowUpRight size={12} aria-hidden /> Go to its Turn
+          <ArrowUpRight size={12} aria-hidden /> {t.goTurn}
         </button>
       </div>
     </div>
   );
 }
 
-function Detail({ detail }: { detail: SubAgentDetail }) {
+function Detail({ detail, language }: { detail: SubAgentDetail; language: Language }) {
   const turn = detail.turn;
   const read = new Date(detail.readAt);
+  const t = cardWords(language);
   return (
     <>
       <dl className="subagent-facts">
         {detail.nickname && (
           <>
-            <dt>Name</dt>
+            <dt>{t.name}</dt>
             <dd>{detail.nickname}</dd>
           </>
         )}
-        <dt>Latest turn</dt>
-        <dd>{turn ? turnStatusLabel(turn.status) : "None yet"}</dd>
-        <dt>Thread</dt>
-        <dd>{threadStatusLabel(detail.status)}</dd>
-        <dt>Goal</dt>
-        <dd className="subagent-muted">Not provided by this Codex version</dd>
+        <dt>{t.latestTurn}</dt>
+        <dd>{turn ? turnStatusLabel(turn.status, language) : t.noneYet}</dd>
+        <dt>{t.thread}</dt>
+        <dd>{threadStatusLabel(detail.status, language)}</dd>
+        <dt>{t.goal}</dt>
+        <dd className="subagent-muted">{t.noGoal}</dd>
         {detail.model && (
           <>
-            <dt>Model</dt>
+            <dt>{t.model}</dt>
             <dd>{detail.model}</dd>
           </>
         )}
         {detail.role && (
           <>
-            <dt>Role</dt>
+            <dt>{t.role}</dt>
             <dd>{detail.role}</dd>
           </>
         )}
-        <dt>Thread ID</dt>
+        <dt>{t.threadId}</dt>
         <dd>
-          <code title={`Parent ${detail.parentThreadId}`}>{detail.threadId}</code>
+          <code title={t.parent(detail.parentThreadId)}>{detail.threadId}</code>
         </dd>
       </dl>
       {turn?.error && (
@@ -418,21 +425,20 @@ function Detail({ detail }: { detail: SubAgentDetail }) {
         </p>
       )}
       <div className="subagent-answer">
-        <span className="subagent-answer-label">Answer</span>
+        <span className="subagent-answer-label">{t.answer}</span>
         {detail.result ? (
           <p>
             {detail.result.text}
-            {detail.result.truncated && <span className="subagent-muted"> … (shortened)</span>}
+            {detail.result.truncated && <span className="subagent-muted">{t.shortened}</span>}
           </p>
         ) : (
-          <p className="subagent-muted">No answer yet</p>
+          <p className="subagent-muted">{t.noAnswer}</p>
         )}
       </div>
       <p className="subagent-note">
-        Read {detail.readFrom === "live" ? "from the running Codex" : "from Codex history"} at{" "}
-        {Number.isNaN(read.getTime())
+        {t.readFrom(detail.readFrom === "live", Number.isNaN(read.getTime())
           ? detail.readAt
-          : read.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+          : read.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }))}
       </p>
     </>
   );

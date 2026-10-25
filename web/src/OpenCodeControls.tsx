@@ -4,6 +4,8 @@ import { errorText, NO_ANSWER_REPLY, respondToRequest } from "./api";
 import { AnswerAgain, DraftNotSaved, useUnconfirmedAnswer } from "./unconfirmed-answer";
 import { choiceAnswers, choiceEmpty, useRequestDraft } from "./request-draft";
 import type { NativeItem, PendingRequest } from "./types";
+import { useStrings } from "./i18n";
+import { cardWords } from "./subagent-text";
 import "./opencode.css";
 
 /** One of OpenCode's questions (its QuestionInfo); `custom` is true unless OpenCode says otherwise. */
@@ -16,23 +18,24 @@ export function OpenCodeTool({ item, unconfirmed, notice, opened, onOpenChange }
   item: NativeItem; unconfirmed: boolean; notice?: ReactNode;
   opened?: boolean; onOpenChange?: (open: boolean) => void;
 }) {
+  const t = useStrings(cardWords);
   const input = (item.input || {}) as Record<string, unknown>;
   const hint = input.command || input.filePath || input.pattern || input.url || input.description || "";
   const running = !unconfirmed && /inProgress|running/.test(item.status || "");
-  const result = unconfirmed || item.status === "unknown" ? "Unconfirmed" : item.status === "inProgress" ? "Running" : item.status;
+  const result = unconfirmed || item.status === "unknown" ? t.unconfirmed : item.status === "inProgress" ? t.running : item.status;
   return <details className="tool-item opencode-tool" id={`item-${item.id}`} data-running={running || undefined}
     open={opened} onToggle={event => {
       if (event.target === event.currentTarget && event.currentTarget.open !== opened) onOpenChange?.(event.currentTarget.open);
     }}>
     <summary><ChevronRight size={12} /><SquareTerminal size={14} />
-      <span><strong>{String(item.name || "Tool")}</strong>{hint ? ` · ${String(hint)}` : ""}</span>
+      <span><strong>{String(item.name || t.tool)}</strong>{hint ? ` · ${String(hint)}` : ""}</span>
       <span className="tool-result">{result}</span>
     </summary>
     <div className="tool-content">
       {notice}
-      <span className="section-eyebrow">INPUT</span><pre>{JSON.stringify(input, null, 2)}</pre>
-      <span className="section-eyebrow">{item.status === "failed" ? "ERROR" : "RESULT"}</span>
-      <pre>{item.output == null ? "No result yet." : shown(item.output)}</pre>
+      <span className="section-eyebrow">{t.input}</span><pre>{JSON.stringify(input, null, 2)}</pre>
+      <span className="section-eyebrow">{item.status === "failed" ? t.error : t.result}</span>
+      <pre>{item.output == null ? t.noResultYet : shown(item.output)}</pre>
     </div>
   </details>;
 }

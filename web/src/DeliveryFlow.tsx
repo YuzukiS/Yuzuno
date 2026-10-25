@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowRight,
   CircleCheck,
@@ -9,6 +9,7 @@ import { api, errorText } from "./api";
 import type { GitHubLink } from "./GitHubLinks";
 import "./delivery-flow.css";
 import { openTaskReview } from "./ReviewJobs";
+import { strings, useStrings } from "./i18n";
 
 export type DeliveryCandidate = {
   flowId: string;
@@ -61,29 +62,119 @@ type Flow = {
   } | null;
 };
 type Page = { flow: Flow | null; settings: Settings };
-const labels: Record<string, string> = {
-  awaiting_result: "Waiting for result",
-  waiting_review: "Waiting for review",
-  waiting_ci: "Waiting for CI",
-  waiting_fix: "Waiting for fixes",
-  ci_failed: "CI did not pass",
-  ready_to_merge: "Ready for merge decision",
-  needs_judgment: "Needs judgment",
-  infrastructure_error: "Execution needs attention",
-  candidate_changed: "Revision changed",
-  stopped: "Delivery stopped",
-  completed: "Task completed",
-  cancelled: "Task cancelled",
-  archived: "Task archived",
-  merged: "Merged · deployment untracked",
-};
+// A task's delivery in the interface language (T-189). Core's reason, the
+// review's status and conclusion, CI run names and results, harness and
+// model names, commits and operation identities are shown as they are.
+const deliveryText = strings({
+  states: {
+    awaiting_result: "Waiting for result",
+    waiting_review: "Waiting for review",
+    waiting_ci: "Waiting for CI",
+    waiting_fix: "Waiting for fixes",
+    ci_failed: "CI did not pass",
+    ready_to_merge: "Ready for merge decision",
+    needs_judgment: "Needs judgment",
+    infrastructure_error: "Execution needs attention",
+    candidate_changed: "Revision changed",
+    stopped: "Delivery stopped",
+    completed: "Task completed",
+    cancelled: "Task cancelled",
+    archived: "Task archived",
+    merged: "Merged · deployment untracked",
+  } as Record<string, string>,
+  aria: "Task delivery",
+  title: "Automatic delivery",
+  refresh: "Refresh delivery",
+  linkedPr: "Linked PR ↗",
+  reviewOf: (round: number | undefined, max: number) => `Review ${round ?? ""} / ${max}`,
+  noReview: "No completed review",
+  reviewer: "Reviewer: ",
+  notConfirmed: "Not confirmed",
+  evidence: "Original review evidence ↗",
+  ciObserved: (at: string) => `CI observed ${at}`,
+  identities: "Authorization and operation identities",
+  round: (round: number) => `Round ${round}`,
+  result: (id: string | null) => `Result: ${id || "Not submitted"}`,
+  review: (id: string | null) => `Review: ${id || "Not started"}`,
+  ci: (id: string | null) => `CI: ${id || "Not subscribed"}`,
+  authorizeNext: "Authorize next candidate…",
+  stop: "Stop automatic delivery",
+  intro: "Connect one fixed PR revision to independent review and CI.",
+  setUp: "Set up delivery…",
+  pullRequest: "Pull request",
+  choose: "Choose a linked PR",
+  authorize: (who: ReactNode, revision: ReactNode): ReactNode => (
+    <>
+      Authorize {who} for {revision}.
+    </>
+  ),
+  maxRounds: "Maximum paid review attempts",
+  oneReview: "1 review",
+  twoReviews: "Up to 2 reviews · explicit continuation required",
+  refreshFirst: "Refresh the PR in GitHub links above before authorizing this version.",
+  note: "Starts after a matching result submission. No automatic fixes, merge or deployment. CI covers the observed GitHub Actions workflows; merge requirements still need a person’s judgment.",
+  authorizeNextReview: "Authorize next review candidate",
+  enable: "Enable this delivery",
+  unknown: "Unknown",
+}, {
+  states: {
+    awaiting_result: "等待结果",
+    waiting_review: "等待审查",
+    waiting_ci: "等待 CI",
+    waiting_fix: "等待修复",
+    ci_failed: "CI 未通过",
+    ready_to_merge: "可以决定是否合并",
+    needs_judgment: "需要判断",
+    infrastructure_error: "执行需要处理",
+    candidate_changed: "修订已变化",
+    stopped: "交付已停止",
+    completed: "任务已完成",
+    cancelled: "任务已取消",
+    archived: "任务已归档",
+    merged: "已合并 · 未跟踪部署",
+  },
+  aria: "任务交付",
+  title: "自动交付",
+  refresh: "刷新交付",
+  linkedPr: "已链接的 PR ↗",
+  reviewOf: (round, max) => `审查 ${round ?? ""} / ${max}`,
+  noReview: "没有已完成的审查",
+  reviewer: "审查模型：",
+  notConfirmed: "未确认",
+  evidence: "原始审查证据 ↗",
+  ciObserved: (at) => `CI 观察于 ${at}`,
+  identities: "授权与操作标识",
+  round: (round) => `第 ${round} 轮`,
+  result: (id) => `结果：${id || "未提交"}`,
+  review: (id) => `审查：${id || "未开始"}`,
+  ci: (id) => `CI：${id || "未订阅"}`,
+  authorizeNext: "授权下一个候选…",
+  stop: "停止自动交付",
+  intro: "把一个固定的 PR 修订交给独立审查和 CI。",
+  setUp: "设置交付…",
+  pullRequest: "拉取请求",
+  choose: "选择一个已链接的 PR",
+  authorize: (who, revision) => (
+    <>
+      为 {revision} 授权 {who}。
+    </>
+  ),
+  maxRounds: "付费审查次数上限",
+  oneReview: "1 次审查",
+  twoReviews: "最多 2 次审查 · 需要明确继续",
+  refreshFirst: "授权此版本前，请先在上方的 GitHub 链接中刷新这个 PR。",
+  note: "在提交匹配的结果后开始。不会自动修复、合并或部署。CI 覆盖观察到的 GitHub Actions 工作流；合并要求仍需要人来判断。",
+  authorizeNextReview: "授权下一个审查候选",
+  enable: "启用此交付",
+  unknown: "未知",
+});
 const call = <T,>(op: string, body: object, signal?: AbortSignal) =>
   api<T>(`/collaboration/${op}`, {
     method: "POST",
     body: JSON.stringify(body),
     signal,
   });
-const short = (s?: string) => s?.slice(0, 8) || "Unknown";
+const short = (s: string | undefined, unknown: string) => s?.slice(0, 8) || unknown;
 export function DeliveryFlow({
   taskId,
   revision,
@@ -96,6 +187,7 @@ export function DeliveryFlow({
   /** Offer setting delivery up; a running flow always shows. */
   manage?: boolean;
 }) {
+  const t = useStrings(deliveryText);
   const [page, setPage] = useState<Page | null>(null);
   const [links, setLinks] = useState<GitHubLink[]>([]);
   const [linkId, setLinkId] = useState("");
@@ -191,20 +283,20 @@ export function DeliveryFlow({
     !["preparing", "running", "unknown"].includes(flow.reviewEvidence.status);
   if (!manage && !flow && !error) return null;
   return (
-    <section className="delivery-flow" aria-label="Task delivery">
+    <section className="delivery-flow" aria-label={t.aria}>
       <div className="delivery-heading">
         <GitPullRequest size={16} />
-        <strong>Automatic delivery</strong>
+        <strong>{t.title}</strong>
         {flow && (
           <span className={`delivery-state is-${flow.state}`} role="status">
-            {labels[flow.state] || flow.state}
+            {t.states[flow.state] || flow.state}
           </span>
         )}
         <button
           type="button"
           className="icon-button"
           onClick={() => void load()}
-          aria-label="Refresh delivery"
+          aria-label={t.refresh}
         >
           <RefreshCw size={14} />
         </button>
@@ -219,25 +311,24 @@ export function DeliveryFlow({
           <p>{flow.reason}</p>
           <div className="delivery-revision">
             <a href={flow.url} target="_blank" rel="noreferrer">
-              Linked PR ↗
+              {t.linkedPr}
             </a>
-            <code title={round?.baseSha}>{short(round?.baseSha)}</code>
+            <code title={round?.baseSha}>{short(round?.baseSha, t.unknown)}</code>
             <ArrowRight size={12} />
-            <code title={round?.headSha}>{short(round?.headSha)}</code>
-            <span>
-              Review {round?.number} / {flow.maxRounds}
-            </span>
+            <code title={round?.headSha}>{short(round?.headSha, t.unknown)}</code>
+            <span>{t.reviewOf(round?.number, flow.maxRounds)}</span>
           </div>
           <div className="delivery-evidence">
             <span>
               <CircleCheck size={13} />{" "}
               {flow.reviewEvidence
                 ? `${flow.reviewEvidence.status} · ${flow.reviewEvidence.conclusion.replaceAll("_", " ")}`
-                : "No completed review"}
+                : t.noReview}
             </span>
             {flow.reviewEvidence && (
               <small>
-                Reviewer: {flow.reviewEvidence.actualModel || "Not confirmed"} ·{" "}
+                {t.reviewer}
+                {flow.reviewEvidence.actualModel || t.notConfirmed} ·{" "}
                 <button
                   type="button"
                   className="text-button"
@@ -248,7 +339,7 @@ export function DeliveryFlow({
                     })
                   }
                 >
-                  Original review evidence ↗
+                  {t.evidence}
                 </button>
               </small>
             )}
@@ -259,22 +350,21 @@ export function DeliveryFlow({
             ))}
             {flow.ciEvidence?.watch.observedAt && (
               <small>
-                CI observed{" "}
-                {new Date(flow.ciEvidence.watch.observedAt).toLocaleString()}
+                {t.ciObserved(new Date(flow.ciEvidence.watch.observedAt).toLocaleString())}
               </small>
             )}
           </div>
           <details>
-            <summary>Authorization and operation identities</summary>
+            <summary>{t.identities}</summary>
             {flow.rounds.map((r) => (
               <div className="delivery-round" key={r.number}>
                 <strong>
-                  Round {r.number} · {r.settings.harness} / {r.settings.model}
+                  {t.round(r.number)} · {r.settings.harness} / {r.settings.model}
                 </strong>
-                <code>Result: {r.resultId || "Not submitted"}</code>
-                <code>Review: {r.review.id || "Not started"}</code>
+                <code>{t.result(r.resultId)}</code>
+                <code>{t.review(r.review.id)}</code>
                 <code>{r.review.requestId}</code>
-                <code>CI: {r.ci.id || "Not subscribed"}</code>
+                <code>{t.ci(r.ci.id)}</code>
                 <code>{r.ci.requestId}</code>
                 {(r.review.error || r.ci.error) && (
                   <p>{r.review.error || r.ci.error}</p>
@@ -288,7 +378,7 @@ export function DeliveryFlow({
               className="secondary-button"
               onClick={() => setExpanded(!expanded)}
             >
-              Authorize next candidate…
+              {t.authorizeNext}
             </button>
           )}
           {flow.enabled && (
@@ -300,20 +390,20 @@ export function DeliveryFlow({
                 void mutate("delivery_stop", { taskId, flowId: flow.id })
               }
             >
-              Stop automatic delivery
+              {t.stop}
             </button>
           )}
         </>
       ) : (
         page && (
           <>
-            <p>Connect one fixed PR revision to independent review and CI.</p>
+            <p>{t.intro}</p>
             <button
               type="button"
               className="secondary-button"
               onClick={() => setExpanded(!expanded)}
             >
-              Set up delivery…
+              {t.setUp}
             </button>
           </>
         )
@@ -322,13 +412,13 @@ export function DeliveryFlow({
         <div className="delivery-setup">
           {!flow && (
             <label>
-              Pull request
+              {t.pullRequest}
               <select
                 value={linked?.id || ""}
                 onChange={(e) => setLinkId(e.target.value)}
               >
                 <option value="" disabled>
-                  Choose a linked PR
+                  {t.choose}
                 </option>
                 {links.map((l) => (
                   <option key={l.id} value={l.id}>
@@ -339,49 +429,39 @@ export function DeliveryFlow({
             </label>
           )}
           <p>
-            Authorize{" "}
-            <strong>
-              {page.settings.harness} / {page.settings.model}
-            </strong>{" "}
-            for{" "}
-            <code>
-              {short(linked?.snapshot.baseSha)} →{" "}
-              {short(linked?.snapshot.headSha)}
-            </code>
-            .
+            {t.authorize(
+              <strong>
+                {page.settings.harness} / {page.settings.model}
+              </strong>,
+              <code>
+                {short(linked?.snapshot.baseSha, t.unknown)} →{" "}
+                {short(linked?.snapshot.headSha, t.unknown)}
+              </code>,
+            )}
           </p>
           {!flow && (
             <label>
-              Maximum paid review attempts
+              {t.maxRounds}
               <select
                 value={maxRounds}
                 onChange={(e) => setMaxRounds(Number(e.target.value))}
               >
-                <option value={1}>1 review</option>
-                <option value={2}>
-                  Up to 2 reviews · explicit continuation required
-                </option>
+                <option value={1}>{t.oneReview}</option>
+                <option value={2}>{t.twoReviews}</option>
               </select>
             </label>
           )}
           {!fresh && (
-            <p>
-              Refresh the PR in GitHub links above before authorizing this
-              version.
-            </p>
+            <p>{t.refreshFirst}</p>
           )}
-          <p className="delivery-note">
-            Starts after a matching result submission. No automatic fixes, merge
-            or deployment. CI covers the observed GitHub Actions workflows;
-            merge requirements still need a person’s judgment.
-          </p>
+          <p className="delivery-note">{t.note}</p>
           <button
             type="button"
             className="primary-button"
             disabled={busy || !fresh}
             onClick={authorize}
           >
-            {flow ? "Authorize next review candidate" : "Enable this delivery"}
+            {flow ? t.authorizeNextReview : t.enable}
           </button>
         </div>
       )}
