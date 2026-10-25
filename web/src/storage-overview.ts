@@ -44,6 +44,7 @@ export const entryLabels: Record<string, string> = {
   opencode: "OpenCode session databases",
   desktopDownloads: "Desktop app downloads",
   backupOperations: "Record of backups and restores",
+  backupSchedule: "Daily backup schedule",
   earlierDatabaseCopy: "Earlier database copy, kept from a one-time conversion",
   unknown: "Not made by this Core",
 };
