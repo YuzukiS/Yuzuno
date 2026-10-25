@@ -760,3 +760,18 @@ test('the dock keeps its marks while a refresh or a return to the conversation i
     assert.deepEqual(p.errors, []);
   } finally { release(); p.close(); }
 });
+
+test("a review's reasons follow a language change in Jobs too; one this version doesn't know keeps its code (T-189)", async () => {
+  const p = mount(url => url.startsWith('/api/reviews?') ? reviewPage([review('why', 2, { conclusion: 'unknown', reasonCodes: ['coverage_incomplete', 'brand_new_reason'] })]) : page([]));
+  try {
+    await open(p); button(p, 'Reviews').click();
+    await until(() => p.doc.querySelectorAll('.review-jobs .job-row').length === 1);
+    p.doc.querySelector('.review-jobs .job-row').click(); await wait();
+    const reasons = label => [...p.doc.querySelectorAll(`.review-jobs .job-detail [aria-label="${label}"] li`)].map(li => li.textContent);
+    assert.deepEqual(reasons('Review reasons'), ['Review coverage is incomplete', 'Unrecognized review reason: brand_new_reason']);
+    p.window.localStorage.setItem('yuzuno.language', JSON.stringify({ language: 'zh-Hans' }));
+    p.window.dispatchEvent(new p.window.StorageEvent('storage', { key: 'yuzuno.language' })); await wait();
+    assert.deepEqual(reasons('审查原因'), ['审查覆盖不完整', '无法识别的审查原因：brand_new_reason']);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});

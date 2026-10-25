@@ -90,6 +90,7 @@ function useOverflow(active: boolean) {
 /** Linked repositories and their recent activity; a project without any shows nothing. */
 function RepoBlock({ projectId, readOnly }: { projectId: string; readOnly: boolean }) {
   const t = useStrings(homeText);
+  const language = useLanguage();
   const [page, setPage] = useState<LinkedRepositories | null>(null);
   const [manage, setManage] = useState(false);
   const [collapsed, toggleFold] = useCardFold(`repos:${projectId}`);
@@ -124,7 +125,7 @@ function RepoBlock({ projectId, readOnly }: { projectId: string; readOnly: boole
         <button type="button" className="quiet-button" aria-expanded={manage} onClick={() => setManage((v) => !v)}>
           {manage ? t.hideRepositoryDetails : t.repositoryDetails}
         </button>
-        {manage && <GitHubLinks projectId={projectId} disabled={readOnly} />}
+        {manage && <GitHubLinks projectId={projectId} disabled={readOnly} language={language} />}
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText } from "./api";
+import { strings, useStrings } from "./i18n";
 import "./pr-operations.css";
 
 type Remote = {
@@ -54,15 +55,120 @@ type Page = {
   nextBefore: number | null;
 };
 const active = (r: Operation) => ["accepted", "running"].includes(r.status);
-const labels: Record<string, string> = {
-  accepted: "Accepted",
-  running: "Working",
-  completed: "Completed",
-  failed: "Failed",
-  unknown: "Outcome unconfirmed",
-  needs_selection: "Choose a matching PR",
-  link_pending: "PR confirmed · link needs repair",
-};
+// A task's PR operations in the interface language (T-189). Repositories,
+// branches, PR titles and bodies, the action, GitHub's PR state, the outcome,
+// Core's phase, IDs, names and errors are shown as they are.
+const operationsText = strings({
+  states: {
+    accepted: "Accepted",
+    running: "Working",
+    completed: "Completed",
+    failed: "Failed",
+    unknown: "Outcome unconfirmed",
+    needs_selection: "Choose a matching PR",
+    link_pending: "PR confirmed · link needs repair",
+  } as Record<string, string>,
+  region: "PR operations",
+  title: "Create or update a PR",
+  hint: "Use pushed branches in the same linked repository. Existing matching PRs are reused. Completion and task association appear here; reviews, CI and merge remain separate.",
+  action: "Action",
+  create: "Create or reuse PR",
+  updateText: "Update title and body",
+  repository: "PR repository",
+  chooseRepository: "Choose repository",
+  linkFirst: "Link a repository in the Project settings first.",
+  base: "Base branch",
+  head: "Head branch",
+  number: "PR number",
+  numberOptional: "(optional existing selection)",
+  numberRequired: "(required)",
+  prTitle: "PR title",
+  prBody: "PR body",
+  draft: "Create as draft",
+  updateNote: "Updates preserve the PR’s draft state and branches. Base/head must match the selected PR.",
+  recipient: "PR result recipient",
+  taskOnly: "Show in this task only",
+  submitting: "Submitting…",
+  update: "Update PR",
+  accepted: (id: string, state: string) => `Operation ${id} · ${state}. Core continues after this window closes.`,
+  attempt: (attempt: number) => `Attempt ${attempt}`,
+  isDraft: "Draft",
+  association: (linked: boolean) => `Task association at completion: ${linked ? "linked" : "not linked"}`,
+  observed: (head: string, base: string) => `Observed head ${head} · base ${base}`,
+  taskLink: (error: string) => `Task link: ${error}`,
+  recorded: (name: string) => `Result recorded in mailbox for ${name}`,
+  resultRecipient: (name: string) => `Result recipient: ${name}`,
+  shownHere: "Result shown in this task only",
+  operationId: (id: string) => `Operation ID: ${id}`,
+  check: "Check outcome / repair link",
+  select: (number: number, title: string) => `Select #${number}: ${title}`,
+  history: "Submitted content and recovery history",
+  predates: "This detail predates the latest operation result. Refresh operation detail to load it.",
+  submittedTitle: "Submitted title",
+  submittedBody: "Submitted body",
+  empty: "(empty)",
+  observedBody: "Last observed PR body",
+  writeReply: (reply: string) => `Write reply: ${reply}`,
+  attemptOf: (attempt: number, state: string) => `Attempt ${attempt}: ${state}`,
+  refresh: "Refresh operation detail",
+  loading: "Loading…",
+  older: "Older PR operations",
+}, {
+  states: {
+    accepted: "已接受",
+    running: "进行中",
+    completed: "已完成",
+    failed: "失败",
+    unknown: "结果未确认",
+    needs_selection: "请选择匹配的 PR",
+    link_pending: "PR 已确认 · 链接需要修复",
+  },
+  region: "PR 操作",
+  title: "创建或更新 PR",
+  hint: "使用同一已链接仓库中已推送的分支。会复用已有的匹配 PR。完成情况和任务关联显示在这里；审查、CI 和合并仍是分开的。",
+  action: "操作",
+  create: "创建或复用 PR",
+  updateText: "更新标题和正文",
+  repository: "PR 仓库",
+  chooseRepository: "选择仓库",
+  linkFirst: "请先在项目设置中链接一个仓库。",
+  base: "Base 分支",
+  head: "Head 分支",
+  number: "PR 编号",
+  numberOptional: "（可选，选择已有 PR）",
+  numberRequired: "（必填）",
+  prTitle: "PR 标题",
+  prBody: "PR 正文",
+  draft: "创建为草稿",
+  updateNote: "更新会保留 PR 的草稿状态和分支。Base/head 必须与所选 PR 一致。",
+  recipient: "PR 结果的接收方",
+  taskOnly: "只在此任务中显示",
+  submitting: "正在提交…",
+  update: "更新 PR",
+  accepted: (id, state) => `操作 ${id} · ${state}。关闭此窗口后 Core 会继续。`,
+  attempt: (attempt) => `第 ${attempt} 次尝试`,
+  isDraft: "草稿",
+  association: (linked) => `完成时的任务关联：${linked ? "已关联" : "未关联"}`,
+  observed: (head, base) => `观察到的 head ${head} · base ${base}`,
+  taskLink: (error) => `任务链接：${error}`,
+  recorded: (name) => `结果已记入 ${name} 的邮箱`,
+  resultRecipient: (name) => `结果接收方：${name}`,
+  shownHere: "结果只在此任务中显示",
+  operationId: (id) => `操作 ID：${id}`,
+  check: "检查结果 / 修复链接",
+  select: (number, title) => `选择 #${number}：${title}`,
+  history: "提交的内容与恢复记录",
+  predates: "此详情早于最新的操作结果。刷新操作详情即可加载。",
+  submittedTitle: "提交的标题",
+  submittedBody: "提交的正文",
+  empty: "（空）",
+  observedBody: "上次观察到的 PR 正文",
+  writeReply: (reply) => `写入回复：${reply}`,
+  attemptOf: (attempt, state) => `第 ${attempt} 次尝试：${state}`,
+  refresh: "刷新操作详情",
+  loading: "正在加载…",
+  older: "更早的 PR 操作",
+});
 const initial = {
   action: "create",
   repositoryId: "",
@@ -90,11 +196,13 @@ export function PrOperations({
   disabled: boolean;
   onLinked?: () => void;
 }) {
+  const t = useStrings(operationsText);
   const [page, setPage] = useState<Page | null>(null);
   const [form, setForm] = useState(initial);
   const [peers, setPeers] = useState<{ id: string; name: string }[]>([]);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  // The accepted operation, worded when shown, so a language change rewords it.
+  const [notice, setNotice] = useState<{ id: string; status: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [details, setDetails] = useState<Record<string, Operation>>({});
   const generation = useRef(0);
@@ -183,7 +291,7 @@ export function PrOperations({
     setForm(initial);
     setPeers([]);
     setError("");
-    setNotice("");
+    setNotice(null);
     setBusy(false);
     setDetails({});
     void load();
@@ -217,7 +325,7 @@ export function PrOperations({
     pending.current.set(key, requestId);
     setBusy(true);
     setError("");
-    setNotice("");
+    setNotice(null);
     const result = await request<Operation>(path, {
       method: "POST",
       body: JSON.stringify({ ...payload, requestId }),
@@ -225,9 +333,7 @@ export function PrOperations({
     if (!mounted.current || stamp !== generation.current) return;
     if (result) {
       pending.current.delete(key);
-      setNotice(
-        `Operation ${result.id} · ${labels[result.status] || result.status}. Core continues after this window closes.`,
-      );
+      setNotice({ id: result.id, status: result.status });
     }
     await load();
     if (mounted.current && stamp === generation.current) setBusy(false);
@@ -246,13 +352,9 @@ export function PrOperations({
   const update = (key: keyof typeof initial, value: string | boolean) =>
     setForm((old) => ({ ...old, [key]: value }));
   return (
-    <section className="pr-operations" aria-label="PR operations">
-      <h4>Create or update a PR</h4>
-      <p className="github-hint">
-        Use pushed branches in the same linked repository. Existing matching PRs
-        are reused. Completion and task association appear here; reviews, CI and
-        merge remain separate.
-      </p>
+    <section className="pr-operations" aria-label={t.region}>
+      <h4>{t.title}</h4>
+      <p className="github-hint">{t.hint}</p>
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -272,25 +374,25 @@ export function PrOperations({
       >
         <fieldset disabled={disabled || busy || !page}>
           <label>
-            Action
+            {t.action}
             <select
-              aria-label="Action"
+              aria-label={t.action}
               value={form.action}
               onChange={(e) => update("action", e.target.value)}
             >
-              <option value="create">Create or reuse PR</option>
-              <option value="update">Update title and body</option>
+              <option value="create">{t.create}</option>
+              <option value="update">{t.updateText}</option>
             </select>
           </label>
           <label>
-            PR repository
+            {t.repository}
             <select
-              aria-label="PR repository"
+              aria-label={t.repository}
               required
               value={form.repositoryId}
               onChange={(e) => update("repositoryId", e.target.value)}
             >
-              <option value="">Choose repository</option>
+              <option value="">{t.chooseRepository}</option>
               {page?.repositories.map((repo) => (
                 <option key={repo.id} value={repo.id}>
                   {repo.fullName}
@@ -299,13 +401,11 @@ export function PrOperations({
             </select>
           </label>
           {page && !page.repositories.length && (
-            <p className="github-hint">
-              Link a repository in the Project settings first.
-            </p>
+            <p className="github-hint">{t.linkFirst}</p>
           )}
           <div className="pr-operation-fields">
             <label>
-              Base branch
+              {t.base}
               <input
                 required
                 value={form.base}
@@ -314,7 +414,7 @@ export function PrOperations({
               />
             </label>
             <label>
-              Head branch
+              {t.head}
               <input
                 required
                 value={form.head}
@@ -324,10 +424,8 @@ export function PrOperations({
             </label>
           </div>
           <label>
-            PR number{" "}
-            {form.action === "create"
-              ? "(optional existing selection)"
-              : "(required)"}
+            {t.number}{" "}
+            {form.action === "create" ? t.numberOptional : t.numberRequired}
             <input
               type="number"
               min="1"
@@ -339,7 +437,7 @@ export function PrOperations({
             />
           </label>
           <label>
-            PR title
+            {t.prTitle}
             <input
               required
               value={form.title}
@@ -348,7 +446,7 @@ export function PrOperations({
             />
           </label>
           <label>
-            PR body
+            {t.prBody}
             <textarea
               rows={5}
               value={form.body}
@@ -363,22 +461,19 @@ export function PrOperations({
                 checked={form.draft}
                 onChange={(e) => update("draft", e.target.checked)}
               />
-              Create as draft
+              {t.draft}
             </label>
           ) : (
-            <p className="github-hint">
-              Updates preserve the PR’s draft state and branches. Base/head must
-              match the selected PR.
-            </p>
+            <p className="github-hint">{t.updateNote}</p>
           )}
           <label>
-            PR result recipient
+            {t.recipient}
             <select
-              aria-label="PR result recipient"
+              aria-label={t.recipient}
               value={form.notifyAgentId}
               onChange={(e) => update("notifyAgentId", e.target.value)}
             >
-              <option value="">Show in this task only</option>
+              <option value="">{t.taskOnly}</option>
               {peers.map((peer) => (
                 <option key={peer.id} value={peer.id}>
                   {peer.name}
@@ -397,10 +492,10 @@ export function PrOperations({
             }
           >
             {busy
-              ? "Submitting…"
+              ? t.submitting
               : form.action === "create"
-                ? "Create or reuse PR"
-                : "Update PR"}
+                ? t.create
+                : t.update}
           </button>
         </fieldset>
       </form>
@@ -411,7 +506,7 @@ export function PrOperations({
       )}
       {notice && (
         <p className="github-notice" role="status">
-          {notice}
+          {t.accepted(notice.id, t.states[notice.status] || notice.status)}
         </p>
       )}
       {page?.operations.map((r) => (
@@ -420,13 +515,13 @@ export function PrOperations({
             <strong>
               {r.repository} · {r.input.action}
             </strong>
-            <span>{labels[r.status] || r.status}</span>
+            <span>{t.states[r.status] || r.status}</span>
           </header>
           <p>
             {r.input.head} → {r.input.base}
           </p>
           <small>
-            {new Date(r.createdAt).toLocaleString()} · Attempt {r.attempt}
+            {new Date(r.createdAt).toLocaleString()} · {t.attempt(r.attempt)}
           </small>
           {active(r) && <p role="status">{r.phase}</p>}
           {r.remote && (
@@ -439,29 +534,27 @@ export function PrOperations({
                 >
                   #{r.remote.number} {r.remote.title}
                 </a>{" "}
-                · {r.remote.draft ? "Draft" : r.remote.state}
+                · {r.remote.draft ? t.isDraft : r.remote.state}
                 {r.outcome ? ` · ${r.outcome}` : ""}
               </p>
-              <p>
-                Task association at completion:{" "}
-                {r.linked ? "linked" : "not linked"}
-              </p>
+              <p>{t.association(r.linked)}</p>
               <small>
-                Observed head {r.remote.headSha.slice(0, 8)} · base{" "}
-                {r.remote.baseSha.slice(0, 8)}
+                {t.observed(r.remote.headSha.slice(0, 8), r.remote.baseSha.slice(0, 8))}
               </small>
             </>
           )}
           {r.error && <p className="github-error">{r.error}</p>}
           {r.associationError && (
-            <p className="github-error">Task link: {r.associationError}</p>
+            <p className="github-error">{t.taskLink(r.associationError)}</p>
           )}
           <p className="github-hint">
             {r.notificationRecipient
-              ? `${r.notificationId ? "Result recorded in mailbox for" : "Result recipient:"} ${r.notificationRecipient.name}`
-              : "Result shown in this task only"}
+              ? r.notificationId
+                ? t.recorded(r.notificationRecipient.name)
+                : t.resultRecipient(r.notificationRecipient.name)
+              : t.shownHere}
           </p>
-          <small>Operation ID: {r.id}</small>
+          <small>{t.operationId(r.id)}</small>
           {!active(r) && r.status !== "completed" && (
             <div className="pr-operation-actions">
               <button
@@ -470,7 +563,7 @@ export function PrOperations({
                 disabled={disabled || busy}
                 onClick={() => void check(r)}
               >
-                Check outcome / repair link
+                {t.check}
               </button>
               {r.candidates.map((candidate) => (
                 <button
@@ -480,7 +573,7 @@ export function PrOperations({
                   disabled={disabled || busy}
                   onClick={() => void check(r, candidate.number)}
                 >
-                  Select #{candidate.number}: {candidate.title}
+                  {t.select(candidate.number, candidate.title)}
                 </button>
               ))}
             </div>
@@ -490,32 +583,29 @@ export function PrOperations({
               if (event.currentTarget.open) void original(r.id);
             }}
           >
-            <summary>Submitted content and recovery history</summary>
+            <summary>{t.history}</summary>
             {details[r.id] ? (
               <>
                 {(details[r.id].attempt !== r.attempt ||
                   details[r.id].status !== r.status) && (
-                  <p className="github-stale">
-                    This detail predates the latest operation result. Refresh
-                    operation detail to load it.
-                  </p>
+                  <p className="github-stale">{t.predates}</p>
                 )}
-                <strong>Submitted title</strong>
+                <strong>{t.submittedTitle}</strong>
                 <p>{details[r.id].input.title}</p>
-                <strong>Submitted body</strong>
-                <pre>{details[r.id].input.body || "(empty)"}</pre>
+                <strong>{t.submittedBody}</strong>
+                <pre>{details[r.id].input.body || t.empty}</pre>
                 {details[r.id].remote && (
                   <>
-                    <strong>Last observed PR body</strong>
-                    <pre>{details[r.id].remote?.body || "(empty)"}</pre>
+                    <strong>{t.observedBody}</strong>
+                    <pre>{details[r.id].remote?.body || t.empty}</pre>
                   </>
                 )}
                 {details[r.id].writeError && (
-                  <p>Write reply: {details[r.id].writeError}</p>
+                  <p>{t.writeReply(details[r.id].writeError!)}</p>
                 )}
                 {details[r.id].history?.map((h) => (
                   <p key={h.attempt}>
-                    Attempt {h.attempt}: {labels[h.status] || h.status} ·{" "}
+                    {t.attemptOf(h.attempt, t.states[h.status] || h.status)} ·{" "}
                     {new Date(h.finishedAt).toLocaleString()}
                     {h.error ? ` · ${h.error}` : ""}
                   </p>
@@ -525,11 +615,11 @@ export function PrOperations({
                   className="secondary-button"
                   onClick={() => void original(r.id)}
                 >
-                  Refresh operation detail
+                  {t.refresh}
                 </button>
               </>
             ) : (
-              "Loading…"
+              t.loading
             )}
           </details>
         </article>
@@ -540,7 +630,7 @@ export function PrOperations({
           className="secondary-button"
           onClick={() => void load(page.nextBefore!)}
         >
-          Older PR operations
+          {t.older}
         </button>
       )}
     </section>

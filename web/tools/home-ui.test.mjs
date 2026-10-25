@@ -1697,3 +1697,26 @@ test("a Home image whose author is gone is never offered to another Agent: the u
     p.close();
   }
 });
+
+// T-189: a project's repository details on Home follow the interface
+// language, changed in another window; the repository's name stays.
+test("Home's repository details follow a language change; the repository stays as named and nothing is read again (T-189)", async () => {
+  const p = await mount({ linked: [repo] });
+  try {
+    await waitFor(() => p.panel("p-app").querySelector(".home-repos .repo-activity"), "the Repositories block is read");
+    [...p.panel("p-app").querySelectorAll(".home-repos button")].find((b) => b.textContent === "Repository details…").click();
+    await waitFor(() => p.panel("p-app").querySelector('.home-repos [aria-label="GitHub repositories"] .github-entry'), "the repositories are listed");
+    const reads = () => p.calls.filter((c) => c.url.endsWith("/api/collaboration/github_repositories")).length;
+    const before = reads();
+    p.w.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+    p.w.dispatchEvent(new p.w.StorageEvent("storage", { key: "yuzuno.language" }));
+    await waitFor(() => p.panel("p-app").querySelector('.home-repos [aria-label="GitHub 仓库"]'), "the details follow the language");
+    const details = p.panel("p-app").querySelector('.home-repos [aria-label="GitHub 仓库"]');
+    assert.equal(details.querySelector("h4").textContent, "仓库");
+    assert.ok(details.textContent.includes("链接此项目使用的仓库。一个仓库可以属于多个项目。"));
+    assert.ok(details.querySelector(".github-entry").textContent.includes("acme/app"), "the repository as named");
+    assert.equal(reads(), before, "no github_repositories read again");
+  } finally {
+    p.close();
+  }
+});

@@ -346,3 +346,87 @@ test("refresh covers the loaded older range and keeps expanded evidence and pagi
     p.close();
   }
 });
+
+// T-189: the operations follow the interface language, changed in another
+// window. Branches, titles, bodies, GitHub's and Core's words stay as written.
+const speak = (p, language) => {
+  p.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+  p.window.dispatchEvent(new p.window.StorageEvent("storage", { key: "yuzuno.language" }));
+};
+const valueOf = (p, name) =>
+  [...p.doc.querySelectorAll("label")].find((l) => l.textContent.startsWith(name))?.querySelector("input,textarea,select")?.value;
+test("operations follow a language change; the form, open history, a retried request and the notice stay, and nothing is asked again", async () => {
+  let attempts = 0;
+  const waiting = {
+    ...operation, id: "operation-2", cursor: 2, status: "needs_selection", linked: false, outcome: "multiple_matches",
+    candidates: [{ ...operation.remote, number: 12, title: "Ship feature again" }],
+    associationError: "task link refused: archived", notificationRecipient: null, notificationId: null,
+  };
+  const detail = { ...waiting, input: { ...waiting.input, body: "" }, writeError: "HTTP 502 from GitHub",
+    history: [{ attempt: 1, status: "failed", finishedAt: new Date().toISOString(), error: "gh: timeout" }] };
+  const p = mount((url, body) => {
+    if (url.includes("peers_list")) return { peers: [{ id: "dev", name: "Dev" }] };
+    if (url === "/api/pr-operations" && body) {
+      if (++attempts === 1) return new Error("Response lost");
+      return { ...operation, id: "operation-3", status: "accepted", requestId: body.requestId };
+    }
+    if (url.startsWith("/api/pr-operations/operation-2?")) return detail;
+    return page([waiting, operation]);
+  });
+  const history = () => article(p, "operation-2").querySelector("details");
+  try {
+    p.window.renderOperations({ taskId: "T-1", disabled: false });
+    await waitFor(() => p.doc.querySelector("fieldset") && !p.doc.querySelector("fieldset").disabled && article(p, "operation-2")
+      && p.doc.querySelector('select[aria-label="PR result recipient"] option[value="dev"]'));
+    field(p, "PR repository", "7");
+    field(p, "Head branch", "feature/zh");
+    field(p, "PR title", "中文标题 kept");
+    field(p, "PR body", "Body as typed");
+    field(p, "PR result recipient", "dev");
+    history().open = true;
+    await waitFor(() => history().textContent.includes("HTTP 502 from GitHub"));
+    await tick();
+    submit(p);
+    await waitFor(() => p.doc.querySelector('[role="alert"]') && !p.doc.querySelector("fieldset").disabled);
+    const before = p.calls.length;
+    speak(p, "zh-Hans");
+    await tick();
+    await tick();
+    const section = p.doc.querySelector(".pr-operations");
+    assert.equal(section.getAttribute("aria-label"), "PR 操作");
+    const text = section.textContent;
+    for (const words of [
+      "创建或更新 PR", "请选择匹配的 PR", "已完成", "第 1 次尝试", "完成时的任务关联：未关联", "观察到的 head bbbbbbbb · base aaaaaaaa",
+      "任务链接：task link refused: archived", "结果只在此任务中显示", "结果已记入 Dev 的邮箱", "操作 ID：operation-2",
+      "提交的内容与恢复记录", "提交的标题", "（空）", "写入回复：HTTP 502 from GitHub", "第 1 次尝试：失败 · ", "创建为草稿",
+    ]) assert.ok(text.includes(words), words);
+    // As written: the repository, action, branches, PR title, GitHub's outcome and Core's error.
+    for (const kept of ["owner/repo · create", "feature → main", "#11 Ship feature", "· 草稿 · multiple_matches", "gh: timeout"])
+      assert.ok(text.includes(kept), kept);
+    assert.ok(button(p, "检查结果 / 修复链接"));
+    assert.ok(button(p, "选择 #12：Ship feature again"));
+    assert.ok(button(p, "创建或复用 PR"));
+    assert.equal(valueOf(p, "PR 仓库"), "7");
+    assert.equal(valueOf(p, "Head 分支"), "feature/zh");
+    assert.equal(valueOf(p, "PR 标题"), "中文标题 kept");
+    assert.equal(valueOf(p, "PR 正文"), "Body as typed");
+    assert.equal(valueOf(p, "PR 结果的接收方"), "dev");
+    assert.ok(history().open, "the history stays open");
+    // Nothing asked of Core: no pr-operations list, detail, start or check, no peers_list.
+    assert.deepEqual(p.calls.slice(before).map((c) => c.url), []);
+    submit(p);
+    await waitFor(() => p.doc.querySelector(".github-notice"));
+    const starts = p.calls.filter((c) => c.url === "/api/pr-operations");
+    assert.equal(starts.length, 2);
+    assert.equal(starts[1].body.requestId, starts[0].body.requestId, "the same request, asked again");
+    assert.equal(starts[1].body.title, "中文标题 kept");
+    assert.equal(p.doc.querySelector(".github-notice").textContent, "操作 operation-3 · 已接受。关闭此窗口后 Core 会继续。");
+    speak(p, "en");
+    await tick();
+    assert.equal(p.doc.querySelector(".github-notice").textContent, "Operation operation-3 · Accepted. Core continues after this window closes.");
+    assert.ok(history().open);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
