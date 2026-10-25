@@ -1,10 +1,11 @@
 import { returnSends, type SendKey } from "./device-preferences";
 import { strings, type Language } from "./i18n";
+import { defaultShortcutKeys, type Rebindable, type ShortcutKeys } from "./shortcut-keys";
 
 /**
  * The keyboard shortcuts Yuzuno has (T-189), for its help: only those the
  * code binds, where they are bound. Each entry names the handler that
- * implements it. They cannot be changed yet.
+ * implements it. Three take another letter on this device (shortcut-keys.ts).
  */
 export type Shortcut = {
   /** Keys pressed together, each shown as its own key; with `either`, keys
@@ -17,6 +18,8 @@ export type Shortcut = {
   action: string;
   /** Where it is handled, for whoever changes it. */
   source: string;
+  /** One this device may give another letter: its key here is the one in effect. */
+  rebind?: Rebindable;
 };
 export type ShortcutGroup = { title: string; note?: string; shortcuts: Shortcut[] };
 
@@ -86,7 +89,7 @@ const text = strings({
   undoMark: "Point & Fix：撤销上一个标记",
 });
 
-export function shortcutGroups({ modifier, sendKey, touch, desktopApp, language = "en" }: {
+export function shortcutGroups({ modifier, sendKey, touch, desktopApp, keys = defaultShortcutKeys, language = "en" }: {
   /** ⌘ on Apple devices, Ctrl elsewhere (api.ts). */
   modifier: string;
   sendKey: SendKey;
@@ -94,6 +97,8 @@ export function shortcutGroups({ modifier, sendKey, touch, desktopApp, language 
   touch: boolean;
   /** The desktop app, not a browser. */
   desktopApp: boolean;
+  /** This device's letters for the three it may change. */
+  keys?: ShortcutKeys;
   language?: Language;
 }): ShortcutGroup[] {
   const send = returnSends(sendKey, touch);
@@ -102,8 +107,8 @@ export function shortcutGroups({ modifier, sendKey, touch, desktopApp, language 
     {
       title: t.anywhere,
       shortcuts: [
-        { keys: [modifier, "K"], action: t.find, source: "App.tsx" },
-        { keys: [modifier, "N"], action: t.newAgent, source: "App.tsx" },
+        { keys: [modifier, keys.find], action: t.find, source: "App.tsx", rebind: "find" },
+        { keys: [modifier, keys.newAgent], action: t.newAgent, source: "App.tsx", rebind: "newAgent" },
         { keys: ["Esc"], action: t.interrupt, source: "App.tsx" },
         ...(desktopApp ? [{ keys: [modifier, ","], action: t.connection, source: "App.tsx" }] : []),
       ],
@@ -128,7 +133,7 @@ export function shortcutGroups({ modifier, sendKey, touch, desktopApp, language 
     {
       title: t.reading,
       shortcuts: [
-        { keys: [modifier, "F"], action: t.search, source: "ConversationSearch.tsx" },
+        { keys: [modifier, keys.search], action: t.search, source: "ConversationSearch.tsx", rebind: "search" },
         { keys: ["↑", "↓"], either: true, action: t.turnsMove, source: "TurnNavigator.tsx" },
         { keys: ["Home", "End"], either: true, action: t.turnsEnds, source: "TurnNavigator.tsx" },
         { keys: ["Return"], action: t.turnsGo, source: "TurnNavigator.tsx", native: true },
