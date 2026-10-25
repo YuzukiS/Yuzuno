@@ -4,8 +4,8 @@
 //  - en-US: English as before; 简体中文 turns Settings' dialog, categories,
 //    directory and search, and the Language, Sending messages, Clock & time
 //    zone and Keyboard shortcuts pages Chinese at once; key names, Agent
-//    names and time zones stay as written; Notifications, not translated
-//    yet, stays English with its save line; the clock format and time zone are
+//    names and time zones stay as written; Workspace service, not translated
+//    yet, stays English; the clock format and time zone are
 //    left as they were; search finds entries by English or Chinese words;
 //  - a reload keeps it; a choice the browser refuses applies in this window,
 //    is said not saved in Chinese, and is gone after a reload; Restore
@@ -164,8 +164,9 @@ try {
     const language = await editorState(box);
     assert.deepEqual(language, { lang: "zh-Hans", heading: "界面语言", status: "已保存到此设备", alert: null, checked: ["zh-Hans"] });
     const coverage = await box.locator(".input-preferences-fixed").textContent();
-    assert.match(coverage, /“界面语言”、“发送消息”、“时钟与时区”、“键盘快捷键”、“主题、文字与布局”、“把偏好移到另一台设备”/);
+    assert.match(coverage, /“界面语言”、“发送消息”、“时钟与时区”、“键盘快捷键”、“主题、文字与布局”、“把偏好移到另一台设备”、“通知偏好”、“关于与帮助”/);
     assert.match(coverage, /仍为英文/);
+    assert.match(coverage, /系统通知（包括测试通知）也仍为英文/);
     assert.equal(await stored(page, "yuzuno.language"), '{"language":"zh-Hans"}');
     assert.equal(await stored(page, "yuzuno.time"), TIME, "the clock format and time zone are left as they were");
     await page.screenshot({ path: join(output, "language-zh.png") });
@@ -205,15 +206,14 @@ try {
     assert.deepEqual(agentsListed, ["选择一个 Agent…", "Mori"], "an Agent's name stays as it was written");
     check("Clock & time zone, Sending messages and Keyboard shortcuts are in Chinese; key names, Agent names and time zones stay as written", { help });
 
-    // Notifications: not translated in this version, wholly English.
-    await page.locator('[role="tab"]', { hasText: "通知与提醒" }).click();
-    box = page.locator("#settings-editor-notifications");
+    // Workspace service (Versions & updates): not translated in this version, wholly English.
+    await page.locator('[role="tab"]', { hasText: "更新与关于" }).click();
+    box = page.locator("#settings-editor-updates");
     await box.waitFor({ timeout: 10_000 });
     const untranslated = await editorState(box);
     assert.equal(untranslated.lang, "en");
-    assert.equal(untranslated.heading, "Notifications");
-    assert.match(untranslated.status, /^Using /, "its save line too");
-    check("Notifications, not translated in this version, stays English with its save line, marked lang=en", { untranslated });
+    assert.equal(untranslated.heading, "Workspace service");
+    check("Workspace service, not translated in this version, stays English, marked lang=en", { untranslated });
 
     // Kept after a reload.
     await closeSettings(page);
