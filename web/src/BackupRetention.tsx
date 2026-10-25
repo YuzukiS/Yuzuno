@@ -45,7 +45,9 @@ type Preview = {
   budget?: Budget;
 };
 const GIB = 1024 ** 3;
-const groups: Verdict[] = ["keep", "remove", "protected", "unknown"];
+/** The verdicts listed, in order; an entry that is not a backup is only counted. */
+type Listed = Exclude<Verdict, "ignored">;
+const groups: Listed[] = ["keep", "remove", "protected", "unknown"];
 
 // This part's own words (T-189). Folders, names, paths, hashes, sizes, times
 // and what Core says (a reason, a budget's reason, how sizes are told) come
@@ -56,7 +58,7 @@ const text = strings({
     over: "The space budget can't be reached",
     unknown: "Whether the space budget is met can't be told",
   } as Record<Budget["state"], string>,
-  groups: { keep: "Kept", remove: "Could be removed", protected: "Protected", unknown: "Can't be judged" } as Record<Verdict, string>,
+  groups: { keep: "Kept", remove: "Could be removed", protected: "Protected", unknown: "Can't be judged" } as Record<Listed, string>,
   section: "Keep the latest backups",
   help:
     "What keeping only the latest backups in one folder would keep, and what it could remove. Here a backup is removed only when you confirm that one; the daily backup's Automatic removal, when you turn it on above, is its own setting.",
