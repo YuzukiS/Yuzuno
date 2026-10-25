@@ -33,6 +33,7 @@ import { HistoryComposition } from "./HistoryComposition";
 import { DraftExport } from "./DraftExport";
 import { StorageOverview } from "./StorageOverview";
 import { ReviewSettings } from "./ReviewSettings";
+import { AutoContinueDefault } from "./QuotaResume";
 import { AgentDefaults } from "./AgentDefaults";
 import { HomePresentationSettings } from "./HomePresentationSettings";
 import { NotificationSettings } from "./NotificationSettings";
@@ -1015,6 +1016,7 @@ export function WorkspaceUpdates({
           {tab === "transfer" && <DeviceTransferSection />}
           {tab === "agent-defaults" && <AgentDefaults active={open} />}
           {tab === "review" && <ReviewSettings active={open} />}
+          {tab === "auto-continue" && <AutoContinueDefault active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
           {tab === "notifications" && <NotificationSettings />}
           {tab === "backup" && <WorkspaceBackup active={open && visible} />}
