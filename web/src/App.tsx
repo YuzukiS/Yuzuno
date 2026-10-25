@@ -621,6 +621,9 @@ export function App() {
   const browserOffline = useBrowserOffline();
   const language = useLanguage();
   const shell = shellText(language);
+  // For the callbacks kept across renders: the words of the language shown now.
+  const shellNow = useRef(shell);
+  shellNow.current = shell;
   const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode, browserOffline, language);
   const agent = workspace?.agents.find((a) => a.id === selected);
   const inspectorShown = (phone ? phoneInspector : inspector) && !!agent && !homeOpen;
@@ -1211,7 +1214,7 @@ export function App() {
     setActionError("");
     try {
       await interruptAgent(selected);
-      setNotice("Interrupt requested. Your conversation is preserved.");
+      setNotice(shellNow.current.interruptHere);
       refresh();
     } catch (e) {
       setActionError(errorText(e));
@@ -1493,12 +1496,12 @@ export function App() {
   function openMessageLink(link: MessageLink) {
     if (!workspace) { setIncomingLink({ kind: "message", ...link }); return; }
     if (link.workspaceId !== workspaceId) {
-      setNotice("This link is to a message in another Workspace. Open it in the Yuzuno that holds that Workspace.");
+      setNotice(shell.linkOtherMessage);
       return;
     }
     const owner = workspace.agents.find((a) => a.id === link.agentId);
     if (!owner) {
-      setNotice("The Agent this link points to is no longer in this Workspace.");
+      setNotice(shell.linkAgentGone);
       return;
     }
     openCatchupSource(
@@ -1516,16 +1519,16 @@ export function App() {
   function openAgentLink(link: AgentLink) {
     if (!workspace) { setIncomingLink({ kind: "agent", ...link }); return; }
     if (link.workspaceId !== workspaceId) {
-      setNotice("This link is to an Agent in another Workspace. Open it in the Yuzuno that holds that Workspace.");
+      setNotice(shell.linkOtherAgent);
       return;
     }
     const owner = workspace.agents.find((a) => a.id === link.agentId);
     if (!owner) {
-      setNotice("The Agent this link points to is no longer in this Workspace.");
+      setNotice(shell.linkAgentGone);
       return;
     }
     openFromList(owner.id);
-    if (owner.closedAt) setNotice(`${owner.name} is closed. Its conversation is shown as it was left; nothing was reopened.`);
+    if (owner.closedAt) setNotice(shell.shownClosed(owner.name));
   }
   function openAppLink(link: AppLink) {
     if (link.kind === "agent") openAgentLink(link);
@@ -1836,7 +1839,7 @@ export function App() {
         if (control.args) throw new Error("Codex's own compaction takes no instructions. Send /compact alone; your draft is kept.");
         await post(`/agents/${encodeURIComponent(target)}/compact`);
         clearIfUnchanged(target, sentDraft);
-        setNotice("Codex accepted /compact. Its compaction shows in this conversation when it runs; until then nothing else is sent.");
+        setNotice(shell.compactAccepted);
         refresh();
         return;
       }
@@ -1853,7 +1856,7 @@ export function App() {
   }
   function reviewStarted(agentId: string, sentDraft: ComposerDraft) {
     clearIfUnchanged(agentId, sentDraft);
-    setNotice("Codex started its review as a turn in this conversation. Its findings show here when it ends.");
+    setNotice(shell.reviewStarted);
     refresh();
   }
   function holdResultReading() {
@@ -1865,7 +1868,7 @@ export function App() {
     const target = selected;
     if (composer.current) composer.current.append(text);
     else setDraft(target, appendDraft(draft, text));
-    setNotice("Added to your draft. Send when ready.");
+    setNotice(shell.addedToDraft);
   }
   // Stable callbacks for memoized Turns that always reach the latest handlers.
   const turnHandlers = useRef({ openFile, holdResultReading, appendToDraft, submitMessage });
@@ -1881,7 +1884,7 @@ export function App() {
   );
   const rewindDraft = useCallback((agentId: string, text: string) => {
     setDraft(agentId, current => appendDraft(current, text));
-    setNotice("Rewind input saved to this Agent’s draft. Send when ready.");
+    setNotice(shellNow.current.rewindSaved);
   }, [setDraft]);
   /**
    * Send to Agent (T-152): the menu and a drop on the rail both end here. It
@@ -1970,7 +1973,7 @@ export function App() {
     }
     selectAgent(targetId);
     requestAnimationFrame(() => composer.current?.focus());
-    setNotice(`Added the annotated image and notes to ${target.name}’s draft. Edit it, then send.`);
+    setNotice(shell.annotatedAdded(target.name));
     return null;
   }
   function getDraftImages(targetId: string) {
@@ -2024,7 +2027,7 @@ export function App() {
       ? request.params.turnId
       : currentDetail?.turns.find(turn => turn.items.some(item => item.id === itemId))?.id;
     if (!turnId) {
-      setNotice("This request has no turn reference, so its proposed changes cannot be located. Check the request details.");
+      setNotice(shell.noTurnReference);
       return;
     }
     showConversationSource({ turnId, itemId }, true);
@@ -2038,7 +2041,7 @@ export function App() {
       });
       refresh();
       setReadActionsOpen(false);
-      setNotice("Conversation marked as read. Pending requests stay open.");
+      setNotice(shell.markedRead);
     } catch (e) {
       throw e;
     }
@@ -2064,9 +2067,7 @@ export function App() {
         setAgentScope(next?.closedAt ? "closed" : "active");
         if (!next && remaining.length) setHomeOpen(true);
       }
-      setNotice(
-        `${agent.name} was deleted. Project files and the original session were kept.`,
-      );
+      setNotice(shell.deleted(agent.name));
     } else if (updated) {
       setWorkspace((w) =>
         w
@@ -2076,11 +2077,7 @@ export function App() {
       live.sync.mutate((d) => (d.agent.id === id ? { ...d, agent: updated } : d));
       if (currentSelected.current === id)
         setAgentScope(action === "close" ? "closed" : "active");
-      setNotice(
-        action === "close"
-          ? `${agent.name} is in Closed. Conversation and draft are saved.`
-          : `${agent.name} is back with the same conversation.`,
-      );
+      setNotice(action === "close" ? shell.closedSaved(agent.name) : shell.reopened(agent.name));
     }
     live.clearError();
     setCatchupSource(null);
@@ -2454,18 +2451,14 @@ export function App() {
                   onRequestOpened={() => {
                     if (modelRequest?.agentId) setModelRequest(null);
                     setNotice(modelRequest?.section === "context"
-                      ? "Context settings are open for this Agent. Saving and applying are separate actions."
+                      ? shell.contextOpen
                       : modelRequest?.kind === "permissions"
-                        ? "Agent settings are open, with this Agent's permissions. A change applies from its next turn."
-                        : "Model settings are open. A change applies from this Agent's next turn.");
+                        ? shell.permissionsOpen
+                        : shell.modelOpen);
                   }}
                   onSaved={() => {
                     refresh();
-                    setNotice(
-                      agent.harness === "claude"
-                        ? "Agent settings saved."
-                        : "Agent settings saved. Context changes need Apply in Agent settings.",
-                    );
+                    setNotice(shell.settingsSaved(agent.harness === "claude"));
                   }}
                 />}
                 <ConversationSearch
@@ -2519,8 +2512,8 @@ export function App() {
                         );
                         setNotice(
                           moved.projectId
-                            ? `${moved.name} is now in ${projectName(moved.projectId, projects)}.`
-                            : `${moved.name} is no longer in a project.`,
+                            ? shell.movedTo(moved.name, projectName(moved.projectId, projects))
+                            : shell.leftProject(moved.name),
                         );
                         refresh();
                       }}
@@ -3171,6 +3164,17 @@ export function App() {
             <LoaderCircle className="spin" size={22} />
             Opening your workspace…
           </div>
+        ) : !workspace ? (
+          // No Workspace was read, so it isn't known to have no Agents; the
+          // banner above has the error and Retry.
+          <div className="welcome welcome-unread" lang={langTag(language)}>
+            <div className="welcome-art">
+              <Yuzu size={142} />
+              <span className="welcome-ground" />
+            </div>
+            <h1>{shell.workspaceUnread}</h1>
+            <p>{shell.workspaceUnreadDetail}</p>
+          </div>
         ) : (
           <div className="welcome">
             <div className="welcome-eyebrow">
@@ -3243,7 +3247,8 @@ export function App() {
                 {shell.currentWork}
               </span>
               {agent.workSummary ? (
-                <p>
+                // What was asked or reported, as written.
+                <p lang="">
                   {agent.workSummary.source === "user" && agent.workSummary.requestParts?.length ? (
                     <RequestSummary agentId={agent.id} summary={agent.workSummary} />
                   ) : <button
@@ -3506,10 +3511,10 @@ export function App() {
             refresh();
             setNotice(
               fork.closedAt
-                ? `This conversation already continues in ${fork.name}, which is closed. Reopen it to continue; nothing was sent.`
+                ? shell.forkClosed(fork.name)
                 : outcome.connected
-                  ? `Continuing in ${fork.name} from the fork. Nothing was sent.`
-                  : `${fork.name} was created from the fork but isn’t connected yet. ${outcome.warnings.join(" ")}`,
+                  ? shell.forkContinuing(fork.name)
+                  : shell.forkNotConnected(fork.name, outcome.warnings.join(" ")),
             );
           }}
         />
@@ -3547,12 +3552,12 @@ export function App() {
           refresh();
           setNotice(
             a.projectDefaultError
-              ? `${a.name} is ready, but the project's default folder wasn't saved: ${a.projectDefaultError}`
+              ? shell.defaultFolderFailed(a.name, a.projectDefaultError)
               : source === "imported"
-                ? "Added with history. The original client must release the session before you continue here; an idle session may still be owned there."
+                ? shell.imported
                 : source === "existing"
-                  ? `Opened ${a.name}’s saved conversation.`
-                  : `${a.name} has a little space of their own.`,
+                  ? shell.openedSaved(a.name)
+                  : shell.created(a.name),
           );
         }}
       />
@@ -3577,7 +3582,7 @@ export function App() {
         agents={workspace?.agents || []}
         onChanged={refresh}
         onCreated={(project) =>
-          setNotice(`${project.name} is ready. Add agents or tasks to it.`)
+          setNotice(shell.projectReady(project.name))
         }
       />
       <ArtifactModal

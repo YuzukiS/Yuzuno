@@ -43,8 +43,8 @@ function useNow(active: boolean) {
 }
 
 // A stored check's words, in the language a page passes (T-189): Machines
-// passes the interface language; New agent, not yet translated, keeps
-// English. Host names, paths and the reasons Core or SSH gave stay as written.
+// and New agent pass the interface language. Host names, paths and the
+// reasons Core or SSH gave stay as written.
 const checkText = strings({
   checking: "Checking…",
   notChecked: "Not checked yet",

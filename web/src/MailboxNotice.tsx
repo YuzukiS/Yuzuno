@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { api, errorText } from "./api";
 import { openJobs } from "./Jobs";
+import { langTag, strings, useLanguage } from "./i18n";
 
 export interface MailboxGroup {
   kind: "peer" | "job" | "ci" | "review" | "pr" | "system" | "workspace";
@@ -70,7 +71,8 @@ const prResults: Record<string, string> = {
   needs_selection: "needs a choice",
   unknown: "result unknown",
 };
-function label(group: MailboxGroup) {
+/** A group's line in English, as Core's doorbell words it. */
+function labelEn(group: MailboxGroup) {
   const count = group.count > 1 ? `${group.count} ` : "";
   if (group.kind === "peer")
     return `${count}Peer message${group.count > 1 ? "s" : ""}`;
@@ -87,6 +89,70 @@ function label(group: MailboxGroup) {
   }
   return `${count}${group.kind === "system" ? "System" : "Workspace mail"}`;
 }
+// In Chinese (T-189); a status Core sends that isn't listed is "结果未知".
+const jobResultsZh: Record<string, string> = {
+  waiting_analysis: "等待分析", succeeded: "通过", failed: "失败", cancelled: "已取消", timed_out: "超时",
+  oom: "内存不足", interrupted: "已中断", rejected: "已拒绝", unknown: "结果未知",
+};
+const ciResultsZh: Record<string, string> = {
+  passed: "通过", failed: "失败", cancelled: "已取消", skipped: "已跳过", pending: "等待中", unknown: "结果未知",
+};
+const reviewResultsZh: Record<string, string> = {
+  no_findings: "无发现", approved_with_notes: "通过，有建议", changes_requested: "要求修改",
+  failed: "失败", cancelled: "已取消", unknown: "无结论",
+};
+const prResultsZh: Record<string, string> = {
+  created: "已创建", updated: "已更新", completed: "已完成", failed: "失败", needs_selection: "需要选择", unknown: "结果未知",
+};
+function labelZh(group: MailboxGroup) {
+  const many = group.count > 1;
+  if (group.kind === "peer") return `${many ? `${group.count} 条` : ""}协作消息`;
+  if (group.kind === "job") return `${many ? `${group.count} 个 ` : ""}Job ${jobResultsZh[group.status] ?? "结果未知"}`;
+  if (group.kind === "ci") return `${many ? `${group.count} 个 ` : ""}CI ${ciResultsZh[group.status] ?? "结果未知"}`;
+  if (group.kind === "review") return `${many ? `${group.count} 次` : ""}代码审查：${reviewResultsZh[group.status] ?? "无结论"}`;
+  if (group.kind === "pr") {
+    const result = prResultsZh[group.status] ?? "结果未知";
+    if (many) return `${group.count} 个 PR 操作${result}`;
+    return ["created", "updated"].includes(group.status) ? `PR ${result}` : `PR 操作${result}`;
+  }
+  return `${many ? `${group.count} 封` : ""}${group.kind === "system" ? "系统邮件" : "工作区邮件"}`;
+}
+
+// The notice's own words (T-189). Names, task IDs, message bodies and the
+// note Core wrote to the Agent are shown as they came.
+const noticeText = strings({
+  label: labelEn,
+  you: "You",
+  urgent: "Urgent",
+  moreCount: (count: number) => `+${count} more`,
+  moreResults: (count: number) => `${count} more results`,
+  older: "Older deliveries do not record which messages they carried; Tasks & messages has the full mailbox.",
+  loading: "Loading these messages…",
+  couldNotLoad: (error: string) => `Could not load these messages: ${error}`,
+  tryAgain: "Try again",
+  openReview: "Open review",
+  gone: "These messages are no longer in the mailbox.",
+  more: "More messages from this delivery are in Tasks & messages.",
+  note: "Delivery note sent to the Agent",
+  range: (count: number | "", after: number | undefined, through: number | undefined, grouped: boolean) =>
+    `${count} message${count === 1 ? "" : "s"} · sequences after ${after ?? ""} through ${through ?? ""}${grouped ? " · repeated results grouped" : ""}`,
+}, {
+  label: labelZh,
+  you: "你",
+  urgent: "紧急",
+  moreCount: (count) => `+${count} 项`,
+  moreResults: (count) => `另有 ${count} 个结果`,
+  older: "较早的投递没有记录它们携带了哪些消息；完整的邮箱见“任务与消息”。",
+  loading: "正在载入这些消息…",
+  couldNotLoad: (error) => `无法载入这些消息：${error}`,
+  tryAgain: "重试",
+  openReview: "打开审查",
+  gone: "这些消息已不在邮箱中。",
+  more: "此次投递的更多消息在“任务与消息”中。",
+  note: "发给 Agent 的投递说明",
+  range: (count, after, through, grouped) =>
+    `${count} 条消息 · 序号 ${after ?? ""} 之后至 ${through ?? ""}${grouped ? " · 重复的结果已合并" : ""}`,
+});
 /** A message as peer_read returns it; only what a reader needs. */
 interface MailMessage {
   id: string;
@@ -138,11 +204,11 @@ function messageResult(message: MailMessage): MailboxGroup | null {
 const reviewOf = (message: MailMessage) =>
   message.reviewId || message.metadata?.reviewId || null;
 
-function sender(message: MailMessage) {
+function sender(message: MailMessage, you: string) {
   const from = message.sender;
   return (
     from?.name ||
-    (from?.kind === "user" ? "You" : from?.kind === "system" ? "Yuzuno Core" : "Agent")
+    (from?.kind === "user" ? you : from?.kind === "system" ? "Yuzuno Core" : "Agent")
   );
 }
 
@@ -194,8 +260,10 @@ export function MailboxNotice({
     snapshot?.version === 1 && snapshot.groups?.length
       ? snapshot.groups.slice(0, 2)
       : [{ kind: "workspace", count: 1, status: "" } satisfies MailboxGroup];
+  const language = useLanguage();
+  const t = noticeText(language);
   // Normal is the usual case and says nothing; only urgency is shown.
-  const priority = snapshot?.priority === "urgent" ? "Urgent" : null;
+  const urgent = snapshot?.priority === "urgent";
   const range =
     snapshot?.version === 1 &&
     snapshot.recipientId &&
@@ -265,16 +333,17 @@ export function MailboxNotice({
     snapshot?.version === 1 ? Math.max(0, snapshot.remainingCount ?? 0) : 0;
   const description = [
     ...groups.map((group) =>
-      [group.name, label(group)].filter(Boolean).join(" · "),
+      [group.name, t.label(group)].filter(Boolean).join(" · "),
     ),
-    remaining ? `+${remaining} more` : null,
-    priority,
+    remaining ? t.moreCount(remaining) : null,
+    urgent ? t.urgent : null,
   ]
     .filter(Boolean)
     .join(" · ");
   return (
     <details
       className="mailbox-notice"
+      lang={langTag(language)}
       onToggle={(event) => {
         if (event.target === event.currentTarget && event.currentTarget.open && mail.state === "idle")
           void load();
@@ -294,22 +363,20 @@ export function MailboxNotice({
                 )}
                 <span className="mailbox-result">
                   {group.name && <span aria-hidden="true"> · </span>}
-                  {label(group)}
+                  {t.label(group)}
                 </span>
               </span>
             );
           })}
         </span>
         {remaining > 0 && (
-          <span className="mailbox-more" title={`${remaining} more results`}>
+          <span className="mailbox-more" title={t.moreResults(remaining)}>
             +{remaining}
           </span>
         )}
-        {priority && (
-          <span
-            className={`mailbox-priority${priority === "Urgent" ? " urgent" : ""}`}
-          >
-            {priority}
+        {urgent && (
+          <span className="mailbox-priority urgent">
+            {t.urgent}
           </span>
         )}
         <span className="mailbox-time">{time}</span>
@@ -324,20 +391,17 @@ export function MailboxNotice({
             stands in for names the summary had to cut. */}
         {!range && <div className="mailbox-full-summary">{description}</div>}
         {!range ? (
-          <p className="mailbox-status">
-            Older deliveries do not record which messages they carried; Tasks
-            &amp; messages has the full mailbox.
-          </p>
+          <p className="mailbox-status">{t.older}</p>
         ) : mail.state === "loading" ? (
           <p className="mailbox-status">
             <LoaderCircle size={12} className="spin" aria-hidden="true" />
-            Loading these messages…
+            {t.loading}
           </p>
         ) : mail.state === "error" ? (
           <p className="mailbox-status" role="alert">
-            Could not load these messages: {mail.error}
+            {t.couldNotLoad(mail.error)}
             <button type="button" className="inline-link" onClick={() => void load()}>
-              Try again
+              {t.tryAgain}
             </button>
           </p>
         ) : mail.state === "loaded" ? (
@@ -350,7 +414,7 @@ export function MailboxNotice({
                 return (
                   <li className="mailbox-message" key={message.id}>
                     <div className="mailbox-message-head">
-                      <strong>{sender(message)}</strong>
+                      <strong lang="">{sender(message, t.you)}</strong>
                       {message.taskId && (
                         <span className="mailbox-message-task">{message.taskId}</span>
                       )}
@@ -359,7 +423,7 @@ export function MailboxNotice({
                     {result && look ? (
                       <div className={`mailbox-message-result mailbox-${look.tone}`}>
                         <look.Icon size={14} aria-hidden="true" />
-                        {[result.name, label(result)].filter(Boolean).join(" · ")}
+                        {[result.name, t.label(result)].filter(Boolean).join(" · ")}
                         {/* Core's own review result names its review: open it
                             in Jobs. Older or peer mail is never guessed at. */}
                         {result.kind === "review" && reviewOf(message) && message.taskId && (
@@ -374,43 +438,36 @@ export function MailboxNotice({
                               })
                             }
                           >
-                            Open review
+                            {t.openReview}
                           </button>
                         )}
                       </div>
                     ) : (
-                      <div className="mailbox-message-body">{message.body}</div>
+                      <div className="mailbox-message-body" lang="">{message.body}</div>
                     )}
                   </li>
                 );
               })}
             </ol>
           ) : (
-            <p className="mailbox-status">
-              These messages are no longer in the mailbox.
-            </p>
+            <p className="mailbox-status">{t.gone}</p>
           )
         ) : null}
         {mail.state === "loaded" && mail.more && (
-          <p className="mailbox-status">
-            More messages from this delivery are in Tasks &amp; messages.
-          </p>
+          <p className="mailbox-status">{t.more}</p>
         )}
         <details className="mailbox-prompt">
           <summary>
             <ChevronRight size={12} aria-hidden="true" className="mailbox-prompt-chevron" />
-            Delivery note sent to the Agent
+            {t.note}
           </summary>
           {snapshot?.version === 1 && (
             <div className="mailbox-range">
-              {snapshot.messageCount} message
-              {snapshot.messageCount === 1 ? "" : "s"} · sequences after{" "}
-              {snapshot.afterSeq} through {snapshot.throughSeq}
-              {(snapshot.messageCount ?? 0) > (snapshot.count ?? 0) &&
-                " · repeated results grouped"}
+              {t.range(snapshot.messageCount ?? "", snapshot.afterSeq, snapshot.throughSeq,
+                (snapshot.messageCount ?? 0) > (snapshot.count ?? 0))}
             </div>
           )}
-          <div className="user-text">{text}</div>
+          <div className="user-text" lang="">{text}</div>
         </details>
       </div>
     </details>

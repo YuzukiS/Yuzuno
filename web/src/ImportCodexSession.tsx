@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import { api, errorText, post } from "./api";
 import { CodexPermissions } from "./CodexPermissions";
+import { useLanguage } from "./i18n";
+import { newAgentText } from "./new-agent-text";
 import type {
   Agent,
   AgentDetail,
@@ -39,6 +41,8 @@ const defaults: AgentSettings = {
 };
 const sessionId =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Why a typed ID wasn't read: worded when shown, so it follows the language. */
+const BAD_ID = Symbol("not a session ID");
 
 export function ImportCodexSession({
   disabled,
@@ -51,13 +55,16 @@ export function ImportCodexSession({
   onCreated: (agent: Agent, source?: "imported" | "existing") => void;
   onBusyChange: (busy: boolean) => void;
 }) {
+  const language = useLanguage();
+  const t = newAgentText(language);
   const [threadId, setThreadId] = useState("");
   const [preview, setPreview] = useState<CodexSessionPreview | null>(null);
   const [name, setName] = useState("");
   const [settings, setSettings] = useState<AgentSettings>(defaults);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<string | typeof BAD_ID>("");
+  const errorShown = error === BAD_ID ? t.codexBadId : error;
   const request = useRef<AbortController | null>(null);
   const importing = useRef(false);
   const mounted = useRef(true);
@@ -83,9 +90,7 @@ export function ImportCodexSession({
     if (disabled || importing.current || loading) return;
     const id = threadId.trim();
     if (!sessionId.test(id)) {
-      setError(
-        "Paste the session ID from Codex, such as the ID after codex resume.",
-      );
+      setError(BAD_ID);
       return;
     }
     request.current?.abort();
@@ -157,7 +162,7 @@ export function ImportCodexSession({
     <div className="session-import create-form remote-create">
       <form onSubmit={(event) => void readPreview(event)}>
         <label htmlFor="import-session-id">
-          Codex session ID
+          {t.codexId}
           <input
             id="import-session-id"
             autoFocus
@@ -172,12 +177,11 @@ export function ImportCodexSession({
           />
         </label>
         <p id="import-session-hint" className="remote-field-note">
-          Use the ID shown by Codex’s resume command. This reads sessions saved
-          on your Core host.
+          {t.codexHint}
         </p>
         <div className="session-preview-action">
           <span>
-            <Monitor size={13} /> Core host · Codex
+            <Monitor size={13} /> {t.coreHostCodex}
           </span>
           <button
             className="secondary-button"
@@ -188,41 +192,30 @@ export function ImportCodexSession({
             ) : (
               <History size={14} />
             )}
-            {loading
-              ? "Reading session…"
-              : preview
-                ? "Read again"
-                : "Preview session"}
+            {loading ? t.readingSession : preview ? t.readAgain : t.previewSession}
           </button>
         </div>
       </form>
 
       {preview && (
         <form onSubmit={(event) => void importSession(event)}>
-          <section className="session-preview" aria-label="Session preview">
+          <section className="session-preview" aria-label={t.sessionPreview}>
             <div className="session-preview-heading">
               <span>
-                <CheckCircle2 size={14} />{" "}
-                {preview.existingAgentId
-                  ? "Already in your workspace"
-                  : "Saved conversation found"}
+                <CheckCircle2 size={14} /> {preview.existingAgentId ? t.alreadyIn : t.found}
               </span>
-              <span>
-                {preview.turnCount} {preview.turnCount === 1 ? "turn" : "turns"}
-              </span>
+              <span>{t.turns(preview.turnCount)}</span>
             </div>
             <p className="session-preview-excerpt">
-              {preview.preview || "No saved message preview."}
+              {preview.preview || t.noExcerpt}
             </p>
             <div className="session-preview-folder">
               <Folder size={14} />
               <span>{preview.cwd}</span>
             </div>
             <p className="session-preview-model">
-              {preview.model || "Codex default model"}
-              {preview.reasoningEffort
-                ? ` · ${preview.reasoningEffort} reasoning`
-                : ""}
+              {preview.model || t.codexDefaultModel}
+              {preview.reasoningEffort ? t.reasoning(preview.reasoningEffort) : ""}
             </p>
           </section>
           {preview.warnings.length > 0 && (
@@ -238,7 +231,7 @@ export function ImportCodexSession({
               disabled={disabled || busy}
             >
               <label>
-                Agent name
+                {t.agentName}
                 <input
                   value={name}
                   onChange={(event) => setName(event.target.value)}
@@ -251,24 +244,20 @@ export function ImportCodexSession({
                 catalog={preview.permissions}
                 disabled={disabled || busy}
                 onChange={setSettings}
+                language={language}
               />
               {!preview.permissions && (
-                <p className="remote-field-note">
-                  Read the preview again to load permission options.
-                </p>
+                <p className="remote-field-note">{t.readForPermissions}</p>
               )}
             </fieldset>
           )}
           <p className="session-handoff-note">
-            The original client must release this session before you can
-            continue here. An idle session can still be owned by that client. A
-            Codex fork can continue independently with a new session ID.
-            {!preview.existingAgentId &&
-              " Adding the session does not send a message or start a turn."}
+            {t.codexHandoff}
+            {!preview.existingAgentId && t.codexAddsNothing}
           </p>
-          {error && (
+          {errorShown && (
             <p role="alert" className="remote-field-error">
-              {error}
+              {errorShown}
             </p>
           )}
           <div className="modal-actions">
@@ -278,7 +267,7 @@ export function ImportCodexSession({
               onClick={close}
               disabled={busy}
             >
-              Cancel
+              {t.cancel}
             </button>
             <button
               className="primary-button"
@@ -291,25 +280,17 @@ export function ImportCodexSession({
               ) : (
                 <ArrowRight size={15} />
               )}
-              {busy
-                ? "Opening…"
-                : preview.existingAgentId
-                  ? "Open agent"
-                  : "Add to workspace"}
+              {busy ? t.opening : preview.existingAgentId ? t.openAgent : t.addToWorkspace}
             </button>
           </div>
         </form>
       )}
-      {!preview && error && (
+      {!preview && errorShown && (
         <p role="alert" className="remote-field-error">
-          {error}
+          {errorShown}
         </p>
       )}
-      {disabled && (
-        <p className="remote-field-note">
-          Session import is disabled in the read-only design preview.
-        </p>
-      )}
+      {disabled && <p className="remote-field-note">{t.importDisabled}</p>}
     </div>
   );
 }

@@ -101,6 +101,12 @@ async function mount({ permission = "default", answer = "granted", shows = "show
             if (shell.answer === "missing") throw "Command desktop_notifications not found";
             return shell.answer;
           }
+          // On macOS: what macOS says once asked (T-188).
+          if (command === "desktop_notifications_request") {
+            if (shell.request === "fails") throw "macOS rejected the notification request";
+            shell.answer = shell.request;
+            return shell.answer;
+          }
           if (command === "desktop_notify" && shell.notify === "refused") throw "The system didn't take the notification: fixture";
           if (command === "desktop_notify") return { handed: true };
           throw `unexpected ${command}`;
@@ -165,7 +171,7 @@ test("blocked or not available: said why, with nothing to switch on", async () =
   for (const [options, label] of [
     [{ permission: "denied" }, /Blocked.*site’s notification permission/],
     [{ api: false }, /Not available in this browser.*no notifications for web pages/],
-    [{ permission: "granted", query: "?shell=desktop" }, /Not available in this app.*the iPhone app, the desktop app on macOS or Linux, and older desktop apps/],
+    [{ permission: "granted", query: "?shell=desktop" }, /Not available in this app.*the iPhone app, the desktop app on Linux, and older desktop apps/],
   ]) {
     const page = await mount(options);
     assert.match(page.text(), label, JSON.stringify(options));
@@ -291,4 +297,96 @@ test("in the desktop app a refused hand-off says so; an app that can't notify he
     assert.deepEqual(page.invoked, [["desktop_notifications"]]);
     page.close();
   }
+});
+
+// T-188: in the desktop app on macOS, the app says what macOS allows it. It
+// asks macOS once, from the user's click; a denial is not asked again but
+// keeps this device's choices; only an allowed one is sent.
+const macos = (authorization, extra = {}) => ({ supported: authorization === "allowed" || authorization === "quiet", system: "macos", authorization, ...extra });
+
+test("on macOS, not asked yet: turning it on asks macOS once, and an allow is then said and used", async () => {
+  const page = await mount({ permission: "granted", shell: { answer: macos("not-requested"), request: macos("allowed") } });
+  await until(() => /asks macOS once/.test(page.text()), "macOS's state");
+  assert.match(page.text(), /System notifications\s*Not asked yet/);
+  assert.match(page.text(), /Turning this on asks macOS first\./);
+  assert.deepEqual(page.invoked, [["desktop_notifications"]], "opening Settings asks nothing");
+  page.box("Notify me on this device").click();
+  await until(() => page.saved()?.enabled === true, "the choice saved");
+  assert.deepEqual(page.invoked, [["desktop_notifications"], ["desktop_notifications_request"]], "asked once, from the click");
+  assert.equal(page.asked, 0, "never the web view's own permission");
+  assert.match(page.text(), /System notifications\s*Allowed\s*macOS allows this app’s notifications\./);
+  assert.equal(page.box("Notify me on this device").checked, true);
+  page.button("Send a test").click();
+  await until(() => page.doc.querySelector(".notification-test-result"), "a result");
+  assert.match(page.doc.querySelector(".notification-test-result").textContent, /^Accepted by macOS\. If you didn’t see it, check this app in System Settings → Notifications, and Focus\.$/);
+  assert.deepEqual(page.invoked.slice(2), [["desktop_notify", { title: "Yuzuno", body: "A test notification from your Workspace.", whenAway: false }]], "sent through the app, not asked again");
+  assert.deepEqual(page.shown, [], "not through the webview's own Notification");
+  page.close();
+});
+
+test("on macOS, a no keeps the choices without asking again or sending; allowing it in System Settings is read on coming back", async () => {
+  const shell = { answer: macos("not-requested"), request: macos("denied") };
+  const page = await mount({ shell });
+  await until(() => !!page.box("Notify me on this device"), "the switch");
+  page.box("Notify me on this device").click();
+  await until(() => /Off in macOS/.test(page.text()), "denied");
+  assert.equal(page.window.localStorage.getItem("yuzuno.notifications"), null, "a no saves nothing");
+  assert.match(page.text(), /this app won’t ask again\. To allow them: System Settings → Notifications → Yuzuno/);
+  assert.equal(page.hasButton("Send a test"), false, "no test, and nothing to ask with");
+  assert.equal(page.box("Notify me on this device").checked, false);
+  assert.match(page.text(), /Kept for when macOS allows this app’s notifications\./);
+  // The choices are still this device's to make.
+  page.box("Notify me on this device").click();
+  await until(() => page.saved()?.enabled === true, "the choice saved");
+  page.box("Mute on this device").click();
+  await until(() => page.saved()?.muted === true, "muted saved");
+  assert.deepEqual(page.invoked, [["desktop_notifications"], ["desktop_notifications_request"]], "never asked again, nothing sent");
+  assert.match(page.text(), /Needs you and unread updates always show/);
+  // Allowed in System Settings meanwhile, then back to this window.
+  shell.answer = macos("allowed");
+  page.window.dispatchEvent(new page.window.Event("focus"));
+  await until(() => /System notifications\s*Allowed/.test(page.text()), "read again");
+  assert.equal(page.invoked.filter(([command]) => command === "desktop_notifications_request").length, 1);
+  assert.equal(page.hasButton("Send a test"), true);
+  page.close();
+});
+
+test("on macOS, quiet delivery is said; a state the app couldn't read is not a denial; a failed ask says so", async () => {
+  const quiet = await mount({ shell: { answer: macos("quiet") } });
+  await until(() => /Allowed quietly/.test(quiet.text()), "quiet");
+  assert.match(quiet.text(), /to Notification Center, without a banner or sound/);
+  quiet.button("Send a test").click();
+  await until(() => quiet.doc.querySelector(".notification-test-result"), "a result");
+  assert.match(quiet.doc.querySelector(".notification-test-result").textContent, /^Accepted by macOS, which delivers this app’s notifications quietly/);
+  quiet.close();
+
+  const refused = await mount({ shell: { answer: macos("allowed"), notify: "refused" } });
+  await until(() => !!refused.button("Send a test"), "the test");
+  refused.button("Send a test").click();
+  await until(() => refused.doc.querySelector(".notification-test-result"), "a result");
+  assert.match(refused.doc.querySelector(".notification-test-result").textContent, /^This app couldn’t hand it to macOS: The system didn't take the notification: fixture$/);
+  await until(() => refused.invoked.filter(([command]) => command === "desktop_notifications").length === 2, "macOS read again after a refusal");
+  refused.close();
+
+  for (const [answer, help] of [
+    [macos("unknown", { reason: "this app isn't running from its app bundle" }), /couldn’t tell whether macOS allows its notifications: this app isn't running from its app bundle\./],
+    [macos("unknown"), /macOS gave an answer this app doesn’t know\./],
+  ]) {
+    const page = await mount({ shell: { answer } });
+    await until(() => /Not available now/.test(page.text()), "not available");
+    assert.match(page.text(), help);
+    assert.doesNotMatch(page.text(), /Off in macOS|Blocked/, "not a denial");
+    assert.equal(page.hasBox("Notify me on this device"), false);
+    assert.equal(page.hasButton("Send a test"), false);
+    page.close();
+  }
+
+  const failing = await mount({ shell: { answer: macos("not-requested"), request: "fails" } });
+  await until(() => !!failing.box("Notify me on this device"), "the switch");
+  failing.box("Notify me on this device").click();
+  await until(() => failing.doc.querySelector(".notification-ask-result"), "the failure");
+  assert.equal(failing.doc.querySelector(".notification-ask-result").textContent, "macOS didn’t ask: macOS rejected the notification request.");
+  assert.match(failing.text(), /Not asked yet/, "still not asked");
+  assert.equal(failing.window.localStorage.getItem("yuzuno.notifications"), null);
+  failing.close();
 });
