@@ -26,7 +26,7 @@ const hookSource = (
 let useConversationSend;
 const WORKSPACE = "ws-1";
 /** The whole file, as it is on disk. */
-const outboxFile = () => JSON.parse(localStorage.getItem("yuzuno.outbox"));
+const outboxFile = () => JSON.parse(localStorage.getItem("yuzuno.outbox") || "{}");
 /** One Workspace's unsent records, keyed `<agent>:<slot>` as before. */
 const outbox = (workspace = WORKSPACE) => outboxFile()[workspace] ?? {};
 async function fixture(t, initial = {}) {
@@ -63,14 +63,15 @@ async function fixture(t, initial = {}) {
     });
   }
   // The file keeps each Workspace's records apart (T-195); a fixture names
-  // the records of the Workspace its hook is in.
-  if (initial.outbox)
-    localStorage.setItem(
-      "yuzuno.outbox",
-      JSON.stringify({ ...initial.file, [initial.workspace ?? WORKSPACE]: initial.outbox }),
-    );
-  else if (initial.file)
-    localStorage.setItem("yuzuno.outbox", JSON.stringify(initial.file));
+  // the records of the Workspace its hook is in. A fixture that starts with
+  // no Workspace has nothing on disk to name: a bucket under "" would be a
+  // Workspace no Core answers as.
+  const startsIn = initial.workspace ?? WORKSPACE;
+  const file = {
+    ...initial.file,
+    ...(initial.outbox && startsIn ? { [startsIn]: initial.outbox } : {}),
+  };
+  if (Object.keys(file).length) localStorage.setItem("yuzuno.outbox", JSON.stringify(file));
   useConversationSend ||= (await import(moduleUrl(hookSource)))
     .useConversationSend;
   let hook;
@@ -237,19 +238,18 @@ test("coming back to a Workspace keeps the records the window is using, so a sen
 });
 
 test("a record saved after coming back to a Workspace survives the send that was already running", async (t) => {
-  // The visible end of the stable-bucket property. While one Agent's send is
-  // in flight, another Agent of the same Workspace can still be opened and
-  // sent to -- the refusal of a second send is per Workspace and Agent -- so
-  // records can be added after a move away and back. Settling the first send
-  // must not write the records as they were before the return.
+  // The visible end of it. While one Agent's send is in flight, another
+  // Agent of the same Workspace can still be sent to -- the refusal of a
+  // second send is per Workspace and Agent -- so records can be added after
+  // a move away and back. Settling the first send must leave them, with
+  // their client message ids, so sending that text again is still a retry
+  // and not a second message.
   const f = await fixture(t, { workspace: "ws-here", outbox: {} });
-  // One resolver per request: a second send must not take the first's, or
-  // answering "the first" would answer the wrong one.
-  const answers = [];
+  let answerA;
   globalThis.fetch = async (url, init) => {
     f.calls.push({ url, body: JSON.parse(init.body) });
     return new Promise((resolve) => {
-      answers.push((receipt) => resolve({ ok: true, json: async () => receipt }));
+      answerA = (receipt) => resolve({ ok: true, json: async () => receipt });
     });
   };
   let sendingA;
@@ -259,21 +259,22 @@ test("a record saved after coming back to a Workspace survives the send that was
   const inputA = f.calls[0].body;
   await f.move("ws-there");
   await f.move("ws-here");
-  // Another Agent here, sent to while a's send is still running.
+  // Another Agent here, whose send fails: its record is kept as unsent.
   await f.select("b");
-  let sendingB;
-  await act(async () => {
-    sendingB = f.hook().submit("from Agent b, after coming back");
-  });
+  globalThis.fetch = async (url, init) => {
+    f.calls.push({ url, body: JSON.parse(init.body) });
+    throw new Error("connection lost");
+  };
+  await f.submit("from Agent b, after coming back");
   const inputB = f.calls[1].body;
   assert.deepEqual(
     outbox("ws-here"),
     { "a:composer": inputA, "b:composer": inputB },
-    "both are kept while both are uncertain",
+    "both are kept while both are unsent",
   );
-  // a's send finishes now.
+  // a's send finishes now, from before the move away.
   await act(async () => {
-    answers[0]({ input: inputA, status: "accepted", turnId: "t1", error: null });
+    answerA({ input: inputA, status: "accepted", turnId: "t1", error: null });
     await sendingA;
   });
   assert.deepEqual(
@@ -281,17 +282,90 @@ test("a record saved after coming back to a Workspace survives the send that was
     { "b:composer": inputB },
     "it removed its own record and left the one saved after the return",
   );
+  assert.equal(
+    outbox("ws-here")["b:composer"].clientMessageId,
+    inputB.clientMessageId,
+    "with its client message id, so sending that text again is a retry",
+  );
   assert.deepEqual(
     f.hook().pendingInputs,
     { "b:composer": inputB },
     "and what the window holds says the same",
   );
-  // Let b's send finish too, so the test leaves nothing in flight.
+});
+
+// T-195, raised by Dev Lead: a send can start before /api/workspace answers.
+// That is this connection, not yet named -- not another Workspace -- so when
+// the name arrives the send is still its own: its receipt is drawn, and the
+// record that stops it being sent twice becomes that Workspace's.
+test("a send started before this connection was named settles as that Workspace's", async (t) => {
+  const f = await fixture(t, { workspace: "", outbox: {} });
+  let answer;
+  globalThis.fetch = async (url, init) => {
+    f.calls.push({ url, body: JSON.parse(init.body) });
+    return new Promise((resolve) => {
+      answer = (receipt) => resolve({ ok: true, json: async () => receipt });
+    });
+  };
+  let sending;
   await act(async () => {
-    answers[1]({ input: inputB, status: "accepted", turnId: "t2", error: null });
-    await sendingB;
+    sending = f.hook().submit("sent before the Workspace was known");
   });
-  assert.deepEqual(outboxFile(), {}, "both settled, nothing left on disk");
+  const input = f.calls[0].body;
+  assert.equal(f.hook().sending, true, "it is sending");
+  assert.deepEqual(outboxFile(), {}, "and nothing is written where no Workspace owns it");
+  // /api/workspace answers while it runs.
+  await f.move("ws-here");
+  assert.deepEqual(
+    outbox("ws-here"),
+    { "a:composer": input },
+    "its retry record is now this Workspace's, saved under it",
+  );
+  assert.equal(f.hook().sending, true, "and it is still this window's send");
+  // It was delivered. Its receipt is drawn here, and the record goes.
+  await act(async () => {
+    answer({ input, status: "accepted", turnId: "t1", error: null });
+    await sending;
+  });
+  assert.deepEqual(
+    f.hook().outgoing.map((m) => [m.agentId, m.receipt.status]),
+    [["a", "accepted"]],
+    "the delivery of a send made before the name arrived is shown, not dropped",
+  );
+  assert.equal(f.refreshes() > 0, true, "and its page was read again");
+  assert.deepEqual(outboxFile(), {}, "the record it kept is settled, not stranded");
+});
+
+test("an uncertain send started before the name arrives keeps one client message id", async (t) => {
+  // The point of the record: sending the same text again must be a retry of
+  // the same message, not a second message with a new id.
+  const f = await fixture(t, { workspace: "", outbox: {} });
+  globalThis.fetch = async (url, init) => {
+    f.calls.push({ url, body: JSON.parse(init.body) });
+    throw new Error("connection lost");
+  };
+  assert.match((await f.submit("unsent, before the name")).message, /connection lost/);
+  const first = f.calls[0].body;
+  await f.move("ws-here");
+  assert.deepEqual(
+    outbox("ws-here"),
+    { "a:composer": first },
+    "the record made while unnamed is this Workspace's",
+  );
+  // Sent again, now that the Workspace is known.
+  globalThis.fetch = async (url, init) => {
+    f.calls.push({ url, body: JSON.parse(init.body) });
+    return { ok: true, json: async () => ({ input: JSON.parse(init.body), status: "accepted", turnId: "t1", error: null }) };
+  };
+  await act(async () => {
+    await f.hook().submit("unsent, before the name");
+  });
+  assert.equal(
+    f.calls[1].body.clientMessageId,
+    first.clientMessageId,
+    "the same id: Core deduplicates it against the first attempt",
+  );
+  assert.deepEqual(outboxFile(), {}, "and the record is settled");
 });
 
 test("sending one Workspace's Agent leaves the same Agent id in another free to send", async (t) => {
