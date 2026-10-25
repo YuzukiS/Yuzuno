@@ -867,3 +867,12 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+/* The shared preset's buttons may wrap their label (T-199): "Replace it with
+   this device's Appearance" was wider than a 320 px phone's Settings pane,
+   which then scrolled sideways. Where it fits, as on a desktop, it stays on
+   one line. */
+.appearance-preset .appearance-file-buttons button {
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
+}
