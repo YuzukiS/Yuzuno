@@ -24,12 +24,13 @@ try {
 import {flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
 import {BriefSectionBody} from ${JSON.stringify(path.join(root, "src/home/brief/BriefSectionBody.tsx"))};
+import {CardFoldWorkspace} from ${JSON.stringify(path.join(root, "src/home/card-fold.tsx"))};
 import {BRIEF_EXAMPLES, checkBriefSection} from ${JSON.stringify(path.join(root, "src/intelligent-ui/brief-contract.ts"))};
 import {PointFixOpen} from ${JSON.stringify(path.join(root, "src/point-fix.ts"))};
 const root=createRoot(document.getElementById('root'));
 window.examples=BRIEF_EXAMPLES;
 window.checkBriefSection=checkBriefSection;
-window.renderSection=(section,projectId,extra={})=>flushSync(()=>root.render(<PointFixOpen.Provider value={window.pointFixOpen||null}><BriefSectionBody section={section} projectId={projectId} {...extra}/></PointFixOpen.Provider>));
+window.renderSection=(section,projectId,extra={},workspaceId='')=>flushSync(()=>root.render(<CardFoldWorkspace.Provider value={workspaceId}><PointFixOpen.Provider value={window.pointFixOpen||null}><BriefSectionBody section={section} projectId={projectId} {...extra}/></PointFixOpen.Provider></CardFoldWorkspace.Provider>));
 window.unmountSection=()=>flushSync(()=>root.render(null));`,
   );
   const result = await build({
@@ -668,6 +669,74 @@ test("a long row of attachments shows the first few and the rest on request, foc
   assert.deepEqual(page.errors, []);
 });
 
+// T-195: two Workspaces at one address can hold the same project and section
+// ids, with the same table. How one window sorts and filters that table is
+// not the other's, and a Workspace arriving under a mounted body must not
+// let the one before's view be saved under this one's key.
+test("a table's view belongs to the Workspace it was set in", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const body = {
+    op: "put", key: KEY, kind: "report", title: "Runs",
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: {}, children: ["runs"] },
+      runs: { type: "Table", props: { id: "runs", title: "Runs",
+        columns: [{ key: "run", label: "Run" }, { key: "score", label: "Score" }],
+        rows: [["11", 0.71], ["12", 0.74], ["21", 0.69]].map(([run, score]) => ({ id: `r${run}`, cells: { run, score } })) } },
+    } },
+  };
+  const section = readSection(page, body, { version: 3 });
+  const show = (workspaceId) => {
+    window.unmountSection();
+    window.renderSection(section, PROJECT, {}, workspaceId);
+  };
+  const filter = () => document.querySelector('input[aria-label="Filter Runs"]');
+  const shown = () => [...document.querySelectorAll(".result-table-scroll tbody tr")].map((row) => row.cells[0].textContent);
+  const type = (value) => {
+    const input = filter();
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, value);
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+  };
+  const viewKey = (workspaceId) => `yuzuno.result-view.brief:${workspaceId}:${PROJECT}:${KEY}#runs`;
+
+  show("ws-here");
+  type("2");
+  await until(() => filter().value === "2" && shown().length === 2, "filtered here");
+  assert.equal(JSON.parse(window.localStorage.getItem(viewKey("ws-here"))).views.runs.filter, "2");
+
+  // The other Workspace, same project, same section, same table.
+  show("ws-there");
+  assert.equal(filter().value, "", "it opens as the body was published");
+  assert.equal(shown().length, 3);
+  type("1");
+  await until(() => filter().value === "1", "filtered there");
+  assert.equal(JSON.parse(window.localStorage.getItem(viewKey("ws-there"))).views.runs.filter, "1");
+  assert.equal(
+    JSON.parse(window.localStorage.getItem(viewKey("ws-here"))).views.runs.filter,
+    "2",
+    "and the first Workspace's view is still its own",
+  );
+
+  // The Workspace arrives under a body already on screen: its own view is
+  // read, and a change made then is saved under its key, not the other's.
+  window.unmountSection();
+  window.renderSection(section, PROJECT, {}, "");
+  assert.equal(filter().value, "", "with no Workspace, no Workspace's view");
+  window.renderSection(section, PROJECT, {}, "ws-here");
+  await until(() => filter().value === "2", "the Workspace's own view is read in place");
+  type("12");
+  await until(() => filter().value === "12", "changed here");
+  assert.equal(JSON.parse(window.localStorage.getItem(viewKey("ws-here"))).views.runs.filter, "12");
+  assert.equal(
+    JSON.parse(window.localStorage.getItem(viewKey("ws-there"))).views.runs.filter,
+    "1",
+    "the other Workspace's view was not written over",
+  );
+  assert.equal(window.localStorage.getItem(viewKey("")), null, "and nothing was saved for no Workspace");
+  assert.deepEqual(page.errors, []);
+});
+
 test("a table keeps its filter and sort when another block is edited, not when it is", async (t) => {
   const page = mount();
   t.after(page.close);
@@ -698,7 +767,7 @@ test("a table keeps its filter and sort when another block is edited, not when i
   await until(() => filter().value === "2" && shown().length === 2, "the filter applied");
   document.querySelector(".result-table-scroll th button").click();
   await until(() => document.querySelector('.result-table-scroll th[aria-sort="ascending"]'), "sorted");
-  const saved = JSON.parse(window.localStorage.getItem(`yuzuno.result-view.brief:${PROJECT}:${KEY}#runs`));
+  const saved = JSON.parse(window.localStorage.getItem(`yuzuno.result-view.brief::${PROJECT}:${KEY}#runs`));
   assert.equal(saved.views.runs.filter, "2");
   // The Agent edits the note: the table, and so its view, is as it was.
   show("Three runs; run 12 leads.", rows, 4);
