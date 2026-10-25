@@ -56,7 +56,7 @@ const text = strings({
   thisCore: "Used by this Core",
   installedRelease: "Needed by an installed or downloaded release",
   unneeded: "No installed or downloaded release needs it",
-  problem: (problem: string) =>
+  problem: (problem: string): string =>
     problem === "notFolder" ? "Not a plain folder: kept"
       : problem === "unknownName" ? "Kept"
         : "Its record of what it is can't be read: kept",
