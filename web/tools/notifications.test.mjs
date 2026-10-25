@@ -199,6 +199,54 @@ test("in the desktop app that can notify, they go through it: not 'allowed', not
   assert.deepEqual(access.notificationAccess(host(api, { native: true, desktop: null })), { state: "unsupported", reason: "app" });
 });
 
+// T-188: on macOS the desktop app says what macOS allows it, and can ask macOS once.
+test("in the desktop app on macOS, macOS's answer is read as it is, asked only before there is one, and only an allowed one is sent", async () => {
+  const { api, calls } = fakeNotifications({ permission: "granted" });
+  const sent = [];
+  const requests = [];
+  const mac = (authorization, { reason, answer = authorization, fails } = {}) => ({
+    notify: async (title, body, whenAway) => (sent.push({ title, whenAway }), true),
+    macos: {
+      authorization,
+      reason,
+      request: async () => {
+        requests.push(authorization);
+        if (fails) throw fails;
+        return mac(answer);
+      },
+    },
+  });
+  const app = (desktop) => host(api, { native: true, desktop });
+  for (const [authorization, state] of [
+    ["allowed", { state: "allowed", system: "macos" }],
+    ["quiet", { state: "allowed", system: "macos", quiet: true }],
+    ["not-requested", { state: "not-requested", system: "macos" }],
+    ["denied", { state: "denied", system: "macos" }],
+    ["unknown", { state: "unsupported", reason: "unread" }],
+  ])
+    assert.deepEqual(access.notificationAccess(app(mac(authorization))), state, authorization);
+  assert.deepEqual(access.notificationAccess(app(mac("unknown", { reason: "unread here" }))), { state: "unsupported", reason: "unread", detail: "unread here" });
+  assert.equal(calls.asked, 0, "the web view's own permission is never read as macOS's");
+
+  assert.deepEqual(await access.requestNotificationAccess(app(mac("not-requested", { answer: "allowed" }))), { state: "allowed", system: "macos" });
+  assert.deepEqual(await access.requestNotificationAccess(app(mac("not-requested", { answer: "denied" }))), { state: "denied", system: "macos" });
+  for (const answered of ["allowed", "quiet", "denied", "unknown"]) await access.requestNotificationAccess(app(mac(answered)));
+  assert.deepEqual(requests, ["not-requested", "not-requested"], "asked only before an answer: never after a no, nor for a state it couldn't read");
+  await assert.rejects(access.requestNotificationAccess(app(mac("not-requested", { fails: "macOS rejected the notification request" }))), /^macOS rejected/);
+
+  for (const authorization of ["not-requested", "denied", "unknown"]) {
+    const outcome = await access.showSystemNotification("Yuzuno", { body: "A test" }, app(mac(authorization)));
+    assert.equal(outcome.outcome, "refused", authorization);
+  }
+  assert.deepEqual(sent, [], "nothing handed on unless macOS allows it");
+  assert.deepEqual(await access.showSystemNotification("Hana finished", {}, app(mac("allowed")), { whenAway: true }), { outcome: "handed" });
+  assert.deepEqual(await access.showSystemNotification("Yuzuno", {}, app(mac("quiet"))), { outcome: "handed" });
+  assert.deepEqual(sent, [{ title: "Hana finished", whenAway: true }, { title: "Yuzuno", whenAway: false }]);
+  const on = { ...prefs.defaultNotificationPrefs, enabled: true };
+  assert.equal(prefs.notifies(on, access.notificationAccess(app(mac("quiet"))), "failed"), true);
+  assert.equal(prefs.notifies(on, access.notificationAccess(app(mac("denied"))), "failed"), false);
+});
+
 test("text for the desktop app fits its bounds by characters, with no control characters but a body's line breaks", () => {
   assert.equal(access.desktopText("Hana finished", access.DESKTOP_TITLE_MAX), "Hana finished");
   const long = "界".repeat(130);
