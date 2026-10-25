@@ -15,6 +15,8 @@ import { userRequests } from "./CurrentTurnPrompt";
 import { isCompacting } from "./conversation-blocks";
 import type { NativeTurn } from "./types";
 import { useAppearance } from "./appearance";
+import { strings, useLanguage } from "./i18n";
+import { turnWords } from "./turn-text";
 import "./turn-dock.css";
 
 /** By default this many Turns show their number; the rest of the nearby
@@ -42,14 +44,40 @@ function glideOffset(row: HTMLElement) {
   return value && value !== "none" ? parseFloat(value.split(" ")[1] ?? "0") || 0 : 0;
 }
 
-function turnStatus(turn: NativeTurn) {
-  if (isCompacting(turn)) return "Compacting";
-  if (/inProgress|running/.test(turn.status)) return "Working";
-  return (
-    { completed: "Completed", interrupted: "Interrupted", failed: "Failed" }[
-      turn.status
-    ] || turn.status
-  );
+// The dock's own words (T-189); a status it doesn't know as the turn has it.
+const text = strings({
+  compacting: "Compacting",
+  working: "Working",
+  ended: { completed: "Completed", interrupted: "Interrupted", failed: "Failed" } as Record<string, string>,
+  label: (loaded: boolean): string => (loaded ? "Loaded turn" : "Turn"),
+  nav: (loaded: boolean): string => (loaded ? "Loaded conversation turns" : "Conversation turns"),
+  heading: (loaded: boolean): string => (loaded ? "Loaded turns" : "Turns"),
+  reading: (loaded: boolean, at: number, of: number) => `Reading ${loaded ? "loaded turn" : "turn"} ${at} of ${of}`,
+  latestTitle: "Back to latest",
+  latestLabel: "Back to the latest turn",
+  collaboration: "Workspace collaboration",
+  noMessage: "No user message",
+  click: "Click to read this turn",
+}, {
+  compacting: "正在压缩",
+  working: "工作中",
+  ended: { completed: "已完成", interrupted: "已中断", failed: "失败" },
+  label: (loaded) => (loaded ? "已载入的 Turn" : "Turn"),
+  nav: (loaded) => (loaded ? "已载入的会话 Turn" : "会话 Turn"),
+  heading: (loaded) => (loaded ? "已载入的 Turn" : "Turn"),
+  reading: (loaded, at, of) => `正在阅读第 ${at} 个${loaded ? "已载入的 " : ""}Turn，共 ${of} 个`,
+  latestTitle: "回到最新",
+  latestLabel: "回到最新的 Turn",
+  collaboration: "工作区协作",
+  noMessage: "没有用户消息",
+  click: "点击阅读这个 Turn",
+});
+type DockWords = ReturnType<typeof text>;
+
+function turnStatus(turn: NativeTurn, t: DockWords) {
+  if (isCompacting(turn)) return t.compacting;
+  if (/inProgress|running/.test(turn.status)) return t.working;
+  return t.ended[turn.status] || turn.status;
 }
 
 function readingIndex(starts: number[], position: number) {
@@ -324,16 +352,16 @@ export function TurnNavigator({
     positionPreview(target);
   });
 
-  const label = loadedNumbering ? "Loaded turn" : "Turn";
+  const language = useLanguage();
+  const t = text(language);
+  const label = t.label(!!loadedNumbering);
   // No numbered Turns: the reader hid the dock in Settings.
   if (!turns.length || turnDock.numbers === 0) return null;
   return (
     <nav
       ref={nav}
       className="turn-dock"
-      aria-label={
-        loadedNumbering ? "Loaded conversation turns" : "Conversation turns"
-      }
+      aria-label={t.nav(!!loadedNumbering)}
       data-engaged={engaged}
       onPointerEnter={() => {
         pointerInside.current = true;
@@ -400,13 +428,11 @@ export function TurnNavigator({
     >
       <span
         className="turn-dock-heading"
-        title={
-          loadedNumbering ? "Loaded conversation turns" : "Conversation turns"
-        }
+        title={t.nav(!!loadedNumbering)}
       >
         <History size={12} aria-hidden="true" />
         <span className="sr-only">
-          {loadedNumbering ? "Loaded turns" : "Turns"}
+          {t.heading(!!loadedNumbering)}
         </span>
       </span>
       <ol
@@ -431,7 +457,7 @@ export function TurnNavigator({
                 data-turn-index={turnIndex}
                 data-active={turnIndex === index}
                 data-highlighted={turnIndex === highlighted}
-                aria-label={`${label} ${turnIndex + 1} · ${turnStatus(turn)}`}
+                aria-label={`${label} ${turnIndex + 1} · ${turnStatus(turn, t)}`}
                 aria-current={turnIndex === index ? "location" : undefined}
                 aria-describedby={
                   turnIndex === highlighted ? tooltipId : undefined
@@ -476,7 +502,7 @@ export function TurnNavigator({
       </ol>
       <span
         className="turn-dock-position"
-        aria-label={`Reading ${loadedNumbering ? "loaded turn" : "turn"} ${index + 1} of ${turns.length}`}
+        aria-label={t.reading(!!loadedNumbering, index + 1, turns.length)}
       >
         {index + 1}
         <span>/ {turns.length}</span>
@@ -487,8 +513,8 @@ export function TurnNavigator({
         <button
           type="button"
           className="turn-dock-latest"
-          title="Back to latest"
-          aria-label="Back to the latest turn"
+          title={t.latestTitle}
+          aria-label={t.latestLabel}
           onClick={() => {
             setHover(null);
             setFocused(null);
@@ -510,17 +536,17 @@ export function TurnNavigator({
             <strong>
               {label} {highlighted! + 1}
             </strong>
-            <span>{turnStatus(previewTurn)}</span>
+            <span>{turnStatus(previewTurn, t)}</span>
           </div>
           <p>
             {previewMessage ? <MessageContent text={previewMessage.text} blocks={previewMessage.blocks} compact onDialogChange={open => { if (!open) setFocused(highlighted); setDialogTurn(open ? highlighted : null); }} /> :
               (previewTurn._yuzunoSource === "peer"
-                ? "Workspace collaboration"
+                ? t.collaboration
                 : previewTurn._yuzunoSource === "native"
-                  ? nativeTurnLabel(previewTurn)
-                  : "No user message")}
+                  ? nativeTurnLabel(previewTurn, turnWords(language))
+                  : t.noMessage)}
           </p>
-          <small>Click to read this turn</small>
+          <small>{t.click}</small>
         </div>
       )}
     </nav>

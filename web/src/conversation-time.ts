@@ -2,6 +2,7 @@ import { formatElapsed } from "./activity-time.ts";
 import { conversationBlocks } from "./conversation-blocks.ts";
 import { timeFormatter, type TimeDisplay } from "./time-preferences.ts";
 import type { BackgroundShells, NativeItem, NativeTurn } from "./types";
+import type { Language } from "./i18n.ts";
 
 const positive = (value: unknown) =>
   typeof value === "number" && Number.isFinite(value) && value > 0
@@ -109,14 +110,21 @@ const endings: Record<string, { elapsed: string; at: string; title: string }> = 
   interrupted: { elapsed: "Interrupted after", at: "Interrupted at ", title: "Interrupted" },
   failed: { elapsed: "Failed after", at: "Failed at ", title: "Failed" },
 };
+// In Chinese (T-189); the times are written as `time` says either way.
+const endingsZh: Record<string, { elapsed: string; at: string; title: string }> = {
+  completed: { elapsed: "用时", at: "完成于 ", title: "完成于" },
+  interrupted: { elapsed: "中断前用时", at: "中断于 ", title: "中断于" },
+  failed: { elapsed: "失败前用时", at: "失败于 ", title: "失败于" },
+};
 
 /**
  * Footer for a finished turn. Background shells are passed only for the
  * latest agent turn; older turns never show the thread's current processes.
- * Its times are written with `time`.
+ * Its times are written with `time`, its words in `language`.
  */
-export function turnFooter(turn: NativeTurn, shells: BackgroundShells | null | undefined, time: TimeDisplay): FooterPart[] {
-  const ending = endings[turn.status];
+export function turnFooter(turn: NativeTurn, shells: BackgroundShells | null | undefined, time: TimeDisplay, language: Language = "en"): FooterPart[] {
+  const zh = language === "zh-Hans";
+  const ending = (zh ? endingsZh : endings)[turn.status];
   if (!ending) return [];
   const parts: FooterPart[] = [];
   const elapsed = turnDuration(turn);
@@ -128,12 +136,14 @@ export function turnFooter(turn: NativeTurn, shells: BackgroundShells | null | u
     parts.push({ kind: "time", prefix, moment: at, title: `${ending.title} ${at.title}` });
   }
   if (shells?.state === "known" && shells.count > 0)
-    parts.push({ kind: "text", text: `${shells.count} ${shells.count === 1 ? "shell" : "shells"} still running` });
+    parts.push({ kind: "text", text: zh ? `${shells.count} 个 shell 仍在运行` : `${shells.count} ${shells.count === 1 ? "shell" : "shells"} still running` });
   else if (shells?.state === "unknown" && shells.lastCount > 0)
     parts.push({
       kind: "text",
-      text: "shell status unknown",
-      title: `${shells.lastCount} background ${shells.lastCount === 1 ? "shell was" : "shells were"} running at ${moment(shells.checkedAt, time).label}. The runtime connection has changed since, so the current count is unknown.`,
+      text: zh ? "shell 状态未知" : "shell status unknown",
+      title: zh
+        ? `${moment(shells.checkedAt, time).label} 时有 ${shells.lastCount} 个后台 shell 在运行。此后运行时连接已变化，因此当前数量未知。`
+        : `${shells.lastCount} background ${shells.lastCount === 1 ? "shell was" : "shells were"} running at ${moment(shells.checkedAt, time).label}. The runtime connection has changed since, so the current count is unknown.`,
     });
   return parts;
 }
