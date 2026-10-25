@@ -46,6 +46,21 @@ const tick = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
 const hoursAgo = (h) => new Date(Date.now() - h * 3600_000).toISOString();
 const MIN = 60_000;
 
+// GET /api/claude-sdk (T-191): the SDK the Claude bridge runs, as Core read it.
+const SDK_READ = "2026-10-24T12:00:00Z";
+const COPY_AT = "2026-10-24T11:00:00Z";
+const sdkStatus = (over = {}) => ({
+  format: 1, readAt: SDK_READ, runtime: { kind: "release", release: "core-20261024-c215011" },
+  sdk: { state: "locked", version: "0.3.296", registry: "registry.npmjs.org" },
+  copy: { state: "inUse", copy: { version: "0.3.296", source: { from: "release", release: "core-20261020-aaaaaaa" }, at: COPY_AT } },
+  ...over,
+});
+const at = (iso) => new Date(iso).toLocaleString();
+const SDK_ROWS = {
+  "Claude Agent SDK": `Yes · Locked 0.3.296 · As claude-agent-sdk.json in release core-20261024-c215011 locks it, from registry.npmjs.org. Core read it ${at(SDK_READ)}.`,
+  "SDK copy": `Yes · In use · SDK 0.3.296, copied from release core-20261020-aaaaaaa, prepared ${at(COPY_AT)}. Core prepared or found this copy in this run; its Claude bridges run from it.`,
+};
+
 // What a Core answers, by path; a function for an error.
 function core(overrides = {}) {
   return {
@@ -73,6 +88,7 @@ function core(overrides = {}) {
     },
     "/api/workspace": { agents: [], defaultCwd: "/work", runtime: { connected: true, account: "person@example.test" } },
     "/api/jobs/budget": { machine: { name: "Core host", scope: "Only jobs managed by this Core share this budget." }, windows: { available: false, reason: "WSL interop is not available" } },
+    "/api/claude-sdk": sdkStatus(),
     ...overrides,
   };
 }
@@ -118,7 +134,7 @@ function mount(answers, { release = "core-20261024-c215011", desktop } = {}) {
   };
 }
 // Only reads of what Core holds: no check, no sign-in, no model list, no usage or MCP request, nothing sent.
-const READS = ["GET /api/health", "GET /api/machines", "GET /api/workspace", "GET /api/jobs/budget"];
+const READS = ["GET /api/health", "GET /api/machines", "GET /api/workspace", "GET /api/jobs/budget", "GET /api/claude-sdk"];
 
 test("it shows Core, this device and each machine's last check, each fact with where and when; it only reads", async () => {
   const page = mount(core());
@@ -128,6 +144,7 @@ test("it shows Core, this device and each machine's last check, each fact with w
     Version: "Yes · 2026.10.24-core.17",
     Release: "Yes · core-20261024-c215011",
     State: "Yes · Ready",
+    ...SDK_ROWS,
   });
   assert.deepEqual(page.facts(page.group("This device")), {
     "This page": "Yes · core-20261024-c215011 · The same release as Core.",
@@ -177,6 +194,8 @@ test("what can't be read or was never checked is Unknown, not guessed; a CLI Cor
     "/api/health": () => ({ status: 503, body: { error: "Core is starting" } }),
     "/api/workspace": { agents: [], defaultCwd: "/work", runtime: { connected: false, error: "codex app-server exited" } },
     "/api/jobs/budget": () => ({ status: 500, body: { error: "Local managed jobs require Linux with a systemd user manager" } }),
+    // A Core from before the SDK was reported.
+    "/api/claude-sdk": undefined,
   });
   answers["/api/machines"] = {
     machines: [
@@ -201,6 +220,8 @@ test("what can't be read or was never checked is Unknown, not guessed; a CLI Cor
     Version: "Unknown · Not known · Core could not be read: Core is starting",
     Release: "Unknown · Not known",
     State: "Unknown · Not known",
+    "Claude Agent SDK": "Unknown · Not known · Core didn't say: not in this fixture",
+    "SDK copy": "Unknown · Not known",
   });
   assert.equal(page.facts(page.group("This device"))["This page"], "Unknown · This page doesn't say which release it is");
   const host = page.machine("Core host");
@@ -284,6 +305,7 @@ test("a Core without its update manager reports no release or readiness: Unknown
     Version: "Yes · 0.1.0",
     Release: "Unknown · Not reported",
     State: "Unknown · Not reported · This Core doesn't report whether its API and storage are ready.",
+    ...SDK_ROWS,
   });
   page.close();
 });
@@ -317,7 +339,7 @@ test("Read again reads the same again; nothing is read while closed; checks are 
   assert.deepEqual(page.calls, [], "nothing while closed");
   page.window.show(true);
   await tick();
-  assert.equal(page.calls.length, 4);
+  assert.equal(page.calls.length, READS.length);
   const again = [...page.document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Read again");
   again.click();
   await tick();
@@ -353,4 +375,46 @@ test("the Core host's models are listed only on Check models, with when; a failu
   // failure would change its connection); nothing else, nothing sent.
   assert.deepEqual([...page.calls].sort(), [...READS, ...READS, "GET /api/models", "GET /api/models?harness=claude"].sort());
   page.close();
+});
+
+test("the Claude Agent SDK: locked or declared version, the copy in use, an earlier copy, none, and what can't be read, each said plainly", async () => {
+  const cases = [
+    [sdkStatus({ runtime: { kind: "other" }, sdk: { state: "inRuntime", version: "0.3.290" }, copy: { state: "notNeeded" } }), {
+      "Claude Agent SDK": `Yes · 0.3.290 · in the runtime · The version the SDK package in this Core's runtime (not an installed release's) declares: that runtime carries the SDK itself. Core read it ${at(SDK_READ)}.`,
+      "SDK copy": "Yes · Not needed · The runtime carries the SDK, so Core runs it as it is.",
+    }],
+    [sdkStatus({ copy: { state: "found", copies: 2, limited: false, newest: { version: "0.3.296", source: { from: "registry", host: "registry.npmjs.org" }, at: COPY_AT } } }), {
+      "Claude Agent SDK": SDK_ROWS["Claude Agent SDK"],
+      "SDK copy": `Unknown · Not used yet in this run · 2 copies of this SDK on the Core host, the newest SDK 0.3.296, downloaded from registry.npmjs.org, prepared ${at(COPY_AT)}. Core checks it when a Claude Agent first starts.`,
+    }],
+    [sdkStatus({ copy: { state: "none", limited: false } }), {
+      "Claude Agent SDK": SDK_ROWS["Claude Agent SDK"],
+      "SDK copy": "No · Not prepared · Core prepares a copy when a Claude Agent first starts: from another installed release, or by downloading the locked package. Reading this downloads nothing.",
+    }],
+    [sdkStatus({ sdk: { state: "unreadable", reason: "claude-agent-sdk.json 无法读取" }, copy: { state: "unknown" } }), {
+      "Claude Agent SDK": `Unknown · Can't be read · claude-agent-sdk.json in release core-20261024-c215011: claude-agent-sdk.json 无法读取. Core read it ${at(SDK_READ)}.`,
+      "SDK copy": "Unknown · Not known · Not known while claude-agent-sdk.json can't be read.",
+    }],
+    [sdkStatus({ runtime: { kind: "other" }, sdk: { state: "none" }, copy: { state: "notNeeded" } }), {
+      "Claude Agent SDK": `No · Not in the runtime · Neither the SDK nor claude-agent-sdk.json is in this Core's runtime (not an installed release's). Core read it ${at(SDK_READ)}.`,
+      "SDK copy": "Yes · Not needed · The runtime carries the SDK, so Core runs it as it is.",
+    }],
+    [sdkStatus({ runtime: { kind: "missing" }, sdk: { state: "unknown" }, copy: { state: "unknown" } }), {
+      "Claude Agent SDK": `Unknown · Not known · Core has no Claude runtime set up, so no SDK is known. Core read it ${at(SDK_READ)}.`,
+      "SDK copy": "Unknown · Not known",
+    }],
+    [{ ...sdkStatus(), format: 2 }, {
+      "Claude Agent SDK": "Unknown · Not known · Core answered in a form this page doesn't read.",
+      "SDK copy": "Unknown · Not known",
+    }],
+  ];
+  for (const [status, rows] of cases) {
+    const page = mount(core({ "/api/claude-sdk": status }));
+    page.window.show();
+    await tick();
+    const service = page.facts(page.group("Workspace service"));
+    assert.deepEqual({ "Claude Agent SDK": service["Claude Agent SDK"], "SDK copy": service["SDK copy"] }, rows, JSON.stringify(status));
+    assert.deepEqual([...page.calls].sort(), [...READS].sort(), "only the same reads");
+    page.close();
+  }
 });
