@@ -2,7 +2,7 @@ import { nativeSession } from "./machine-checks";
 import type { Agent } from "./types";
 
 /** What an Agent's action menu can offer (T-184), in its order. */
-export type AgentMenuAction = "reconnect" | "check" | "endMissing" | "interrupt" | "disconnect" | "settings" | "manage";
+export type AgentMenuAction = "reconnect" | "check" | "endMissing" | "interrupt" | "disconnect" | "settings" | "copyLink" | "manage";
 
 /** One entry of the menu: what it does and whether it can run now. */
 export interface AgentMenuItem {
@@ -23,6 +23,8 @@ export interface AgentActionHandlers {
   endMissing?: (id: string) => void;
   /** Opens the confirmation that disconnects the Agent (T-184). */
   disconnect?: (id: string) => void;
+  /** Copies a link to the Agent itself (T-184), where links are offered. */
+  copyLink?: (id: string) => void;
 }
 
 /**
@@ -66,7 +68,11 @@ export function interruptible(agent: Agent): boolean {
  * Opening the Agent is its row's own click, not an entry. */
 export function agentMenuItems(
   agent: Agent,
-  { missingTurns = false, disconnect = false }: { missingTurns?: boolean; disconnect?: boolean } = {},
+  {
+    missingTurns = false,
+    disconnect = false,
+    link = false,
+  }: { missingTurns?: boolean; disconnect?: boolean; link?: boolean } = {},
 ): AgentMenuItem[] {
   const items: AgentMenuItem[] = [];
   const reconnect = reconnectOffer(agent);
@@ -78,6 +84,8 @@ export function agentMenuItems(
   if (interruptible(agent)) items.push({ action: "interrupt", label: "Interrupt current turn" });
   if (disconnect && disconnectable(agent)) items.push({ action: "disconnect", label: "Disconnect…" });
   if (!agent.closedAt && agent.harness !== "opencode") items.push({ action: "settings", label: "Agent settings…" });
+  // Any Agent can be linked, a closed one or one with no Turn yet.
+  if (link) items.push({ action: "copyLink", label: "Copy agent link" });
   items.push({ action: "manage", label: "Manage…" });
   return items;
 }

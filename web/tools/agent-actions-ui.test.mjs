@@ -122,6 +122,22 @@ test("it offers only what applies to the Agent as it is", () => {
   page.close();
 });
 
+test("Copy agent link is offered for any Agent, closed or without a Turn, where the menu can copy it (T-184)", () => {
+  const page = mount();
+  const offered = (rest, options = { link: true }) =>
+    actions(page.window.agentMenuItems(agent("a", rest), options)).filter((item) => item.startsWith("copyLink"));
+  for (const rest of [
+    {},
+    { threadId: undefined },
+    { status: "working" },
+    { status: "offline", connectionState: "disconnected", closedAt: "now" },
+    { harness: "opencode", opencodeSessionId: "s", threadId: undefined },
+    { remote: { machine: { id: "m", name: "Box" } } },
+  ]) assert.deepEqual(offered(rest), ["copyLink:Copy agent link"], JSON.stringify(rest));
+  assert.deepEqual(offered({}, {}), [], "not where nothing copies it");
+  page.close();
+});
+
 test("its button opens it by click or keys, keys move through it, and Escape closes it without interrupting", async () => {
   const page = mount();
   page.window.renderRows([agent("a", { status: "working" })]);
