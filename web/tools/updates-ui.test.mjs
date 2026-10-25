@@ -32,7 +32,7 @@ const wait = (ms = 60) => new Promise((done) => setTimeout(done, ms));
 const PRODUCT_POLL_MS = 1500;
 const POLL_MS = 100;
 // Opens an entry from its Settings category's row (T-187), once it is there.
-const entry = (f, text) => until(() => {
+const settingsEntry = (f, text) => until(() => {
   const el = [...f.w.document.querySelectorAll(".settings-entries button")].find((b) => b.textContent === text);
   el?.click();
   return !!el;
@@ -1116,7 +1116,7 @@ test("phone access opens from Connections & devices and reads Core's view each t
   const editor = () => f.w.document.querySelector("#settings-editor-remote");
   const openPhone = async () => {
     f.w.document.querySelector("#settings-tab-connections").click();
-    assert.ok(await entry(f, "Phone access"), "Connections & devices offers phone access");
+    assert.ok(await settingsEntry(f, "Phone access"), "Connections & devices offers phone access");
     assert.ok(await until(() => editor() && !editor().hidden && /pc\.tail0\.ts\.net/.test(editor().textContent)), "the phone editor shows Core's view");
   };
   try {
@@ -1255,7 +1255,7 @@ test("draft storage opens from Data, privacy & recovery and shows the Agent's sa
   try {
     await f.open();
     f.w.document.querySelector("#settings-tab-data").click();
-    assert.ok(await entry(f, "Drafts"), "Data, privacy & recovery offers it");
+    assert.ok(await settingsEntry(f, "Drafts"), "Data, privacy & recovery offers it");
     const row = () => f.w.document.querySelector('#settings-drafts [data-agent="a"]');
     assert.ok(await until(() => !!row()), "the Agent's saved draft is listed");
     assert.equal(f.w.document.querySelector("#settings-drafts textarea") === null, true, "nothing is opened until chosen");
