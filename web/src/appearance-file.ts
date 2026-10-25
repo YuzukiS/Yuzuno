@@ -38,8 +38,8 @@ const GROUPS: Record<string, string[] | null> = {
   turnDock: ["numbers", "bars"],
 };
 /** At most this many unknown names are listed, each cut to NAME_LENGTH. */
-const LISTED = 20;
-const NAME_LENGTH = 40;
+export const LISTED = 20;
+export const NAME_LENGTH = 40;
 
 export function fieldValue(appearance: Appearance, field: AppearanceField): FieldValue {
   const [group, key] = field.split(".") as [keyof Appearance, string | undefined];
@@ -86,13 +86,13 @@ export type AppearanceFileContents = {
   exportedAt: string | null;
 };
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
+export const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-const shown = (value: unknown) => {
+export const shown = (value: unknown) => {
   const text = JSON.stringify(value) ?? String(value);
   return text.length > NAME_LENGTH ? `${text.slice(0, NAME_LENGTH - 1)}…` : text;
 };
-const named = (name: string) => (name.length > NAME_LENGTH ? `${name.slice(0, NAME_LENGTH - 1)}…` : name);
+export const named = (name: string) => (name.length > NAME_LENGTH ? `${name.slice(0, NAME_LENGTH - 1)}…` : name);
 
 /** Reads an Appearance export. A file that is not one, or of a version this
  * device does not read, is refused as a whole; otherwise each field is taken
@@ -117,13 +117,24 @@ export function readAppearanceFile(text: string): { contents: AppearanceFileCont
   }
   const saved = data.appearance;
   if (!isObject(saved)) return { error: "This file holds no Appearance settings" };
-  const contents: AppearanceFileContents = {
-    values: {},
-    invalid: [],
-    unknown: [],
-    exportedAt: typeof data.exportedAt === "string" && data.exportedAt.length <= NAME_LENGTH ? data.exportedAt : null,
+  const group = readAppearanceGroup(saved, Object.keys(data).filter((name) => !TOP.includes(name)));
+  return {
+    contents: {
+      ...group,
+      exportedAt: typeof data.exportedAt === "string" && data.exportedAt.length <= NAME_LENGTH ? data.exportedAt : null,
+    },
   };
-  const unknown = Object.keys(data).filter((name) => !TOP.includes(name));
+}
+
+/** The Appearance settings object of an export (`saved`), read field by
+ * field as `readAppearanceFile` does: shared with the device-preferences file
+ * (T-194). `unknown` starts with names the caller already found unknown. */
+export function readAppearanceGroup(
+  saved: Record<string, unknown>,
+  unknown: string[] = [],
+): Omit<AppearanceFileContents, "exportedAt"> {
+  const contents: Omit<AppearanceFileContents, "exportedAt"> = { values: {}, invalid: [], unknown: [] };
+  unknown = [...unknown];
   for (const [name, value] of Object.entries(saved)) {
     if (!(name in GROUPS)) unknown.push(`appearance.${name}`);
     else if (GROUPS[name] && isObject(value)) {
@@ -146,7 +157,7 @@ export function readAppearanceFile(text: string): { contents: AppearanceFileCont
     if (fieldValue(read, field) === value) contents.values[field] = value as FieldValue;
     else contents.invalid.push({ field, value: shown(value) });
   }
-  return { contents };
+  return contents;
 }
 
 /** `current` with the chosen fields taken from the file's accepted values. */

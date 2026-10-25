@@ -1,0 +1,143 @@
+import type { Appearance } from "./appearance";
+import {
+  APPEARANCE_FILE,
+  APPEARANCE_FILE_VERSION,
+  LISTED,
+  NAME_LENGTH,
+  isObject,
+  named,
+  readAppearanceGroup,
+  shown,
+  type AppearanceFileContents,
+} from "./appearance-file";
+import { sendKeys, type DevicePreferences, type SendKey } from "./device-preferences";
+import { clockFormats, knownTimeZone, type ClockFormat, type TimePreferences } from "./time-preferences";
+
+/**
+ * This device's preferences as one file (T-194): Appearance, how messages are
+ * sent, and how times are shown, to keep or to take to another device. Each
+ * group is read back on its own and applied on its own, once saved on this
+ * device; nothing makes several groups one change. The file holds only these
+ * fields: no Core settings, native permissions, accounts, folders,
+ * conversations or drafts. An Appearance export (#199) reads as a file with
+ * the Appearance group only.
+ */
+export const DEVICE_FILE = "yuzuno-device-preferences";
+export const DEVICE_FILE_VERSION = 1;
+/** An export is about 1 KiB; a larger file is not read. */
+export const MAX_DEVICE_FILE_BYTES = 16 * 1024;
+
+export type DeviceGroup = "appearance" | "sending" | "time";
+export const deviceGroups: readonly DeviceGroup[] = ["appearance", "sending", "time"];
+const TOP = ["format", "version", "exportedAt", ...deviceGroups];
+
+/** One group as a file holds it: what this device accepts, or why it can't
+ * be applied at all. Appearance is read field by field, as its own file is;
+ * the other groups are taken whole or not at all. */
+export type DeviceFileContents = {
+  appearance?: Omit<AppearanceFileContents, "exportedAt" | "unknown"> | { refused: string };
+  sending?: { value: Partial<DevicePreferences> } | { refused: string };
+  time?: { value: Partial<TimePreferences> } | { refused: string };
+  unknown: string[];
+  exportedAt: string | null;
+  /** "appearance" when the file is an Appearance export. */
+  kind: "device" | "appearance";
+};
+
+/** The export: each group's settings in effect, and nothing else. */
+export function exportDevicePreferences(
+  { appearance, sending, time }: { appearance: Appearance; sending: DevicePreferences; time: TimePreferences },
+  now = new Date(),
+): string {
+  const { palette, theme, fontSize, agentList, projectGroups, dock, turnDock } = appearance;
+  return `${JSON.stringify(
+    {
+      format: DEVICE_FILE,
+      version: DEVICE_FILE_VERSION,
+      exportedAt: now.toISOString(),
+      appearance: {
+        palette,
+        theme,
+        fontSize,
+        agentList,
+        projectGroups,
+        dock: { jobs: dock.jobs, actions: dock.actions, subAgents: dock.subAgents },
+        turnDock: { numbers: turnDock.numbers, bars: turnDock.bars },
+      },
+      sending: { sendKey: sending.sendKey },
+      time: { clock: time.clock, timeZone: time.timeZone },
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+function readSending(saved: unknown, unknown: string[]): DeviceFileContents["sending"] {
+  if (!isObject(saved)) return { refused: `not settings: ${shown(saved)}` };
+  for (const name of Object.keys(saved)) if (name !== "sendKey") unknown.push(`sending.${name}`);
+  if (!("sendKey" in saved)) return { value: {} };
+  return sendKeys.includes(saved.sendKey as SendKey)
+    ? { value: { sendKey: saved.sendKey as SendKey } }
+    : { refused: `a send key this version doesn’t have: ${shown(saved.sendKey)}` };
+}
+
+function readTime(saved: unknown, unknown: string[]): DeviceFileContents["time"] {
+  if (!isObject(saved)) return { refused: `not settings: ${shown(saved)}` };
+  for (const name of Object.keys(saved)) if (name !== "clock" && name !== "timeZone") unknown.push(`time.${name}`);
+  const value: Partial<TimePreferences> = {};
+  if ("clock" in saved) {
+    if (!clockFormats.includes(saved.clock as ClockFormat))
+      return { refused: `a clock format this version doesn’t have: ${shown(saved.clock)}` };
+    value.clock = saved.clock as ClockFormat;
+  }
+  if ("timeZone" in saved) {
+    if (saved.timeZone !== null && !knownTimeZone(saved.timeZone))
+      return { refused: `a time zone this browser doesn’t know: ${shown(saved.timeZone)}` };
+    value.timeZone = saved.timeZone as string | null;
+  }
+  return { value };
+}
+
+/** Reads a device-preferences file, or an Appearance export. A file that is
+ * neither, or of a version this device does not read, is refused as a
+ * whole; otherwise each group is read on its own. */
+export function readDeviceFile(text: string): { contents: DeviceFileContents } | { error: string } {
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return { error: "This file isn’t JSON, so it isn’t a preferences export" };
+  }
+  if (!isObject(data) || (data.format !== DEVICE_FILE && data.format !== APPEARANCE_FILE)) {
+    return { error: "This file isn’t a Yuzuno preferences or Appearance export" };
+  }
+  const appearanceOnly = data.format === APPEARANCE_FILE;
+  const version = appearanceOnly ? APPEARANCE_FILE_VERSION : DEVICE_FILE_VERSION;
+  if (data.version !== version) {
+    return {
+      error:
+        Number.isInteger(data.version) && (data.version as number) > version
+          ? `This file is from a newer Yuzuno (file version ${data.version}); this version reads version ${version}`
+          : "This file’s version isn’t one Yuzuno knows",
+    };
+  }
+  const known = appearanceOnly ? ["format", "version", "exportedAt", "appearance"] : TOP;
+  const unknown = Object.keys(data).filter((name) => !known.includes(name));
+  const contents: DeviceFileContents = {
+    unknown: [],
+    exportedAt: typeof data.exportedAt === "string" && data.exportedAt.length <= NAME_LENGTH ? data.exportedAt : null,
+    kind: appearanceOnly ? "appearance" : "device",
+  };
+  if ("appearance" in data) {
+    if (isObject(data.appearance)) {
+      const group = readAppearanceGroup(data.appearance);
+      contents.appearance = { values: group.values, invalid: group.invalid };
+      unknown.push(...group.unknown);
+    } else contents.appearance = { refused: `not settings: ${shown(data.appearance)}` };
+  }
+  if (!appearanceOnly && "sending" in data) contents.sending = readSending(data.sending, unknown);
+  if (!appearanceOnly && "time" in data) contents.time = readTime(data.time, unknown);
+  if (!contents.appearance && !contents.sending && !contents.time) return { error: "This file holds none of these preferences" };
+  contents.unknown = unknown.slice(0, LISTED).map(named);
+  return { contents };
+}

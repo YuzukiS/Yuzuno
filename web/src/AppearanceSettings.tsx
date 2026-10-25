@@ -412,7 +412,7 @@ export function AppearanceSection() {
   );
 }
 
-const fieldLabels: Record<AppearanceField, string> = {
+export const fieldLabels: Record<AppearanceField, string> = {
   palette: "Palette",
   theme: "Theme",
   fontSize: "Text size",
@@ -426,7 +426,7 @@ const fieldLabels: Record<AppearanceField, string> = {
 };
 
 /** A setting's value as the controls above name it. */
-function fieldText(field: AppearanceField, value: string | number): string {
+export function fieldText(field: AppearanceField, value: string | number): string {
   switch (field) {
     case "palette":
       return paletteLabels[value as Palette];
