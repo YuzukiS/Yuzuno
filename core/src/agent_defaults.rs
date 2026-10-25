@@ -253,7 +253,8 @@ pub fn resolve_claude_model(defaults: &AgentDefaults, project: Option<&AgentDefa
         ModelAsk::Inherit => {
             let none = AgentDefaults::default();
             let project = project.unwrap_or(&none);
-            match [(project, "project"), (defaults, "workspace")].into_iter().find_map(|(layer, source)| layer.claude_model.clone().map(|model| (model, source))) {
+            let found = [(project, "project"), (defaults, "workspace")].into_iter().find_map(|(layer, source)| layer.claude_model.clone().map(|model| (model, source)));
+            match found {
                 Some((model, source)) => plan(model, Some(source), source),
                 None => plan(String::new(), None, "builtin"),
             }
