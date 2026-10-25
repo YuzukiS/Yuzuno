@@ -75,7 +75,7 @@ function PublishedResult({
   }, [agentId, shown.id, reads]);
   switch (state.kind) {
     case "loading":
-      return <ResultPlaceholder label="Loading interactive result…" />;
+      return <ResultPlaceholder what="result" />;
     case "failed":
       // Reading it again never asks the Agent for anything.
       return state.missing ? (

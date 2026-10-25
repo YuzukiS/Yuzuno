@@ -4,6 +4,7 @@ import { api, errorText, post } from "../api";
 import { ClarificationHost } from "./ClarificationHost";
 import { useResult } from "./ResultContext";
 import { TASK_STATUSES } from "./contract";
+import { strings, useLanguage } from "../i18n";
 import {
   failureText,
   finalAttempt,
@@ -16,6 +17,62 @@ import {
   type TaskStatusProps,
 } from "./task-status";
 // Its styles are in intelligent-ui.css, which the main bundle loads.
+
+// The card's own words in the interface language (T-189); see task-status.ts.
+const cardText = strings({
+  aria: (id: string) => `Proposed status change for ${id}`,
+  title: (id: string) => `Proposed change to ${id}`,
+  now: "Now",
+  reading: "Reading the task from Core…",
+  task: (status: string, version: number, assignee: string | null | undefined, archived: boolean) =>
+    `${status} · version ${version}${assignee ? ` · ${assignee}` : ""}${archived ? " · archived" : ""}`,
+  gone: (id: string) => `${id} no longer exists`,
+  unknown: "Unknown",
+  proposes: "Agent proposes",
+  proposal: (status: string, reason: string) => `${status}: ${reason}`,
+  applied: (by: string, id: string, status: string, version: number | null | undefined, reason: string | null | undefined) =>
+    `${by} confirmed it: ${id} is now ${status}${version ? ` (version ${version})` : ""}.${reason ? ` Reason: ${reason}` : ""}`,
+  declined: (by: string, id: string) => `${by} declined it. ${id} was not changed by this proposal.`,
+  newStatus: "New status",
+  proposed: " (proposed)",
+  reason: "Reason",
+  already: (id: string, status: string) => `${id} is already ${status}.`,
+  edited: "You changed the Agent’s proposal.",
+  change: (id: string, status: string) => `Change ${id} to ${status}`,
+  decline: "Decline",
+  lost: (confirm: boolean) => `Core’s answer to your ${confirm ? "confirmation" : "decline"} was lost, so it isn’t known whether it was recorded.`,
+  checkAgain: "Check again",
+  lostAfter: "sends the same decision once more; Core never applies it twice.",
+  only: "Only your confirmation changes the task. Nothing else here does.",
+  publish: "Ask the Agent to publish this proposal with result_publish so you can confirm it here.",
+  readOnly: "This proposal is read-only here. Open its original conversation to decide it.",
+}, {
+  aria: (id) => `${id} 的状态变更提议`,
+  title: (id) => `对 ${id} 的变更提议`,
+  now: "当前",
+  reading: "正在从 Core 读取任务…",
+  task: (status, version, assignee, archived) => `${status} · 版本 ${version}${assignee ? ` · ${assignee}` : ""}${archived ? " · 已归档" : ""}`,
+  gone: (id) => `${id} 已不存在`,
+  unknown: "未知",
+  proposes: "Agent 提议",
+  proposal: (status, reason) => `${status}：${reason}`,
+  applied: (by, id, status, version, reason) =>
+    `${by} 已确认：${id} 现在是“${status}”${version ? `（版本 ${version}）` : ""}。${reason ? `理由：${reason}` : ""}`,
+  declined: (by, id) => `${by} 拒绝了它。${id} 没有因这个提议而改变。`,
+  newStatus: "新状态",
+  proposed: "（提议）",
+  reason: "理由",
+  already: (id, status) => `${id} 已经是“${status}”。`,
+  edited: "你修改了 Agent 的提议。",
+  change: (id, status) => `把 ${id} 改为“${status}”`,
+  decline: "拒绝",
+  lost: (confirm) => `Core 对你的${confirm ? "确认" : "拒绝"}的回答丢失了，所以不知道它是否已被记录。`,
+  checkAgain: "再次检查",
+  lostAfter: "会再发送一次同样的决定；Core 不会重复执行。",
+  only: "只有你的确认会改变任务。这里的其他操作都不会。",
+  publish: "请让 Agent 用 result_publish 发布这个提议，你就能在这里确认。",
+  readOnly: "这个提议在这里是只读的。请打开它的原始会话来决定。",
+});
 
 type CardProps = {
   proposal: TaskStatusProps;
@@ -46,6 +103,9 @@ export function TaskStatusCard({
   onDecide,
   onCheck,
 }: CardProps) {
+  const language = useLanguage();
+  const t = cardText(language);
+  const label = (value: string | null | undefined) => statusLabel(value, language);
   const [status, setStatus] = useState<string>(proposal.status);
   const [reason, setReason] = useState(proposal.reason);
   const task = view?.task || null;
@@ -56,39 +116,37 @@ export function TaskStatusCard({
   const same = !!task && task.status === status;
   const disabled = !!busy || !!blocked || !task || !onDecide || !!unanswered;
   return (
-    <section className="task-status-card" aria-label={`Proposed status change for ${proposal.taskId}`}>
+    <section className="task-status-card" aria-label={t.aria(proposal.taskId)}>
       <header>
         <ClipboardCheck size={15} />
         <h4>
-          Proposed change to {proposal.taskId}
+          {t.title(proposal.taskId)}
           {task && <span> · {task.title}</span>}
         </h4>
       </header>
       <dl className="task-status-facts">
         <div>
-          <dt>Now</dt>
+          <dt>{t.now}</dt>
           <dd>
             {loading && !view
-              ? "Reading the task from Core…"
+              ? t.reading
               : task
-                ? `${statusLabel(task.status)} · version ${task.version}${task.assignee ? ` · ${task.assignee}` : ""}${task.archived ? " · archived" : ""}`
+                ? t.task(label(task.status), task.version, task.assignee, !!task.archived)
                 : view
-                  ? `${proposal.taskId} no longer exists`
-                  : "Unknown"}
+                  ? t.gone(proposal.taskId)
+                  : t.unknown}
           </dd>
         </div>
         <div>
-          <dt>Agent proposes</dt>
-          <dd>
-            {statusLabel(proposal.status)}: {proposal.reason}
-          </dd>
+          <dt>{t.proposes}</dt>
+          <dd>{t.proposal(label(proposal.status), proposal.reason)}</dd>
         </div>
       </dl>
       {final ? (
         <p className="task-status-outcome" role="status">
           {final.state === "applied"
-            ? `${final.by.name} confirmed it: ${proposal.taskId} is now ${statusLabel(final.status)}${final.taskVersion ? ` (version ${final.taskVersion})` : ""}.${final.reason ? ` Reason: ${final.reason}` : ""}`
-            : `${final.by.name} declined it. ${proposal.taskId} was not changed by this proposal.`}
+            ? t.applied(final.by.name, proposal.taskId, label(final.status), final.taskVersion, final.reason)
+            : t.declined(final.by.name, proposal.taskId)}
         </p>
       ) : blocked ? (
         <p className="task-status-outcome" role="status">
@@ -98,18 +156,18 @@ export function TaskStatusCard({
         <>
           <div className="task-status-edit">
             <label>
-              <span>New status</span>
+              <span>{t.newStatus}</span>
               <select value={status} disabled={disabled} onChange={(e) => setStatus(e.target.value)}>
                 {TASK_STATUSES.map((value) => (
                   <option key={value} value={value}>
-                    {statusLabel(value)}
-                    {value === proposal.status ? " (proposed)" : ""}
+                    {label(value)}
+                    {value === proposal.status ? t.proposed : ""}
                   </option>
                 ))}
               </select>
             </label>
             <label>
-              <span>Reason</span>
+              <span>{t.reason}</span>
               <textarea
                 rows={2}
                 maxLength={1000}
@@ -121,10 +179,10 @@ export function TaskStatusCard({
           </div>
           {task && (
             <ul className="task-status-impact">
-              {(same ? [`${task.id} is already ${statusLabel(task.status)}.`] : impact(task, status, reason)).map((line) => (
+              {(same ? [t.already(task.id, label(task.status))] : impact(task, status, reason, language)).map((line) => (
                 <li key={line}>{line}</li>
               ))}
-              {edited && <li>You changed the Agent’s proposal.</li>}
+              {edited && <li>{t.edited}</li>}
             </ul>
           )}
           <div className="task-status-actions">
@@ -137,7 +195,7 @@ export function TaskStatusCard({
               }
             >
               {busy === "confirm" ? <LoaderCircle size={14} className="spin" /> : <Check size={14} />}
-              Change {proposal.taskId} to {statusLabel(status)}
+              {t.change(proposal.taskId, label(status))}
             </button>
             <button
               type="button"
@@ -146,25 +204,24 @@ export function TaskStatusCard({
               onClick={() => onDecide?.({ action: "decline" })}
             >
               {busy === "decline" ? <LoaderCircle size={14} className="spin" /> : <X size={14} />}
-              Decline
+              {t.decline}
             </button>
           </div>
         </>
       )}
       {!final && last?.state === "failed" && (
         <p className="task-status-error" role="alert">
-          {failureText(last, task)}
+          {failureText(last, task, language)}
         </p>
       )}
       {unanswered && (
         <p className="task-status-error" role="alert">
-          Core’s answer to your {unanswered.action === "confirm" ? "confirmation" : "decline"} was lost, so it isn’t known
-          whether it was recorded.{" "}
+          {t.lost(unanswered.action === "confirm")}{" "}
           <button type="button" className="inline-link" disabled={!!busy || !onCheck} onClick={onCheck}>
             {busy === "check" ? <LoaderCircle size={13} className="spin" /> : <RefreshCw size={13} />}
-            Check again
+            {t.checkAgain}
           </button>{" "}
-          sends the same decision once more; Core never applies it twice.
+          {t.lostAfter}
         </p>
       )}
       {error && !unanswered && (
@@ -172,13 +229,14 @@ export function TaskStatusCard({
           {error}
         </p>
       )}
-      <small>Only your confirmation changes the task. Nothing else here does.</small>
+      <small>{t.only}</small>
     </section>
   );
 }
 
 /** The card for a published result: Core's facts, decisions and their receipts. */
 export function PublishedTaskStatus({ proposal }: { proposal: TaskStatusProps }) {
+  const t = cardText(useLanguage());
   const host = useContext(ClarificationHost);
   const { resultId } = useResult();
   const agent = host?.detail?.agent;
@@ -241,11 +299,7 @@ export function PublishedTaskStatus({ proposal }: { proposal: TaskStatusProps })
       setBusy("");
     }
   }
-  const readOnly = !resultId
-    ? "Ask the Agent to publish this proposal with result_publish so you can confirm it here."
-    : !agent || host?.readOnly
-      ? "This proposal is read-only here. Open its original conversation to decide it."
-      : undefined;
+  const readOnly = !resultId ? t.publish : !agent || host?.readOnly ? t.readOnly : undefined;
   return (
     <TaskStatusCard
       proposal={proposal}
