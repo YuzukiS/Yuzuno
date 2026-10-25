@@ -132,9 +132,9 @@ async fn claude_code_on_the_core_host_takes_a_default_model_its_catalog_offers()
 
     // The Agent made before any default is as it was.
     let id = plain["id"].as_str().unwrap();
-    let (_, agents) = call(&router, "GET", "/api/agents", None).await;
-    let first = agents.as_array().or(agents["agents"].as_array()).unwrap().iter().find(|a| a["id"] == id).unwrap().clone();
-    assert_eq!(first["model"], json!(""));
+    let (status, detail) = call(&router, "GET", &format!("/api/agents/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!((detail["agent"]["id"].clone(), detail["agent"]["model"].clone()), (json!(id), json!("")), "{detail}");
     std::fs::write(tmp.path().join("end-session"), "").unwrap();
 }
 
