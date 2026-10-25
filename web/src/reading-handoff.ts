@@ -130,12 +130,12 @@ export function restoredOffset(progress: number, height: number, pane: number) {
   return Math.min(Math.max(offset, visible - height), Math.max(0, pane - visible));
 }
 
-/** "5 min ago", by Core's own clock. */
-export function ageText(seconds: number) {
-  if (!(seconds >= 60)) return "just now";
+/** "5 min ago", by Core's own clock; in Chinese when `zh` (T-189). */
+export function ageText(seconds: number, zh = false) {
+  if (!(seconds >= 60)) return zh ? "刚刚" : "just now";
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 60) return zh ? `${minutes} 分钟前` : `${minutes} min ago`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `${hours} h ago`;
-  return `${Math.floor(hours / 24)} days ago`;
+  if (hours < 48) return zh ? `${hours} 小时前` : `${hours} h ago`;
+  return zh ? `${Math.floor(hours / 24)} 天前` : `${Math.floor(hours / 24)} days ago`;
 }

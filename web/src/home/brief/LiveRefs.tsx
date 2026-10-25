@@ -15,15 +15,17 @@ import { useBrief, type BriefContextValue } from "./BriefContext";
 import type { LiveRefState, Section } from "../types";
 import { formatTime, type LiveRef, type LiveRefKind, type LiveRefsProps } from "./brief-catalog";
 import { useTimeDisplay } from "../../time-preferences";
+import { useStrings } from "../../i18n";
+import { briefText } from "./brief-text";
 
-const kinds: Record<LiveRefKind, { label: string; icon: LucideIcon }> = {
-  task: { label: "Task", icon: ClipboardList },
-  pr: { label: "Pull request", icon: GitPullRequest },
-  ci: { label: "CI run", icon: Workflow },
-  job: { label: "Job", icon: Cpu },
-  review: { label: "Review", icon: ScanSearch },
-  agent: { label: "Agent", icon: Bot },
-  machine: { label: "Machine", icon: Server },
+const kinds: Record<LiveRefKind, { icon: LucideIcon }> = {
+  task: { icon: ClipboardList },
+  pr: { icon: GitPullRequest },
+  ci: { icon: Workflow },
+  job: { icon: Cpu },
+  review: { icon: ScanSearch },
+  agent: { icon: Bot },
+  machine: { icon: Server },
 };
 
 /** A GitHub page, checked by the same rule as result sources; anything else is not a link. */
@@ -83,6 +85,7 @@ function opening(ref: LiveRef, brief: BriefContextValue, state: LiveRefState | u
 
 function Chip({ item }: { item: LiveRef }) {
   const time = useTimeDisplay();
+  const t = useStrings(briefText);
   const brief = useBrief();
   const kind = kinds[item.kind];
   if (!kind) return null;
@@ -94,7 +97,7 @@ function Chip({ item }: { item: LiveRef }) {
   // read out after it (T-173). Without a label, the current title shows.
   const name = item.label || state?.title || item.id;
   const full = item.label && state?.title && state.title !== item.label ? state.title : null;
-  const title = `${kind.label} ${item.id}${full ? `: ${full}` : ""}${state?.observedAt ? ` · as of ${formatTime(state.observedAt, time)}` : ""}`;
+  const title = `${t.refKind[item.kind]} ${item.id}${full ? `: ${full}` : ""}${state?.observedAt ? t.refAsOf(formatTime(state.observedAt, time)) : ""}`;
   const content = (
     <>
       <Icon size={13} aria-hidden="true" />
@@ -103,7 +106,7 @@ function Chip({ item }: { item: LiveRef }) {
       {name !== item.id && <small>{item.id}</small>}
       {state && !state.found ? (
         <em className="brief-ref-state" data-tone="missing">
-          not found
+          {t.notFound}
         </em>
       ) : (
         state?.state && (
@@ -128,7 +131,7 @@ function Chip({ item }: { item: LiveRef }) {
     );
   if (target)
     return (
-      <button type="button" {...attributes} title={`Open ${title}`} onClick={target.open}>
+      <button type="button" {...attributes} title={t.open(title)} onClick={target.open}>
         {content}
       </button>
     );
@@ -140,8 +143,9 @@ function Chip({ item }: { item: LiveRef }) {
 }
 
 export function BriefLiveRefs({ items }: LiveRefsProps) {
+  const t = useStrings(briefText);
   return (
-    <ul className="brief-refs" aria-label="References">
+    <ul className="brief-refs" aria-label={t.references}>
       {items.map((item, index) => (
         <li key={`${item.kind}:${item.id}:${index}`}>
           <Chip item={item} />

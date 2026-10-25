@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { api, errorText, patch, post, remove } from "./api";
-import { strings, useStrings } from "./i18n";
+import { strings, useLanguage, useStrings } from "./i18n";
 import { Avatar, Modal } from "./components";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import {
@@ -291,6 +291,115 @@ export function ProjectSwitcher({
   );
 }
 
+// The Projects window's own words (T-189). Project, Agent and machine names,
+// folders, repository and service names, and what Core says are shown as
+// they are. New Agent defaults and Code review come translated from their
+// own editors.
+const managerText = strings({
+  title: "Projects",
+  description: "Group long-running work. Agents keep collaborating across projects, and task numbers stay shared.",
+  list: "Projects",
+  without: "Without a project",
+  newProject: "New project",
+  archivedList: "Archived",
+  gone: "This project is no longer available.",
+  coreHost: "Core host",
+  // New project
+  newTitle: "A new project",
+  newNote: "A project is where a long piece of work belongs, such as an app or a study. It can use several machines and folders.",
+  name: "Name",
+  folderOn: (machine: string) => `Default folder on ${machine}`,
+  optional: "optional",
+  folderHint: "Fills in new agents’ folder. Agents can still use any folder, such as a worktree elsewhere.",
+  create: "Create project",
+  // A project
+  projectName: "Project name",
+  rename: "Rename",
+  archivedNote: "Archived. Its agents and tasks stay where they are and still reach you when they need you; nothing new joins it.",
+  folders: "Default folders",
+  foldersNote: "Fills in new agents’ folder on each machine. It does not limit which folders an agent may use, and changing it never moves existing agents.",
+  machinesFailed: (error: string) => `Couldn’t load machines: ${error}`,
+  noDefault: "No default",
+  save: "Save",
+  clear: "Clear",
+  agents: "Agents",
+  closedSuffix: " · closed",
+  removeFrom: (agent: string, project: string) => `Remove ${agent} from ${project}`,
+  removeTip: "Remove from project",
+  noAgents: "No agents yet.",
+  agentToAdd: "Agent to add",
+  addAgent: "Add an agent…",
+  fromProject: (project: string) => ` · from ${project}`,
+  add: "Add",
+  moveNote: "Moving an agent changes only where it is listed. Its folder, conversation and read state stay the same.",
+  unarchive: "Unarchive",
+  archive: "Archive project",
+  stillLinked: (agents: number, tasks: number) =>
+    `Still linked to ${agents} agent${agents === 1 ? "" : "s"} and ${tasks} task${tasks === 1 ? "" : "s"}; archive it instead`,
+  deleteEmpty: "Delete this empty project",
+  delete: "Delete",
+  // Without a project
+  unassignedTitle: "Agents without a project",
+  unassignedNote: "Grouped by folder as a suggestion. Nothing is assigned until you choose.",
+  allAssigned: "Every agent has a project.",
+  newNameFor: (folder: string) => `New project name for ${folder}`,
+  partlyJoined: (project: string, failed: string) =>
+    `${project} was created, but not every agent joined it (${failed}). Add them to ${project} below.`,
+  existingFor: (folder: string) => `Existing project for ${folder}`,
+  addToExisting: "Add to an existing project…",
+  addAll: (count: number) => (count > 1 ? `Add all ${count}` : "Add"),
+  partlyAdded: (failed: string) => `Not every agent was added (${failed}).`,
+}, {
+  title: "项目",
+  description: "把长期工作分组。Agent 可以跨项目协作，任务编号仍共用。",
+  list: "项目",
+  without: "无项目",
+  newProject: "新建项目",
+  archivedList: "已归档",
+  gone: "此项目已不存在。",
+  coreHost: "Core 主机",
+  newTitle: "新项目",
+  newNote: "项目是一项长期工作的归属，例如一个应用或一项研究。它可以使用多台机器和多个文件夹。",
+  name: "名称",
+  folderOn: (machine) => `${machine} 上的默认文件夹`,
+  optional: "可选",
+  folderHint: "用于预填新 Agent 的文件夹。Agent 仍可使用任何文件夹，例如别处的 worktree。",
+  create: "创建项目",
+  projectName: "项目名称",
+  rename: "重命名",
+  archivedNote: "已归档。它的 Agent 和任务保持原样，需要你时仍会找你；不会再有新的加入。",
+  folders: "默认文件夹",
+  foldersNote: "用于在每台机器上预填新 Agent 的文件夹。它不限制 Agent 可以使用哪些文件夹，更改它也不会移动现有 Agent。",
+  machinesFailed: (error) => `无法加载机器：${error}`,
+  noDefault: "无默认值",
+  save: "保存",
+  clear: "清除",
+  agents: "Agent",
+  closedSuffix: " · 已关闭",
+  removeFrom: (agent, project) => `将 ${agent} 移出 ${project}`,
+  removeTip: "移出项目",
+  noAgents: "还没有 Agent。",
+  agentToAdd: "要添加的 Agent",
+  addAgent: "添加 Agent…",
+  fromProject: (project) => ` · 来自 ${project}`,
+  add: "添加",
+  moveNote: "移动 Agent 只改变它列在哪里。它的文件夹、会话和已读状态保持不变。",
+  unarchive: "取消归档",
+  archive: "归档项目",
+  stillLinked: (agents, tasks) => `仍关联 ${agents} 个 Agent 和 ${tasks} 个任务；请改为归档`,
+  deleteEmpty: "删除这个空项目",
+  delete: "删除",
+  unassignedTitle: "无项目的 Agent",
+  unassignedNote: "按文件夹分组作为建议。在你选择之前不会分配任何项目。",
+  allAssigned: "每个 Agent 都有项目。",
+  newNameFor: (folder) => `${folder} 的新项目名称`,
+  partlyJoined: (project, failed) => `已创建 ${project}，但并非所有 Agent 都已加入（${failed}）。请在下方把它们加入 ${project}。`,
+  existingFor: (folder) => `${folder} 的现有项目`,
+  addToExisting: "加入现有项目…",
+  addAll: (count) => (count > 1 ? `全部添加（${count}）` : "添加"),
+  partlyAdded: (failed) => `并非所有 Agent 都已添加（${failed}）。`,
+});
+
 type ManagerView =
   | { kind: "project"; id: string }
   | { kind: "new" }
@@ -318,6 +427,7 @@ export function ProjectManager({
   onChanged: () => void;
   onCreated: (project: Project) => void;
 }) {
+  const t = useStrings(managerText);
   const [view, setView] = useState<ManagerView>({ kind: "new" });
   const [machines, setMachines] = useState<WorkspaceMachine[]>([]);
   const [machineError, setMachineError] = useState("");
@@ -368,11 +478,11 @@ export function ProjectManager({
       open={open}
       onOpenChange={onOpenChange}
       wide
-      title="Projects"
-      description="Group long-running work. Agents keep collaborating across projects, and task numbers stay shared."
+      title={t.title}
+      description={t.description}
     >
       <div className="project-manager">
-        <nav className="project-list" aria-label="Projects">
+        <nav className="project-list" aria-label={t.list}>
           {activeProjects(projects).map(listItem)}
           <button
             type="button"
@@ -380,7 +490,7 @@ export function ProjectManager({
             onClick={() => setView({ kind: "unassigned" })}
           >
             <span className="scope-blank" />
-            <span>Without a project</span>
+            <span>{t.without}</span>
             <small>{unassigned.length}</small>
           </button>
           <button
@@ -388,11 +498,11 @@ export function ProjectManager({
             className="quiet-button project-new"
             onClick={() => setView({ kind: "new" })}
           >
-            <Plus size={14} /> New project
+            <Plus size={14} /> {t.newProject}
           </button>
           {archived.length > 0 && (
             <div className="project-archived-list">
-              <span>Archived</span>
+              <span>{t.archivedList}</span>
               {archived.map(listItem)}
             </div>
           )}
@@ -434,7 +544,7 @@ export function ProjectManager({
               }}
             />
           ) : (
-            <p className="project-note">This project is no longer available.</p>
+            <p className="project-note">{t.gone}</p>
           )}
         </section>
       </div>
@@ -468,6 +578,7 @@ function NewProject({
   machines: WorkspaceMachine[];
   onCreated: (project: Project) => void;
 }) {
+  const t = useStrings(managerText);
   const [name, setName] = useState("");
   const [folder, setFolder] = useState("");
   const action = useAction();
@@ -487,13 +598,10 @@ function NewProject({
         if (created) onCreated(created);
       }}
     >
-      <h3>A new project</h3>
-      <p className="project-note">
-        A project is where a long piece of work belongs, such as an app or a
-        study. It can use several machines and folders.
-      </p>
+      <h3>{t.newTitle}</h3>
+      <p className="project-note">{t.newNote}</p>
       <label>
-        Name
+        {t.name}
         <input
           autoFocus
           required
@@ -504,7 +612,7 @@ function NewProject({
         />
       </label>
       <label>
-        Default folder on {host?.name || "Core host"} <small>optional</small>
+        {t.folderOn(host?.name || t.coreHost)} <small>{t.optional}</small>
         <input
           value={folder}
           onChange={(event) => setFolder(event.target.value)}
@@ -513,10 +621,7 @@ function NewProject({
           autoCapitalize="none"
           autoCorrect="off"
         />
-        <span className="field-hint">
-          Fills in new agents’ folder. Agents can still use any folder, such as
-          a worktree elsewhere.
-        </span>
+        <span className="field-hint">{t.folderHint}</span>
       </label>
       {action.error && (
         <p role="alert" className="inline-error">
@@ -533,7 +638,7 @@ function NewProject({
           ) : (
             <FolderPlus size={15} />
           )}
-          Create project
+          {t.create}
         </button>
       </div>
     </form>
@@ -559,6 +664,8 @@ function ProjectDetail({
   onChanged: () => void;
   onDeleted: () => void;
 }) {
+  const t = useStrings(managerText);
+  const language = useLanguage();
   const [name, setName] = useState(project.name);
   // Unsaved folder edits per machine. The workspace refreshes every few
   // seconds; only an edit that now matches what Core saved is dropped.
@@ -606,7 +713,7 @@ function ProjectDetail({
         }}
       >
         <label>
-          Project name
+          {t.projectName}
           <input
             required
             maxLength={100}
@@ -620,29 +727,25 @@ function ProjectDetail({
             !!action.busy || !name.trim() || name.trim() === project.name
           }
         >
-          Rename
+          {t.rename}
         </button>
       </form>
-      <GitHubLinks key={project.id} projectId={project.id} disabled={archived} />
+      <GitHubLinks key={project.id} projectId={project.id} disabled={archived} language={language} />
       <ProjectServices key={`services:${project.id}`} projectId={project.id} machines={machines} disabled={archived} />
       <HomeContentEditors key={`editors:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
       <AgentDefaults key={`defaults:${project.id}`} active projectId={project.id} disabled={archived} />
       <ReviewSettings key={`review:${project.id}`} active projectId={project.id} disabled={archived} />
       {archived && (
         <p className="project-note project-archived-note">
-          <Archive size={14} /> Archived. Its agents and tasks stay where they
-          are and still reach you when they need you; nothing new joins it.
+          <Archive size={14} /> {t.archivedNote}
         </p>
       )}
 
-      <h3>Default folders</h3>
-      <p className="project-note">
-        Fills in new agents’ folder on each machine. It does not limit which
-        folders an agent may use, and changing it never moves existing agents.
-      </p>
+      <h3>{t.folders}</h3>
+      <p className="project-note">{t.foldersNote}</p>
       {machineError && (
         <p role="alert" className="inline-error">
-          Couldn’t load machines: {machineError}
+          {t.machinesFailed(machineError)}
         </p>
       )}
       <div className="project-folders">
@@ -676,9 +779,9 @@ function ProjectDetail({
                 {machine.name}
               </span>
               <input
-                aria-label={`Default folder on ${machine.name}`}
+                aria-label={t.folderOn(machine.name)}
                 value={value}
-                placeholder={machine.defaultCwd || "No default"}
+                placeholder={machine.defaultCwd || t.noDefault}
                 onChange={(event) =>
                   setEdits({ ...edits, [machine.id]: event.target.value })
                 }
@@ -693,9 +796,9 @@ function ProjectDetail({
                 {action.busy === `folder:${machine.id}` ? (
                   <LoaderCircle size={13} className="spin" />
                 ) : value.trim() || !saved ? (
-                  "Save"
+                  t.save
                 ) : (
-                  "Clear"
+                  t.clear
                 )}
               </button>
             </form>
@@ -704,7 +807,7 @@ function ProjectDetail({
       </div>
 
       <h3>
-        Agents <span className="project-count">{members.length}</span>
+        {t.agents} <span className="project-count">{members.length}</span>
       </h3>
       {members.length ? (
         <ul className="project-members">
@@ -714,17 +817,17 @@ function ProjectDetail({
               <span className="project-member-text">
                 <strong>
                   {agent.name}
-                  {agent.closedAt ? " · closed" : ""}
+                  {agent.closedAt ? t.closedSuffix : ""}
                 </strong>
                 <small title={agent.cwd}>
-                  {agent.remote?.machine.name || "Core host"} · {agent.cwd}
+                  {agent.remote?.machine.name || t.coreHost} · {agent.cwd}
                 </small>
               </span>
               <button
                 type="button"
                 className="icon-button"
-                aria-label={`Remove ${agent.name} from ${project.name}`}
-                title="Remove from project"
+                aria-label={t.removeFrom(agent.name, project.name)}
+                title={t.removeTip}
                 disabled={!!action.busy}
                 onClick={() => void move(agent, null)}
               >
@@ -734,7 +837,7 @@ function ProjectDetail({
           ))}
         </ul>
       ) : (
-        <p className="project-note">No agents yet.</p>
+        <p className="project-note">{t.noAgents}</p>
       )}
       {!archived && others.length > 0 && (
         <form
@@ -746,18 +849,18 @@ function ProjectDetail({
           }}
         >
           <select
-            aria-label="Agent to add"
+            aria-label={t.agentToAdd}
             value={adding}
             onChange={(event) => setAdding(event.target.value)}
           >
-            <option value="">Add an agent…</option>
+            <option value="">{t.addAgent}</option>
             {others.map((agent) => (
               <option key={agent.id} value={agent.id}>
                 {agent.name}
                 {agent.projectId
-                  ? ` · from ${projectName(agent.projectId, projects)}`
+                  ? t.fromProject(projectName(agent.projectId, projects))
                   : ""}
-                {agent.closedAt ? " · closed" : ""}
+                {agent.closedAt ? t.closedSuffix : ""}
               </option>
             ))}
           </select>
@@ -765,14 +868,11 @@ function ProjectDetail({
             className="secondary-button"
             disabled={!adding || !!action.busy}
           >
-            Add
+            {t.add}
           </button>
         </form>
       )}
-      <p className="project-note">
-        Moving an agent changes only where it is listed. Its folder,
-        conversation and read state stay the same.
-      </p>
+      <p className="project-note">{t.moveNote}</p>
 
       {action.error && (
         <p role="alert" className="inline-error">
@@ -787,7 +887,7 @@ function ProjectDetail({
           onClick={() => void save("archive", { archived: !archived })}
         >
           {archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
-          {archived ? "Unarchive" : "Archive project"}
+          {archived ? t.unarchive : t.archive}
         </button>
         <button
           type="button"
@@ -795,8 +895,8 @@ function ProjectDetail({
           disabled={!!action.busy || members.length > 0 || tasks > 0}
           title={
             members.length || tasks
-              ? `Still linked to ${members.length} agent${members.length === 1 ? "" : "s"} and ${tasks} task${tasks === 1 ? "" : "s"}; archive it instead`
-              : "Delete this empty project"
+              ? t.stillLinked(members.length, tasks)
+              : t.deleteEmpty
           }
           onClick={() =>
             void action.run("delete", async () => {
@@ -806,7 +906,7 @@ function ProjectDetail({
           }
         >
           <Trash2 size={14} />
-          Delete
+          {t.delete}
         </button>
       </div>
     </div>
@@ -824,6 +924,7 @@ function Unassigned({
   onChanged: () => void;
   onCreated: (project: Project) => void;
 }) {
+  const t = useStrings(managerText);
   const groups = unassignedFolders(agents);
   const [names, setNames] = useState<Record<string, string>>({});
   const [targets, setTargets] = useState<Record<string, string>>({});
@@ -843,12 +944,10 @@ function Unassigned({
   };
   return (
     <div className="project-form">
-      <h3>Agents without a project</h3>
-      <p className="project-note">
-        Grouped by folder as a suggestion. Nothing is assigned until you choose.
-      </p>
+      <h3>{t.unassignedTitle}</h3>
+      <p className="project-note">{t.unassignedNote}</p>
       {!groups.length && (
-        <p className="project-note">Every agent has a project.</p>
+        <p className="project-note">{t.allAssigned}</p>
       )}
       {groups.map((group) => {
         const name = names[group.key] ?? folderName(group.cwd);
@@ -860,7 +959,7 @@ function Unassigned({
               <span>
                 <strong title={group.cwd}>{group.cwd}</strong>
                 <small>
-                  {group.machineName} ·{" "}
+                  {group.machineId === "local" ? t.coreHost : group.machineName} ·{" "}
                   {group.agents.map((agent) => agent.name).join(", ")}
                 </small>
               </span>
@@ -880,9 +979,7 @@ function Unassigned({
                     // The project exists either way; show it and what is left.
                     onChanged();
                     if (failed.length)
-                      throw new Error(
-                        `${project.name} was created, but not every agent joined it (${failed.join("; ")}). Add them to ${project.name} below.`,
-                      );
+                      throw new Error(t.partlyJoined(project.name, failed.join("; ")));
                     return project;
                   },
                 );
@@ -890,7 +987,7 @@ function Unassigned({
               }}
             >
               <input
-                aria-label={`New project name for ${group.cwd}`}
+                aria-label={t.newNameFor(group.cwd)}
                 value={name}
                 maxLength={100}
                 onChange={(event) =>
@@ -901,7 +998,7 @@ function Unassigned({
                 className="secondary-button"
                 disabled={!!action.busy || !name.trim()}
               >
-                <FolderPlus size={14} /> Create project
+                <FolderPlus size={14} /> {t.create}
               </button>
             </form>
             {activeProjects(projects).length > 0 && (
@@ -914,20 +1011,18 @@ function Unassigned({
                     const failed = await assign(group, target);
                     onChanged();
                     if (failed.length)
-                      throw new Error(
-                        `Not every agent was added (${failed.join("; ")}).`,
-                      );
+                      throw new Error(t.partlyAdded(failed.join("; ")));
                   });
                 }}
               >
                 <select
-                  aria-label={`Existing project for ${group.cwd}`}
+                  aria-label={t.existingFor(group.cwd)}
                   value={target}
                   onChange={(event) =>
                     setTargets({ ...targets, [group.key]: event.target.value })
                   }
                 >
-                  <option value="">Add to an existing project…</option>
+                  <option value="">{t.addToExisting}</option>
                   {activeProjects(projects).map((project) => (
                     <option key={project.id} value={project.id}>
                       {project.name}
@@ -938,8 +1033,7 @@ function Unassigned({
                   className="quiet-button"
                   disabled={!!action.busy || !target}
                 >
-                  Add{" "}
-                  {group.agents.length > 1 ? `all ${group.agents.length}` : ""}
+                  {t.addAll(group.agents.length)}
                 </button>
               </form>
             )}
@@ -955,6 +1049,21 @@ function Unassigned({
   );
 }
 
+// The picker's own words (T-189); project and Agent names as they are.
+const pickerText = strings({
+  project: "Project",
+  none: "No project",
+  archived: " · archived",
+  move: "Move",
+  note: (name: string) => `Changes only where ${name} is listed. Folder and conversation stay.`,
+}, {
+  project: "项目",
+  none: "无项目",
+  archived: " · 已归档",
+  move: "移动",
+  note: (name) => `只改变 ${name} 列在哪里。文件夹和会话保持不变。`,
+});
+
 /** Membership is chosen explicitly from the conversation's actions dialog. */
 export function AgentProjectPicker({
   agent,
@@ -969,6 +1078,7 @@ export function AgentProjectPicker({
 }) {
   const [value, setValue] = useState(agent.projectId || "");
   const action = useAction();
+  const t = useStrings(pickerText);
   useEffect(() => setValue(agent.projectId || ""), [agent.id, agent.projectId]);
   const choices = projects.filter(
     (project) => !project.archivedAt || project.id === agent.projectId,
@@ -987,13 +1097,13 @@ export function AgentProjectPicker({
       }}
     >
       <label>
-        Project
+        {t.project}
         <select
           value={value}
           disabled={disabled || !!action.busy}
           onChange={(event) => setValue(event.target.value)}
         >
-          <option value="">No project</option>
+          <option value="">{t.none}</option>
           {choices.map((project) => (
             <option
               key={project.id}
@@ -1001,7 +1111,7 @@ export function AgentProjectPicker({
               disabled={!!project.archivedAt && project.id !== agent.projectId}
             >
               {project.name}
-              {project.archivedAt ? " · archived" : ""}
+              {project.archivedAt ? t.archived : ""}
             </option>
           ))}
         </select>
@@ -1013,11 +1123,9 @@ export function AgentProjectPicker({
         }
       >
         {action.busy ? <LoaderCircle size={14} className="spin" /> : null}
-        Move
+        {t.move}
       </button>
-      <p>
-        Changes only where {agent.name} is listed. Folder and conversation stay.
-      </p>
+      <p>{t.note(agent.name)}</p>
       {action.error && (
         <p role="alert" className="inline-error">
           {action.error}

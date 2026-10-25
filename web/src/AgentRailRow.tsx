@@ -9,21 +9,23 @@ import type { Agent, WorkSummary } from "./types";
 import { useAgentJobs } from "./live-jobs";
 import { useAgentCI, waitingSummary } from "./live-ci";
 import { useHandoffDrop } from "./SendToAgent";
-import { strings, useLanguage } from "./i18n";
+import { strings, useLanguage, type Language } from "./i18n";
 import "./reading.css";
 
 export function workingFolder(cwd: string): string {
   return cwd.split(/[/\\]/).filter(Boolean).at(-1) || cwd;
 }
 
-export function summaryOrigin(summary: WorkSummary): string {
+/** Where a work summary came from, in `language` (T-189); English by default. */
+export function summaryOrigin(summary: WorkSummary, language: Language = "en"): string {
+  const zh = language === "zh-Hans";
   return summary.source === "agent"
-    ? "Agent report · open original message"
+    ? zh ? "Agent 报告 · 打开原始消息" : "Agent report · open original message"
     : summary.source === "user"
-      ? "Your task · open original message"
+      ? zh ? "你的任务 · 打开原始消息" : "Your task · open original message"
       : summary.kind === "pending"
-        ? "Open the request that needs your response"
-        : "Runtime record · open source";
+        ? zh ? "打开需要你回复的请求" : "Open the request that needs your response"
+        : zh ? "运行记录 · 打开来源" : "Runtime record · open source";
 }
 
 // The row's own words (T-189); the Agent's and machine's names and what the

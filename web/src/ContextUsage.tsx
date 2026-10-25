@@ -1,6 +1,34 @@
 import { useEffect, useId, useRef, useState } from "react";
 import "./context-usage.css";
 import type { ContextUsage as Usage } from "./types";
+import { strings, useStrings } from "./i18n";
+
+// The meter's own words (T-189); the counts as the conversation reports them.
+const text = strings({
+  unavailable: "Usage unavailable",
+  used: (percent: number, stale: boolean) => `${percent}% used${stale ? " · last known" : ""}`,
+  button: (label: string, sample: boolean) => `Context: ${label}${sample ? " (sample)" : ""}`,
+  heading: "Context window",
+  sample: "Sample",
+  remaining: (percent: number) => `${percent}% remaining`,
+  none: "Current context usage isn't available for this conversation yet.",
+  design: "Design sample · not live conversation usage.",
+  stale: "Last known usage. Waiting for a fresh update from this conversation.",
+  live: "Estimated from the latest model request; updates after each response and compaction.",
+  tokens: (used: string, window: string) => `${used} / ${window} tokens`,
+}, {
+  unavailable: "用量不可用",
+  used: (percent, stale) => `已用 ${percent}%${stale ? " · 上次已知" : ""}`,
+  button: (label, sample) => `上下文：${label}${sample ? "（示例）" : ""}`,
+  heading: "上下文窗口",
+  sample: "示例",
+  remaining: (percent) => `剩余 ${percent}%`,
+  none: "此会话的当前上下文用量暂不可用。",
+  design: "设计示例 · 不是会话的实时用量。",
+  stale: "上次已知的用量。正在等待此会话的新更新。",
+  live: "根据最近一次模型请求估算；每次回复和压缩后更新。",
+  tokens: (used, window) => `${used} / ${window} 个 token`,
+});
 
 export function ContextUsage({
   usedPercent = null,
@@ -11,6 +39,7 @@ export function ContextUsage({
   sample?: boolean;
   usage?: Usage | null;
 }) {
+  const t = useStrings(text);
   if (!sample) usedPercent = usage?.usedPercent ?? null;
   const percent =
     usedPercent !== null &&
@@ -27,7 +56,7 @@ export function ContextUsage({
         : percent >= 70
           ? "medium"
           : "low";
-  const label = percent === null ? "Usage unavailable" : `${percent}% used${usage?.stale ? " · last known" : ""}`;
+  const label = percent === null ? t.unavailable : t.used(percent, !!usage?.stale);
   const [open, setOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -77,7 +106,7 @@ export function ContextUsage({
       <button
         type="button"
         className="context-usage-button"
-        aria-label={`Context: ${label}${sample ? " (sample)" : ""}`}
+        aria-label={t.button(label, sample)}
         aria-describedby={open ? tooltipId : undefined}
         onFocus={() => setOpen(true)}
         onClick={() => {
@@ -106,23 +135,17 @@ export function ContextUsage({
         <div className="context-usage-tooltip" id={tooltipId} role="tooltip">
           <div className="context-usage-card">
             <div className="context-usage-heading">
-              <strong>Context window</strong>
-              {sample && <small>Sample</small>}
+              <strong>{t.heading}</strong>
+              {sample && <small>{t.sample}</small>}
             </div>
             <div className="context-usage-value">
               <span>{label}</span>
-              {percent !== null && <span>{100 - percent}% remaining</span>}
+              {percent !== null && <span>{t.remaining(100 - percent)}</span>}
             </div>
             <p>
-              {percent === null
-                ? "Current context usage isn't available for this conversation yet."
-                : sample
-                  ? "Design sample · not live conversation usage."
-                  : usage?.stale
-                    ? "Last known usage. Waiting for a fresh update from this conversation."
-                    : "Estimated from the latest model request; updates after each response and compaction."}
+              {percent === null ? t.none : sample ? t.design : usage?.stale ? t.stale : t.live}
             </p>
-            {usage && !sample && <p>{usage.usedTokens.toLocaleString()} / {usage.windowTokens.toLocaleString()} tokens</p>}
+            {usage && !sample && <p>{t.tokens(usage.usedTokens.toLocaleString(), usage.windowTokens.toLocaleString())}</p>}
           </div>
         </div>
       )}

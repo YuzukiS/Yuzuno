@@ -732,6 +732,36 @@ test("Home content editor settings save stable IDs, explicit none and compatibil
   } finally { page.close(); }
 });
 
+test("Home content editors follow a language change from another window, an unsaved choice kept (T-189)", async () => {
+  const page = await mount({ storage: { "yuzuno.selected": "a" } });
+  const language = async (value) => {
+    page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: value }));
+    page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+    await pause();
+  };
+  try {
+    await fromScopeMenu(page, "Manage projects");
+    const all = await waitFor(() => page.document.querySelector(".home-editor-mode input"), "editor setting loads");
+    all.click(); await pause();
+    page.document.querySelectorAll(".home-editor-members input")[1].click(); await pause();
+    const settings = () => page.document.querySelector(".home-editor-settings");
+    const chosen = () => [...page.document.querySelectorAll(".home-editor-members input")].map((box) => box.checked);
+    const names = () => [...page.document.querySelectorAll(".home-editor-members span")].map((span) => span.textContent);
+    const english = { text: settings().textContent, chosen: chosen(), names: names() };
+    assert.match(english.text, /Home content editors.*Only selected members maintain reports and status.*Save content editors.*Unsaved changes/s);
+    assert.deepEqual(english.chosen, [true, false]);
+    const before = page.calls.length;
+    await language("zh-Hans");
+    assert.match(settings().textContent, /Home 内容编辑者.*所有成员，包括以后加入的成员.*只有所选成员维护报告和状态.*保存内容编辑者.*有未保存的更改/s);
+    assert.deepEqual([chosen(), names()], [english.chosen, english.names], "the unsaved choice and the Agent names as they were");
+    await language("en");
+    assert.equal(settings().textContent, english.text);
+    assert.deepEqual(chosen(), english.chosen);
+    assert.deepEqual(page.calls.slice(before).filter((call) => call.method === "PUT"), [], "changing the language saves nothing");
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally { page.close(); }
+});
+
 test("a project's service opens only once this computer proves it reaches Core's port", async () => {
   const page = await mount({ storage: { "yuzuno.selected": "a" } });
   try {
@@ -826,3 +856,117 @@ test("a page not opened on a loopback address says only that its connection reac
     page.close();
   }
 });
+
+// T-189: the Projects window in Chinese. Project, Agent and machine names,
+// folders, repository and service names and what Core says stay as written.
+const chinese = { "yuzuno.selected": "a", "yuzuno.language": { language: "zh-Hans" } };
+
+test("the Projects window reads in Chinese; names, folders and Core's words stay as written (T-189)", async () => {
+  const page = await mount({ storage: chinese });
+  try {
+    await fromScopeMenu(page, "管理项目");
+    const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
+    assert.match(dialog.textContent, /把长期工作分组/);
+    assert.ok(button(page, "无项目", dialog) && button(page, "新建项目", dialog));
+    assert.match(dialog.querySelector(".project-archived-list").textContent, /已归档.*Old study/, "the archived list, its project named as given");
+    button(page, "App", dialog).click();
+    await waitFor(() => button(page, "App", dialog)?.getAttribute("aria-current") === "true", "App is shown");
+    await waitFor(() => /还没有服务。/.test(dialog.textContent), "the services section has loaded");
+    const text = dialog.textContent;
+    assert.match(text, /项目名称/);
+    assert.ok(button(page, "重命名", dialog));
+    assert.match(text, /仓库/);
+    assert.match(text, /链接此项目使用的仓库。/);
+    assert.match(text, /服务/);
+    assert.match(text, /默认文件夹/);
+    assert.match(text, /不会移动现有 Agent/);
+    assert.ok(dialog.querySelector('[aria-label="Core host 上的默认文件夹"]'), "the machine named as Core names it");
+    assert.ok(dialog.querySelector('[aria-label="将 Mori 移出 App"]'));
+    assert.match(text, /\/home\/u\/app-collaboration/);
+    const add = dialog.querySelector(".project-add-agent select");
+    assert.equal(add.options[0].textContent, "添加 Agent…");
+    assert.ok([...add.options].some((option) => option.textContent === "Sora · 来自 Research"));
+    assert.ok(button(page, "归档项目", dialog));
+    assert.match(button(page, "删除", dialog).title, /仍关联 2 个 Agent 和 1 个任务；请改为归档/);
+    assert.doesNotMatch(text, /Default folders|Rename|No services yet|Archive project|Repositories/);
+
+    button(page, "无项目", dialog).click();
+    await waitFor(() => /无项目的 Agent/.test(dialog.textContent), "Without a project is shown");
+    assert.match(dialog.textContent, /在你选择之前不会分配任何项目。/);
+    assert.match(dialog.textContent, /\/home\/u\/scratch/);
+    assert.match(dialog.textContent, /Core 主机 · Loose/);
+    assert.ok(button(page, "创建项目", dialog));
+    assert.equal(dialog.querySelector(".project-suggestion select").options[0].textContent, "加入现有项目…");
+
+    button(page, "新建项目", dialog).click();
+    await waitFor(() => /新项目/.test(dialog.textContent), "the new project form");
+    assert.match(dialog.textContent, /Core host 上的默认文件夹/);
+    assert.match(dialog.textContent, /可选/);
+    assert.ok(button(page, "创建项目", dialog));
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a partly failed suggestion and a service read in Chinese, with Core's reasons as written (T-189)", async () => {
+  const page = await mount({ storage: chinese, failMove: ["e"] });
+  try {
+    await fromScopeMenu(page, "管理项目");
+    const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
+    button(page, "无项目", dialog).click();
+    await waitFor(() => /无项目的 Agent/.test(dialog.textContent), "Without a project is shown");
+    button(page, "创建项目", dialog).click();
+    await waitFor(() => /并非所有 Agent 都已加入/.test(dialog.textContent), "the partial result is explained");
+    assert.match(dialog.textContent, /已创建 scratch，但并非所有 Agent 都已加入（Loose: Agent is gone）。请在下方把它们加入 scratch。/);
+
+    button(page, "App", dialog).click();
+    const panel = await waitFor(() => dialog.querySelector('[aria-label="服务"]'), "the services panel");
+    await waitFor(() => /还没有服务。/.test(panel.textContent), "no services yet");
+    button(page, "添加", panel).click();
+    const form = await waitFor(() => panel.querySelector(".services-form"), "the form opens");
+    for (const label of ["名称", "机器", "该机器上的端口", "路径"])
+      assert.ok([...form.querySelectorAll("label")].some((l) => l.textContent.trim().startsWith(label)), label);
+    const [name, port] = form.querySelectorAll("input");
+    type(page, name, "Notebook");
+    choose(page, form.querySelector("select"), "gpu");
+    type(page, port, "8888");
+    type(page, form.querySelectorAll("input")[2], "/lab");
+    button(page, "添加服务", form).click();
+    await waitFor(() => page.services.length === 1 && /Notebook/.test(panel.textContent), "the service is registered");
+    assert.match(panel.textContent, /GPU box · 端口 8888 · \/lab · 由你添加/);
+    assert.match(panel.textContent, /未打开/);
+    page.answersHere.set(4380, () => "hello");
+    button(page, "打开", panel).click();
+    const note = await waitFor(() => panel.querySelector(".services-unreached"), "this computer does not reach it");
+    assert.match(note.textContent, /^这台电脑访问不到 Core 的端口 4380/);
+    assert.match(panel.textContent, /有响应 \(HTTP 200\) · Core 端口 4380/);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("switching the language while a project's repositories are open keeps what is typed and asks GitHub nothing again (T-189 R1)", async () => {
+  const page = await mount({ storage: chinese });
+  try {
+    await fromScopeMenu(page, "管理项目");
+    const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
+    button(page, "App", dialog).click();
+    const panel = await waitFor(() => dialog.querySelector('[aria-label="GitHub 仓库"]'), "the repositories section");
+    await waitFor(() => panel.querySelector('[role="alert"]'), "its first answer (this Core lists no links)");
+    const input = panel.querySelector(".github-link-form input");
+    type(page, input, "owner/repo");
+    const asked = () => page.calls.filter((call) => call.url.includes("/api/collaboration/github_")).length;
+    const before = asked();
+    page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "en" }));
+    page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+    await waitFor(() => dialog.querySelector('[aria-label="GitHub repositories"]'), "the section in English");
+    await pause(100);
+    assert.equal(dialog.querySelector(".github-link-form input").value, "owner/repo", "what was typed stays");
+    assert.equal(asked(), before, "no request is started again");
+  } finally {
+    page.close();
+  }
+});
+

@@ -45,6 +45,8 @@ export const jobsText = strings({
   finishedAt: "Finished",
   started: (when: string) => `Started ${when}`,
   finished: (when: string) => `Finished ${when}`,
+  // The conversation's dock.
+  dock: "Jobs and CI in this conversation",
   // The dialog.
   counts: (active: number, queued: number) => `${active} active jobs, ${queued} queued jobs`,
   countsTitle: (active: number, queued: number) => `${active} active · ${queued} queued`,
@@ -201,6 +203,7 @@ export const jobsText = strings({
   finishedAt: "完成",
   started: (when) => `开始于 ${when}`,
   finished: (when) => `完成于 ${when}`,
+  dock: "此会话中的 Job 与 CI",
   counts: (active, queued) => `${active} 个活跃 Job，${queued} 个排队 Job`,
   countsTitle: (active, queued) => `${active} 个活跃 · ${queued} 个排队`,
   title: "Job",

@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
+import { useStrings } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import { Cpu, Gpu, MemoryStick, Monitor } from "lucide-react";
 import { errorText } from "../api";
 import { openJobs } from "../Jobs";
-import { absolute, mebibytes, percent, plural, UNKNOWN } from "./format";
+import { absolute, mebibytes, percent, UNKNOWN } from "./format";
 import { readMachineLoad } from "./home-api";
 import { useHomeNavigation } from "./home-navigation";
 import { previewMachineLoad } from "./preview-home";
 import type { MachineLoad } from "./types";
 import { FoldButton, useCardFold } from "./card-fold";
+import { homeText } from "./home-text";
 
 const POLL_MS = 2_000;
 
@@ -47,22 +49,25 @@ function Meter({
 /** Shown until the first reading arrives; not a value and not unknown. */
 const READING = "…";
 
-function Fact({ name, value, swatch }: { name: string; value: string; swatch?: string }) {
+/** `name` stays the fact's key (data-fact); `label` is how it reads. */
+function Fact({ name, label, value, swatch }: { name: string; label?: string; value: string; swatch?: string }) {
+  const t = useStrings(homeText);
   const state = value === UNKNOWN ? " is-unknown" : value === READING ? " is-reading" : "";
   return (
     <span className={`home-fact${state}`} data-fact={name}>
       {swatch && <span className={`home-swatch home-meter-${swatch}`} aria-hidden />}
-      {name} <strong>{value}</strong>
+      {label ?? t.fact[name as keyof typeof t.fact] ?? name} <strong>{value === UNKNOWN ? t.unknown : value}</strong>
     </span>
   );
 }
 
 /** One of a GPU's two readings as a bar: the name, the bar, the value. */
-function GpuBar({ name, value, share }: { name: string; value: string; share: number }) {
+function GpuBar({ name, label, value, share }: { name: string; label: string; value: string; share: number }) {
+  const t = useStrings(homeText);
   return (
     <span className="home-gpu-bar">
-      <Fact name={name} value={value} />
-      <Meter label={`GPU ${name.toLowerCase()} ${value}`} segments={[{ name: "gpu", share }]} />
+      <Fact name={name} label={label} value={value} />
+      <Meter label={t.gpuMeter(label, value === UNKNOWN ? t.unknown : value)} segments={[{ name: "gpu", share }]} />
     </span>
   );
 }
@@ -82,6 +87,7 @@ export function MachineWidget({
   readOnly: boolean;
 }) {
   const time = useTimeDisplay();
+  const t = useStrings(homeText);
   const visible = useDocumentVisible();
   const navigate = useHomeNavigation();
   // Collapsed, it reads no load; the header keeps the last reading's time (T-115).
@@ -112,16 +118,17 @@ export function MachineWidget({
   }, [readOnly, visible, collapsed]);
   const cpu = load?.cpu;
   const memory = load?.memory;
-  const atText = load ? `Core host · as of ${absolute(load.at, time)}` : readOnly ? "Core host" : "Reading…";
-  const errorLine = error && `Machine load is unavailable: ${error}${load ? " · Showing the last reading." : ""}`;
+  const atText = load ? t.coreHostAsOf(absolute(load.at, time)) : readOnly ? t.coreHost : t.readingShort;
+  const errorLine = error && `${t.loadUnavailable(error)}${load ? t.lastReading : ""}`;
+  const shown = (value: string) => (value === UNKNOWN ? t.unknown : value);
   const jobs = load?.jobs;
   return (
-    <section className={`home-machines${collapsed ? " is-collapsed" : ""}`} aria-label="Machines">
+    <section className={`home-machines${collapsed ? " is-collapsed" : ""}`} aria-label={t.machines}>
       <header>
         <h2>
-          <FoldButton collapsed={collapsed} onToggle={toggleFold} label="Machines" controls="home-machines-body" />
+          <FoldButton collapsed={collapsed} onToggle={toggleFold} label={t.machines} controls="home-machines-body" />
           <Monitor size={14} />
-          Machines
+          {t.machines}
         </h2>
         {/* Adding, editing and testing machines happens on the Machines page. */}
         {!readOnly && (
@@ -130,7 +137,7 @@ export function MachineWidget({
             className="quiet-button home-machines-manage"
             onClick={() => navigate({ kind: "machine", machineId: "local" })}
           >
-            Manage
+            {t.manage}
           </button>
         )}
         {/* One line either way: an error replaces the time instead of adding a row. */}
@@ -146,11 +153,11 @@ export function MachineWidget({
       <div className="home-machine" aria-busy={load ? undefined : true}>
         <div className="home-load">
           <span className="home-load-title">
-            <Cpu size={13} /> CPU <strong>{cpu ? percent(cpu.totalPct) : READING}</strong>
-            {cpu && <> of {plural(cpu.cores, "core")}</>}
+            <Cpu size={13} /> CPU <strong>{cpu ? shown(percent(cpu.totalPct)) : READING}</strong>
+            {cpu && t.ofCores(cpu.cores)}
           </span>
           <Meter
-            label={cpu ? `CPU ${percent(cpu.totalPct)}` : "CPU, reading"}
+            label={cpu ? `CPU ${shown(percent(cpu.totalPct))}` : t.cpuReading}
             segments={
               cpu
                 ? [
@@ -169,11 +176,11 @@ export function MachineWidget({
         </div>
         <div className="home-load">
           <span className="home-load-title">
-            <MemoryStick size={13} /> Memory <strong>{memory ? mebibytes(memory.usedMiB) : READING}</strong>
-            {memory && <> of {mebibytes(memory.totalMiB)}</>}
+            <MemoryStick size={13} /> {t.memory} <strong>{memory ? shown(mebibytes(memory.usedMiB)) : READING}</strong>
+            {memory && t.ofTotal(shown(mebibytes(memory.totalMiB)))}
           </span>
           <Meter
-            label={memory ? `Memory ${mebibytes(memory.usedMiB)} used` : "Memory, reading"}
+            label={memory ? t.memoryUsed(shown(mebibytes(memory.usedMiB))) : t.memoryReading}
             segments={
               memory
                 ? [
@@ -197,9 +204,9 @@ export function MachineWidget({
             // The shape of one GPU, so a GPU arriving keeps the height.
             <ul>
               <li>
-                <span className="home-gpu-name">Reading…</span>
-                <GpuBar name="Use" value={READING} share={0} />
-                <GpuBar name="Memory" value={READING} share={0} />
+                <span className="home-gpu-name">{t.readingShort}</span>
+                <GpuBar name="Use" label={t.fact.Use} value={READING} share={0} />
+                <GpuBar name="Memory" label={t.gpuMemory} value={READING} share={0} />
               </li>
             </ul>
           ) : load.gpus == null ? (
@@ -207,20 +214,22 @@ export function MachineWidget({
               <Fact name="GPU" value={UNKNOWN} />
             </span>
           ) : load.gpus.length === 0 ? (
-            <span className="home-note">No GPU reported</span>
+            <span className="home-note">{t.noGpu}</span>
           ) : (
             <ul>
               {load.gpus.map((gpu, index) => (
-                <li key={index} title="The whole card, other programs included; not split by Agent or Job">
+                <li key={index} title={t.wholeCard}>
                   <span className="home-gpu-name">{gpu.name}</span>
                   <GpuBar
                     name="Use"
+                    label={t.fact.Use}
                     value={percent(gpu.utilPct)}
                     share={width(gpu.utilPct, 100)}
                   />
                   <GpuBar
                     name="Memory"
-                    value={`${mebibytes(gpu.memUsedMiB)} / ${mebibytes(gpu.memTotalMiB)}`}
+                    label={t.gpuMemory}
+                    value={`${shown(mebibytes(gpu.memUsedMiB))} / ${shown(mebibytes(gpu.memTotalMiB))}`}
                     share={width(gpu.memUsedMiB, gpu.memTotalMiB)}
                   />
                 </li>
@@ -230,18 +239,18 @@ export function MachineWidget({
         </div>
         <div className="home-machine-jobs">
           <span className="home-load-title">
-            Jobs on this machine
+            {t.jobsHere}
             {/* Plain text: a badge would make this line taller when Jobs appear. */}
             {jobs?.length ? <span className="home-machine-jobs-count">· {jobs.length}</span> : null}
           </span>
           {/* A fixed height that scrolls: Jobs starting and ending move nothing below. */}
           <div className="home-machine-jobs-list" tabIndex={jobs && jobs.length > 3 ? 0 : undefined}>
             {!jobs ? (
-              <span className="home-note">Reading…</span>
+              <span className="home-note">{t.readingShort}</span>
             ) : jobs.length ? (
               <ul>
                 {jobs.map((job) => {
-                  const who = `${projectName(job.projectId)} · ${job.agentName || "No Agent"}`;
+                  const who = `${projectName(job.projectId)} · ${job.agentName || t.noAgent}`;
                   const body = (
                     <>
                       <span className="home-machine-job-dot" aria-hidden />
@@ -267,7 +276,7 @@ export function MachineWidget({
                           type="button"
                           className="home-machine-job"
                           title={`${job.name}\n${who}`}
-                          aria-label={`${job.name}, ${who}, CPU ${percent(job.cpuPct)}, memory ${mebibytes(job.memMiB)}: open in Jobs`}
+                          aria-label={t.openJob(job.name, who, shown(percent(job.cpuPct)), shown(mebibytes(job.memMiB)))}
                           onClick={() => openJobs({ source: "local", jobId: job.id })}
                         >
                           {body}
@@ -278,7 +287,7 @@ export function MachineWidget({
                 })}
               </ul>
             ) : (
-              <span className="home-note">No Jobs running</span>
+              <span className="home-note">{t.noJobs}</span>
             )}
           </div>
         </div>

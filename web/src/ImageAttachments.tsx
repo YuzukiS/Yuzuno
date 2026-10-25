@@ -2,17 +2,42 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { SquareDashedMousePointer, X } from "lucide-react";
 import { Modal } from "./components";
 import { API_BASE } from "./api";
+import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import "./image-input.css";
 
 export const inputImageUrl = (agent: string, id: string, thumb = false) =>
   `${API_BASE}/api/agents/${encodeURIComponent(agent)}/images/${encodeURIComponent(id)}${thumb ? "?thumb=true" : ""}`;
 type PreviewImage = { id: string; agentId: string; name?: string };
+// The attachments' own words (T-189); an image's name as it came.
+const text = strings({
+  open: (n: number, name: string) => `Open image ${n}: ${name}`,
+  image: (n: number) => `Image ${n}`,
+  attached: "Attached image",
+  markUp: (n: number) => `Mark up image ${n}`,
+  markUpTitle: "Point & Fix · mark areas on this image",
+  remove: (n: number) => `Remove image ${n}`,
+  original: "Original image attached to this message",
+  unavailable: "This saved image is unavailable. The original file may have been removed from this Core.",
+  markUpButton: "Mark up",
+  closeDialog: "Close dialog",
+}, {
+  open: (n, name) => `打开图片 ${n}：${name}`,
+  image: (n) => `图片 ${n}`,
+  attached: "附加的图片",
+  markUp: (n) => `标注图片 ${n}`,
+  markUpTitle: "Point & Fix · 在这张图片上标出区域",
+  remove: (n) => `移除图片 ${n}`,
+  original: "此消息附带的原图",
+  unavailable: "这张已保存的图片不可用，原文件可能已从此 Core 中移除。",
+  markUpButton: "标注",
+  closeDialog: "关闭对话框",
+});
 export function ImageAttachments({
   images,
   onRemove,
   onAnnotate,
   annotateThumbnails = false,
-  description = "Original image attached to this message",
+  description,
 }: {
   images: readonly PreviewImage[];
   onRemove?: (id: string) => void;
@@ -24,6 +49,7 @@ export function ImageAttachments({
   description?: string;
 }) {
   const [opened, setOpened] = useState<PreviewImage | null>(null);
+  const t = useStrings(text);
   if (!images.length) return null;
   return (
     <div className="input-images">
@@ -32,25 +58,25 @@ export function ImageAttachments({
           <button
             type="button"
             className="input-image-open"
-            aria-label={`Open image ${index + 1}: ${image.name || "Attached image"}`}
+            aria-label={t.open(index + 1, image.name || t.attached)}
             onClick={() => setOpened(image)}
           >
             <img
               src={inputImageUrl(image.agentId, image.id, true)}
-              alt={image.name || `Image ${index + 1}`}
+              alt={image.name || t.image(index + 1)}
               loading="lazy"
             />
             <span className="input-image-hover" aria-hidden="true">
               <img src={inputImageUrl(image.agentId, image.id, true)} alt="" />
-              <span>{image.name || `Image ${index + 1}`}</span>
+              <span>{image.name || t.image(index + 1)}</span>
             </span>
           </button>
           {onAnnotate && annotateThumbnails && (
             <button
               type="button"
               className="input-image-markup"
-              aria-label={`Mark up image ${index + 1}`}
-              title="Point & Fix · mark areas on this image"
+              aria-label={t.markUp(index + 1)}
+              title={t.markUpTitle}
               onClick={() => onAnnotate(image)}
             >
               <SquareDashedMousePointer size={11} />
@@ -60,7 +86,7 @@ export function ImageAttachments({
             <button
               type="button"
               className="input-image-remove"
-              aria-label={`Remove image ${index + 1}`}
+              aria-label={t.remove(index + 1)}
               onClick={() => {
                 if (opened?.id === image.id) setOpened(null);
                 onRemove(image.id);
@@ -74,9 +100,9 @@ export function ImageAttachments({
       <ImagePreview
         open={!!opened}
         src={opened ? inputImageUrl(opened.agentId, opened.id) : ""}
-        name={opened?.name || "Attached image"}
-        description={description}
-        unavailable="This saved image is unavailable. The original file may have been removed from this Core."
+        name={opened?.name || t.attached}
+        description={description ?? t.original}
+        unavailable={t.unavailable}
         onClose={() => setOpened(null)}
         onAnnotate={onAnnotate && opened ? () => {
           const image = opened;
@@ -113,6 +139,8 @@ export function ImagePreview({
   onAnnotate?: () => void;
 }) {
   const [failed, setFailed] = useState("");
+  const language = useLanguage();
+  const t = text(language);
   // Each opening reads the image again: one that failed may be back.
   useEffect(() => {
     if (open) setFailed("");
@@ -132,6 +160,8 @@ export function ImagePreview({
       }}
       title={name}
       description={description}
+      lang={langTag(language)}
+      closeLabel={t.closeDialog}
       wide
       onCloseAutoFocus={(event) => {
         const back = opener.current;
@@ -148,7 +178,7 @@ export function ImagePreview({
           {onAnnotate && failed !== src && (
             <button type="button" className="secondary-button input-image-annotate" onClick={onAnnotate}>
               <SquareDashedMousePointer size={14} />
-              Mark up
+              {t.markUpButton}
             </button>
           )}
         </div>
