@@ -608,27 +608,38 @@ test('a disputed address is not forgotten unless it is confirmed', async () => {
 });
 
 test('a refusal about another address names that address, not the one typed', async () => {
-  // connect_core can be asked to point a saved workspace away from a disputed
-  // address; it refuses, and the address at fault is not the one typed.
+  // Pointing a saved workspace at a *different* address is refused because of
+  // the disputed one it would leave. The two addresses must differ, or this
+  // proves nothing: falling back to `result.url` would read the same.
+  const typed = 'https://three.example.ts.net/';
+  const atFault = 'https://one.example.ts.net/';
+  let sent = '';
   const dom = await mount(async (command, args) => {
     if (command === 'saved_cores') return disputedSaved;
-    if (command === 'connect_core')
+    if (command === 'connect_core') {
+      sent = args.url;
       return {
-        url: args.url,
+        url: typed,
         opened: false,
         identity: 'conflict',
-        address: 'https://one.example.ts.net/',
+        address: atFault,
         profileName: 'Home',
         savedWorkspaceId: null,
         workspaceId: null,
       };
+    }
   });
   try {
     const document = dom.window.document;
     const status = document.querySelector('[role="status"]');
-    document.querySelector('#saved-list li .saved-open').click();
+    const address = document.querySelector('#core-url');
+    address.value = typed;
+    submit(dom);
     await settle();
+    assert.equal(sent, typed, 'the address typed is the one asked about');
+    // It names the address at fault, which is not the one typed.
     assert.match(status.textContent, /one\.example\.ts\.net/, 'it names the disputed address');
+    assert.doesNotMatch(status.textContent, /three\.example\.ts\.net/, 'not the address typed');
     assert.match(status.textContent, /nothing was opened or changed/);
     assert.equal(status.dataset.error, 'true');
     // Not a save that failed: there is no offer to open it without saving.

@@ -473,8 +473,13 @@ fn settle(before: &Saved, profiles: &[Profile], forgetting: Option<&Url>) -> (Ve
             }
         }
     }
-    // An address is listed or remembered, never both.
-    remembered.retain(|known| !profiles.iter().any(|profile| profile.url == known.url));
+    // An address is listed or remembered, never both -- and the address being
+    // forgotten is neither. Skipping its propagation above is not enough: the
+    // list starts from what was already remembered, so without this the entry
+    // being forgotten survived its own forgetting. The caller was told it had
+    // worked, and a different Workspace was still refused there afterwards.
+    remembered
+        .retain(|known| !profiles.iter().any(|profile| profile.url == known.url) && forgetting != Some(&known.url));
     (profiles, remembered)
 }
 
@@ -1081,6 +1086,35 @@ mod tests {
         assert!(committing(&saved, &[a.clone(), b.clone()], None).is_ok());
         let (forgotten, _) = forget_identities(&saved, &here);
         assert!(committing(&saved, &forgotten, Some(&here)).is_ok(), "the explicit way out still writes");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn forgetting_a_remembered_address_really_forgets_it() {
+        // Through `committing`, the way `forget_address` does it. The bug this
+        // guards: the entry survived its own forgetting, because the settled
+        // list starts from what was already remembered and only listed
+        // addresses were dropped from it. The app answered success and still
+        // refused a different Workspace there afterwards.
+        let (dir, path) = folder();
+        let a = known("https://one.example.ts.net", "w-a");
+        let b = known("https://two.example.ts.net", "w-b");
+        save(&path, &[], None, &[a.clone(), b.clone()]).unwrap();
+        let saved = read(&path);
+        let here = core_at("https://one.example.ts.net");
+        assert_eq!(saved.workspace_for(&here), Some("w-a"));
+
+        let (profiles, remembered) = committing(&saved, saved.profiles(), Some(&here)).expect("it writes");
+        assert_eq!(remembered, vec![b.clone()], "only the other address is left");
+        assert_eq!(profiles, vec![], "no profile was invented");
+
+        // And after the write and a read, which is what a later launch sees.
+        save(&path, &profiles, None, &remembered).unwrap();
+        let after = read(&path);
+        assert_eq!(after.workspace_for(&here), None, "the address is unknown again");
+        assert_eq!(after.workspace_for(&core_at("https://two.example.ts.net")), Some("w-b"), "the other is untouched");
+        // So a different Workspace opens there now, instead of being refused.
+        assert_eq!(opening(after.workspace_for(&here), "w-other"), Opening::Open(Some("w-other".into())));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
