@@ -1,0 +1,22 @@
+/* This device's preferences to and from one file (T-194); the rows reuse
+   the Appearance file's preview styles. */
+.device-transfer-group {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+  margin: 12px 0 0;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--line);
+}
+.device-transfer-group h4 {
+  margin: 0;
+  font-size: calc(11px + var(--font-adjust, 3px));
+}
+.device-transfer-group ul {
+  justify-self: stretch;
+  margin: 0;
+}
+.device-transfer-group .appearance-file-error,
+.device-transfer-group .appearance-file-done {
+  margin: 0;
+}

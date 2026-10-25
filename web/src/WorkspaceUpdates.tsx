@@ -22,6 +22,7 @@ import { AppearanceSection } from "./AppearanceSettings";
 import { InputPreferencesSection } from "./InputPreferences";
 import { TimePreferencesSection } from "./TimePreferences";
 import { ShortcutHelpSection } from "./ShortcutHelp";
+import { DeviceTransferSection } from "./DeviceTransfer";
 import { Modal } from "./components";
 import { DesktopUpdate } from "./DesktopUpdate";
 import { DiagnosticsCopy } from "./RecoveryPage";
@@ -1006,6 +1007,7 @@ export function WorkspaceUpdates({
           {tab === "input" && <InputPreferencesSection />}
           {tab === "time" && <TimePreferencesSection />}
           {tab === "shortcuts" && <ShortcutHelpSection />}
+          {tab === "transfer" && <DeviceTransferSection />}
           {tab === "agent-defaults" && <AgentDefaults active={open} />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}

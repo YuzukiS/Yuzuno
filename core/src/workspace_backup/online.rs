@@ -84,7 +84,12 @@ impl Backups {
                 }
             }
             op.state = "interrupted".into();
-            op.error = Some("Core stopped while this ran; nothing it was writing was kept".into());
+            op.error = Some(if op.kind == "remove" {
+                // A removal is never finished or repeated on its own (retention.rs).
+                "Core stopped while this removed a backup: it may be partly removed, and what is left (a .removing- folder) is left as it is".into()
+            } else {
+                "Core stopped while this ran; nothing it was writing was kept".into()
+            });
             op.finished_at = Some(now());
             changed = true;
         }
@@ -340,7 +345,7 @@ async fn operation(State(ws): State<Arc<Workspace>>, UrlPath(id): UrlPath<String
     }
 }
 
-fn started(result: Result<Operation, Refusal>) -> Response {
+pub(crate) fn started(result: Result<Operation, Refusal>) -> Response {
     match result {
         Ok(op) => (StatusCode::ACCEPTED, Json(json!({"operation": op}))).into_response(),
         Err(Refusal::Busy(id)) => (StatusCode::CONFLICT,
