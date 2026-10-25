@@ -253,9 +253,9 @@ test("prepared runtimes: read on Check, only unneeded ones can be chosen, remove
   assert.equal(reads(), 1);
   const row = (c) => p.doc.querySelector(`[data-copy="${c ? KEY(c) : "other"}"]`)?.textContent ?? "";
   assert.match(row("a"), /Claude Agent SDK 0\.3\.296 · runtime aaaaaaaa.*Used by this Core/);
-  assert.match(row("b"), /Needed by an installed release/);
-  assert.match(row("c"), /No installed release needs it/);
-  assert.match(row("d"), /size unknown.*No installed release needs it/);
+  assert.match(row("b"), /Needed by an installed or downloaded release/);
+  assert.match(row("c"), /No installed or downloaded release needs it/);
+  assert.match(row("d"), /size unknown.*No installed or downloaded release needs it/);
   assert.match(row("e"), /Its record of what it is can't be read: kept/);
   assert.match(row(null), /^Not a copy Core made.*Kept$/);
   const ticks = () => [...p.doc.querySelectorAll('[data-copy] input[type="checkbox"]')];
@@ -267,7 +267,7 @@ test("prepared runtimes: read on Check, only unneeded ones can be chosen, remove
   await until(() => !p.button("Remove chosen…").disabled);
   p.button("Remove chosen…").click();
   const confirm = await until(() => p.doc.querySelector(".storage-confirm"), "the confirmation");
-  assert.match(confirm.textContent, /^Remove 1 prepared runtime, about .+ MiB\? Core checks again first that no installed release needs it\./);
+  assert.match(confirm.textContent, /^Remove 1 prepared runtime, about .+ MiB\? Core checks again first that no installed or downloaded release needs it\./);
   p.button("Cancel").click();
   await until(() => !p.doc.querySelector(".storage-confirm"));
   assert.deepEqual(removals, [], "cancelled: nothing posted");
@@ -296,7 +296,7 @@ test("prepared runtimes: a refusal is said and offers nothing; a removal Core re
   await until(() => refused.text().includes("Workspace database"));
   refused.button("Check prepared runtimes").click();
   await until(() => refused.doc.querySelector('[data-refused="installing"]'), "the refusal");
-  assert.match(refused.text(), /An update is being installed\. Check again once it has finished\./);
+  assert.match(refused.text(), /An update is being downloaded or installed\. Check again once it has finished\./);
   assert.equal(refused.doc.querySelectorAll('[data-copy] input[type="checkbox"]').length, 0);
   assert.equal(refused.button("Remove chosen…"), undefined);
 
@@ -314,7 +314,7 @@ test("prepared runtimes: a refusal is said and offers nothing; a removal Core re
   await until(() => late.button("Remove"));
   late.button("Remove").click();
   const alert = await until(() => [...late.doc.querySelectorAll('.claude-runtime-copies [role="alert"]')].find((el) => el.textContent.includes("couldn't be read")), "the refusal");
-  assert.match(alert.textContent, /^An installed release's runtime couldn't be read, so what it needs can't be told\. Nothing is offered for removal\.$/);
+  assert.match(alert.textContent, /^The runtime of an installed or downloaded release couldn't be read, so what it needs can't be told\. Nothing is offered for removal\.$/);
   assert.equal(late.doc.querySelectorAll("[data-result]").length, 0, "no result claimed");
   assert.deepEqual(late.errors, []);
 });

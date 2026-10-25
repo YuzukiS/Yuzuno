@@ -561,7 +561,7 @@ fn file_name(path: &Path) -> String {
     path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-// Prepared copies no installed release needs (T-193). Core keeps a copy per
+// Prepared copies no installed or downloaded release needs (T-193). Core keeps a copy per
 // runtime and never removes one; the update helper removes old releases, so
 // copies only those needed stay behind. They are listed, and removed only
 // when chosen. Anything that can't be told for certain is kept.
@@ -572,11 +572,12 @@ const COPIES_LISTED: usize = 64;
 const SIZE_ENTRIES: usize = 200_000;
 
 /// What the runtimes of this install's releases need, and the copies this
-/// process uses: the copies that stay. Else why that can't be told, as a code
-/// the page words; then nothing is offered or removed.
+/// process uses: the copies that stay. The releases are the installed ones
+/// (`releases/`) and those downloaded and waiting to be prepared
+/// (`incoming/`, which the update keeps). Else why that can't be told, as a
+/// code the page words; then nothing is offered or removed.
 /// - `notRelease`: the bridge is not in `…/releases/<id>/runtimes/claude`;
-/// - `installing`: a release is being staged (`releases/.stage-*`) or waits
-///   in `incoming/`;
+/// - `installing`: a release is being staged in either (`.stage-*`);
 /// - `releasesUnreadable`: a release, or its runtime, can't be read or hashed.
 /// What stays: every key a release's runtime has, and the one this Core's has.
 struct Needed {
@@ -590,19 +591,15 @@ fn needed(script: Result<PathBuf>, cache: &Path) -> std::result::Result<Needed, 
     release_of(&root).ok_or("notRelease")?;
     let releases = root.parent().and_then(Path::parent).and_then(Path::parent).ok_or("notRelease")?;
     let install = releases.parent().ok_or("notRelease")?;
-    match std::fs::read_dir(install.join("incoming")) {
-        Ok(mut waiting) => {
-            if waiting.next().is_some() {
-                return Err("installing");
-            }
-        }
-        Err(error) if error.kind() == NotFound => {}
+    let incoming = match std::fs::read_dir(install.join("incoming")) {
+        Ok(waiting) => Some(waiting),
+        Err(error) if error.kind() == NotFound => None,
         Err(_) => return Err("releasesUnreadable"),
-    }
+    };
     let this_release = root.parent().and_then(Path::parent).ok_or("notRelease")?;
     let mut keys = std::collections::BTreeSet::new();
     let mut current = None;
-    for entry in std::fs::read_dir(releases).map_err(|_| "releasesUnreadable")? {
+    for entry in std::fs::read_dir(releases).map_err(|_| "releasesUnreadable")?.chain(incoming.into_iter().flatten()) {
         let entry = entry.map_err(|_| "releasesUnreadable")?;
         if entry.file_name().to_string_lossy().starts_with(".stage-") {
             return Err("installing");
@@ -754,7 +751,7 @@ async fn remove_copies(axum::Json(removal): axum::Json<Removal>) -> Result<axum:
     Ok(axum::Json(done))
 }
 
-/// Removes the chosen copies no installed release needs, while no runtime is
+/// Removes the chosen copies no release needs, while no runtime is
 /// being prepared (`PREPARING`), with what is needed read again first.
 async fn remove(script: Result<PathBuf>, cache: Option<PathBuf>, keys: Vec<String>) -> serde_json::Value {
     let held = PREPARING.clone().lock_owned().await;

@@ -501,8 +501,8 @@ fn nothing_is_offered_or_removed_when_what_the_releases_need_cannot_be_told() {
             std::fs::create_dir_all(at.base.path().join("releases/.stage-1b4e28ba-2fa1-11d2-883f-0016d3cca427")).unwrap();
             at.current.join("bridge.mjs")
         }, "installing"),
-        ("a release waiting in incoming", |at| {
-            std::fs::create_dir_all(at.base.path().join("incoming/core-c")).unwrap();
+        ("a download being staged", |at| {
+            std::fs::create_dir_all(at.base.path().join("incoming/.stage-1b4e28ba-2fa1-11d2-883f-0016d3cca427")).unwrap();
             at.current.join("bridge.mjs")
         }, "installing"),
         ("a release runtime with a link in it", |at| {
@@ -538,18 +538,25 @@ fn only_chosen_unneeded_copies_go_and_what_is_needed_is_read_again_first() {
     std::fs::rename(base.join("releases/core-1"), base.join("set-aside")).unwrap();
     assert_eq!(by_key(&copies(script(&at.current), Some(&at.cache)))[&again]["removable"], true);
     std::fs::rename(base.join("set-aside"), base.join("releases/core-1")).unwrap();
+    // A release downloaded and waiting to be prepared (`incoming/`) needs its copy too.
+    let waiting = distinct_release(base, "core-2");
+    let downloaded = content_key(&waiting).unwrap();
+    prepare(&waiting, &at.cache, &at.node).unwrap();
+    std::fs::create_dir_all(base.join("incoming")).unwrap();
+    std::fs::rename(base.join("releases/core-2"), base.join("incoming/core-2")).unwrap();
+    assert_eq!(by_key(&copies(script(&at.current), Some(&at.cache)))[&downloaded]["usedBy"], "installedRelease");
     let no_receipt = "1".repeat(32);
     write(&at.cache.join(&no_receipt).join("sdk.mjs"), "x");
     let missing = "4".repeat(32);
 
-    let chosen = [at.orphan.clone(), again.clone(), current.clone(), previous.clone(), missing.clone(), no_receipt.clone()];
+    let chosen = [at.orphan.clone(), again.clone(), current.clone(), previous.clone(), downloaded.clone(), missing.clone(), no_receipt.clone()];
     let done = remove_chosen(script(&at.current), Some(&at.cache), &chosen);
     assert_eq!(done["state"], "done", "{done}");
     let outcomes: BTreeMap<String, Value> = done["results"].as_array().unwrap().iter()
         .map(|result| (result["key"].as_str().unwrap().to_owned(), result.clone())).collect();
     assert_eq!(outcomes[&at.orphan]["outcome"], "removed");
     assert!(outcomes[&at.orphan]["bytes"].as_u64().unwrap() > 0);
-    for key in [&again, &current, &previous] {
+    for key in [&again, &current, &previous, &downloaded] {
         assert_eq!(outcomes[key]["outcome"], "protected", "{key}");
         assert!(at.cache.join(key).join(RECEIPT).is_file(), "{key} is kept");
     }
