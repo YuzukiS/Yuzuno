@@ -78,18 +78,34 @@ function Form({
   // are read, and nothing carries over from the one before it (T-195).
   const belongTo = useRef(key);
   const typed = useRef(false);
+  // Which form-state a submission in flight belongs to. Learning the
+  // Workspace keeps the state on screen, so a submission made before it was
+  // known is still this form's and must still settle: its number does not
+  // change. Moving to another Workspace's key replaces the state, so it
+  // does, and the submission that was running settles nothing here.
+  const generation = useRef(0);
   useEffect(() => {
     if (!key || belongTo.current === key) return;
-    const carry = belongTo.current === null && typed.current;
+    // Learning the Workspace for the first time is the same form becoming
+    // attributable. Going from one key to another is a different Workspace's
+    // form, which is where what is on screen, and anything still running for
+    // it, stops being this one's.
+    const sameForm = belongTo.current === null;
+    // What is on screen is only carried over when the person typed it; with
+    // nothing typed, this key's own saved answers are read.
+    const carry = sameForm && typed.current;
     belongTo.current = key;
+    if (!sameForm) generation.current += 1;
     try {
       if (carry) saveClarificationDraft(localStorage, key, values);
       else {
         typed.current = false;
         setValues(readClarificationDraft(localStorage, key, form));
         setErrors({});
-        // A submission of the Workspace before this one is no longer this
-        // form's: it cannot leave this one busy or showing its refusal.
+      }
+      if (!sameForm) {
+        // A submission of the Workspace before this one cannot leave this
+        // form busy or showing its refusal.
         inFlight.current = false;
         setBusy(false);
         setFailure("");
@@ -145,13 +161,13 @@ function Form({
       document.getElementById(`${domId}-${first}`)?.focus();
       return;
     }
-    // This submission belongs to the key these answers were typed under. If
-    // the Core at this address answers as another Workspace while it runs,
+    // This submission belongs to the form-state these answers were typed in.
+    // If the Core at this address answers as another Workspace while it runs,
     // its refusal is not that Workspace's to show and must not leave that
-    // Workspace's form busy (T-195): the move resets those itself.
-    // `from` is that key; a null one is a form shown before this window knew
-    // its Workspace, and is still its own submission.
-    const from = belongTo.current;
+    // Workspace's form busy (T-195): the move resets those itself. Learning
+    // the Workspace for the first time is not such a move -- the answers and
+    // this submission are the same ones -- so it still settles here.
+    const from = generation.current;
     inFlight.current = true;
     setBusy(true);
     setFailure("");
@@ -159,10 +175,10 @@ function Form({
       // Capture exactly the values the user explicitly submitted.
       await onSubmit(structuredClone(values));
     } catch (error) {
-      if (belongTo.current === from)
+      if (generation.current === from)
         setFailure(error instanceof Error ? error.message : String(error));
     } finally {
-      if (belongTo.current === from) {
+      if (generation.current === from) {
         setBusy(false);
         inFlight.current = false;
       }

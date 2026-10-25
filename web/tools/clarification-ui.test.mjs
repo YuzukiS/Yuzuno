@@ -205,6 +205,82 @@ test("answers typed before this window knows its Workspace are kept, reach disk 
   }
 });
 
+// T-195, found by Dev Lead and missed by the cases above: the Workspace
+// arriving *while a submission is running* is the same form becoming
+// attributable, not a move to another Workspace's form. Its result must
+// still settle here, or the form is left sending for good.
+test("a submission made before the Workspace was known still settles when it arrives", async () => {
+  for (const outcome of ["refused", "accepted"]) {
+    const page = mount();
+    let settle;
+    const submit = () =>
+      new Promise((resolve, reject) => {
+        settle = () => (outcome === "refused" ? reject(Error("Native rejected this reply")) : resolve());
+      });
+    try {
+      // No Workspace yet: the form is shown and can be answered.
+      page.render({ draftIdentity: null, onSubmit: submit });
+      await tick();
+      const input = page.document.querySelector("textarea");
+      Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(input, "answered before it was known");
+      input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+      page.document.querySelector('input[value="keyboard"]').click();
+      await tick();
+      page.button("Submit answers").click();
+      await tick();
+      assert.ok(page.button("Sending answers…"), `${outcome}: it is sending`);
+      // /api/workspace answers while it runs.
+      page.render({ onSubmit: submit });
+      await tick();
+      assert.ok(page.button("Sending answers…"), `${outcome}: still sending, this is the same form`);
+      assert.equal(
+        page.document.querySelector("textarea").value,
+        "answered before it was known",
+        `${outcome}: the answers are kept`,
+      );
+      settle();
+      await tick();
+      assert.ok(
+        page.button("Submit answers") || page.button("Answers sent"),
+        `${outcome}: it settled rather than being left sending`,
+      );
+      if (outcome === "refused")
+        assert.match(page.document.body.textContent, /Native rejected/, "the refusal is said");
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
+
+test("learning the Workspace reads its own saved answers when nothing was typed", async () => {
+  const page = mount();
+  try {
+    // What this Workspace's key already holds, from an earlier visit.
+    page.window.localStorage.setItem(
+      `yuzuno.clarification.v1:${JSON.stringify(["ws-1", "a:result1"])}:${clarificationExample.id}`,
+      JSON.stringify({ version: 1, values: { directory: "saved earlier", theme: "dark", checks: [] } }),
+    );
+    page.render({ draftIdentity: null });
+    await tick();
+    assert.equal(
+      page.document.querySelector("textarea").value,
+      "/home/me/project",
+      "with no Workspace, no Workspace's saved answers",
+    );
+    page.render({});
+    await tick();
+    assert.equal(
+      page.document.querySelector("textarea").value,
+      "saved earlier",
+      "and once it is known, its own are read -- nothing typed, nothing to keep",
+    );
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 test("a refusal from the Workspace before this one is not shown here, and leaves this form usable", async () => {
   const page = mount();
   let refuse;

@@ -76,8 +76,9 @@ async function fixture(t, initial = {}) {
   let hook;
   let refreshes = 0;
   let workspace = initial.workspace ?? WORKSPACE;
+  let agent = "a";
   function Harness() {
-    hook = useConversationSend(workspace, "a", initial.turnId === null ? null : "turn1", () => refreshes++, initial.harness || "codex");
+    hook = useConversationSend(workspace, agent, initial.turnId === null ? null : "turn1", () => refreshes++, initial.harness || "codex");
     return null;
   }
   const root = createRoot(document.getElementById("root"));
@@ -98,6 +99,11 @@ async function fixture(t, initial = {}) {
      * the page being reloaded (T-195). */
     async move(next) {
       workspace = next;
+      await act(async () => root.render(createElement(Harness)));
+    },
+    /** Another Agent of the same Workspace is opened. */
+    async select(next) {
+      agent = next;
       await act(async () => root.render(createElement(Harness)));
     },
     async submit(text, images, clarification) {
@@ -228,6 +234,57 @@ test("coming back to a Workspace keeps the records the window is using, so a sen
   });
   assert.deepEqual(using, {}, "and the send that finished settled those");
   assert.deepEqual(outboxFile(), {}, "nothing is left on disk for either Workspace");
+});
+
+test("a record saved after coming back to a Workspace survives the send that was already running", async (t) => {
+  // The visible end of the stable-bucket property. While one Agent's send is
+  // in flight, another Agent of the same Workspace can still be opened and
+  // sent to -- the refusal of a second send is per Workspace and Agent -- so
+  // records can be added after a move away and back. Settling the first send
+  // must not write the records as they were before the return.
+  const f = await fixture(t, { workspace: "ws-here", outbox: {} });
+  let answerA;
+  globalThis.fetch = async (url, init) => {
+    f.calls.push({ url, body: JSON.parse(init.body) });
+    return new Promise((resolve) => {
+      answerA = (receipt) => resolve({ ok: true, json: async () => receipt });
+    });
+  };
+  let sendingA;
+  await act(async () => {
+    sendingA = f.hook().submit("from Agent a, before leaving");
+  });
+  const inputA = f.calls[0].body;
+  await f.move("ws-there");
+  await f.move("ws-here");
+  // Another Agent here, sent to while a's send is still running.
+  await f.select("b");
+  let sendingB;
+  await act(async () => {
+    sendingB = f.hook().submit("from Agent b, after coming back");
+  });
+  const inputB = f.calls[1].body;
+  assert.deepEqual(
+    outbox("ws-here"),
+    { "a:composer": inputA, "b:composer": inputB },
+    "both are kept while both are uncertain",
+  );
+  // a's send finishes now.
+  await act(async () => {
+    answerA({ input: inputA, status: "accepted", turnId: "t1", error: null });
+    await sendingA;
+  });
+  assert.deepEqual(
+    outbox("ws-here"),
+    { "b:composer": inputB },
+    "it removed its own record and left the one saved after the return",
+  );
+  assert.deepEqual(
+    f.hook().pendingInputs,
+    { "b:composer": inputB },
+    "and what the window holds says the same",
+  );
+  void sendingB;
 });
 
 test("sending one Workspace's Agent leaves the same Agent id in another free to send", async (t) => {
