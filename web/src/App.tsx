@@ -358,7 +358,7 @@ export function App() {
   const frame = useCustomFrame();
   const [homeOpen, setHomeOpen] = useState(false);
   const [collaborationOpen, setCollaborationOpen] = useState(false);
-  const [taskFocus, setTaskFocus] = useState<{ taskId: string; reviewId?: string; at: number } | null>(null);
+  const [taskFocus, setTaskFocus] = useState<{ taskId: string; reviewId?: string; section?: "workspaces"; at: number } | null>(null);
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [artifact, setArtifact] = useState<ArtifactPreview | null>(null);
@@ -1308,6 +1308,11 @@ export function App() {
       if (!projects.some((project) => project.id === destination.projectId && !project.archivedAt)) return;
       setSettingsProject(destination.projectId);
       setProjectDialog("manage");
+    } else if (destination.kind === "taskWorkspaces") {
+      // That Task, by its ID, at its own Workspace section: it opens there and
+      // lists, and nothing is previewed or removed until it is asked there.
+      setTaskFocus({ taskId: destination.taskId, section: "workspaces", at: Date.now() });
+      setCollaborationOpen(true);
     } else if (destination.kind === "machines") setMachinesOpen(true);
     else openJobs({ source: "local", settings: "budget" });
     });

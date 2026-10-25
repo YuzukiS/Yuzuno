@@ -16,6 +16,10 @@ import { strings, useLanguage } from "./i18n";
 import "./storage-overview.css";
 
 type UpdatesStorage = { managed: boolean; storage: { releaseBytes: number; backupBytes: number; retainedReleases: number; keepReleases: number } };
+/** A Task as Core's task list gives it: only what choosing it needs. */
+type TaskChoice = { id: string; title: string; status: string };
+type TaskChoices = { tasks: TaskChoice[]; hasMore: boolean };
+const TASKS_LISTED = 100;
 
 function readStorage(): Storage | null {
   try {
@@ -100,6 +104,17 @@ const text = strings({
   keptBy: (name: string) => `Kept by ${name} in its own folder on that computer. Yuzuno does not measure, back up or remove it.`,
   never: "Never in a Workspace backup",
   footer: "What each held Agent's stored history takes inside the database is in History & memory information. To report a problem, Copy diagnostics shows its text before anything is copied.",
+  taskFolders: "Build output in task work folders",
+  taskFoldersNote:
+    "Cargo's build output in a task's registered work folders can be removed from that task's Workspace section. It lists each folder, previews what would go and removes only what you then choose: regenerable Cargo build output, never source files, the folder or its branch. Whether it can run there, and why not, is what Core reports in that section. Choosing a task here only opens it: nothing is previewed or removed.",
+  taskFoldersElsewhere: "Open a task's Workspace section from Tasks to remove its build output.",
+  readingTasks: "Reading this Workspace's tasks…",
+  tasksNotRead: (reason: string) => `The tasks could not be read: ${reason}`,
+  noTasks: "This Workspace has no tasks.",
+  task: "Task",
+  chooseTask: "Choose a task…",
+  openFolders: "Open its Workspace section",
+  moreTasks: (count: number) => `The ${count} most recently changed tasks are listed; open an older one from Tasks.`,
   entryLabel: (what: string) => entryLabels[what] ?? what,
   onDisk: (size: string, disk: string) => `${size} · ${disk} on disk`,
   link: "a link: not followed",
@@ -150,6 +165,17 @@ const text = strings({
   keptBy: (name) => `由 ${name} 保存在那台电脑上它自己的文件夹中。Yuzuno 不会测量、备份或删除它。`,
   never: "从不在 Workspace 备份中的内容",
   footer: "每个保留的 Agent 的历史在数据库中占用多少，见“历史与内存信息”。要报告问题，“复制诊断信息”会先显示文本，再复制任何内容。",
+  taskFolders: "任务工作目录中的构建输出",
+  taskFoldersNote:
+    "任务已登记工作目录中由 Cargo 生成的构建输出，可以在该任务的 Workspace 部分移除。那里列出每个目录，先预览将移除的内容，然后只移除你选中的部分：可再生成的 Cargo 构建输出，从不包括源代码、目录本身或其分支。能否在那里执行以及原因，以 Core 在那部分报告的为准。在这里选择任务只会打开它：不会预览或移除任何内容。",
+  taskFoldersElsewhere: "从“任务”打开任务的 Workspace 部分，即可移除它的构建输出。",
+  readingTasks: "正在读取此 Workspace 的任务…",
+  tasksNotRead: (reason) => `无法读取任务：${reason}`,
+  noTasks: "此 Workspace 没有任务。",
+  task: "任务",
+  chooseTask: "选择任务…",
+  openFolders: "打开它的 Workspace 部分",
+  moreTasks: (count) => `只列出最近更改的 ${count} 个任务；更早的任务请从“任务”打开。`,
   entryLabel: (what) => entryLabelsZh[what] ?? entryLabels[what] ?? what,
   onDisk: (size, disk) => `${size} · 磁盘上 ${disk}`,
   link: "链接：不跟随",
@@ -171,8 +197,16 @@ function at(iso: string) {
  * Core's overview while it is shown; a size that is not known is said to be
  * unknown, never 0. Nothing here deletes or changes anything.
  */
-export function StorageOverview({ active, updates }: { active: boolean; updates: UpdatesStorage | null }) {
+export function StorageOverview({ active, updates, onOpenTaskWorkspaces }: {
+  active: boolean;
+  updates: UpdatesStorage | null;
+  /** Opens that Task's own Workspace section, by its ID (T-193). */
+  onOpenTaskWorkspaces?: (taskId: string) => void;
+}) {
   const t = text(useLanguage());
+  const [taskChoices, setTaskChoices] = useState<TaskChoices | null>(null);
+  const [tasksError, setTasksError] = useState("");
+  const [chosenTask, setChosenTask] = useState("");
   const [view, setView] = useState<StorageOverviewView | null>(null);
   const [loadError, setLoadError] = useState("");
   const [device, setDevice] = useState<DeviceInventory | null>(null);
@@ -198,6 +232,24 @@ export function StorageOverview({ active, updates }: { active: boolean; updates:
     void refresh(controller.signal);
     return () => controller.abort();
   }, [active, refresh]);
+
+  // The Workspace's tasks, every status, as the task board lists them: a read.
+  useEffect(() => {
+    if (!active || !onOpenTaskWorkspaces) return;
+    const controller = new AbortController();
+    setTasksError("");
+    void api<TaskChoices>("/collaboration/task_list", { method: "POST", body: JSON.stringify({ limit: TASKS_LISTED }), signal: controller.signal })
+      .then((page) => {
+        if (controller.signal.aborted) return;
+        const tasks = (Array.isArray(page?.tasks) ? page.tasks : []).filter((task) => typeof task?.id === "string" && !!task.id);
+        setTaskChoices({ tasks, hasMore: page?.hasMore === true });
+        setChosenTask((was) => (tasks.some((task) => task.id === was) ? was : ""));
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted) setTasksError(errorText(e));
+      });
+    return () => controller.abort();
+  }, [active, !!onOpenTaskWorkspaces]);
 
   return (
     <section id="settings-storage" className="settings-section storage-overview" aria-labelledby="settings-storage-title">
@@ -271,6 +323,43 @@ export function StorageOverview({ active, updates }: { active: boolean; updates:
               <p className="storage-note">{t.jobs(view.jobs.total, view.jobs.unfinished)}</p>
             )}
           </>
+        )}
+      </section>
+
+      <section className="storage-part" aria-labelledby="storage-task-folders">
+        <h4 id="storage-task-folders">{t.taskFolders}</h4>
+        <p className="storage-note">{t.taskFoldersNote}</p>
+        {!onOpenTaskWorkspaces ? (
+          <p className="storage-note">{t.taskFoldersElsewhere}</p>
+        ) : tasksError ? (
+          <p className="updates-error" role="alert">{t.tasksNotRead(tasksError)}</p>
+        ) : !taskChoices ? (
+          <p className="storage-note">{t.readingTasks}</p>
+        ) : taskChoices.tasks.length === 0 ? (
+          <p className="storage-note">{t.noTasks}</p>
+        ) : (
+          <div className="storage-task-open">
+            <label>
+              <span>{t.task}</span>
+              <select className="settings-select" value={chosenTask} onChange={(event) => setChosenTask(event.target.value)}>
+                <option value="">{t.chooseTask}</option>
+                {taskChoices.tasks.map((task) => (
+                  <option key={task.id} value={task.id}>
+                    {task.id} · {task.title} · {task.status}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={!taskChoices.tasks.some((task) => task.id === chosenTask)}
+              onClick={() => onOpenTaskWorkspaces(chosenTask)}
+            >
+              {t.openFolders}
+            </button>
+            {taskChoices.hasMore && <p className="storage-note">{t.moreTasks(taskChoices.tasks.length)}</p>}
+          </div>
         )}
       </section>
 
