@@ -153,11 +153,14 @@ function client(server, name, saved = null) {
   return page;
 }
 const read = (page) => until(() => !page.status().startsWith("Reading") && page.device(), `${page.name} read the preset`);
-/** Read again, and wait for that read's answer, not the last one's. */
+/** Read again, and wait for that read's answer, not the last one's: the
+ * fixture counts the request at once, before React has shown "Reading". */
 async function reread(page) {
   const gets = page.server.gets;
   page.press("Read again");
-  await until(() => page.server.gets > gets && !page.status().startsWith("Reading") && page.device(), `${page.name} read the preset again`);
+  await until(() => page.server.gets > gets, `${page.name} asked again`);
+  await tick();
+  await until(() => !page.status().startsWith("Reading") && page.device(), `${page.name} read the preset again`);
 }
 /** B turns following on from the preset it reads now. */
 async function follow(page) {
