@@ -127,6 +127,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::project_brief::router())
         .merge(crate::machine_load::router())
         .merge(crate::storage_overview::router())
+        .merge(crate::claude_sdk::router())
         .merge(crate::github::router())
         .merge(crate::workspace_backup::online::router())
         .route("/api/health",get(health))
