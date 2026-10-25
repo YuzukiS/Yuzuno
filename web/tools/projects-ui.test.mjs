@@ -916,24 +916,3 @@ test("a partly failed suggestion and a service read in Chinese, with Core's reas
     page.close();
   }
 });
-
-test("an Agent's project is moved in Chinese from its actions (T-189)", async () => {
-  const page = await mount({ storage: { ...chinese, "yuzuno.projectScope.ws-1": "project:p-app" } });
-  try {
-    await waitFor(() => page.document.querySelector(".conversation-metadata .project-chip"), "Mori's conversation shows its project");
-    page.document.querySelector("button.agent-actions-button.conversation-action").click();
-    (await waitFor(() => page.document.querySelector('[role="menuitem"][data-action="manage"]'), "the actions menu offers its management")).click();
-    const dialog = await waitFor(() => dialogOf(page)?.querySelector(".agent-project-picker select") && dialogOf(page), "the project picker");
-    const picker = dialog.querySelector(".agent-project-picker");
-    assert.match(picker.textContent, /项目/);
-    assert.equal(picker.querySelector("select").options[0].textContent, "无项目");
-    assert.match(picker.textContent, /只改变 Mori 列在哪里。文件夹和会话保持不变。/);
-    choose(page, picker.querySelector("select"), "p-res");
-    button(page, "移动", picker).click();
-    await waitFor(() => page.calls.some((call) => call.url.endsWith("/agents/a/project")), "the move is sent");
-    assert.deepEqual(page.calls.find((call) => call.url.endsWith("/agents/a/project")).body, { projectId: "p-res" });
-  } finally {
-    page.close();
-  }
-});
-

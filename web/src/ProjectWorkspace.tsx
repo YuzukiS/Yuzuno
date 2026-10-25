@@ -349,12 +349,6 @@ const managerText = strings({
   addToExisting: "Add to an existing project…",
   addAll: (count: number) => (count > 1 ? `Add all ${count}` : "Add"),
   partlyAdded: (failed: string) => `Not every agent was added (${failed}).`,
-  // An Agent's project
-  project: "Project",
-  noProject: "No project",
-  archivedSuffix: " · archived",
-  move: "Move",
-  moveAgentNote: (agent: string) => `Changes only where ${agent} is listed. Folder and conversation stay.`,
 }, {
   title: "项目",
   description: "把长期工作分组。Agent 可以跨项目协作，任务编号仍共用。",
@@ -404,11 +398,6 @@ const managerText = strings({
   addToExisting: "加入现有项目…",
   addAll: (count) => (count > 1 ? `全部添加（${count}）` : "添加"),
   partlyAdded: (failed) => `并非所有 Agent 都已添加（${failed}）。`,
-  project: "项目",
-  noProject: "无项目",
-  archivedSuffix: " · 已归档",
-  move: "移动",
-  moveAgentNote: (agent) => `只改变 ${agent} 列在哪里。文件夹和会话保持不变。`,
 });
 
 type ManagerView =
@@ -1072,7 +1061,6 @@ export function AgentProjectPicker({
   disabled: boolean;
   onMoved: (agent: Agent) => void;
 }) {
-  const t = useStrings(managerText);
   const [value, setValue] = useState(agent.projectId || "");
   const action = useAction();
   useEffect(() => setValue(agent.projectId || ""), [agent.id, agent.projectId]);
@@ -1093,13 +1081,13 @@ export function AgentProjectPicker({
       }}
     >
       <label>
-        {t.project}
+        Project
         <select
           value={value}
           disabled={disabled || !!action.busy}
           onChange={(event) => setValue(event.target.value)}
         >
-          <option value="">{t.noProject}</option>
+          <option value="">No project</option>
           {choices.map((project) => (
             <option
               key={project.id}
@@ -1107,7 +1095,7 @@ export function AgentProjectPicker({
               disabled={!!project.archivedAt && project.id !== agent.projectId}
             >
               {project.name}
-              {project.archivedAt ? t.archivedSuffix : ""}
+              {project.archivedAt ? " · archived" : ""}
             </option>
           ))}
         </select>
@@ -1119,9 +1107,11 @@ export function AgentProjectPicker({
         }
       >
         {action.busy ? <LoaderCircle size={14} className="spin" /> : null}
-        {t.move}
+        Move
       </button>
-      <p>{t.moveAgentNote(agent.name)}</p>
+      <p>
+        Changes only where {agent.name} is listed. Folder and conversation stay.
+      </p>
       {action.error && (
         <p role="alert" className="inline-error">
           {action.error}
