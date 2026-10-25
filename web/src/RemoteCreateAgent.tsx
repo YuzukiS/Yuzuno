@@ -8,6 +8,8 @@ import {
   Wifi,
 } from "lucide-react";
 import { api, errorText, post } from "./api";
+import { langTag, useLanguage } from "./i18n";
+import { newAgentText } from "./new-agent-text";
 import { Modal } from "./components";
 import { ChoiceChips } from "./ChoiceChips";
 import { MachineEditor } from "./MachineEditor";
@@ -90,6 +92,8 @@ export function RemoteCreateAgent({
   /** Whether Core creates OpenCode Agents (`opencode.enabled` of /workspace). */
   opencode?: boolean;
 }) {
+  const language = useLanguage();
+  const t = newAgentText(language);
   const localMachine: WorkspaceMachine = {
     id: "local",
     name: "Core host",
@@ -302,8 +306,8 @@ export function RemoteCreateAgent({
   }, [model, localCodex, localClaude]);
   const defaultPermission =
     harness === "claude"
-      ? known && { text: claudeModeText(known.effective.claudePermissionMode.value), source: known.effective.claudePermissionMode.source }
-      : known && { text: codexPermissionText(known.effective.codexPermissionPreset.value), source: known.effective.codexPermissionPreset.source };
+      ? known && { text: claudeModeText(known.effective.claudePermissionMode.value, language), source: known.effective.claudePermissionMode.source }
+      : known && { text: codexPermissionText(known.effective.codexPermissionPreset.value, language), source: known.effective.codexPermissionPreset.source };
   // The model this Agent gets: its own, or the default it inherits.
   const chosenModel = models.find((m) => (m.model || m.id) === (model || (localClaude ? defaultModel?.value : "")));
   // Auto mode needs a model that supports it; where Core's catalog says this
@@ -407,25 +411,21 @@ export function RemoteCreateAgent({
     <Modal
       open={open}
       onOpenChange={(value) => !value && !locked && close()}
-      title={
-        mode === "new" ? "A new little teammate" : "Welcome back to your work"
-      }
+      title={mode === "new" ? t.newTitle : t.existingTitle}
       description={
-        mode === "new"
-          ? "Choose a name and a place to work. Send the first task in the conversation."
-          : mode === "claude"
-            ? "Continue a Claude Code session saved on this machine in Yuzuno."
-            : "Continue an existing Codex session in Yuzuno."
+        mode === "new" ? t.newDescription : mode === "claude" ? t.claudeDescription : t.codexDescription
       }
+      lang={langTag(language)}
+      closeLabel={t.close}
     >
-      <div className="agent-create-modes" role="group" aria-label="Agent setup">
+      <div className="agent-create-modes" role="group" aria-label={t.setup}>
         <button
           type="button"
           aria-pressed={mode === "new"}
           disabled={locked}
           onClick={() => setMode("new")}
         >
-          New agent
+          {t.newAgent}
         </button>
         <button
           type="button"
@@ -433,7 +433,7 @@ export function RemoteCreateAgent({
           disabled={locked}
           onClick={() => setMode("existing")}
         >
-          Existing Codex session
+          {t.existingCodex}
         </button>
         <button
           type="button"
@@ -441,7 +441,7 @@ export function RemoteCreateAgent({
           disabled={locked}
           onClick={() => setMode("claude")}
         >
-          Existing Claude session
+          {t.existingClaude}
         </button>
       </div>
       {mode === "existing" ? (
@@ -467,18 +467,18 @@ export function RemoteCreateAgent({
         >
           <fieldset className="remote-form-fields" disabled={locked}>
             <label>
-              Name
+              {t.name}
               <input
                 autoFocus
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Mikan, Mori, or something entirely you"
+                placeholder={t.namePlaceholder}
                 required
                 maxLength={60}
               />
             </label>
             <ChoiceChips
-              label="Harness"
+              label={t.harness}
               name="create-harness"
               value={harness}
               onChange={(value) => {
@@ -492,17 +492,16 @@ export function RemoteCreateAgent({
               choices={[
                 { value: "codex", label: "Codex" },
                 { value: "claude", label: "Claude Code" },
-                ...(opencode ? [{ value: "opencode", label: "OpenCode", note: "Experimental" }] : []),
+                ...(opencode ? [{ value: "opencode", label: "OpenCode", note: t.experimental }] : []),
               ]}
             />
             {known && (
               <p className="remote-field-note create-default-source" data-source={known.effective.harness.source}>
-                {sourceText(known.effective.harness.source)}: {harnessName(known.effective.harness.value)} for new
-                Agents.
+                {t.defaultHarness(sourceText(known.effective.harness.source, language), harnessName(known.effective.harness.value))}
               </p>
             )}
             <ChoiceChips
-              label="Where to work"
+              label={t.whereToWork}
               name="create-machine"
               className="create-machines"
               value={machine.id}
@@ -514,9 +513,9 @@ export function RemoteCreateAgent({
               choices={(machines.length ? machines : [localMachine]).map((m) => ({
                 value: m.id,
                 label: m.name,
-                note: m.kind === "ssh" ? "SSH" : "Local",
+                note: m.kind === "ssh" ? "SSH" : t.local,
                 icon: m.kind === "ssh" ? <Server size={13} /> : <Monitor size={13} />,
-                title: m.kind === "ssh" ? isOpenCode ? "OpenCode Agents run only on the Core host for now" : m.target : "The machine running your workspace Core",
+                title: m.kind === "ssh" ? isOpenCode ? t.openCodeLocal : m.target : t.coreMachine,
                 disabled: isOpenCode && m.kind === "ssh",
               }))}
               after={
@@ -526,27 +525,27 @@ export function RemoteCreateAgent({
                   aria-expanded={adding}
                   aria-controls="new-ssh-machine"
                   disabled={disabled || adding || loadingMachines || isOpenCode}
-                  title={isOpenCode ? "OpenCode Agents run only on the Core host for now" : undefined}
+                  title={isOpenCode ? t.openCodeLocal : undefined}
                   onClick={() => setAdding(true)}
                 >
-                  <Plus size={13} /> Add SSH machine
+                  <Plus size={13} /> {t.addMachine}
                 </button>
               }
             />
             {loadingMachines && (
               <p className="remote-field-note" role="status">
-                Loading machines…
+                {t.loadingMachines}
               </p>
             )}
             {machineError && (
               <div className="remote-field-error" role="alert">
-                <span>Couldn’t load machines: {machineError}</span>
+                <span>{t.machinesError(machineError)}</span>
                 <button
                   type="button"
                   className="quiet-button"
                   onClick={() => setReload((value) => value + 1)}
                 >
-                  Try again
+                  {t.tryAgain}
                 </button>
               </div>
             )}
@@ -557,10 +556,11 @@ export function RemoteCreateAgent({
                 onBusyChange={setSavingMachine}
                 onCancel={() => setAdding(false)}
                 onSaved={machineAdded}
+                language={language}
               />
             ) : (
               <div className="remote-machine-status">
-                <LastCheck check={machine.lastCheck} checking={checking} compact />
+                <LastCheck check={machine.lastCheck} checking={checking} compact language={language} />
                 <button
                   type="button"
                   className="quiet-button"
@@ -572,7 +572,7 @@ export function RemoteCreateAgent({
                   ) : (
                     <Wifi size={14} />
                   )}
-                  {checking ? "Checking…" : "Test connection"}
+                  {checking ? t.checking : t.testConnection}
                 </button>
               </div>
             )}
@@ -582,7 +582,7 @@ export function RemoteCreateAgent({
               </p>
             )}
             <label>
-              Working folder
+              {t.folder}
               <div className="input-with-icon">
                 <Folder size={15} />
                 <input
@@ -601,17 +601,11 @@ export function RemoteCreateAgent({
                 />
               </div>
               <span className="field-hint">
-                A folder on{" "}
-                {remote
-                  ? machine.name
-                  : "the machine running your workspace Core"}
-                {project && projectDefault
-                  ? `. ${project.name}’s default here is filled in; any folder works, such as a worktree.`
-                  : "."}
+                {t.folderOn(remote ? machine.name : null, project && projectDefault ? project.name : null)}
               </span>
             </label>
             <ChoiceChips
-              label="Project"
+              label={t.project}
               name="create-project"
               value={projectId}
               onChange={(value) => {
@@ -620,7 +614,7 @@ export function RemoteCreateAgent({
                 fillCwd(folderFor(machine, value));
               }}
               choices={[
-                { value: "", label: "No project" },
+                { value: "", label: t.noProject },
                 ...activeProjectList.map((p) => ({ value: p.id, label: p.name })),
               ]}
             />
@@ -631,25 +625,18 @@ export function RemoteCreateAgent({
                   checked={saveDefault}
                   onChange={(e) => setSaveDefault(e.target.checked)}
                 />
-                {projectDefault
-                  ? `Make this ${project.name}’s default folder on ${machine.name}`
-                  : `Save as ${project.name}’s default folder on ${machine.name}`}
+                {projectDefault ? t.makeDefault(project.name, machine.name) : t.saveDefault(project.name, machine.name)}
               </label>
             )}
             {isOpenCode ? (
-              <p className="remote-field-note">
-                Uses OpenCode’s own default model, login and permission rules on
-                your Core host; OpenCode may download or update its own
-                dependencies when it starts. Experimental: no images, rewind or
-                slash commands, and a message waits until the current turn ends.
-              </p>
+              <p className="remote-field-note">{t.openCodeNote}</p>
             ) : remote ? (
               <label>
-                Model
+                {t.model}
                 <input
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
-                  placeholder="Harness default"
+                  placeholder={t.harnessDefault}
                   spellCheck={false}
                   autoCapitalize="none"
                   autoCorrect="off"
@@ -657,21 +644,21 @@ export function RemoteCreateAgent({
               </label>
             ) : (
               <ChoiceChips
-                label="Model"
+                label={t.model}
                 name="create-model"
                 value={model}
                 disabled={loadingModels}
                 onChange={setModel}
                 choices={[
                   defaultModel
-                    ? { value: "", label: `Default · ${modelText(defaultModel.value)}`, note: sourceText(defaultModel.source) }
-                    : { value: "", label: "Harness default" },
+                    ? { value: "", label: t.defaultIs(modelText(defaultModel.value, language)), note: sourceText(defaultModel.source, language) }
+                    : { value: "", label: t.harnessDefault },
                   // Only where it differs from the default: Codex's own, whatever is inherited.
-                  ...(defaultModel?.value ? [{ value: OWN_MODEL, label: modelText(null) }] : []),
+                  ...(defaultModel?.value ? [{ value: OWN_MODEL, label: modelText(null, language) }] : []),
                   ...models.map((m) => ({
                     value: m.model || m.id,
                     label: m.displayName,
-                    note: m.isDefault ? "default" : undefined,
+                    note: m.isDefault ? t.defaultNote : undefined,
                     title: m.description || undefined,
                   })),
                 ]}
@@ -679,8 +666,7 @@ export function RemoteCreateAgent({
             )}
             {!remote && loadingModels && (
               <p className="remote-field-note" role="status">
-                <LoaderCircle size={13} className="spin" /> Loading{" "}
-                {harnessName(harness)} models…
+                <LoaderCircle size={13} className="spin" /> {t.loadingModels(harnessName(harness))}
               </p>
             )}
             {!remote && modelError && (
@@ -688,16 +674,13 @@ export function RemoteCreateAgent({
                 className="remote-field-error model-catalog-error"
                 role="alert"
               >
-                <span>
-                  Couldn’t load models: {modelError}. You can still use the
-                  harness default.
-                </span>
+                <span>{t.modelsError(modelError)}</span>
                 <button
                   className="quiet-button"
                   type="button"
                   onClick={() => setModelReload((n) => n + 1)}
                 >
-                  Retry models
+                  {t.retryModels}
                 </button>
               </div>
             )}
@@ -706,10 +689,7 @@ export function RemoteCreateAgent({
               !loadingModels &&
               !modelError &&
               models.length === 0 && (
-                <p className="remote-field-note">
-                  No model choices were returned. The harness default is still
-                  available.
-                </p>
+                <p className="remote-field-note">{t.noModels}</p>
               )}
             {!remote &&
               models.find((m) => (m.model || m.id) === model)?.description && (
@@ -719,80 +699,72 @@ export function RemoteCreateAgent({
               )}
             {localCodex && namedModel && !!namedModel.supportedReasoningEfforts?.length && (
               <ChoiceChips
-                label="Reasoning effort"
+                label={t.effort}
                 name="create-effort"
                 value={effort}
                 onChange={setEffort}
                 choices={[
-                  { value: "", label: `Model’s own${namedModel.defaultReasoningEffort ? ` · ${namedModel.defaultReasoningEffort}` : ""}` },
+                  { value: "", label: t.modelsOwn(namedModel.defaultReasoningEffort ?? null) },
                   ...(namedModel.supportedReasoningEfforts ?? []).map((e) => ({ value: e.reasoningEffort, label: e.reasoningEffort, title: e.description || undefined })),
                 ]}
               />
             )}
             {localCodex && !model && defaultModel?.value && (
               <p className="remote-field-note create-default-source" data-source={defaultModel.source}>
-                Reasoning effort with it: {known?.effective.codexReasoningEffort?.value || "the model’s own"}. Choose a
-                model to choose this Agent’s own.
+                {t.effortWith(known?.effective.codexReasoningEffort?.value || null)}
               </p>
             )}
             {remote && (
               <p className="remote-field-note">
-                Leave the model empty to use {harnessName(harness)}’s default on {machine.name}.
-                {(harness === "codex" ? known?.effective.codexModel?.value : harness === "claude" ? known?.effective.claudeModel?.value : null)
-                  ? " The default model for new Agents applies only on the Core host."
-                  : ""}
+                {t.remoteModel(
+                  harnessName(harness),
+                  machine.name,
+                  !!(harness === "codex" ? known?.effective.codexModel?.value : harness === "claude" ? known?.effective.claudeModel?.value : null),
+                )}
               </p>
             )}
             {!isOpenCode && (
               <ChoiceChips
-                label="Permissions"
+                label={t.permissions}
                 name="create-permissions"
                 value={permission}
                 onChange={setPermission}
                 choices={[
                   {
                     value: "",
-                    label: `Default · ${defaultPermission ? defaultPermission.text : "Not reported by this Core"}`,
-                    note: defaultPermission ? sourceText(defaultPermission.source) : undefined,
+                    label: t.defaultIs(defaultPermission ? defaultPermission.text : t.unreported),
+                    note: defaultPermission ? sourceText(defaultPermission.source, language) : undefined,
                   },
                   ...(harness === "claude"
                     ? CLAUDE_MODES.map((mode) => ({
                         value: mode,
-                        label: claudeModeText(mode),
+                        label: claudeModeText(mode, language),
                         disabled: mode === "auto" && autoUnavailable,
-                        note: mode === "auto" && autoUnavailable ? "not available for this model" : undefined,
+                        note: mode === "auto" && autoUnavailable ? t.notForModel : undefined,
                       }))
-                    : CODEX_PRESETS.map((preset) => ({ value: preset, label: codexPermissionText(preset) }))),
+                    : CODEX_PRESETS.map((preset) => ({ value: preset, label: codexPermissionText(preset, language) }))),
                 ]}
               />
             )}
             {permissionConflict && (
               <p className="remote-field-error" role="alert">
-                Auto mode isn’t available for this model, so the default for new Agents can’t be used. Choose this
-                Agent’s permissions.
+                {t.autoConflict}
               </p>
             )}
             {!isOpenCode && (
               <p className="remote-field-note">
-                {harness === "codex"
-                  ? "Follow Codex config uses this machine’s own Codex configuration; the others are Yuzuno’s choice. The machine checks it when the Agent starts."
-                  : "The Agent shows the mode its Claude Code session reports once it starts."}
+                {harness === "codex" ? t.codexPermissionNote : t.claudePermissionNote}
               </p>
             )}
             {!isOpenCode && (
               <p className="remote-login-note">
                 <Server size={13} />
-                <span>
-                  Uses the {harnessName(harness)} login
-                  on {remote ? machine.name : "your Core host"}.
-                </span>
+                <span>{t.login(harnessName(harness), remote ? machine.name : null)}</span>
               </p>
             )}
           </fieldset>
           {disabled && (
-            <p className="field-hint">
-              Creation is disabled in the read-only design preview.
-            </p>
+            <p className="field-hint">{t.createDisabled}</p>
           )}
           {error && (
             <p role="alert" className="inline-error">
@@ -806,7 +778,7 @@ export function RemoteCreateAgent({
               onClick={close}
               disabled={locked}
             >
-              Cancel
+              {t.cancel}
             </button>
             <button
               className="primary-button"
@@ -825,7 +797,7 @@ export function RemoteCreateAgent({
               ) : (
                 <Plus size={15} />
               )}
-              {busy ? "Creating…" : "Create agent"}
+              {busy ? t.creating : t.create}
             </button>
           </div>
         </form>
