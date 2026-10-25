@@ -1325,10 +1325,10 @@ export function App() {
   // Agent is not sent again (api.ts).
   // Said where it is seen when the reply comes: in that Agent's conversation
   // if it is on screen, otherwise naming the Agent.
-  const agentName = (id: string) => workspace?.agents.find((a) => a.id === id)?.name || "the agent";
-  const menuFailed = (id: string, what: string) => (error: unknown) => {
+  const agentName = (id: string) => workspace?.agents.find((a) => a.id === id)?.name || shell.theAgent;
+  const menuFailed = (id: string, what: "reconnect" | "interrupt") => (error: unknown) => {
     if (shownConversation.current === id) setActionError(errorText(error));
-    else setMenuError(`Couldn’t ${what} ${agentName(id)}: ${errorText(error)}`);
+    else setMenuError(shell.menuFailed(what, agentName(id), errorText(error)));
   };
   // Links are offered on an http(s) page only, as message links are (T-166).
   const linkBase = /^https?:$/.test(window.location.protocol) ? `${window.location.origin}${window.location.pathname}` : "";
@@ -1338,8 +1338,8 @@ export function App() {
     Promise.resolve()
       .then(() => navigator.clipboard.writeText(href))
       .then(
-        () => setNotice(`Link to ${agentName(id)} copied.`),
-        () => setMenuError(`Couldn’t copy the link to ${agentName(id)}: this browser didn’t allow it. The link is ${href}`),
+        () => setNotice(shell.linkCopied(agentName(id))),
+        () => setMenuError(shell.linkRefused(agentName(id), href)),
       );
   };
   // Shown already (its own header's menu): nothing to navigate.
@@ -1354,11 +1354,7 @@ export function App() {
       }),
     interrupt: (id) =>
       interruptAgent(id).then(() => {
-        setNotice(
-          shownConversation.current === id
-            ? "Interrupt requested. Your conversation is preserved."
-            : `Interrupt requested for ${agentName(id)}. The conversation is preserved.`,
-        );
+        setNotice(shownConversation.current === id ? shell.interruptHere : shell.interruptFor(agentName(id)));
         refresh();
       }, menuFailed(id, "interrupt")),
     settings: (id) => {
@@ -2527,7 +2523,7 @@ export function App() {
                     />
                   }
                 />
-                <AgentActionsMenu agent={agent} handlers={agentActions} className="conversation-action" label="Conversation actions"
+                <AgentActionsMenu agent={agent} handlers={agentActions} className="conversation-action" label={shell.conversationActions}
                   missingTurns={!!currentDetail?.codexHandoff?.missingTurns} />
               </div>
             </div>
@@ -3474,7 +3470,7 @@ export function App() {
           open={endMissingFor === currentDetail.agent.id}
           onOpenChange={(open) => setEndMissingFor(open ? currentDetail.agent.id : null)}
           onEnded={() => {
-            setNotice("Ended as interrupted, result unknown. Reconnect to go on in the same session.");
+            setNotice(shell.endedMissing);
             refresh();
           }}
         />
@@ -3484,7 +3480,7 @@ export function App() {
         open={!!disconnectFor}
         onOpenChange={(open) => { if (!open) setDisconnectFor(null); }}
         onDone={(name) => {
-          setNotice(`${name} is disconnected. Nothing starts it again until you reconnect it.`);
+          setNotice(shell.disconnected(name));
           refresh();
         }}
       />

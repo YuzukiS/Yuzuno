@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CircleStop, Link2, MoreHorizontal, RotateCw, Settings2, SlidersHorizontal, Square, Unplug } from "lucide-react";
-import { agentMenuItems, type AgentActionHandlers, type AgentMenuAction, type AgentMenuItem } from "./agent-actions";
+import { agentMenuItems, agentMenuLabel, type AgentActionHandlers, type AgentMenuAction, type AgentMenuItem } from "./agent-actions";
+import { langTag, strings, useLanguage } from "./i18n";
 import type { Agent } from "./types";
 import "./agent-actions.css";
+
+// The menu's own names (T-189); the Agent's name as it came.
+const menuText = strings({
+  actionsFor: (name: string) => `Actions for ${name}`,
+  actions: "Actions",
+  menu: (name: string) => `${name} actions`,
+}, {
+  actionsFor: (name) => `${name} 的操作`,
+  actions: "操作",
+  menu: (name) => `${name} 的操作`,
+});
 
 /** Where the menu opens, in viewport pixels. */
 export interface MenuPoint {
@@ -67,6 +79,8 @@ export function AgentActionsMenu({
   label?: string;
   ref?: React.Ref<AgentActionsMenuHandle>;
 }) {
+  const language = useLanguage();
+  const t = menuText(language);
   const [menu, setMenu] = useState<OpenMenu | null>(null);
   const [placed, setPlaced] = useState<MenuPoint | null>(null);
   const current = useRef<OpenMenu | null>(null);
@@ -210,8 +224,8 @@ export function AgentActionsMenu({
         ref={trigger}
         type="button"
         className={`agent-actions-button ${className}`.trim()}
-        aria-label={label ?? `Actions for ${agent.name}`}
-        title={label ?? "Actions"}
+        aria-label={label ?? t.actionsFor(agent.name)}
+        title={label ?? t.actions}
         aria-haspopup="menu"
         aria-expanded={!!menu}
         aria-controls={menu ? menuId : undefined}
@@ -235,7 +249,8 @@ export function AgentActionsMenu({
             ref={list}
             id={menuId}
             role="menu"
-            aria-label={`${menu.name} actions`}
+            aria-label={t.menu(menu.name)}
+            lang={langTag(language)}
             className="agent-actions-menu"
             data-placed={!!placed}
             style={{ left: placed?.x ?? 0, top: placed?.y ?? 0 }}
@@ -262,7 +277,7 @@ export function AgentActionsMenu({
                   }}
                 >
                   <Icon size={15} aria-hidden="true" />
-                  {item.label}
+                  {agentMenuLabel(item.action, item.disabled, language)}
                 </button>
               );
             })}
