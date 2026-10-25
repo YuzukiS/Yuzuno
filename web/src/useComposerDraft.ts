@@ -97,14 +97,20 @@ export function useComposerDraft(workspaceId: string, agentId: string) {
     storage.current ||= new DraftStorage(localStorage);
     return storage.current.load(key);
   }
-  function setDraft(id: string, update: ComposerDraft | ((current: ComposerDraft) => ComposerDraft)) {
-    const at = cache(id);
-    const draft = typeof update === "function" ? update(drafts.current.get(at) || saved(id) || emptyDraft()) : update;
+  /**
+   * Write a draft under the identity it is filed as, which is not always the
+   * one this render has. A send that started before the Workspace was known
+   * is settled by the render that started it, while the draft itself has
+   * since moved to the Workspace that arrived. So the storage key comes from
+   * `at`, never from the current `workspaceId`.
+   */
+  function write(at: string, id: string, draft: ComposerDraft) {
     if (broken.current.has(at)) return;
+    const [workspace] = JSON.parse(at) as [string, string];
     drafts.current.set(at, draft);
     unsaved.current.add(at);
     try {
-      const key = disk(id);
+      const key = workspace && id ? draftIdentity(workspace, id) : null;
       // No Workspace to attribute it to: it stays in this window, and is not
       // written to the key an Agent alone would name. Said rather than
       // quietly not saved -- against a Core that does not say which
@@ -129,8 +135,25 @@ export function useComposerDraft(workspaceId: string, agentId: string) {
     }
     render((n) => n + 1);
   }
+  function setDraft(id: string, update: ComposerDraft | ((current: ComposerDraft) => ComposerDraft)) {
+    const at = cache(id);
+    const draft = typeof update === "function" ? update(drafts.current.get(at) || saved(id) || emptyDraft()) : update;
+    write(at, id, draft);
+  }
+  /**
+   * Clear what was sent, where it is filed now. The draft object decides, not
+   * the key: a send that started before the Workspace was known is settled by
+   * a render whose key is still the unattributed one, while the draft has
+   * moved to the Workspace that arrived. Looking only under this render's key
+   * misses it, and the composer keeps text Core has already taken -- which
+   * the next Enter sends a second time, under a new clientMessageId.
+   */
   function clearIfUnchanged(id: string, sent: ComposerDraft) {
-    if (drafts.current.get(cache(id)) === sent) setDraft(id, emptyDraft());
+    for (const [at, draft] of drafts.current)
+      if (draft === sent && (JSON.parse(at) as [string, string])[1] === id) {
+        write(at, id, emptyDraft());
+        return;
+      }
   }
   function preserveDrafts() {
     if (broken.current.size)

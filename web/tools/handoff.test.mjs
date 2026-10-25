@@ -88,3 +88,12 @@ test("only a well-formed handoff is read from a drag", () => {
   assert.equal(readHandoff(JSON.stringify({ ...good, text: "x".repeat(8_000_001) })), null);
   assert.equal(readHandoff(JSON.stringify({ ...good, text: "x".repeat(500_000) }))?.text.length, 500_000);
 });
+
+test("in Chinese a refusal says why in Chinese, the Agent's name as it is; English stays the default (T-189)", () => {
+  assert.equal(handoffRefusal(message(), mori, "zh-Hans"), "这本来就来自 Mori 的会话。");
+  assert.equal(handoffRefusal(message(), { ...hana, closedAt: "2026-10-19" }, "zh-Hans"), "Hana 已关闭，无法接收消息。");
+  assert.equal(handoffRefusal(message(), undefined, "zh-Hans"), "该 Agent 已不在此 Workspace 中。");
+  assert.equal(handoffRefusal(message({ text: "  \n" }), hana, "zh-Hans"), "没有可发送的文字。");
+  assert.equal(handoffRefusal(message(), hana, "zh-Hans"), null);
+  assert.equal(handoffRefusal(message(), mori, "en"), "This already comes from Mori’s conversation.");
+});

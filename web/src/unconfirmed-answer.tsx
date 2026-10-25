@@ -1,5 +1,7 @@
 import { useState, type MutableRefObject } from "react";
 import { NoReplyError } from "./api";
+import { useStrings } from "./i18n";
+import { requestWords } from "./request-text";
 
 /** An answer to a native request that got no reply in time (T-170). Whether it
  * reached Core is not known, so the card stays closed and Core's record is
@@ -27,13 +29,15 @@ export function useUnconfirmedAnswer(refresh: () => void, answering: MutableRefO
 
 /** A question card's draft that this browser could not save. */
 export function DraftNotSaved() {
-  return <p className="field-hint">This answer is kept in this window only; it could not be saved in this browser. Copy it before reloading.</p>;
+  const t = useStrings(requestWords);
+  return <p className="field-hint">{t.notSaved}</p>;
 }
 
 export function AnswerAgain({ onClick }: { onClick: () => void }) {
+  const t = useStrings(requestWords);
   return (
     <button type="button" className="secondary-button" onClick={onClick}>
-      Answer again
+      {t.answerAgain}
     </button>
   );
 }

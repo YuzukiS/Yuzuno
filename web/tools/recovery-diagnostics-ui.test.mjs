@@ -132,6 +132,10 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
         defaultCwd: "/w",
       });
     if (url.endsWith("/api/updates")) return respond(updates);
+    // Data, privacy & recovery opens at its storage overview (T-187).
+    if (url.endsWith("/api/storage"))
+      return respond({ format: 1, readAt: "2026-10-24T22:00:00Z", dataDir: "/w/data", entries: [], unreadable: null,
+        database: { pageSize: 4096, pages: 10, freePages: 0 }, jobs: { total: 0, unfinished: 0 }, native: [], notInBackup: [] });
     return respond({});
   };
   const doc = w.document;
@@ -142,18 +146,22 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
 const recovery = (p) => p.doc.querySelector(".app-recovery");
 const railShows = (p, name) => new RegExp(name).test(p.doc.querySelector(".agent-list")?.textContent || "");
 // Settings opens on its categories (T-187): Diagnostics and the stored
-// history are editors under Data, privacy & recovery, opened from their cards;
-// one opened before stays mounted when the other is opened.
+// history are editors under Data, privacy & recovery, opened from its row of
+// entries; one opened before stays mounted when the other is opened.
 async function openSettingsEditor(p, title, selector) {
   if (!p.doc.querySelector("#settings-tab-data")) p.doc.querySelector('[aria-label="Settings and updates"]').click();
   await waitFor(() => p.doc.querySelector("#settings-tab-data"), "Settings shows its categories");
   p.doc.querySelector("#settings-tab-data").click();
-  await waitFor(() => p.button(`Open ${title}`), `Data, privacy & recovery offers ${title}`);
-  p.button(`Open ${title}`).click();
+  const entry = () => [...p.doc.querySelectorAll(".settings-entries button")].find((b) => b.textContent === title);
+  await waitFor(entry, `Data, privacy & recovery offers ${title}`);
+  entry().click();
   await waitFor(() => p.doc.querySelector(selector), `Settings shows ${title}`);
   return p.doc.querySelector(selector);
 }
-const openDiagnostics = (p) => openSettingsEditor(p, "Copy diagnostics", "#settings-diagnostics");
+const openDiagnostics = (p) => openSettingsEditor(p, "Diagnostics", "#settings-diagnostics");
+// What was sent: Data opens at its storage overview (T-187), whose list of
+// tasks is a read that the collaboration API takes by POST; that is not sent.
+const sent = (p) => p.calls.filter((c) => c.method && c.method !== "GET" && !c.url.endsWith("/api/collaboration/task_list"));
 const shownText = (p) => p.doc.querySelector('textarea[aria-label="Diagnostics"]')?.value;
 // Settings shows the text first (T-193): Preview copies nothing; Copy then takes that text.
 async function previewAndCopy(p) {
@@ -213,7 +221,7 @@ test("Copy diagnostics on the recovery page: versions, the render error by kind 
     assert.match(text, /^1\. render · TypeError · once, \S+\n {3}read a property of null$/m, "a fixed summary, not the message");
     assert.doesNotMatch(text, /Cannot read|slice/, "the message itself is not kept");
     assert.doesNotMatch(text, /ws-private-id/, "Core's workspace id is not part of it");
-    assert.equal(p.calls.filter((c) => c.method && c.method !== "GET").length, 0, "copying sends nothing");
+    assert.equal(sent(p).length, 0, "copying sends nothing");
   } finally {
     p.close();
   }
@@ -406,7 +414,7 @@ test("Copy diagnostics adds Core's memory counters, read only for the text: numb
     for (const word of ["MemoryNoteSentinel", "ReasonSentinel", "ExtraFieldSentinel", "/home/person", "kernel process status"]) assert.ok(!text.includes(word), `${word} is not copied`);
     assert.equal(p.calls.filter((c) => c.url.endsWith("/api/diagnostics/memory")).length, 1, "read once, for this text");
     assert.ok(!(p.w.localStorage.getItem("yuzuno.diagnostics.v1") || "").includes("uordblks"), "the memory read is not stored");
-    assert.equal(p.calls.filter((c) => c.method && c.method !== "GET").length, 0, "copying sends nothing");
+    assert.equal(sent(p).length, 0, "copying sends nothing");
   } finally {
     p.close();
   }
@@ -456,7 +464,7 @@ test("when Core's memory can't be read, the text says why and everything else is
 const historyCalls = (p) => p.calls.filter((c) => c.url.endsWith("/api/diagnostics/memory/history")).length;
 async function openHistory(p) {
   await waitFor(() => railShows(p, "Mori"), "the app is drawn");
-  return openSettingsEditor(p, "History & memory information", "#settings-history");
+  return openSettingsEditor(p, "History & memory", "#settings-history");
 }
 
 test("the held Agents' stored history is read only when Measure is pressed: a chart and a table of Core's numbers, nothing else from the report", async () => {
@@ -501,7 +509,7 @@ test("the held Agents' stored history is read only when Measure is pressed: a ch
     assert.equal(historyCalls(p), 1, "and not read again by itself");
     p.button("Measure", section).click();
     await waitFor(() => historyCalls(p) === 2, "pressed again, read again");
-    assert.equal(p.calls.filter((c) => c.method && c.method !== "GET").length, 0, "measuring sends nothing");
+    assert.equal(sent(p).length, 0, "measuring sends nothing");
   } finally {
     p.close();
   }

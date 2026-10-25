@@ -126,7 +126,8 @@ try {
     await page.waitForTimeout(300);
     await shot(page, `${label}-updates-about`);
     if (!before) {
-      const open = page.getByRole("button", { name: "Open Runtime & versions" });
+      // In Updates & about's row of entries (T-187).
+      const open = page.locator(".settings-entries").getByRole("button", { name: "Runtime", exact: true });
       await open.waitFor();
       // The app itself reads the Workspace and machines; that nothing of the
       // section is read before it opens is checked in runtime-settings-ui.

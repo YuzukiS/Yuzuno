@@ -65,7 +65,8 @@ test("Runtime & versions opens from Updates & about, reads only once opened and 
   window.eval(bundle);
   window.renderSettings();
   const button = (text) => [...document.querySelectorAll("button")].find((item) => item.textContent.trim() === text);
-  const open = await until(() => button("Open Runtime & versions"), "Updates & about offers Runtime & versions");
+  // In Updates & about's row of entries (T-187).
+  const open = await until(() => [...document.querySelectorAll(".settings-entries button")].find((b) => b.textContent === "Runtime"), "Updates & about offers Runtime & versions");
   const runtimeReads = () => calls.filter((c) => /\/api\/(health|machines|workspace|jobs\/budget)$/.test(c));
   assert.deepEqual(runtimeReads(), [], "nothing of it is read before it is opened");
   open.click();

@@ -3,7 +3,36 @@ import { createPortal } from "react-dom";
 import { Forward } from "lucide-react";
 import type { Agent } from "./types";
 import { HANDOFF_TYPE, handoffRefusal, readHandoff, type HandoffSource } from "./handoff";
+import { strings, useLanguage } from "./i18n";
 import "./send-to-agent.css";
+
+// Send to Agent's own words in the interface language (T-189). Agent and
+// machine names are shown as they are; what it adds to a draft is the message.
+const sendText = strings({
+  send: "Send to Agent",
+  tip: (label: string) => `${label}: choose an Agent, or drag this onto one. It is added to that Agent’s draft; you send it.`,
+  menu: "Add to an Agent’s draft",
+  note: "Adds it to the Agent’s draft. Nothing is sent until you send it.",
+  host: "Core host",
+  noOther: "No other open Agent",
+  nothing: "Nothing to send",
+  strip: "Agents to drop it on",
+  drop: "Drop on an Agent to add it to their draft",
+  noOpen: "No open Agent",
+  addTo: (name: string) => `Add it to ${name}’s draft`,
+}, {
+  send: "发送给 Agent",
+  tip: (label) => `${label}：选择一个 Agent，或把它拖到某个 Agent 上。它会加入该 Agent 的草稿；由你发送。`,
+  menu: "加入某个 Agent 的草稿",
+  note: "加入该 Agent 的草稿。在你发送之前，不会发出任何内容。",
+  host: "Core 主机",
+  noOther: "没有其他打开的 Agent",
+  nothing: "没有可发送的内容",
+  strip: "可以放下的 Agent",
+  drop: "放到某个 Agent 上，即可加入其草稿",
+  noOpen: "没有打开的 Agent",
+  addTo: (name) => `加入 ${name} 的草稿`,
+});
 
 /** What App lends the buttons and the rail: one action for the menu and the drop (T-152). */
 export type HandoffApi = {
@@ -72,6 +101,7 @@ function subscribe(watch: () => void) {
 /** A rail row as a drop target: only a handoff from this window, and never one it refuses. */
 export function useHandoffDrop(agent: Agent) {
   const api = useContext(HandoffContext);
+  const language = useLanguage();
   const [state, setState] = useState<"" | "accept" | "refuse">("");
   useEffect(() => {
     if (!state) return;
@@ -85,7 +115,7 @@ export function useHandoffDrop(agent: Agent) {
   }, [state]);
   if (!api) return { state, refusal: null, handlers: {} };
   // Judged during the drag: a render before it began knew no source.
-  const refusal = () => (dragging ? handoffRefusal(dragging.source, agent) : null);
+  const refusal = () => (dragging ? handoffRefusal(dragging.source, agent, language) : null);
   const over = (event: DragEvent) => {
     // Only a drag this window started; one from elsewhere is not offered a target.
     if (!dragging || !event.dataTransfer.types.includes(HANDOFF_TYPE)) return;
@@ -133,13 +163,15 @@ export function useHandoffDrop(agent: Agent) {
  */
 export function SendToAgentButton({
   source,
-  label = "Send to Agent",
+  label: given,
 }: {
   /** Built when used, so it is a snapshot of that moment. */
   source: () => HandoffSource | null;
   label?: string;
 }) {
   const api = useContext(HandoffContext);
+  const t = sendText(useLanguage());
+  const label = given ?? t.send;
   const [open, setOpen] = useState(false);
   const wrapper = useRef<HTMLSpanElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -185,7 +217,7 @@ export function SendToAgentButton({
         className="quiet-button send-to-agent-button"
         aria-haspopup="menu"
         aria-expanded={open}
-        title={`${label}: choose an Agent, or drag this onto one. It is added to that Agent’s draft; you send it.`}
+        title={t.tip(label)}
         draggable
         onDragStart={event => {
           const value = source();
@@ -202,8 +234,8 @@ export function SendToAgentButton({
         <span>{label}</span>
       </button>
       {open && (
-        <div ref={menu} role="menu" aria-label="Add to an Agent’s draft" className="send-to-agent-menu" onKeyDown={keys}>
-          <p className="send-to-agent-note">Adds it to the Agent’s draft. Nothing is sent until you send it.</p>
+        <div ref={menu} role="menu" aria-label={t.menu} className="send-to-agent-menu" onKeyDown={keys}>
+          <p className="send-to-agent-note">{t.note}</p>
           {targets.length ? (
             targets.map(agent => (
               <button
@@ -217,12 +249,12 @@ export function SendToAgentButton({
                 }}
               >
                 <span className="send-to-agent-name">{agent.name}</span>
-                <small>{agent.remote?.machine.name || "Core host"}</small>
+                <small>{agent.remote?.machine.name || t.host}</small>
               </button>
             ))
           ) : (
             <button type="button" role="menuitem" disabled>
-              {picked ? "No other open Agent" : "Nothing to send"}
+              {picked ? t.noOther : t.nothing}
             </button>
           )}
         </div>
@@ -238,30 +270,32 @@ export function SendToAgentButton({
  */
 export function HandoffDropStrip() {
   const api = useContext(HandoffContext);
+  const t = sendText(useLanguage());
   const active = useSyncExternalStore(subscribe, () => !!dragging?.dialog);
   if (!api || !active) return null;
   const agents = api.agents().filter(agent => !agent.closedAt);
   // Beside the dialog's own portal, above its overlay: inside the app it
   // would sit under the overlay and never be hit by a drag.
   return createPortal(
-    <div className="handoff-strip" role="group" aria-label="Agents to drop it on">
-      <span className="handoff-strip-label">Drop on an Agent to add it to their draft</span>
-      {agents.length ? agents.map(agent => <HandoffChip key={agent.id} agent={agent} />) : <span className="handoff-strip-label">No open Agent</span>}
+    <div className="handoff-strip" role="group" aria-label={t.strip}>
+      <span className="handoff-strip-label">{t.drop}</span>
+      {agents.length ? agents.map(agent => <HandoffChip key={agent.id} agent={agent} />) : <span className="handoff-strip-label">{t.noOpen}</span>}
     </div>,
     document.body,
   );
 }
 function HandoffChip({ agent }: { agent: Agent }) {
+  const t = sendText(useLanguage());
   const drop = useHandoffDrop(agent);
   return (
     <span
       className={`handoff-chip${drop.state ? ` handoff-${drop.state}` : ""}`}
       data-agent-id={agent.id}
-      title={drop.refusal || `Add it to ${agent.name}’s draft`}
+      title={drop.refusal || t.addTo(agent.name)}
       {...drop.handlers}
     >
       <span className="send-to-agent-name">{agent.name}</span>
-      <small>{agent.remote?.machine.name || "Core host"}</small>
+      <small>{agent.remote?.machine.name || t.host}</small>
     </span>
   );
 }

@@ -387,3 +387,44 @@ test("a pasted ID is checked before any read; errors are shown; the filter reads
     page.close();
   }
 });
+
+test("Existing Claude session follows a language change from another window, the chosen session, name and Project kept (T-189)", async () => {
+  const page = mount();
+  const language = async (value) => {
+    page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: value }));
+    page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+    await tick();
+    await tick();
+  };
+  try {
+    await open(page);
+    button(page, "Fix the build").click();
+    await tick();
+    const name = () => page.document.querySelector('.session-import input[maxlength="60"]');
+    await value(page, name(), "Build fix");
+    await value(page, page.document.querySelector("select"), "p2");
+    const kept = () => ({
+      chosen: page.document.querySelector('.claude-session-list button[aria-pressed="true"] strong').textContent,
+      rows: rows(page),
+      name: name().value,
+      project: page.document.querySelector("select").value,
+      folder: page.document.querySelector("input[readonly]").value,
+      recent: [...page.document.querySelectorAll(".claude-session-recent p")].map((p) => p.textContent),
+    });
+    const english = { text: page.document.body.textContent, kept: kept() };
+    assert.match(english.text, /Saved conversation found.*2 prompts.*last used claude-opus-5-5.*Add to workspace/s);
+    const before = page.calls.length;
+    await language("zh-Hans");
+    const text = page.document.body.textContent;
+    assert.match(text, /欢迎回到你的工作.*找到已保存的会话.*2 条提示.*上次使用 claude-opus-5-5.*添加到 Workspace/s);
+    assert.match(page.document.querySelector(".session-handoff-note").textContent, /^Claude Code 不会锁定会话.*添加它不会运行任何东西/);
+    assert.deepEqual(kept(), english.kept, "the session, name, Project, folder and its messages as they were");
+    await language("en");
+    assert.equal(page.document.body.textContent, english.text);
+    assert.equal(page.calls.length, before, "changing the language reads and imports nothing");
+    assert.deepEqual(runs(page), []);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});

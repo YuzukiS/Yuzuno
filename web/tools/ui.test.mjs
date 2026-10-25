@@ -2565,6 +2565,61 @@ test("a draft typed before the Workspace was known is kept and saved under it wh
   } finally { page.close(); }
 });
 
+// T-195, found by Dev 3's Chromium run r5 of #347: the send that carries a
+// draft away is settled by the render that started it. When the Workspace
+// arrives mid-send, that render's key is still the unattributed one while the
+// draft has moved to the Workspace -- so a key-only check cleared nothing and
+// the composer kept text Core had already taken. The next Enter sent it again
+// under a new clientMessageId, which is a second message to the Agent.
+test("a message sent before the Workspace was known does not stay in the composer to be sent twice", async () => {
+  let complete;
+  const page = await mount({
+    noWorkspaceId: true,
+    workspaceIdentity: "ws-later",
+    messageResponse: () => new Promise((resolve) => { complete = resolve; }),
+  });
+  try {
+    const field = page.document.querySelector("[data-composer-input]");
+    setValue(page.window, field, "sent before the Workspace was known");
+    await pause();
+    page.document.querySelector('[aria-label="Send message"]').click();
+    await pause();
+    const posted = page.calls.filter((r) => r.init?.method === "POST" && r.url.endsWith("/messages"));
+    assert.equal(posted.length, 1, "one send is in flight");
+    const sent = JSON.parse(posted[0].init.body);
+
+    // The Workspace arrives while Core still holds the answer.
+    page.core.noWorkspaceId = false;
+    page.eventSources.at(-1).onmessage?.({
+      data: JSON.stringify({ type: "workspace.changed", scope: "runtime" }),
+    });
+    await until(
+      () => Object.keys(page.window.localStorage).some((key) => key.startsWith("yuzuno.composer.v1:")),
+      "the draft is filed under the Workspace that arrived",
+    );
+
+    complete({ ok: true, status: 200, json: async () => ({ input: sent, status: "accepted", turnId: null, error: null }) });
+    await until(
+      () => composerText(field) === "",
+      "what Core has taken does not stay in the composer",
+    );
+
+    // And the saved draft is empty too, so reopening does not offer it again.
+    assert.equal(
+      savedDraftText(page.window.localStorage, "a"),
+      "",
+      "nor is it left saved under the Workspace",
+    );
+
+    // Enter now has nothing to send: no second message under a new id.
+    field.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await pause();
+    const again = page.calls.filter((r) => r.init?.method === "POST" && r.url.endsWith("/messages"));
+    assert.equal(again.length, 1, "the message was sent once, not twice");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("an Agent only read before the Workspace was known reads that Workspace's own saved draft", async () => {
   // Nothing was typed, so there is nothing of this window's to carry: the
   // Workspace's own saved draft is what opens.

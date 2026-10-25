@@ -99,7 +99,8 @@ function mount(t, mcp) {
     },
   };
   page.open = async () => {
-    (await until(() => page.button("Open Runtime & versions"), "Updates & about offers Runtime & versions")).click();
+    // In Updates & about's row of entries (T-187).
+    (await until(() => [...document.querySelectorAll(".settings-entries button")].find((b) => b.textContent === "Runtime"), "Updates & about offers Runtime & versions")).click();
     return until(() => page.group(), "the MCP services group");
   };
   return page;

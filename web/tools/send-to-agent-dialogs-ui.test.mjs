@@ -49,7 +49,7 @@ const budget = {
   activeCount: 0, queuedCount: 0,
 };
 
-async function mount() {
+async function mount({ turns = [] } = {}) {
   const errors = [];
   const calls = [];
   const vc = new VirtualConsole();
@@ -76,7 +76,7 @@ async function mount() {
     const path = new URL(String(url), "http://127.0.0.1:4492").pathname;
     if (path === "/api/workspace") return response({ workspace: { id: "fixture" }, agents, projects: [project], runtime: { connected: true }, defaultCwd: "/w" });
     const detail = /^\/api\/agents\/([ab])$/.exec(path);
-    if (detail) return response({ agent: agents.find((a) => a.id === detail[1]), pending: [], artifacts: [], turns: [] });
+    if (detail) return response({ agent: agents.find((a) => a.id === detail[1]), pending: [], artifacts: [], turns: detail[1] === "a" ? turns : [] });
     if (path === "/api/collaboration/task_list") return response({ tasks: [task], counts: { doing: 1 }, hasMore: false });
     if (path === "/api/collaboration/task_get") return response({ task, activities: [], executions: [], hasMore: false });
     if (path.startsWith("/api/collaboration/github_")) return response({ links: [], repositories: [], refreshing: false });
@@ -162,6 +162,58 @@ test("a Job row dragged out of the Jobs dialog drops on an Agent; a drag let go 
     assert.ok(text.startsWith("Hana's own note.\n\nFor reference: Job “Build the UI” (job-1), succeeded"), text);
     assert.match(text, /Artifacts, on this Core’s host: \/w\/out\/report\.json\./);
     assert.equal(page.doc.querySelector(".jobs-dialog"), null, "the Jobs dialog closed");
+    assert.deepEqual(writes(page), []);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+// T-189: Send to Agent follows the interface language, changed in another
+// window. Agent and machine names stay as they are; nothing is sent.
+const speak = (page, language) => {
+  page.w.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+  page.w.dispatchEvent(new page.w.StorageEvent("storage", { key: "yuzuno.language" }));
+};
+test("Send to Agent follows a language change: its open menu, a refusal on the rail and the drop strip; nothing is sent (T-189)", async () => {
+  const reply = { id: "turn-1", status: "completed", items: [{ id: "reply-1", type: "agentMessage", text: "The rail is quieter now." }] };
+  const page = await mount({ turns: [reply] });
+  const sendButton = () => page.doc.querySelector(".reply-actions .send-to-agent-button");
+  const hanaDraft = page.w.localStorage.getItem("yuzuno.composer.v1:b");
+  try {
+    await waitFor(sendButton, "Mori's reply offers Send to Agent");
+    sendButton().click();
+    await waitFor(() => page.doc.querySelector(".send-to-agent-menu"), "the menu opens");
+    speak(page, "zh-Hans");
+    await pause();
+    const menu = page.doc.querySelector(".send-to-agent-menu");
+    assert.ok(menu, "the menu stays open");
+    assert.equal(menu.getAttribute("aria-label"), "加入某个 Agent 的草稿");
+    assert.equal(menu.querySelector(".send-to-agent-note").textContent, "加入该 Agent 的草稿。在你发送之前，不会发出任何内容。");
+    assert.deepEqual([...menu.querySelectorAll("[role=menuitem]")].map((b) => b.textContent), ["HanaCore 主机"], "Mori's own reply is not offered to Mori");
+    assert.equal(sendButton().textContent, "发送给 Agent");
+    assert.match(sendButton().title, /^发送给 Agent：选择一个 Agent/);
+    // Dragged onto Mori, the rail says why not.
+    const own = dragData();
+    fire(page, sendButton(), "dragstart", own);
+    await pause();
+    fire(page, page.doc.querySelector('.agent-row[data-agent-id="a"]'), "dragover", own);
+    await pause();
+    assert.equal(page.doc.querySelector('.agent-row[data-agent-id="a"] .handoff-hint').textContent, "这本来就来自 Mori 的会话。");
+    fire(page, page.doc.body, "dragend", own);
+    await pause();
+    // A task card dragged out of the board: the strip and its chips.
+    await waitFor(() => page.button("任务与消息") && !page.button("任务与消息").disabled, "the board can open");
+    page.button("任务与消息").click();
+    const card = await waitFor(() => page.doc.querySelector('.collab-task-card[data-task-id="T-7"]'), "the task is listed");
+    const drag = dragData();
+    fire(page, card, "dragstart", drag);
+    const strip = await waitFor(() => page.doc.querySelector(".handoff-strip"), "the strip opens");
+    assert.equal(strip.getAttribute("aria-label"), "可以放下的 Agent");
+    assert.equal(strip.querySelector(".handoff-strip-label").textContent, "放到某个 Agent 上，即可加入其草稿");
+    assert.equal(chip(page, "b").title, "加入 Hana 的草稿");
+    assert.equal(chip(page, "b").textContent, "HanaCore 主机");
+    fire(page, page.doc.body, "dragend", drag);
+    await pause();
+    assert.equal(page.w.localStorage.getItem("yuzuno.composer.v1:b"), hanaDraft, "Hana's draft is as it was");
     assert.deepEqual(writes(page), []);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
