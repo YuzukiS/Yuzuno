@@ -222,9 +222,11 @@ pub fn read(bytes: &[u8]) -> Saved {
         return match record.get("coreUrl").and_then(Value::as_str) {
             Some(address) => match parse_core_url(address) {
                 Ok(url) => {
-                    // The old record keeps `start` beside `coreUrl`; it was
-                    // that address's, so it becomes that entry's.
-                    let start = start_from_json_legacy(&record, &url);
+                    // The one-address reader this app already had, so the
+                    // old record is read here exactly as it was read before:
+                    // its `start` is that `coreUrl`'s, and a record from
+                    // before `confirmed` stays unconfirmed.
+                    let start = crate::connection::saved_start(bytes);
                     let entry = Entry {
                         id: "core".into(),
                         name: name_for(&url),
@@ -238,6 +240,9 @@ pub fn read(bytes: &[u8]) -> Saved {
                     let selected = Some(entry.id.clone());
                     Saved::Entries { entries: vec![entry], selected }
                 }
+                // Kept apart on purpose: "this is not a Workspace record" and
+                // "its address is not one this app opens" send a person to
+                // two different places.
                 Err(_) => Saved::Unusable("its address is not one this app opens".into()),
             },
             None => Saved::Unusable("it is not a saved Workspace record".into()),
@@ -272,23 +277,6 @@ pub fn read(bytes: &[u8]) -> Saved {
         .filter(|id| entries.iter().any(|entry| entry.id == *id))
         .map(str::to_owned);
     Saved::Entries { entries, selected }
-}
-
-/// The one-address record's start, which named no address of its own: it was
-/// the record's `coreUrl`, so it is that entry's.
-fn start_from_json_legacy(record: &Value, url: &Url) -> Option<StartProfile> {
-    let start = record.get("start")?;
-    if start.is_null() {
-        return None;
-    }
-    let profile = StartProfile::new(
-        url,
-        start["wslDistro"].as_str()?,
-        start["user"].as_str()?,
-        start["installDir"].as_str()?,
-        start["workspaceId"].as_str()?,
-    )?;
-    Some(StartProfile { confirmed: start["confirmed"] == true, ..profile })
 }
 
 /// The record to write. `Err` when it would not read back: writing one would
