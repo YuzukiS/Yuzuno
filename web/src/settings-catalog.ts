@@ -68,7 +68,7 @@ export const settingsCatalog: readonly SettingEntry[] = [
 
 /** The editors this version shows in the interface language (T-189); the
  * others, and the rest of Yuzuno, stay in English. */
-export const translatedEditors: readonly SettingsEditor[] = ["language", "input", "time", "shortcuts", "appearance", "transfer", "notifications", "about"];
+export const translatedEditors: readonly SettingsEditor[] = ["language", "input", "time", "shortcuts", "appearance", "transfer", "storage", "diagnostics", "notifications", "about"];
 
 /** Search finds an entry by its words in either language, whichever is
  * shown (T-189): its English and Chinese title, scope and category. */
