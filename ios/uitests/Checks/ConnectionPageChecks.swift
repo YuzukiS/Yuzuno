@@ -104,7 +104,7 @@ final class ConnectionPageChecks: XCTestCase {
             ("wordmark", text(containing: "yuzuno", in: app)),
             ("eyebrow", text(containing: "A little room", in: app)),
             ("heading", text(containing: "Your workspace", in: app)),
-            ("field", app.textFields.firstMatch),
+            ("field", app.textFields["Workspace address"]),
         ]
         for (name, element) in parts {
             note("\(label) \(name): \(element.exists ? "\(element.frame)" : "missing")")
@@ -117,9 +117,15 @@ final class ConnectionPageChecks: XCTestCase {
         sleep(2)
     }
 
+    /// The connection page's address field, by its label. The page also has
+    /// a field for the name this iPhone gives a Workspace (T-195), so the
+    /// first field of the window is not necessarily this one.
+    private var addressField: XCUIElement { yuzuno.textFields["Workspace address"] }
+
     /// Types into the empty field and connects.
     private func enter(_ address: String) {
-        let field = yuzuno.textFields.firstMatch
+        let field = addressField
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "no address field; \(page())")
         field.tap()
         field.typeText(address)
         yuzuno.buttons["Connect"].tap()
@@ -131,7 +137,7 @@ final class ConnectionPageChecks: XCTestCase {
     func testLaunchAndTheAppsOwnRefusal() {
         // A fresh install has no saved Workspace, and the page found the app's bridge.
         freshPage()
-        XCTAssertTrue(yuzuno.textFields.firstMatch.exists, page())
+        XCTAssertTrue(addressField.exists, page())
         drawn(in: yuzuno)
         screenshot("app-portrait")
         enter("http://core.example.ts.net")
