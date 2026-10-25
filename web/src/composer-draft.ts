@@ -88,6 +88,37 @@ export function appendDraft(draft: ComposerDraft, text: string): ComposerDraft {
 
 const prefix = "yuzuno.composer.v1:";
 const bodyPrefix = "yuzuno.paste.v1:";
+
+/**
+ * Which Workspace's Agent a draft belongs to (T-195). Drafts, their paste
+ * bodies and the window's own cache were keyed by Agent alone, so two
+ * Workspaces at one address -- which the saved list allows, and whose Agents
+ * may share an id -- handed each other their unsent drafts.
+ *
+ * The shape is `request-draft.ts`'s, so the two read alike on disk. An empty
+ * Workspace is never composed into an identity: until `/api/workspace`
+ * answers, `App.tsx` has `""`, and a draft must not be read or written
+ * against a Workspace this does not know yet. The caller checks for that;
+ * this only refuses to spell it.
+ */
+export function draftIdentity(workspace: string, agent: string): string {
+  if (!workspace) throw new Error("A draft needs the Workspace it belongs to.");
+  return JSON.stringify([workspace, agent]);
+}
+
+/** The Workspace and Agent an identity names, or `null` for a key written
+ * before drafts were kept per Workspace. Nothing is attributed by guessing. */
+export function draftIdentityParts(identity: string): { workspace: string; agent: string } | null {
+  try {
+    const parsed = JSON.parse(identity);
+    if (!Array.isArray(parsed) || parsed.length !== 2) return null;
+    const [workspace, agent] = parsed;
+    if (typeof workspace !== "string" || typeof agent !== "string" || !workspace) return null;
+    return { workspace, agent };
+  } catch {
+    return null;
+  }
+}
 type SavedPart =
   | { kind: "text"; text: string }
   | Pick<PastedText, "kind" | "id" | "number" | "bodyId">;
@@ -98,6 +129,13 @@ type SavedDraft = { version: 1; nextNumber: number; parts: SavedPart[]; images?:
  * paste body is read. "legacy" is a draft the older string map still holds; an
  * empty saved draft (or none) is "none". `load` checks more: a draft summed up
  * here can still prove damaged when it is opened.
+ *
+ * `agent` is whichever key the caller holds, and the two uses do not mix
+ * (T-195): a `draftIdentity` reports that Workspace's draft, and its older
+ * shapes cannot answer because the string map is keyed by Agent alone; a bare
+ * Agent id, as `unattributedDraftAgents` returns, reports the older shape as
+ * "legacy". So a draft is summed up for the Workspace that owns it, or
+ * reported as unattributed, and never read as both.
  */
 export type SavedDraftSummary =
   | { state: "none" }
@@ -124,13 +162,41 @@ export function savedDraftSummary(storage: Pick<Storage, "getItem">, agent: stri
   }
 }
 
-/** The Agents this device's draft storage holds something for: a manifest,
- * or an entry in the older string map. Nothing is read beyond keys and that map. */
-export function savedDraftAgents(storage: Pick<Storage, "getItem" | "key" | "length">): string[] {
+/** The Agents one Workspace's draft storage holds something for. Only keys
+ * that name this Workspace are read: another Workspace's drafts are not
+ * counted as this one's, and the older unattributed shapes are reported
+ * apart (`unattributedDraftAgents`). Nothing is read beyond the keys. */
+export function savedDraftAgents(
+  storage: Pick<Storage, "getItem" | "key" | "length">,
+  workspace: string,
+): string[] {
+  const agents = new Set<string>();
+  if (!workspace) return [];
+  for (let index = 0; index < storage.length; index++) {
+    const key = storage.key(index);
+    if (!key?.startsWith(prefix)) continue;
+    const parts = draftIdentityParts(key.slice(prefix.length));
+    if (parts?.workspace === workspace) agents.add(parts.agent);
+  }
+  return [...agents];
+}
+
+/**
+ * The Agents whose saved drafts say which Agent but not which Workspace: a
+ * key written before drafts were kept per Workspace, or an entry in the
+ * older `yuzuno.drafts` string map (T-195).
+ *
+ * These are reported, never claimed. They are not read into any Workspace,
+ * not rewritten and not removed; this is what lets the existing storage view
+ * say honestly that they are still there and whose they are not known to be.
+ */
+export function unattributedDraftAgents(storage: Pick<Storage, "getItem" | "key" | "length">): string[] {
   const agents = new Set<string>();
   for (let index = 0; index < storage.length; index++) {
     const key = storage.key(index);
-    if (key?.startsWith(prefix)) agents.add(key.slice(prefix.length));
+    if (!key?.startsWith(prefix)) continue;
+    const identity = key.slice(prefix.length);
+    if (!draftIdentityParts(identity)) agents.add(identity);
   }
   try {
     const legacy = JSON.parse(storage.getItem("yuzuno.drafts") || "{}");
@@ -139,6 +205,22 @@ export function savedDraftAgents(storage: Pick<Storage, "getItem" | "key" | "len
     // A damaged older map is reported for each Agent it would hold (savedDraftSummary).
   }
   return [...agents];
+}
+
+/**
+ * A draft that says which Agent but not which Workspace, read as itself
+ * (T-195): for showing a person what is still saved on their device and
+ * letting them keep a copy, never for a composer, which would be giving one
+ * Workspace what may be another's. Nothing is written, and the older key is
+ * left where it is.
+ */
+export function readUnattributedDraft(
+  storage: Pick<Storage, "getItem" | "setItem" | "removeItem">,
+  agent: string,
+): ComposerDraft {
+  if (storage.getItem(prefix + agent) !== null) return new DraftStorage(storage).load(agent);
+  const legacy = JSON.parse(storage.getItem("yuzuno.drafts") || "{}");
+  return textDraft(typeof legacy?.[agent] === "string" ? legacy[agent] : "");
 }
 
 /** Cache only identities, so nearby keystrokes never stringify/read paste bodies. */
@@ -154,12 +236,15 @@ export class DraftStorage {
   load(agent: string): ComposerDraft {
     const raw = this.storage.getItem(prefix + agent);
     if (!raw) {
-      // Read the old string map without rewriting or deleting other Agents' drafts.
-      const legacy = JSON.parse(this.storage.getItem("yuzuno.drafts") || "{}");
+      // Nothing saved for this Workspace's Agent. The older shapes -- a key
+      // of the Agent alone, and the `yuzuno.drafts` string map -- are no
+      // longer read here: they say which Agent but not which Workspace, and
+      // handing them to whichever Workspace happens to be open would be
+      // attributing them by guesswork. They are left exactly as they are and
+      // reported by `unattributedDraftAgents` so a person can see what is
+      // still there (T-195).
       this.manifests.set(agent, raw);
-      return textDraft(
-        typeof legacy?.[agent] === "string" ? legacy[agent] : "",
-      );
+      return emptyDraft();
     }
     const saved: SavedDraft = JSON.parse(raw);
     if (
@@ -274,7 +359,8 @@ export class DraftStorage {
   }
 
   remove(agent: string) {
-    // A tombstone also prevents a cleared legacy string from reappearing.
+    // An empty manifest rather than a deleted key, so saving reconciles this
+    // draft's pasted bodies and removes them with it.
     this.save(agent, emptyDraft());
   }
 

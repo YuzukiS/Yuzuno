@@ -259,17 +259,30 @@ async function hasText(text) {
 }
 async function preserved() {
   assert.equal(
+    // A draft is saved under the Workspace and the Agent (T-195), and this
+    // page is in one Workspace, so the key is the one naming Agent "a".
     await page.evaluate(() => {
-      const raw = localStorage.getItem("yuzuno.composer.v1:a");
-      return raw
-        ? JSON.parse(raw)
-            .parts.map((p) =>
-              p.kind === "text"
-                ? p.text
-                : localStorage.getItem("yuzuno.paste.v1:a:" + p.bodyId),
-            )
-            .join("")
-        : JSON.parse(localStorage.getItem("yuzuno.drafts")).a;
+      const prefix = "yuzuno.composer.v1:";
+      for (let index = 0; index < localStorage.length; index++) {
+        const key = localStorage.key(index);
+        if (!key || !key.startsWith(prefix)) continue;
+        const identity = key.slice(prefix.length);
+        let parsed;
+        try {
+          parsed = JSON.parse(identity);
+        } catch {
+          continue;
+        }
+        if (!Array.isArray(parsed) || parsed.length !== 2 || parsed[1] !== "a") continue;
+        return JSON.parse(localStorage.getItem(key))
+          .parts.map((p) =>
+            p.kind === "text"
+              ? p.text
+              : localStorage.getItem("yuzuno.paste.v1:" + identity + ":" + p.bodyId),
+          )
+          .join("");
+      }
+      return null;
     }),
     draft,
   );
@@ -344,10 +357,6 @@ try {
         JSON.stringify({ theme: "light", fontSize: 20, palette: "garden" }),
       );
       localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
-      localStorage.setItem(
-        "yuzuno.drafts",
-        JSON.stringify({ a: "更新前写的草稿 · keep this draft" }),
-      );
       localStorage.setItem("updates-fixture-seeded", "yes");
     }
     window.EventSource = class {
@@ -365,6 +374,11 @@ try {
   await page.goto(origin);
   const composer = page.locator("[data-composer-input]");
   await composer.waitFor();
+  // Typed rather than seeded into storage: a draft is saved under the
+  // Workspace it was written in (T-195), and only the running Core knows
+  // which Workspace this is. The app saves it under the right key itself.
+  await composer.press("Control+End");
+  await composer.pressSequentially("更新前写的草稿 · keep this draft");
   await composer.press("Control+End");
   await composer.evaluate((el, text) => {
     const clipboardData = new DataTransfer();
@@ -452,8 +466,18 @@ try {
   await page.evaluate(() => {
     window.savedUpdateStorageSet = Storage.prototype.setItem;
     Storage.prototype.setItem = function (key, value) {
-      if (key === "yuzuno.composer.v1:a")
-        throw new Error("Draft storage is full");
+      // Whatever Workspace this is, this Agent's draft manifest (T-195).
+      const prefix = "yuzuno.composer.v1:";
+      if (key.startsWith(prefix)) {
+        let parsed;
+        try {
+          parsed = JSON.parse(key.slice(prefix.length));
+        } catch {
+          parsed = null;
+        }
+        if (Array.isArray(parsed) && parsed[1] === "a")
+          throw new Error("Draft storage is full");
+      }
       return window.savedUpdateStorageSet.call(this, key, value);
     };
   });

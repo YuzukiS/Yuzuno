@@ -345,6 +345,7 @@ export function WorkspaceUpdatesHost({
   onNeedsReloadChange,
   preserveDrafts,
   navigation,
+  workspaceId,
   openAt,
 }: {
   enabled: boolean;
@@ -353,6 +354,9 @@ export function WorkspaceUpdatesHost({
   onNeedsReloadChange: (needsReload: boolean) => void;
   navigation?: SettingsNavigation;
   preserveDrafts: () => void;
+  /** Which Workspace's saved drafts the drafts tab reads (T-195). Empty until
+   * the Workspace is known, and then none are shown as its own. */
+  workspaceId: string;
   /** Opens Settings at this editor (a notification's click, T-196). */
   openAt?: SettingsOpenAt | null;
 }) {
@@ -370,6 +374,7 @@ export function WorkspaceUpdatesHost({
       preserveDrafts={preserveDrafts}
       chain={chain}
       navigation={navigation}
+      workspaceId={workspaceId}
       openAt={openAt}
       {...updates}
     />
@@ -392,6 +397,7 @@ export function WorkspaceUpdates({
   needsReload,
   chain,
   navigation,
+  workspaceId,
   openAt,
 }: {
   open: boolean;
@@ -403,6 +409,7 @@ export function WorkspaceUpdates({
   needsReload: boolean;
   chain: UpdateChainControl;
   navigation?: SettingsNavigation;
+  workspaceId: string;
   openAt?: SettingsOpenAt | null;
 }) {
   const language = useLanguage();
@@ -989,7 +996,7 @@ export function WorkspaceUpdates({
           {tab === "updates" && <DesktopUpdate preserveDrafts={preserveDrafts} />}
           {tab === "diagnostics" && <DiagnosticsCopy />}
           {tab === "history" && <HistoryComposition />}
-          {tab === "drafts" && <DraftExport active={open && visible} agents={navigation?.agents ?? null} />}
+          {tab === "drafts" && <DraftExport active={open && visible} agents={navigation?.agents ?? null} workspaceId={workspaceId} />}
           {tab === "storage" && (
             <StorageOverview
               active={open && visible}
