@@ -732,6 +732,36 @@ test("Home content editor settings save stable IDs, explicit none and compatibil
   } finally { page.close(); }
 });
 
+test("Home content editors follow a language change from another window, an unsaved choice kept (T-189)", async () => {
+  const page = await mount({ storage: { "yuzuno.selected": "a" } });
+  const language = async (value) => {
+    page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: value }));
+    page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+    await pause();
+  };
+  try {
+    await fromScopeMenu(page, "Manage projects");
+    const all = await waitFor(() => page.document.querySelector(".home-editor-mode input"), "editor setting loads");
+    all.click(); await pause();
+    page.document.querySelectorAll(".home-editor-members input")[1].click(); await pause();
+    const settings = () => page.document.querySelector(".home-editor-settings");
+    const chosen = () => [...page.document.querySelectorAll(".home-editor-members input")].map((box) => box.checked);
+    const names = () => [...page.document.querySelectorAll(".home-editor-members span")].map((span) => span.textContent);
+    const english = { text: settings().textContent, chosen: chosen(), names: names() };
+    assert.match(english.text, /Home content editors.*Only selected members maintain reports and status.*Save content editors.*Unsaved changes/s);
+    assert.deepEqual(english.chosen, [true, false]);
+    const before = page.calls.length;
+    await language("zh-Hans");
+    assert.match(settings().textContent, /Home 内容编辑者.*所有成员，包括以后加入的成员.*只有所选成员维护报告和状态.*保存内容编辑者.*有未保存的更改/s);
+    assert.deepEqual([chosen(), names()], [english.chosen, english.names], "the unsaved choice and the Agent names as they were");
+    await language("en");
+    assert.equal(settings().textContent, english.text);
+    assert.deepEqual(chosen(), english.chosen);
+    assert.deepEqual(page.calls.slice(before).filter((call) => call.method === "PUT"), [], "changing the language saves nothing");
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally { page.close(); }
+});
+
 test("a project's service opens only once this computer proves it reaches Core's port", async () => {
   const page = await mount({ storage: { "yuzuno.selected": "a" } });
   try {
