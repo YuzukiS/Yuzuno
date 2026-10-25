@@ -12,6 +12,8 @@ fn main() {
             "desktop_update_status",
             "desktop_update_check",
             "desktop_update_install",
+            "desktop_notifications",
+            "desktop_notify",
         ]),
     ))
     .expect("Unable to build desktop capabilities");
