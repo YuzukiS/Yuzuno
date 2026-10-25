@@ -153,6 +153,8 @@ export function Modal({
   wide = false,
   className = "",
   onCloseAutoFocus,
+  lang,
+  closeLabel = "Close dialog",
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -163,6 +165,9 @@ export function Modal({
   /** More classes for the dialog box, such as a fixed size. */
   className?: string;
   onCloseAutoFocus?: (event: Event) => void;
+  /** The language of its title and close button, when not the page's. */
+  lang?: string;
+  closeLabel?: string;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -171,6 +176,7 @@ export function Modal({
         <Dialog.Content
           className={`modal ${wide ? "modal-wide" : ""} ${className}`.trim()}
           onCloseAutoFocus={onCloseAutoFocus}
+          lang={lang}
         >
           <div className="modal-heading">
             <div>
@@ -179,7 +185,7 @@ export function Modal({
                 <Dialog.Description>{description}</Dialog.Description>
               )}
             </div>
-            <Dialog.Close className="icon-button" aria-label="Close dialog">
+            <Dialog.Close className="icon-button" aria-label={closeLabel}>
               <X size={18} />
             </Dialog.Close>
           </div>
