@@ -202,6 +202,19 @@ pub fn identity(known: Option<&str>, answered: Option<&str>) -> Identity {
     }
 }
 
+/// Whether what was read may be replaced by a list built from it.
+///
+/// `Unreadable` may not: it answers no profiles, so a list built from it
+/// holds only whatever is being added, and writing that replaces every
+/// Workspace the record still holds -- up to sixteen names and the
+/// `workspaceId`s the refusal depends on -- for a record that may be a
+/// passing read error, or one a newer build wrote. The record is left as it
+/// is; `read` keeps answering `Unreadable`, and a person can be told that
+/// rather than quietly losing the list.
+pub fn may_replace(saved: &Saved) -> bool {
+    !matches!(saved, Saved::Unreadable(_))
+}
+
 /// A name for a Workspace nobody has named yet: its host, which is what the
 /// person typed and recognises.
 pub fn name_for(url: &Url) -> String {
@@ -528,6 +541,18 @@ mod tests {
         assert_eq!(at_address(&kept, &core("https://two.example.ts.net:8444")).map(|p| &*p.id), Some("core-2"));
         assert!(at_address(&kept, &core("https://two.example.ts.net")).is_none());
         assert!(at_address(&kept, &core("https://three.example.ts.net")).is_none(), "an address not saved is new");
+    }
+
+    #[test]
+    fn a_record_that_could_not_be_read_is_never_replaced_by_a_list_built_from_it() {
+        // Unreadable answers no profiles, so anything built from it would
+        // replace the whole record with just what is being added.
+        assert!(!may_replace(&Saved::Unreadable("it could not be read (...)".into())));
+        assert!(may_replace(&Saved::Never), "a first launch has nothing to lose");
+        assert!(may_replace(&Saved::Profiles {
+            profiles: vec![profile("core-1", "Home", "https://one.example.ts.net", None)],
+            selected: None,
+        }));
     }
 
     #[test]

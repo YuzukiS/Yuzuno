@@ -74,6 +74,16 @@ async fn connect_core(
     let core = core_url::parse(&url)?;
     let workspace = check_health(&state.client, &core).await?;
     let saved = read_profiles(&app);
+    // A record that could not be read answers no profiles. Building a list
+    // from that and writing it would replace every Workspace the record still
+    // holds -- for what may be a passing read error, or a record a newer
+    // build wrote. So this opens the Workspace, writes nothing, and says
+    // which. The comment in `core_profiles::save_with` names this failure;
+    // guarding only that write was never enough, because by the time it runs
+    // the list it was handed is already empty. (`rename_core` and
+    // `remove_core` reach no write at all from such a record: the Workspace
+    // they were asked about is not in an empty list, and they answer that.)
+    let replaceable = core_profiles::may_replace(&saved);
     let mut profiles = saved.profiles().to_vec();
     // The saved Workspace this is: the one the page named, or, when it named
     // none, whichever is saved at this same address. Looking the address up
@@ -130,13 +140,22 @@ async fn connect_core(
             id
         }
     };
-    let written = saved_core_file(&app)
-        .ok_or_else(|| std::io::Error::other("this app has no data folder to keep it in"))
-        .and_then(|file| core_profiles::save(&file, &profiles, Some(&selected_id)));
+    let written = if replaceable {
+        saved_core_file(&app)
+            .ok_or_else(|| std::io::Error::other("this app has no data folder to keep it in"))
+            .and_then(|file| core_profiles::save(&file, &profiles, Some(&selected_id)))
+    } else {
+        Err(std::io::Error::other(
+            "the Workspaces saved on this iPhone could not be read, so this was not written over them",
+        ))
+    };
     let mut answer = serde_json::json!({
         "url": core.as_str(),
         "opened": true,
-        "identity": "known",
+        // Nothing was compared when the list could not be read: there was no
+        // saved Workspace to compare this one against, which is not the same
+        // as having found it unchanged.
+        "identity": if replaceable { "known" } else { "unknown" },
         "profile": selected_id,
         "workspaceId": workspace,
         "saved": written.is_ok(),
