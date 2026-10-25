@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CircleAlert, LoaderCircle, RotateCw } from "lucide-react";
+import { CircleAlert, CircleStop, LoaderCircle, RotateCw } from "lucide-react";
 import { errorText, reconnectAgent } from "./api";
 import { nativeSession } from "./machine-checks";
 import type { AgentDetail } from "./types";
@@ -14,12 +14,16 @@ import "./recovery.css";
  * offers a reconnect (a writer conflict, an unconfirmed message) or the
  * remote controls do.
  */
-export function recoveryReason(detail: AgentDetail): "running" | "uncertain" | "offline" | "collaboration" | null {
+export function recoveryReason(detail: AgentDetail): "running" | "uncertain" | "offline" | "collaboration" | "missing" | null {
   const agent = detail.agent;
   if (agent.closedAt) return null;
   if (detail.collaboration?.ready === false) return "collaboration";
   if (agent.remote) return null;
   if (!nativeSession(agent)) return null;
+  // A check found Turns Codex's own history doesn't have (T-198): no
+  // reconnect can confirm them; only ending them lets the Agent go on.
+  if (agent.harness !== "claude" && detail.codexHandoff?.missingTurns && agent.connectionState !== "connected")
+    return "missing";
   if (agent.harness !== "claude" && detail.codexHandoff?.writerConflictAt)
     return null;
   if (detail.messageReceipts?.some((r) => r.status === "sending" || r.status === "uncertain"))
@@ -40,11 +44,14 @@ export function RecoveryNotice({
   disabled,
   hasDraft,
   onRecovered,
+  onEndMissing,
 }: {
   detail: AgentDetail;
   disabled: boolean;
   hasDraft: boolean;
   onRecovered: () => void;
+  /** Opens the confirmation that ends Turns missing from the native history. */
+  onEndMissing?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -86,7 +93,12 @@ export function RecoveryNotice({
     <div className="recovery-notice" role="status">
       <CircleAlert size={14} />
       <span>
-        {reason === "offline" ? (
+        {reason === "missing" ? (
+          <>
+            Codex’s own history doesn’t have the turn Yuzuno recorded as still running, so reconnecting can’t confirm
+            it. You can end it as interrupted, result unknown, and go on in the same session; nothing is sent again.
+          </>
+        ) : reason === "offline" ? (
           <>This agent’s session isn’t connected. Reconnect to open the same session; nothing is sent.</>
         ) : (
           <>
@@ -109,6 +121,12 @@ export function RecoveryNotice({
         {connecting ? <LoaderCircle size={14} className="spin" /> : <RotateCw size={14} />}
         {connecting ? "Reconnecting…" : error ? "Try again" : reason === "offline" ? "Reconnect" : "Reconnect and check"}
       </button>
+      {reason === "missing" && onEndMissing && (
+        <button type="button" className="primary-button" disabled={disabled || connecting} onClick={onEndMissing}>
+          <CircleStop size={14} />
+          End turn…
+        </button>
+      )}
       {error && (
         <p role="alert" className="recovery-error">
           Couldn’t reconnect: {error}

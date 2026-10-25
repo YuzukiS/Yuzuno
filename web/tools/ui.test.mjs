@@ -113,6 +113,7 @@ async function mount({
   interruptResponse,
   reconnectResponse,
   otherAgentFields,
+  codexHandoff,
 } = {}) {
   const calls = [];
   const eventUrls = [];
@@ -205,6 +206,7 @@ async function mount({
         collaboration: agent.id === "a" ? collaboration : null,
         backgroundShells: agent.id === "a" ? backgroundShells : null,
         ...(agent.id === "a" && codexPlan ? { codexPlan } : {}),
+        ...(agent.id === "a" && codexHandoff ? { codexHandoff } : {}),
         claudeRuntime: agent.id === "a" ? claudeRuntime : null,
         messageReceipts: receipts.filter((r) => r.agentId === agent.id),
         history,
@@ -3640,6 +3642,67 @@ test("a reconnect already on its way is not sent again from another control: the
     assert.equal(reconnects().length, 1);
     assert.ok(reconnects()[0].url.endsWith("/api/agents/a/reconnect?view=summary"));
     assert.equal(page.calls.filter((c) => c.url.includes("/messages")).length, 0, "nothing was sent to the Agent");
+  } finally {
+    page.close();
+  }
+});
+test("a turn Codex never saved is ended only after confirming, from the notice or the menu; nothing is sent (T-198)", async () => {
+  const missingTurns = { turnIds: ["t1"], threadId: "thread-a", generation: 7, nativeStatus: "idle", checkedAt: "2026-10-25T01:00:00Z" };
+  const page = await mount({
+    status: "error",
+    turnStatus: "inProgress",
+    agentFields: { threadId: "thread-a", connectionState: "unconfirmed" },
+    codexHandoff: { missingTurns },
+  });
+  try {
+    const notice = await until(() => page.document.querySelector(".recovery-notice"), "the recovery notice");
+    assert.match(notice.textContent, /Codex’s own history doesn’t have the turn Yuzuno recorded as still running/);
+    const buttons = [...notice.querySelectorAll("button")].map((b) => b.textContent.trim());
+    assert.deepEqual(buttons, ["Reconnect and check", "End turn…"], "checking again stays offered beside ending");
+    const send = page.document.querySelector('button[aria-label="Send message"], button[aria-label="Send while working"]');
+    assert.ok(send.disabled, "the draft waits");
+    assert.equal(send.title, "End the unconfirmed turn, or check again, first");
+    const ends = () => page.calls.filter((c) => c.url.includes("/missing-turns/end"));
+
+    [...notice.querySelectorAll("button")].find((b) => b.textContent.includes("End turn")).click();
+    const dialog = await until(() => page.document.querySelector(".end-missing-dialog"), "the confirmation");
+    assert.match(dialog.textContent, /marked interrupted, with the result unknown/);
+    assert.match(dialog.textContent, /nothing is sent again, and anything already done, such as commands or file changes, isn’t undone/);
+    [...dialog.querySelectorAll("button")].find((b) => b.textContent.trim() === "Cancel").click();
+    await until(() => !page.document.querySelector(".end-missing-dialog"), "the confirmation closes");
+    assert.equal(ends().length, 0, "nothing changes until confirmed");
+
+    // The conversation's menu offers the same, where the notice may give way (phones).
+    page.document.querySelector('[aria-label="Conversation actions"]').click();
+    await pause();
+    page.document.querySelector('[role="menuitem"][data-action="endMissing"]').click();
+    const again = await until(() => page.document.querySelector(".end-missing-dialog"), "the confirmation from the menu");
+    [...again.querySelectorAll("button")].find((b) => b.textContent.includes("End as interrupted")).click();
+    await until(() => ends().length === 1, "the end request");
+    assert.ok(ends()[0].url.endsWith("/api/agents/a/codex/missing-turns/end"));
+    assert.deepEqual(JSON.parse(ends()[0].init.body), { turnIds: ["t1"], generation: 7 });
+    await pause();
+    assert.equal(ends().length, 1, "sent once");
+    assert.equal(page.calls.filter((c) => c.url.includes("/messages") || c.url.includes("/reconnect")).length, 0,
+      "no message and no reconnect by itself");
+  } finally {
+    page.close();
+  }
+});
+test("while Codex said the session was running a turn, ending it can't be confirmed (T-198)", async () => {
+  const page = await mount({
+    status: "error",
+    turnStatus: "inProgress",
+    agentFields: { threadId: "thread-a", connectionState: "unconfirmed" },
+    codexHandoff: { missingTurns: { turnIds: ["t1"], threadId: "thread-a", generation: 3, nativeStatus: "active", checkedAt: "2026-10-25T01:00:00Z" } },
+  });
+  try {
+    const notice = await until(() => page.document.querySelector(".recovery-notice"), "the recovery notice");
+    [...notice.querySelectorAll("button")].find((b) => b.textContent.includes("End turn")).click();
+    const dialog = await until(() => page.document.querySelector(".end-missing-dialog"), "the confirmation");
+    assert.match(dialog.textContent, /Codex said this session was running a turn/);
+    assert.ok([...dialog.querySelectorAll("button")].find((b) => b.textContent.includes("End as interrupted")).disabled);
+    assert.equal(page.calls.filter((c) => c.url.includes("/missing-turns/end")).length, 0);
   } finally {
     page.close();
   }

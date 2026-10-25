@@ -96,6 +96,12 @@ function shared(key: string, request: () => Promise<unknown>): Promise<unknown> 
 export function reconnectAgent(id: string): Promise<unknown> {
   return shared(`reconnect:${id}`, () => post<unknown>(`/agents/${encodeURIComponent(id)}/reconnect?view=summary`));
 }
+/** Ends the Turns a check found missing from the native history (T-198):
+ * each becomes interrupted with its result unknown. Nothing is sent. */
+export function endMissingTurns(id: string, missing: { turnIds: string[]; generation: number }): Promise<unknown> {
+  return shared(`end-missing:${id}`, () => post<unknown>(`/agents/${encodeURIComponent(id)}/codex/missing-turns/end`,
+    { turnIds: missing.turnIds, generation: missing.generation }));
+}
 /** Asks Core to interrupt an Agent's running turn; its conversation stays. */
 export function interruptAgent(id: string): Promise<unknown> {
   return shared(`interrupt:${id}`, () => post<unknown>(`/agents/${encodeURIComponent(id)}/interrupt`));

@@ -289,6 +289,18 @@ export interface CodexHandoff {
   writerConflictAt?: string | null;
   forkedTo?: ForkLink | null;
   forkedFrom?: ForkLink | null;
+  /** Unfinished Turns the native history, read to its end, doesn't have
+   * (T-198): Codex never saved them, so their result is unknown. */
+  missingTurns?: MissingTurns | null;
+}
+export interface MissingTurns {
+  turnIds: string[];
+  threadId: string;
+  /** The connection whose check found them; ending them names it. */
+  generation: number;
+  /** What Codex said the thread was doing then: "idle", "active", ... */
+  nativeStatus: string;
+  checkedAt: string;
 }
 export interface ForkPreview {
   sourceThreadId: string;

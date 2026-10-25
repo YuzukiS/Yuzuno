@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { MoreHorizontal, RotateCw, Settings2, SlidersHorizontal, Square } from "lucide-react";
+import { CircleStop, MoreHorizontal, RotateCw, Settings2, SlidersHorizontal, Square } from "lucide-react";
 import { agentMenuItems, type AgentActionHandlers, type AgentMenuAction, type AgentMenuItem } from "./agent-actions";
 import type { Agent } from "./types";
 import "./agent-actions.css";
@@ -32,6 +32,7 @@ interface OpenMenu {
 const icons: Record<AgentMenuAction, typeof RotateCw> = {
   reconnect: RotateCw,
   check: RotateCw,
+  endMissing: CircleStop,
   interrupt: Square,
   settings: SlidersHorizontal,
   manage: Settings2,
@@ -52,9 +53,13 @@ export function AgentActionsMenu({
   className = "",
   label,
   ref,
+  missingTurns = false,
 }: {
   agent: Agent;
   handlers: AgentActionHandlers;
+  /** A check found Turns missing from the native history (T-198); only the
+   * open conversation knows, from its record. */
+  missingTurns?: boolean;
   className?: string;
   /** Its button's name; "Actions for {name}" unless the place names it. */
   label?: string;
@@ -71,9 +76,9 @@ export function AgentActionsMenu({
   const open = useCallback(
     (at: MenuPoint, align: OpenMenu["align"], returnTo: HTMLElement | null, focus: OpenMenu["focus"] = "first") => {
       setPlaced(null);
-      setMenu({ id: agent.id, name: agent.name, items: agentMenuItems(agent), at, align, returnTo, focus });
+      setMenu({ id: agent.id, name: agent.name, items: agentMenuItems(agent, { missingTurns: missingTurns && !!handlers.endMissing }), at, align, returnTo, focus });
     },
-    [agent],
+    [agent, missingTurns, handlers.endMissing],
   );
   const close = useCallback((refocus: boolean) => {
     const was = current.current;
@@ -184,6 +189,9 @@ export function AgentActionsMenu({
         break;
       case "manage":
         handlers.manage(target.id);
+        break;
+      case "endMissing":
+        handlers.endMissing?.(target.id);
         break;
     }
   }
