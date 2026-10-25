@@ -119,7 +119,7 @@ function client(server, name, saved = null) {
   const original = storage.setItem;
   const props = { workspaceId: W1, connected: true, nudge: 0 };
   const page = {
-    name, window, props,
+    name, window, props, server,
     get connected() { return props.connected; },
     render: () => window.render({ ...props }),
     event() { props.nudge++; page.render(); },
@@ -153,10 +153,15 @@ function client(server, name, saved = null) {
   return page;
 }
 const read = (page) => until(() => !page.status().startsWith("Reading") && page.device(), `${page.name} read the preset`);
+/** Read again, and wait for that read's answer, not the last one's. */
+async function reread(page) {
+  const gets = page.server.gets;
+  page.press("Read again");
+  await until(() => page.server.gets > gets && !page.status().startsWith("Reading") && page.device(), `${page.name} read the preset again`);
+}
 /** B turns following on from the preset it reads now. */
 async function follow(page) {
-  page.press("Read again");
-  await read(page);
+  await reread(page);
   page.press("Follow this preset…");
   await until(() => page.preview("Follow preview"), "the follow preview");
   const go = [...page.preview("Follow preview").querySelectorAll("button")].find((b) => b.textContent.startsWith("Follow"));
@@ -180,8 +185,8 @@ test("off until turned on after a preview; then each newer revision another devi
   assert.equal(b.palette(), "garden", "a save by another device changes nothing here by itself");
   assert.equal(b.stored(), null);
 
-  b.press("Read again");
-  await read(b);
+  await reread(b);
+  assert.match(b.status(), /shared preset revision 1/);
   b.press("Follow this preset…");
   const preview = await until(() => b.preview("Follow preview"), "the follow preview");
   assert.match(preview.textContent, /Palette.*Now: Garden.*Shared: Pine/);
