@@ -416,3 +416,67 @@ test("a daily run is shown as it ended, never as a success while it runs; the ph
     q.close();
   }
 });
+
+test("the retention preview says what it would keep, could remove and protect, offers no deletion, and Check reads one back", async () => {
+  const sent = [];
+  const backup = (day, verdict, reason, extra = {}) => ({
+    name: `yuzuno-backup-202610${day}T0300Z`, path: `/backups/daily/yuzuno-backup-202610${day}T0300Z`, verdict, reason,
+    workspaceId: "ws-synthetic", createdAt: `2026-10-${day}T03:00:05+00:00`, estimateBytes: 3 * 1024 * 1024, ...extra,
+  });
+  const preview = {
+    folder: "/backups/daily", keep: 2, notInspected: 0, removableEstimateBytes: 3 * 1024 * 1024,
+    entries: [
+      backup("24", "keep", "One of the latest 2", { lastCheckedAt: "2026-10-24T04:00:00+00:00" }),
+      backup("23", "keep", "One of the latest 2"),
+      backup("22", "remove", "Older than the latest 2"),
+      { name: "other", path: "/backups/daily/other", verdict: "protected", reason: "A backup of another Workspace", workspaceId: "ws-other" },
+      { name: "damaged", path: "/backups/daily/damaged", verdict: "unknown", reason: "Its manifest can't be read: The backup manifest is not JSON" },
+      { name: "photos", path: "/backups/daily/photos", verdict: "ignored", reason: "No manifest.json, so not a Workspace backup" },
+    ],
+  };
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/workspace/backup")) {
+      return { body: view({ schedule: { enabled: true, timeUtc: "03:00", folder: "/backups/daily", nextRunAt: "2026-10-26T03:00:00Z", lastRun: null } }) };
+    }
+    if (url.endsWith("/api/workspace/backup/retention/preview")) {
+      sent.push(["preview", body]);
+      return { body: preview };
+    }
+    if (url.endsWith("/api/workspace/backups/check")) {
+      sent.push(["check", body]);
+      return { status: 202, body: { operation: op({ id: "op7", kind: "check", requestId: body.requestId, request: { path: body.path } }) } };
+    }
+    if (url.endsWith("/operations/op7")) {
+      return { body: op({ id: "op7", kind: "check", state: "succeeded", step: "verify", finishedAt: "2026-10-25T02:00:00Z", result: { ...summary, path: body?.path ?? "/backups/daily/yuzuno-backup-20261022T0300Z" } }) };
+    }
+    assert.fail(`unexpected ${method} ${url}`);
+  });
+  try {
+    const group = () => p.doc.querySelector('[aria-label="Keep the latest backups"]');
+    await waitFor(() => group()?.querySelector('input[aria-label="Folder holding backups"]')?.value === "/backups/daily", "the daily folder as the default");
+    type(p, "Backups to keep", "2");
+    await waitFor(() => !button(p, "Preview").disabled, "Preview offered");
+    button(p, "Preview").click();
+    await waitFor(() => group().querySelector('[aria-label="Retention preview"]'), "the preview");
+    assert.deepEqual(sent[0], ["preview", { folder: "/backups/daily", keep: 2 }]);
+    const result = group().querySelector('[aria-label="Retention preview"]');
+    assert.equal(result.querySelector('[role="status"]').textContent,
+      "Keeping the latest 2: 2 kept, 1 could be removed (about 3.0 MiB, as their manifests declare), 2 protected or can't be judged. 1 other entry is not a backup.");
+    const headings = [...result.querySelectorAll("h4")].map((h) => h.textContent);
+    assert.deepEqual(headings, ["Kept (2)", "Could be removed (1)", "Protected (1)", "Can't be judged (1)"]);
+    assert.match(result.textContent, /no backup's files were checked/);
+    assert.match(result.textContent, /last checked 2026-10-24 04:00 UTC/);
+    assert.match(result.textContent, /A backup of another Workspace/);
+    const labels = [...group().querySelectorAll("button")].map((b) => b.textContent.trim().toLowerCase());
+    assert.ok(!labels.some((l) => /delete|remove|clean|apply|automatic/.test(l)), labels.join(", "));
+    const removable = [...result.querySelectorAll("li")].find((li) => li.textContent.includes("yuzuno-backup-20261022T0300Z"));
+    removable.querySelector("button").click();
+    await waitFor(() => sent.some(([kind]) => kind === "check"), "the check");
+    const check = sent.find(([kind]) => kind === "check")[1];
+    assert.equal(check.path, "/backups/daily/yuzuno-backup-20261022T0300Z");
+    assert.ok(check.requestId, "Check is the existing operation, with its own requestId");
+    await waitFor(() => p.text().includes("Check finished"), "the check's outcome");
+  } finally {
+    p.close();
+  }
+});
