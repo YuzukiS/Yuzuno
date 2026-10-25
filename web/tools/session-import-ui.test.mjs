@@ -677,3 +677,51 @@ test("acknowledged outgoing previews stay gone when imported history pages are d
     page.close();
   }
 });
+
+test("Existing Codex session follows a language change from another window; the preview, name and chosen permissions are kept and nothing is read again (T-189)", async () => {
+  const page = mount();
+  const language = async (value) => {
+    page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: value }));
+    page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+    await tick();
+    await tick();
+  };
+  try {
+    await open(page);
+    // A typed ID that isn't one: the note is worded when shown.
+    await value(page, page.document.querySelector("#import-session-id"), "not-an-id");
+    button(page, "Preview session").click();
+    await tick();
+    assert.match(page.document.querySelector('[role="alert"]').textContent, /^Paste the session ID from Codex/);
+    await language("zh-Hans");
+    assert.match(page.document.querySelector('[role="alert"]').textContent, /^请粘贴 Codex 的会话 ID/);
+    await language("en");
+    await read(page);
+    const name = [...page.document.querySelectorAll("label")].find((l) => l.textContent.startsWith("Agent name")).querySelector("input");
+    await value(page, name, "Kept name");
+    await permission(page, "full");
+    const kept = () => ({
+      id: page.document.querySelector("#import-session-id").value,
+      name: name.value,
+      permission: page.document.querySelector('[aria-label="Permissions"] input:checked')?.value,
+      folder: page.document.querySelector(".session-preview-folder").textContent,
+      excerpt: page.document.querySelector(".session-preview-excerpt").textContent,
+      warnings: [...page.document.querySelectorAll(".session-import-warnings p")].map((p) => p.textContent),
+    });
+    const english = { text: page.document.body.textContent, kept: kept() };
+    assert.match(english.text, /42 turns.*gpt-6.1 · high reasoning.*Add to workspace/s);
+    const before = page.calls.length;
+    await language("zh-Hans");
+    const text = page.document.body.textContent;
+    assert.match(text, /欢迎回到你的工作.*Codex 会话 ID.*42 个 Turn.*gpt-6\.1 · high 推理.*添加到 Workspace/s);
+    assert.match(page.document.querySelector(".session-handoff-note").textContent, /^原客户端必须先释放此会话.*添加会话不会发送消息/);
+    assert.deepEqual(kept(), english.kept, "the ID, name, chosen permission, folder, excerpt and Codex's warnings as they were");
+    await language("en");
+    assert.equal(page.document.body.textContent, english.text);
+    assert.equal(page.calls.length, before, "changing the language reads and imports nothing");
+    assert.equal(importCalls(page).length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
