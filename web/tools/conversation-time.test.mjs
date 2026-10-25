@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 process.env.TZ = "Asia/Shanghai";
 const { patchDetail } = await import("../src/detail-patch.ts");
 const { DetailSync } = await import("../src/detail-sync.ts");
-const { conversationTimeMarks, timeMarkKey } = await import("../src/conversation-time.ts");
+const { conversationTimeMarks, timeMarkKey, turnFooter } = await import("../src/conversation-time.ts");
 
 const pause = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 const at = (minute, second = 0) => Date.UTC(2026, 9, 14, 2, minute, second);
@@ -68,4 +68,22 @@ test("streamed deltas never cause a read; only a change notice does", async () =
   await pause(60);
   assert.equal(reads, 2);
   sync.dispose();
+});
+
+// This device's clock format (T-189): the same loaded Turns, written with
+// another clock, are written again, not taken from the marks already made.
+test("another clock format writes the same loaded Turns' marks and ending again", () => {
+  const d = detail();
+  d.turns[0].status = "completed";
+  d.turns[0].completedAt = at(3) / 1000;
+  const written = (clock) => [...conversationTimeMarks(d.turns, clock).values()].map((mark) => mark.label);
+  const ending = (clock) => turnFooter(d.turns[0], null, clock).find((part) => part.kind === "time").moment.label;
+  const system = written("system");
+  assert.deepEqual(system, [new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(at(0, 5)))], "unset, as before");
+  assert.deepEqual(written("h24"), ["10:00"]);
+  assert.equal(ending("h24"), "10:03");
+  assert.match(written("h12")[0], /^10:00\s?AM$/);
+  assert.deepEqual(written("h24"), ["10:00"], "and back");
+  assert.equal(conversationTimeMarks(d.turns, "h24"), conversationTimeMarks(d.turns, "h24"), "one result per Turns and clock format");
+  assert.deepEqual(written("system"), system);
 });
