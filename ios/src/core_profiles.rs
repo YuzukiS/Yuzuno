@@ -182,9 +182,11 @@ impl Saved {
         // unbound while another label at it knows better: that opened a
         // different Workspace onto the first one's stored data.
         //
-        // Should two labels at one address disagree, the first that knows
-        // one decides, so a different answer is refused rather than opened.
-        // Refusing is the safe direction; `settle` keeps them in agreement.
+        // Two labels at one address cannot disagree in a record this app
+        // will read: `read_bytes` refuses one that records two different
+        // Workspaces for one address, so there is no winner to pick here,
+        // and `save` cannot write one either -- it reads back what it is
+        // about to write, through that same reader.
         if self.profiles().iter().any(|profile| profile.url == *url) {
             return self
                 .profiles()
@@ -251,6 +253,22 @@ pub fn read_bytes(bytes: &[u8]) -> Saved {
             // One unusable entry makes the record unusable rather than
             // quietly dropping a Workspace someone saved.
             _ => return Saved::Unreadable("one of its Workspaces is not one this app opens".into()),
+        }
+    }
+    // At most one *distinct* Workspace per address. Two labels for one
+    // address are allowed and stay allowed -- one recording none and one
+    // recording w ("None/A"), or both recording the same ("A/A"). Two
+    // different identifiers at one address are two answers to one question:
+    // nothing may choose between them, and choosing would open a Workspace
+    // onto another's stored data. Such a record is refused whole, in either
+    // order, and its bytes are left exactly as they are.
+    for (at, profile) in profiles.iter().enumerate() {
+        let Some(mine) = profile.workspace_id.as_deref() else { continue };
+        if profiles[..at]
+            .iter()
+            .any(|kept| kept.url == profile.url && kept.workspace_id.as_deref().is_some_and(|theirs| theirs != mine))
+        {
+            return Saved::Unreadable("it records two different workspaces for one address".into());
         }
     }
     let mut remembered: Vec<Remembered> = Vec::new();
@@ -770,6 +788,10 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    fn core_at(address: &str) -> Url {
+        crate::core_url::parse(address).unwrap()
+    }
+
     fn known(address: &str, workspace: &str) -> Remembered {
         Remembered { url: crate::core_url::parse(address).unwrap(), workspace_id: workspace.into() }
     }
@@ -834,6 +856,63 @@ mod tests {
         let left = read(&path);
         assert_eq!(left.workspace_for(&address), Some("w-one"));
         assert_eq!(opening(left.workspace_for(&address), "w-two"), Opening::Changed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn two_different_workspaces_at_one_address_are_refused_either_way_round() {
+        let (dir, path) = folder();
+        let a = |id: &str| profile(id, "Home", "https://one.example.ts.net", Some("w-a"));
+        let b = |id: &str| profile(id, "Home again", "https://one.example.ts.net", Some("w-b"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        // Both orders. Refusing only one answer is not safety: the record
+        // itself holds two answers for one address, so it is refused whole.
+        for (first, second) in [("core-1", "core-2"), ("core-2", "core-1")] {
+            let listed = if first == "core-1" { vec![a(first), b(second)] } else { vec![b(first), a(second)] };
+            // The writer will not produce it: it reads back what it writes.
+            let refused = save(&path, &listed, Some(first), &[]).unwrap_err().to_string();
+            assert!(refused.contains("could not read back"), "{refused}");
+            assert!(refused.contains("two different workspaces for one address"), "{refused}");
+            assert_eq!(read(&path), Saved::Never, "nothing was written");
+
+            // And a record already on disk is refused by the reader, with its
+            // bytes left exactly as they are.
+            let text = format!(
+                r#"{{"version":1,"profiles":[{},{}],"selected":"{first}"}}"#,
+                serde_json::to_string(&listed[0].to_json()).unwrap(),
+                serde_json::to_string(&listed[1].to_json()).unwrap()
+            );
+            std::fs::write(&path, &text).unwrap();
+            assert_eq!(
+                read(&path),
+                Saved::Unreadable("it records two different workspaces for one address".into()),
+                "order {first} then {second}"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "the bytes are untouched");
+
+            // Nothing may be decided from it, so neither answer gets through:
+            // `unusable` is what `connect_core` refuses on, before it selects,
+            // writes or navigates. No winner is picked for either answer.
+            let saved = read(&path);
+            assert!(unusable(&saved).is_some(), "a connection is refused while this is so");
+            assert_eq!(saved.profiles(), &[], "it answers no profiles");
+            assert_eq!(saved.workspace_for(&core_at("https://one.example.ts.net")), None);
+            // And settle cannot launder it into something writable: it is
+            // handed no profiles, so it claims nothing about the address.
+            assert_eq!(settle(&saved, saved.profiles()).1, vec![], "no binding invented from a refused record");
+            std::fs::remove_file(&path).unwrap();
+        }
+
+        // The legal duplicates stay legal and usable.
+        for listed in [vec![a("core-1"), a("core-2")], vec![profile("core-1", "Home", "https://one.example.ts.net", None), a("core-2")]] {
+            save(&path, &listed, Some("core-1"), &[]).expect("two labels for one address are allowed");
+            let saved = read(&path);
+            assert_eq!(saved.profiles().len(), 2);
+            assert_eq!(saved.workspace_for(&core_at("https://one.example.ts.net")), Some("w-a"));
+            assert_eq!(opening(saved.workspace_for(&core_at("https://one.example.ts.net")), "w-b"), Opening::Changed);
+            std::fs::remove_file(&path).unwrap();
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 
