@@ -3,6 +3,7 @@
 #[cfg(windows)]
 mod chrome;
 mod connection;
+mod entries;
 mod health;
 mod update;
 
