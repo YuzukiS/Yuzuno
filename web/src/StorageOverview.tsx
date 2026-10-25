@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, errorText } from "./api";
+import { ClaudeRuntimeCopies } from "./ClaudeRuntimeCopies";
 import {
   browserEstimate,
   deviceGroups,
@@ -86,7 +87,7 @@ const entryLabelsZh: Record<string, string> = {
 };
 const text = strings({
   title: "Data & storage",
-  intro: "Where this Workspace's data is kept, who keeps it and what is known of its size. This page only reads: nothing here deletes or changes anything.",
+  intro: "Where this Workspace's data is kept, who keeps it and what is known of its size. Nothing here deletes or changes anything, except prepared Claude runtimes you choose to remove below.",
   device: "On this device, for this site",
   deviceNote: "Kept only in this browser at this address. It is not in a Workspace backup, and clearing this site's data in the browser removes it.",
   deviceReason: (reason: string) => reason,
@@ -150,7 +151,7 @@ const text = strings({
   notInBackup: "Not in a backup",
 }, {
   title: "数据与存储",
-  intro: "这个 Workspace 的数据存放在哪里、由谁保存，以及已知的大小。此页面只读取：这里不会删除或更改任何内容。",
+  intro: "这个 Workspace 的数据存放在哪里、由谁保存，以及已知的大小。除了你在下方选择移除的已准备 Claude 运行环境，这里不会删除或更改任何内容。",
   device: "在此设备上，此站点",
   deviceNote: "只保存在此浏览器的这个地址下。它不在 Workspace 备份中，在浏览器中清除此站点的数据会删除它。",
   deviceReason: (reason) => {
@@ -219,7 +220,8 @@ function at(iso: string) {
  * Settings → Data & storage (T-193): where this Workspace's data is kept, who
  * keeps it and what is known of its size. It reads this browser's storage and
  * Core's overview while it is shown; a size that is not known is said to be
- * unknown, never 0. Nothing here deletes or changes anything.
+ * unknown, never 0. Nothing here deletes or changes anything, except the
+ * prepared Claude runtimes chosen in ClaudeRuntimeCopies.
  */
 export function StorageOverview({ active, updates, onOpenTaskWorkspaces }: {
   active: boolean;
@@ -348,6 +350,8 @@ export function StorageOverview({ active, updates, onOpenTaskWorkspaces }: {
           </>
         )}
       </section>
+
+      <ClaudeRuntimeCopies />
 
       <section className="storage-part" aria-labelledby="storage-task-folders">
         <h4 id="storage-task-folders">{t.taskFolders}</h4>

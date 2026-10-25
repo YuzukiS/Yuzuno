@@ -52,7 +52,7 @@ const overview = () => ({
   ],
   notInBackup: ["Native session histories kept by Codex, Claude Code and OpenCode outside the Workspace"],
 });
-function mount(seed = {}, { tasks = { tasks: [], hasMore: false } } = {}) {
+function mount(seed = {}, { tasks = { tasks: [], hasMore: false }, runtimes = null } = {}) {
   const vc = new VirtualConsole();
   const errors = [], calls = [];
   vc.on("jsdomError", (error) => errors.push(error.message));
@@ -69,7 +69,10 @@ function mount(seed = {}, { tasks = { tasks: [], hasMore: false } } = {}) {
       const body = { error: listed.error };
       return { ok: false, status: listed.httpStatus, json: async () => body, text: async () => JSON.stringify(body) };
     }
-    const value = String(url).endsWith("/api/storage") ? overview() : listed ?? {};
+    // The prepared Claude runtimes (T-193): each read and removal answered in turn.
+    const runtime = String(url).endsWith("/api/claude-sdk/copies") ? runtimes?.copies(calls.filter((c) => c.url.endsWith("/api/claude-sdk/copies")).length)
+      : String(url).endsWith("/api/claude-sdk/copies/remove") ? runtimes?.remove(JSON.parse(init.body)) : null;
+    const value = String(url).endsWith("/api/storage") ? overview() : listed ?? runtime ?? {};
     return { ok: true, status: 200, json: async () => structuredClone(value), text: async () => JSON.stringify(value) };
   };
   w.eval(bundle);
@@ -127,7 +130,9 @@ test("opening it only reads: this device by group and Core's overview once, with
   assert.match(p.text(), /Claude Code · lab box.*size unknown.*Kept by Claude Code in its own folder on that computer/);
   assert.match(p.text(), /Codex · the Core host.*3 Agents \(1 closed\)/);
   assert.match(p.text(), /Releases: 300 MiB \(3 kept, up to 3\)\. Database copies made before updates: 20 MiB/);
-  assert.equal(p.doc.querySelectorAll("#settings-storage button").length, 0, "nothing to press: it only reads");
+  assert.deepEqual([...p.doc.querySelectorAll("#settings-storage button")].map((b) => b.textContent), ["Check prepared runtimes"],
+    "the one thing to press is a read, and nothing was read for it yet");
+  assert.ok(!p.calls.some((c) => c.url.includes("/claude-sdk")), "prepared runtimes are not read until asked");
   assert.deepEqual(p.errors, []);
 });
 
@@ -214,4 +219,102 @@ test("a task list that can't be read says why; an empty one says so; without the
   endless.w.renderStorage({ active: true, updates: managed, onOpenTaskWorkspaces: () => {} });
   await until(() => /Only the 10 oldest tasks are listed; open a later one from Tasks\./.test(endless.text()), "the pages it stopped at");
   assert.equal(endless.posts().length, 10, "a bounded number of pages");
+});
+
+// T-193: prepared Claude runtimes. Read only on Check; only copies no
+// installed release needs can be ticked; removal is posted only once
+// confirmed, with just the chosen keys; each result is said as it was.
+const KEY = (c) => c.repeat(32);
+const copy = (c, version, at, bytes, usedBy, problem = null) =>
+  ({ key: c ? KEY(c) : null, version, source: null, at, bytes, usedBy, removable: !usedBy && !problem && !!c, problem });
+const ready = (copies) => ({ format: 1, readAt: "2026-10-25T20:00:00Z", state: "ready", copies, limited: false });
+const listed = [
+  copy("a", "0.3.296", "2026-10-20T10:00:00Z", 52428800, "thisCore"),
+  copy("b", "0.3.290", "2026-10-01T10:00:00Z", 50331648, "installedRelease"),
+  copy("c", "0.3.280", "2026-09-01T10:00:00Z", 49283072, null),
+  copy("d", "0.3.270", "2026-08-01T10:00:00Z", null, null),
+  copy("e", null, null, null, null, "noReceipt"),
+  copy(null, null, null, null, null, "unknownName"),
+];
+
+test("prepared runtimes: read on Check, only unneeded ones can be chosen, removed only once confirmed, each result said", async (t) => {
+  const removals = [];
+  const p = mount({}, { runtimes: {
+    copies: (n) => ready(n === 1 ? listed : listed.filter((c) => c.key !== KEY("c"))),
+    remove: (body) => { removals.push(body); return { format: 1, state: "done", results: [
+      { key: KEY("c"), outcome: "removed", bytes: 49283072 },
+      { key: KEY("d"), outcome: "partly", error: "permission denied" }] }; },
+  } }); t.after(p.close);
+  p.w.renderStorage({ active: true, updates: managed });
+  await until(() => p.text().includes("Workspace database"));
+  p.button("Check prepared runtimes").click();
+  await until(() => p.doc.querySelector('[data-copy]'), "the prepared runtimes");
+  const reads = () => p.calls.filter((c) => c.url.endsWith("/api/claude-sdk/copies")).length;
+  assert.equal(reads(), 1);
+  const row = (c) => p.doc.querySelector(`[data-copy="${c ? KEY(c) : "other"}"]`)?.textContent ?? "";
+  assert.match(row("a"), /Claude Agent SDK 0\.3\.296 · runtime aaaaaaaa.*Used by this Core/);
+  assert.match(row("b"), /Needed by an installed release/);
+  assert.match(row("c"), /No installed release needs it/);
+  assert.match(row("d"), /size unknown.*No installed release needs it/);
+  assert.match(row("e"), /Its record of what it is can't be read: kept/);
+  assert.match(row(null), /^Not a copy Core made.*Kept$/);
+  const ticks = () => [...p.doc.querySelectorAll('[data-copy] input[type="checkbox"]')];
+  assert.deepEqual(ticks().map((box) => box.closest("[data-copy]").dataset.copy), [KEY("c"), KEY("d")], "only what no release needs");
+  assert.equal(p.button("Remove chosen…").disabled, true, "nothing chosen");
+
+  // Chosen, then taken back at the confirmation: nothing is removed.
+  ticks()[0].click();
+  await until(() => !p.button("Remove chosen…").disabled);
+  p.button("Remove chosen…").click();
+  const confirm = await until(() => p.doc.querySelector(".storage-confirm"), "the confirmation");
+  assert.match(confirm.textContent, /^Remove 1 prepared runtime, about .+ MiB\? Core checks again first that no installed release needs it\./);
+  p.button("Cancel").click();
+  await until(() => !p.doc.querySelector(".storage-confirm"));
+  assert.deepEqual(removals, [], "cancelled: nothing posted");
+
+  // Both chosen: a size not known isn't added up as 0.
+  ticks()[1].click();
+  await until(() => !p.button("Remove chosen…").disabled);
+  p.button("Remove chosen…").click();
+  const both = await until(() => p.doc.querySelector(".storage-confirm"));
+  assert.match(both.textContent, /^Remove 2 prepared runtimes\? /, "no size claimed when one is unknown");
+  p.button("Remove").click();
+  await until(() => p.doc.querySelector('[data-result="partly"]'), "the results");
+  assert.deepEqual(removals, [{ keys: [KEY("c"), KEY("d")] }], "just the chosen keys");
+  assert.match(p.doc.querySelector('[data-result="removed"]').textContent, /^Runtime cccccccc: removed, about .+ MiB freed\.$/);
+  assert.match(p.doc.querySelector('[data-result="partly"]').textContent,
+    /^Runtime dddddddd: moved aside, but not all of it could be removed \(permission denied\)\..*its space is not counted as freed\.$/);
+  await until(() => reads() === 2 && !p.doc.querySelector(`[data-copy="${KEY("c")}"]`), "the list read again");
+  assert.equal(p.posts().filter((c) => c.url.includes("/claude-sdk")).length, 1, "one removal");
+  assert.deepEqual(p.errors, []);
+});
+
+test("prepared runtimes: a refusal is said and offers nothing; a removal Core refuses says why and removes nothing", async (t) => {
+  const refused = mount({}, { runtimes: { copies: () => ({ format: 1, readAt: "2026-10-25T20:00:00Z", state: "refused", reason: "installing", copies: [], limited: false }) } });
+  t.after(refused.close);
+  refused.w.renderStorage({ active: true, updates: managed });
+  await until(() => refused.text().includes("Workspace database"));
+  refused.button("Check prepared runtimes").click();
+  await until(() => refused.doc.querySelector('[data-refused="installing"]'), "the refusal");
+  assert.match(refused.text(), /An update is being installed\. Check again once it has finished\./);
+  assert.equal(refused.doc.querySelectorAll('[data-copy] input[type="checkbox"]').length, 0);
+  assert.equal(refused.button("Remove chosen…"), undefined);
+
+  const late = mount({}, { runtimes: {
+    copies: () => ready(listed),
+    remove: () => ({ format: 1, state: "refused", reason: "releasesUnreadable", results: [] }),
+  } }); t.after(late.close);
+  late.w.renderStorage({ active: true, updates: managed });
+  await until(() => late.text().includes("Workspace database"));
+  late.button("Check prepared runtimes").click();
+  const tick = await until(() => late.doc.querySelector('[data-copy] input[type="checkbox"]'));
+  tick.click();
+  await until(() => !late.button("Remove chosen…").disabled);
+  late.button("Remove chosen…").click();
+  await until(() => late.button("Remove"));
+  late.button("Remove").click();
+  const alert = await until(() => [...late.doc.querySelectorAll('.claude-runtime-copies [role="alert"]')].find((el) => el.textContent.includes("couldn't be read")), "the refusal");
+  assert.match(alert.textContent, /^An installed release's runtime couldn't be read, so what it needs can't be told\. Nothing is offered for removal\.$/);
+  assert.equal(late.doc.querySelectorAll("[data-result]").length, 0, "no result claimed");
+  assert.deepEqual(late.errors, []);
 });

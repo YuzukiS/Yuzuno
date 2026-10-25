@@ -416,7 +416,10 @@ const STATUS_COPIES: usize = 64;
 const UNUSABLE_MANIFEST: &str = "claude-agent-sdk.json 不是可用的 Claude Agent SDK 清单";
 
 pub(crate) fn router() -> axum::Router<Arc<crate::workspace::Workspace>> {
-    axum::Router::new().route("/api/claude-sdk", axum::routing::get(read_status))
+    axum::Router::new()
+        .route("/api/claude-sdk", axum::routing::get(read_status))
+        .route("/api/claude-sdk/copies", axum::routing::get(read_copies))
+        .route("/api/claude-sdk/copies/remove", axum::routing::post(remove_copies))
 }
 
 async fn read_status() -> Result<axum::Json<serde_json::Value>, crate::server::ApiError> {
@@ -556,6 +559,266 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
 
 fn file_name(path: &Path) -> String {
     path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+// Prepared copies no installed release needs (T-193). Core keeps a copy per
+// runtime and never removes one; the update helper removes old releases, so
+// copies only those needed stay behind. They are listed, and removed only
+// when chosen. Anything that can't be told for certain is kept.
+
+/// The most copies listed, or chosen in one removal.
+const COPIES_LISTED: usize = 64;
+/// The most entries one copy's size counts before its size is unknown.
+const SIZE_ENTRIES: usize = 200_000;
+
+/// What the runtimes of this install's releases need, and the copies this
+/// process uses: the copies that stay. Else why that can't be told, as a code
+/// the page words; then nothing is offered or removed.
+/// - `notRelease`: the bridge is not in `…/releases/<id>/runtimes/claude`;
+/// - `installing`: a release is being staged (`releases/.stage-*`) or waits
+///   in `incoming/`;
+/// - `releasesUnreadable`: a release, or its runtime, can't be read or hashed.
+/// What stays: every key a release's runtime has, and the one this Core's has.
+struct Needed {
+    keys: std::collections::BTreeSet<String>,
+    current: Option<String>,
+}
+
+fn needed(script: Result<PathBuf>, cache: &Path) -> std::result::Result<Needed, &'static str> {
+    use std::io::ErrorKind::NotFound;
+    let root = script.ok().and_then(|script| script.parent().map(Path::to_path_buf)).ok_or("notRelease")?;
+    release_of(&root).ok_or("notRelease")?;
+    let releases = root.parent().and_then(Path::parent).and_then(Path::parent).ok_or("notRelease")?;
+    let install = releases.parent().ok_or("notRelease")?;
+    match std::fs::read_dir(install.join("incoming")) {
+        Ok(mut waiting) => {
+            if waiting.next().is_some() {
+                return Err("installing");
+            }
+        }
+        Err(error) if error.kind() == NotFound => {}
+        Err(_) => return Err("releasesUnreadable"),
+    }
+    let this_release = root.parent().and_then(Path::parent).ok_or("notRelease")?;
+    let mut keys = std::collections::BTreeSet::new();
+    let mut current = None;
+    for entry in std::fs::read_dir(releases).map_err(|_| "releasesUnreadable")? {
+        let entry = entry.map_err(|_| "releasesUnreadable")?;
+        if entry.file_name().to_string_lossy().starts_with(".stage-") {
+            return Err("installing");
+        }
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            return Err("releasesUnreadable");
+        }
+        let runtime = entry.path().join("runtimes/claude");
+        match std::fs::symlink_metadata(&runtime) {
+            Err(error) if error.kind() == NotFound => continue,
+            Ok(meta) if meta.is_dir() => {}
+            _ => return Err("releasesUnreadable"),
+        }
+        match std::fs::symlink_metadata(runtime.join(MANIFEST)) {
+            // It carries the SDK itself and is run as it is: it needs no copy.
+            Err(error) if error.kind() == NotFound => {}
+            Ok(meta) if meta.is_file() => {
+                let key = content_key(&runtime).map_err(|_| "releasesUnreadable")?;
+                if entry.path() == this_release {
+                    current = Some(key.clone());
+                }
+                keys.insert(key);
+            }
+            _ => return Err("releasesUnreadable"),
+        }
+    }
+    keys.extend(used(cache));
+    Ok(Needed { keys, current })
+}
+
+/// The copies this process prepared or found, and so its bridges run.
+fn used(cache: &Path) -> std::collections::BTreeSet<String> {
+    PREPARED.lock().unwrap().values().filter(|done| done.parent() == Some(cache)).map(|done| file_name(done)).collect()
+}
+
+/// A copy's name as `prepare` makes it: `content_key`'s 32 hex digits.
+fn copy_key(name: &str) -> bool {
+    name.len() == 32 && name.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Why `<cache>/<name>` is not a copy this can remove: not a plain folder, or
+/// no receipt naming it.
+fn copy_problem(cache: &Path, name: &str) -> Option<&'static str> {
+    let copy = cache.join(name);
+    if !std::fs::symlink_metadata(&copy).is_ok_and(|meta| meta.is_dir()) {
+        return Some("notFolder");
+    }
+    let receipt = read_bounded(&copy.join(RECEIPT), STATUS_SMALL_BYTES).ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    match receipt {
+        None => Some("noReceipt"),
+        Some(receipt) if receipt["key"] != name => Some("receiptMismatch"),
+        Some(_) => None,
+    }
+}
+
+/// The bytes of the regular files under `dir`, links not followed; `None`
+/// past SIZE_ENTRIES entries or when part of it can't be read.
+fn folder_bytes(dir: &Path) -> Option<u64> {
+    let mut total = 0u64;
+    let mut seen = 0usize;
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).ok()? {
+            seen += 1;
+            if seen > SIZE_ENTRIES {
+                return None;
+            }
+            let entry = entry.ok()?;
+            let meta = std::fs::symlink_metadata(entry.path()).ok()?;
+            if meta.is_dir() {
+                pending.push(entry.path());
+            } else if meta.is_file() {
+                total += meta.len();
+            }
+        }
+    }
+    Some(total)
+}
+
+async fn read_copies() -> Result<axum::Json<serde_json::Value>, crate::server::ApiError> {
+    let copies = tokio::task::spawn_blocking(|| copies(configured_bridge(std::env::var_os("YUZUNO_CLAUDE_BRIDGE")), cache().as_deref())).await?;
+    Ok(axum::Json(copies))
+}
+
+/// The prepared copies in the cache, each with what is known of it and
+/// whether it can be removed. Read only; no path is said.
+fn copies(script: Result<PathBuf>, cache: Option<&Path>) -> serde_json::Value {
+    use serde_json::json;
+    let read_at = crate::model::now();
+    let refused = |reason: &str| json!({"format": 1, "readAt": read_at, "state": "refused", "reason": reason, "copies": [], "limited": false});
+    let Some(cache) = cache else { return refused("cacheUnset") };
+    let needed = match needed(script, cache) {
+        Ok(needed) => needed,
+        Err(reason) => return refused(reason),
+    };
+    let entries = match std::fs::read_dir(cache) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return json!({"format": 1, "readAt": read_at, "state": "ready", "copies": [], "limited": false});
+        }
+        Err(_) => return refused("cacheUnreadable"),
+    };
+    let used = used(cache);
+    let mut listed = Vec::new();
+    let mut limited = false;
+    for entry in entries {
+        let Ok(entry) = entry else { return refused("cacheUnreadable") };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(TEMPORARY) {
+            continue;
+        }
+        if listed.len() == COPIES_LISTED {
+            limited = true;
+            break;
+        }
+        let problem = if copy_key(&name) { copy_problem(cache, &name) } else { Some("unknownName") };
+        let used_by = if used.contains(&name) || needed.current.as_deref() == Some(name.as_str()) {
+            json!("thisCore")
+        } else if needed.keys.contains(&name) {
+            json!("installedRelease")
+        } else {
+            serde_json::Value::Null
+        };
+        let about = problem.is_none().then(|| read_receipt(&entry.path())).flatten().map(|(_, _, copy)| copy);
+        listed.push(json!({
+            // A name that isn't a key is never said: it could be anything.
+            "key": copy_key(&name).then_some(&name),
+            "version": about.as_ref().map(|copy| copy["version"].clone()),
+            "source": about.as_ref().map(|copy| copy["source"].clone()),
+            "at": about.as_ref().map(|copy| copy["at"].clone()),
+            "bytes": problem.is_none().then(|| folder_bytes(&entry.path())).flatten(),
+            "usedBy": used_by,
+            "removable": problem.is_none() && used_by.is_null(),
+            "problem": problem,
+        }));
+    }
+    listed.sort_by(|a, b| b["at"].as_str().cmp(&a["at"].as_str()));
+    json!({"format": 1, "readAt": read_at, "state": "ready", "copies": listed, "limited": limited})
+}
+
+#[derive(Deserialize)]
+struct Removal {
+    keys: Vec<String>,
+}
+
+async fn remove_copies(axum::Json(removal): axum::Json<Removal>) -> Result<axum::Json<serde_json::Value>, crate::server::ApiError> {
+    let done = remove(configured_bridge(std::env::var_os("YUZUNO_CLAUDE_BRIDGE")), cache(), removal.keys).await;
+    Ok(axum::Json(done))
+}
+
+/// Removes the chosen copies no installed release needs, while no runtime is
+/// being prepared (`PREPARING`), with what is needed read again first.
+async fn remove(script: Result<PathBuf>, cache: Option<PathBuf>, keys: Vec<String>) -> serde_json::Value {
+    let held = PREPARING.clone().lock_owned().await;
+    tokio::task::spawn_blocking(move || {
+        let _held = held;
+        remove_chosen(script, cache.as_deref(), &keys)
+    })
+    .await
+    .unwrap_or_else(|_| serde_json::json!({"format": 1, "state": "refused", "reason": "interrupted", "results": []}))
+}
+
+/// Each chosen copy is first moved aside under a `.tmp-` name, so a copy
+/// that is only partly removed is never run or copied from, and the next
+/// preparation clears what is left; then it is removed. Each says what
+/// happened to it:
+/// - `removed`, with its bytes when they were counted;
+/// - `partly`: moved aside, but not all of it could be removed yet;
+/// - `failed`: it could not be moved aside, so it is as it was;
+/// - `protected`: a release needs it, or this Core uses it;
+/// - `notFound` or `unknown` (not a copy this can tell is one): kept.
+fn remove_chosen(script: Result<PathBuf>, cache: Option<&Path>, keys: &[String]) -> serde_json::Value {
+    use serde_json::json;
+    let refused = |reason: &str| json!({"format": 1, "state": "refused", "reason": reason, "results": []});
+    let unique: std::collections::BTreeSet<&String> = keys.iter().collect();
+    if keys.is_empty() || keys.len() > COPIES_LISTED || unique.len() != keys.len() || !keys.iter().all(|key| copy_key(key)) {
+        return refused("badChoice");
+    }
+    let Some(cache) = cache else { return refused("cacheUnset") };
+    let needed = match needed(script, cache) {
+        Ok(needed) => needed,
+        Err(reason) => return refused(reason),
+    };
+    let mut results = Vec::new();
+    for key in keys {
+        let copy = cache.join(key);
+        if needed.keys.contains(key) {
+            results.push(json!({"key": key, "outcome": "protected"}));
+            continue;
+        }
+        match std::fs::symlink_metadata(&copy) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                results.push(json!({"key": key, "outcome": "notFound"}));
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(problem) = copy_problem(cache, key) {
+            results.push(json!({"key": key, "outcome": "unknown", "problem": problem}));
+            continue;
+        }
+        let bytes = folder_bytes(&copy);
+        let aside = cache.join(format!("{TEMPORARY}removing-{key}-{}", uuid::Uuid::new_v4().simple()));
+        if let Err(error) = std::fs::rename(&copy, &aside) {
+            results.push(json!({"key": key, "outcome": "failed", "error": error.kind().to_string()}));
+            continue;
+        }
+        sync_dir(cache);
+        match std::fs::remove_dir_all(&aside) {
+            Ok(()) => results.push(json!({"key": key, "outcome": "removed", "bytes": bytes})),
+            Err(error) => results.push(json!({"key": key, "outcome": "partly", "error": error.kind().to_string()})),
+        }
+    }
+    sync_dir(cache);
+    json!({"format": 1, "state": "done", "results": results})
 }
 
 #[cfg(test)]
