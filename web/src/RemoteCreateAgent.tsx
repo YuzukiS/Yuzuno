@@ -22,10 +22,14 @@ import {
   CODEX_PRESETS,
   type AgentDefaultsView,
   claudeModeText,
+  codexModelText,
   codexPermissionText,
   readAgentDefaults,
   sourceText,
 } from "./agent-defaults";
+
+/** The dialog's choice of Codex's own default model, sent as `model: null` (T-190). */
+const CODEX_OWN_MODEL = "(Codex’s own default)";
 import "./remote.css";
 
 export interface WorkspaceMachine {
@@ -101,6 +105,8 @@ export function RemoteCreateAgent({
   const [name, setName] = useState("");
   const [cwd, setCwd] = useState(defaultCwd);
   const [model, setModel] = useState("");
+  /** This Agent's own reasoning effort ("" is the default), for Codex on the Core host. */
+  const [effort, setEffort] = useState("");
   const [harness, setHarness] = useState<"codex" | "claude" | "opencode">("codex");
   // OpenCode is offered only while Core says it creates such Agents, and
   // only on the Core host, with OpenCode's own default model.
@@ -281,6 +287,15 @@ export function RemoteCreateAgent({
     return () => controller.abort();
   }, [open, disabled, mode, projectId]);
   const known = defaults && defaults !== "unknown" ? defaults : null;
+  // A default model and effort: Codex on the Core host only, from a Core that reports them.
+  const localCodex = harness === "codex" && !remote;
+  const defaultModel = localCodex ? known?.effective.codexModel : undefined;
+  const namedModel = localCodex && model && model !== CODEX_OWN_MODEL ? models.find((m) => (m.model || m.id) === model) : undefined;
+  useEffect(() => {
+    // An effort belongs to the model chosen with it; Codex's own model is the Core host's.
+    setEffort("");
+    if (!localCodex && model === CODEX_OWN_MODEL) setModel("");
+  }, [model, localCodex]);
   const defaultPermission =
     harness === "claude"
       ? known && { text: claudeModeText(known.effective.claudePermissionMode.value), source: known.effective.claudePermissionMode.source }
@@ -360,7 +375,9 @@ export function RemoteCreateAgent({
           cwd: cwd.trim(),
           machineId: machine.id,
           harness,
-          ...(model.trim() ? { model: model.trim() } : {}),
+          // Left out, the default for new Agents; null, Codex's own default (T-190).
+          ...(model === CODEX_OWN_MODEL ? { model: null } : model.trim() ? { model: model.trim() } : {}),
+          ...(effort && namedModel ? { reasoningEffort: effort } : {}),
           // Only this Agent's own choice; Core applies the default otherwise.
           ...(permission && harness === "codex" ? { permissionPreset: permission } : {}),
           ...(permission && harness === "claude" ? { permissionMode: permission } : {}),
@@ -641,7 +658,11 @@ export function RemoteCreateAgent({
                 disabled={loadingModels}
                 onChange={setModel}
                 choices={[
-                  { value: "", label: "Harness default" },
+                  defaultModel
+                    ? { value: "", label: `Default · ${codexModelText(defaultModel.value)}`, note: sourceText(defaultModel.source) }
+                    : { value: "", label: "Harness default" },
+                  // Only where it differs from the default: Codex's own, whatever is inherited.
+                  ...(defaultModel?.value ? [{ value: CODEX_OWN_MODEL, label: "Codex’s own default" }] : []),
                   ...models.map((m) => ({
                     value: m.model || m.id,
                     label: m.displayName,
@@ -691,9 +712,30 @@ export function RemoteCreateAgent({
                   {models.find((m) => (m.model || m.id) === model)?.description}
                 </p>
               )}
+            {localCodex && namedModel && !!namedModel.supportedReasoningEfforts?.length && (
+              <ChoiceChips
+                label="Reasoning effort"
+                name="create-effort"
+                value={effort}
+                onChange={setEffort}
+                choices={[
+                  { value: "", label: `Model’s own${namedModel.defaultReasoningEffort ? ` · ${namedModel.defaultReasoningEffort}` : ""}` },
+                  ...(namedModel.supportedReasoningEfforts ?? []).map((e) => ({ value: e.reasoningEffort, label: e.reasoningEffort, title: e.description || undefined })),
+                ]}
+              />
+            )}
+            {localCodex && !model && defaultModel?.value && (
+              <p className="remote-field-note create-default-source" data-source={defaultModel.source}>
+                Reasoning effort with it: {known?.effective.codexReasoningEffort?.value || "the model’s own"}. Choose a
+                model to choose this Agent’s own.
+              </p>
+            )}
             {remote && (
               <p className="remote-field-note">
                 Leave the model empty to use {harnessName(harness)}’s default on {machine.name}.
+                {harness === "codex" && known?.effective.codexModel?.value
+                  ? " The default model for new Agents applies only on the Core host."
+                  : ""}
               </p>
             )}
             {!isOpenCode && (
