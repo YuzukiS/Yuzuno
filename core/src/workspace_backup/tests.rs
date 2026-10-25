@@ -1075,6 +1075,9 @@ fn a_stopped_automatic_pass_stays_stopped_and_says_what_it_had_removed() {
 /// writes, only after, so that write's older copy can't land over the next
 /// one's (main CI 40175308220's failure fits a backup's write landing over the
 /// removal started right after it, so a restart didn't know the removal).
+/// It is shown ended only once its place is free, so a start made as soon as
+/// its end is seen is not refused (batch 84, run 40184716742, fits a restore
+/// refused Busy right after its check read "succeeded").
 #[tokio::test(flavor = "multi_thread")]
 async fn an_operation_keeps_its_place_until_its_end_is_written_so_the_next_stays_in_the_journal() {
     use online::{Backups, Refusal};
@@ -1101,22 +1104,30 @@ async fn an_operation_keeps_its_place_until_its_end_is_written_so_the_next_stays
     end_first.send(()).unwrap();
     held.recv().unwrap();
     assert_eq!(backups.current().map(|op| op.id), Some(first.id.clone()), "still in its place while its end is written");
+    assert_eq!(backups.get(&first.id).map(|op| op.state).as_deref(), Some("running"), "not shown ended while its place is taken");
     assert!(backups.writing.try_lock().is_err(), "its write holds the journal from its copy until it has written");
     let meanwhile = backups.start("check", "second", json!({"path": "/b"}), |_| None, |_| unreachable!("not while the first is in its place"));
     assert!(matches!(meanwhile, Err(Refusal::Busy(id)) if id == first.id), "nothing else starts meanwhile");
     release.send(()).unwrap();
+    // As a client does: wait until it reads ended, then start at once.
     for _ in 0..500 {
-        if backups.current().is_none() {
+        if backups.get(&first.id).is_some_and(|op| op.state != "running") {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    // Once its place is free its end is on disk; the next writes after it, and stays.
+    // Shown ended: its end is on disk and its place is free; the next starts,
+    // writes after it, and stays.
     assert_eq!(on_disk(&first.id).as_deref(), Some("succeeded"));
     let (_end_second, second_gate) = channel::<()>();
     let second = backups.start("check", "second", json!({"path": "/b"}), |_| None, move |_| {
         let _ = second_gate.recv();
         Ok(json!({}))
-    }).unwrap();
+    });
+    assert!(second.is_ok(), "a start right after the end is seen is not refused: {:?}", second.as_ref().err());
+    let second = second.unwrap();
     assert_eq!((on_disk(&first.id).as_deref(), on_disk(&second.id).as_deref()), (Some("succeeded"), Some("running")));
+    // Busy is for a new operation that really holds the place.
+    let third = backups.start("check", "third", json!({"path": "/c"}), |_| None, |_| unreachable!("not while the second runs"));
+    assert!(matches!(third, Err(Refusal::Busy(id)) if id == second.id), "the second, still running, holds the place");
 }

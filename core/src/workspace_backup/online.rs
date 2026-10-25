@@ -118,8 +118,15 @@ impl Backups {
     /// Writes the journal as it is now: an earlier copy never lands over a
     /// later one. Locks: `writing`, then `state` only to copy.
     fn save(&self) -> Result<()> {
+        self.write_with(|_| {})
+    }
+
+    /// Writes the journal as it is now with `change` made to the copy only,
+    /// which the caller shows once it is written (finish).
+    fn write_with(&self, change: impl FnOnce(&mut Vec<Operation>)) -> Result<()> {
         let _writing = self.writing.lock().unwrap();
-        let operations = self.state.lock().unwrap().clone();
+        let mut operations = self.state.lock().unwrap().clone();
+        change(&mut operations);
         #[cfg(test)]
         {
             let hold = self.between_copy_and_write.lock().unwrap().take();
@@ -237,9 +244,15 @@ impl Backups {
 
     fn finish(&self, id: &str, outcome: Result<Value>) {
         let step = self.running.lock().unwrap().as_ref().filter(|(r, _)| r == id).map(|(_, ctl)| ctl.step().to_owned());
-        {
-            let mut state = self.state.lock().unwrap();
-            if let Some(op) = state.iter_mut().find(|op| op.id == id) {
+        // Its end is written first, from a copy. Only then is it shown, and
+        // its place let go, under `running` as start takes it: no one sees
+        // it ended while its place is still taken (batch 84, run
+        // 40184716742, fits a restore refused Busy right after its check
+        // read "succeeded"), and the next operation starts, and writes, only
+        // after (main CI 40175308220).
+        let mut ended = None;
+        let _ = self.write_with(|operations| {
+            if let Some(op) = operations.iter_mut().find(|op| op.id == id) {
                 if let Some(step) = step {
                     op.step = step;
                 }
@@ -255,14 +268,15 @@ impl Backups {
                         op.error = Some(format!("{error:#}"));
                     }
                 }
+                ended = Some(op.clone());
+            }
+        });
+        let mut running = self.running.lock().unwrap();
+        if let Some(ended) = ended {
+            if let Some(op) = self.state.lock().unwrap().iter_mut().find(|op| op.id == id) {
+                *op = ended;
             }
         }
-        // Its end is written before it lets go of its place, so the next
-        // operation starts only after, and a free place means the journal
-        // has its end (main CI 40175308220's failure fits a removal started
-        // in between, whose write this one's older copy landed over).
-        let _ = self.save();
-        let mut running = self.running.lock().unwrap();
         if running.as_ref().is_some_and(|(r, _)| r == id) {
             *running = None;
         }
