@@ -160,7 +160,7 @@ fn stub_codex(dir: &std::path::Path, models: &Value) -> String {
     std::fs::write(dir.join("models.json"), models.to_string()).unwrap();
     let script = dir.join("codex.py");
     std::fs::write(&script, r#"#!/usr/bin/python3
-import json, os, sys
+import json, os, sys, time
 root = os.path.dirname(os.path.abspath(__file__))
 for line in sys.stdin:
     r = json.loads(line)
@@ -168,6 +168,10 @@ for line in sys.stdin:
     m = r.get('method')
     result = {}
     if m == 'model/list':
+        # While `hold` exists, the list waits, and says so with `listing`.
+        if os.path.exists(os.path.join(root, 'hold')):
+            open(os.path.join(root, 'listing'), 'w').close()
+            while os.path.exists(os.path.join(root, 'hold')): time.sleep(0.02)
         with open(os.path.join(root, 'models.json')) as f: result = {'data': json.load(f), 'nextCursor': None}
     elif m in ['thread/start', 'thread/resume', 'thread/read']:
         result = {'thread': {'id': 'thread', 'status': {'type': 'idle'}, 'turns': []}, 'model': 'm-big'}
@@ -246,4 +250,37 @@ async fn codex_on_the_core_host_takes_a_default_model_and_effort_its_catalog_off
     let kept = ws.store.agent(inherit["id"].as_str().unwrap()).unwrap();
     assert_eq!((kept.model.as_str(), kept.settings.reasoning_effort.as_deref()), ("m-big", Some("high")));
     assert_eq!(ws.store.agents().unwrap().len(), 6, "refused requests created nothing");
+}
+
+/// A save that waits on the catalog does not undo a change saved meanwhile:
+/// it reads, changes and writes the defaults in one store transaction
+/// (review ac471f13).
+#[tokio::test]
+async fn a_save_waiting_on_the_catalog_keeps_a_change_saved_meanwhile() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().to_string_lossy().into_owned();
+    let codex = stub_codex(tmp.path(), &json!([{"id":"m-big","model":"m-big","supportedReasoningEfforts":[{"reasoningEffort":"high"}]}]));
+    let ws = Workspace::new(tmp.path().join("data"), cwd, codex).unwrap();
+    let router = server::router_on_port(ws.clone(), tmp.path().join("assets"), 4317);
+
+    std::fs::write(tmp.path().join("hold"), "").unwrap();
+    let waiting = tokio::spawn({
+        let router = router.clone();
+        async move { call(&router, "POST", "/api/agent-defaults", Some(json!({"codexModel":"m-big"}))).await }
+    });
+    let mut polls = 0;
+    while !tmp.path().join("listing").exists() {
+        polls += 1;
+        assert!(polls < 1500, "the catalog was not asked for its models");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let (status, meanwhile) = call(&router, "POST", "/api/agent-defaults", Some(json!({"harness":"claude"}))).await;
+    assert_eq!(status, StatusCode::OK, "{meanwhile}");
+    std::fs::remove_file(tmp.path().join("hold")).unwrap();
+
+    let (status, saved) = waiting.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["saved"], json!({"harness":"claude","codexModel":"m-big"}));
+    let (_, read) = call(&router, "GET", "/api/agent-defaults", None).await;
+    assert_eq!(read["saved"], json!({"harness":"claude","codexModel":"m-big"}));
 }

@@ -404,15 +404,27 @@ async fn get_defaults(State(ws): State<Arc<Workspace>>, Query(query): Query<ForP
     Ok(Json(answer))
 }
 
+/// This Core host's Codex catalog, read before a save whose change names a
+/// model or effort, so the save itself stays one store transaction: the
+/// catalog can take long, and a change saved meanwhile must not be undone
+/// (review ac471f13).
+async fn catalog_for(ws: &Arc<Workspace>, change: &Change) -> Option<Result<Value>> {
+    if change.names_a_model() { Some(ws.catalog().await) } else { None }
+}
+
 /// A change applied to `current` and validated; a model or effort it names
-/// confirmed by this Core host's Codex catalog, as the catalog names it.
-async fn checked(ws: &Arc<Workspace>, current: AgentDefaults, change: Change) -> Result<AgentDefaults> {
+/// confirmed by the catalog read for it, as the catalog names it.
+fn checked(current: AgentDefaults, change: Change, catalog: Option<&Result<Value>>) -> Result<AgentDefaults> {
     let names_a_model = change.names_a_model();
     let mut next = change.apply(current);
     next.validate()?;
     if let (true, Some(model)) = (names_a_model, next.codex_model.clone()) {
-        let catalog = ws.catalog().await.map_err(|e| anyhow::anyhow!("Can't read this Core host's Codex models: {e:#}; nothing was saved"))?;
-        let named = check_in_catalog(&catalog, &model, next.codex_reasoning_effort.as_deref()).map_err(|e| anyhow::anyhow!("{e:#}; nothing was saved"))?;
+        let catalog = match catalog {
+            Some(Ok(catalog)) => catalog,
+            Some(Err(e)) => bail!("Can't read this Core host's Codex models: {e:#}; nothing was saved"),
+            None => bail!("Can't read this Core host's Codex models; nothing was saved"),
+        };
+        let named = check_in_catalog(catalog, &model, next.codex_reasoning_effort.as_deref()).map_err(|e| anyhow::anyhow!("{e:#}; nothing was saved"))?;
         next.codex_model = Some(named);
     }
     Ok(next)
@@ -421,9 +433,9 @@ async fn checked(ws: &Arc<Workspace>, current: AgentDefaults, change: Change) ->
 async fn set_defaults(State(ws): State<Arc<Workspace>>, Json(change): Json<Value>) -> Result<Json<Value>, ApiError> {
     let _permit = ws.admission.enter_work()?;
     let change: Change = serde_json::from_value(change).map_err(|e| anyhow::anyhow!("Invalid defaults: {e}"))?;
-    let current = ws.stored(|s| s.agent_defaults()).await?;
-    let next = checked(&ws, current, change).await?;
+    let catalog = catalog_for(&ws, &change).await;
     let saved = ws.stored(move |s| {
+        let next = checked(s.agent_defaults()?, change, catalog.as_ref())?;
         s.save_agent_defaults(&next)?;
         Ok(next)
     }).await?;
@@ -436,15 +448,11 @@ async fn set_defaults(State(ws): State<Arc<Workspace>>, Json(change): Json<Value
 async fn set_project_defaults(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(change): Json<Value>) -> Result<Json<Value>, ApiError> {
     let _permit = ws.admission.enter_work()?;
     let change: Change = serde_json::from_value(change).map_err(|e| anyhow::anyhow!("Invalid defaults: {e}"))?;
-    let project = id.clone();
-    // As other changes to a project: an archived one is not changed (review 404bdbd3).
-    let current = ws.stored(move |s| {
-        s.ensure_project_assignable(&project)?;
-        s.project_agent_defaults(&project)
-    }).await?;
-    let next = checked(&ws, current, change).await?;
+    let catalog = catalog_for(&ws, &change).await;
     let answer = ws.stored(move |s| {
+        // As other changes to a project: an archived one is not changed (review 404bdbd3).
         s.ensure_project_assignable(&id)?;
+        let next = checked(s.project_agent_defaults(&id)?, change, catalog.as_ref())?;
         s.save_project_agent_defaults(&id, &next)?;
         Ok(view(&s.agent_defaults()?, Some((&id, &next))))
     }).await?;
