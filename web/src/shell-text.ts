@@ -54,6 +54,16 @@ export const shellText = strings({
   liveReconnectingLine: "The event stream is reconnecting automatically. Workspace snapshots still refresh every 5 seconds while this window is visible.",
   modelsUnavailable: "Codex model list is unavailable.",
   sentence: (text: string) => `${text}.`,
+  // What an Agent's action menu said it did (T-189), worded when it happens.
+  conversationActions: "Conversation actions",
+  theAgent: "the agent",
+  menuFailed: (action: "reconnect" | "interrupt", name: string, error: string) => `Couldn’t ${action} ${name}: ${error}`,
+  linkCopied: (name: string) => `Link to ${name} copied.`,
+  linkRefused: (name: string, href: string) => `Couldn’t copy the link to ${name}: this browser didn’t allow it. The link is ${href}`,
+  interruptHere: "Interrupt requested. Your conversation is preserved.",
+  interruptFor: (name: string) => `Interrupt requested for ${name}. The conversation is preserved.`,
+  disconnected: (name: string) => `${name} is disconnected. Nothing starts it again until you reconnect it.`,
+  endedMissing: "Ended as interrupted, result unknown. Reconnect to go on in the same session.",
 }, {
   status: {
     idle: "就绪",
@@ -99,4 +109,13 @@ export const shellText = strings({
   liveReconnectingLine: "事件流正在自动重新连接。此窗口可见时，Workspace 快照仍会每 5 秒刷新一次。",
   modelsUnavailable: "Codex 模型列表不可用。",
   sentence: (text) => `${text}。`,
+  conversationActions: "会话操作",
+  theAgent: "该 Agent",
+  menuFailed: (action, name, error) => `无法${action === "reconnect" ? "重新连接" : "中断"} ${name}：${error}`,
+  linkCopied: (name) => `已复制 ${name} 的链接。`,
+  linkRefused: (name, href) => `无法复制 ${name} 的链接：此浏览器不允许。链接是 ${href}`,
+  interruptHere: "已请求中断。你的会话会保留。",
+  interruptFor: (name) => `已请求中断 ${name}。会话会保留。`,
+  disconnected: (name) => `${name} 已断开连接。在你重新连接之前，没有任何东西会再次启动它。`,
+  endedMissing: "已作为中断结束，结果未知。重新连接即可在同一会话中继续。",
 });
