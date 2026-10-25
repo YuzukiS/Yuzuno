@@ -1176,6 +1176,24 @@ test("data & storage opens from Data, privacy & recovery and reads Core's overvi
   } finally { f.w.close(); }
 });
 
+// Draft storage is one of Settings' editors (T-193 slice 3): its card under
+// Data, privacy & recovery opens it in place and lists this device's saved
+// drafts for the Workspace's Agents; one is shown whole only when chosen.
+test("draft storage opens from Data, privacy & recovery and shows the Agent's saved draft whole", async () => {
+  const f = await mount();
+  try {
+    await f.open();
+    f.w.document.querySelector("#settings-tab-data").click();
+    assert.ok(await f.press("Open Draft storage"), "Data, privacy & recovery offers it");
+    const row = () => f.w.document.querySelector('#settings-drafts [data-agent="a"]');
+    assert.ok(await until(() => !!row()), "the Agent's saved draft is listed");
+    assert.equal(f.w.document.querySelector("#settings-drafts textarea") === null, true, "nothing is opened until chosen");
+    row().querySelector("button").click();
+    assert.ok(await until(() => /中文 draft kept while updating/.test(f.w.document.querySelector("#settings-drafts textarea")?.value || "")), "it is shown whole");
+    assert.deepEqual(f.errors, []);
+  } finally { f.w.close(); }
+});
+
 // The desktop shell's own update state, as desktop/src/update.rs reports it.
 function desktopShell(overrides = {}) {
   const state = {
