@@ -64,7 +64,7 @@ const marksCache = new WeakMap<readonly NativeTurn[], { clock: ClockFormat; mark
 
 export function conversationTimeMarks(turns: readonly NativeTurn[], clock: ClockFormat): ReadonlyMap<string, Moment> {
   const cached = marksCache.get(turns);
-  if (cached?.clock === clock) return cached.marks;
+  if (cached && cached.clock === clock) return cached.marks;
   const marks = new Map<string, Moment>();
   let previous: string | undefined;
   for (const turn of turns) {
