@@ -1069,3 +1069,52 @@ fn a_stopped_automatic_pass_stays_stopped_and_says_what_it_had_removed() {
     assert!(said.contains("before it, 1 backup was removed (b-1)") && said.contains("the rest are left as they are"), "{said}");
     assert_eq!(backups_in(&folder), vec!["b-2", "b-3"]);
 }
+
+/// An operation keeps its place until its end is written: the next starts,
+/// and writes, only after, so that write, copied before, can't land over the
+/// next one's (main CI 40175308220, where a backup's write landed over the
+/// removal started right after it, so a restart didn't know the removal).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_operation_keeps_its_place_until_its_end_is_written_so_the_next_stays_in_the_journal() {
+    use online::{Backups, Refusal};
+    use std::sync::mpsc::channel;
+    let root = tempfile::tempdir().unwrap();
+    let backups = Arc::new(Backups::open(root.path()));
+    // The journal as a restart would read it: each operation's state.
+    let on_disk = |id: &str| -> Option<String> {
+        let written: Vec<online::Operation> = serde_json::from_slice(&fs::read(root.path().join(online::JOURNAL)).unwrap()).unwrap();
+        written.into_iter().find(|op| op.id == id).map(|op| op.state)
+    };
+    let (end_first, first_gate) = channel::<()>();
+    let first = backups.start("check", "first", json!({"path": "/a"}), |_| None, move |_| {
+        let _ = first_gate.recv();
+        Ok(json!({}))
+    }).unwrap();
+    // Its end's write is held between its copy and writing it.
+    let (copied, held) = channel::<()>();
+    let (release, released) = channel::<()>();
+    *backups.between_copy_and_write.lock().unwrap() = Some(Box::new(move || {
+        copied.send(()).unwrap();
+        let _ = released.recv();
+    }));
+    end_first.send(()).unwrap();
+    held.recv().unwrap();
+    assert_eq!(backups.current().map(|op| op.id), Some(first.id.clone()), "still in its place while its end is written");
+    let meanwhile = backups.start("check", "second", json!({"path": "/b"}), |_| None, |_| unreachable!("not while the first is in its place"));
+    assert!(matches!(meanwhile, Err(Refusal::Busy(id)) if id == first.id), "nothing else starts meanwhile");
+    release.send(()).unwrap();
+    for _ in 0..500 {
+        if backups.current().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    // Once its place is free its end is on disk; the next writes after it, and stays.
+    assert_eq!(on_disk(&first.id).as_deref(), Some("succeeded"));
+    let (_end_second, second_gate) = channel::<()>();
+    let second = backups.start("check", "second", json!({"path": "/b"}), |_| None, move |_| {
+        let _ = second_gate.recv();
+        Ok(json!({}))
+    }).unwrap();
+    assert_eq!((on_disk(&first.id).as_deref(), on_disk(&second.id).as_deref()), (Some("succeeded"), Some("running")));
+}
