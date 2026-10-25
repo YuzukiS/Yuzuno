@@ -207,6 +207,22 @@ export function unattributedDraftAgents(storage: Pick<Storage, "getItem" | "key"
   return [...agents];
 }
 
+/**
+ * A draft that says which Agent but not which Workspace, read as itself
+ * (T-195): for showing a person what is still saved on their device and
+ * letting them keep a copy, never for a composer, which would be giving one
+ * Workspace what may be another's. Nothing is written, and the older key is
+ * left where it is.
+ */
+export function readUnattributedDraft(
+  storage: Pick<Storage, "getItem" | "setItem" | "removeItem">,
+  agent: string,
+): ComposerDraft {
+  if (storage.getItem(prefix + agent) !== null) return new DraftStorage(storage).load(agent);
+  const legacy = JSON.parse(storage.getItem("yuzuno.drafts") || "{}");
+  return textDraft(typeof legacy?.[agent] === "string" ? legacy[agent] : "");
+}
+
 /** Cache only identities, so nearby keystrokes never stringify/read paste bodies. */
 export class DraftStorage {
   private written = new Set<string>();
@@ -343,7 +359,8 @@ export class DraftStorage {
   }
 
   remove(agent: string) {
-    // A tombstone also prevents a cleared legacy string from reappearing.
+    // An empty manifest rather than a deleted key, so saving reconciles this
+    // draft's pasted bodies and removes them with it.
     this.save(agent, emptyDraft());
   }
 

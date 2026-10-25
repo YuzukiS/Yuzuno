@@ -24,6 +24,11 @@ const hookSource = (
   .replace('"./api"', JSON.stringify(moduleUrl(apiSource)))
   .replace('"./image-input"', JSON.stringify(moduleUrl(imagesSource)));
 let useConversationSend;
+const WORKSPACE = "ws-1";
+/** The whole file, as it is on disk. */
+const outboxFile = () => JSON.parse(localStorage.getItem("yuzuno.outbox"));
+/** One Workspace's unsent records, keyed `<agent>:<slot>` as before. */
+const outbox = (workspace = WORKSPACE) => outboxFile()[workspace] ?? {};
 async function fixture(t, initial = {}) {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', {
     url: "http://127.0.0.1:4399/",
@@ -57,14 +62,21 @@ async function fixture(t, initial = {}) {
       configurable: true,
     });
   }
+  // The file keeps each Workspace's records apart (T-195); a fixture names
+  // the records of the Workspace its hook is in.
   if (initial.outbox)
-    localStorage.setItem("yuzuno.outbox", JSON.stringify(initial.outbox));
+    localStorage.setItem(
+      "yuzuno.outbox",
+      JSON.stringify({ ...initial.file, [initial.workspace ?? WORKSPACE]: initial.outbox }),
+    );
+  else if (initial.file)
+    localStorage.setItem("yuzuno.outbox", JSON.stringify(initial.file));
   useConversationSend ||= (await import(moduleUrl(hookSource)))
     .useConversationSend;
   let hook;
   let refreshes = 0;
   function Harness() {
-    hook = useConversationSend("a", initial.turnId === null ? null : "turn1", () => refreshes++, initial.harness || "codex");
+    hook = useConversationSend(initial.workspace ?? WORKSPACE, "a", initial.turnId === null ? null : "turn1", () => refreshes++, initial.harness || "codex");
     return null;
   }
   const root = createRoot(document.getElementById("root"));
@@ -95,13 +107,60 @@ async function fixture(t, initial = {}) {
   };
 }
 
+test("two Workspaces at one address keep their unsent records apart", async (t) => {
+  // Their Agents can share an id. Keyed by Agent alone, a retry here reused
+  // the other Workspace's client message id, so Core would have deduplicated
+  // the two against each other and one message would never have arrived.
+  const theirs = {
+    clientMessageId: "their-id",
+    text: "their unsent text",
+    expectedTurnId: "turn1",
+    question: null,
+  };
+  const f = await fixture(t, {
+    workspace: "ws-here",
+    outbox: {},
+    file: { "ws-there": { "a:composer": theirs } },
+  });
+  // A fresh send here, not a retry of the other Workspace's message.
+  assert.match((await f.submit("my own text")).message, /workspace_updating/);
+  assert.notEqual(f.calls[0].body.clientMessageId, theirs.clientMessageId);
+  assert.equal(f.calls[0].body.text, "my own text");
+  assert.deepEqual(
+    outbox("ws-there"),
+    { "a:composer": theirs },
+    "and the other Workspace's record is still its own",
+  );
+});
+
+test("a record saved before the outbox was kept per Workspace is left alone, not retried here", async (t) => {
+  const before = {
+    clientMessageId: "unattributed-id",
+    text: "saved before scoping",
+    expectedTurnId: "turn1",
+    question: null,
+  };
+  const f = await fixture(t, { outbox: {}, file: { "a:composer": before } });
+  assert.match((await f.submit(before.text)).message, /workspace_updating/);
+  assert.notEqual(
+    f.calls[0].body.clientMessageId,
+    before.clientMessageId,
+    "it says which Agent but not which Workspace, so it is not claimed here",
+  );
+  assert.deepEqual(
+    outboxFile()["a:composer"],
+    before,
+    "and it is kept exactly as it is",
+  );
+});
+
 test("an explicit update fence rejects a fresh send and removes only the unsent outbox", async (t) => {
   const f = await fixture(t);
   assert.match((await f.submit("保留 draft")).message, /workspace_updating/);
   assert.equal(f.calls.length, 1);
   assert.equal(f.hook().outgoing[0].receipt.status, "rejected");
   assert.equal(f.hook().sending, false);
-  assert.deepEqual(JSON.parse(localStorage.getItem("yuzuno.outbox")), {});
+  assert.deepEqual(outboxFile(), {});
   assert.equal(f.refreshes(), 0);
 });
 
@@ -118,7 +177,7 @@ test("a fenced retry keeps the original uncertain identity across another mount"
   assert.deepEqual(f.calls[0].body, input);
   assert.equal(f.hook().outgoing[0].receipt.status, "uncertain");
   assert.deepEqual(
-    JSON.parse(localStorage.getItem("yuzuno.outbox"))["a:composer"],
+    outbox()["a:composer"],
     input,
   );
 });
@@ -131,7 +190,7 @@ test("a transport failure never becomes a definite update rejection", async (t) 
   assert.match((await f.submit("保留 draft")).message, /connection lost/);
   assert.equal(f.hook().outgoing[0].receipt.status, "uncertain");
   assert.ok(
-    JSON.parse(localStorage.getItem("yuzuno.outbox"))["a:composer"]
+    outbox()["a:composer"]
       .clientMessageId,
   );
 });
@@ -145,7 +204,7 @@ test("a readiness rejection clears only the unsent preview without making it unc
   });
   assert.match((await f.submit("保留 draft")).message, /Reconnect before sending/);
   assert.deepEqual(f.hook().outgoing, []);
-  assert.deepEqual(JSON.parse(localStorage.getItem("yuzuno.outbox")), {});
+  assert.deepEqual(outboxFile(), {});
   assert.equal(f.refreshes(), 1);
 });
 
@@ -170,7 +229,7 @@ test("a follow-up refused before it was submitted frees its draft's id, so sendi
   assert.match((await f.submit("Is it done?")).message, /尚未确认/);
   assert.equal(f.calls[0].body.expectedTurnId, "turn1");
   assert.equal(f.hook().outgoing.length, 0, "no preview of a delivery to confirm");
-  assert.deepEqual(JSON.parse(localStorage.getItem("yuzuno.outbox")), {}, "no old id or turn kept to reuse");
+  assert.deepEqual(outboxFile(), {}, "no old id or turn kept to reuse");
 });
 
 test("local Claude sends image references with a new message and with a follow-up", async (t) => {
@@ -192,7 +251,7 @@ test("a form retry retains its stable source and answer snapshot without changin
   const f = await fixture(t, { outbox: { "a:form:result-a:setup": original, "a:composer": composer } });
   assert.match((await f.submit(original.text, [], clarification)).message, /earlier delivery/);
   assert.deepEqual(f.calls[0].body, original);
-  const persisted = JSON.parse(localStorage.getItem("yuzuno.outbox"));
+  const persisted = outbox();
   assert.deepEqual(persisted["a:form:result-a:setup"], original);
   assert.deepEqual(persisted["a:composer"], composer);
 });
@@ -211,5 +270,5 @@ test("idle Claude form submissions use durable receipts and freeze answers befor
   assert.deepEqual(sent.input.clarification.answers.checks, ["keyboard"]);
   assert.deepEqual(f.hook().outgoing[0].receipt.input.clarification.answers.checks, ["keyboard"]);
   assert.equal(f.hook().outgoing[0].receipt.status, "accepted");
-  assert.deepEqual(JSON.parse(localStorage.getItem("yuzuno.outbox")), {});
+  assert.deepEqual(outboxFile(), {});
 });

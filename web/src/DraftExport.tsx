@@ -21,7 +21,7 @@ type Many = { state: "saving"; name: string; count: number } | { state: "failed"
 const words = strings({
   title: "Drafts on this device",
   intro:
-    "Drafts saved in this browser for this site, shown for the Agents this Workspace lists. A draft is saved under its Agent's ID only: which Workspace it was written in is not recorded, so a matching Agent doesn't prove it. Choose one to see it whole, then save it as a text file, or tick several to save them together as one file. These are the copies saved on this device: text typed in an open conversation since it was last saved is not in them. Nothing here sends, changes or clears a draft.",
+    "Drafts saved in this browser for this site, shown for the Agents this Workspace lists. A draft is saved under the Workspace and Agent it was written in, so another Workspace's drafts at this address are not shown here. Choose one to see it whole, then save it as a text file, or tick several to save them together as one file. These are the copies saved on this device: text typed in an open conversation since it was last saved is not in them. Nothing here sends, changes or clears a draft.",
   connect: "Connect to your Workspace to see which of its Agents have drafts here.",
   unlisted: (why: string) => `Drafts can't be read: ${why}.`,
   noMatch: "No saved draft on this device matches an Agent this Workspace lists.",
@@ -40,6 +40,8 @@ const words = strings({
   notStartedMany: (why: string) => `The download could not start (${why}). Show each draft and copy it.`,
   others: (count: number) =>
     `${count} saved ${count === 1 ? "draft is" : "drafts are"} for Agent IDs this Workspace doesn't list, so ${count === 1 ? "it is" : "they are"} not shown here.`,
+  unattributed: (count: number) =>
+    `${count} saved ${count === 1 ? "draft does" : "drafts do"} not say which Workspace ${count === 1 ? "it was" : "they were"} written in, from before Yuzuno recorded that. ${count === 1 ? "It is" : "They are"} listed as that, and left exactly as saved; an Agent name shown for ${count === 1 ? "it" : "them"} is only an ID that matches.`,
   unopened: (name: string, why: string) => `The draft for ${name} can't be read (${why}). It is left as it is.`,
   saving: (name: string) => `Your browser was asked to save ${name}. If no file appears, select the text below and copy it.`,
   whole: (name: string) => `The whole saved draft for ${name}. Nothing has been saved, copied or sent.`,
@@ -56,12 +58,13 @@ const words = strings({
   skills: (count: number) => `${count} ${count === 1 ? "skill" : "skills"}`,
   join: ", ",
   legacy: "Saved by an earlier version: ",
+  noWorkspace: "Workspace not recorded: ",
   // What a draft's own check says (composer-draft.ts), where this language has it.
   checks: {} as Partial<Record<string, string>>,
 }, {
   title: "此设备上的草稿",
   intro:
-    "此浏览器为此站点保存的草稿，按此 Workspace 列出的 Agent 显示。草稿只按其 Agent 的 ID 保存：不记录它是在哪个 Workspace 中写的，所以 Agent 匹配并不能证明这一点。选择一份可查看全文，再把它保存为文本文件；也可以勾选几份，一起保存为一个文件。这些是此设备上保存的副本：在打开的会话中、上次保存之后输入的文字不在其中。此处不会发送、更改或清除任何草稿。",
+    "此浏览器为此站点保存的草稿，按此 Workspace 列出的 Agent 显示。草稿按写下它的 Workspace 与 Agent 保存，因此同一地址上其他 Workspace 的草稿不会显示在这里。选择一份可查看全文，再把它保存为文本文件；也可以勾选几份，一起保存为一个文件。这些是此设备上保存的副本：在打开的会话中、上次保存之后输入的文字不在其中。此处不会发送、更改或清除任何草稿。",
   connect: "连接到你的 Workspace 后，才能看到它的哪些 Agent 在这里有草稿。",
   unlisted: (why) => `无法读取草稿：${why}。`,
   noMatch: "此设备上保存的草稿都不属于此 Workspace 列出的 Agent。",
@@ -78,6 +81,7 @@ const words = strings({
   failedJoin: "；",
   notStartedMany: (why) => `无法开始下载（${why}）。请逐份显示草稿并复制。`,
   others: (count) => `另有 ${count} 份已保存的草稿属于此 Workspace 未列出的 Agent ID，因此不在这里显示。`,
+  unattributed: (count) => `有 ${count} 份已保存的草稿没有记录它写在哪个 Workspace（在 Yuzuno 开始记录之前保存）。它们按此标注列出并保持原样；为它们显示的 Agent 名称只表示 ID 相同。`,
   unopened: (name, why) => `无法读取 ${name} 的草稿（${why}）。它保持原样。`,
   saving: (name) => `已请求浏览器保存 ${name}。如果没有出现文件，请选中下方文字并复制。`,
   whole: (name) => `${name} 已保存的完整草稿。尚未保存、复制或发送任何内容。`,
@@ -94,6 +98,7 @@ const words = strings({
   skills: (count) => `技能 ${count} 个`,
   join: "，",
   legacy: "由早期版本保存：",
+  noWorkspace: "未记录 Workspace：",
   checks: {
     "Invalid saved draft": "保存的草稿无效",
     "Invalid saved image references": "保存的图片引用无效",
@@ -171,7 +176,7 @@ export function DraftExport({ active, agents, workspaceId }: { active: boolean; 
     }
     // Shown again, nothing is ticked; otherwise only drafts still listed stay ticked.
     const again = !wasActive.current;
-    const kept = new Set(next.available ? next.rows.filter((row) => row.summary.state !== "damaged").map((row) => row.agentId) : []);
+    const kept = new Set(next.available ? next.rows.filter((row) => row.summary.state !== "damaged").map((row) => row.identity) : []);
     setSelected((was) => (again ? new Set() : new Set([...was].filter((id) => kept.has(id)))));
     if (again) setMany(null);
     wasActive.current = true;
@@ -181,7 +186,7 @@ export function DraftExport({ active, agents, workspaceId }: { active: boolean; 
     const storage = readStorage();
     setSave(null);
     if (!storage) return setShown({ agentId: row.agentId, name: row.name, why: { kind: "noStorage" } });
-    setShown({ agentId: row.agentId, name: row.name, ...exportDraft(storage, workspaceId, row.agentId, row.name) });
+    setShown({ agentId: row.agentId, name: row.name, ...exportDraft(storage, row) });
   }
 
   function download() {
@@ -192,11 +197,14 @@ export function DraftExport({ active, agents, workspaceId }: { active: boolean; 
     setSave(why === null ? { state: "saving", name } : { state: "notSaved", why: { kind: "error", error: why } });
   }
 
-  function toggle(agentId: string) {
+  // Ticked by the key the draft is saved under, not the Agent ID: one Agent
+  // ID can have both this Workspace's draft and one saved before Workspaces
+  // were recorded (T-195).
+  function toggle(identity: string) {
     setMany(null);
     setSelected((was) => {
       const next = new Set(was);
-      if (!next.delete(agentId)) next.add(agentId);
+      if (!next.delete(identity)) next.add(identity);
       return next;
     });
   }
@@ -204,11 +212,11 @@ export function DraftExport({ active, agents, workspaceId }: { active: boolean; 
   /** The ticked drafts, read now, as one file; none if any can't be read. */
   function downloadSelected() {
     if (!listing?.available) return;
-    const rows = listing.rows.filter((row) => selected.has(row.agentId));
+    const rows = listing.rows.filter((row) => selected.has(row.identity));
     if (!rows.length) return;
     const storage = readStorage();
     if (!storage) return setMany({ state: "notSaved", why: { kind: "noStorage" } });
-    const made = exportDrafts(storage, workspaceId, rows);
+    const made = exportDrafts(storage, rows);
     if ("failed" in made) return setMany({ state: "failed", failed: made.failed, of: rows.length });
     const name = draftsFileName();
     const why = saveFile(name, made.text, "application/json;charset=utf-8");
@@ -234,13 +242,13 @@ export function DraftExport({ active, agents, workspaceId }: { active: boolean; 
           {listing.rows.length === 0 && <p className="diagnostics-note">{t.noMatch}</p>}
           <ul className="draft-export-rows">
             {listing.rows.map((row) => (
-              <li key={row.agentId} data-agent={row.agentId}>
+              <li key={row.identity} data-agent={row.agentId} data-unattributed={row.attributed ? undefined : "true"}>
                 <span className="draft-export-name">
                   {row.summary.state !== "damaged" && (
                     <input
                       type="checkbox"
-                      checked={selected.has(row.agentId)}
-                      onChange={() => toggle(row.agentId)}
+                      checked={selected.has(row.identity)}
+                      onChange={() => toggle(row.identity)}
                       aria-label={t.choose(row.name)}
                     />
                   )}
@@ -275,6 +283,9 @@ export function DraftExport({ active, agents, workspaceId }: { active: boolean; 
                 </p>
               )}
             </div>
+          )}
+          {listing.unattributed > 0 && (
+            <p className="diagnostics-note">{t.unattributed(listing.unattributed)}</p>
           )}
           {listing.otherAgents > 0 && (
             <p className="diagnostics-note">{t.others(listing.otherAgents)}</p>
@@ -320,5 +331,5 @@ function describe(row: DraftRow, t: Text): string {
   if (summary.pastes) parts.push(t.pastes(summary.pastes));
   if (summary.images) parts.push(t.images(summary.images));
   if (summary.skills) parts.push(t.skills(summary.skills));
-  return `${summary.state === "legacy" ? t.legacy : ""}${parts.join(t.join)}`;
+  return `${row.attributed ? "" : t.noWorkspace}${summary.state === "legacy" ? t.legacy : ""}${parts.join(t.join)}`;
 }

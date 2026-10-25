@@ -179,19 +179,20 @@ test("one Agent id in two Workspaces keeps two drafts, bodies included", () => {
     "theirs " + body.replace(/first/, "theirs"),
     "The other Workspace's draft is its own, not a copy of this one",
   );
+  // Each Workspace is asked only about its own, and a Workspace this window
+  // does not know yet owns nothing.
+  assert.deepEqual(savedDraftAgents(disk, "ws-here"), ["a"]);
+  assert.deepEqual(savedDraftAgents(disk, "ws-there"), ["a"]);
+  assert.deepEqual(savedDraftAgents(disk, "ws-elsewhere"), []);
+  assert.deepEqual(savedDraftAgents(disk, ""), []);
+  assert.deepEqual(unattributedDraftAgents(disk), []);
   // Sending in one Workspace leaves the other's draft and its body alone.
   new DraftStorage(disk).remove(here);
   assert.equal(draftText(new DraftStorage(disk).load(here)), "");
   assert.equal(
     draftText(new DraftStorage(disk).load(there)),
     "theirs " + body.replace(/first/, "theirs"),
-  );
-  assert.deepEqual(savedDraftAgents(disk, "ws-there"), ["a"]);
-  assert.deepEqual(savedDraftAgents(disk, "ws-here"), []);
-  assert.deepEqual(
-    savedDraftAgents(disk, ""),
-    [],
-    "A Workspace this window does not know yet owns nothing",
+    "Sending here does not take the other Workspace's pasted body with it",
   );
 });
 
