@@ -75,8 +75,9 @@ async function fixture(t, initial = {}) {
     .useConversationSend;
   let hook;
   let refreshes = 0;
+  let workspace = initial.workspace ?? WORKSPACE;
   function Harness() {
-    hook = useConversationSend(initial.workspace ?? WORKSPACE, "a", initial.turnId === null ? null : "turn1", () => refreshes++, initial.harness || "codex");
+    hook = useConversationSend(workspace, "a", initial.turnId === null ? null : "turn1", () => refreshes++, initial.harness || "codex");
     return null;
   }
   const root = createRoot(document.getElementById("root"));
@@ -93,6 +94,12 @@ async function fixture(t, initial = {}) {
     calls,
     hook: () => hook,
     refreshes: () => refreshes,
+    /** The Core at this address now answers as another Workspace, without
+     * the page being reloaded (T-195). */
+    async move(next) {
+      workspace = next;
+      await act(async () => root.render(createElement(Harness)));
+    },
     async submit(text, images, clarification) {
       let error;
       await act(async () => {
@@ -130,6 +137,61 @@ test("two Workspaces at one address keep their unsent records apart", async (t) 
     outbox("ws-there"),
     { "a:composer": theirs },
     "and the other Workspace's record is still its own",
+  );
+});
+
+test("a send that outlives a move to another Workspace stays the first one's", async (t) => {
+  // Same Agent id in both. The answer arrives after the move: it must not
+  // draw a delivery here, must not read this Workspace's page again, and
+  // must settle the records of the Workspace it was sent from -- not write
+  // them under this one's name.
+  const theirs = {
+    clientMessageId: "their-id",
+    text: "their unsent text",
+    expectedTurnId: "turn1",
+    question: null,
+  };
+  const f = await fixture(t, {
+    workspace: "ws-here",
+    outbox: {},
+    file: { "ws-there": { "a:composer": theirs } },
+  });
+  let answer;
+  globalThis.fetch = async (url, init) => {
+    f.calls.push({ url, body: JSON.parse(init.body) });
+    return new Promise((resolve) => {
+      answer = (receipt) => resolve({ ok: true, json: async () => receipt });
+    });
+  };
+  let sending;
+  await act(async () => {
+    sending = f.hook().submit("sent from here");
+  });
+  assert.equal(f.calls.length, 1);
+  const input = f.calls[0].body;
+  assert.deepEqual(
+    outbox("ws-here"),
+    { "a:composer": input },
+    "its retry record is kept while it is uncertain",
+  );
+  await f.move("ws-there");
+  assert.deepEqual(f.hook().outgoing, [], "the move leaves no delivery of the other Workspace's here");
+  const before = f.refreshes();
+  await act(async () => {
+    answer({ input, status: "accepted", turnId: "t1", error: null });
+    await sending;
+  });
+  assert.deepEqual(
+    f.hook().outgoing,
+    [],
+    "an accepted send from the Workspace before does not appear in this one",
+  );
+  assert.equal(f.refreshes(), before, "and does not read this Workspace's page again");
+  assert.deepEqual(outbox("ws-here"), {}, "it settled its own Workspace's records");
+  assert.deepEqual(
+    outbox("ws-there"),
+    { "a:composer": theirs },
+    "and left this Workspace's exactly as they were",
   );
 });
 

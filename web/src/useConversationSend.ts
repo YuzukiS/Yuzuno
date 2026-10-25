@@ -81,6 +81,10 @@ export function useConversationSend(
     loadedFor.current = workspaceId;
     outbox.current = load(workspaceId);
   }, [workspaceId, outbox]);
+  // Which Workspace this window is in now, for a send that is still running
+  // from the one before it.
+  const current = useRef(workspaceId);
+  current.current = workspaceId;
   const inFlight = useRef(new Set<string>());
   const [sendingFor, setSendingFor] = useState<string[]>([]);
   const [outgoing, setOutgoing] = useState<OutgoingMessage[]>([]);
@@ -109,7 +113,13 @@ export function useConversationSend(
       return remaining.length === messages.length ? messages : remaining;
     });
   }, [agentId, detail]);
-  const showReceipt = (receipt: MessageReceipt) =>
+  // `startedIn` is the Workspace the send belongs to. A send that outlives a
+  // move to another Workspace does not draw its delivery there: the preview
+  // would be of a message no one in this Workspace sent, under an Agent id
+  // that can be the same in both (T-195). The request is not cancelled -- it
+  // may already have been delivered -- and it is not sent again.
+  const showReceipt = (receipt: MessageReceipt, startedIn: string) =>
+    current.current === startedIn &&
     setOutgoing((messages) => {
       if (
         synchronized.current.has(`${agentId}:${receipt.input.clientMessageId}`)
@@ -125,13 +135,17 @@ export function useConversationSend(
         ? [...messages, next]
         : messages.map((m, i) => (i === index ? next : m));
     });
-  const persist = () => {
-    // Nothing is written against a Workspace this window does not know yet.
-    if (!workspaceId) return;
+  // Takes the records and the Workspace rather than reading them, so a send
+  // still running after a move writes the records it started with, under the
+  // Workspace it started in, and never this Workspace's records under the
+  // other one's name. Nothing is written against a Workspace this window
+  // does not know yet.
+  const persist = (records: Outbox, workspace: string) => {
+    if (!workspace) return;
     try {
       const file = readFile();
-      if (Object.keys(outbox.current).length) file[workspaceId] = outbox.current;
-      else delete file[workspaceId];
+      if (Object.keys(records).length) file[workspace] = records;
+      else delete file[workspace];
       localStorage.setItem(storageKey, JSON.stringify(file));
     } catch {
       /* In-memory retry protection still applies. */
@@ -149,9 +163,13 @@ export function useConversationSend(
     if (harness === "claude" && question)
       throw new Error("Claude answers in the conversation; reply with a new message.");
     const key = `${agentId}:${clarification ? `form:${clarification.resultId}:${clarification.formId}` : question ? `${question.turnId}:${question.itemId}` : "composer"}`;
+    // This send belongs to the Workspace it starts in, and to that
+    // Workspace's records, whatever this window moves to while it runs.
+    const startedIn = workspaceId;
+    const records = outbox.current;
     // A message whose delivery became unknown is never sent again; sending
     // the same text after that is a new message with its own id.
-    const kept = outbox.current[key];
+    const kept = records[key];
     const previous = detail?.messageReceipts?.some(
       (r) => r.input.clientMessageId === kept?.clientMessageId && r.status === "unknown",
     )
@@ -174,11 +192,11 @@ export function useConversationSend(
             question,
             ...(clarification ? { clarification: structuredClone(clarification) } : {}),
           };
-    outbox.current[key] = input;
-    persist();
+    records[key] = input;
+    persist(records, startedIn);
     inFlight.current.add(agentId);
     setSendingFor([...inFlight.current]);
-    showReceipt({ input, status: "sending", turnId: null, error: null });
+    showReceipt({ input, status: "sending", turnId: null, error: null }, startedIn);
     let received = false;
     try {
       const receipt = await postWithin<MessageReceipt>(
@@ -186,15 +204,16 @@ export function useConversationSend(
         input,
       );
       received = true;
-      showReceipt(receipt);
-      refresh();
+      showReceipt(receipt, startedIn);
+      // Only this Workspace's page is read again for it.
+      if (current.current === startedIn) refresh();
       // Queued at Claude is sent (not yet read): the preview shows which.
       const sent = receipt.status === "accepted" || receipt.status === "queued";
       // Rejected and unknown are final: the draft stays, and sending it
       // again is a new message.
       if (sent || receipt.status === "rejected" || receipt.status === "unknown") {
-        delete outbox.current[key];
-        persist();
+        delete records[key];
+        persist(records, startedIn);
       }
       if (!sent)
         throw new Error(
@@ -205,11 +224,13 @@ export function useConversationSend(
     } catch (error) {
       if (!received && error instanceof HttpError && error.code === "message_not_submitted") {
         received = true;
-        delete outbox.current[key];
-        persist();
-        setOutgoing(messages => messages.filter(m =>
-          m.agentId !== agentId || m.receipt.input.clientMessageId !== input.clientMessageId));
-        refresh();
+        delete records[key];
+        persist(records, startedIn);
+        if (current.current === startedIn) {
+          setOutgoing(messages => messages.filter(m =>
+            m.agentId !== agentId || m.receipt.input.clientMessageId !== input.clientMessageId));
+          refresh();
+        }
       } else if (
         !received &&
         error instanceof HttpError &&
@@ -224,9 +245,9 @@ export function useConversationSend(
             status: "rejected",
             turnId: null,
             error: error.message,
-          });
-          delete outbox.current[key];
-          persist();
+          }, startedIn);
+          delete records[key];
+          persist(records, startedIn);
         } else {
           showReceipt({
             input,
@@ -234,7 +255,7 @@ export function useConversationSend(
             turnId: null,
             error:
               "This retry paused for an update. The earlier delivery still needs confirmation; your draft is kept.",
-          });
+          }, startedIn);
           throw new Error(
             "The update paused this retry. Reconnect afterward to confirm the earlier delivery; it has not been sent again.",
           );
@@ -246,7 +267,7 @@ export function useConversationSend(
           status: "uncertain",
           turnId: null,
           error: "Reconnect to confirm delivery. Your draft is kept.",
-        });
+        }, startedIn);
       throw error;
     } finally {
       inFlight.current.delete(agentId);

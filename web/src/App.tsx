@@ -252,8 +252,18 @@ export function App() {
   const [selected, setSelected] = useState<string>(() =>
     previewMode ? "mikan" : readStorage("yuzuno.selected", ""),
   );
+  // Which Workspace this window is in. Empty until /api/workspace answers,
+  // and what belongs to one Workspace -- the shown conversation, drafts,
+  // unsent messages, shared requests -- is neither read nor written while it
+  // is (T-195).
+  const workspaceId = workspace?.workspace?.id || "";
+  // First, so a request started by any hook, effect or control below is
+  // shared only within the Workspace it was started in.
+  useEffect(() => {
+    scopeRequests(previewMode ? "" : workspaceId);
+  }, [workspaceId]);
   // The shown Agent's detail: read once, then patched from the event stream.
-  const live = useAgentDetail(previewMode ? null : selected || null);
+  const live = useAgentDetail(workspaceId, previewMode ? null : selected || null);
   const previewShown = useMemo(
     () => (previewMode && selected ? previewDetail(selected) : null),
     [selected],
@@ -361,14 +371,6 @@ export function App() {
   const [artifact, setArtifact] = useState<ArtifactPreview | null>(null);
   // An image being marked for Point & Fix (T-167).
   const [pointFix, setPointFix] = useState<PointFixSource | null>(null);
-  // Which Workspace this window is in. Empty until /api/workspace answers,
-  // and the drafts below are neither read nor written while it is (T-195).
-  const workspaceId = workspace?.workspace?.id || "";
-  // Declared first, so a request started by any effect or control below is
-  // shared only within the Workspace it was started in (T-195).
-  useEffect(() => {
-    scopeRequests(previewMode ? "" : workspaceId);
-  }, [workspaceId]);
   const { draft, getDraft, setDraft, clearIfUnchanged, preserveDrafts, removeDraft, copyDraft, discardSavedDraft, draftError, draftBlocked } = useComposerDraft(workspaceId, selected);
   const [interrupting, setInterrupting] = useState(false);
   const [actionError, setActionError] = useState("");

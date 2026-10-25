@@ -99,7 +99,13 @@ function shared(action: string, request: () => Promise<unknown>): Promise<unknow
   const key = `${requestWorkspace}\n${action}`;
   const current = inFlight.get(key);
   if (current) return current;
-  const started = request().finally(() => inFlight.delete(key));
+  // Only this request clears itself. Going to another Workspace and back
+  // (A -> B -> A) can start a second request under the same key while the
+  // first is still running; a plain delete would then have taken the newer
+  // one out and let a third click send again.
+  const started: Promise<unknown> = request().finally(() => {
+    if (inFlight.get(key) === started) inFlight.delete(key);
+  });
   inFlight.set(key, started);
   return started;
 }

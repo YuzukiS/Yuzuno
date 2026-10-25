@@ -104,6 +104,8 @@ async function mount({
   liveJobs,
   liveCI,
   workspaceIdentity,
+  // An older Core that does not say which Workspace this is (T-195).
+  noWorkspaceId = false,
   models,
   modelsResponse,
   claudeRuntime,
@@ -173,7 +175,7 @@ async function mount({
         // A real Core always says which Workspace this is, and the page keeps
         // drafts, unsent messages and reading places per Workspace (T-195),
         // so the fixture says it too.
-        workspace: { id: workspaceIdentity || "ci-fixture" },
+        ...(noWorkspaceId ? {} : { workspace: { id: workspaceIdentity || "ci-fixture" } }),
         agents: agents.map((a) =>
           a.id === "a"
             ? {
@@ -2495,6 +2497,35 @@ test("an Agent link is copied from its menu and opens that Agent only, changing 
     assert.equal(savedDraftText(page.window.localStorage, "a"), "draft for Mori");
     assert.equal(savedDraftText(page.window.localStorage, "b"), "draft for Hana");
     assert.deepEqual(changes(page), [], "nothing was sent, reconnected or changed");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+// T-195: a Core that does not say which Workspace this is. A draft has no
+// Workspace to be saved under, so it is kept in this window and said to be,
+// rather than quietly not saved or shown as saved.
+test("against a Core that names no Workspace, a draft is kept in this window and says so", async () => {
+  const page = await mount({ noWorkspaceId: true });
+  try {
+    const field = page.document.querySelector("[data-composer-input]");
+    setValue(page.window, field, "typed with no Workspace to save it under");
+    await pause();
+    assert.equal(
+      composerText(field),
+      "typed with no Workspace to save it under",
+      "what was typed is on screen",
+    );
+    const said = [...page.document.querySelectorAll('.inline-error[role="alert"]')].map((p) => p.textContent);
+    assert.deepEqual(
+      said.filter((text) => /kept in this window only/.test(text ?? "")),
+      ["This draft is kept in this window only: Core has not said which Workspace this is, so there is nothing to save it under. Copy it before reloading."],
+    );
+    assert.deepEqual(
+      Object.keys(page.window.localStorage).filter((key) => key.startsWith("yuzuno.composer.v1:") || key.startsWith("yuzuno.paste.v1:")),
+      [],
+      "and it is not written under a key that an Agent alone would name",
+    );
+    assert.deepEqual(changes(page), [], "nothing was sent");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

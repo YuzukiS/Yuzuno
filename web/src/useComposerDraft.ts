@@ -58,9 +58,17 @@ export function useComposerDraft(workspaceId: string, agentId: string) {
     unsaved.current.add(at);
     try {
       const key = disk(id);
-      // No Workspace to attribute it to yet: it stays in this window, and is
-      // not written to the key an Agent alone would name.
-      if (key) {
+      // No Workspace to attribute it to: it stays in this window, and is not
+      // written to the key an Agent alone would name. Said rather than
+      // quietly not saved -- against a Core that does not say which
+      // Workspace this is, that is where the draft stays.
+      if (!key) {
+        if (id)
+          errors.current.set(
+            at,
+            "This draft is kept in this window only: Core has not said which Workspace this is, so there is nothing to save it under. Copy it before reloading.",
+          );
+      } else {
         storage.current ||= new DraftStorage(localStorage);
         storage.current.save(key, draft);
         unsaved.current.delete(at);
