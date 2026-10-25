@@ -199,8 +199,8 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
             {categoryEntries.map((entry) => <button type="button" key={entry.id} aria-current={entry.id === shown.id ? "true" : undefined}
               onClick={() => select(entry)}>{entryShortTitle(entry, language)}</button>)}
           </nav>}
-          <EntryAbout key={shown.id} entry={localizedEntry(shown, language)} />
-          {shown.target.kind !== "editor" && <SettingCard key={shown.id} entry={localizedEntry(shown, language)} navigation={navigation}
+          <EntryAbout key={`about-${shown.id}`} entry={localizedEntry(shown, language)} />
+          {shown.target.kind !== "editor" && <SettingCard key={`card-${shown.id}`} entry={localizedEntry(shown, language)} navigation={navigation}
             brief onOpen={() => open(shown)} />}
         </>}
         {/* Keep visited editors mounted while searching or changing category:
