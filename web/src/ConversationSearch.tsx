@@ -7,7 +7,57 @@ import {
   type ConversationMatch,
 } from "./conversation-search";
 import type { NativeTurn } from "./types";
+import { strings, useStrings } from "./i18n";
 import "./conversation-search.css";
+
+// Kept as this English sentence and said in the language shown (T-189).
+const GONE = "This message is no longer available in the loaded conversation.";
+// The search's own words (T-189); messages, names and Core's errors as they came.
+const text = strings({
+  gone: GONE,
+  search: "Search conversation",
+  searchTitle: (key: string) => `Search this conversation (${key}+F)`,
+  saved: "Core-saved messages, including unloaded history. Up to 50 results.",
+  loaded: "Loaded messages only.",
+  nativePages: " Native history is searched only in pages you have loaded.",
+  noTools: " Tool output is excluded.",
+  close: "Close conversation search",
+  searchSaved: "Search saved messages",
+  searchLoaded: "Search loaded messages",
+  placeholder: "Find something in this conversation…",
+  searching: "Searching saved messages…",
+  empty: "Search user messages, agent progress, and replies.",
+  matching: (count: number) => `${count} matching ${count === 1 ? "message" : "messages"}`,
+  none: "No messages match your search.",
+  results: "Matching messages",
+  you: "You",
+  progress: "Progress",
+  reply: "Reply",
+  loadedTurn: "Loaded turn",
+  turn: "Turn",
+}, {
+  gone: "已载入的会话中不再有这条消息。",
+  search: "搜索会话",
+  searchTitle: (key) => `搜索此会话（${key}+F）`,
+  saved: "Core 保存的消息，包括未载入的历史。最多 50 条结果。",
+  loaded: "仅限已载入的消息。",
+  nativePages: "原生历史只在你已载入的页面中搜索。",
+  noTools: "不包括工具输出。",
+  close: "关闭会话搜索",
+  searchSaved: "搜索已保存的消息",
+  searchLoaded: "搜索已载入的消息",
+  placeholder: "在此会话中查找…",
+  searching: "正在搜索已保存的消息…",
+  empty: "搜索用户消息、Agent 进展和回复。",
+  matching: (count) => `${count} 条匹配的消息`,
+  none: "没有与搜索匹配的消息。",
+  results: "匹配的消息",
+  you: "你",
+  progress: "进展",
+  reply: "回复",
+  loadedTurn: "已载入的 Turn",
+  turn: "Turn",
+});
 
 export function ConversationSearch({
   agentName,
@@ -33,6 +83,7 @@ export function ConversationSearch({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
+  const t = useStrings(text);
   const inputId = useId();
   const input = useRef<HTMLInputElement>(null);
   const destination = useRef<ConversationMatch | null>(null);
@@ -105,9 +156,7 @@ export function ConversationSearch({
 
   function select(result: ConversationMatch) {
     if (!onLocate && !findMessage(result)) {
-      setError(
-        "This message is no longer available in the loaded conversation.",
-      );
+      setError(GONE);
       return;
     }
     // Stop following immediately, before dialog dismissal and any live refresh.
@@ -127,8 +176,8 @@ export function ConversationSearch({
       <Dialog.Trigger asChild>
         <button
           className="conversation-action conversation-search-trigger"
-          aria-label="Search conversation"
-          title={`Search this conversation (${shortcutModifier}+F)`}
+          aria-label={t.search}
+          title={t.searchTitle(shortcutModifier)}
           aria-keyshortcuts="Control+F Meta+F"
           disabled={disabled}
         >
@@ -161,9 +210,7 @@ export function ConversationSearch({
             if (onLocate) { onLocate(result); return; }
             const target = findMessage(result);
             if (!target) {
-              setError(
-                "This message is no longer available in the loaded conversation.",
-              );
+              setError(GONE);
               setOpen(true);
               return;
             }
@@ -177,28 +224,28 @@ export function ConversationSearch({
         >
           <div className="modal-heading">
             <div>
-              <Dialog.Title>Search conversation</Dialog.Title>
+              <Dialog.Title>{t.search}</Dialog.Title>
               <Dialog.Description>
-                {agentName} · {savedAgentId ? "Core-saved messages, including unloaded history. Up to 50 results." : "Loaded messages only."}
-                {savedAgentId && loadedNumbering && " Native history is searched only in pages you have loaded."} Tool output is excluded.
+                {agentName} · {savedAgentId ? t.saved : t.loaded}
+                {savedAgentId && loadedNumbering && t.nativePages}{t.noTools}
               </Dialog.Description>
             </div>
             <Dialog.Close
               className="icon-button"
-              aria-label="Close conversation search"
+              aria-label={t.close}
             >
               <X size={18} />
             </Dialog.Close>
           </div>
           <label className="sr-only" htmlFor={inputId}>
-            {savedAgentId ? "Search saved messages" : "Search loaded messages"}
+            {savedAgentId ? t.searchSaved : t.searchLoaded}
           </label>
           <input
             ref={input}
             id={inputId}
             className="conversation-search-input"
             type="search"
-            placeholder="Find something in this conversation…"
+            placeholder={t.placeholder}
             autoComplete="off"
             value={query}
             onChange={(event) => {
@@ -208,19 +255,19 @@ export function ConversationSearch({
           />
           {error && (
             <p role="alert" className="inline-error">
-              {error}
+              {error === GONE ? t.gone : error}
             </p>
           )}
           <p className="conversation-search-status" role="status">
-            {searching ? "Searching saved messages…" : !query.trim()
-              ? "Search user messages, agent progress, and replies."
+            {searching ? t.searching : !query.trim()
+              ? t.empty
               : results.length
-                ? `${results.length} matching ${results.length === 1 ? "message" : "messages"}`
-                : "No messages match your search."}
+                ? t.matching(results.length)
+                : t.none}
           </p>
           <ol
             className="conversation-search-results"
-            aria-label="Matching messages"
+            aria-label={t.results}
           >
             {results.map((result) => (
               <li key={JSON.stringify([result.turnId, result.itemId])}>
@@ -231,11 +278,11 @@ export function ConversationSearch({
                   <span className="conversation-search-meta">
                     <strong>
                       {result.role === "user"
-                        ? "You"
-                        : `${agentName} · ${result.role === "progress" ? "Progress" : "Reply"}`}
+                        ? t.you
+                        : `${agentName} · ${result.role === "progress" ? t.progress : t.reply}`}
                     </strong>
                     <span>
-                      {loadedNumbering ? "Loaded turn" : "Turn"}{" "}
+                      {loadedNumbering ? t.loadedTurn : t.turn}{" "}
                       {result.turnNumber}
                     </span>
                     <ArrowUpRight size={16} aria-hidden="true" />
