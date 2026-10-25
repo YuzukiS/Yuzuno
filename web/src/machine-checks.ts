@@ -1,7 +1,7 @@
 import { post } from "./api";
 
-/** Whether a Harness CLI answered `--version`, and for Claude Code on the
- * Core host what its sign-in check said (`signIn`). */
+/** Whether a Harness CLI answered `--version`, and for Claude Code what its
+ * sign-in check said (`signIn`). */
 export interface HarnessCheck {
   harness: "codex" | "claude" | string;
   supported: boolean;
@@ -9,9 +9,11 @@ export interface HarnessCheck {
   executable?: string;
   version?: string;
   error?: string;
-  /** Claude Code on the Core host: what its `claude auth status` said. A
-   * clear signed-out answer also makes it unavailable, with `error` saying
-   * where to sign in; unknown leaves it found and keeps the reason here. */
+  /** Claude Code: what its `claude auth status` said, on the Core host as Core
+   * runs it, on an SSH machine as SSH runs it there. A clear signed-out answer
+   * also makes it unavailable, with `error` saying where to sign in; unknown
+   * leaves it found and keeps the reason here. Absent where it wasn't asked or
+   * didn't say. */
   signIn?: { state: "signedIn" | "signedOut" | "unknown"; method?: string; folder?: string; detail?: string };
 }
 

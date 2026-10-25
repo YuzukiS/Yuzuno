@@ -203,7 +203,11 @@ function signInFact(
   if (harness === "claude") {
     const signIn = check?.signIn;
     if (!signIn) {
-      if (machine.kind !== "local") return fact("unknown", "Not known", "Checks of SSH machines don't report sign-in by itself; a sign-in problem shows on the CLI line.");
+      if (machine.kind !== "local") {
+        if (!machine.lastCheck) return fact("unknown", "Not checked yet", "Check the machine on the Machines page.");
+        if (!machine.lastCheck.reachable) return fact("unknown", "Not known", "The last check didn't reach this machine.");
+        return fact("unknown", "Not known", "The last check didn't report it: `claude auth status` there gave no answer, Claude Code couldn't run, or the check was made before SSH checks reported sign-in. A sign-in problem shows on the CLI line.");
+      }
       return machine.lastCheck
         ? fact("unknown", "Not known", "Sign-in is read only when the CLI can run.")
         : fact("unknown", "Not known", "Sign-in is checked with the CLI on the Machines page.");

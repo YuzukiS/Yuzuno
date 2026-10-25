@@ -240,7 +240,7 @@ test("what can't be read or was never checked is Unknown, not guessed; a CLI Cor
   });
   assert.deepEqual(page.facts(page.harness("Studio", "Claude Code")), {
     CLI: "No · Not usable · 2.1.296 (Claude Code) · Claude Code there is not logged in: run claude login on it",
-    "Signed in": "Unknown · Not known · Checks of SSH machines don't report sign-in by itself; a sign-in problem shows on the CLI line.",
+    "Signed in": "Unknown · Not known · The last check didn't report it: `claude auth status` there gave no answer, Claude Code couldn't run, or the check was made before SSH checks reported sign-in. A sign-in problem shows on the CLI line.",
     Models: "Unknown · Not checked here · An SSH machine's models are listed when an Agent there chooses one.",
   });
   assert.equal(page.facts(page.machine("Studio").querySelector("dl"))["Managed Jobs"],
@@ -270,6 +270,39 @@ test("on the Core host a signed-out Claude Code is found and signed out; one tha
   }
 });
 
+test("an SSH machine's Claude Code sign-in is what its last check's `claude auth status` said there, signed in or out, apart from unreported, unreached and never checked", async () => {
+  const hint = "Claude Code is installed there but not logged in for SSH sessions: run over SSH, `claude auth status` reports not logged in (auth method: none).";
+  for (const [claude, cli, signedIn] of [
+    [{ found: true, signIn: { state: "signedIn", method: "claude.ai" } }, "Yes · Found · 2.1.296 (Claude Code) · /opt/homebrew/bin/claude", "Yes · Signed in · claude.ai"],
+    [{ found: false, error: hint, signIn: { state: "signedOut", method: "none" } }, "Yes · Found · 2.1.296 (Claude Code) · /opt/homebrew/bin/claude", `No · Signed out · ${hint}`],
+    // Found, but the check didn't report a sign-in: not known, never signed out.
+    [{ found: true }, "Yes · Found · 2.1.296 (Claude Code) · /opt/homebrew/bin/claude",
+      "Unknown · Not known · The last check didn't report it: `claude auth status` there gave no answer, Claude Code couldn't run, or the check was made before SSH checks reported sign-in. A sign-in problem shows on the CLI line."],
+  ]) {
+    const answers = core();
+    answers["/api/machines"].machines[1].lastCheck = {
+      machineId: "box", startedAt: hoursAgo(0.1), checkedAt: hoursAgo(0.1), durationMs: 3000, reachable: true,
+      harnesses: [{ harness: "claude", supported: true, executable: "/opt/homebrew/bin/claude", version: "2.1.296 (Claude Code)", ...claude }],
+    };
+    const page = mount(answers);
+    page.window.show();
+    await tick();
+    const facts = page.facts(page.harness("Build box", "Claude Code"));
+    assert.equal(facts.CLI, cli);
+    assert.equal(facts["Signed in"], signedIn);
+    assert.deepEqual([...page.calls].sort(), [...READS].sort(), "only reads: the sign-in is the stored check's");
+    page.close();
+  }
+  // Never checked: nothing to say yet.
+  const answers = core();
+  answers["/api/machines"].machines[1].lastCheck = null;
+  const page = mount(answers);
+  page.window.show();
+  await tick();
+  assert.equal(page.facts(page.harness("Build box", "Claude Code"))["Signed in"], "Unknown · Not checked yet · Check the machine on the Machines page.");
+  page.close();
+});
+
 test("an SSH machine the last check didn't reach: its CLIs are Unknown, even with Core's placeholder Claude entry", async () => {
   // As Core stores a failed SSH probe (machines.rs): unreachable, with a
   // placeholder {harness: "claude", supported: true, found: false}.
@@ -281,6 +314,7 @@ test("an SSH machine the last check didn't reach: its CLIs are Unknown, even wit
   const reach = "Unknown · Not known · The last check didn't reach this machine.";
   assert.equal(page.facts(page.machine("Build box").querySelector("dl")).Reached, "No · Not reached · ssh: connect to host box.test port 22: Connection timed out");
   assert.equal(page.facts(page.harness("Build box", "Claude Code")).CLI, reach, "not 'No · Not found'");
+  assert.equal(page.facts(page.harness("Build box", "Claude Code"))["Signed in"], "Unknown · Not known · The last check didn't reach this machine.");
   assert.equal(page.facts(page.harness("Build box", "Codex")).CLI, reach);
   page.close();
 });
