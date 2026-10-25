@@ -18,13 +18,30 @@ export interface HarnessCheck {
   signIn?: { state: "signedIn" | "signedOut" | "unknown"; method?: string; folder?: string; detail?: string };
 }
 
+// A check's harness words, in the interface language where a page passes it
+// (T-189). Harness names, versions, methods and Core's reasons stay as written.
+const harnessWords = strings({
+  signedIn: (method?: string) => `The CLI answered --version and reports it is signed in${method ? ` (${method})` : ""}.`,
+  signInUnknown: (detail?: string) => `The CLI answered --version. Whether it is signed in could not be checked: ${detail ?? "no reason given"}`,
+  signInUnchecked: "The CLI answered --version. Sign-in is not checked.",
+  coreHostOnly: (name: string) => `${name} · Core host only`,
+  found: (name: string, version?: string) => `${name} found${version ? ` · ${version}` : ""}`,
+  unavailable: (name: string) => `${name} unavailable`,
+}, {
+  signedIn: (method) => `CLI 响应了 --version，并报告已登录${method ? `（${method}）` : ""}。`,
+  signInUnknown: (detail) => `CLI 响应了 --version。无法检查是否已登录：${detail ?? "未说明原因"}`,
+  signInUnchecked: "CLI 响应了 --version。未检查登录状态。",
+  coreHostOnly: (name) => `${name} · 仅限 Core 主机`,
+  found: (name, version) => `已找到 ${name}${version ? ` · ${version}` : ""}`,
+  unavailable: (name) => `${name} 不可用`,
+});
+
 /** The found chip's tip: what was checked, sign-in included where it was. */
-export function harnessTip(check: HarnessCheck) {
-  if (check.signIn?.state === "signedIn")
-    return `The CLI answered --version and reports it is signed in${check.signIn.method ? ` (${check.signIn.method})` : ""}.`;
-  if (check.signIn?.state === "unknown")
-    return `The CLI answered --version. Whether it is signed in could not be checked: ${check.signIn.detail ?? "no reason given"}`;
-  return "The CLI answered --version. Sign-in is not checked.";
+export function harnessTip(check: HarnessCheck, language: Language = "en") {
+  const t = harnessWords(language);
+  if (check.signIn?.state === "signedIn") return t.signedIn(check.signIn.method);
+  if (check.signIn?.state === "unknown") return t.signInUnknown(check.signIn.detail);
+  return t.signInUnchecked;
 }
 /** What Core could reach and run at one moment. Never a live status. */
 export interface MachineCheck {
@@ -93,12 +110,12 @@ export const agentHarnessName = (agent: { harness?: string }) => harnessName(age
 export const nativeSession = (agent: { harness?: string; claudeSessionId?: string; opencodeSessionId?: string; threadId?: string }) =>
   agent.harness === "claude" ? agent.claudeSessionId : agent.harness === "opencode" ? agent.opencodeSessionId : agent.threadId;
 
-export function harnessLabel(check: HarnessCheck) {
+export function harnessLabel(check: HarnessCheck, language: Language = "en") {
+  const t = harnessWords(language);
   const name = harnessName(check.harness);
-  if (!check.supported) return `${name} · Core host only`;
-  if (check.found)
-    return `${name} found${check.version ? ` · ${check.version}` : ""}`;
+  if (!check.supported) return t.coreHostOnly(name);
+  if (check.found) return t.found(name, check.version);
   // Missing, failing and timing out all mean it cannot be used; the reason
   // is shown beside it.
-  return `${name} unavailable`;
+  return t.unavailable(name);
 }

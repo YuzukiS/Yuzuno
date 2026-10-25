@@ -1,4 +1,5 @@
 import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLanguage, useStrings } from "../i18n";
 import { systemTimeZone, timeZoneName, useTimeDisplay } from "../time-preferences";
 import { CalendarClock, Check, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
 import { errorText } from "../api";
@@ -12,33 +13,32 @@ import { FoldButton, useCardFold } from "./card-fold";
 import { sectionSummary, unmaintained } from "./card-summary";
 import { absolute, deferChoices, duration, relative } from "./format";
 import { deferSection, type SeenMark } from "./home-api";
+import { homeText } from "./home-text";
 import { SectionBody } from "./SectionBody";
 import type { Section } from "./types";
 import { pinnable, PinsContext } from "./widget-layout";
 
-const kindLabel = { ask: "Ask", report: "Report", status: "Status" } as const;
-
-/** Why an author no longer keeps a section up to date. */
-const gone = { closed: "has closed", deleted: "was deleted", moved: "moved to another project" } as const;
-
 /** When a status's data is from, and whether it is past its validity. */
 function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; stale: boolean }) {
   const time = useTimeDisplay();
+  const language = useLanguage();
+  const t = homeText(language);
   return (
     <span className={stale ? "home-stale" : ""} title={absolute(status.asOf, time)}>
       <Clock3 size={12} />
-      Data as of {absolute(status.asOf, time)}
-      {stale && ` · older than its ${duration(status.validFor)} validity`}
+      {t.dataAsOf(absolute(status.asOf, time))}
+      {stale && t.pastValidity(duration(status.validFor, language))}
     </span>
   );
 }
 
 function Time({ label, iso }: { label: string; iso?: string }) {
   const time = useTimeDisplay();
+  const language = useLanguage();
   if (!iso) return null;
   return (
     <span title={absolute(iso, time)}>
-      {label} {relative(iso)}
+      {label} {relative(iso, language)}
     </span>
   );
 }
@@ -75,6 +75,7 @@ function useReservedHeight(version: number, collapsed: boolean) {
  * Only this button follows the pins, so pinning redraws no card body. */
 function PinButton({ section, projectId }: { section: Section; projectId: string }) {
   const pins = useContext(PinsContext);
+  const t = useStrings(homeText);
   if (!pins || !pinnable(section)) return null;
   const pinned = pins.isPinned(projectId, section);
   // Content Home keeps out of the default view (or history) is never pinned.
@@ -84,8 +85,8 @@ function PinButton({ section, projectId }: { section: Section; projectId: string
       type="button"
       className="icon-button home-pin"
       aria-pressed={pinned}
-      aria-label={pinned ? `Unpin “${section.title}” from Widgets` : `Pin “${section.title}” to Widgets`}
-      title={pinned ? "Unpin from Widgets" : "Pin to Widgets"}
+      aria-label={pinned ? t.unpinLabel(section.title) : t.pinLabel(section.title)}
+      title={pinned ? t.unpin : t.pin}
       onClick={() => pins.toggle(projectId, section)}
     >
       {pinned ? <PinOff size={13} /> : <Pin size={13} />}
@@ -116,6 +117,8 @@ export const SectionCard = memo(function SectionCard({
   onChanged: () => void;
 }) {
   const time = useTimeDisplay();
+  const language = useLanguage();
+  const t = homeText(language);
   // Collapsing hides the body only: drafts, Defer and table state are kept,
   // and the header still says what changed and offers Seen (T-115).
   const [collapsed, toggleFold] = useCardFold(`section:${projectId}:${section.key}`);
@@ -137,6 +140,7 @@ export const SectionCard = memo(function SectionCard({
   // anyone still keeps it up to date (T-173); unfolded, the body says so.
   const summary = useMemo(() => (section.kind === "ask" ? null : sectionSummary(section)), [section]);
   const orphaned = unmaintained(section);
+  const gone = t.gone[section.owner.state as keyof typeof t.gone] ?? t.inactive;
   // Answered, waiting for its owner: no longer the user's to decide, so it
   // shows in short, with the question and details one click away.
   const replied = section.ask?.state === "replied";
@@ -191,38 +195,38 @@ export const SectionCard = memo(function SectionCard({
           controls={`${sectionDomId(projectId, section.key)}-body`}
         />
         <span className={`home-kind kind-${section.kind}${replied ? " is-replied" : ""}`}>
-          {replied ? "Replied" : kindLabel[section.kind]}
+          {replied ? t.replied : t.kind[section.kind]}
         </span>
         <h3 id={`${sectionDomId(projectId, section.key)}-title`}>{section.title}</h3>
         {changed && (
-          <span className="home-changed" title="Changed since you last marked it seen">
-            {section.seen ? "Updated" : "New"}
+          <span className="home-changed" title={t.changedTitle}>
+            {section.seen ? t.updated : t.new}
           </span>
         )}
         {orphaned && (
-          <span className="home-unmaintained" title={`${section.owner.name} ${gone[section.owner.state as keyof typeof gone] ?? "is not active"}: nobody updates this ${kindLabel[section.kind].toLowerCase()} any more`}>
-            Not maintained
+          <span className="home-unmaintained" title={t.notMaintainedTitle(section.owner.name, gone, t.kindInSentence[section.kind])}>
+            {t.notMaintained}
           </span>
         )}
         <span className="home-section-meta">
           <span className="home-owner">
-            {sub ? "by " : ""}
+            {sub ? t.by : ""}
             {section.owner.name}
-            {section.owner.state !== "active" && ` (${section.owner.state})`}
+            {section.owner.state !== "active" && t.ownerState(section.owner.state)}
           </span>
-          <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt)}</span>
+          <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt, language)}</span>
         </span>
         {replyable && (
           <button
             type="button"
             className="quiet-button home-reply-open"
             aria-expanded={replying}
-            aria-label={`Reply to “${section.title}”`}
-            title={`Reply to ${section.owner.name}`}
+            aria-label={t.replyLabel(section.title)}
+            title={t.replyTitle(section.owner.name)}
             onClick={() => setReplying((open) => !open)}
           >
             <MessageSquareReply size={13} />
-            Reply
+            {t.reply}
           </button>
         )}
         {!readOnly && <PinButton section={section} projectId={projectId} />}
@@ -232,10 +236,10 @@ export const SectionCard = memo(function SectionCard({
             className="quiet-button home-seen"
             disabled={seeing}
             onClick={() => void seen()}
-            aria-label={`Mark “${section.title}” seen`}
+            aria-label={t.seenLabel(section.title)}
           >
             {seeing ? <LoaderCircle size={13} className="spin" /> : <Eye size={13} />}
-            Seen
+            {t.seen}
           </button>
         )}
       </header>
@@ -256,17 +260,15 @@ export const SectionCard = memo(function SectionCard({
       <div className="home-card-body" id={`${sectionDomId(projectId, section.key)}-body`} hidden={collapsed}>
       {orphaned && (
         <p className="home-note home-unmaintained-note">
-          {section.owner.name} {gone[section.owner.state as keyof typeof gone] ?? "is not active"}, so this {kindLabel[section.kind].toLowerCase()} is no longer
-          updated and may be out of date. A Home content editor can claim it to bring it up to date or remove it;
-          nothing is removed by itself.
+          {t.notMaintainedNote(section.owner.name, gone, t.kindInSentence[section.kind])}
         </p>
       )}
       {(section.status || section.time) && (
         <div className="home-section-time">
           {section.status && <DataAsOf status={section.status} stale={stale} />}
-          <Time label="Due" iso={section.time?.due} />
-          <Time label="Expected" iso={section.time?.eta} />
-          <Time label="Next update" iso={section.time?.nextUpdate} />
+          <Time label={t.due} iso={section.time?.due} />
+          <Time label={t.expected} iso={section.time?.eta} />
+          <Time label={t.nextUpdate} iso={section.time?.nextUpdate} />
         </div>
       )}
       {!replied && section.ask && <p className="home-question">{section.ask.question}</p>}
@@ -279,7 +281,7 @@ export const SectionCard = memo(function SectionCard({
         <div className="home-ask">
           {deferred && (
             <p className="home-note">
-              <CalendarClock size={12} /> Deferred until {absolute(deferred, time)}
+              <CalendarClock size={12} /> {t.deferredUntil(absolute(deferred, time))}
             </p>
           )}
           <AskReply
@@ -300,11 +302,11 @@ export const SectionCard = memo(function SectionCard({
                 onClick={() => setDeferOpen((open) => !open)}
               >
                 <CalendarClock size={13} />
-                Defer
+                {t.defer}
               </button>
               {deferOpen && (
-                <span role="group" aria-label="Defer until">
-                  {deferChoices().map((choice) => (
+                <span role="group" aria-label={t.deferUntil}>
+                  {deferChoices(language).map((choice) => (
                     <button
                       key={choice.id}
                       type="button"
@@ -321,9 +323,7 @@ export const SectionCard = memo(function SectionCard({
               {/* Times here are shown in another zone, but Defer's 9:00 is
                   this device's own (T-189): said where it is chosen. */}
               {deferOpen && time.timeZone && time.timeZone !== systemTimeZone() && (
-                <p className="home-note home-defer-zone">
-                  Tomorrow and Next week are 9:00 in this device’s time zone, {timeZoneName(systemTimeZone())}.
-                </p>
+                <p className="home-note home-defer-zone">{t.deferZone(timeZoneName(systemTimeZone()))}</p>
               )}
             </div>
           )}
@@ -331,7 +331,7 @@ export const SectionCard = memo(function SectionCard({
       )}
       {replied && (
         <details className="home-replied-details">
-          <summary>{updatedSinceReply ? "Question" : "Question and details"}</summary>
+          <summary>{updatedSinceReply ? t.question : t.questionAndDetails}</summary>
           <p className="home-question">{section.ask!.question}</p>
           {!updatedSinceReply && (
             <div className="home-section-body">
@@ -342,7 +342,7 @@ export const SectionCard = memo(function SectionCard({
       )}
       {section.ask?.state === "resolved" && (
         <p className="home-note">
-          <Check size={12} /> Resolved by {section.owner.name}
+          <Check size={12} /> {t.resolvedBy(section.owner.name)}
         </p>
       )}
       </div>

@@ -1,5 +1,6 @@
 /** Small display helpers for Home. Unknown values stay "unknown", never 0. */
 
+import type { Language } from "../i18n.ts";
 import { timeFormatter, type TimeDisplay } from "../time-preferences.ts";
 
 export const UNKNOWN = "unknown";
@@ -18,23 +19,19 @@ export const percent = (value: number | null | undefined) =>
 export const mebibytes = (value: number | null | undefined) =>
   known(value, (n) => (n >= 1024 ? `${(n / 1024).toFixed(1)} GiB` : `${Math.round(n)} MiB`));
 
-/** "5 min ago", "in 2 h": relative to now, coarse on purpose. */
-export function relative(iso: string | null | undefined, now = Date.now()) {
+/** "5 min ago", "in 2 h": relative to now, coarse on purpose; in Simplified
+ * Chinese for a part shown in it (T-189). */
+export function relative(iso: string | null | undefined, language: Language = "en", now = Date.now()) {
   if (!iso) return "";
   const at = Date.parse(iso);
   if (!Number.isFinite(at)) return "";
   const diff = at - now;
   const future = diff > 0;
   const seconds = Math.abs(diff) / 1000;
-  const text =
-    seconds < 45
-      ? "just now"
-      : seconds < 3600
-        ? `${Math.round(seconds / 60)} min`
-        : seconds < 86_400
-          ? `${Math.round(seconds / 3600)} h`
-          : `${Math.round(seconds / 86_400)} d`;
-  return text === "just now" ? text : future ? `in ${text}` : `${text} ago`;
+  if (seconds < 45) return language === "zh-Hans" ? "刚刚" : "just now";
+  const text = duration(seconds, language);
+  if (language === "zh-Hans") return future ? `${text}后` : `${text}前`;
+  return future ? `in ${text}` : `${text} ago`;
 }
 
 const absoluteTime = timeFormatter({ month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -45,14 +42,15 @@ export function absolute(iso: string | null | undefined, time: TimeDisplay) {
   return Number.isFinite(at.getTime()) ? absoluteTime(time).format(at) : "";
 }
 
-export function duration(seconds: number) {
-  if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
-  if (seconds < 86_400) return `${Math.round(seconds / 3600)} h`;
-  return `${Math.round(seconds / 86_400)} d`;
+export function duration(seconds: number, language: Language = "en") {
+  const [minutes, hours, days] = language === "zh-Hans" ? [" 分钟", " 小时", " 天"] : [" min", " h", " d"];
+  if (seconds < 3600) return `${Math.round(seconds / 60)}${minutes}`;
+  if (seconds < 86_400) return `${Math.round(seconds / 3600)}${hours}`;
+  return `${Math.round(seconds / 86_400)}${days}`;
 }
 
 /** The deferral choices: an hour from now, tomorrow 9:00, next Monday 9:00. */
-export function deferChoices(now = new Date()) {
+export function deferChoices(language: Language = "en", now = new Date()) {
   const hour = new Date(now.getTime() + 3_600_000);
   const tomorrow = new Date(now);
   tomorrow.setDate(now.getDate() + 1);
@@ -60,9 +58,10 @@ export function deferChoices(now = new Date()) {
   const week = new Date(now);
   week.setDate(now.getDate() + (((8 - now.getDay()) % 7) || 7));
   week.setHours(9, 0, 0, 0);
+  const [inAnHour, tomorrowLabel, nextWeek] = language === "zh-Hans" ? ["1 小时", "明天", "下周"] : ["1 hour", "Tomorrow", "Next week"];
   return [
-    { id: "hour", label: "1 hour", until: hour.toISOString() },
-    { id: "tomorrow", label: "Tomorrow", until: tomorrow.toISOString() },
-    { id: "week", label: "Next week", until: week.toISOString() },
+    { id: "hour", label: inAnHour, until: hour.toISOString() },
+    { id: "tomorrow", label: tomorrowLabel, until: tomorrow.toISOString() },
+    { id: "week", label: nextWeek, until: week.toISOString() },
   ];
 }

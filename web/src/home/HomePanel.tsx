@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useLanguage, useStrings } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import {
   ArrowDown,
@@ -23,8 +24,9 @@ import { ProjectReply } from "./AskReply";
 import { CardReply, cardReplySlot, hasCardReply, KeptCardReplies, referableHistory } from "./CardReply";
 import { changedSinceSeen, groupSections, projectDomId, requestDomId, topicName } from "./brief-layout";
 import { FoldButton, useCardFold } from "./card-fold";
-import { absolute, plural, relative } from "./format";
+import { absolute, relative } from "./format";
 import { readLinkedRepositories, type LinkedRepositories, type SeenMark } from "./home-api";
+import { homeText } from "./home-text";
 import type { HomeTarget } from "./home-navigation";
 import { readPanelChoice, savePanelChoice } from "./panel-memory";
 import { RepoActivity } from "./RepoActivity";
@@ -43,13 +45,11 @@ export const FULL_RANKS = 3;
 const autoFolds = new Map<string, boolean>();
 const touchedPanels = new Set<string>();
 
-const missingText: Partial<Record<BriefOutcome, string>> = {
-  missing: "ended a turn without updating the Brief",
-  reminded: "ended a turn without updating the Brief; Yuzuno sent one reminder",
-  remindFailed: "ended a turn without updating the Brief; the reminder did not finish",
-};
+const missingText = (missing: ReturnType<typeof homeText>["missing"], outcome: BriefOutcome) =>
+  outcome === "missing" || outcome === "reminded" || outcome === "remindFailed" ? missing[outcome] : missing.other;
 
 function AgentCounts({ agents }: { agents: ProjectPanel["agents"] }) {
+  const t = useStrings(homeText);
   const counts: ("working" | "idle" | "waiting" | "error" | "offline")[] = [
     "working",
     "idle",
@@ -58,11 +58,11 @@ function AgentCounts({ agents }: { agents: ProjectPanel["agents"] }) {
     ...(agents.offline ? (["offline"] as const) : []),
   ];
   return (
-    <span className="home-agent-counts" aria-label={plural(agents.total, "Agent")}>
+    <span className="home-agent-counts" aria-label={t.agents(agents.total)}>
       {counts.map((key) => (
         <span key={key} className={`home-count${agents[key] ? "" : " is-zero"}`} data-count={key}>
           <span className={`status-dot ${key}`} aria-hidden />
-          {key === "error" ? plural(agents[key], "error") : `${agents[key]} ${key}`}
+          {t.count(key, agents[key])}
         </span>
       ))}
     </span>
@@ -89,6 +89,7 @@ function useOverflow(active: boolean) {
 
 /** Linked repositories and their recent activity; a project without any shows nothing. */
 function RepoBlock({ projectId, readOnly }: { projectId: string; readOnly: boolean }) {
+  const t = useStrings(homeText);
   const [page, setPage] = useState<LinkedRepositories | null>(null);
   const [manage, setManage] = useState(false);
   const [collapsed, toggleFold] = useCardFold(`repos:${projectId}`);
@@ -111,9 +112,9 @@ function RepoBlock({ projectId, readOnly }: { projectId: string; readOnly: boole
   return (
     <div className={`home-widget home-repos${collapsed ? " is-collapsed" : ""}`}>
       <div className="home-card-head">
-        <FoldButton collapsed={collapsed} onToggle={toggleFold} label="Repositories" controls={body} />
+        <FoldButton collapsed={collapsed} onToggle={toggleFold} label={t.repositories} controls={body} />
         <h4>
-          <Github size={13} /> Repositories
+          <Github size={13} /> {t.repositories}
         </h4>
         {collapsed && <span className="home-card-count">{page.repositories.length}</span>}
       </div>
@@ -121,7 +122,7 @@ function RepoBlock({ projectId, readOnly }: { projectId: string; readOnly: boole
         {!collapsed && <RepoActivity projectId={projectId} linked={page.repositories} />}
         <GitHubSummary links={page.links} />
         <button type="button" className="quiet-button" aria-expanded={manage} onClick={() => setManage((v) => !v)}>
-          {manage ? "Hide repository details" : "Repository details…"}
+          {manage ? t.hideRepositoryDetails : t.repositoryDetails}
         </button>
         {manage && <GitHubLinks projectId={projectId} disabled={readOnly} />}
       </div>
@@ -131,14 +132,15 @@ function RepoBlock({ projectId, readOnly }: { projectId: string; readOnly: boole
 
 /** A project's waiting approvals; collapsed, its count still shows (T-115). */
 function Approvals({ projectId, count, children }: { projectId: string; count: number; children: ReactNode }) {
+  const t = useStrings(homeText);
   const [collapsed, toggleFold] = useCardFold(`approvals:${projectId}`);
   const body = `${projectDomId(projectId)}-approvals`;
   return (
     <div className={`home-widget home-approvals${collapsed ? " is-collapsed" : ""}`}>
       <div className="home-card-head">
-        <FoldButton collapsed={collapsed} onToggle={toggleFold} label="Waiting for approval" controls={body} />
+        <FoldButton collapsed={collapsed} onToggle={toggleFold} label={t.waitingForApproval} controls={body} />
         <h4>
-          <ShieldCheck size={13} /> Waiting for approval
+          <ShieldCheck size={13} /> {t.waitingForApproval}
         </h4>
         <span className="home-card-count">{count}</span>
       </div>
@@ -151,12 +153,13 @@ function Approvals({ projectId, count, children }: { projectId: string; count: n
 
 /** A History entry a reply can still refer to (T-174): its own Reply. */
 function HistoryReply({ section, projectId, workspaceId, agents }: { section: Section; projectId: string; workspaceId: string; agents: Agent[] }) {
+  const t = useStrings(homeText);
   const [open, setOpen] = useState(() => hasCardReply(cardReplySlot(workspaceId, projectId, section.key)));
   return open ? (
     <CardReply section={section} projectId={projectId} workspaceId={workspaceId} agents={agents} onClose={() => setOpen(false)} />
   ) : (
-    <button type="button" className="quiet-button" aria-label={`Reply to “${section.title}”`} title={`Reply to ${section.owner.name}`} onClick={() => setOpen(true)}>
-      <MessageSquareReply size={13} /> Reply
+    <button type="button" className="quiet-button" aria-label={t.replyLabel(section.title)} title={t.replyTitle(section.owner.name)} onClick={() => setOpen(true)}>
+      <MessageSquareReply size={13} /> {t.reply}
     </button>
   );
 }
@@ -172,12 +175,14 @@ function History30({
   reply?: { workspaceId: string; agents: Agent[]; referable: Section[] };
 }) {
   const time = useTimeDisplay();
+  const language = useLanguage();
+  const t = homeText(language);
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   if (!sections.length) return null;
   return (
     <details className="home-history">
       <summary>
-        <History size={13} /> History (30 days) · {sections.length}
+        <History size={13} /> {t.history} · {sections.length}
       </summary>
       <ul>
         {sections.map((section) => {
@@ -196,10 +201,10 @@ function History30({
                 }}
               >
                 <summary>
-                  <span className={`home-kind kind-${section.kind}`}>{section.kind}</span>
+                  <span className={`home-kind kind-${section.kind}`}>{t.historyKind[section.kind]}</span>
                   {section.title}
                   <small>
-                    {section.owner.name} · <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt)}</span>
+                    {section.owner.name} · <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt, language)}</span>
                   </small>
                 </summary>
                 {/* Read only when opened: history never costs the live view. */}
@@ -207,7 +212,7 @@ function History30({
                   <>
                     {/* A resolved ask keeps its question and the user's answer. */}
                     {section.ask && <p className="home-question">{section.ask.question}</p>}
-                    {section.ask?.replyText && <p className="home-history-reply">Your reply: {section.ask.replyText}</p>}
+                    {section.ask?.replyText && <p className="home-history-reply">{t.yourReply}{section.ask.replyText}</p>}
                     <SectionBody section={section} projectId={projectId} />
                     {reply?.referable.includes(section) && (
                       <HistoryReply section={section} projectId={projectId} workspaceId={reply.workspaceId} agents={reply.agents} />
@@ -252,6 +257,8 @@ export function HomePanel({
   onSeen: (projectId: string, marks: SeenMark[]) => Promise<void>;
 }) {
   const time = useTimeDisplay();
+  const language = useLanguage();
+  const t = homeText(language);
   const id = panel.project.id;
   const [choice, setChoice] = useState(() => readPanelChoice(workspaceId, id));
   const [more, setMore] = useState(false);
@@ -356,18 +363,16 @@ export function HomePanel({
           <h2 id={`${projectDomId(id)}-name`}>{panel.project.name}</h2>
         </button>
         <span className="home-panel-chips">
-          {panel.unseen > 0 && <span className="home-chip is-new">{panel.unseen} new</span>}
-          {needsYou.length > 0 && (
-            <span className="home-chip is-attention">{plural(needsYou.length, "needs", "need")} you</span>
-          )}
-          {collapsed && quiet && <span className="home-quiet">Nothing new since you looked</span>}
+          {panel.unseen > 0 && <span className="home-chip is-new">{t.newCount(panel.unseen)}</span>}
+          {needsYou.length > 0 && <span className="home-chip is-attention">{t.needCount(needsYou.length)}</span>}
+          {collapsed && quiet && <span className="home-quiet">{t.quiet}</span>}
         </span>
         {reorder && (
-          <span className="home-reorder" role="group" aria-label={`Move ${panel.project.name}`}>
+          <span className="home-reorder" role="group" aria-label={t.move(panel.project.name)}>
             <button
               type="button"
               className="icon-button"
-              aria-label={`Move ${panel.project.name} up`}
+              aria-label={t.moveUp(panel.project.name)}
               disabled={!reorder.onUp || reorder.busy}
               onClick={reorder.onUp}
             >
@@ -376,7 +381,7 @@ export function HomePanel({
             <button
               type="button"
               className="icon-button"
-              aria-label={`Move ${panel.project.name} down`}
+              aria-label={t.moveDown(panel.project.name)}
               disabled={!reorder.onDown || reorder.busy}
               onClick={reorder.onDown}
             >
@@ -392,7 +397,7 @@ export function HomePanel({
               <Approvals projectId={id} count={panel.pending.length}>
                 {panel.pending.map((request) => (
                   <div key={request.id} id={requestDomId(request.id)} tabIndex={-1} className="home-approval">
-                    <span className="home-from">From {request.agentName}</span>
+                    <span className="home-from">{t.from(request.agentName)}</span>
                     <PendingCard
                       request={request}
                       refresh={onChanged}
@@ -407,9 +412,7 @@ export function HomePanel({
           </div>
           <div ref={briefRef} className={`home-brief${capped ? " is-capped" : ""}`}>
             {groups.length === 0 ? (
-              <p className="home-note home-brief-empty">
-                No current Home content. Content editors can add reports and status; everyone can add an Ask.
-              </p>
+              <p className="home-note home-brief-empty">{t.noContent}</p>
             ) : (
               groups.map((group) =>
                 // A sub-topic whose topic has no section of its own stands as
@@ -438,7 +441,7 @@ export function HomePanel({
           </div>
           {rank >= FULL_RANKS && (uncapped || overflowing) && (
             <button type="button" className="quiet-button home-more" onClick={toggleMore}>
-              {uncapped ? "Show less" : "Show more"}
+              {uncapped ? t.showLess : t.showMore}
             </button>
           )}
           {!readOnly && (
@@ -454,7 +457,7 @@ export function HomePanel({
             {changed > 0 && !readOnly && (
               <button type="button" className="secondary-button" disabled={seeingAll} onClick={() => void seenAll()}>
                 {seeingAll ? <LoaderCircle size={13} className="spin" /> : <Eye size={13} />}
-                Seen all
+                {t.seenAll}
               </button>
             )}
             <ProjectReply
@@ -472,11 +475,11 @@ export function HomePanel({
             </p>
           )}
           <details className="home-team-details">
-            <summary>Team details &amp; history</summary>
+            <summary>{t.teamDetails}</summary>
             <AgentCounts agents={panel.agents} />
             <div className="home-widgets">
             {panel.errors.length > 0 && (
-              <div className="home-widget home-errors" role="list" aria-label="Agent errors">
+              <div className="home-widget home-errors" role="list" aria-label={t.agentErrors}>
                 {panel.errors.map((item) => (
                   <div role="listitem" key={`${item.agentId}:${item.at}`} className="home-error">
                     <CircleAlert size={14} />
@@ -488,7 +491,7 @@ export function HomePanel({
                       {item.agentName}
                     </button>
                     <span className="home-error-message">{item.message}</span>
-                    <small title={absolute(item.at, time)}>{relative(item.at)}</small>
+                    <small title={absolute(item.at, time)}>{relative(item.at, language)}</small>
                   </div>
                 ))}
               </div>
@@ -496,7 +499,7 @@ export function HomePanel({
             {panel.jobs.length > 0 && (
               <div className="home-widget home-jobs">
                 <h4>
-                  <Workflow size={13} /> Jobs
+                  <Workflow size={13} /> {t.jobs}
                 </h4>
                 <ul>
                   {panel.jobs.map((job) => (
@@ -508,7 +511,7 @@ export function HomePanel({
                       >
                         <span className={`home-job-status status-${job.status}`}>{job.status}</span>
                         <strong>{job.name}</strong>
-                        <span>{job.agentName || "No Agent"}</span>
+                        <span>{job.agentName || t.noAgent}</span>
                       </button>
                     </li>
                   ))}
@@ -516,7 +519,7 @@ export function HomePanel({
               </div>
             )}
             {panel.missing.length > 0 && (
-              <ul className="home-widget home-missing" aria-label="Brief updates not made">
+              <ul className="home-widget home-missing" aria-label={t.briefsNotMade}>
                 {panel.missing.map((item) => (
                   <li key={`${item.agentId}:${item.turnId}`}>
                     <button
@@ -526,15 +529,15 @@ export function HomePanel({
                     >
                       {item.agentName}
                     </button>{" "}
-                    {missingText[item.outcome] || "ended a turn without a recorded Brief update"}
-                    <small title={absolute(item.at, time)}> · {relative(item.at)}</small>
+                    {missingText(t.missing, item.outcome)}
+                    <small title={absolute(item.at, time)}> · {relative(item.at, language)}</small>
                   </li>
                 ))}
               </ul>
             )}
             </div>
             {(panel.brief.teamSections?.length ?? 0) > 0 && <div className="home-team-content">
-              <p className="home-note">Earlier content from other members. Hidden from the default Home view; not marked Seen.</p>
+              <p className="home-note">{t.teamNote}</p>
               {panel.brief.teamSections?.map(section => card(section))}
             </div>}
             <History30

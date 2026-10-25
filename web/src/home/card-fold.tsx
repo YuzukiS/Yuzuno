@@ -1,5 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { useStrings } from "../i18n";
+import { homeText } from "./home-text";
 import { readCardCollapsed, saveCardCollapsed } from "./panel-memory";
 
 /** The Workspace whose card choices Home keeps (T-115); "" keeps them for
@@ -44,6 +46,7 @@ export function FoldButton({
   /** The id of the body it shows and hides. */
   controls: string;
 }) {
+  const t = useStrings(homeText);
   return (
     <button
       type="button"
@@ -51,7 +54,7 @@ export function FoldButton({
       aria-expanded={!collapsed}
       aria-controls={controls}
       aria-label={label}
-      title={collapsed ? "Expand" : "Collapse"}
+      title={collapsed ? t.expand : t.collapse}
       onClick={onToggle}
     >
       {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
