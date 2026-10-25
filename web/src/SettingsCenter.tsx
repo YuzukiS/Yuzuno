@@ -32,6 +32,9 @@ const text = strings({
   gap: " ",
   agent: "Agent",
   project: "Project",
+  // Ending the picker's accessible name: "<entry> agent".
+  agentKind: "agent",
+  projectKind: "project",
   chooseAgent: "Choose an Agent…",
   chooseProject: "Choose a project…",
   noAgents: "No eligible Agents are available.",
@@ -57,6 +60,8 @@ const text = strings({
   gap: "",
   agent: "Agent",
   project: "项目",
+  agentKind: "Agent",
+  projectKind: "项目",
   chooseAgent: "选择一个 Agent…",
   chooseProject: "选择一个项目…",
   noAgents: "没有符合条件的 Agent。",
@@ -206,7 +211,7 @@ function SettingCard({ entry, navigation, active, onOpen }: {
     {unavailable ? <p className="settings-unavailable"><strong>{t.unavailable}</strong>{t.gap}{target.reason}</p> : <>
       {requiresObject && <label className="settings-object-choice">
         {target.kind === "agent" ? t.agent : t.project}
-        <select value={selected?.id ?? ""} onChange={(event) => setObjectId(event.target.value)} aria-label={`${entry.title} ${target.kind}`}>
+        <select value={selected?.id ?? ""} onChange={(event) => setObjectId(event.target.value)} aria-label={`${entry.title} ${target.kind === "agent" ? t.agentKind : t.projectKind}`}>
           <option value="">{target.kind === "agent" ? t.chooseAgent : t.chooseProject}</option>
           {/* Names are as their owners wrote them. */}
           {choices.map((item) => <option key={item.id} value={item.id} lang="">{item.name}</option>)}
