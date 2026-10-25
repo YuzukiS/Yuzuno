@@ -24,6 +24,7 @@ The order below is the usual shape; your project's instructions decide who may p
 ## CI
 
 - `ci_subscribe` with the PR or run URL and the exact head SHA sends one mail per completed run attempt. A newer head needs its own subscription.
+- An open SSH Agent subscribes for itself like a local Agent, under the same task, ownership and limit rules; Core reads GitHub and the results arrive in its mailbox, with nothing run on its machine (T-49 source; requires a Core with this change). A Core without it refuses an SSH Agent with "Choose an open local Agent": there a local Agent has to watch the run and pass the result on. Automatic delivery (`delivery_enable`) still needs a local task owner.
 - After a merge, watch the merge commit itself, with no need to wait for its run to appear.
   - Pass its commit URL (`https://github.com/{owner}/{repo}/commit/{sha}`), `expectedSha` set to that SHA, and the exact `branch` and `event` of the runs to watch. For a merge to main that is usually `main` and `push`; check the repository's workflows rather than guessing.
   - Until a run exists the watch shows `waiting_for_run` and reads less often: every 30 s for ten minutes, every two minutes until an hour, then every ten minutes. The Agent rail shows it as waiting for its first run, still monitored, with its last successful check; only a failed or overdue read turns that into Check CI.
