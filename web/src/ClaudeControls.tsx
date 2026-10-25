@@ -9,7 +9,7 @@ import { cardWords } from "./subagent-text";
 import { requestWords, shownError, type RequestWords } from "./request-text";
 import { callToward, formatUsage, turnSubAgents, type ClaudeSubAgentEntry, type ClaudeSubAgentRecord } from "./claude-subagents";
 import { Prose } from "./components";
-import { ConversationRows, useConversationDisclosure, useConversationTarget } from "./ConversationWindow";
+import { ConversationRows, useConversationDisclosure, useConversationReveal } from "./ConversationWindow";
 import { payloadLimits, useFullItem } from "./item-payload";
 import type { ClaudeRuntime, NativeItem, NativeTurn, PendingRequest } from "./types";
 import "./claude.css";
@@ -188,7 +188,7 @@ export function ClaudeTool({ item, unconfirmed, notice, opened, onOpenChange }: 
   const anchored = useContext(AnchorsContext);
   const t = useStrings(cardWords);
   const entry = scope?.entries.get(item.id);
-  const target = useConversationTarget(scope?.turnId ?? "");
+  const target = useConversationReveal(scope?.turnId ?? "");
   // A source link to one of its calls, or to a call of a sub-agent it
   // started, opens it.
   const revealing = !!entry && !!scope && !!callToward(scope.items, target?.itemId, item.id);
@@ -297,7 +297,7 @@ export function ClaudeSubAgentDetail({ agentId, entry, live, item, onNavigate }:
   const goal = record?.prompt || (typeof input.prompt === "string" ? input.prompt : "");
   const usage = formatUsage(record?.usage, language);
   const scope = useContext(SubAgentScopeContext);
-  const target = useConversationTarget(entry.turnId);
+  const target = useConversationReveal(entry.turnId);
   // Its call on the way to a source link's target, however deeply nested.
   const items = scope?.turnId === entry.turnId ? scope.items : new Map(entry.calls.map(call => [call.id, call]));
   const targetCall = callToward(items, target?.itemId, entry.key);
@@ -406,7 +406,7 @@ function PreviewCall({ agentId, turnId, item, unconfirmed }: CallProps) {
 function ToolCall({ agentId, turnId, item, unconfirmed }: CallProps) {
   const view = useFullItem(agentId, turnId, item);
   const [opened, setOpened] = useConversationDisclosure(`tool:${turnId}:${item.id}`, false);
-  const targeted = useConversationTarget(turnId)?.itemId === item.id;
+  const targeted = useConversationReveal(turnId)?.itemId === item.id;
   const t = useStrings(cardWords);
   useLayoutEffect(() => { if (targeted && !opened) setOpened(true); }, [targeted]);
   const notice = view.error ? <p className="claude-subagent-error" role="alert">{view.error}</p>
