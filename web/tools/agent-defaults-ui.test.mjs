@@ -227,3 +227,66 @@ test("an archived project's defaults are shown but can't be changed", async () =
   assert.equal(select(page, "Harness for new Agents").disabled, true);
   assert.equal(button(page, "Inherit all").disabled, true);
 });
+
+// A Core with model defaults (T-190): the Core host's Codex catalog, and a view that reports them.
+const catalog = [
+  { id: "m-small", model: "m-small", displayName: "Small", defaultReasoningEffort: "medium", supportedReasoningEfforts: [{ reasoningEffort: "low", description: "" }, { reasoningEffort: "medium", description: "" }] },
+  { id: "m-big", model: "m-big", displayName: "Big", supportedReasoningEfforts: [{ reasoningEffort: "high", description: "" }] },
+];
+const modelView = (saved) => {
+  const base = view(saved);
+  return {
+    ...base,
+    builtIn: { ...base.builtIn, codexModel: null, codexReasoningEffort: null },
+    effective: {
+      ...base.effective,
+      codexModel: { value: saved.codexModel ?? null, source: saved.codexModel ? "workspace" : "builtin" },
+      codexReasoningEffort: { value: saved.codexReasoningEffort ?? null, source: saved.codexReasoningEffort ? "workspace" : "builtin" },
+    },
+    modelAppliesTo: "Codex Agents created on the Core host. SSH machines, Claude Code and OpenCode keep their own model and effort.",
+  };
+};
+
+test("a default Codex model and effort come from the Core host's catalog, as a pair, and only to a Core that has them", async () => {
+  let saved = {};
+  const page = mount((url, method, body) => {
+    if (url.endsWith("/models")) return [200, { models: catalog }];
+    if (method === "POST") saved = Object.fromEntries(Object.entries({ ...saved, ...body }).filter(([, v]) => v !== null));
+    return [200, modelView(saved)];
+  });
+  page.window.renderDefaults();
+  await until(() => select(page, "Codex model for new Agents")?.options.length === 3, "the catalog's models");
+  const text = () => page.document.querySelector("#settings-agent-defaults")?.textContent ?? "";
+  assert.match(text(), /Built in: Codex’s own default/);
+  assert.match(text(), /SSH machines, Claude Code and OpenCode keep their own model and effort/);
+  assert.doesNotMatch(text(), /no Workspace default for them yet/);
+  const options = (label) => [...select(page, label).options].map((o) => o.textContent.trim());
+  assert.deepEqual(options("Codex model for new Agents"), ["Built in · Codex’s own default", "Small", "Big"]);
+  assert.equal(select(page, "Codex reasoning effort for new Agents").disabled, true, "no model, no effort to choose");
+  await choose(page, "Codex model for new Agents", "m-small");
+  assert.deepEqual(options("Codex reasoning effort for new Agents"), ["Model’s own · medium", "low", "medium"]);
+  await choose(page, "Codex reasoning effort for new Agents", "low");
+  button(page, "Save").click();
+  await until(() => posts(page).length === 1 && /Set for this Workspace: m-small, reasoning effort low/.test(text()), "the saved pair");
+  assert.deepEqual(posts(page)[0].body, { codexModel: "m-small", codexReasoningEffort: "low" });
+  // Another model that doesn't offer that effort: the effort goes with the model.
+  await choose(page, "Codex model for new Agents", "m-big");
+  assert.equal(select(page, "Codex reasoning effort for new Agents").value, "");
+  button(page, "Save").click();
+  await until(() => posts(page).length === 2 && /Set for this Workspace: m-big\./.test(text()), "the new model saved");
+  assert.deepEqual(posts(page)[1].body, { codexModel: "m-big", codexReasoningEffort: null });
+  button(page, "Use built-in for all").click();
+  await until(() => posts(page).length === 3, "everything built in");
+  assert.deepEqual(posts(page)[2].body, { harness: null, codexPermissionPreset: null, claudePermissionMode: null, codexModel: null, codexReasoningEffort: null });
+  assert.deepEqual(page.errors, []);
+});
+
+test("a default model the Core host no longer offers, or a catalog that can't be read, is said", async () => {
+  const stale = mount((url) => (url.endsWith("/models") ? [200, { models: catalog }] : [200, modelView({ codexModel: "gone" })]));
+  stale.window.renderDefaults();
+  await until(() => /gone is no longer offered/.test(stale.document.body.textContent), "the stale default said");
+  assert.ok([...select(stale, "Codex model for new Agents").options].some((o) => o.textContent.trim() === "gone (no longer offered)"));
+  const broken = mount((url) => (url.endsWith("/models") ? [500, { error: "Codex is not signed in" }] : [200, modelView({})]));
+  broken.window.renderDefaults();
+  await until(() => /Couldn’t read this Core host’s Codex models: .*Codex is not signed in/.test(broken.document.body.textContent), "the catalog failure said");
+});
