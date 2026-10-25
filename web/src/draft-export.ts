@@ -108,12 +108,14 @@ export function exportDrafts(
   const failed: DraftsFailure[] = [];
   const read = new DraftStorage(readOnly(storage));
   for (const row of rows) {
-    const now = savedDraftSummary(storage, row.agentId);
-    if (now.state === "none" || now.state === "damaged") {
-      failed.push({ agentId: row.agentId, name: row.name, reason: now.state === "none" ? "it is no longer saved here" : now.reason });
-      continue;
-    }
+    // Every read of this draft, its summary's included, is this draft's: a
+    // read the browser refuses names it as a failure, like any other.
     try {
+      const now = savedDraftSummary(storage, row.agentId);
+      if (now.state === "none" || now.state === "damaged") {
+        failed.push({ agentId: row.agentId, name: row.name, reason: now.state === "none" ? "it is no longer saved here" : now.reason });
+        continue;
+      }
       const draft = read.load(row.agentId);
       drafts.push({
         agentId: row.agentId,
