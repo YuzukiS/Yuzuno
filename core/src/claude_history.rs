@@ -431,6 +431,10 @@ pub(crate) struct Applied {
 /// the record holds by now is skipped, so applying twice adds nothing.
 /// `messages`: the saved messages by offset (`history_messages`).
 pub(crate) fn apply(d: &mut AgentDetail, plan: &Plan, entries: &[Entry], messages: &HashMap<usize, Value>, now: DateTime<Utc>) -> Applied {
+    // What Claude saved says nothing about what the Agent does now. Projecting
+    // a turn from outside shows it in progress for a moment, which reads as
+    // working; the Agent's own status is put back below (T-184).
+    let status = d.agent.status.clone();
     let mut applied = Applied::default();
     let by_offset: HashMap<usize, &Entry> = entries.iter().map(|e| (e.offset, e)).collect();
     let mut touched: Vec<String> = Vec::new();
@@ -541,6 +545,9 @@ pub(crate) fn apply(d: &mut AgentDetail, plan: &Plan, entries: &[Entry], message
             claude::settle_open_tools(t);
         }
     }
+    // As it was, but for what is still open: a Turn in progress, a request.
+    d.agent.status = status;
+    claude::refresh_status(d);
     applied.turns = touched;
     applied
 }
