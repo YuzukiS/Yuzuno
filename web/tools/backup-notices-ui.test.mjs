@@ -125,10 +125,12 @@ test("a failed daily backup is one notification, not repeated on a reconnect, an
       tag: "yuzuno:backupFailed:ws-synthetic:op-26",
     });
 
-    // A reconnect and another change notice read it again: the same run, not again.
+    // A reconnect, then another change notice, each read it again: the same run, not again.
+    // (Sent together, React would batch them into one read.)
     p.send({ type: "reset", reason: "open" });
+    await until(() => p.reads() >= before + 2, "read on the reconnect");
     p.send({ type: "workspace.changed", scope: "backup" });
-    await until(() => p.reads() >= before + 3, "read again");
+    await until(() => p.reads() >= before + 3, "read on the next notice");
     await pause(200);
     assert.equal(p.core.shown.length, 1, "once per run");
 
