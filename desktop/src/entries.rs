@@ -245,6 +245,24 @@ pub fn forgetting(remembered: &[Remembered], url: &Url) -> Option<Vec<Remembered
     Some(remembered.iter().filter(|known| known.url != *url).cloned().collect())
 }
 
+/// What to say when the Workspace that answered is not the one known for
+/// this address. It is here, and not written where it is shown, because the
+/// two cases say different true things and the difference is easy to lose:
+/// an address with an entry has a workspace saved under a name someone gave
+/// it, and an address that is only remembered has no entry and no name at
+/// all. Saying "saved under that name" about the second is false, and so is
+/// offering to remove a saved workspace that is not there.
+pub fn changed_refusal(named: &str, listed: bool) -> String {
+    if listed {
+        return format!(
+            "\u{201C}{named}\u{201D} answered as a different workspace than the one saved under that name, so it was not opened. Its conversations, drafts and reading places are that other workspace's. Give this workspace an address of its own: two workspaces at one address share what this app has stored for that address. Removing the saved workspace does not clear what is stored for that address, and this computer goes on remembering which workspace was there -- so removing it is not a way to open another one here."
+        );
+    }
+    format!(
+        "\u{201C}{named}\u{201D} answered as a different workspace than the one this computer remembers at that address, so it was not opened. No workspace is saved here for it, but what this app stored for that address is still there, and it is the remembered workspace's. Give this workspace an address of its own. To use this address for the one that just answered, forget the address first: that forgets only which workspace was there, and clears nothing that is stored for it."
+    )
+}
+
 /// A name for a Workspace nobody has named: its host and port, which is what
 /// was typed. A desktop Core is usually on loopback, where the port is what
 /// tells two of them apart, so the port belongs in the name.
@@ -824,6 +842,31 @@ mod tests {
         // The same address twice could disagree with itself.
         let twice = br#"{"version":1,"entries":[],"remembered":[{"url":"http://127.0.0.1:4317/","workspaceId":"w-one"},{"url":"http://127.0.0.1:4317/","workspaceId":"w-two"}]}"#;
         assert_eq!(read(twice), Saved::Unusable("it remembers one address twice".into()));
+    }
+
+    #[test]
+    fn the_refusal_does_not_claim_a_saved_workspace_that_is_only_remembered() {
+        // The listed case: there is an entry, under a name someone gave it.
+        let listed = changed_refusal("Home", true);
+        assert!(listed.contains("the one saved under that name"), "{listed}");
+        assert!(listed.contains("Removing the saved workspace does not clear"), "{listed}");
+
+        // The remembered-only case: no entry, so no name anyone gave it and
+        // no saved workspace to remove. Saying either would be false.
+        let remembered = changed_refusal("127.0.0.1:4319", false);
+        assert!(!remembered.contains("saved under that name"), "{remembered}");
+        assert!(!remembered.contains("Removing the saved workspace"), "{remembered}");
+        assert!(remembered.contains("this computer remembers at that address"), "{remembered}");
+        // It points at the step that actually applies, and says what that
+        // step does not do.
+        assert!(remembered.contains("forget the address first"), "{remembered}");
+        assert!(remembered.contains("clears nothing that is stored for it"), "{remembered}");
+
+        // Neither may offer removal or forgetting as a way to clear data.
+        for text in [listed, remembered] {
+            assert!(!text.contains("forgets its drafts"), "{text}");
+            assert!(!text.to_lowercase().contains("clear your data"), "{text}");
+        }
     }
 
     #[test]

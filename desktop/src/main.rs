@@ -623,11 +623,7 @@ async fn open_core(
     let known = saved.workspace_for(&core);
     let answered = match entries::opening(known, &workspace) {
         entries::Opening::Open(answered) => answered,
-        entries::Opening::Changed => {
-            return Err(format!(
-                "“{named}” answered as a different workspace than the one saved under that name, so it was not opened. Its conversations, drafts and reading places are that other workspace's. Give this workspace an address of its own: two workspaces at one address share what this app has stored for that address. Removing the saved workspace does not clear what is stored for that address, and this computer goes on remembering which workspace was there -- so removing it is not a way to open another one here."
-            ))
-        }
+        entries::Opening::Changed => return Err(entries::changed_refusal(&named, here.is_some())),
         entries::Opening::Unverified => {
             return Err(format!(
                 "“{named}” answered without saying which workspace it is, so this app could not check it is the one saved at that address and did not open it. Nothing of what is saved has been changed."
