@@ -204,6 +204,7 @@ test("off until turned on after a preview; then each newer revision another devi
 
   // A saves a new revision: B applies it when Core announces it.
   a.window.choose("yuzu");
+  await tick(); // as a person would: the section shows the choice before Replace is pressed
   a.press("Replace it with this device’s Appearance");
   await until(() => server.preset?.revision === 2, "A's second save");
   await until(() => b.palette() === "yuzu", "B follows revision 2");
