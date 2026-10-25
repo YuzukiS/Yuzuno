@@ -4,6 +4,8 @@
 // on, Tailscale Serve and the last verification are four separate facts: the
 // page never shows one for another.
 
+import { strings, type Language } from "./i18n";
+
 export type VerificationStep = {
   id: "host" | "tailscale" | "https" | "listener" | "hop" | "serve" | "endToEnd";
   state: "ok" | "failed" | "skipped";
@@ -82,23 +84,103 @@ export function running(operation: RemoteAccessOperation | null | undefined): bo
 }
 
 export const operationSteps: RemoteAccessOperation["step"][] = ["validate", "save", "listen", "serve", "verify"];
-export const operationStepLabels: Record<RemoteAccessOperation["step"], string> = {
-  validate: "Check the settings",
-  save: "Save them",
-  listen: "Core listens on the phone's port",
-  serve: "Tailscale Serve points to it",
-  verify: "Reach it from the tailnet",
-  done: "Done",
+
+// What these facts are called, in the interface language (T-189). What Core
+// says (a detail, a reason, an address, a login, a target) is shown as it
+// comes. Each helper is in English unless the page passes its language.
+const words = strings({
+  operationSteps: {
+    validate: "Check the settings",
+    save: "Save them",
+    listen: "Core listens on the phone's port",
+    serve: "Tailscale Serve points to it",
+    verify: "Reach it from the tailnet",
+    done: "Done",
+  } as Record<RemoteAccessOperation["step"], string>,
+  verificationSteps: {
+    host: "Core's host",
+    tailscale: "Tailscale on Windows",
+    https: "HTTPS certificates",
+    listener: "Core's phone port",
+    hop: "From Windows to Core",
+    serve: "Tailscale Serve",
+    endToEnd: "The whole way",
+  } as Record<VerificationStep["id"], string>,
+  badge: { on: "On", notVerified: "Not verified", notApplied: "Not applied", notChecked: "Not checked", incomplete: "Incomplete", off: "Off" },
+  savedLabel: "Saved settings",
+  nothingSaved: "Nothing saved",
+  savedOff: "Saved as off",
+  savedOn: (origin: string | null, login: string, applied: boolean) =>
+    `On · ${origin ?? "no address yet"} · ${login}${applied ? "" : " · not applied"}`,
+  listeningLabel: "Core listening",
+  listeningOn: (port: number, origin: string, environment: boolean) =>
+    `On, port ${port} for ${origin}${environment ? " · from Core's environment" : ""}`,
+  notListening: "Not listening for the phone",
+  serveLabel: "Tailscale Serve",
+  others: (n: number) => ` · ${n} other ${n === 1 ? "entry left as it is" : "entries left as they are"}`,
+  conflict: (port: string) => `Port ${port} is used by another Serve entry; Yuzuno leaves it as it is`,
+  notChecked: "Not checked yet",
+  absent: "No Yuzuno entry",
+  ours: (port: string, target: string | undefined) => `Yuzuno's entry on port ${port}${target ? ` → ${target}` : ""}`,
+  sameTarget: (port: string) => `An entry on port ${port} points to Core, but Settings did not make it`,
+  serveError: (detail: string | undefined) => `Could not be read${detail ? ` (${detail})` : ""}`,
+  verificationLabel: "Verification",
+  portTaken: (port: string) => `Not ready: port ${port} is taken; choose another Serve port under Advanced`,
+  notReady: (step: string, detail: string) => `Not ready: “${step}”${detail ? `: ${detail}` : ""}`,
+  readyNotSetUp: "Not set up; Core's host, Tailscale and HTTPS are ready",
+  notSetUp: "Not set up",
+  reached: "Reached from the tailnet",
+  failedAt: (step: string | null, detail: string) => `Failed at “${step ?? "a step"}”${detail ? `: ${detail}` : ""}`,
+}, {
+  operationSteps: {
+    validate: "检查设置",
+    save: "保存设置",
+    listen: "Core 在手机端口上监听",
+    serve: "Tailscale Serve 指向它",
+    verify: "从 tailnet 访问它",
+    done: "完成",
+  },
+  verificationSteps: {
+    host: "Core 的主机",
+    tailscale: "Windows 上的 Tailscale",
+    https: "HTTPS 证书",
+    listener: "Core 的手机端口",
+    hop: "从 Windows 到 Core",
+    serve: "Tailscale Serve",
+    endToEnd: "完整链路",
+  },
+  badge: { on: "开启", notVerified: "未验证", notApplied: "未应用", notChecked: "未检查", incomplete: "未完成", off: "关闭" },
+  savedLabel: "已保存的设置",
+  nothingSaved: "未保存任何设置",
+  savedOff: "已保存为关闭",
+  savedOn: (origin, login, applied) => `开启 · ${origin ?? "尚无地址"} · ${login}${applied ? "" : " · 未应用"}`,
+  listeningLabel: "Core 监听",
+  listeningOn: (port, origin, environment) => `开启，端口 ${port}，用于 ${origin}${environment ? " · 来自 Core 的环境变量" : ""}`,
+  notListening: "未为手机监听",
+  serveLabel: "Tailscale Serve",
+  others: (n) => ` · 另有 ${n} 个入口保持原样`,
+  conflict: (port) => `端口 ${port} 被另一个 Serve 入口占用；Yuzuno 保持它原样`,
+  notChecked: "尚未检查",
+  absent: "没有 Yuzuno 的入口",
+  ours: (port, target) => `Yuzuno 的入口，端口 ${port}${target ? ` → ${target}` : ""}`,
+  sameTarget: (port) => `端口 ${port} 上有一个指向 Core 的入口，但它不是由设置创建的`,
+  serveError: (detail) => `无法读取${detail ? `（${detail}）` : ""}`,
+  verificationLabel: "验证",
+  portTaken: (port) => `尚未就绪：端口 ${port} 已被占用；请在“高级”中选择另一个 Serve 端口`,
+  notReady: (step, detail) => `尚未就绪：“${step}”${detail ? `：${detail}` : ""}`,
+  readyNotSetUp: "尚未设置；Core 的主机、Tailscale 和 HTTPS 已就绪",
+  notSetUp: "尚未设置",
+  reached: "已从 tailnet 访问到",
+  failedAt: (step, detail) => `在“${step ?? "某一步"}”失败${detail ? `：${detail}` : ""}`,
+});
+
+/** What each step is called, in `language`; English unless a page passes one. */
+export const stepLabels = (language: Language = "en") => {
+  const w = words(language);
+  return { operation: w.operationSteps, verification: w.verificationSteps };
 };
-export const verificationStepLabels: Record<VerificationStep["id"], string> = {
-  host: "Core's host",
-  tailscale: "Tailscale on Windows",
-  https: "HTTPS certificates",
-  listener: "Core's phone port",
-  hop: "From Windows to Core",
-  serve: "Tailscale Serve",
-  endToEnd: "The whole way",
-};
+export const operationStepLabels = stepLabels().operation;
+export const verificationStepLabels = stepLabels().verification;
 
 /** One line per fact, as the page shows it; `tone` says how it reads. */
 export type StateLine = { label: string; text: string; tone: "on" | "off" | "warn" | "unknown" };
@@ -113,14 +195,17 @@ export function setUp(view: RemoteAccessView): boolean {
 const readiness: VerificationStep["id"][] = ["host", "tailscale", "https", "serve"];
 
 /** What the badge beside the title says, from the view alone. */
-export function badge(view: RemoteAccessView): string {
-  if (view.url) return view.verification && !view.verification.ok ? "Not verified" : "On";
-  if (view.saved?.enabled && !view.saved.applied && !view.listening) return "Not applied";
-  if (view.listening && view.serve.state === "unchecked") return "Not checked";
-  return view.saved?.enabled || view.listening || view.serve.state === "ours" ? "Incomplete" : "Off";
+export function badge(view: RemoteAccessView, language: Language = "en"): string {
+  const b = words(language).badge;
+  if (view.url) return view.verification && !view.verification.ok ? b.notVerified : b.on;
+  if (view.saved?.enabled && !view.saved.applied && !view.listening) return b.notApplied;
+  if (view.listening && view.serve.state === "unchecked") return b.notChecked;
+  return view.saved?.enabled || view.listening || view.serve.state === "ours" ? b.incomplete : b.off;
 }
 
-export function stateLines(view: RemoteAccessView): StateLine[] {
+export function stateLines(view: RemoteAccessView, language: Language = "en"): StateLine[] {
+  const w = words(language);
+  const named = (id: VerificationStep["id"]) => w.verificationSteps[id] ?? id;
   const { saved, listening, serve, verification } = view;
   const failed = verification?.steps.find((step) => step.state === "failed");
   // Before anything is set up, Core's phone port, the hop and the whole way
@@ -131,66 +216,58 @@ export function stateLines(view: RemoteAccessView): StateLine[] {
     verification?.steps.some((step) => step.id === id && step.state === "ok"),
   );
   const notYet = !!verification && !verification.ok && !setUp(view);
-  const others =
-    serve.otherEntries > 0
-      ? ` · ${serve.otherEntries} other ${serve.otherEntries === 1 ? "entry left as it is" : "entries left as they are"}`
-      : "";
+  const others = serve.otherEntries > 0 ? w.others(serve.otherEntries) : "";
+  const port = String(serve.port ?? "?");
   return [
     {
-      label: "Saved settings",
-      text: !saved
-        ? "Nothing saved"
-        : !saved.enabled
-          ? "Saved as off"
-          : `On · ${saved.origin ?? "no address yet"} · ${saved.login}${saved.applied ? "" : " · not applied"}`,
+      label: w.savedLabel,
+      text: !saved ? w.nothingSaved : !saved.enabled ? w.savedOff : w.savedOn(saved.origin, saved.login, saved.applied),
       tone: !saved || !saved.enabled ? "off" : saved.applied ? "on" : "warn",
     },
     {
-      label: "Core listening",
-      text: listening
-        ? `On, port ${listening.port} for ${listening.origin}${listening.source === "environment" ? " · from Core's environment" : ""}`
-        : "Not listening for the phone",
+      label: w.listeningLabel,
+      text: listening ? w.listeningOn(listening.port, listening.origin, listening.source === "environment") : w.notListening,
       tone: listening ? "on" : "off",
     },
     {
-      label: "Tailscale Serve",
+      label: w.serveLabel,
       // For a conflict Core's detail is the whole sentence, with where the
       // other entry sends requests; for an error it is the reason. For
       // Yuzuno's own entry it would repeat the line.
       text:
         serve.state === "conflict"
-          ? serve.detail ?? `Port ${serve.port ?? "?"} is used by another Serve entry; Yuzuno leaves it as it is`
+          ? serve.detail ?? w.conflict(port)
           : {
-              unchecked: "Not checked yet",
-              absent: "No Yuzuno entry",
-              ours: `Yuzuno's entry on port ${serve.port ?? "?"}${serve.target ? ` → ${serve.target}` : ""}`,
-              sameTargetNotRecorded: `An entry on port ${serve.port ?? "?"} points to Core, but Settings did not make it`,
-              error: `Could not be read${serve.detail ? ` (${serve.detail})` : ""}`,
+              unchecked: w.notChecked,
+              absent: w.absent,
+              ours: w.ours(port, serve.target),
+              sameTargetNotRecorded: w.sameTarget(port),
+              error: w.serveError(serve.detail),
             }[serve.state] + others,
       tone:
         serve.state === "ours" ? "on" : serve.state === "absent" ? "off" : serve.state === "unchecked" ? "unknown" : "warn",
     },
     notYet
       ? {
-          label: "Verification",
+          label: w.verificationLabel,
           // A Serve port taken by another entry is said on the Serve line;
           // here, what to do about it.
           text: unready?.id === "serve" && serve.state === "conflict"
-            ? `Not ready: port ${serve.port ?? "?"} is taken; choose another Serve port under Advanced`
+            ? w.portTaken(port)
             : unready
-              ? `Not ready: “${verificationStepLabels[unready.id] ?? unready.id}”${unready.detail ? `: ${unready.detail}` : ""}`
+              ? w.notReady(named(unready.id), unready.detail)
               : ready
-                ? "Not set up; Core's host, Tailscale and HTTPS are ready"
-                : "Not set up",
+                ? w.readyNotSetUp
+                : w.notSetUp,
           tone: unready ? "warn" : "off",
         }
       : {
-          label: "Verification",
+          label: w.verificationLabel,
           text: !verification
-            ? "Not checked yet"
+            ? w.notChecked
             : verification.ok
-              ? "Reached from the tailnet"
-              : `Failed at “${failed ? verificationStepLabels[failed.id] ?? failed.id : "a step"}”${failed?.detail ? `: ${failed.detail}` : ""}`,
+              ? w.reached
+              : w.failedAt(failed ? named(failed.id) : null, failed?.detail ?? ""),
           tone: !verification ? "unknown" : verification.ok ? "on" : "warn",
         },
   ];
