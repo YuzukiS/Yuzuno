@@ -212,8 +212,14 @@ export function BatchReconnect({
           <button
             type="button"
             className="secondary-button"
-            disabled={!offered.length}
-            onClick={() => choose(workspaceId, offered.map((agent) => agent.id), readyOffered.length < offered.length)}
+            disabled={!offered.length && !ready.length}
+            // Select all chooses what it offers; Clear unchooses every row,
+            // one the user ticked themselves too (T-184).
+            onClick={() =>
+              readyOffered.length < offered.length
+                ? choose(workspaceId, offered.map((agent) => agent.id), true)
+                : choose(workspaceId, ready.map((agent) => agent.id), false)
+            }
           >
             {readyOffered.length < offered.length ? "Select all" : "Clear"}
           </button>
