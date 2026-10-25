@@ -89,6 +89,7 @@ import type {
 } from "./types";
 import type { SettingsDestination, SettingsEditor } from "./settings-catalog";
 import { UpdateBanner, WorkspaceUpdatesHost } from "./WorkspaceUpdates";
+import { useAppearanceFollow } from "./appearance-follow";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
@@ -276,6 +277,8 @@ export function App() {
   const [jobsRevision, jobsRefresh] = useRefreshTrigger();
   // Only for the Home tab's count of open Asks while Home is closed.
   const [asksRevision, asksRefresh] = useRefreshTrigger();
+  // The shared Appearance preset, for a device that follows it (T-194).
+  const [presetRevision, presetRefresh] = useRefreshTrigger();
   const [loading, setLoading] = useState(!previewMode);
   const [createOpen, setCreateOpen] = useState(false);
   // A project chosen by a group's "+": its id, "" for none, null to follow
@@ -552,17 +555,19 @@ export function App() {
           else if (event.scope === "projects" || event.scope === "runtime")
             workspaceRefresh.soon(250);
           else if (event.scope === "backup") setBackupRevision((n) => n + 1);
+          else if (event.scope === "appearance-preset") presetRefresh.now();
           else refresh();
           return;
         case "reset":
           jobsRefresh.now();
+          presetRefresh.now();
           refresh();
           // Not each poll while the stream is down: a reconnect resets anew.
           if (event.reason !== "poll") setBackupRevision((n) => n + 1);
           return;
       }
     },
-    [workspaceRefresh, homeRefresh, asksRefresh, boardRefresh, machinesRefresh, jobsRefresh, live.sync, refresh],
+    [workspaceRefresh, homeRefresh, asksRefresh, boardRefresh, machinesRefresh, jobsRefresh, presetRefresh, live.sync, refresh],
   );
   const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent);
   useEffect(() => {
@@ -630,6 +635,8 @@ export function App() {
   }, [phone, listShown, inspectorShown]);
   const projects = workspace?.projects || [];
   const workspaceId = workspace?.workspace?.id || "";
+  // Read when Core announces a save, the events reset or reconnect; never polled.
+  useAppearanceFollow(previewMode ? "" : workspaceId, eventConnection, presetRevision);
   const readingPositions = useMemo(
     () => (workspaceId && !previewMode ? localReadingPositions(workspaceId) : null),
     [workspaceId],

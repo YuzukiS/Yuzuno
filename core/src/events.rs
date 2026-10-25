@@ -35,7 +35,8 @@
 //!   applied (and already sent as the messages above); `agent` is its listed
 //!   entry (rail) now, without `projectId`. At most every 250 ms per Agent.
 //! - `workspace.changed` `{scope, <scope>: true}`: `collaboration`,
-//!   `projects`, `machines` or `runtime`.
+//!   `projects`, `machines` or `runtime`; `{scope: "appearance-preset"}` when
+//!   the Workspace's shared Appearance preset was saved (appearance_preset.rs).
 //! - `reset` `{refresh: true, reason}` and `resumed` `{from}`, as above.
 //!
 //! `rev` is the Agent record's revision once that change is applied (see

@@ -3,7 +3,9 @@
 //! preview and apply on their own device. Core keeps it and never applies it
 //! anywhere; it is not preference sync. A save names the Workspace and the
 //! revision it read, and is refused when either is no longer this one's, so
-//! no client overwrites a newer preset it has not seen.
+//! no client overwrites a newer preset it has not seen. A kept save is
+//! announced on the live events (`workspace.changed`, scope
+//! `appearance-preset`); a refused one is not.
 //!
 //! Core checks the shape: the Appearance names a client may keep (as
 //! appearance-file.ts lists them), each a short lowercase word or a small
@@ -161,6 +163,10 @@ async fn save_preset(
     validate(&save.appearance)?;
     let via = if remote.is_some() { "remote" } else { "local" };
     let (id, saved) = ws.stored(move |s| Ok((s.workspace_id()?, s.save_appearance_preset(&save, via)?))).await?;
+    if saved.is_ok() {
+        // Its clients read it again; a device that follows it applies it.
+        ws.changes.send(json!({"type":"workspace.changed","scope":"appearance-preset"}));
+    }
     Ok(match saved {
         Ok(preset) => Json(view(id, Some(preset))).into_response(),
         Err(Refused::OtherWorkspace) => (StatusCode::CONFLICT, Json(json!({
@@ -245,6 +251,7 @@ mod tests {
         assert!(!id.is_empty());
         assert_eq!(none["preset"], Value::Null, "nothing until a first save");
 
+        let mut events = ws.changes.subscribe(None);
         // Client A saves from "no preset".
         let (status, first) = call(&ws, "PUT", Some(save(&id, 0, appearance())), false).await;
         assert_eq!(status, StatusCode::OK, "{first}");
@@ -253,9 +260,14 @@ mod tests {
         assert_eq!(first["preset"]["savedVia"], "local");
         assert_eq!(first["preset"]["appearance"], appearance());
 
+        let announced = events.try_next().expect("a kept save is announced");
+        assert_eq!(serde_json::from_str::<Value>(&announced.data).unwrap(), json!({"type":"workspace.changed","scope":"appearance-preset"}));
+        assert!(events.try_next().is_none(), "once");
+
         // Client B, which also read "no preset", is refused and told what is there now.
         let (status, refused) = call(&ws, "PUT", Some(save(&id, 0, json!({"theme":"light"}))), true).await;
         assert_eq!(status, StatusCode::CONFLICT);
+        assert!(events.try_next().is_none(), "a refused save is not announced");
         assert_eq!(refused["code"], "preset_changed");
         assert_eq!(refused["preset"]["revision"], 1);
         assert_eq!(call(&ws, "GET", None, false).await.1["preset"], first["preset"], "A's preset stands");
