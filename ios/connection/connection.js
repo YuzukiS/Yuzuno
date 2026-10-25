@@ -167,9 +167,28 @@ async function connect() {
       profile: editing?.id ?? null,
       name: nameField.value || null,
     });
-    if (result.identity === 'changed') {
-      show('This is not the workspace saved under that name.', true);
-      askAboutIdentity(result);
+    // Anything the app did not open stops here. Keyed on 'changed' alone, a
+    // refusal it did not recognise fell through to the navigation below --
+    // so the test is what the app said it did, not which reason it gave.
+    if (result.opened === false) {
+      if (result.identity === 'changed') {
+        show('This is not the workspace saved under that name.', true);
+        askAboutIdentity(result);
+      } else if (result.identity === 'unverified') {
+        show(
+          `${result.profileName} did not say which workspace it is, so this iPhone could not check it is the one ` +
+            'saved at that address. Nothing was opened and nothing saved here has changed.',
+          true,
+        );
+      } else if (result.identity === 'unkeepable') {
+        show(
+          `${result.profileName} named a workspace identifier longer than this iPhone keeps, so nothing was ` +
+            'opened and nothing was written. What is saved is as it was.',
+          true,
+        );
+      } else {
+        show('This iPhone did not open that workspace, and nothing saved here has changed.', true);
+      }
       busy(false);
       return;
     }
