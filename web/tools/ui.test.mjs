@@ -2404,6 +2404,80 @@ test("a message link in a reply or pasted into agent search opens here, not as a
   } finally { page.close(); }
 });
 
+// Requests that would change something: a shared reading position is the
+// one write leaving a conversation makes (T-170), and not one of them.
+const changes = (page) => page.calls.filter((c) => (c.init.method || "GET") !== "GET" && !c.url.endsWith("/reading")).map((c) => `${c.init.method} ${c.url}`);
+const linkDraft = (text) => JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text }] });
+
+test("an Agent link is copied from its menu and opens that Agent only, changing nothing; another Workspace or a removed Agent is said (T-184)", async () => {
+  const page = await mount({
+    workspaceIdentity: "ws-1",
+    otherAgentFields: { threadId: "thread-b" },
+    stored: { "yuzuno.selected": JSON.stringify("a"), "yuzuno.composer.v1:a": linkDraft("draft for Mori"), "yuzuno.composer.v1:b": linkDraft("draft for Hana") },
+  });
+  try {
+    const shown = () => page.document.querySelector(".agent-row.selected")?.dataset.agentId;
+    const toast = () => page.document.querySelector(".toast")?.textContent || "";
+    const alert = () => page.document.querySelector(".toast-error")?.textContent || "";
+    await until(() => shown() === "a", "Mori is open");
+    page.document.querySelector('[aria-label="Actions for Hana"]').click();
+    await pause();
+    page.document.querySelector('[role="menuitem"][data-action="copyLink"]').click();
+    await until(() => page.copied.length, "the link is copied");
+    assert.equal(page.copied[0], "http://127.0.0.1:4317/#/agent?w=ws-1&a=b");
+    await until(() => /Link to Hana copied/.test(toast()), "copying is confirmed");
+    assert.equal(shown(), "a", "copying opened nothing");
+    // Opening it selects Hana, as the list does, and leaves the address.
+    page.window.location.hash = "#/agent?w=ws-1&a=b";
+    await until(() => shown() === "b", "the linked Agent is open");
+    assert.equal(page.window.location.hash, "", "a reload does not open the link again");
+    // Another Workspace, or an Agent no longer here: Hana stays open.
+    page.window.location.hash = "#/agent?w=ws-2&a=a";
+    await until(() => /an Agent in another Workspace/.test(toast()), "another Workspace is refused");
+    page.window.location.hash = "#/agent?w=ws-1&a=gone";
+    await until(() => /no longer in this Workspace/.test(toast()), "a removed Agent is explained");
+    assert.equal(shown(), "b", "nothing else was opened instead");
+    // Pasted into agent search.
+    page.document.querySelector('button[aria-label="Search agents"]').click();
+    await pause();
+    typeInto(page, page.document.querySelector('input[aria-label="Search agents"]'), " http://localhost:9/#/agent?w=ws-1&a=a ");
+    await pause();
+    assert.equal(button(page, "Open linked message"), undefined);
+    button(page, "Open linked agent").click();
+    await until(() => shown() === "a", "the pasted link opens Mori");
+    // A browser that refuses the clipboard is said, with the link to copy by hand.
+    page.window.navigator.clipboard = { writeText: async () => { throw new page.window.Error("denied"); } };
+    page.document.querySelector('[aria-label="Conversation actions"]').click();
+    await pause();
+    page.document.querySelector('[role="menuitem"][data-action="copyLink"]').click();
+    await until(() => /Couldn’t copy the link to Mori/.test(alert()), "a refused copy is said");
+    assert.match(alert(), /The link is http:\/\/127\.0\.0\.1:4317\/#\/agent\?w=ws-1&a=a$/);
+    assert.equal(page.copied.length, 1);
+    assert.equal(savedDraftText(page.window.localStorage, "a"), "draft for Mori");
+    assert.equal(savedDraftText(page.window.localStorage, "b"), "draft for Hana");
+    assert.deepEqual(changes(page), [], "nothing was sent, reconnected or changed");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("an Agent link in the address opens a closed Agent's conversation and says nothing was reopened (T-184)", async () => {
+  const page = await mount({
+    url: "http://127.0.0.1:4317/#/agent?w=ws-1&a=b",
+    workspaceIdentity: "ws-1",
+    otherAgentFields: { threadId: "thread-b", status: "offline", connectionState: "disconnected", closedAt: "2026-10-25T00:00:00Z" },
+    stored: { "yuzuno.selected": JSON.stringify("a"), "yuzuno.composer.v1:a": linkDraft("draft for Mori") },
+  });
+  try {
+    const toast = () => page.document.querySelector(".toast")?.textContent || "";
+    await until(() => page.document.querySelector(".agent-row.selected")?.dataset.agentId === "b", "the closed Agent is open");
+    await until(() => /Hana is closed\. Its conversation is shown as it was left; nothing was reopened/.test(toast()), "its state is said");
+    assert.equal(page.window.location.hash, "");
+    assert.equal(savedDraftText(page.window.localStorage, "a"), "draft for Mori");
+    assert.deepEqual(changes(page), [], "nothing was reopened, reconnected or sent");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("a conversation reopens where it was left, and one left at the latest stays there (T-166)", async () => {
   const requests = [];
   const saved = (position) => JSON.stringify({ a: { savedAt: 1, ...position } });

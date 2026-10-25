@@ -93,7 +93,7 @@ import { useAppearanceFollow } from "./appearance-follow";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
-import { MessageLinks, messageLinkHref, parseMessageLink, type MessageLink, type MessageLinkApi } from "./deep-link";
+import { MessageLinks, agentLinkHref, messageLinkHref, parseAppLink, type AgentLink, type AppLink, type MessageLink, type MessageLinkApi } from "./deep-link";
 import { localReadingPositions, readingAnchor, type ReadingPosition } from "./reading-position";
 import { ageText, markOfferHandled, offerable, restoredOffset, type Handoff } from "./reading-handoff";
 import { publishReading, readHandoff } from "./reading-handoff-api";
@@ -407,7 +407,7 @@ export function App() {
   const [sourceJump, setSourceJump] = useState(false);
   const [sourceNotice, setSourceNotice] = useState("");
   // A message link waiting for the Workspace to load.
-  const [incomingLink, setIncomingLink] = useState<MessageLink | null>(null);
+  const [incomingLink, setIncomingLink] = useState<AppLink | null>(null);
   // Where the shown conversation was last being read, kept when it is left.
   const reading = useRef<{ agentId: string; position: ReadingPosition } | null>(null);
   const readingFrame = useRef(0);
@@ -970,12 +970,12 @@ export function App() {
     setArtifact(null);
   }, [selected]);
   useEffect(() => { pruneResultViewCache(); }, []);
-  // A message link in the address (T-166): read once, then removed, so a
-  // reload returns to where the user is reading rather than to the link.
+  // A message or Agent link in the address (T-166, T-184): read once, then
+  // removed, so a reload returns to where the user is reading, not the link.
   useEffect(() => {
     if (previewMode) return;
     const take = () => {
-      const link = parseMessageLink(window.location.href);
+      const link = parseAppLink(window.location.href);
       if (!link) return;
       history.replaceState(history.state, "", window.location.pathname + window.location.search);
       setIncomingLink(link);
@@ -988,7 +988,7 @@ export function App() {
     if (!incomingLink || !workspace) return;
     setIncomingLink(null);
     initialReading.current = true;
-    openMessageLink(incomingLink);
+    openAppLink(incomingLink);
   }, [incomingLink, workspace]);
   // Another browser's place in the open conversation (T-170): offered, never
   // applied by itself. Read when it opens or the page shows again; an answer
@@ -1329,6 +1329,18 @@ export function App() {
     if (shownConversation.current === id) setActionError(errorText(error));
     else setMenuError(`Couldn’t ${what} ${agentName(id)}: ${errorText(error)}`);
   };
+  // Links are offered on an http(s) page only, as message links are (T-166).
+  const linkBase = /^https?:$/.test(window.location.protocol) ? `${window.location.origin}${window.location.pathname}` : "";
+  /** Copies the link to an Agent (T-184), saying whether it was copied. */
+  const copyAgentLink = (id: string) => {
+    const href = agentLinkHref(linkBase, { workspaceId, agentId: id });
+    Promise.resolve()
+      .then(() => navigator.clipboard.writeText(href))
+      .then(
+        () => setNotice(`Link to ${agentName(id)} copied.`),
+        () => setMenuError(`Couldn’t copy the link to ${agentName(id)}: this browser didn’t allow it. The link is ${href}`),
+      );
+  };
   // Shown already (its own header's menu): nothing to navigate.
   const showAgent = (id: string) => {
     if (id !== selected || homeOpen || (phone && phoneList)) openFromList(id);
@@ -1361,6 +1373,7 @@ export function App() {
       setEndMissingFor(id);
     },
     disconnect: (id) => setDisconnectFor(id),
+    copyLink: linkBase && workspaceId && !previewMode ? copyAgentLink : undefined,
   };
   useEffect(() => {
     if (!settingsFor || settingsFor !== selected) return;
@@ -1481,7 +1494,7 @@ export function App() {
    * or Task it shows is left as it is.
    */
   function openMessageLink(link: MessageLink) {
-    if (!workspace) { setIncomingLink(link); return; }
+    if (!workspace) { setIncomingLink({ kind: "message", ...link }); return; }
     if (link.workspaceId !== workspaceId) {
       setNotice("This link is to a message in another Workspace. Open it in the Yuzuno that holds that Workspace.");
       return;
@@ -1497,9 +1510,32 @@ export function App() {
       homeOpen ? "home" : "rail", false, { link },
     );
   }
+  /**
+   * Opens the Agent a link names (T-184): it is selected, as a click in the
+   * list selects it, and only that. Nothing is reconnected, sent, created or
+   * changed, and the draft stays. Another Workspace or a missing Agent is
+   * said, and nothing else is selected instead.
+   */
+  function openAgentLink(link: AgentLink) {
+    if (!workspace) { setIncomingLink({ kind: "agent", ...link }); return; }
+    if (link.workspaceId !== workspaceId) {
+      setNotice("This link is to an Agent in another Workspace. Open it in the Yuzuno that holds that Workspace.");
+      return;
+    }
+    const owner = workspace.agents.find((a) => a.id === link.agentId);
+    if (!owner) {
+      setNotice("The Agent this link points to is no longer in this Workspace.");
+      return;
+    }
+    openFromList(owner.id);
+    if (owner.closedAt) setNotice(`${owner.name} is closed. Its conversation is shown as it was left; nothing was reopened.`);
+  }
+  function openAppLink(link: AppLink) {
+    if (link.kind === "agent") openAgentLink(link);
+    else openMessageLink(link);
+  }
   const openLink = useRef(openMessageLink);
   openLink.current = openMessageLink;
-  const linkBase = /^https?:$/.test(window.location.protocol) ? `${window.location.origin}${window.location.pathname}` : "";
   const messageLinks = useMemo<MessageLinkApi>(() => ({
     href: (owner, turnId, itemId) => linkBase && workspaceId && !previewMode
       ? messageLinkHref(linkBase, { workspaceId, agentId: owner.id, turnId, itemId, threadId: owner.threadId })
@@ -1527,12 +1563,12 @@ export function App() {
       if (position) reading.current = { agentId: shown, position };
     });
   }
-  const searchLink = searchOpen ? parseMessageLink(search) : null;
+  const searchLink = searchOpen ? parseAppLink(search) : null;
   function openSearchLink() {
     if (!searchLink) return;
     setSearchOpen(false);
     setSearch("");
-    openMessageLink(searchLink);
+    openAppLink(searchLink);
   }
   // From a dock or a sub-agent's card, which on a phone is a panel over the
   // conversation (PhoneDocks.tsx): the panel closes on the Turn it goes to.
@@ -2205,7 +2241,7 @@ export function App() {
               <Search size={13} />
               <input
                 autoFocus
-                placeholder="Find an agent or paste a message link…"
+                placeholder="Find an agent or paste a link…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={(e) => {
@@ -2231,7 +2267,7 @@ export function App() {
           {searchLink && (
             <button className="quiet-button open-message-link" onClick={openSearchLink}>
               <Link2 size={13} />
-              Open linked message
+              {searchLink.kind === "agent" ? "Open linked agent" : "Open linked message"}
             </button>
           )}
         </div>
