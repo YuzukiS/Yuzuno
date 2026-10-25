@@ -9,7 +9,7 @@
  */
 import type { z } from "zod";
 import { API_BASE } from "../../api";
-import { clockFormatter, type ClockFormat } from "../../time-preferences";
+import { timeFormatter, type TimeDisplay } from "../../time-preferences";
 import type { briefComponentProps, BriefComponent } from "../../intelligent-ui/brief-contract.ts";
 
 type Props<K extends BriefComponent> = z.infer<(typeof briefComponentProps)[K]>;
@@ -134,10 +134,10 @@ export function metricDelta(
   return { sign, text: sign === 0 ? "±0" : `${sign > 0 ? "+" : "−"}${magnitude}` };
 }
 
-const when = clockFormatter({ dateStyle: "medium", timeStyle: "short" });
-/** A Core timestamp for display, with this device's clock format; an
- * unreadable one is shown as written. */
-export function formatTime(iso: string, clock: ClockFormat): string {
+const when = timeFormatter({ dateStyle: "medium", timeStyle: "short" });
+/** A Core timestamp for display, with this device's clock format and time
+ * zone; an unreadable one is shown as written. */
+export function formatTime(iso: string, time: TimeDisplay): string {
   const at = Date.parse(iso);
-  return Number.isFinite(at) ? when(clock).format(new Date(at)) : iso;
+  return Number.isFinite(at) ? when(time).format(new Date(at)) : iso;
 }

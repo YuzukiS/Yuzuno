@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useClockFormat } from "../../time-preferences";
+import { useTimeDisplay } from "../../time-preferences";
 import {
   Bar,
   BarChart,
@@ -326,7 +326,7 @@ function DataTable({ kind, props, series }: { kind: Kind; props: ChartProps; ser
 }
 
 function BriefChart({ kind, props }: { kind: Kind; props: Placed }) {
-  const clock = useClockFormat();
+  const time = useTimeDisplay();
   const { section } = useBrief();
   const { series, data, error, loading } = useSeries(props, props.elementKey);
   // The legend comes from the chart's own declaration, so its height is
@@ -379,7 +379,7 @@ function BriefChart({ kind, props }: { kind: Kind; props: Placed }) {
           {props.data && (
             <>
               Data: {props.data.attachment}
-              {attachment?.takenAt && <> · snapshot {formatTime(attachment.takenAt, clock)}</>}
+              {attachment?.takenAt && <> · snapshot {formatTime(attachment.takenAt, time)}</>}
             </>
           )}
         </span>
