@@ -85,7 +85,10 @@ const keyGroups: [DeviceGroupId, string[]][] = [
     "yuzuno.composer.v1:", "yuzuno.paste.v1:", "yuzuno.drafts", "yuzuno.home-card-drafts.v1",
     "yuzuno.request-drafts.v1:", "yuzuno.question-draft.v1:", "yuzuno.job-submission.v1:", "yuzuno.clarification.v1:",
   ]],
-  ["pending", ["yuzuno.update-intent", "yuzuno.codexForkRequests", "yuzuno.taskProposal."]],
+  ["pending", [
+    "yuzuno.update-intent", "yuzuno.update-intent:", "yuzuno.codexForkRequests", "yuzuno.taskProposal.",
+    "yuzuno.remoteAccess.pending", "yuzuno.remoteAccess.pending:",
+  ]],
   ["preferences", [
     "yuzuno.appearance", "yuzuno.preferences", "yuzuno.panel-widths", "yuzuno.projectScope.",
     "yuzuno.projectGroupsFolded.", "yuzuno.homeWidgets", "yuzuno.homeWidgets.", "yuzuno.home-panel.v1:", "yuzuno.home-cards.v1:",

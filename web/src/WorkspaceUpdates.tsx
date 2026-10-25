@@ -133,30 +133,37 @@ export function useWorkspaceUpdates(enabled: boolean, open: boolean) {
   return { status, statusAt: read?.at ?? 0, connectionError, refresh, needsReload };
 }
 
-/** The release chosen with one click, shared with other windows. */
-function useUpdateIntent() {
-  const [intent, setIntent] = useState<UpdateIntent | null>(savedUpdateIntent);
+/** The release chosen with one click in this Workspace, shared with its
+ * other windows (T-195). `keep` saves a choice in the Workspace it was made
+ * in, which a step that finishes after this window moved to another
+ * Workspace still names; the window shows only its current Workspace's. */
+function useUpdateIntent(workspace: string) {
+  const [read, setRead] = useState(() => ({ workspace, intent: savedUpdateIntent(workspace) }));
+  const current = useRef(workspace);
+  current.current = workspace;
   useEffect(() => {
+    setRead({ workspace, intent: savedUpdateIntent(workspace) });
     const changed = (event: StorageEvent) => {
-      if (event.key === updateIntentKey || event.key === null)
-        setIntent(savedUpdateIntent());
+      if (event.key === updateIntentKey(workspace) || event.key === null)
+        setRead({ workspace, intent: savedUpdateIntent(workspace) });
     };
     window.addEventListener("storage", changed);
     return () => window.removeEventListener("storage", changed);
+  }, [workspace]);
+  const keep = useCallback((owner: string, next: UpdateIntent | null) => {
+    saveUpdateIntent(owner, next);
+    if (owner === current.current) setRead({ workspace: owner, intent: next });
   }, []);
-  const keep = useCallback((next: UpdateIntent | null) => {
-    saveUpdateIntent(next);
-    setIntent(next);
-  }, []);
-  return [intent, keep] as const;
+  return [read.workspace === workspace ? read.intent : null, keep, current] as const;
 }
 
-/** Only one window posts the next step; the others see it in the shared
- * choice. Without Web Locks (an insecure origin) this window acts alone. */
-async function exclusive(work: () => Promise<void>) {
+/** Only one window posts the next step for a Workspace; the others see it in
+ * the shared choice. Without Web Locks (an insecure origin) this window acts
+ * alone. */
+async function exclusive(workspace: string, work: () => Promise<void>) {
   const locks = (navigator as Navigator & { locks?: LockManager }).locks;
   if (!locks?.request) return work();
-  await locks.request("yuzuno.update-chain", { ifAvailable: true }, async (lock) => {
+  await locks.request(`yuzuno.update-chain:${workspace}`, { ifAvailable: true }, async (lock) => {
     if (lock) await work();
   });
 }
@@ -184,7 +191,7 @@ function thisTab() {
  * with the always-mounted host, so closing Settings does not stop it. */
 function useUpdateChain(
   updates: ReturnType<typeof useWorkspaceUpdates>,
-  [intent, keep]: ReturnType<typeof useUpdateIntent>,
+  [intent, keep, workspace]: ReturnType<typeof useUpdateIntent>,
   preserveDrafts: () => void,
 ) {
   const { status, statusAt, refresh } = updates;
@@ -197,19 +204,21 @@ function useUpdateChain(
   const [posting, setPosting] = useState(false);
   const [stopped, setStopped] = useState<{ version: string; reason: UpdateStop } | null>(null);
   const advance = useCallback(async () => {
-    if (acting.current || !status) return;
+    // Each step is one Workspace's: the one this window is in when it starts.
+    const ws = workspace.current;
+    if (acting.current || !status || !ws) return;
     acting.current = true;
     let posted = false;
     try {
-      await exclusive(async () => {
+      await exclusive(ws, async () => {
         // The shared record, which another window may have moved on.
-        const chosen = savedUpdateIntent();
-        if (!chosen) return keep(null);
+        const chosen = savedUpdateIntent(ws);
+        if (!chosen) return keep(ws, null);
         const chain = updateChain(status, chosen, updateStatusFresh(chosen, statusAt));
         if ("watch" in chain) return;
         if (!("next" in chain)) {
-          keep(null);
-          if ("stop" in chain && chain.stop && !chain.shown)
+          keep(ws, null);
+          if ("stop" in chain && chain.stop && !chain.shown && workspace.current === ws)
             setStopped({ version: chosen.version, reason: chain.stop });
           return;
         }
@@ -217,8 +226,8 @@ function useUpdateChain(
         // Another window chose this release; it saves its drafts and applies.
         if (step === "apply" && chosen.owner && chosen.owner !== tab) return;
         const stop = (reason: UpdateStop) => {
-          keep(null);
-          setStopped({ version: chosen.version, reason });
+          keep(ws, null);
+          if (workspace.current === ws) setStopped({ version: chosen.version, reason });
         };
         posted = true;
         setPosting(true);
@@ -237,7 +246,10 @@ function useUpdateChain(
           return stop({ why: "unanswered" });
         const asked = { step, at: Date.now(), priorOperationId: status.operation?.id ?? null };
         const pending = { ...chosen, asked, unanswered: sends };
-        keep(pending);
+        // This window now answers as another Workspace: nothing chosen in
+        // the first one is posted to it. The choice stays where it was.
+        if (workspace.current !== ws) return;
+        keep(ws, pending);
         // Apply verifies every file of the prepared release before it
         // answers; the other steps answer once their work is under way.
         const controller = new AbortController();
@@ -253,15 +265,15 @@ function useUpdateChain(
             signal: controller.signal,
           });
           // Cancelled or replaced while the request was out: leave it be.
-          if (savedUpdateIntent()?.requestId !== chosen.requestId) return;
-          keep({
+          if (savedUpdateIntent(ws)?.requestId !== chosen.requestId) return;
+          keep(ws, {
             ...pending,
             accepted: { step, at: Date.now(), operationId: reply?.operationId },
             unanswered: 0,
             asked: undefined,
           });
         } catch (error) {
-          if (savedUpdateIntent()?.requestId !== chosen.requestId) return;
+          if (savedUpdateIntent(ws)?.requestId !== chosen.requestId) return;
           // Core's refusal ends the chain. A lost answer is asked again, a
           // few times, only when the next status shows Core did not carry
           // the request out (Apply also repeats its request ID).
@@ -269,14 +281,15 @@ function useUpdateChain(
           if (sends >= UNANSWERED_LIMIT)
             return stop({ why: "unanswered" });
           // Judge it only from a status read after it gave up.
-          keep({ ...pending, asked: { ...asked, at: Date.now() } });
+          keep(ws, { ...pending, asked: { ...asked, at: Date.now() } });
         } finally {
           clearTimeout(timeout);
         }
       });
     } catch (error) {
-      setStopped({ version: savedUpdateIntent()?.version ?? "", reason: { said: errorText(error) } });
-      keep(null);
+      if (workspace.current === ws)
+        setStopped({ version: savedUpdateIntent(ws)?.version ?? "", reason: { said: errorText(error) } });
+      keep(ws, null);
     } finally {
       acting.current = false;
       if (posted) {
@@ -284,7 +297,7 @@ function useUpdateChain(
         await refresh();
       }
     }
-  }, [status, statusAt, keep, refresh, tab]);
+  }, [status, statusAt, keep, refresh, tab, workspace]);
   useEffect(() => {
     if (intent && status) void advance();
   }, [intent, status, advance]);
@@ -304,7 +317,8 @@ function useUpdateChain(
       if (!status) return;
       // A repeated click, here or in another window, joins the update
       // already under way instead of choosing again.
-      const saved = savedUpdateIntent();
+      const ws = workspace.current;
+      const saved = savedUpdateIntent(ws);
       if (saved && updateChainStep(updateChain(status, saved, updateStatusFresh(saved, statusAt))))
         return;
       const first = updateChain(status, release, true);
@@ -315,7 +329,7 @@ function useUpdateChain(
         return;
       }
       setStopped(null);
-      keep({
+      keep(ws, {
         releaseId: release.releaseId,
         version: release.version,
         requestId: crypto.randomUUID(),
@@ -325,12 +339,12 @@ function useUpdateChain(
     },
     /** An explicit click here: this window saves its own drafts and applies. */
     continueHere() {
-      const saved = savedUpdateIntent();
-      if (saved) keep({ ...saved, owner: tab });
+      const saved = savedUpdateIntent(workspace.current);
+      if (saved) keep(workspace.current, { ...saved, owner: tab });
     },
     /** Forget the choice; nothing more is posted for it. */
     cancel() {
-      keep(null);
+      keep(workspace.current, null);
     },
   };
 }
@@ -360,7 +374,7 @@ export function WorkspaceUpdatesHost({
   /** Opens Settings at this editor (a notification's click, T-196). */
   openAt?: SettingsOpenAt | null;
 }) {
-  const intent = useUpdateIntent();
+  const intent = useUpdateIntent(workspaceId);
   // A chosen update is followed closely even while Settings is closed.
   const updates = useWorkspaceUpdates(enabled, open || !!intent[0]);
   const chain = useUpdateChain(updates, intent, preserveDrafts);
@@ -1027,7 +1041,7 @@ export function WorkspaceUpdates({
           {tab === "home" && <HomePresentationSettings active={open} />}
           {tab === "notifications" && <NotificationSettings />}
           {tab === "backup" && <WorkspaceBackup active={open && visible} />}
-          {tab === "remote" && <RemoteAccessSettings active={open && visible} />}
+          {tab === "remote" && <RemoteAccessSettings key={workspaceId} active={open && visible} workspaceId={workspaceId} />}
           {tab === "about" && <AboutSection current={status?.current ?? null} openEditor={openEditor} />}
         </>}
       />

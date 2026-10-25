@@ -84,7 +84,8 @@ try {
   assert.equal(posts.filter(p => p === '/api/updates/apply').length, 1);
   assert.ok(!posts.some(p => /interrupt|reviewed/.test(p)));
   assert.deepEqual(report.errors, []);
-  assert.equal(await page.evaluate(() => localStorage.getItem('yuzuno.update-intent')), null);
+  // No choice is left, for any Workspace (T-195 keeps them per Workspace).
+  assert.deepEqual(await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('yuzuno.update-intent'))), []);
   check('explicit reload loads matching UI and keeps browser storage; exactly one apply; the finished choice is forgotten');
   report.passed = true;
 } finally {

@@ -57,7 +57,8 @@ const polls = async (f, n = 2) => {
 };
 const posts = (calls, path) =>
   calls.filter((c) => c.method === "POST" && c.url.endsWith(`/api/updates/${path}`));
-const intentKey = "yuzuno.update-intent";
+// The chosen update is kept per Workspace (T-195); the fixture's is this one.
+const intentKey = "yuzuno.update-intent:fixture-workspace";
 const release = (id) => ({
   releaseId: id,
   version: `2026.10.${id}`,
@@ -1015,6 +1016,33 @@ test("a reload while a step is out still follows what Core did with it", async (
     assert.equal(g.w.localStorage.getItem(intentKey), null);
     assert.deepEqual(g.errors, []);
   } finally { g.w.close(); }
+});
+
+test("an update chosen in another Workspace, or saved before choices were kept per Workspace, is carried out nowhere and left as it was (T-195)", async () => {
+  // The same address once answered as another Workspace, which chose B; an
+  // older page also left a choice that says no Workspace. B is prepared here.
+  const another = JSON.stringify({ releaseId: "B", version: "2026.10.B", requestId: "11111111-1d2b-4c5d-8e9f-a0b1c2d3e4f5", from: "prepare" });
+  const older = JSON.stringify({ releaseId: "B", version: "2026.10.B", requestId: "22222222-1d2b-4c5d-8e9f-a0b1c2d3e4f5", from: "prepare" });
+  const seed = (w) => {
+    w.localStorage.setItem("yuzuno.update-intent:another-workspace", another);
+    w.localStorage.setItem("yuzuno.update-intent", older);
+  };
+  const prepared = {
+    preparedReleaseId: "B",
+    operation: { id: "prepare", releaseId: "B", phase: "prepared", startedAt: "", updatedAt: "" },
+  };
+  const f = await mount(prepared, undefined, seed);
+  try {
+    await f.open();
+    await polls(f);
+    await polls(f);
+    for (const step of ["download", "prepare", "apply"])
+      assert.equal(posts(f.calls, step).length, 0, `nothing asks this Workspace's Core to ${step}`);
+    assert.equal(f.w.localStorage.getItem(intentKey), null, "this Workspace chose nothing");
+    assert.equal(f.w.localStorage.getItem("yuzuno.update-intent:another-workspace"), another, "the other Workspace's choice is kept");
+    assert.equal(f.w.localStorage.getItem("yuzuno.update-intent"), older, "the older choice is kept where it is");
+    assert.deepEqual(f.errors, []);
+  } finally { f.w.close(); }
 });
 
 test("Apply is sent only from the window where the release was chosen, unless the user continues here", async () => {

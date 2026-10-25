@@ -133,7 +133,7 @@ const state = (box) => box.evaluate((el) => ({
   inputs: [...el.querySelectorAll(".remote-access-advanced input")].map((i) => i.value),
   preview: el.querySelector(".remote-access-preview")?.textContent ?? null,
   buttons: [...el.querySelectorAll(".remote-access-actions button")].map((b) => [b.textContent, b.disabled]),
-  pending: localStorage.getItem("yuzuno.remoteAccess.pending"),
+  pending: localStorage.getItem("yuzuno.remoteAccess.pending:ws-remote-language"),
 }));
 
 try {

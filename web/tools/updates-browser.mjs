@@ -579,7 +579,8 @@ try {
     await route.abort().catch(() => {});
   await page.waitForTimeout(1700);
   assert.equal(calls.filter((c) => c.path.endsWith("/apply")).length, 3);
-  assert.equal(await page.evaluate(() => localStorage.getItem("yuzuno.update-intent")), null);
+  // No choice is left, for any Workspace (T-195 keeps them per Workspace).
+  assert.deepEqual(await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("yuzuno.update-intent"))), []);
   check(
     "a hanging Apply answer leaves Cancel usable for the durable wait and is not sent again",
   );

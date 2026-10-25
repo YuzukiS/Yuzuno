@@ -17,7 +17,13 @@ import "./codex-fork.css";
 
 // One request ID per source and boundary, kept across reloads, so a retry
 // after a lost response settles the same attempt instead of forking again.
+// Kept per Workspace (T-195): Agent ids can repeat between the Workspaces
+// one address answers as, and one Workspace's attempt is never retried as
+// another's. Entries saved before (`<agent>:<boundary>`) do not say which
+// Workspace they were made in: they are left in place, never read or retried.
 const storageKey = "yuzuno.codexForkRequests";
+const requestKey = (workspace: string, agent: string, through: string) =>
+  JSON.stringify([workspace, agent, through]);
 function requests(): Record<string, string> {
   try {
     const value = JSON.parse(localStorage.getItem(storageKey) || "{}");
@@ -197,12 +203,16 @@ export function CodexWriterNotice({
 /** One explicit fork. Cancel changes nothing; only Fork and continue writes. */
 export function ForkCodexDialog({
   agent,
+  workspaceId,
   open,
   projectLabel,
   onOpenChange,
   onForked,
 }: {
   agent: Agent;
+  /** The Workspace this Agent is in; empty until it is known, and then no
+   * fork is asked (T-195). */
+  workspaceId: string;
   open: boolean;
   projectLabel: (projectId: string | null) => string;
   onOpenChange: (open: boolean) => void;
@@ -215,6 +225,15 @@ export function ForkCodexDialog({
   const [error, setError] = useState("");
   const [outcome, setOutcome] = useState<ForkOutcome | null>(null);
   const running = useRef(false);
+  // Gone with its Workspace (its parent keys it by Workspace): an attempt
+  // that ends afterwards keeps its record but opens nothing there.
+  const shown = useRef(true);
+  useEffect(() => {
+    shown.current = true;
+    return () => {
+      shown.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -238,11 +257,11 @@ export function ForkCodexDialog({
   const through = preview?.throughTurnId;
   const uncertain = outcome?.state === "uncertain";
   async function fork() {
-    if (running.current || !through || !name.trim()) return;
+    if (running.current || !through || !name.trim() || !workspaceId) return;
     running.current = true;
     setBusy(true);
     setError("");
-    const key = `${agent.id}:${through}`;
+    const key = requestKey(workspaceId, agent.id, through);
     const saved = requests();
     // Forking again after an unconfirmed result is the user's explicit
     // choice: a new attempt that gives the old one up. Nothing else is new.
@@ -264,10 +283,11 @@ export function ForkCodexDialog({
       if (result.state === "uncertain") {
         // A retry reports this same attempt; it is never repeated by itself.
         saveRequests({ ...current, [key]: result.requestId });
-        setOutcome(result);
+        if (shown.current) setOutcome(result);
       } else {
         delete current[key];
         saveRequests(current);
+        if (!shown.current) return;
         if (result.state === "completed" && result.agent) {
           onForked(result);
           onOpenChange(false);
@@ -381,7 +401,7 @@ export function ForkCodexDialog({
           </button>
           <button
             className="primary-button"
-            disabled={busy || loading || !through || !name.trim()}
+            disabled={busy || loading || !through || !name.trim() || !workspaceId}
           >
             {busy ? (
               <LoaderCircle size={15} className="spin" />
