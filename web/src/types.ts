@@ -24,6 +24,9 @@ export interface Agent {
   createdAt: string;
   updatedAt: string;
   closedAt?: string | null;
+  /** When the user disconnected this open Agent (T-184): its native session
+   * stays stopped, and nothing starts it, until they reconnect it. */
+  disconnectedAt?: string | null;
   unreadCount: number;
   pendingCount: number;
   lastMessage?: string;
