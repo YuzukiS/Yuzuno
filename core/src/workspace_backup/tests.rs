@@ -905,3 +905,31 @@ fn a_space_budget_sets_aside_what_stays_before_sharing_it_out() {
     assert_eq!(verdicts(&undated), [("b-1", "unknown"), ("b-3", "keep"), ("b-2", "remove")]);
     assert_eq!(undated.budget.as_ref().unwrap().state, "met");
 }
+
+#[test]
+fn under_a_space_budget_a_backup_whose_size_cant_be_trusted_is_never_offered_for_removal() {
+    use retention::{preview, remove, Rule};
+    fn verdict(p: &retention::Preview, name: &str) -> &'static str {
+        p.entries.iter().find(|e| e.name == name).unwrap().verdict
+    }
+    let root = tempfile::tempdir().unwrap();
+    let (folder, me, _) = three_backups(root.path());
+    let newest = preview(&folder, 3, &me, &[]).unwrap().entries.iter().find(|e| e.name == "b-3").unwrap().estimate_bytes.unwrap();
+    declare(&folder, "b-1", 0);
+    // Beyond the count: the count alone still removes it, as before; under a budget it can't be judged (Lead 9959).
+    assert_eq!(verdict(&preview(&folder, 2, &me, &[]).unwrap(), "b-1"), "remove");
+    let beyond_count = preview(&folder, Rule { keep: 2, budget_bytes: Some(1 << 40) }, &me, &[]).unwrap();
+    assert_eq!(verdict(&beyond_count, "b-1"), "unknown");
+    assert_eq!(beyond_count.budget.as_ref().unwrap().state, "unknown");
+    // Older than a backup beyond the budget: not removable either.
+    declare(&folder, "b-2", 10 << 20);
+    let rule = Rule { keep: 3, budget_bytes: Some(newest + (1 << 20)) };
+    let past_budget = preview(&folder, rule, &me, &[]).unwrap();
+    assert_eq!((verdict(&past_budget, "b-2"), verdict(&past_budget, "b-1")), ("remove", "unknown"));
+    assert_eq!(past_budget.removable_unknown_sizes, 0, "nothing of a size that can't be trusted is offered");
+    // And a removal of it under that budget is refused, whatever the page sent.
+    let sha = past_budget.entries.iter().find(|e| e.name == "b-1").unwrap().manifest_sha256.clone().unwrap();
+    let refused = remove(&folder, rule, "b-1", &sha, &me, Vec::new, &Control::named("untrusted"), retention::MAX_ENTRIES).unwrap_err().to_string();
+    assert!(refused.contains("not one that could be removed now: Its declared size can't be trusted"), "{refused}");
+    assert!(folder.join("b-1").is_dir());
+}

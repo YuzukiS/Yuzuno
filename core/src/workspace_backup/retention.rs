@@ -317,6 +317,13 @@ fn share(candidates: &[(DateTime<Utc>, Entry)], rule: Rule, reserved: Option<u64
     let mut beyond = false;
     candidates.iter().enumerate().map(|(index, (_, found))| {
         let size = found.estimate_bytes;
+        // With a budget, sizes decide: one with no size to trust is never
+        // offered for removal, beyond the count or past the budget alike.
+        // (The newest is kept whatever its size.)
+        if rule.budget_bytes.is_some() && index > 0 && size.is_none() {
+            total = None;
+            return ("unknown", "Its declared size can't be trusted, so under a space budget it can't be judged, and it is not offered for removal".to_string());
+        }
         if index >= keep {
             ("remove", format!("Older than the latest {keep}"))
         } else if let Some(budget) = rule.budget_bytes {
