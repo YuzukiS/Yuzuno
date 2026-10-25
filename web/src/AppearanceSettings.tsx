@@ -443,6 +443,10 @@ export function fieldLabel(field: AppearanceField, language: Language = "en"): s
   return language === "zh-Hans" ? parts[field].replace(": ", "：") : parts[field];
 }
 
+/** Each setting's name in English, for a part not translated yet (the
+ * shared Appearance preset). */
+export const fieldLabels = Object.fromEntries(appearanceFields.map((field) => [field, fieldLabel(field)])) as Record<AppearanceField, string>;
+
 /** A setting's value as the controls above name it, in `language`. A value
  * this version doesn't name is shown as the file wrote it. */
 export function fieldText(field: AppearanceField, value: string | number, language: Language = "en"): string {
