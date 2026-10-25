@@ -21,7 +21,7 @@ async function until(check, label = "condition") {
 }
 // holdPoll: no 5 s interval (the stream's poll and the workspace safety net,
 // POLL_MS), so only the reads a test drives happen (T-170).
-async function mount({ deadlineMs = 180, before, settle = true, holdPoll = false } = {}) {
+async function mount({ deadlineMs = 180, before, settle = true, holdPoll = false, storage = {} } = {}) {
   const errors = [], vc = new VirtualConsole();
   vc.on("jsdomError", e => errors.push(e.message));
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
@@ -37,6 +37,7 @@ async function mount({ deadlineMs = 180, before, settle = true, holdPoll = false
       `yuzuno.composer.v1:${JSON.stringify([FIXTURE_WORKSPACE, agent])}`,
       JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text }] }),
     );
+  for (const [key, value] of Object.entries(storage)) w.localStorage.setItem(key, value);
   w.eval(`(${installConnectionFixture.toString()})({deadlineMs: ${deadlineMs}})`);
   before?.(w.connectionFixture);
   if (holdPoll) {
@@ -357,4 +358,61 @@ test("back online after a failed workspace read, it is read again at once and on
     assert.equal(reads(), before + 2, "one more read after it, not one per report");
     retained(p);
   } finally { p.close(); }
+});
+
+// T-195: the Agent a window reopens belongs to a Workspace. Until
+// /api/workspace says which Workspace this is there is none to restore, and
+// the key written before Workspaces were recorded is not read in its place.
+// A read that fails says so where connection failures are already said, and
+// a later failure does not take away a selection already confirmed.
+test("a Workspace that cannot be read opens no Agent and says so; a retry restores its own, and a later failure keeps it", async () => {
+  const p = await mount({
+    settle: false,
+    holdPoll: true,
+    before: (f) => {
+      f.mode = "offline";
+    },
+    storage: {
+      // Written before Workspaces were recorded: this one must not be used.
+      "yuzuno.selected": JSON.stringify("a"),
+      // This Workspace's own, a different Agent so the two can be told apart.
+      [`yuzuno.selected.${FIXTURE_WORKSPACE}`]: JSON.stringify("b"),
+    },
+  });
+  try {
+    const shown = () => p.d.querySelector(".conversation-heading h1")?.textContent;
+    const alert = () => p.d.querySelector('.core-connection-banner[role="alert"]');
+    await until(() => alert(), "the connection banner");
+    assert.ok(
+      [...alert().querySelectorAll("button")].length >= 1,
+      "the banner offers its retry",
+    );
+    assert.equal(shown(), undefined, "no Agent is opened while the Workspace is unknown");
+    assert.deepEqual(
+      p.f.calls.filter((c) => /\/api\/agents\/[ab]$/.test(c.path)).map((c) => c.path),
+      [],
+      "and neither Agent is read: the older key names one, but not which Workspace",
+    );
+    // Core answers. This Workspace's own remembered Agent opens -- "Claude
+    // fixture" is b, not the "a" the older key names.
+    p.f.scenario("ok");
+    await until(() => shown() === "Claude fixture", "this Workspace's own Agent");
+    assert.equal(
+      p.w.localStorage.getItem("yuzuno.selected"),
+      JSON.stringify("a"),
+      "the older key is left exactly as it was",
+    );
+    // A later read fails. The selection this Workspace confirmed stays.
+    p.f.scenario("offline");
+    await until(() => alert(), "the failure is said again");
+    assert.equal(shown(), "Claude fixture", "a refresh that failed takes nothing away");
+    assert.equal(
+      p.w.localStorage.getItem(`yuzuno.selected.${FIXTURE_WORKSPACE}`),
+      JSON.stringify("b"),
+      "and what this Workspace remembers is untouched",
+    );
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
 });
