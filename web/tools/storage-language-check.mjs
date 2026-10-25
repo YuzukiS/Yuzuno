@@ -10,7 +10,8 @@
 //    is; changed to English in another window, the lines are English, the
 //    same text is shown and nothing is gathered again;
 //  - clearing recorded errors refused, then done: said in Chinese;
-//  - nothing is written to Core.
+//  - nothing is written to Core (Data & storage's task choice reads Core's
+//    task list, a read sent as POST: T-193).
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/storage-language-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -71,6 +72,7 @@ await context.route("**/*", async (route) => {
   }
   if (path.startsWith("/api/")) report.reads.push(`${method} ${path}`);
   if (path === "/api/agents/a/reading") return route.fulfill({ json: method === "GET" ? { handoff: null } : { accepted: true, sourceSeq: 0 } });
+  if (method === "POST" && path === "/api/collaboration/task_list") return route.fulfill({ json: { tasks: [{ id: "T-7", title: "Build cache", status: "done" }], hasMore: false } });
   if (method !== "GET") {
     report.writes.push({ method, path });
     return route.fulfill({ json: {} });
@@ -137,6 +139,7 @@ try {
     unknown: el.querySelector('[data-entry="new-thing"]').textContent,
     database: el.querySelector('[data-entry="workspace.sqlite"]').textContent,
     never: [...el.querySelectorAll(".storage-list li")].map((li) => li.textContent),
+    tasks: el.querySelector('[aria-labelledby="storage-task-folders"]').textContent,
     text: el.textContent,
   }));
   assert.equal(zh.heading, "数据与存储");
@@ -149,6 +152,7 @@ try {
   assert.match(zh.text, /12 条 Job 记录，1 条未完成。/);
   assert.match(zh.text, /Codex · Core 主机大小未知3 个 Agent（1 个已关闭） · 由 Codex 保存在那台电脑上它自己的文件夹中。/);
   assert.doesNotMatch(zh.text, /size unknown|Not in a backup|entries ·/);
+  assert.match(zh.tasks, /^任务工作目录中的构建输出任务已登记工作目录中由 Cargo 生成的构建输出.+不会预览或移除任何内容。任务选择任务…T-7 · Build cache · done打开它的 Workspace 部分$/, "a task by its ID, its title as it comes");
   await page.screenshot({ path: join(output, "storage-zh.png") });
   check("Data & storage in Chinese; Core's reason, path and listed item, and a name this version doesn't know, as they come", { heading: zh.heading });
 
