@@ -174,8 +174,11 @@ fn assemble(root: &Path, cache: &Path, temporary: &Path, key: &str, manifest: &M
 }
 
 fn manifest(root: &Path) -> Result<Manifest> {
-    let manifest: Manifest = serde_json::from_slice(&std::fs::read(root.join(MANIFEST))?)
-        .context("claude-agent-sdk.json 无法读取")?;
+    parse_manifest(&std::fs::read(root.join(MANIFEST))?)
+}
+
+fn parse_manifest(bytes: &[u8]) -> Result<Manifest> {
+    let manifest: Manifest = serde_json::from_slice(bytes).context("claude-agent-sdk.json 无法读取")?;
     ensure!(manifest.format == 1 && manifest.name == NAME, "claude-agent-sdk.json 不是 Claude Agent SDK 的清单");
     ensure!(manifest.resolved.starts_with("https://") && manifest.integrity.starts_with("sha512-"),
         "claude-agent-sdk.json 没有 HTTPS 来源和 sha512 integrity");
@@ -400,6 +403,151 @@ fn sync_dir(dir: &Path) {
     if let Ok(dir) = std::fs::File::open(dir) {
         let _ = dir.sync_all();
     }
+}
+
+/// The most of claude-agent-sdk.json the status reads; a manifest lists every
+/// file of the package, so this is far above one.
+const STATUS_MANIFEST_BYTES: u64 = 1 << 20;
+/// The most of a receipt or of the SDK's package.json the status reads.
+const STATUS_SMALL_BYTES: u64 = 64 << 10;
+/// The most top-level entries of the prepared copies' folder it looks at.
+const STATUS_COPIES: usize = 64;
+
+pub(crate) fn router() -> axum::Router<Arc<crate::workspace::Workspace>> {
+    axum::Router::new().route("/api/claude-sdk", axum::routing::get(read_status))
+}
+
+async fn read_status() -> Result<axum::Json<serde_json::Value>, crate::server::ApiError> {
+    let status = tokio::task::spawn_blocking(|| status(std::env::var_os("YUZUNO_CLAUDE_BRIDGE"))).await?;
+    Ok(axum::Json(status))
+}
+
+/// The Claude Agent SDK Core's Claude bridge runs (T-191), for Runtime &
+/// versions. Read only: nothing is prepared, copied or downloaded, Node and
+/// the bridge aren't started, the runtime isn't hashed, and of the prepared
+/// copies only each top-level receipt is read. The bridge has no version of
+/// its own: it is part of the runtime. No path is said, and a registry only
+/// by its host.
+pub(crate) fn status(configured: Option<OsString>) -> serde_json::Value {
+    status_of(configured_bridge(configured), cache().as_deref())
+}
+
+fn status_of(script: Result<PathBuf>, cache: Option<&Path>) -> serde_json::Value {
+    use serde_json::json;
+    let read_at = crate::model::now();
+    let Some(root) = script.ok().and_then(|script| script.parent().map(Path::to_path_buf)).filter(|root| root.is_dir()) else {
+        return json!({"format": 1, "readAt": read_at, "runtime": {"kind": "missing"}, "sdk": {"state": "unknown"}, "copy": {"state": "unknown"}});
+    };
+    let runtime = release_of(&root).map_or_else(|| json!({"kind": "other"}), |release| json!({"kind": "release", "release": release}));
+    let (sdk, copy) = if root.join(MANIFEST).is_file() {
+        match read_bounded(&root.join(MANIFEST), STATUS_MANIFEST_BYTES).and_then(|bytes| parse_manifest(&bytes)) {
+            Ok(manifest) => (
+                json!({"state": "locked", "version": word(&manifest.version), "registry": registry_host(&manifest.resolved)}),
+                copy_status(&root, cache, &manifest),
+            ),
+            Err(error) => (json!({"state": "unreadable", "reason": error.to_string()}), json!({"state": "unknown"})),
+        }
+    } else if let Ok(bytes) = read_bounded(&root.join(PACKAGE).join("package.json"), STATUS_SMALL_BYTES) {
+        // The runtime carries the SDK itself and is run as it is: the version
+        // is the one its package declares.
+        let version = serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+            .and_then(|package| package["version"].as_str().and_then(word));
+        (json!({"state": "inRuntime", "version": version}), json!({"state": "notNeeded"}))
+    } else {
+        (json!({"state": "none"}), json!({"state": "notNeeded"}))
+    };
+    json!({"format": 1, "readAt": read_at, "runtime": runtime, "sdk": sdk, "copy": copy})
+}
+
+/// The copy of this runtime Core prepared or found in this run, which its
+/// bridges run; else copies of this SDK an earlier run left, by their
+/// receipts at the top of the cache.
+fn copy_status(root: &Path, cache: Option<&Path>, manifest: &Manifest) -> serde_json::Value {
+    use serde_json::json;
+    let used = PREPARED.lock().unwrap().get(root).filter(|done| done.join(RECEIPT).is_file()).cloned();
+    if let Some(done) = used {
+        let receipt = read_receipt(&done);
+        return json!({"state": "inUse", "copy": receipt.map(|(_, _, copy)| copy)});
+    }
+    let Some(cache) = cache else { return json!({"state": "unknown"}) };
+    let mut found = Vec::new();
+    let mut limited = false;
+    for (n, entry) in std::fs::read_dir(cache).into_iter().flatten().flatten().enumerate() {
+        if n == STATUS_COPIES {
+            limited = true;
+            break;
+        }
+        if entry.file_name().to_string_lossy().starts_with(TEMPORARY) {
+            continue;
+        }
+        if let Some((name, integrity, copy)) = read_receipt(&entry.path()) {
+            if name == manifest.name && integrity == manifest.integrity {
+                found.push(copy);
+            }
+        }
+    }
+    if found.is_empty() {
+        return json!({"state": "none", "limited": limited});
+    }
+    found.sort_by(|a, b| b["at"].as_str().cmp(&a["at"].as_str()));
+    json!({"state": "found", "copies": found.len(), "newest": found[0], "limited": limited})
+}
+
+/// A copy's receipt: the SDK it names and integrity, and what is said of it
+/// (version, where its files came from, when).
+fn read_receipt(copy: &Path) -> Option<(String, String, serde_json::Value)> {
+    let receipt: serde_json::Value = serde_json::from_slice(&read_bounded(&copy.join(RECEIPT), STATUS_SMALL_BYTES).ok()?).ok()?;
+    let text = |key: &str| receipt[key].as_str().map(str::to_owned);
+    let source = text("source").unwrap_or_default();
+    let source = if let Some(url) = source.strip_prefix("registry ") {
+        serde_json::json!({"from": "registry", "host": registry_host(url)})
+    } else if let Some(release) = source.strip_prefix("release ") {
+        serde_json::json!({"from": "release", "release": word(release)})
+    } else if source.starts_with("prepared copy ") {
+        serde_json::json!({"from": "preparedCopy"})
+    } else {
+        serde_json::json!({"from": "unknown"})
+    };
+    let at = text("at").filter(|at| at.len() <= 40 && at.chars().all(|c| c.is_ascii_alphanumeric() || "-:.+".contains(c)));
+    let copy = serde_json::json!({"version": text("version").as_deref().and_then(word), "source": source, "at": at});
+    Some((text("name")?, text("integrity")?, copy))
+}
+
+/// `…/releases/<release>/runtimes/claude`: that release.
+fn release_of(root: &Path) -> Option<String> {
+    let release = root.ends_with("runtimes/claude").then(|| root.parent()?.parent()).flatten()?;
+    (release.parent()?.file_name()? == "releases").then(|| word(&release.file_name()?.to_string_lossy())).flatten()
+}
+
+/// A version or a name as it is, if it is one: never other text.
+fn word(text: &str) -> Option<String> {
+    (!text.is_empty() && text.len() <= 80 && text.chars().all(|c| c.is_ascii_alphanumeric() || "._+-".contains(c)))
+        .then(|| text.to_owned())
+}
+
+/// An https URL's host, without anything that may sign in to it.
+fn registry_host(url: &str) -> Option<String> {
+    let authority = url.strip_prefix("https://")?.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit('@').next()?;
+    (!host.is_empty() && host.len() <= 253 && host.chars().all(|c| c.is_ascii_alphanumeric() || ".-:[]".contains(c)))
+        .then(|| host.to_owned())
+}
+
+/// At most `limit` bytes of a regular file; a larger one, or anything but a
+/// file (never opened, so a pipe can't hold the read), is refused.
+fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let meta = std::fs::metadata(path).map_err(|_| anyhow::anyhow!("{} 无法读取", file_name(path)))?;
+    ensure!(meta.is_file(), "{} 不是普通文件", file_name(path));
+    let file = std::fs::File::open(path).map_err(|_| anyhow::anyhow!("{} 无法打开", file_name(path)))?;
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() as u64 <= limit, "{} 超过 {} 字节", file_name(path), limit);
+    Ok(bytes)
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 #[cfg(test)]
