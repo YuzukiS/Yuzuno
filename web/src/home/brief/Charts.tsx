@@ -16,6 +16,8 @@ import {
   ZAxis,
 } from "recharts";
 import { api, errorText } from "../../api";
+import { useStrings } from "../../i18n";
+import { briefText } from "./brief-text";
 import { useBrief } from "./BriefContext";
 import {
   chartPath,
@@ -78,7 +80,9 @@ function chartData(value: unknown): ChartData | null {
   };
 }
 
-type Loaded = { key: string; data?: ChartData; error?: string };
+/** Why a chart has no points: Core's reason, or Yuzuno's own words, worded when shown. */
+type Problem = { reason: string } | { word: "chartUnreadable" | "chartNoData" | "chartNotFound" };
+type Loaded = { key: string; data?: ChartData; error?: Problem };
 /**
  * Inline series as they are; attachment data read from Core once per
  * section version. While a newer version loads, the previous data stays up,
@@ -96,17 +100,17 @@ function useSeries(props: ChartProps, elementKey: string | undefined) {
       (value) => {
         if (controller.signal.aborted) return;
         const data = chartData(value);
-        setLoaded(data ? { key, data } : { key, error: "Core answered with chart data this view can't read." });
+        setLoaded(data ? { key, data } : { key, error: { word: "chartUnreadable" } });
       },
       (error) => {
-        if (!controller.signal.aborted) setLoaded({ key, error: errorText(error) });
+        if (!controller.signal.aborted) setLoaded({ key, error: { reason: errorText(error) } });
       },
     );
     return () => controller.abort();
   }, [key, path]);
   if (props.series) return { series: props.series, data: null, error: null, loading: false };
-  if (!props.data) return { series: [], data: null, error: "This chart has no data.", loading: false };
-  if (!path) return { series: [], data: null, error: "This chart can't be located in its section.", loading: false };
+  if (!props.data) return { series: [], data: null, error: { word: "chartNoData" } as Problem, loading: false };
+  if (!path) return { series: [], data: null, error: { word: "chartNotFound" } as Problem, loading: false };
   const current = loaded?.key === key ? loaded : null;
   const data = current?.data ?? (current ? undefined : loaded?.data);
   return {
@@ -271,12 +275,13 @@ const TABLE_ROWS = 500;
  * moves the section nor costs anything for a large series.
  */
 function DataTable({ kind, props, series }: { kind: Kind; props: ChartProps; series: Series[] }) {
+  const t = useStrings(briefText);
   const [open, setOpen] = useState(false);
   const table = useMemo(() => {
     if (!open) return null;
     if (kind === "scatter")
       return {
-        columns: ["Series", withUnit(props.x), withUnit(props.y)],
+        columns: [t.series, withUnit(props.x), withUnit(props.y)],
         rows: series.flatMap((item) => item.points.map(([x, y]) => [item.name, x, y])),
       };
     const numeric = series.every((item) => item.points.every(([x]) => typeof x === "number"));
@@ -284,13 +289,13 @@ function DataTable({ kind, props, series }: { kind: Kind; props: ChartProps; ser
       columns: [withUnit(props.x), ...series.map((item) => item.name)],
       rows: mergeRows(series, kind === "line" && numeric).rows.map((row) => [row.x, ...series.map((_, i) => row[`s${i}`] ?? null)]),
     };
-  }, [open, kind, props.x, props.y, series]);
+  }, [open, kind, props.x, props.y, series, t.series]);
   return (
     <details className="brief-chart-data" onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary>Data table</summary>
+      <summary>{t.dataTable}</summary>
       {table && (
         <div className="brief-preview">
-          <div className="brief-preview-frame brief-preview-scroll" tabIndex={0} role="region" aria-label={`${props.title} data`}>
+          <div className="brief-preview-frame brief-preview-scroll" tabIndex={0} role="region" aria-label={t.tableOf(props.title)}>
             <table>
               <thead>
                 <tr>
@@ -314,10 +319,10 @@ function DataTable({ kind, props, series }: { kind: Kind; props: ChartProps; ser
           </div>
           <small>
             {!table.rows.length
-              ? "No points yet."
+              ? t.noPointsYet
               : table.rows.length > TABLE_ROWS
-                ? `First ${TABLE_ROWS} of ${table.rows.length.toLocaleString()} rows`
-                : `${table.rows.length} rows`}
+                ? t.firstRowsOf(TABLE_ROWS, table.rows.length.toLocaleString())
+                : t.rowCount(table.rows.length)}
           </small>
         </div>
       )}
@@ -327,6 +332,7 @@ function DataTable({ kind, props, series }: { kind: Kind; props: ChartProps; ser
 
 function BriefChart({ kind, props }: { kind: Kind; props: Placed }) {
   const time = useTimeDisplay();
+  const t = useStrings(briefText);
   const { section } = useBrief();
   const { series, data, error, loading } = useSeries(props, props.elementKey);
   // The legend comes from the chart's own declaration, so its height is
@@ -341,7 +347,7 @@ function BriefChart({ kind, props }: { kind: Kind; props: Placed }) {
       <header>
         <h4>{props.title}</h4>
         {names.length > 1 && (
-          <ul className="brief-legend" aria-label="Series">
+          <ul className="brief-legend" aria-label={t.series}>
             {names.map((name, index) => (
               <li key={index}>
                 <i
@@ -360,14 +366,14 @@ function BriefChart({ kind, props }: { kind: Kind; props: Placed }) {
       <div className="brief-chart-plot">
         {error ? (
           <p className="brief-chart-state" role="status">
-            Chart data couldn't be read. {error}
+            {t.chartError("reason" in error ? error.reason : t[error.word])}
           </p>
         ) : loading && !points ? (
           <p className="brief-chart-state" role="status">
-            Loading chart data…
+            {t.loadingChart}
           </p>
         ) : !points ? (
-          <p className="brief-chart-state">No points to show.</p>
+          <p className="brief-chart-state">{t.noPoints}</p>
         ) : (
           <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
             <Plot kind={kind} props={props} series={series} />
@@ -378,8 +384,9 @@ function BriefChart({ kind, props }: { kind: Kind; props: Placed }) {
         <span>
           {props.data && (
             <>
-              Data: {props.data.attachment}
-              {attachment?.takenAt && <> · snapshot {formatTime(attachment.takenAt, time)}</>}
+              {t.dataFrom}
+              {props.data.attachment}
+              {attachment?.takenAt && t.snapshotAt(formatTime(attachment.takenAt, time))}
             </>
           )}
         </span>
@@ -389,9 +396,9 @@ function BriefChart({ kind, props }: { kind: Kind; props: Placed }) {
         {props.data && (
           <span className="brief-chart-points">
             {data?.downsampled
-              ? `Downsampled from ${data.sourcePoints.toLocaleString()} points`
+              ? t.downsampled(data.sourcePoints.toLocaleString())
               : data
-                ? `${data.sourcePoints.toLocaleString()} points`
+                ? t.points(data.sourcePoints.toLocaleString())
                 : " "}
           </span>
         )}

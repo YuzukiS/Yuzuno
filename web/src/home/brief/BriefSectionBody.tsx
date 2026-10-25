@@ -20,6 +20,8 @@ import { BriefBarChart, BriefLineChart, BriefScatterChart } from "./Charts";
 import { BriefLiveRefs } from "./LiveRefs";
 import { BriefAttachments } from "./AttachmentView";
 import type { BlockChanges } from "./block-changes";
+import { briefText } from "./brief-text";
+import { useStrings } from "../../i18n";
 import { recordError } from "../../diagnostics";
 import {
   CHART_TYPES,
@@ -45,17 +47,19 @@ class PartBoundary extends Component<{ children: ReactNode }, { failed: boolean 
   }
 }
 function Unreadable() {
+  const t = useStrings(briefText);
   return (
     <p className="result-part-error" role="status">
-      This part of the section couldn't be displayed.
+      {t.partUnreadable}
     </p>
   );
 }
 function SectionUnreadable() {
+  const t = useStrings(briefText);
   return (
     <div className="brief-body">
       <p className="result-part-error" role="status">
-        This section couldn't be displayed.
+        {t.sectionUnreadable}
       </p>
     </div>
   );
@@ -84,11 +88,6 @@ class SectionBoundary extends Component<Drawn, { failed: boolean }> {
 }
 /** The prop BriefSectionBody gives a block that changed since the seen version. */
 const CHANGE = "yuzunoChange";
-const changeText = {
-  new: ["New", "Added since you marked this section seen"],
-  updated: ["Updated", "Changed since you marked this section seen"],
-} as const;
-
 function part<P extends object>(Part: ComponentType<P>): ComponentType<ComponentRenderProps> {
   return function Guarded({ element, children }: ComponentRenderProps) {
     const { [CHANGE]: change, ...props } = element.props as Record<string, unknown>;
@@ -98,18 +97,27 @@ function part<P extends object>(Part: ComponentType<P>): ComponentType<Component
       </PartBoundary>
     );
     if (change !== "new" && change !== "updated") return shown;
-    const [label, title] = changeText[change];
     // A plain group keeps the rule that sets it apart from the block before.
     const rule = element.type === "Group" && (!props.tone || props.tone === "plain");
     return (
-      <div className="brief-change" data-change={change} data-rule={rule || undefined}>
-        <span className="brief-change-mark" title={title}>
-          {label}
-        </span>
+      <ChangeMark change={change} rule={rule}>
         {shown}
-      </div>
+      </ChangeMark>
     );
   };
+}
+
+/** The mark on a block changed since the seen version, in the interface language. */
+function ChangeMark({ change, rule, children }: { change: "new" | "updated"; rule: boolean; children: ReactNode }) {
+  const [label, title] = useStrings(briefText).change[change];
+  return (
+    <div className="brief-change" data-change={change} data-rule={rule || undefined}>
+      <span className="brief-change-mark" title={title}>
+        {label}
+      </span>
+      {children}
+    </div>
+  );
 }
 
 // Display only: no component here starts anything. Links open pages and
@@ -132,14 +140,18 @@ const registry: ComponentRegistry = {
   ScatterChart: part(BriefScatterChart),
   LiveRefs: part(BriefLiveRefs),
   Attachments: part(BriefAttachments),
-  Sources: part((props: SourcesProps) => (
-    <div className="result-source-list">
-      <span>Sources</span>
-      <SourceLinks ids={props.items.map((item) => item.id)} />
-    </div>
-  )),
+  Sources: part(BriefSources),
 };
 const noActions = Object.freeze({});
+function BriefSources(props: SourcesProps) {
+  const t = useStrings(briefText);
+  return (
+    <div className="result-source-list">
+      <span>{t.sources}</span>
+      <SourceLinks ids={props.items.map((item) => item.id)} />
+    </div>
+  );
+}
 
 /**
  * Tables and source links come from interactive results and read their

@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, Users } from "lucide-react";
 import { api, errorText } from "../api";
+import { useStrings } from "../i18n";
 import type { Agent } from "../types";
+import { homeText } from "./home-text";
 import type { ContentEditors } from "./types";
 import "./home-editors.css";
 
@@ -12,6 +14,7 @@ export function HomeContentEditors({ projectId, agents, disabled, onChanged }: {
   disabled: boolean;
   onChanged: () => void;
 }) {
+  const t = useStrings(homeText);
   const [saved, setSaved] = useState<ContentEditors | null>(null);
   const [ids, setIds] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -44,17 +47,17 @@ export function HomeContentEditors({ projectId, agents, disabled, onChanged }: {
     } catch (e) { setError(errorText(e)); }
     finally { setBusy(false); }
   }
-  return <section className="home-editor-settings" aria-label="Home content editors">
-    <h3><Users size={15} /> Home content editors</h3>
-    <p>Choose who writes the project’s reports and status on Home. Everyone can still ask you questions and request approval.</p>
-    {!saved ? <p role="status">{error || "Loading content editors…"}</p> : <>
+  return <section className="home-editor-settings" aria-label={t.editors}>
+    <h3><Users size={15} /> {t.editors}</h3>
+    <p>{t.editorsIntro}</p>
+    {!saved ? <p role="status">{error || t.loadingEditors}</p> : <>
       <label className="home-editor-mode">
         <input type="checkbox" checked={ids === null} disabled={disabled || busy}
           onChange={e => setIds(e.target.checked ? null : members.map(a => a.id))} />
-        <span>All members, including future members</span>
+        <span>{t.allMembers}</span>
       </label>
       {ids !== null && <>
-        <div className="home-editor-members" role="group" aria-label="Selected content editors">
+        <div className="home-editor-members" role="group" aria-label={t.selectedEditors}>
           {members.map(agent => <label key={agent.id}>
             <input type="checkbox" checked={ids.includes(agent.id)} disabled={disabled || busy}
               onChange={e => setIds(e.target.checked ? [...ids, agent.id] : ids.filter(id => id !== agent.id))} />
@@ -62,21 +65,19 @@ export function HomeContentEditors({ projectId, agents, disabled, onChanged }: {
           </label>)}
           {unavailable.map(id => <label key={id}>
             <input type="checkbox" checked disabled={disabled || busy} onChange={() => setIds(ids.filter(value => value !== id))} />
-            <span>Unavailable member <small>{id}</small></span>
+            <span>{t.unavailableMember} <small>{id}</small></span>
           </label>)}
         </div>
-        <p className="home-editor-hint">{ids.length === 0
-          ? "No content editors selected. Members can only ask questions or request approval."
-          : "Only selected members maintain reports and status. Everyone else can ask questions or request approval."}</p>
+        <p className="home-editor-hint">{ids.length === 0 ? t.noEditors : t.onlyEditors}</p>
       </>}
       <div className="home-editor-actions">
         <button type="button" className="secondary-button" disabled={disabled || busy || !changed} onClick={() => void save()}>
-          {busy && <LoaderCircle size={13} className="spin" />} Save content editors
+          {busy && <LoaderCircle size={13} className="spin" />} {t.saveEditors}
         </button>
-        {changed && <span className="home-editor-hint">Unsaved changes</span>}
+        {changed && <span className="home-editor-hint">{t.unsavedChanges}</span>}
       </div>
     </>}
     {saved && error && <p className="inline-error" role="alert">{error}</p>}
-    {error && <button type="button" className="quiet-button" disabled={busy} onClick={() => setReload(n => n + 1)}>Reload saved editors</button>}
+    {error && <button type="button" className="quiet-button" disabled={busy} onClick={() => setReload(n => n + 1)}>{t.reloadEditors}</button>}
   </section>;
 }

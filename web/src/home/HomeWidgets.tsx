@@ -4,6 +4,8 @@
 // area takes any widget with an id, a name and a body.
 import { useState, type ReactNode } from "react";
 import { ArrowDown, ArrowUp, EyeOff, LayoutGrid, PinOff, Plus } from "lucide-react";
+import { useStrings } from "../i18n";
+import { homeText } from "./home-text";
 import type { WidgetLayout } from "./widget-layout";
 
 export type HomeWidget = {
@@ -37,6 +39,7 @@ export function HomeWidgets({
   /** Absent where the layout can't be changed (the design preview). */
   onChange?: (next: (current: WidgetLayout) => WidgetLayout) => void;
 }) {
+  const t = useStrings(homeText);
   const [stateArranging, setArranging] = useState(false);
   const arranging = stateArranging && !!onChange;
   const { shown, hidden } = arrangeWidgets(widgets, layout ?? { order: [], hidden: [], pins: [] });
@@ -62,11 +65,11 @@ export function HomeWidgets({
     );
   };
   return (
-    <aside className="home-widget-column" aria-label="Widgets">
+    <aside className="home-widget-column" aria-label={t.widgets}>
       <header className="home-widget-column-head">
         <h2>
           <LayoutGrid size={14} />
-          Widgets
+          {t.widgets}
         </h2>
         {onChange && layout && (
           <button
@@ -75,21 +78,21 @@ export function HomeWidgets({
             aria-pressed={arranging}
             onClick={() => setArranging((value) => !value)}
           >
-            {arranging ? "Done" : "Arrange"}
+            {arranging ? t.reorderDone : t.arrange}
           </button>
         )}
       </header>
-      {!layout && <p className="home-note">Reading this workspace's layout…</p>}
+      {!layout && <p className="home-note">{t.readingLayout}</p>}
       {layout && shown.map((widget, index) => (
         <div key={widget.id} className="home-widget-slot" data-widget={widget.id}>
           {arranging && (
-            <div className="home-widget-tools" role="group" aria-label={`Arrange ${widget.name}`}>
+            <div className="home-widget-tools" role="group" aria-label={t.arrangeWidget(widget.name)}>
               <span>{widget.name}</span>
               <button
                 type="button"
                 className="icon-button"
-                aria-label={`Move ${widget.name} up`}
-                title="Move up"
+                aria-label={t.moveUp(widget.name)}
+                title={t.moveUpTitle}
                 disabled={index === 0}
                 onClick={() => move(index, -1)}
               >
@@ -98,8 +101,8 @@ export function HomeWidgets({
               <button
                 type="button"
                 className="icon-button"
-                aria-label={`Move ${widget.name} down`}
-                title="Move down"
+                aria-label={t.moveDown(widget.name)}
+                title={t.moveDownTitle}
                 disabled={index === shown.length - 1}
                 onClick={() => move(index, 1)}
               >
@@ -108,8 +111,8 @@ export function HomeWidgets({
               <button
                 type="button"
                 className="icon-button"
-                aria-label={`Hide ${widget.name}`}
-                title="Hide"
+                aria-label={t.hideWidget(widget.name)}
+                title={t.hide}
                 onClick={() => hide(widget)}
               >
                 <EyeOff size={13} />
@@ -118,8 +121,8 @@ export function HomeWidgets({
                 <button
                   type="button"
                   className="icon-button"
-                  aria-label={`Unpin ${widget.name}`}
-                  title="Unpin"
+                  aria-label={t.unpinWidget(widget.name)}
+                  title={t.unpinShort}
                   onClick={widget.onUnpin}
                 >
                   <PinOff size={13} />
@@ -134,7 +137,7 @@ export function HomeWidgets({
         <div className="home-widget-column-add">
           {hidden.length ? (
             <>
-              <span>{shown.length ? "Add a widget" : "No widgets on show. Add one:"}</span>
+              <span>{shown.length ? t.addWidget : t.noWidgets}</span>
               {hidden.map((widget) => (
                 <button
                   key={widget.id}
@@ -147,7 +150,7 @@ export function HomeWidgets({
               ))}
             </>
           ) : (
-            <span>Every widget is on show.</span>
+            <span>{t.allWidgets}</span>
           )}
         </div>
       )}
