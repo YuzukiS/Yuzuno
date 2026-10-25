@@ -211,7 +211,7 @@ export function StorageOverview({ active, updates }: { active: boolean; updates:
       <section className="storage-part" aria-labelledby="storage-device">
         <h4 id="storage-device">{t.device}</h4>
         <p className="storage-note">{t.deviceNote}</p>
-        {device && !device.available && <p className="updates-error" role="alert">{t.deviceReason(device.reason)}</p>}
+        {device && !device.available && <p className="updates-error" role="alert">{t.deviceReason(device.reason ?? "")}</p>}
         {device?.available && (
           <>
             <ul className="storage-rows">

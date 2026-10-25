@@ -24,7 +24,7 @@ const words = strings({
   title: "Diagnostics",
   intro: (errors: number) =>
     `Versions, connection and the errors this window recorded (${errors === 0 ? "none" : errors}), to paste into a report. No conversations, drafts or credentials. Preview it first: nothing is copied, saved or sent until you choose.`,
-  preview: (again: boolean) => (again ? "Preview again" : "Preview diagnostics"),
+  preview: (again: boolean): string => (again ? "Preview again" : "Preview diagnostics"),
   gathering: "Gathering…",
   shown: "This is the whole text. Nothing has been copied, saved or sent.",
   saving: (name: string) => `Your browser was asked to save ${name}. If no file appears, select the text below and copy it.`,
