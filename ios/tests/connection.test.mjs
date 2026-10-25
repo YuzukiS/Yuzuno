@@ -410,3 +410,79 @@ test('a Workspace that cannot be reached is said so, and the list is still there
     assert.equal(document.querySelector('#connect-button').disabled, false);
   } finally { dom.window.close(); }
 });
+
+// T-195: a record this app cannot read is usable for nothing. It will not
+// open a Workspace it cannot check against the saved ones, and writes
+// nothing, so what is saved stays exactly as it is. A first launch is not
+// that case: nothing is saved, so the first Workspace opens and is kept.
+const unreadable = {
+  state: 'unreadable',
+  reason: 'one of its Workspaces is not one this app opens',
+  profiles: [],
+};
+const refusal =
+  'The Workspaces saved on this iPhone could not be read (one of its Workspaces is not one this app opens). ' +
+  'This app will not open a workspace it cannot check against them, and has changed nothing of what is saved.';
+
+test('with an unreadable record nothing is opened, and nothing is written over it', async () => {
+  const calls = [];
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'saved_cores') return unreadable;
+    if (command === 'connect_core') throw refusal;
+  });
+  try {
+    const document = dom.window.document;
+    const status = document.querySelector('[role="status"]');
+    // On opening, the record is reported as unusable rather than as a first
+    // launch, and no Workspace is listed to tap.
+    assert.match(status.textContent, /could not be used \(one of its Workspaces is not one this app opens\)/);
+    assert.doesNotMatch(status.textContent, /to begin/);
+    assert.equal(document.querySelectorAll('#saved-list li').length, 0);
+    assert.equal(document.querySelector('#saved-cores').hidden, true);
+
+    // Connecting is refused, and the page says so rather than opening.
+    document.querySelector('#core-url').value = 'https://one.example.ts.net';
+    submit(dom);
+    await settle();
+    assert.match(status.textContent, /will not open a workspace it cannot check/);
+    assert.equal(status.dataset.error, 'true');
+    assert.doesNotMatch(status.textContent, /Opening your workspace|Found it/);
+    // Nothing offers to open it anyway, and nothing offers to discard the
+    // record: losing what is saved is not this page's to offer.
+    assert.equal(document.querySelector('#identity-open'), null);
+    assert.equal(document.querySelector('#open-unsaved').hidden, true);
+    assert.equal(
+      [...document.querySelectorAll('button')].some((button) => /reset|discard|forget all|clear/i.test(button.textContent)),
+      false,
+    );
+    // The field keeps what was typed, so the address is not lost either.
+    assert.equal(document.querySelector('#core-url').value, 'https://one.example.ts.net');
+    assert.equal(document.querySelector('#connect-button').disabled, false);
+    // Only the read and the one refused connect: nothing wrote.
+    assert.deepEqual(
+      calls.map((call) => call.command),
+      ['saved_cores', 'connect_core'],
+    );
+  } finally { dom.window.close(); }
+});
+
+test('a first launch is not an unreadable record: the first Workspace opens and is kept', async () => {
+  const calls = [];
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'saved_cores') return { state: 'never', profiles: [] };
+    if (command === 'connect_core')
+      return { url: args.url.trim(), opened: true, identity: 'known', profile: 'core-1', saved: true };
+  });
+  try {
+    const document = dom.window.document;
+    const status = document.querySelector('[role="status"]');
+    assert.match(status.textContent, /Enter your workspace address/);
+    document.querySelector('#core-url').value = 'https://one.example.ts.net';
+    submit(dom);
+    await settle();
+    assert.equal(calls.at(-1).command, 'connect_core');
+    assert.match(status.textContent, /Found it. Opening your workspace/);
+  } finally { dom.window.close(); }
+});

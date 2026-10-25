@@ -74,16 +74,25 @@ async fn connect_core(
     let core = core_url::parse(&url)?;
     let workspace = check_health(&state.client, &core).await?;
     let saved = read_profiles(&app);
-    // A record that could not be read answers no profiles. Building a list
-    // from that and writing it would replace every Workspace the record still
-    // holds -- for what may be a passing read error, or a record a newer
-    // build wrote. So this opens the Workspace, writes nothing, and says
-    // which. The comment in `core_profiles::save_with` names this failure;
-    // guarding only that write was never enough, because by the time it runs
-    // the list it was handed is already empty. (`rename_core` and
-    // `remove_core` reach no write at all from such a record: the Workspace
-    // they were asked about is not in an empty list, and they answer that.)
-    let replaceable = core_profiles::may_replace(&saved);
+    // A record that could not be read answers no profiles, and nothing may
+    // be decided from it: not whether this address is one of the saved
+    // Workspaces, not which Workspace answered there before, and not what a
+    // list built from it would replace. So the connection is refused here --
+    // before the window is pointed anywhere and before anything is written --
+    // and the record is left exactly as it is. Opening anyway would be the
+    // draft-sharing case this slice refuses, with the check that prevents it
+    // switched off; writing anyway would put this one Workspace over a record
+    // that may still hold sixteen. The comment in `core_profiles::save_with`
+    // named this failure while guarding only its own oversize write, which
+    // was never enough: by the time that write runs the list it was handed is
+    // already empty. (`rename_core` and `remove_core` reach no write from
+    // such a record either: the Workspace they were asked about is not in an
+    // empty list, and they answer that.)
+    if let Some(reason) = core_profiles::unusable(&saved) {
+        return Err(format!(
+            "The Workspaces saved on this iPhone could not be read ({reason}). This app will not open a workspace it cannot check against them, and has changed nothing of what is saved."
+        ));
+    }
     let mut profiles = saved.profiles().to_vec();
     // The saved Workspace this is: the one the page named, or, when it named
     // none, whichever is saved at this same address. Looking the address up
@@ -140,22 +149,13 @@ async fn connect_core(
             id
         }
     };
-    let written = if replaceable {
-        saved_core_file(&app)
-            .ok_or_else(|| std::io::Error::other("this app has no data folder to keep it in"))
-            .and_then(|file| core_profiles::save(&file, &profiles, Some(&selected_id)))
-    } else {
-        Err(std::io::Error::other(
-            "the Workspaces saved on this iPhone could not be read, so this was not written over them",
-        ))
-    };
+    let written = saved_core_file(&app)
+        .ok_or_else(|| std::io::Error::other("this app has no data folder to keep it in"))
+        .and_then(|file| core_profiles::save(&file, &profiles, Some(&selected_id)));
     let mut answer = serde_json::json!({
         "url": core.as_str(),
         "opened": true,
-        // Nothing was compared when the list could not be read: there was no
-        // saved Workspace to compare this one against, which is not the same
-        // as having found it unchanged.
-        "identity": if replaceable { "known" } else { "unknown" },
+        "identity": "known",
         "profile": selected_id,
         "workspaceId": workspace,
         "saved": written.is_ok(),

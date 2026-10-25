@@ -202,17 +202,24 @@ pub fn identity(known: Option<&str>, answered: Option<&str>) -> Identity {
     }
 }
 
-/// Whether what was read may be replaced by a list built from it.
+/// Why what was read cannot be used, when it cannot.
 ///
-/// `Unreadable` may not: it answers no profiles, so a list built from it
-/// holds only whatever is being added, and writing that replaces every
-/// Workspace the record still holds -- up to sixteen names and the
-/// `workspaceId`s the refusal depends on -- for a record that may be a
-/// passing read error, or one a newer build wrote. The record is left as it
-/// is; `read` keeps answering `Unreadable`, and a person can be told that
-/// rather than quietly losing the list.
-pub fn may_replace(saved: &Saved) -> bool {
-    !matches!(saved, Saved::Unreadable(_))
+/// `Unreadable` answers no profiles, so nothing may be decided from it: not
+/// whether this address is one of the saved Workspaces, not which Workspace
+/// answered there before, and not what a list built from it would replace.
+/// A connection is refused while that is so, rather than opening a Workspace
+/// whose identity cannot be checked or writing one Workspace over a record
+/// that still holds up to sixteen. The record is left exactly as it is,
+/// byte for byte; a passing read error passes, and a record a newer build
+/// wrote stays that build's to read.
+///
+/// `Never` is not this: nothing was ever saved, so there is nothing to check
+/// against and nothing to lose, and the first Workspace is written normally.
+pub fn unusable(saved: &Saved) -> Option<&str> {
+    match saved {
+        Saved::Unreadable(reason) => Some(reason),
+        Saved::Never | Saved::Profiles { .. } => None,
+    }
 }
 
 /// A name for a Workspace nobody has named yet: its host, which is what the
@@ -544,15 +551,22 @@ mod tests {
     }
 
     #[test]
-    fn a_record_that_could_not_be_read_is_never_replaced_by_a_list_built_from_it() {
-        // Unreadable answers no profiles, so anything built from it would
-        // replace the whole record with just what is being added.
-        assert!(!may_replace(&Saved::Unreadable("it could not be read (...)".into())));
-        assert!(may_replace(&Saved::Never), "a first launch has nothing to lose");
-        assert!(may_replace(&Saved::Profiles {
-            profiles: vec![profile("core-1", "Home", "https://one.example.ts.net", None)],
-            selected: None,
-        }));
+    fn a_record_that_could_not_be_read_is_usable_for_nothing() {
+        // Nothing may be decided from it: not whether an address is saved,
+        // not which Workspace answered there, not what writing would replace.
+        assert_eq!(
+            unusable(&Saved::Unreadable("it could not be read (...)".into())),
+            Some("it could not be read (...)")
+        );
+        // A first launch is not that: nothing saved, nothing to lose.
+        assert_eq!(unusable(&Saved::Never), None);
+        assert_eq!(
+            unusable(&Saved::Profiles {
+                profiles: vec![profile("core-1", "Home", "https://one.example.ts.net", None)],
+                selected: None,
+            }),
+            None
+        );
     }
 
     #[test]
