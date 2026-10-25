@@ -143,5 +143,12 @@ async fn a_projects_overrides_reach_only_new_agents_in_it_and_null_inherits_agai
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = call(&router, "POST", "/api/projects/no-such-project/agent-defaults", Some(json!({"harness":"codex"}))).await;
     assert!(!status.is_success(), "{status}");
+    // An archived project's defaults are not changed, as nothing else of it is.
+    let (status, _) = call(&router, "PATCH", &format!("/api/projects/{id}"), Some(json!({"archived":true}))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, archived) = call(&router, "POST", &overrides, Some(json!({"harness":"claude"}))).await;
+    assert!(!status.is_success() && archived["error"].as_str().unwrap_or_default().contains("archived"), "{status} {archived}");
+    let (_, still) = call(&router, "GET", &format!("/api/agent-defaults?projectId={id}"), None).await;
+    assert_eq!(still["project"]["saved"], json!({"harness":"codex"}), "unchanged: {still}");
     assert_eq!(ws.store.agents().unwrap().len(), 4, "refused requests created nothing");
 }

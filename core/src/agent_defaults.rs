@@ -270,7 +270,8 @@ async fn set_project_defaults(State(ws): State<Arc<Workspace>>, Path(id): Path<S
     let _permit = ws.admission.enter_work()?;
     let change: Change = serde_json::from_value(change).map_err(|e| anyhow::anyhow!("Invalid defaults: {e}"))?;
     let answer = ws.stored(move |s| {
-        s.project(&id)?;
+        // As other changes to a project: an archived one is not changed (review 404bdbd3).
+        s.ensure_project_assignable(&id)?;
         let next = change.apply(s.project_agent_defaults(&id)?);
         next.validate()?;
         s.save_project_agent_defaults(&id, &next)?;
