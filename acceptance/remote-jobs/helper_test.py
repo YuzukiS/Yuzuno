@@ -161,7 +161,9 @@ class HelperTests(unittest.TestCase):
         reads a terminal result as settled and lets the attempt's reservation
         go, while its group may still be running. Once the machine can be
         asked again, this same attempt settles on the path that already
-        exists.
+        exists -- as a cancel of the same attempt. The exit code the command
+        really had is not recovered: it was never written, and nothing here
+        reconstructs it.
 
         The hook is named when the attempt starts, so its supervisor inherits
         it, but the file appears only once the command is running: enumeration
@@ -197,6 +199,41 @@ class HelperTests(unittest.TestCase):
         self.call(self.bound(attempt, "cancel"))
         settled = self.settle(attempt)
         self.assertEqual(settled["result"]["status"], "cancelled", settled)
+
+    def test_a_stop_that_reached_nothing_is_retried_and_converges_when_the_machine_can_be_asked(self):
+        """The other half of the same control flow (T-186): the command is
+        still running, so the timeout's own first stop is the one that fails.
+        `why` is set once, so without a retry that single failed stop was the
+        last one ever asked for -- the group would keep running and the
+        attempt would never converge, even after the machine could be asked
+        again. The case above exits on its own and does not exercise this.
+        """
+        unreadable = Path(self.tmp.name) / "pids-unreadable"
+        blind_env = {"YUZUNO_JOBS_PIDS_UNREADABLE_FILE": str(unreadable)}
+        attempt = self.attempt("sleep 30", timeout=2)
+        started = self.call(dict(attempt, action="start"), env_extra=blind_env)
+        self.assertIn(started["status"], ("started", "running"), started)
+        pid = started["started"]["pid"]
+        folder = self.folder(attempt)
+        # Blind before the deadline, so it is the timeout's first stop that
+        # reaches nothing.
+        unreadable.write_text("while this exists, the machine cannot be asked\n")
+        # Past the deadline and past one whole BLIND_LIMIT of failing to ask.
+        time.sleep(9)
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            self.fail("nothing is signalled while the machine cannot be asked, so it still runs")
+        self.assertFalse((folder / "result.json").exists(),
+                         "and nothing terminal is written for it")
+
+        # Asked again: the stop that reached nothing is asked for again, and
+        # this same attempt converges on its timeout.
+        unreadable.unlink()
+        settled = self.settle(attempt, seconds=30)
+        self.assertEqual(settled["result"]["status"], "failed", settled)
+        self.assertIn("timeout", settled["result"]["reason"], settled)
+        self.assertTrue(gone(pid), "its command is stopped")
 
     def attempt(self, script, timeout=60, workspace="ws-1", limits=None):
         spec = {"argv": ["/bin/sh", "-c", script], "cwd": str(self.work), "env": {"PATH": "/usr/bin:/bin"},
