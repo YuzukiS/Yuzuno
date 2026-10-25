@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { LoaderCircle, RefreshCw } from "lucide-react";
 import { readRuntime, runtimeView, type Fact, type MachineFacts, type RuntimeRead } from "./runtime-status";
 import { ClaudeMcpStatus } from "./ClaudeMcpStatus";
+import { CodexMcpStatus } from "./CodexMcpStatus";
 import type { Agent } from "./types";
 import "./runtime-section.css";
 
@@ -63,45 +64,52 @@ function MachineCard({ machine }: { machine: MachineFacts }) {
   );
 }
 
-/** MCP services as each Claude Code session reported them (T-191). One
- * Agent at a time: opening shows what its last read found and asks nothing;
- * only Refresh asks that Agent's session. Harnesses without a status report
- * are named, not guessed. */
+/** MCP services as each Agent's harness reported them (T-191), one Agent at
+ * a time. Claude Code: opening shows its session's last report and asks
+ * nothing; only Refresh asks that session. Codex: the startup reports its
+ * connection received; reading asks Codex nothing. A harness without a
+ * report is named, not guessed. */
 function McpServices({ agents }: { agents: Agent[] }) {
   const open = agents.filter((agent) => !agent.closedAt);
-  const claude = open.filter((agent) => agent.harness === "claude");
-  const others = open.length - claude.length;
+  const listed = open.filter((agent) => agent.harness === "claude" || (agent.harness ?? "codex") === "codex");
+  const others = open.length - listed.length;
   const [chosen, setChosen] = useState("");
-  const agent = claude.find((item) => item.id === chosen) ?? claude[0];
+  const agent = listed.find((item) => item.id === chosen) ?? listed[0];
   const where = (item: Agent) => (item.remote ? item.remote.machine.name : "Core host");
+  const label = (item: Agent) => `${item.name} · ${item.harness === "claude" ? "Claude Code" : "Codex"} · ${where(item)}`;
   return (
     <section className="runtime-group runtime-mcp" aria-labelledby="runtime-mcp">
       <h4 id="runtime-mcp">MCP services</h4>
       <p className="runtime-note">
-        Whether each Claude Code session reached its MCP services, as it last reported. Showing an Agent asks
-        nothing; Refresh asks that session once. Configuration and sign-in stay in Claude Code.
+        As each Agent's harness reported them. Claude Code: its session's last report; Refresh asks that session
+        once. Codex: the startup reports its connection received; reading asks Codex nothing. Showing an Agent
+        asks nothing. Configuration and sign-in stay in each CLI.
       </p>
       {agent ? (
         <>
           <label className="runtime-mcp-agent">
             <span>Agent</span>
             <select className="settings-select" value={agent.id} onChange={(event) => setChosen(event.target.value)}>
-              {claude.map((item) => (
+              {listed.map((item) => (
                 <option key={item.id} value={item.id}>
-                  {item.name} · {where(item)}
+                  {label(item)}
                 </option>
               ))}
             </select>
           </label>
-          <ClaudeMcpStatus agent={agent} cachedOnOpen heading={`${agent.name} · ${where(agent)}`} headingLevel={5} />
+          {agent.harness === "claude" ? (
+            <ClaudeMcpStatus agent={agent} cachedOnOpen heading={label(agent)} headingLevel={5} />
+          ) : (
+            <CodexMcpStatus agent={agent} heading={label(agent)} headingLevel={5} anchor={false} />
+          )}
         </>
       ) : (
-        <p className="runtime-note">No open Claude Code Agents. MCP status comes from Claude Code sessions.</p>
+        <p className="runtime-note">No open Claude Code or Codex Agents to report MCP services.</p>
       )}
       {others > 0 && (
         <p className="runtime-note">
-          {others === 1 ? "1 Codex or OpenCode Agent" : `${others} Codex or OpenCode Agents`}: these don't report MCP
-          status to Yuzuno in this version.
+          {others === 1 ? "1 OpenCode Agent" : `${others} OpenCode Agents`}: OpenCode doesn't report MCP status to
+          Yuzuno in this version.
         </p>
       )}
     </section>

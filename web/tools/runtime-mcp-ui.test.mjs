@@ -1,7 +1,8 @@
-// MCP services in Settings → Runtime & versions (T-191): one Claude Code
-// Agent at a time, opened with what its last read found (?cached=true asks
-// nothing); only Refresh asks that session. Offline is said as offline, an
-// old observation as old, and other harnesses are named, not guessed.
+// MCP services in Settings → Runtime & versions (T-191): one Agent at a
+// time. Claude Code opens with what its last read found (?cached=true asks
+// nothing) and only Refresh asks that session; Codex shows the startup
+// reports its connection received (asks Codex nothing). Offline is said as
+// offline, an old observation as old, and OpenCode is named, not guessed.
 // Fixture HTTP only; no Core.
 import "./jsdom-guard.mjs";
 import test from "node:test";
@@ -46,6 +47,7 @@ const agents = [
   agent("ume", "Ume", { connectionState: "disconnected" }),
   agent("kaki", "Kaki", { remote: { machine: { id: "box", name: "Build box", target: "builder@box.example.test", codex: "codex", defaultCwd: "/srv" } } }),
   agent("yuzu", "Yuzu", { harness: "codex" }),
+  agent("momo", "Momo", { harness: "opencode" }),
   agent("nashi", "Nashi", { closedAt: "2026-10-24T00:00:00Z" }),
 ];
 const view = (state, reason, observation = null) => ({
@@ -76,8 +78,8 @@ function mount(t, mcp) {
     const where = new URL(url, "http://isolated.test");
     const call = `${init.method ?? "GET"} ${where.pathname}${where.search}`;
     calls.push(call);
-    const match = where.pathname.match(/^\/api\/agents\/([^/]+)\/claude\/mcp-status$/);
-    const value = match ? mcp(match[1], init.method ?? "GET", where.search) : answers[where.pathname];
+    const match = where.pathname.match(/^\/api\/agents\/([^/]+)\/(claude\/mcp-status|codex\/mcp)$/);
+    const value = match ? mcp(match[1], init.method ?? "GET", where.search, match[2]) : answers[where.pathname];
     if (value === undefined) return { ok: false, status: 404, json: async () => ({}), text: async () => '{"error":"not in this fixture"}' };
     return { ok: true, status: 200, json: async () => value, text: async () => JSON.stringify(value) };
   };
@@ -88,7 +90,7 @@ function mount(t, mcp) {
     window, document, calls, errors,
     group: () => document.querySelector("#settings-runtime .runtime-mcp"),
     button: (label) => [...document.querySelectorAll("button")].find((item) => item.textContent.trim() === label || item.getAttribute("aria-label") === label),
-    mcpCalls: () => calls.filter((c) => c.includes("/claude/mcp-status")),
+    mcpCalls: () => calls.filter((c) => c.includes("/claude/mcp-status") || c.includes("/codex/mcp")),
     async choose(id) {
       const select = page.group().querySelector("select");
       Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value").set.call(select, id);
@@ -112,24 +114,27 @@ test("an Agent never read shows nothing observed and asks nothing; Refresh asks 
   });
   const group = await page.open();
   await until(() => /has not been checked/.test(group.textContent), "the not-observed note");
-  // Only open Claude Code Agents are offered, each with its machine.
-  assert.deepEqual([...group.querySelectorAll("option")].map((o) => o.textContent), ["Mori · Core host", "Ume · Core host", "Kaki · Build box"]);
-  assert.match(group.querySelector("h5").textContent, /Mori · Core host/);
-  assert.match(group.textContent, /1 Codex or OpenCode Agent: these don.t report MCP status/);
+  // Open Claude Code and Codex Agents are offered, each with its harness and machine.
+  assert.deepEqual([...group.querySelectorAll("option")].map((o) => o.textContent),
+    ["Mori · Claude Code · Core host", "Ume · Claude Code · Core host", "Kaki · Claude Code · Build box", "Yuzu · Codex · Core host"]);
+  assert.match(group.querySelector("h5").textContent, /Mori · Claude Code · Core host/);
+  assert.match(group.textContent, /1 OpenCode Agent: OpenCode doesn.t report MCP status/);
   assert.deepEqual(page.mcpCalls(), ["GET /api/agents/mori/claude/mcp-status?cached=true"]);
   page.button("Refresh MCP status").click();
   await until(() => refreshed && group.querySelector(".mcp-server-list"), "the refreshed report");
   assert.match(group.textContent, /Observed ·/);
   assert.deepEqual([...group.querySelectorAll(".mcp-server-state")].map((s) => s.textContent), ["Connected", "Needs authentication"]);
   assert.deepEqual(page.mcpCalls(), ["GET /api/agents/mori/claude/mcp-status?cached=true", "POST /api/agents/mori/claude/mcp-status"]);
-  assert.ok(!page.calls.some((c) => /\/agents\/(yuzu|nashi)\//.test(c)), "no request for a Codex or closed Agent");
+  assert.ok(!page.calls.some((c) => /\/agents\/(yuzu|momo|nashi)\//.test(c)), "nothing read for an Agent not shown, an OpenCode or a closed one");
   assert.deepEqual(page.errors, []);
 });
 
 test("switching Agents shows each one's own last report: old as old, offline as offline, a remote one as not available", async (t) => {
   const old = minutesAgo(30);
-  const page = mount(t, (id, method) => {
+  const page = mount(t, (id, method, search, kind) => {
     assert.equal(method, "GET", "nothing is refreshed without a click");
+    if (kind === "codex/mcp") return { state: "observed", reason: "startup_reports", generation: 3, more: 0,
+      servers: [{ name: "files", status: "ready", error: null, failureReason: null, observedAt: old }] };
     if (id === "mori") return view("stale", "expired", observed(old, [{ name: "docs", status: "connected" }]));
     if (id === "ume") return view("unavailable", "not_connected", observed(old, [{ name: "docs", status: "connected" }]));
     return view("unavailable", "remote_unavailable");
@@ -150,10 +155,18 @@ test("switching Agents shows each one's own last report: old as old, offline as 
   await page.choose("kaki");
   await until(() => /unavailable for this remote runtime/.test(group.textContent), "Kaki's remote note");
   assert.equal(group.querySelector(".mcp-server-list"), null);
+
+  await page.choose("yuzu");
+  await until(() => group.querySelector('[aria-label="Codex MCP services"] .mcp-server-list'), "Yuzu's startup reports");
+  assert.match(group.querySelector("h5").textContent, /Yuzu · Codex · Core host/);
+  assert.equal(group.querySelector(".mcp-server-state").textContent, "Ready at startup");
+  assert.match(group.textContent, /Codex is not asked here/);
+  assert.equal(page.document.querySelectorAll("#agent-mcp-status").length, 0, "the inspector's /mcp anchor stays the inspector's");
   assert.deepEqual(page.mcpCalls(), [
     "GET /api/agents/mori/claude/mcp-status?cached=true",
     "GET /api/agents/ume/claude/mcp-status?cached=true",
     "GET /api/agents/kaki/claude/mcp-status?cached=true",
+    "GET /api/agents/yuzu/codex/mcp",
   ]);
   assert.deepEqual(page.errors, []);
 });
