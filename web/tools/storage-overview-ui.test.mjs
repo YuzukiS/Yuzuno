@@ -86,11 +86,16 @@ function mount(seed = {}, { tasks = { tasks: [], hasMore: false } } = {}) {
 
 const managed = { managed: true, storage: { releaseBytes: 314572800, backupBytes: 20971520, retainedReleases: 3, keepReleases: 3 } };
 const seed = {
-  "yuzuno.composer.v1:agent-a": JSON.stringify({ version: 1, nextNumber: 2, parts: [{ kind: "text", text: "secret draft text" }, { kind: "paste", id: "p1", number: 1, bodyId: "b1" }] }),
-  "yuzuno.paste.v1:agent-a:b1": "secret pasted body",
-  "yuzuno.composer.v1:agent-b": JSON.stringify({ version: 1, nextNumber: 1, parts: [] }),
-  "yuzuno.composer.v1:agent-c": "{damaged",
-  "yuzuno.outbox": JSON.stringify({ "agent-a:composer": { text: "secret outbox text" } }),
+  [`yuzuno.composer.v1:${JSON.stringify(["ws-1", "agent-a"])}`]: JSON.stringify({ version: 1, nextNumber: 2, parts: [{ kind: "text", text: "secret draft text" }, { kind: "paste", id: "p1", number: 1, bodyId: "b1" }] }),
+  [`yuzuno.paste.v1:${JSON.stringify(["ws-1", "agent-a"])}:b1`]: "secret pasted body",
+  [`yuzuno.composer.v1:${JSON.stringify(["ws-1", "agent-b"])}`]: JSON.stringify({ version: 1, nextNumber: 1, parts: [] }),
+  [`yuzuno.composer.v1:${JSON.stringify(["ws-1", "agent-c"])}`]: "{damaged",
+  // Unsent messages are kept per Workspace (T-195). This view is the
+  // device's, so it counts every Workspace's and says so as one number.
+  "yuzuno.outbox": JSON.stringify({
+    "ws-1": { "agent-a:composer": { clientMessageId: "m1", text: "secret outbox text" } },
+    "ws-2": { "agent-a:composer": { clientMessageId: "m2", text: "another Workspace's secret" } },
+  }),
   "yuzuno.appearance": JSON.stringify({ theme: "dark" }),
   "yuzuno.future-feature.v9": "1",
   "another-app": "x",
@@ -107,8 +112,9 @@ test("opening it only reads: this device by group and Core's overview once, with
   assert.deepEqual(Object.keys(groups), ["unsent", "drafts", "preferences", "other", "foreign"]);
   assert.match(groups.drafts, /4 entries/);
   assert.match(groups.unsent, /1 entry/);
-  assert.match(p.text(), /1 Agent has a saved draft; 1 saved draft could not be read and is left as it is\. 1 message is waiting/);
-  for (const secret of ["secret draft text", "secret pasted body", "secret outbox text", "agent-a"]) assert.ok(!p.text().includes(secret), `${secret} is not shown`);
+  assert.match(p.text(), /1 Agent has a saved draft; 1 saved draft could not be read and is left as it is\. 2 messages are waiting/);
+  for (const secret of ["secret draft text", "secret pasted body", "secret outbox text", "another Workspace's secret", "agent-a", "ws-1", "ws-2"])
+    assert.ok(!p.text().includes(secret), `${secret} is not shown`);
   // The browser here reports nothing: said so, never a size of 0.
   assert.match(p.text(), /This browser does not report how much it keeps for this site\./);
   assert.deepEqual(p.zeros(), [], "nothing unknown is shown as 0");

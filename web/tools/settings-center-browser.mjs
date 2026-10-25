@@ -30,7 +30,9 @@ page.on('console', (message) => { if (message.type() === 'error' && /TypeError|R
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png' };
 await context.addInitScript(() => {
   localStorage.setItem('yuzuno.selected', JSON.stringify('cedar'));
-  localStorage.setItem('yuzuno.composer.v1:cedar', JSON.stringify({ version: 1, parts: [{ kind: 'text', text: 'Keep this draft' }] }));
+  // Saved under the Workspace and the Agent it was written in (T-195); this
+  // fixture's /api/workspace says 'settings-fixture'.
+  localStorage.setItem('yuzuno.composer.v1:["settings-fixture","cedar"]', JSON.stringify({ version: 1, parts: [{ kind: 'text', text: 'Keep this draft' }] }));
 });
 await context.route('**/*', async (route) => {
   const request = route.request(), url = new URL(request.url());
@@ -50,6 +52,7 @@ await context.route('**/*', async (route) => {
   if (/\/projects\/[^/]+\/home-editors$/.test(url.pathname)) return respond({ version: 0, editorAgentIds: null });
   if (url.pathname === '/api/collaboration/github_repositories') return respond({ links: [], repositories: [], refreshing: false });
   if (/\/claude\/auto-continue$/.test(url.pathname)) return respond({ workspace: true, agent: null, enabled: true, intent: null, stopped: null });
+  if (url.pathname === '/api/storage') return respond({ format: 1, readAt: '2026-10-24T22:00:00Z', dataDir: '/fixture/data', entries: [], unreadable: null, database: { pageSize: 4096, pages: 10, freePages: 0 }, jobs: { total: 0, unfinished: 0 }, native: [], notInBackup: [] });
   switch (url.pathname) {
     case '/api/health': return respond({ product: 'yuzuno', application: 'yuzuno-next', workspaceId: 'settings-fixture', releaseId: 'fixture' });
     case '/api/workspace': return respond({ agents, projects, projectUsage: {}, runtime: { connected: true }, defaultCwd: '/fixture', workspace: { id: 'settings-fixture' } });
@@ -145,7 +148,9 @@ try {
       await picker.focus();
       await page.keyboard.press('ArrowUp');
       assert.equal(await picker.inputValue(), 'data');
-      assert.equal(await page.locator('.settings-catalog-heading h3').innerText(), 'Data, privacy & recovery');
+      // Data opens at its first entry's editor (T-187).
+      assert.equal(await page.locator('.settings-entries [aria-current="true"]').innerText(), 'Storage');
+      await page.locator('#settings-editor-storage:not([hidden])').waitFor();
       await page.keyboard.press('ArrowUp');
       assert.equal(await picker.inputValue(), 'jobs');
     }
@@ -183,7 +188,7 @@ try {
   assert.match(await appearance.getByRole('status').innerText(), /Using the defaults/);
   const protectedKeys = await page.evaluate(() => ({
     selected: localStorage.getItem('yuzuno.selected'),
-    draft: localStorage.getItem('yuzuno.composer.v1:cedar'),
+    draft: localStorage.getItem('yuzuno.composer.v1:["settings-fixture","cedar"]'),
   }));
   await page.evaluate(() => {
     const set = Storage.prototype.setItem, remove = Storage.prototype.removeItem;
@@ -222,7 +227,7 @@ try {
   assert.equal(await page.evaluate(() => localStorage.getItem('yuzuno.appearance')), null);
   assert.deepEqual(await page.evaluate(() => ({
     selected: localStorage.getItem('yuzuno.selected'),
-    draft: localStorage.getItem('yuzuno.composer.v1:cedar'),
+    draft: localStorage.getItem('yuzuno.composer.v1:["settings-fixture","cedar"]'),
   })), protectedKeys);
   check('appearance reset retry removes this override, preserves the selected Agent and draft, and never saves a defaults object');
   await closeDialog();

@@ -80,12 +80,38 @@ export function post<T>(path: string, body: unknown = {}): Promise<T> {
 }
 /** An Agent's reconnect or interrupt that is still running: a second click,
  * or the same action from another control (its menu, a notice, Escape),
- * waits for it instead of sending again (T-184). */
+ * waits for it instead of sending again (T-184).
+ *
+ * Shared within one Workspace only (T-195). A page keeps running when the
+ * Core at this address answers as a different Workspace -- a restored backup,
+ * or another Core reusing the address -- and Agent ids can repeat between
+ * them, so a key of the Agent alone would have handed the new Workspace the
+ * answer to the old Workspace's request for a different Agent. The earlier
+ * request is not aborted: it may already have taken effect, and it still
+ * clears itself when it settles. It is simply no longer anyone's to wait on.
+ *
+ * The map is not cleared when the Workspace changes, so a request under one
+ * key is the only one under it and could clear itself safely. Comparing
+ * first is guarding the property rather than relying on that: a second
+ * request under a key still held would otherwise be taken out of the map by
+ * the first one settling.
+ */
+let requestWorkspace = "";
+export function scopeRequests(workspaceId: string) {
+  requestWorkspace = workspaceId;
+}
 const inFlight = new Map<string, Promise<unknown>>();
-function shared(key: string, request: () => Promise<unknown>): Promise<unknown> {
+function shared(action: string, request: () => Promise<unknown>): Promise<unknown> {
+  const key = `${requestWorkspace}\n${action}`;
   const current = inFlight.get(key);
   if (current) return current;
-  const started = request().finally(() => inFlight.delete(key));
+  // Only this request clears itself. Going to another Workspace and back
+  // (A -> B -> A) can start a second request under the same key while the
+  // first is still running; a plain delete would then have taken the newer
+  // one out and let a third click send again.
+  const started: Promise<unknown> = request().finally(() => {
+    if (inFlight.get(key) === started) inFlight.delete(key);
+  });
   inFlight.set(key, started);
   return started;
 }

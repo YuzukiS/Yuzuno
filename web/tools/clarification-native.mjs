@@ -309,7 +309,24 @@ try {
     );
     assert.equal(report.receipt.status, "accepted");
     const draft = await page.evaluate(
-      (id) => JSON.parse(localStorage.getItem("yuzuno.composer.v1:" + id)),
+      (id) => {
+        // A draft is saved under the Workspace and the Agent (T-195); this
+        // page is in one Workspace, so the key is the one naming this Agent.
+        const prefix = "yuzuno.composer.v1:";
+        for (let index = 0; index < localStorage.length; index++) {
+          const key = localStorage.key(index);
+          if (!key || !key.startsWith(prefix)) continue;
+          let parsed;
+          try {
+            parsed = JSON.parse(key.slice(prefix.length));
+          } catch {
+            continue;
+          }
+          if (Array.isArray(parsed) && parsed.length === 2 && parsed[1] === id)
+            return JSON.parse(localStorage.getItem(key) || "null");
+        }
+        return null;
+      },
       agent.id,
     );
     assert.equal(

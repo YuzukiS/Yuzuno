@@ -83,7 +83,8 @@ function mount(t, answers) {
     link: (label) => [...document.querySelectorAll("#settings-about a")].find((a) => a.textContent.trim() === label),
   };
   page.open = async () => {
-    (await until(() => page.button("Open About & help"), "Updates & about offers About & help")).click();
+    // In Updates & about's row of entries (T-187).
+    (await until(() => [...document.querySelectorAll(".settings-entries button")].find((b) => b.textContent === "About & help"), "Updates & about offers About & help")).click();
     return until(() => page.row("This version"), "About & help is shown");
   };
   return page;

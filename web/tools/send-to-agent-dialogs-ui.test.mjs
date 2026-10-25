@@ -64,7 +64,11 @@ async function mount({ turns = [] } = {}) {
   w.EventSource = class { addEventListener() {} close() {} };
   w.HTMLElement.prototype.scrollIntoView = () => {};
   w.HTMLElement.prototype.scrollTo = () => {};
-  w.localStorage.setItem("yuzuno.composer.v1:b", JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "Hana's own note." }] }));
+  // Saved under the Workspace and Agent it was written in (T-195).
+  w.localStorage.setItem(
+    `yuzuno.composer.v1:${JSON.stringify(["fixture", "b"])}`,
+    JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "Hana's own note." }] }),
+  );
   const project = { id: "p", name: "App", defaultDirs: {}, createdAt: "", updatedAt: "" };
   const response = (body) => ({ ok: true, status: 200, json: async () => structuredClone(body), text: async () => JSON.stringify(body) });
   w.fetch = async (url, init = {}) => {
