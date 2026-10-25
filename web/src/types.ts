@@ -27,6 +27,9 @@ export interface Agent {
   /** When the user disconnected this open Agent (T-184): its native session
    * stays stopped, and nothing starts it, until they reconnect it. */
   disconnectedAt?: string | null;
+  /** Disconnected, but its SSH machine's host didn't confirm the native
+   * runtime stopped; held as disconnected all the same. */
+  disconnectUnconfirmed?: boolean;
   unreadCount: number;
   pendingCount: number;
   lastMessage?: string;

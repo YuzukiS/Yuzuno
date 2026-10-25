@@ -36,6 +36,7 @@ export function DisconnectAgentDialog({
   }, [agentId, open]);
   if (!agent) return null;
   const harness = agent.harness === "claude" ? "Claude Code" : "Codex";
+  const machine = agent.remote?.machine.name;
   async function confirm() {
     if (busy || !agent) return;
     const target = agent.id;
@@ -60,7 +61,9 @@ export function DisconnectAgentDialog({
       description="Nothing changes until you confirm."
     >
       <div className="end-missing-dialog disconnect-dialog">
-        <p>This stops the agent’s {harness} session on this computer. The agent stays open:</p>
+        <p>
+          This stops the agent’s {harness} session on {machine || "this computer"}. The agent stays open:
+        </p>
         <ul>
           <li>its conversation, settings, permissions, tasks and your drafts are kept;</li>
           <li>Jobs it started keep running, and their results wait for it;</li>
@@ -73,6 +76,12 @@ export function DisconnectAgentDialog({
           It is disconnected only if Core can confirm it is idle: no turn, request, unconfirmed message or background
           work. Otherwise nothing changes, and you are told why. To end the agent instead, use Close.
         </p>
+        {machine && (
+          <p>
+            {machine} is asked to stop Claude and to say once it has. If it can’t say so, you are told, and the agent
+            stays disconnected until you press Reconnect.
+          </p>
+        )}
         {error && (
           <p role="alert" className="recovery-error">
             {error}

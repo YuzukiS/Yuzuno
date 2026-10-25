@@ -11,6 +11,16 @@
 //! to be none. Anything unknown refuses, and a refusal changes nothing. The
 //! transport is closed as the update detach closes it, for this generation
 //! only, so a late event of the old connection changes nothing.
+//!
+//! A Claude Agent on an SSH machine is checked the same way, through its
+//! host there. Ending SSH proves only that SSH ended, so the host is asked to
+//! stop the native runtime and answers once it has exited
+//! (runtimes/claude/remote-host.mjs `host_stop`). The user's choice is
+//! recorded before asking, marked unconfirmed: a host that refuses, or is too
+//! old to know the request, withdraws it and changes nothing; a confirmed
+//! stop makes it an ordinary Disconnect; anything else (no answer, SSH lost,
+//! a stop the host can't confirm, a Core restart) leaves it held, unconfirmed,
+//! until the user's Reconnect.
 use crate::{
     model::{now, Agent, AgentDetail},
     store::Activity,
@@ -35,11 +45,11 @@ pub(crate) fn refusal(detail: &AgentDetail) -> Option<String> {
     if agent.disconnected_at.is_some() {
         return Some("you already disconnected this Agent".into());
     }
-    if agent.remote.is_some() {
-        return Some("an Agent on an SSH machine can't be disconnected yet: its native runtime there outlives this connection".into());
-    }
     if !matches!(agent.harness.as_str(), "codex" | "claude") {
         return Some("only Codex and Claude Code Agents can be disconnected in this version: processes an OpenCode tool started can outlive OpenCode".into());
+    }
+    if agent.remote.is_some() && agent.harness != "claude" {
+        return Some("a Codex Agent on an SSH machine can't be disconnected yet: its runtime there is stopped another way".into());
     }
     if agent.connection_state != "connected" {
         return Some("this Agent isn't connected, so there is no native session to stop".into());
@@ -143,9 +153,13 @@ impl Workspace {
                 if let Some(count) = self.background_shells.claude_active(id, connection.generation).filter(|count| *count > 0) {
                     bail!("Not disconnected: {count} Claude background task(s) are still running. Nothing changed.");
                 }
-                self.detach_idle_claude(id, &connection)
-                    .await
-                    .map_err(|error| anyhow!("Not disconnected: {error}. The connection was kept if it could be."))?;
+                match &detail.agent.remote {
+                    Some(remote) => self.detach_idle_remote_claude(id, &connection, &remote.machine.name).await?,
+                    None => self
+                        .detach_idle_claude(id, &connection)
+                        .await
+                        .map_err(|error| anyhow!("Not disconnected: {error}. The connection was kept if it could be."))?,
+                }
             }
             other => bail!("Not disconnected: {other} Agents can't be disconnected. Nothing changed."),
         }
@@ -153,6 +167,7 @@ impl Workspace {
         let stamp = at.clone();
         self.record_meta(id, "agent/disconnected", json!({"at": at}), move |m| {
             m.agent.disconnected_at = Some(stamp);
+            m.agent.disconnect_unconfirmed = false;
             m.agent.status = "offline".into();
             m.agent.connection_state = "disconnected".into();
         })
@@ -165,14 +180,94 @@ impl Workspace {
     /// The user's Reconnect: an Agent they disconnected may be started again
     /// from now on. Only this, Close and Reopen clear their choice.
     pub(crate) async fn clear_disconnect(&self, id: &str) -> Result<()> {
-        if self.listed(id).await?.disconnected_at.is_none() {
+        let agent = self.listed(id).await?;
+        if agent.disconnected_at.is_none() && !agent.disconnect_unconfirmed {
             return Ok(());
         }
         self.record_meta(id, "agent/reconnectChosen", json!({}), |m| {
             m.agent.disconnected_at = None;
+            m.agent.disconnect_unconfirmed = false;
         })
         .await?;
         self.changed(id);
+        Ok(())
+    }
+
+    /// As detach_idle_claude (updates/lifecycle.rs), for a Claude Agent on an
+    /// SSH machine: idle by the bridge there and by what this generation has
+    /// reported, then its host stops the bridge and says whether it exited
+    /// cleanly. The user's choice is recorded first, unconfirmed. Only a
+    /// refusal withdraws it (nothing changed); only a confirmed stop returns
+    /// Ok. Otherwise this end is closed and the choice stays, unconfirmed.
+    async fn detach_idle_remote_claude(self: &Arc<Self>, id: &str, connection: &crate::claude::Connection, machine: &str) -> Result<()> {
+        let kept = |error: anyhow::Error| anyhow!("Not disconnected: {error}. Nothing changed.");
+        let status = connection.bridge.request(json!({"op": "status"})).await.map_err(kept)?;
+        if !crate::updates::lifecycle::claude_idle(&status) {
+            bail!("Not disconnected: Claude on {machine} hasn't confirmed it is idle. Nothing changed.");
+        }
+        let events = connection.events.as_ref().context("Not disconnected: the native event barrier is missing. Nothing changed.")?;
+        events.drain().await.map_err(kept)?;
+        // What this generation reported meanwhile: the record and its
+        // background tasks (the bridge's status doesn't count those).
+        if let Some(reason) = refusal(&self.detail(id).await?) {
+            bail!("Not disconnected: {reason}. Nothing changed.");
+        }
+        if let Some(count) = self.background_shells.claude_active(id, connection.generation).filter(|count| *count > 0) {
+            bail!("Not disconnected: {count} Claude background task(s) are still running. Nothing changed.");
+        }
+        let at = now();
+        self.record_meta(id, "agent/disconnectRequested", json!({"at": at}), move |m| {
+            m.agent.disconnected_at = Some(at);
+            m.agent.disconnect_unconfirmed = true;
+        })
+        .await
+        .map_err(kept)?;
+        self.changed(id);
+        let reason = |answer: &Value| answer["reason"].as_str().unwrap_or("no reason given").to_owned();
+        // None: it stopped. Some(Ok(why)): it refused, and nothing stopped.
+        // Some(Err(why)): whether it stopped isn't known.
+        let outcome = match connection.bridge.request(json!({"op": "host_stop"})).await {
+            Ok(answer) if answer["stopped"] == true => None,
+            Ok(answer) if answer["stopped"] == false => Some(Ok(format!("Claude's host on {machine} refused: {}", reason(&answer)))),
+            Ok(answer) => Some(Err(reason(&answer))),
+            // Answered by the bridge itself: a host from an earlier Core
+            // passed the request on, and nothing stopped.
+            Err(error) if error.downcast_ref::<crate::claude::Rejected>().is_some() => Some(Ok(format!(
+                "the Claude host on {machine} is from an earlier version and can't confirm a stop ({error})"
+            ))),
+            Err(error) => Some(Err(error.to_string())),
+        };
+        let unknown = match outcome {
+            None => None,
+            Some(Err(why)) => Some(why),
+            Some(Ok(why)) => {
+                self.record_meta(id, "agent/disconnectRefused", json!({}), |m| {
+                    m.agent.disconnected_at = None;
+                    m.agent.disconnect_unconfirmed = false;
+                })
+                .await
+                .map_err(|error| anyhow!("Not disconnected: {why}, but your choice couldn't be withdrawn ({error}); it stays disconnected until you press Reconnect"))?;
+                self.changed(id);
+                bail!("Not disconnected: {why}. Nothing changed.");
+            }
+        };
+        // The host is stopping, or its answer was lost: this generation ends.
+        events.mark_closing();
+        let _ = connection.bridge.close_and_wait().await;
+        let _ = events.drain().await;
+        {
+            let _owned = self.owner(id).await;
+            let mut connections = self.claudes.lock().unwrap();
+            if connections.get(id).is_some_and(|c| c.generation == connection.generation) {
+                connections.remove(id);
+            }
+        }
+        if let Some(why) = unknown {
+            self.changed(id);
+            bail!(
+                "Not confirmed: Claude on {machine} didn't confirm it stopped ({why}). Yuzuno closed its connection and keeps this Agent disconnected: nothing starts it until you press Reconnect."
+            );
+        }
         Ok(())
     }
 
@@ -205,6 +300,7 @@ impl Workspace {
 mod tests {
     use super::*;
     use crate::model::{CodexHandoff, MessageReceipt, MissingTurns, PendingRequest};
+    use crate::workspace::Workspace;
 
     /// A local, connected, idle Agent with one finished Turn, as the
     /// update probe's fixture has it (updates/storage.rs).
@@ -248,6 +344,9 @@ mod tests {
             change(&mut d);
             assert!(refusal(&d).is_some(), "{what} must refuse");
         }
+        let mut ssh_claude = detail("claude");
+        ssh_claude.agent.remote = Some(crate::model::RemoteAgent::new(crate::remote::RemoteMachine { name: "lab".into(), ..Default::default() }));
+        assert_eq!(refusal(&ssh_claude), None, "a Claude Agent on an SSH machine goes on to its host's checks");
         let mut claude = detail("claude");
         claude.turns[0]["items"] = json!([{"id": "call", "subAgent": {"status": "running"}}]);
         assert!(refusal(&claude).is_some(), "a Claude sub-agent still running refuses");
@@ -272,6 +371,145 @@ mod tests {
         }
         for running in [json!("active"), json!("somethingNew"), Value::Null] {
             assert!(!codex_thread_at_rest(&running), "{running}");
+        }
+    }
+
+    /// Stands in for SSH and a machine's Claude host (remote-host.mjs) behind
+    /// it: answers as an idle bridge, and `host_stop` as `mode` says: `ok`,
+    /// `busy`, `older` (an earlier host passes it on and its bridge refuses),
+    /// `unconfirmed`, or `lost` (SSH ends with no answer). Logs every op.
+    const HOST: &str = r#"
+const [log, mode] = process.argv.slice(2);
+const fs = require('node:fs');
+const out = v => process.stdout.write(JSON.stringify(v) + '\n');
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  const c = JSON.parse(line);
+  fs.appendFileSync(log, JSON.stringify(c) + '\n');
+  const reply = result => out({ type: 'response', id: c.id, result });
+  if (c.op === 'start') return reply({ started: true, sessionId: c.sessionId });
+  if (c.op === 'status') return reply({ ready: true, turnId: null, pendingCount: 0, configuring: false, interrupting: false });
+  if (c.op !== 'host_stop') return reply({});
+  if (mode === 'ok') return reply({ stopped: true, exit: { code: 0, signal: null } });
+  if (mode === 'busy') return reply({ stopped: false, reason: 'Claude on this machine is not idle' });
+  if (mode === 'older') return out({ type: 'response', id: c.id, error: 'Unknown operation' });
+  if (mode === 'unconfirmed') return reply({ stopped: null, reason: 'the Claude bridge on this machine only ended after SIGTERM' });
+  process.exit(0);
+});
+process.stdin.on('end', () => process.exit(0));
+"#;
+
+    /// A connected, idle Claude Agent on machine `machine` whose session is
+    /// `session-1`, over HOST in `mode`; None where Node is missing.
+    async fn ssh_claude(dir: &std::path::Path, machine: &str, mode: &str) -> Option<Arc<Workspace>> {
+        if std::process::Command::new("node").arg("--version").output().is_err() {
+            eprintln!("node is not installed; skipped");
+            return None;
+        }
+        let script = dir.join("host.cjs");
+        std::fs::write(&script, HOST).unwrap();
+        let argv = ["node".to_owned(), script.to_string_lossy().into_owned(), dir.join("ops.jsonl").to_string_lossy().into_owned(), mode.to_owned()];
+        crate::claude::REMOTE_ATTACH.lock().unwrap().push((machine.to_owned(), argv.into()));
+        let ws = Workspace::new(dir.join("data"), dir.to_string_lossy().into(), "unused".into()).unwrap();
+        let mut d = detail("claude");
+        d.agent.thread_id = None;
+        d.agent.claude_session_id = Some("session-1".into());
+        d.agent.connection_state = "disconnected".into();
+        d.agent.status = "offline".into();
+        d.agent.remote = Some(crate::model::RemoteAgent::new(crate::remote::RemoteMachine { id: machine.into(), name: "Mac mini".into(), target: "tester@192.0.2.10".into(), ..Default::default() }));
+        ws.store.insert(&d).unwrap();
+        ws.claude_ensure("a").await.unwrap();
+        assert_eq!(ws.store.detail("a").unwrap().agent.connection_state, "connected");
+        Some(ws)
+    }
+
+    fn ops(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(dir.join("ops.jsonl")).unwrap_or_default().lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap()["op"].as_str().unwrap_or_default().to_owned())
+            .filter(|op| ["start", "status", "host_stop", "send", "append"].contains(&op.as_str()))
+            .collect()
+    }
+
+    /// Ends the stand-in's process, if this generation is still open.
+    async fn close(ws: &Workspace) {
+        let open = ws.claudes.lock().unwrap().remove("a");
+        if let Some(connection) = open {
+            let _ = connection.bridge.close_and_wait().await;
+        }
+    }
+
+    async fn until(what: &str, done: impl Fn() -> bool) {
+        for _ in 0..200 {
+            if done() { return; }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("{what}");
+    }
+
+    /// T-184: an SSH Claude Agent is disconnected only once its host says the
+    /// native runtime exited; then it is an ordinary Disconnect.
+    #[tokio::test]
+    async fn an_ssh_claude_agent_is_disconnected_once_its_host_confirms_the_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(ws) = ssh_claude(dir.path(), "t184-ssh-ok", "ok").await else { return };
+        let agent = ws.disconnect_agent("a").await.unwrap();
+        assert!(agent.disconnected_at.is_some());
+        assert!(!agent.disconnect_unconfirmed);
+        assert_eq!((agent.status.as_str(), agent.connection_state.as_str()), ("offline", "disconnected"));
+        assert!(ws.claudes.lock().unwrap().get("a").is_none(), "this generation is closed");
+        assert_eq!(ops(dir.path()), ["start", "status", "host_stop"]);
+        let error = ws.send("a", "not now".into()).await.unwrap_err().to_string();
+        assert!(error.contains("disconnected"), "{error}");
+        assert_eq!(ops(dir.path()).iter().filter(|op| *op == "start").count(), 1, "nothing started it again");
+    }
+
+    /// A host that refuses, or one from an earlier Core that passes the
+    /// request to its bridge, withdraws the choice: nothing changed.
+    #[tokio::test]
+    async fn an_ssh_claude_host_that_refuses_or_is_older_changes_nothing() {
+        for (machine, mode, said) in [("t184-ssh-busy", "busy", "refused: Claude on this machine is not idle"), ("t184-ssh-older", "older", "earlier version")] {
+            let dir = tempfile::tempdir().unwrap();
+            let Some(ws) = ssh_claude(dir.path(), machine, mode).await else { return };
+            let error = ws.disconnect_agent("a").await.unwrap_err().to_string();
+            assert!(error.contains(said) && error.ends_with("Nothing changed."), "{mode}: {error}");
+            let agent = ws.store.detail("a").unwrap().agent;
+            assert!(agent.disconnected_at.is_none() && !agent.disconnect_unconfirmed, "{mode}");
+            assert_eq!(agent.connection_state, "connected", "{mode}");
+            assert!(ws.claudes.lock().unwrap().get("a").is_some(), "{mode}: the connection is kept");
+            assert_eq!(ops(dir.path()), ["start", "status", "host_stop"], "{mode}");
+            close(&ws).await;
+        }
+    }
+
+    /// A stop the host can't confirm, or an answer SSH lost, is not called a
+    /// Disconnect, yet nothing starts the Agent again: not a send, a mail
+    /// Start or recovery (claude_ensure), nor a Core restart. The user's
+    /// Reconnect resumes the same session.
+    #[tokio::test]
+    async fn an_unconfirmed_ssh_claude_stop_holds_the_agent_until_the_users_reconnect() {
+        for (machine, mode) in [("t184-ssh-unconfirmed", "unconfirmed"), ("t184-ssh-lost", "lost")] {
+            let dir = tempfile::tempdir().unwrap();
+            let Some(ws) = ssh_claude(dir.path(), machine, mode).await else { return };
+            let error = ws.disconnect_agent("a").await.unwrap_err().to_string();
+            assert!(error.starts_with("Not confirmed: Claude on Mac mini didn't confirm it stopped"), "{mode}: {error}");
+            until("this generation to close", || ws.claudes.lock().unwrap().get("a").is_none()).await;
+            let agent = ws.store.detail("a").unwrap().agent;
+            assert!(agent.disconnected_at.is_some() && agent.disconnect_unconfirmed, "{mode}: held, unconfirmed");
+            assert!(ws.send("a", "not now".into()).await.is_err(), "{mode}: a send");
+            assert!(ws.claude_ensure("a").await.is_err(), "{mode}: a mail Start or recovery");
+            drop(ws);
+            let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+            let restarted = ws.store.detail("a").unwrap().agent;
+            assert!(restarted.disconnected_at.is_some() && restarted.disconnect_unconfirmed, "{mode}: after a restart");
+            assert!(ws.claude_ensure("a").await.is_err(), "{mode}: after a restart");
+            assert_eq!(ops(dir.path()).iter().filter(|op| *op == "start").count(), 1, "{mode}: nothing started it again");
+            let reconnected = ws.reconnect("a").await.unwrap().agent;
+            assert!(reconnected.disconnected_at.is_none() && !reconnected.disconnect_unconfirmed, "{mode}");
+            assert_eq!(reconnected.connection_state, "connected", "{mode}");
+            let starts: Vec<Value> = std::fs::read_to_string(dir.path().join("ops.jsonl")).unwrap().lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap()).filter(|c| c["op"] == "start").collect();
+            assert_eq!(starts.len(), 2, "{mode}");
+            assert_eq!(starts[1]["sessionId"], "session-1", "{mode}: the same session resumes");
+            close(&ws).await;
         }
     }
 

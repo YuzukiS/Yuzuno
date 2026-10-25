@@ -191,7 +191,7 @@ impl Workspace {
                 cwd: String::new(), model: String::new(), settings: Default::default(), color: colors[count % colors.len()].into(),
                 harness: "claude".into(), claude_session_id: Some(session.clone()), opencode_session_id: None, thread_id: None, status: "offline".into(),
                 created_at: now(), updated_at: now(), unread_count: 0, pending_count: 0, last_message: None, last_seq: 0,
-                reviewed_seq: 0, rev: 0, error: None, remote: None, connection_state: "disconnected".into(), closed_at: None, disconnected_at: None,
+                reviewed_seq: 0, rev: 0, error: None, remote: None, connection_state: "disconnected".into(), closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
             },
             turns: vec![], history: None, pending: vec![], artifacts: vec![], context_usage: None,
             message_receipts: vec![], claude_runtime: None, codex_handoff: None,

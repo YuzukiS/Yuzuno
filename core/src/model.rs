@@ -280,6 +280,11 @@ pub struct Agent {
     /// recovery, a send) until their Reconnect, Close or Reopen clears this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disconnected_at: Option<String>,
+    /// The user disconnected this Agent, but its stop was not confirmed (an
+    /// SSH machine's host didn't say its runtime had exited). It is held as
+    /// disconnected all the same until their Reconnect, Close or Reopen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disconnect_unconfirmed: bool,
     pub created_at: String,
     pub updated_at: String,
     pub unread_count: u64,

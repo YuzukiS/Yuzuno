@@ -13,6 +13,13 @@
 // - A new client while the bridge still works is refused: two queries must
 //   never write one native session. An idle bridge is replaced by a fresh one
 //   so the new client starts (and resumes) a session of its own.
+// - The user's Disconnect (T-184): the client asks the host itself to stop
+//   (`host_stop`). A host whose bridge says it is idle closes it and says
+//   stopped only when it ended on its own, at once and cleanly, as when its
+//   input ends; a bridge that needed SIGTERM may have left its Claude CLI
+//   behind, so that stop is unconfirmed. Any doubt about idle refuses and
+//   changes nothing. Closing SSH alone could not tell Core the bridge had
+//   stopped.
 //
 // It reads no credentials (the installed Claude CLI owns them) and logs only
 // lifecycle events, never protocol content.
@@ -29,11 +36,24 @@ export const DENY_MESSAGE = 'Yuzuno lost its connection to this machine before a
 const IDLE_POLL_MS = Number(process.env.YUZUNO_HOST_POLL_MS || 2000);
 const FIRST_CLIENT_MS = Number(process.env.YUZUNO_HOST_FIRST_CLIENT_MS || 60_000);
 const HOST_REPLY_MS = 10_000;
+const BRIDGE_EXIT_MS = Number(process.env.YUZUNO_HOST_EXIT_MS || 8000);
+// After SIGTERM, how long a bridge's exit is still awaited before it is
+// reported as not seen.
+const BRIDGE_KILL_MS = Number(process.env.YUZUNO_HOST_KILL_MS || 5000);
+// After host_stop has answered, how long the client has to close.
+const CLIENT_CLOSE_MS = 10_000;
 const STDERR_TAIL = 16 * 1024;
 
 /** True while the bridge has work that a new query would collide with. */
 export function busy(status) {
   return !!status && !!(status.turnId || status.pendingCount || status.configuring || status.interrupting);
+}
+
+/** True only when the bridge has said it is started and has no work: an
+ * unanswered status is not idle (as Core's updates/lifecycle claude_idle). */
+export function idle(status) {
+  return !!status && status.ready === true && status.turnId === null && status.pendingCount === 0
+    && status.configuring === false && status.interrupting === false;
 }
 
 export class RemoteHost {
@@ -205,12 +225,59 @@ export class RemoteHost {
   }
 
   fromClient(socket, line) {
-    if (socket !== this.client || !this.bridge) return;
+    if (socket !== this.client) return;
     let command = null;
     try { command = JSON.parse(line); } catch {}
+    if (command?.op === 'host_stop') return void this.stopFor(socket, command.id);
+    // Once a stop is asked for, nothing more reaches the bridge.
+    if (this.stopAsked || this.stopping) {
+      if (command?.id != null) socket.write(JSON.stringify({ type: 'response', id: command.id, error: 'This Claude host is stopping.' }) + '\n');
+      return;
+    }
+    if (!this.bridge) return;
     if (command?.op === 'start') this.awaitingStart = command.id;
     if (command?.op === 'respond' && typeof command.requestId === 'string') this.pending.delete(command.requestId);
     this.bridge.stdin.write(line + '\n');
+  }
+
+  /**
+   * The user's Disconnect (T-184), asked by the attached client. Refused, with
+   * nothing changed, unless the bridge itself says it is idle, and that
+   * answer is about the same client and bridge. Commands this client sends
+   * meanwhile are refused. Then the host takes no more clients, closes the
+   * bridge, and answers `stopped: true` only if it exited by itself within
+   * BRIDGE_EXIT_MS with code 0; otherwise `stopped: null` (unconfirmed),
+   * with why. It exits once the client has closed (or a while after).
+   */
+  async stopFor(socket, id) {
+    const answer = result => { if (!socket.destroyed) socket.write(JSON.stringify({ type: 'response', id, result }) + '\n'); };
+    if (this.stopAsked || this.stopping) return answer({ stopped: false, reason: 'this Claude host is already stopping' });
+    this.stopAsked = true;
+    const bridge = this.bridge;
+    const status = await this.status();
+    const refused = socket !== this.client ? 'another connection took this Claude host over'
+      : this.stopping ? 'this Claude host is already stopping'
+      : !bridge || this.bridge !== bridge ? 'the Claude bridge on this machine changed while it was asked'
+      : !status ? "Claude on this machine didn't answer whether it is idle"
+      : !idle(status) || this.pending.size ? 'Claude on this machine is not idle' : null;
+    if (refused) {
+      this.stopAsked = false;
+      this.log('stopRefused', { reason: refused });
+      return answer({ stopped: false, reason: refused });
+    }
+    this.stopping = true;
+    clearTimeout(this.firstClient);
+    this.log('stopping', { reason: 'disconnected by the user' });
+    this.state();
+    const exit = await this.closeBridge();
+    const unconfirmed = !exit ? "the Claude bridge on this machine didn't exit, even after SIGTERM"
+      : exit.forced ? 'the Claude bridge on this machine only ended after SIGTERM, so its Claude CLI may not have stopped'
+      : exit.code !== 0 || exit.signal !== null ? `the Claude bridge on this machine exited with ${exit.signal ?? `code ${exit.code}`}` : null;
+    answer(unconfirmed ? { stopped: null, reason: unconfirmed } : { stopped: true, exit: { code: exit.code, signal: exit.signal } });
+    const finish = () => { clearTimeout(timer); this.finish('disconnected by the user'); };
+    const timer = setTimeout(finish, CLIENT_CLOSE_MS);
+    if (socket.destroyed) finish();
+    else socket.once('close', finish);
   }
 
   /** No client: deny what waits for one, let the turn end, then stop. */
@@ -253,18 +320,28 @@ export class RemoteHost {
     }
   }
 
+  /** Ends the bridge: its stdin first, SIGTERM if it hasn't exited after
+   * BRIDGE_EXIT_MS. Returns how it exited (`forced` once SIGTERM was sent),
+   * or null if no exit was seen. */
   async closeBridge() {
     const child = this.bridge;
-    if (!child) return;
+    if (!child) return null;
     this.bridge = null;
-    await new Promise(resolve => {
-      const timer = setTimeout(() => { child.kill('SIGTERM'); resolve(); }, 8000);
-      child.once('exit', () => { clearTimeout(timer); resolve(); });
-      child.stdin.end();
-    });
+    const exited = child.exitCode !== null || child.signalCode !== null
+      ? Promise.resolve({ code: child.exitCode, signal: child.signalCode })
+      : new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
+    const within = ms => Promise.race([exited, new Promise(resolve => setTimeout(() => resolve(null), ms))]);
+    child.stdin.end();
+    let exit = await within(BRIDGE_EXIT_MS);
+    if (!exit) {
+      child.kill('SIGTERM');
+      exit = await within(BRIDGE_KILL_MS);
+      if (exit) exit = { ...exit, forced: true };
+    }
     this.started = false;
     this.pending.clear();
-    this.log('bridgeClosed');
+    this.log('bridgeClosed', { exited: !!exit });
+    return exit;
   }
 
   async shutdown(reason) {
@@ -273,6 +350,12 @@ export class RemoteHost {
     clearTimeout(this.firstClient);
     this.log('stopping', { reason });
     await this.closeBridge();
+    this.finish(reason);
+  }
+
+  finish(reason) {
+    if (this.finished) return;
+    this.finished = true;
     this.client?.destroy();
     this.client = null;
     this.server?.close();
