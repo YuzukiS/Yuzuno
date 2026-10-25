@@ -106,7 +106,7 @@ def main():
         manifest.update(json.loads(out))
         (s.out / "backup-manifest.json").write_text(out)
         excluded = {e["path"] for e in manifest["excluded"]}
-        assert manifest["database"]["agents"] == 2 and len(manifest["files"]) == 5, manifest
+        assert manifest["database"]["agents"] == 2 and len(manifest["files"]) == 6, manifest
         assert "workspace.sqlite: workspace_meta collaboration.mcp.agent.*" in excluded, excluded
         assert b"synthetic-credential-" not in (backup / "workspace.sqlite").read_bytes()
         return f"{len(manifest['files'])} files, {manifest['database']['agents']} Agents, {len(excluded)} names left out"

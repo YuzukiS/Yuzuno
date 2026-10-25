@@ -32,6 +32,8 @@ serde = { version = "1", features = ["derive"] }
 # float_roundtrip: a float parsed back from the JSON written for it is the
 # same float, so records survive a write and load exactly (record_rows).
 serde_json = { version = "1", features = ["float_roundtrip"] }
+# The phone address as a QR code in Settings (T-185): one file, no dependencies.
+qrcodegen = "1.8"
 subtle = "2.6"
 tar = "0.4"
 tempfile = "3"
