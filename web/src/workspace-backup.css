@@ -89,3 +89,16 @@
   gap: 2px;
   justify-items: start;
 }
+.backup-retention-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.backup-retention-confirm {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.backup-retention-confirm p {
+  margin: 0 0 6px;
+}
