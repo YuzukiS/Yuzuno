@@ -1069,3 +1069,31 @@ fn a_stopped_automatic_pass_stays_stopped_and_says_what_it_had_removed() {
     assert!(said.contains("before it, 1 backup was removed (b-1)") && said.contains("the rest are left as they are"), "{said}");
     assert_eq!(backups_in(&folder), vec!["b-2", "b-3"]);
 }
+
+/// An operation that starts just as another ends stays in the journal: the
+/// ending one's write never lands over it (main CI 40175308220). Many rounds,
+/// each starting the second the moment the first lets go of its place.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_operation_started_as_another_ends_stays_in_the_journal() {
+    use online::Backups;
+    let root = tempfile::tempdir().unwrap();
+    for round in 0..200 {
+        let data = root.path().join(format!("w{round}"));
+        fs::create_dir(&data).unwrap();
+        let backups = Arc::new(Backups::open(&data));
+        backups.start("check", "first", json!({"path": "/a"}), |_| None, |_| Ok(json!({}))).unwrap();
+        while backups.current().is_some() {
+            std::hint::spin_loop();
+        }
+        let (_hold, gate) = std::sync::mpsc::channel::<()>();
+        let second = backups.start("check", "second", json!({"path": "/b"}), |_| None, move |_| {
+            let _ = gate.recv();
+            Ok(json!({}))
+        }).unwrap();
+        // The first one's write, if it is still to come, comes now.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let reopened = Backups::open(&data);
+        assert_eq!(reopened.get(&second.id).map(|op| op.state), Some("interrupted".to_string()),
+            "round {round}: the operation started as the first ended is missing from the journal");
+    }
+}

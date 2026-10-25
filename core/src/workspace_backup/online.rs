@@ -57,6 +57,8 @@ pub struct Backups {
     file: PathBuf,
     state: Mutex<Vec<Operation>>,
     running: Mutex<Option<(String, Arc<Control>)>>,
+    /// Held while the journal is written, so writes happen one at a time.
+    writing: Mutex<()>,
 }
 
 /// Why an operation was not started.
@@ -93,14 +95,20 @@ impl Backups {
             op.finished_at = Some(now());
             changed = true;
         }
-        let backups = Self { file, state: Mutex::new(operations), running: Mutex::new(None) };
+        let backups = Self { file, state: Mutex::new(operations), running: Mutex::new(None), writing: Mutex::new(()) };
         if changed {
             let _ = backups.save();
         }
         backups
     }
 
+    /// Writes the journal as it is now. One write at a time, each of the
+    /// operations as they are when it writes: an operation that ends releases
+    /// its place before it writes, so another may start and write meanwhile,
+    /// and an earlier copy must never land over a later one (main CI
+    /// 40175308220).
     fn save(&self) -> Result<()> {
+        let _writing = self.writing.lock().unwrap();
         let operations = self.state.lock().unwrap().clone();
         crate::updates::package::atomic_json(&self.file, &operations)
     }
