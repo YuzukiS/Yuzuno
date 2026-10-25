@@ -86,7 +86,7 @@ test("the list reads manifests only, shows this Workspace's drafts as they are, 
   const p = mount(); t.after(p.close);
   p.w.renderDrafts({ active: false, agents });
   await tick(); await tick();
-  assert.deepEqual(p.reads.filter((key) => key.startsWith("yuzuno.")), [], "hidden, it reads nothing");
+  assert.deepEqual(p.reads.filter((key) => key.startsWith("yuzuno.") && key !== "yuzuno.language"), [], "hidden, it reads no draft (only the language it is shown in)");
   p.w.renderDrafts({ active: true, agents });
   await until(() => p.row("a1"), "the list");
   assert.match(p.row("a1").textContent, /^Cedar12 characters of text, 1 pasted text, 1 image \(referenced; not saved in the file\) Show$/);
@@ -259,4 +259,50 @@ test("a ticked draft whose saved copy the browser refuses to read is named: noth
   assert.deepEqual([p.tick("a1").checked, p.tick("a2").checked], [true, true], "the choice stays");
   assert.deepEqual(p.writes, [], "nothing is written");
   assert.deepEqual(p.errors, [], "no error escapes the page");
+});
+
+// T-189: the language changed in another window. The page's own words
+// change; the drafts, their names, the shown draft and its file name stay as
+// they are, what is ticked stays ticked, and no draft is read, written or
+// downloaded for it. What a draft's own check says is said in Chinese too.
+test("switched to Chinese in another window, the page's words change and the choice, the shown draft and the asked-for file stay; nothing is read, written or downloaded", async (t) => {
+  const p = mount(); t.after(p.close);
+  const draftReads = () => p.reads.filter((key) => key !== "yuzuno.language");
+  const language = (value) => {
+    p.elsewhere("yuzuno.language", JSON.stringify({ language: value }));
+    p.w.dispatchEvent(new p.w.StorageEvent("storage", { key: "yuzuno.language" }));
+  };
+  p.w.renderDrafts({ active: true, agents });
+  await until(() => p.row("a2"));
+  p.tick("a1").click();
+  p.tick("a2").click();
+  p.row("a1").querySelector("button").click();
+  const text = await until(() => p.shown(), "the chosen draft");
+  p.button("Download .txt").click();
+  await until(() => p.saves.links.length === 1, "a download is asked for");
+  const en = p.section().textContent, read = draftReads().length;
+  language("zh-Hans");
+  await until(() => p.section().querySelector("h3").textContent === "此设备上的草稿", "shown in Chinese");
+  assert.match(p.row("a1").textContent, /^Cedar文本 12 个字符，粘贴的文本 1 段，图片 1 张（仅引用；不保存在文件中） 显示$/);
+  assert.match(p.row("a2").textContent, /^Pine（已关闭）由早期版本保存：文本 12 个字符 显示$/);
+  assert.match(p.row("a3").textContent, /^Maple无法读取（.+）；保持原样。$/, "the browser's words for a damaged draft, as it gave them");
+  assert.match(p.section().textContent, /已选择 2 份草稿。只有在下载时才会读取它们粘贴的文本。/);
+  assert.match(p.section().textContent, /另有 1 份已保存的草稿属于此 Workspace 未列出的 Agent ID，因此不在这里显示。/);
+  assert.match(p.section().textContent, /已请求浏览器保存 yuzuno-draft-Cedar-[\dTZ-]+\.txt。如果没有出现文件，请选中下方文字并复制。/, "asked, not said to be saved");
+  assert.equal(p.shown(), text, "the shown draft is as it was, its export text as written");
+  assert.equal(p.section().querySelector("textarea").getAttribute("aria-label"), "Cedar 已保存的草稿");
+  assert.deepEqual([p.tick("a1").checked, p.tick("a2").checked], [true, true], "the choice stays");
+  assert.deepEqual([draftReads().length, p.writes, p.saves.links.length], [read, [], 1], "no draft read, nothing written or downloaded");
+  language("en");
+  await until(() => p.section().querySelector("h3").textContent === "Drafts on this device", "back in English");
+  assert.equal(p.section().textContent, en, "as it was in English");
+  // A ticked draft whose pasted text is missing: the check's words, in Chinese.
+  language("zh-Hans");
+  await until(() => p.section().querySelector("h3").textContent === "此设备上的草稿");
+  p.tick("a5").click();
+  p.button("下载所选（.json）").click();
+  const alert = await until(() => p.section().querySelector(".draft-export-many [role=\"alert\"]"), "the failure is said");
+  assert.equal(alert.textContent, "没有下载任何内容：所选的 3 份草稿中有 1 份无法读取（Rowan：保存的粘贴文本已丢失）。取消勾选它即可保存其余草稿。");
+  assert.deepEqual([p.writes, p.saves.links.length], [[], 1], "no partial file");
+  assert.deepEqual(p.errors, []);
 });
