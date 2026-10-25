@@ -376,7 +376,8 @@ test("operations follow a language change; the form, open history, a retried req
   const history = () => article(p, "operation-2").querySelector("details");
   try {
     p.window.renderOperations({ taskId: "T-1", disabled: false });
-    await waitFor(() => p.doc.querySelector("fieldset") && !p.doc.querySelector("fieldset").disabled && article(p, "operation-2"));
+    await waitFor(() => p.doc.querySelector("fieldset") && !p.doc.querySelector("fieldset").disabled && article(p, "operation-2")
+      && p.doc.querySelector('select[aria-label="PR result recipient"] option[value="dev"]'));
     field(p, "PR repository", "7");
     field(p, "Head branch", "feature/zh");
     field(p, "PR title", "中文标题 kept");
