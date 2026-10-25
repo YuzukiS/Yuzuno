@@ -1049,6 +1049,21 @@ function Unassigned({
   );
 }
 
+// The picker's own words (T-189); project and Agent names as they are.
+const pickerText = strings({
+  project: "Project",
+  none: "No project",
+  archived: " · archived",
+  move: "Move",
+  note: (name: string) => `Changes only where ${name} is listed. Folder and conversation stay.`,
+}, {
+  project: "项目",
+  none: "无项目",
+  archived: " · 已归档",
+  move: "移动",
+  note: (name) => `只改变 ${name} 列在哪里。文件夹和会话保持不变。`,
+});
+
 /** Membership is chosen explicitly from the conversation's actions dialog. */
 export function AgentProjectPicker({
   agent,
@@ -1063,6 +1078,7 @@ export function AgentProjectPicker({
 }) {
   const [value, setValue] = useState(agent.projectId || "");
   const action = useAction();
+  const t = useStrings(pickerText);
   useEffect(() => setValue(agent.projectId || ""), [agent.id, agent.projectId]);
   const choices = projects.filter(
     (project) => !project.archivedAt || project.id === agent.projectId,
@@ -1081,13 +1097,13 @@ export function AgentProjectPicker({
       }}
     >
       <label>
-        Project
+        {t.project}
         <select
           value={value}
           disabled={disabled || !!action.busy}
           onChange={(event) => setValue(event.target.value)}
         >
-          <option value="">No project</option>
+          <option value="">{t.none}</option>
           {choices.map((project) => (
             <option
               key={project.id}
@@ -1095,7 +1111,7 @@ export function AgentProjectPicker({
               disabled={!!project.archivedAt && project.id !== agent.projectId}
             >
               {project.name}
-              {project.archivedAt ? " · archived" : ""}
+              {project.archivedAt ? t.archived : ""}
             </option>
           ))}
         </select>
@@ -1107,11 +1123,9 @@ export function AgentProjectPicker({
         }
       >
         {action.busy ? <LoaderCircle size={14} className="spin" /> : null}
-        Move
+        {t.move}
       </button>
-      <p>
-        Changes only where {agent.name} is listed. Folder and conversation stay.
-      </p>
+      <p>{t.note(agent.name)}</p>
       {action.error && (
         <p role="alert" className="inline-error">
           {action.error}

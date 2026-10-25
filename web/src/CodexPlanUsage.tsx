@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { api, post } from "./api";
 import type { Agent } from "./types";
+import { strings, useStrings } from "./i18n";
 import "./codex-plan-usage.css";
 
 type Window = {
@@ -71,13 +72,82 @@ export function duration(mins: number | null) {
   if (mins % 60 === 0) return `${mins / 60}h`;
   return `${mins}m`;
 }
-function date(value: string | number | null) {
-  if (value === null) return "unknown";
+function date(value: string | number | null, unknown = "unknown") {
+  if (value === null) return unknown;
   const result = new Date(typeof value === "number" ? value * 1000 : value);
   return Number.isFinite(result.getTime())
     ? result.toLocaleString()
-    : "unknown";
+    : unknown;
 }
+
+// The panel's own words (T-189). A window's name and the detail of each
+// window stay as usageWindows words them, as in the status bar.
+const text = strings({
+  noConnection: "Native connection unavailable",
+  noLive: "Live updates disconnected",
+  keptPrevious: "Could not refresh; previous report retained",
+  noApiKey: "Not available for API-key authentication",
+  notFor: (type: string) => `Not available for ${type}`,
+  notSignedIn: "Not signed in",
+  accountChanged: "Account changed; waiting for a new report",
+  checking: "Checking…",
+  unknown: "Unknown",
+  noWindows: "No quota windows reported",
+  source: (label: string, generation: string, account: string | null) =>
+    `${label} · native connection ${generation}${account ? ` · account ${account}` : " · account ID not supplied"}`,
+  coreHost: "Core host",
+  account: "Account",
+  planUsage: "Plan usage",
+  waiting: "Waiting for update",
+  lastReport: "Last report",
+  used: (percent: number) => `${percent}% used`,
+  detailsTitle: "Account source, reset times and observation time",
+  details: "Details",
+  shared: (source: string) => `Shared account quota · ${source}`,
+  credits: (name: string) => `${name} credits: `,
+  unlimited: "unlimited (reported)",
+  noneReported: "none reported",
+  unknownValue: "unknown",
+  ordinary: "Ordinary usage: ",
+  allowed: "allowed (reported)",
+  notAllowed: "not allowed (reported)",
+  observed: (observed: string, checked: string) => `Observed: ${observed} · Checked: ${checked}`,
+  refresh: "Refresh Codex plan usage",
+  cooldown: "Recently checked; refresh available shortly",
+  read: "Read account usage from this Agent’s native connection",
+}, {
+  noConnection: "原生连接不可用",
+  noLive: "实时更新已断开",
+  keptPrevious: "无法刷新；保留了之前的报告",
+  noApiKey: "使用 API 密钥认证时不可用",
+  notFor: (type) => `${type} 不可用`,
+  notSignedIn: "未登录",
+  accountChanged: "账户已更改；正在等待新的报告",
+  checking: "正在检查…",
+  unknown: "未知",
+  noWindows: "未报告任何额度窗口",
+  source: (label, generation, account) => `${label} · 原生连接 ${generation}${account ? ` · 账户 ${account}` : " · 未提供账户 ID"}`,
+  coreHost: "Core 主机",
+  account: "账户",
+  planUsage: "套餐用量",
+  waiting: "等待更新",
+  lastReport: "上次报告",
+  used: (percent) => `已用 ${percent}%`,
+  detailsTitle: "账户来源、重置时间和观测时间",
+  details: "详情",
+  shared: (source) => `共享账户额度 · ${source}`,
+  credits: (name) => `${name} 额度：`,
+  unlimited: "无限（据报告）",
+  noneReported: "未报告",
+  unknownValue: "未知",
+  ordinary: "普通用量：",
+  allowed: "允许（据报告）",
+  notAllowed: "不允许（据报告）",
+  observed: (observed, checked) => `观测：${observed} · 检查：${checked}`,
+  refresh: "刷新 Codex 套餐用量",
+  cooldown: "刚检查过；稍后即可刷新",
+  read: "从此 Agent 的原生连接读取账户用量",
+});
 export function usageWindows(usage: CodexUsage, now: number) {
   return usage.buckets.flatMap((bucket) =>
     [bucket.primary, bucket.secondary].flatMap((w, index) => {
@@ -251,34 +321,35 @@ export function CodexPlanUsage({
     agent,
     streamConnected,
   );
+  const t = useStrings(text);
   const live = connected && streamConnected;
   const windows = usage ? usageWindows(usage, clock) : [];
   const cooldown = usage?.checkedAt
     ? Math.max(0, 5000 - (clock - Date.parse(usage.checkedAt)))
     : 0;
   const reason = !connected
-    ? "Native connection unavailable"
+    ? t.noConnection
     : !streamConnected
-      ? "Live updates disconnected"
+      ? t.noLive
       : error
-        ? "Could not refresh; previous report retained"
+        ? t.keptPrevious
         : usage?.error ||
           (usage?.status === "unavailable"
             ? usage.account?.type === "apiKey"
-              ? "Not available for API-key authentication"
+              ? t.noApiKey
               : usage.account?.type
-                ? `Not available for ${usage.account.type}`
-                : "Not signed in"
+                ? t.notFor(usage.account.type)
+                : t.notSignedIn
             : usage?.status === "unknown"
-              ? "Account changed; waiting for a new report"
+              ? t.accountChanged
               : usage?.status === "disconnected"
-                ? "Native connection unavailable"
+                ? t.noConnection
                 : !usage
                   ? busy
-                    ? "Checking…"
-                    : "Unknown"
+                    ? t.checking
+                    : t.unknown
                   : windows.length === 0
-                    ? "No quota windows reported"
+                    ? t.noWindows
                     : null);
   const who = [
     usage?.account?.label || usage?.account?.type,
@@ -287,18 +358,18 @@ export function CodexPlanUsage({
     .filter(Boolean)
     .join(" · ");
   const source = usage
-    ? `${usage.source.label} · native connection ${usage.source.generation}${usage.accountId ? ` · account ${usage.accountId}` : " · account ID not supplied"}`
-    : agent.remote?.machine.name || "Core host";
+    ? t.source(usage.source.label, usage.source.generation, usage.accountId)
+    : agent.remote?.machine.name || t.coreHost;
   return (
     <>
       {who && (
         <div className="codex-account">
-          <dt>Account</dt>
+          <dt>{t.account}</dt>
           <dd title={`${who}\n${source}`}>{who}</dd>
         </div>
       )}
       <div className="codex-plan-usage" id="agent-plan-usage">
-        <dt>Plan usage</dt>
+        <dt>{t.planUsage}</dt>
         <dd>
           <div className="codex-plan-values" aria-live="polite">
             {reason && <span className="codex-plan-note">{reason}</span>}
@@ -311,7 +382,7 @@ export function CodexPlanUsage({
                 >
                   <span>{w.name}</span>
                   <span>
-                    {w.text}
+                    {w.expired ? t.waiting : w.stale ? t.lastReport : w.percent === null ? t.unknown : t.used(w.percent)}
                     {w.stale && !w.expired && w.percent !== null
                       ? ` · ${w.percent}%`
                       : ""}
@@ -320,10 +391,8 @@ export function CodexPlanUsage({
               ))}
             {usage && live && (
               <details className="codex-plan-details">
-                <summary title="Account source, reset times and observation time">
-                  Details
-                </summary>
-                <span>Shared account quota · {source}</span>
+                <summary title={t.detailsTitle}>{t.details}</summary>
+                <span>{t.shared(source)}</span>
                 {windows.map((w) => (
                   <span key={w.key}>{w.detail}</span>
                 ))}
@@ -331,42 +400,37 @@ export function CodexPlanUsage({
                   (b) =>
                     b.credits && (
                       <span key={b.limitId}>
-                        {b.limitName || b.limitId} credits:{" "}
+                        {t.credits(b.limitName || b.limitId)}
                         {b.credits.unlimited === true
-                          ? "unlimited (reported)"
+                          ? t.unlimited
                           : b.credits.balance !== null
                             ? b.credits.balance
                             : b.credits.hasCredits === false
-                              ? "none reported"
-                              : "unknown"}
+                              ? t.noneReported
+                              : t.unknownValue}
                       </span>
                     ),
                 )}
                 <span>
-                  Ordinary usage:{" "}
+                  {t.ordinary}
                   {usage.ordinaryUsageAllowed === null
-                    ? "unknown"
+                    ? t.unknownValue
                     : usage.ordinaryUsageAllowed
-                      ? "allowed (reported)"
-                      : "not allowed (reported)"}
+                      ? t.allowed
+                      : t.notAllowed}
                 </span>
-                <span>
-                  Observed: {date(usage.observedAt)} · Checked:{" "}
-                  {date(usage.checkedAt)}
-                </span>
+                <span>{t.observed(date(usage.observedAt, t.unknownValue), date(usage.checkedAt, t.unknownValue))}</span>
               </details>
             )}
           </div>
           <button
             type="button"
             className="codex-plan-refresh"
-            aria-label="Refresh Codex plan usage"
+            aria-label={t.refresh}
             aria-busy={busy}
             disabled={busy || !live || cooldown > 0}
             title={
-              cooldown > 0
-                ? "Recently checked; refresh available shortly"
-                : "Read account usage from this Agent’s native connection"
+              cooldown > 0 ? t.cooldown : t.read
             }
             onClick={() => refresh(true)}
           >

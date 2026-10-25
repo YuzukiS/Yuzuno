@@ -15,7 +15,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { strings, useStrings } from "./i18n";
+import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import "./work-dock.css";
 
 // The dock's own words (T-189); labels and names come from its callers.
@@ -85,7 +85,7 @@ export function WorkDock({
   children: ReactNode;
 }) {
   return (
-    <nav className="work-dock" aria-label={label}>
+    <nav className="work-dock" aria-label={label} lang={langTag(useLanguage())}>
       {children}
     </nav>
   );
