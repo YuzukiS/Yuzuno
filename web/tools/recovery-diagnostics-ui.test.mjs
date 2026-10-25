@@ -533,6 +533,68 @@ test("when Core does not measure the stored history, the section says why and gi
   }
 });
 
+// T-189: the language changed in another window after a read. The page's own
+// words change; Core's numbers, names and reasons stay as they came, and
+// nothing is measured again.
+function changeLanguage(p, language) {
+  p.w.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+  p.w.dispatchEvent(new p.w.StorageEvent("storage", { key: "yuzuno.language" }));
+}
+test("History in Chinese after a read: its own words change, Core's numbers and names stay, and nothing is measured again", async () => {
+  const p = await mount();
+  try {
+    const section = await openHistory(p);
+    p.button("Measure", section).click();
+    await waitFor(() => section.querySelector("table"), "the table shows");
+    const rows = () => [...section.querySelectorAll("tbody tr")].map((tr) => [...tr.children].map((c) => c.textContent));
+    const en = { rows: rows(), text: section.textContent };
+    changeLanguage(p, "zh-Hans");
+    await waitFor(() => section.querySelector("h3").textContent === "Core 持有的 Agent 的已存储历史", "shown in Chinese");
+    assert.equal(section.closest("[lang]").getAttribute("lang"), "zh-Hans");
+    assert.match(section.textContent, /这些是已存储的字节，不是 Core 使用的内存。/);
+    assert.deepEqual([...section.querySelectorAll("thead th")].map((th) => th.textContent), ["Agent", "条目文本", "大型载荷", "Turn", "元数据", "记录", "预览"]);
+    assert.deepEqual([...section.querySelectorAll(".history-legend li")].map((li) => li.textContent), ["条目文本", "大型载荷", "Turn", "元数据"]);
+    assert.deepEqual(rows(), [
+      ["Mori *", "3.0 MiB (40)", "12.0 MiB (2)", "6.0 KiB (3)", "2.0 KiB (1)", "15.0 MiB", "8.0 KiB (2)"],
+      ["Agent b0c1d2e3", "尚无已存储的行"],
+      ["Old †", "0 B (0)", "0 B (0)", "0 B (0)", "5.0 MiB (1)", "5.0 MiB", "0 B (0)"],
+      ["全部持有", "3.0 MiB (40)", "12.0 MiB (2)", "6.0 KiB (3)", "5.0 MiB (2)", "20.0 MiB", "8.0 KiB (2)"],
+    ]);
+    assert.match(section.querySelector("caption").textContent, /^已存储字节（行数），读取于 \S/);
+    assert.equal(section.querySelector("caption time").getAttribute("datetime"), "2026-10-23T08:00:00+00:00");
+    assert.match(section.textContent, /\* 有更改可能尚未包含在此报告中。/);
+    assert.match(section.textContent, /† 以旧版布局存储：整条记录都在其元数据行中。/);
+    assert.ok(p.button("测量", section), "Measure is offered again, not pressed");
+    await pause(200);
+    assert.equal(historyCalls(p), 1, "the language change measures nothing");
+    changeLanguage(p, "en");
+    await waitFor(() => section.querySelector("h3").textContent === "Stored history of held Agents", "back in English");
+    assert.deepEqual([rows(), section.textContent], [en.rows, en.text], "as it was in English");
+    assert.equal(historyCalls(p), 1);
+  } finally {
+    p.close();
+  }
+  // Why it wasn't measured: this window's words in Chinese, Core's as it said them.
+  for (const [history, en, zh] of [
+    ["older core", "Not measured: this Core can't measure it.", "未测量：此 Core 无法测量。"],
+    [{ format: 1, readAt: "2026-10-23T08:00:00+00:00", available: false, reason: "Another measurement is running; ask again once it has finished." },
+      "Not measured: Another measurement is running; ask again once it has finished.", "未测量：Another measurement is running; ask again once it has finished."],
+  ]) {
+    const q = await mount({ history });
+    try {
+      const section = await openHistory(q);
+      q.button("Measure", section).click();
+      await waitFor(() => section.querySelector('[role="status"]'), "the answer is shown");
+      assert.equal(section.querySelector('[role="status"]').textContent, en);
+      changeLanguage(q, "zh-Hans");
+      await waitFor(() => section.querySelector('[role="status"]').textContent === zh, "said in Chinese");
+      assert.equal(historyCalls(q), 1, "not measured again");
+    } finally {
+      q.close();
+    }
+  }
+});
+
 // Settings' diagnostics (T-193): the text is shown before anything leaves the
 // window. Copy and Download then take exactly that text.
 function watchSaves(p) {
