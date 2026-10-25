@@ -265,6 +265,14 @@ pub fn router() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/workspace/backup", get(status))
         .route("/api/workspace/backup/operations/{id}", get(operation))
+        .route("/api/workspace/backup/last-run", get(last_run))
+}
+
+/// The daily backup's last run only: what a page reads again when Core says
+/// it changed, to notify of a failure (T-196). Unlike `status`, it measures
+/// nothing.
+async fn last_run(State(ws): State<Arc<Workspace>>) -> Json<Value> {
+    Json(json!({"lastRun": ws.backup_schedule.get().last_run}))
 }
 
 /// The routes that start or stop work: on Core's own port only.
@@ -392,7 +400,11 @@ impl Workspace {
                 match looked {
                     Ok(Err(error)) => eprintln!("Daily backup: {error:#}"),
                     Err(error) => eprintln!("Daily backup: {error}"),
-                    Ok(Ok(())) => {}
+                    // Pages read the last run again (and may notify of its failure, T-196).
+                    Ok(Ok(true)) => {
+                        ws.changes.send(json!({"type":"workspace.changed","scope":"backup"}));
+                    }
+                    Ok(Ok(false)) => {}
                 }
                 let schedule = ws.backup_schedule.clone();
                 drop(ws);
