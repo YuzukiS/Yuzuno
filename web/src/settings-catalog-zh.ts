@@ -54,7 +54,7 @@ export const entriesZh: Record<string, EntryText> = {
 
 /** Each entry's short name, in the row of its category's entries. */
 export const entriesShortZh: Record<string, string> = {
-  appearance: "主题与布局", "send-key": "发送", shortcuts: "快捷键", transfer: "迁移偏好", "appearance-preset": "共享预设",
+  appearance: "外观", "send-key": "发送", shortcuts: "快捷键", transfer: "迁移偏好", "appearance-preset": "共享预设",
   clock: "时钟", language: "语言", notifications: "通知", "agent-model": "模型与权限", "agent-context": "上下文",
   "auto-continue": "自动继续", "auto-continue-default": "自动继续默认值", "agent-defaults": "新 Agent 默认值",
   review: "代码审查", credentials: "账户与 MCP", machines: "机器与 SSH", phone: "手机访问", projects: "项目", home: "Home",

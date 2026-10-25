@@ -73,7 +73,7 @@ export const settingsCatalog: readonly SettingEntry[] = [
 /** A shorter name for an entry, in the row of its category's entries; its
  * title stays its full name. */
 const entryShort: Record<string, string> = {
-  appearance: "Theme & layout", "send-key": "Sending", shortcuts: "Shortcuts", transfer: "Move preferences",
+  appearance: "Appearance", "send-key": "Sending", shortcuts: "Shortcuts", transfer: "Move preferences",
   "appearance-preset": "Shared preset", clock: "Clock", language: "Language", notifications: "Notifications",
   "agent-model": "Model & permissions", "agent-context": "Context", "auto-continue": "Auto-continue",
   "auto-continue-default": "Auto-continue default", "agent-defaults": "New Agent defaults", review: "Code review",

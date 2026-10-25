@@ -8,7 +8,7 @@
 .settings-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* A category's entries, one row above the entry shown. */
 .settings-entries { display: flex; flex-wrap: wrap; gap: 2px 4px; margin: 0 0 8px; }
-.settings-entries button { padding: 5px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); font: inherit; font-size: calc(10.5px + var(--font-adjust, 3px)); cursor: pointer; }
+.settings-entries button { padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); font: inherit; font-size: calc(10.5px + var(--font-adjust, 3px)); cursor: pointer; }
 .settings-entries button:hover { color: var(--ink); background: color-mix(in srgb, currentColor 6%, transparent); }
 .settings-entries [aria-current="true"] { color: var(--accent-ink); background: var(--accent-wash); font-weight: 550; }
 .settings-entries button:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 1px; }
