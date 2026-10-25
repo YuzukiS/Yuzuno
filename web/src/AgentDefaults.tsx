@@ -36,7 +36,7 @@ const modelName = (m: Model) => m.model || m.id;
 // The editor's own words (T-189). Harness and model names, efforts, what Core
 // says about where a model applies, and its errors are shown as they come.
 const text = strings({
-  saved: (project: boolean) =>
+  saved: (project: boolean): string =>
     project
       ? "Saved for this project. Agents created in it from now on use these; existing Agents keep their settings."
       : "Saved. Agents created from now on use these; existing Agents keep their settings.",

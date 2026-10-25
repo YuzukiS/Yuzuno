@@ -200,8 +200,9 @@ try {
     assert.equal(help.heading, "键盘快捷键");
     assert.deepEqual(help.groups, ["任何地方", "撰写消息", "阅读会话", "Home", "列表与对话框"]);
     for (const key of ["Ctrl", "Return", "Shift", "Esc", "Tab"]) assert.ok(help.keys.includes(key), key);
+    // New Agent defaults has had model and reasoning defaults since #266.
     const models = await search(page, "推理");
-    assert.deepEqual(models, ["模型、推理与权限"]);
+    assert.deepEqual(models, ["模型、推理与权限", "新 Agent 默认值"]);
     const agentsListed = await page.locator(".settings-catalog-card select option").allTextContents();
     assert.deepEqual(agentsListed, ["选择一个 Agent…", "Mori"], "an Agent's name stays as it was written");
     check("Clock & time zone, Sending messages and Keyboard shortcuts are in Chinese; key names, Agent names and time zones stay as written", { help });
