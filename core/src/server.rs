@@ -630,14 +630,33 @@ async fn create(State(ws): State<Arc<Workspace>>, Json(p): Json<Create>) -> ApiR
         Ok((store.agent_defaults()?, own))
     }).await?;
     let new = crate::agent_defaults::resolve(&defaults, project_defaults.as_ref(), p.harness.as_deref(), p.permission_preset.as_deref(), p.permission_mode.as_deref())?;
-    // A model and effort default: Codex on the Core host only. Checked against
-    // its catalog before anything exists; elsewhere the model is as before.
+    // A default model: Codex (with its effort) and Claude Code on the Core
+    // host only. A default is checked against that host's catalog before
+    // anything exists; elsewhere the model is as before.
     let local = p.machine_id.as_deref().is_none_or(|machine| machine == "local");
     let plan = crate::agent_defaults::resolve_model(&defaults, project_defaults.as_ref(), new.harness == "codex" && local,
-        &p.model, p.reasoning_effort.as_ref().map(|effort| effort.as_deref()))?;
+        &p.model, p.reasoning_effort.as_ref().map(|effort| effort.as_deref()))?
+        .or_else(|| (new.harness == "claude" && local).then(|| crate::agent_defaults::resolve_claude_model(&defaults, project_defaults.as_ref(), &p.model)));
     let mut settings = new.settings;
     let mut sources = new.sources;
     let model = match plan {
+        Some(plan) if new.harness == "claude" => {
+            let mut model = plan.model.clone();
+            if let Some((checked, _, source)) = &plan.check {
+                let set_for = if *source == "project" { "this project" } else { "this Workspace" };
+                let catalog = ws.claude_catalog().await.map_err(|e| anyhow::anyhow!(
+                    "Can't read this Core host's Claude Code models to check {checked}, the default model set for {set_for}: {e:#}. Choose a model for this Agent, or try again"))?;
+                let entry = crate::agent_defaults::catalog_entry(&catalog, "Claude Code", checked).map_err(|e| anyhow::anyhow!(
+                    "The default Claude Code model set for {set_for} can't be used now: {e:#}. Choose a model for this Agent"))?;
+                // As the create dialog holds for a model chosen there.
+                if entry["supportsAutoMode"] == false && settings.permission_mode.as_deref() == Some("auto") {
+                    return Err(anyhow::anyhow!("{checked}, the default Claude Code model set for {set_for}, can't run in Auto mode. Choose a model or a permission mode for this Agent").into());
+                }
+                model = crate::agent_defaults::catalog_name(entry, checked);
+            }
+            sources["model"] = plan.sources.0.into();
+            model
+        }
         Some(plan) => {
             let mut model = plan.model.clone();
             if let Some((checked, effort, source)) = &plan.check {
