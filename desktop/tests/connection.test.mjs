@@ -253,3 +253,141 @@ test('a system frame or an older shell keeps the window controls hidden', async 
     } finally { dom.window.close(); }
   }
 });
+
+// T-195: the named Workspaces this computer keeps. One entry may start a
+// Core; the rest are addresses. Saved is not reachable, and a list that
+// could not be read is not an empty list.
+const twoSaved = {
+  coreUrl: 'http://127.0.0.1:4317/',
+  autoConnect: false,
+  selected: 'core-1',
+  saved: [
+    { id: 'core-1', name: 'Home', url: 'http://127.0.0.1:4317/', workspaceId: 'w-one', startable: true },
+    { id: 'core-2', name: 'Home', url: 'http://127.0.0.1:4318/', workspaceId: 'w-two', startable: false },
+  ],
+};
+
+test('saved workspaces are listed apart by workspace, with only one able to start a Core', async () => {
+  const dom = await mount(async (command) => {
+    if (command === 'connection_info') return twoSaved;
+  });
+  try {
+    const document = dom.window.document;
+    const items = [...document.querySelectorAll('#saved-list li')];
+    assert.equal(items.length, 2);
+    assert.deepEqual(items.map((item) => item.querySelector('.saved-name').textContent), ['Home', 'Home']);
+    assert.deepEqual(items.map((item) => item.querySelector('.saved-url').textContent), [
+      'http://127.0.0.1:4317/',
+      'http://127.0.0.1:4318/',
+    ]);
+    assert.deepEqual(items.map((item) => item.querySelector('.saved-workspace').textContent), [
+      'workspace w-one',
+      'workspace w-two',
+    ]);
+    // Only one may start, and it is the one the record said.
+    assert.deepEqual(items.map((item) => Boolean(item.querySelector('.saved-start'))), [true, false]);
+    // Saved is not reachable.
+    assert.doesNotMatch(document.querySelector('#saved-cores').textContent, /reachable|online|connected/i);
+  } finally { dom.window.close(); }
+});
+
+test('a workspace that answers as another one is refused, and nothing is opened', async () => {
+  const calls = [];
+  const refusal =
+    '“Home” answered as a different workspace than the one saved under that name, so it was not opened. ' +
+    "Its conversations, drafts and reading places are that other workspace's.";
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'connection_info') return twoSaved;
+    if (command === 'connect_core') throw refusal;
+  });
+  try {
+    const document = dom.window.document;
+    document.querySelector('#saved-list li .saved-open').click();
+    await settle();
+    const status = document.querySelector('[role="status"]');
+    assert.match(status.textContent, /answered as a different workspace/);
+    assert.equal(status.dataset.error, 'true');
+    assert.doesNotMatch(status.textContent, /Opening|Connected/i);
+    assert.equal(calls.filter((call) => call.command === 'connect_core').length, 1, 'asked once, not retried');
+    // The list is still there to choose another; refusing is not forgetting.
+    assert.equal(document.querySelectorAll('#saved-list li').length, 2);
+  } finally { dom.window.close(); }
+});
+
+test('an unreadable list is not an empty list: nothing is listed, nothing is written over it', async () => {
+  const calls = [];
+  const dom = await mount(async (command) => {
+    calls.push(command);
+    if (command === 'connection_info')
+      return { coreUrl: 'http://127.0.0.1:4317/', autoConnect: false, saved: [], savedError: 'one of its Workspaces is not one this app opens' };
+  });
+  try {
+    const document = dom.window.document;
+    const status = document.querySelector('[role="status"]');
+    assert.equal(document.querySelector('#saved-cores').hidden, true, 'nothing is listed');
+    assert.match(status.textContent, /could not be used \(one of its Workspaces is not one this app opens\)/);
+    assert.match(status.textContent, /has not been changed/);
+    assert.match(status.textContent, /will not open a workspace/);
+    // Never "enter it again and it will be saved": connecting is refused.
+    assert.doesNotMatch(status.textContent, /saves it anew|saved anew/);
+    // Nothing offers to discard the record: losing what is saved is not
+    // this page's to offer.
+    assert.equal(
+      [...document.querySelectorAll('button')].some((button) => /reset|discard|forget all|clear/i.test(button.textContent)),
+      false,
+    );
+    // It did not connect by itself.
+    assert.equal(calls.filter((command) => command === 'connect_core').length, 0);
+  } finally { dom.window.close(); }
+});
+
+test('renaming and removing change this computer only, and removing asks first', async () => {
+  const calls = [];
+  let record = twoSaved;
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'connection_info') return record;
+    if (command === 'rename_core') {
+      record = { ...twoSaved, saved: [{ ...twoSaved.saved[0], name: args.name.trim() }, twoSaved.saved[1]] };
+      return record;
+    }
+    if (command === 'remove_core') {
+      record = { ...twoSaved, selected: null, saved: twoSaved.saved.filter((entry) => entry.id !== args.entry) };
+      return record;
+    }
+  });
+  try {
+    const document = dom.window.document;
+    // JSDOM implements neither, and the page asks at click time.
+    dom.window.prompt = () => ' Studio ';
+    dom.window.confirm = () => true;
+    document.querySelector('#saved-list li .saved-rename').click();
+    await settle();
+    assert.equal(calls.at(-1).command, 'rename_core');
+    assert.equal(calls.at(-1).args.name, ' Studio ', 'what was typed is sent; the app trims and bounds it');
+    assert.equal(document.querySelector('#saved-list li .saved-name').textContent, 'Studio');
+    assert.match(document.querySelector('[role="status"]').textContent, /the workspace itself is unchanged/);
+
+    document.querySelector('#saved-list li .saved-remove').click();
+    await settle();
+    assert.equal(calls.at(-1).command, 'remove_core');
+    assert.equal(document.querySelectorAll('#saved-list li').length, 1, 'the other one stays');
+    assert.match(document.querySelector('[role="status"]').textContent, /no longer saved on this computer/);
+  } finally { dom.window.close(); }
+});
+
+test('removing is not done when it is not confirmed', async () => {
+  const calls = [];
+  const dom = await mount(async (command) => {
+    calls.push(command);
+    if (command === 'connection_info') return twoSaved;
+  });
+  try {
+    dom.window.confirm = () => false;
+    dom.window.document.querySelector('#saved-list li .saved-remove').click();
+    await settle();
+    assert.equal(calls.filter((command) => command === 'remove_core').length, 0);
+    assert.equal(dom.window.document.querySelectorAll('#saved-list li').length, 2);
+  } finally { dom.window.close(); }
+});

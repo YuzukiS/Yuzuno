@@ -515,6 +515,30 @@ async fn open_core(
     if expected.is_some_and(|expected| expected != workspace) {
         return Err("Core answered, but with another Workspace. Check its address.".into());
     }
+    // The Workspace saved at this address, against the one that just
+    // answered. A desktop Core is usually told apart by its port, but one
+    // port serves one Workspace at a time: the same 127.0.0.1:4317 answers
+    // as another Workspace once it is set up again, and that is the same
+    // origin, so the same stored drafts and reading places. Having a port is
+    // not a reason to skip this.
+    //
+    // A record that could not be read decides nothing, so it refuses rather
+    // than opening a Workspace it cannot check -- and writes nothing over
+    // what is saved.
+    let saved = read_entries(window.app_handle());
+    if let Some(reason) = entries::unusable(&saved) {
+        return Err(format!(
+            "The workspaces saved on this computer could not be read ({reason}). This app will not open a workspace it cannot check against them, and has changed nothing of what is saved."
+        ));
+    }
+    if let Some(entry) = saved.entries().iter().find(|entry| entry.url == core) {
+        if entries::identity(entry.workspace_id.as_deref(), Some(&workspace)) == entries::Identity::Changed {
+            return Err(format!(
+                "“{}” answered as a different workspace than the one saved under that name, so it was not opened. Its conversations, drafts and reading places are that other workspace's. Save it at an address of its own, or remove the saved workspace first — that forgets its drafts here along with it.",
+                entry.name
+            ));
+        }
+    }
     // Only a Core on this computer can say where it is installed; the Mac
     // app and other platforms never start one.
     let offered = if cfg!(windows) && is_loopback(&core) {
