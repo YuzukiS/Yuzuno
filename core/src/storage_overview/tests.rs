@@ -41,6 +41,7 @@ fn fixture() -> (tempfile::TempDir, Arc<Workspace>, PathBuf) {
     write(&data.join("someone-elses/notes.txt"), 300);
     write(&data.join("workspace.before-record-rows-20260101T000000Z.sqlite"), 700);
     write(&data.join("backup-operations.json"), 20);
+    write(&data.join("backup-schedule.json"), 20);
     symlink(tmp.path().join("outside"), data.join("elsewhere")).unwrap();
     (tmp, ws, data)
 }
@@ -77,6 +78,8 @@ fn the_overview_names_each_entry_without_walking_it_and_says_what_a_backup_copie
         (Some("earlierDatabaseCopy"), Some("file"), Some(700), Some("notCopied")));
     let journal = entry(&overview, "backup-operations.json");
     assert_eq!((journal["what"].as_str(), journal["backup"].as_str()), (Some("backupOperations"), Some("excluded")), "{journal}");
+    let schedule = entry(&overview, "backup-schedule.json");
+    assert_eq!((schedule["what"].as_str(), schedule["backup"].as_str()), (Some("backupSchedule"), Some("excluded")), "{schedule}");
     let link = entry(&overview, "elsewhere");
     assert_eq!((link["kind"].as_str(), link["backup"].as_str()), (Some("link"), Some("notCopied")));
     assert!(link.get("bytes").is_none(), "a link is not followed: {link}");

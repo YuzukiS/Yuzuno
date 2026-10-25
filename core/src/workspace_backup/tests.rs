@@ -677,3 +677,113 @@ fn a_retention_preview_keeps_the_latest_protects_what_it_cannot_judge_and_delete
     assert!(retention::preview(&folder.join("linked"), 2, &me, &[]).unwrap_err().to_string().contains("not followed"));
     assert_eq!(listing(&folder), before, "a preview deletes and changes nothing");
 }
+
+/// Three backups of the fixture Workspace a day apart in `root/backups`, and
+/// the preview's manifest hash of each, keeping the latest 2.
+fn three_backups(root: &Path) -> (PathBuf, String, std::collections::HashMap<String, String>) {
+    let (_data, made, manifest) = backed_up(root);
+    let folder = root.join("backups");
+    fs::create_dir(&folder).unwrap();
+    for (name, at) in [("b-1", "2026-10-21T03:00:00Z"), ("b-2", "2026-10-22T03:00:00Z"), ("b-3", "2026-10-23T03:00:00Z")] {
+        let dir = copy_of(&made, &folder.join(name));
+        rewrite_manifest(&dir, |m| m["createdAt"] = json!(at));
+    }
+    let preview = retention::preview(&folder, 2, &manifest.workspace_id, &[]).unwrap();
+    let hashes = preview.entries.iter().filter_map(|e| Some((e.name.clone(), e.manifest_sha256.clone()?))).collect();
+    (folder, manifest.workspace_id, hashes)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_confirmed_removal_reads_another_backup_whole_and_removes_only_that_one() {
+    use online::{Backups, Refusal};
+    let root = tempfile::tempdir().unwrap();
+    let (folder, me, hashes) = three_backups(root.path());
+    let data = root.path().join("journal");
+    fs::create_dir(&data).unwrap();
+    let backups = Arc::new(Backups::open(&data));
+    let request = json!({"folder": folder, "keep": 2, "name": "b-1", "manifestSha256": hashes["b-1"]});
+    let start = |request_id: &str, request: Value| {
+        let (folder, me, sha, journal) = (folder.clone(), me.clone(), hashes["b-1"].clone(), backups.clone());
+        backups.start("remove", request_id, request, |_| None, move |ctl| {
+            retention::remove(&folder, 2, "b-1", &sha, &me, || journal.all(), ctl, retention::MAX_ENTRIES)
+        })
+    };
+    let op = start("rm1", request.clone()).unwrap();
+    assert_eq!(start("rm1", request.clone()).unwrap().id, op.id, "the same request is the same removal");
+    assert!(matches!(start("rm1", json!({"folder": folder, "keep": 2, "name": "b-2", "manifestSha256": hashes["b-2"]})), Err(Refusal::Conflict)));
+    let mut done = backups.get(&op.id).unwrap();
+    for _ in 0..500 {
+        if done.state != "running" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        done = backups.get(&op.id).unwrap();
+    }
+    assert_eq!(done.state, "succeeded", "{:?}", done.error);
+    let result = done.result.unwrap();
+    assert_eq!(result["keptCheckedName"], json!("b-3"), "the newest kept one was read back whole first");
+    assert!(!folder.join("b-1").exists());
+    assert!(folder.join("b-2/manifest.json").is_file() && folder.join("b-3/manifest.json").is_file());
+    assert!(fs::read_dir(&folder).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().contains(".removing-")));
+    verify(&folder.join("b-3")).unwrap();
+}
+
+#[test]
+fn a_removal_is_refused_when_nothing_kept_reads_back_whole_or_the_folder_changed() {
+    let root = tempfile::tempdir().unwrap();
+    let (folder, me, hashes) = three_backups(root.path());
+    let (_, other_made, _) = backed_up(&root.path().join("elsewhere"));
+    let other = copy_of(&other_made, &folder.join("other"));
+    rewrite_manifest(&other, |m| m["workspaceId"] = json!("ws-someone-else"));
+    let before = listing(&folder);
+    let ctl = Control::named("refused");
+    let refuse = |keep: usize, name: &str, sha: &str, ops: Vec<online::Operation>, limit: usize| {
+        retention::remove(&folder, keep, name, sha, &me, move || ops.clone(), &ctl, limit).unwrap_err().to_string()
+    };
+    // Kept backups, other Workspaces and links are not removable; nor is one a running check uses.
+    assert!(refuse(2, "b-3", &hashes["b-3"], vec![], 500).contains("not one that could be removed now: One of the latest 2"));
+    assert!(refuse(2, "other", "x", vec![], 500).contains("A backup of another Workspace"));
+    let checking = operation("check", "running", json!({"path": folder.join("b-1")}), None);
+    assert!(refuse(2, "b-1", &hashes["b-1"], vec![checking], 500).contains("A running check uses it"));
+    // A manifest that changed since the preview, a name gone, a folder too large to read whole.
+    assert!(refuse(2, "b-1", "0000", vec![], 500).contains("changed since the preview"));
+    assert!(refuse(2, "b-9", "x", vec![], 500).contains("no longer in"));
+    assert!(refuse(2, "b-1", &hashes["b-1"], vec![], 3).contains("more than 3 entries"));
+    // Neither kept backup reads back whole: nothing is removed.
+    for kept in ["b-2", "b-3"] {
+        fs::write(folder.join(kept).join(DATABASE), b"damaged").unwrap();
+    }
+    let after_damage = listing(&folder);
+    let refused = refuse(2, "b-1", &hashes["b-1"], vec![], 500);
+    assert!(refused.contains("could be read back whole just now") && refused.contains("nothing was removed"), "{refused}");
+    assert_eq!(listing(&folder), after_damage, "nothing removed or changed by the refusals");
+    assert_eq!(before.len(), after_damage.len());
+}
+
+#[test]
+fn a_removal_cut_off_says_what_is_left_and_nothing_finishes_it_on_its_own() {
+    let root = tempfile::tempdir().unwrap();
+    let (folder, me, hashes) = three_backups(root.path());
+    // A folder inside b-1 Core may not change: the move aside works, the removal stops part way.
+    let locked = folder.join("b-1").join(FILES);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+    let error = retention::remove(&folder, 2, "b-1", &hashes["b-1"], &me, Vec::new, &Control::named("cut"), 500).unwrap_err().to_string();
+    let aside = folder.join(".b-1.removing-cut");
+    fs::set_permissions(aside.join(FILES), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(error.contains("was partly removed") && error.contains(".b-1.removing-cut"), "{error}");
+    assert!(aside.is_dir() && !folder.join("b-1").exists());
+    let preview = retention::preview(&folder, 2, &me, &[]).unwrap();
+    let left = preview.entries.iter().find(|e| e.name == ".b-1.removing-cut").unwrap();
+    assert_eq!((left.verdict, left.reason.as_str()), ("protected", "Left by a removal that did not finish; left alone"));
+    // A Core stopped during a removal: interrupted, and what was left stays.
+    let data = root.path().join("journal");
+    fs::create_dir(&data).unwrap();
+    let journal = vec![json!({"id":"cafe0456","requestId":"rm9","kind":"remove","state":"running","step":"remove",
+        "request":{"folder": folder, "keep": 2, "name": "b-1", "manifestSha256": hashes["b-1"]},
+        "startedAt":"2026-10-25T00:00:00Z","finishedAt":null,"error":null,"result":null})];
+    fs::write(data.join(online::JOURNAL), serde_json::to_vec(&journal).unwrap()).unwrap();
+    let op = online::Backups::open(&data).get("cafe0456").unwrap();
+    assert_eq!(op.state, "interrupted");
+    assert!(op.error.unwrap().contains("may be partly removed"));
+    assert!(aside.is_dir(), "nothing is removed on restart");
+}
