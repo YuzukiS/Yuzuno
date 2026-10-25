@@ -95,7 +95,8 @@ async function mount({ permission = "default", answer = "granted", shows = "show
     window.__TAURI__ = {
       core: {
         invoke: async (command, args) => {
-          page.invoked.push(args === undefined ? [command] : [command, args]);
+          // Copied out of the page's realm, to compare with this one's values.
+          page.invoked.push(args === undefined ? [command] : [command, JSON.parse(JSON.stringify(args))]);
           if (command === "desktop_notifications") {
             if (shell.answer === "missing") throw "Command desktop_notifications not found";
             return shell.answer;

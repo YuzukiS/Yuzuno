@@ -87,7 +87,8 @@ function mount({ permission = "granted", saved = { enabled: true }, looking = fa
     window.__TAURI__ = {
       core: {
         invoke: async (command, args) => {
-          page.invoked.push(args === undefined ? [command] : [command, args]);
+          // Copied out of the page's realm, to compare with this one's values.
+          page.invoked.push(args === undefined ? [command] : [command, JSON.parse(JSON.stringify(args))]);
           if (command === "desktop_notifications") return shell.answer;
           if (command === "desktop_notify") return null;
           throw `unexpected ${command}`;

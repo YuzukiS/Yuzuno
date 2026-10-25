@@ -1,4 +1,4 @@
-import { reachesSystem, type NotificationAccess } from "./notification-access";
+import type { NotificationAccess } from "./notification-access";
 
 /**
  * This device's choices about system notifications (T-188). They are kept
@@ -52,4 +52,4 @@ export function parseNotificationPrefs(saved: unknown): NotificationPrefs {
 /** Whether this kind goes to the system now: chosen, not muted, and allowed
  * (or, in the desktop app, handed to the system through it). */
 export const notifies = (prefs: NotificationPrefs, access: NotificationAccess, kind: NotificationCategory) =>
-  prefs.enabled && !prefs.muted && prefs.categories[kind] && reachesSystem(access);
+  prefs.enabled && !prefs.muted && prefs.categories[kind] && (access.state === "allowed" || access.state === "through-app");
