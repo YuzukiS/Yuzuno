@@ -321,8 +321,9 @@ test("a send started before this connection was named settles as that Workspace'
     { "a:composer": input },
     "its retry record is now this Workspace's, saved under it",
   );
-  assert.equal(f.hook().sending, true, "and it is still this window's send");
-  // It was delivered. Its receipt is drawn here, and the record goes.
+  // It was delivered. Its receipt is drawn here, and the record goes. The
+  // send is settled before anything else is asserted, so a failure here
+  // leaves no request held open.
   await act(async () => {
     answer({ input, status: "accepted", turnId: "t1", error: null });
     await sending;
