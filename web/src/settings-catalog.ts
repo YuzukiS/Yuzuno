@@ -1,4 +1,7 @@
 /** Navigation metadata only. Values and persistence belong to the existing editors. */
+import type { Language } from "./i18n.ts";
+import { categoriesZh, entriesZh } from "./settings-catalog-zh.ts";
+
 export const settingsCategories = [
   { id: "appearance", label: "Appearance & interaction", description: "How this device displays your Workspace." },
   { id: "notifications", label: "Notifications & attention", description: "Attention inside Yuzuno and notification capabilities." },
@@ -10,7 +13,7 @@ export const settingsCategories = [
   { id: "updates", label: "Updates & about", description: "Versions and updates for the Workspace service and desktop client, with help, release notes and licenses." },
 ] as const;
 export type SettingsCategory = typeof settingsCategories[number]["id"];
-export type SettingsEditor = "appearance" | "updates" | "home" | "review" | "diagnostics" | "history" | "runtime" | "input" | "time" | "shortcuts" | "notifications" | "backup" | "remote" | "agent-defaults" | "about" | "storage" | "drafts" | "transfer";
+export type SettingsEditor = "appearance" | "updates" | "home" | "review" | "diagnostics" | "history" | "runtime" | "input" | "time" | "language" | "shortcuts" | "notifications" | "backup" | "remote" | "agent-defaults" | "about" | "storage" | "drafts" | "transfer";
 export type SettingsDestination =
   | { kind: "agent"; section: "model" | "context" | "auto-continue"; agentId: string }
   | { kind: "project"; projectId: string }
@@ -40,7 +43,7 @@ export const settingsCatalog: readonly SettingEntry[] = [
   { id: "transfer", category: "appearance", title: "Move preferences to another device", keywords: "导出 导入 迁移 文件 备份 偏好 外观 发送 时间 export import move file transfer preferences appearance send time device", scope: "This device · a file you keep", source: "This device's Appearance, send key and time display, as in effect. Nothing of the Workspace, accounts or permissions.", effect: "Export writes a file. Import shows each group beside yours; each group is applied on its own, only once saved on this device. It doesn't sync devices.", target: { kind: "editor", editor: "transfer" } },
   { id: "appearance-preset", category: "appearance", title: "Shared Appearance preset", keywords: "共享 预设 外观 工作区 其他设备 应用 shared preset appearance workspace devices apply", scope: "This Workspace · applied on this device", source: "One Appearance preset this Workspace's Core keeps, saved from a device when you choose; none until then.", effect: "Saving replaces it only if it hasn't changed since you read it. Applying shows each setting beside yours and saves it on this device. Nothing follows along by itself; it isn't sync.", target: { kind: "editor", editor: "appearance" } },
   { id: "clock", category: "appearance", title: "Clock & time zone", keywords: "时间 时钟 12 24 小时制 上午 下午 时区 time clock 12-hour 24-hour am pm time zone timezone", scope: "This device · this site", source: "The choices saved in this browser or WebView; System and this device’s time zone when unset.", effect: "Rewrites times and their dates in conversations and on Home at once. Stored times and relative times don’t change. Storage must succeed to keep it after reopening.", target: { kind: "editor", editor: "time" } },
-  { id: "language", category: "appearance", title: "Language", keywords: "语言 界面 language locale interface", scope: "This device", source: "The interface uses its built-in language; dates and times are written in this browser’s locale.", effect: "A language never changes the time Yuzuno stores.", target: { kind: "unavailable", reason: "Choosing the interface language is not available in this version. The clock format and time zone are in Clock & time zone." } },
+  { id: "language", category: "appearance", title: "Language", keywords: "语言 界面 中文 简体 英文 language locale interface chinese english", scope: "This device · this site", source: "The choice saved in this browser or WebView; System, this browser’s language, when unset. English is shown for a language this version doesn’t have.", effect: "Settings’ directory, its search and this device’s pages change at once; other pages stay in English. What people and Agents wrote, code and logs are never translated.", target: { kind: "editor", editor: "language" } },
   { id: "notifications", category: "notifications", title: "Notification preferences", keywords: "通知 注意力 声音 免打扰 静音 系统 权限 推送 测试 预览 needs you unread mute test", scope: "This device · this browser", source: "This device’s choices, saved in this browser; the permission is the browser’s own. Needs you and unread activity always show inside the Workspace.", effect: "Notifies only while Yuzuno is open and you look elsewhere. Muting changes nothing Agents or the Workspace deliver; no push or background notifications.", target: { kind: "editor", editor: "notifications" } },
   { id: "agent-model", category: "agents", title: "Model, reasoning & permissions", keywords: "Agent 模型 推理 权限 approvals sandbox effort runtime", scope: "Selected Agent", source: "This Agent’s saved choices and its harness catalog. Native observations remain separate.", effect: "Model and effort changes apply from the next turn. The editor explains the harness’s permission timing.", target: { kind: "agent", section: "model" } },
   { id: "agent-context", category: "agents", title: "Context window & compaction", keywords: "上下文 窗口 压缩 context token automatic compact", scope: "Selected Codex Agent", source: "Saved overrides, requested application and native observed usage are shown separately.", effect: "Save keeps the choice; Apply requires a safe idle conversation. Unknown native values stay unknown.", target: { kind: "agent", section: "context" } },
@@ -64,11 +67,32 @@ export const settingsCatalog: readonly SettingEntry[] = [
   { id: "about", category: "updates", title: "About & help", keywords: "关于 帮助 文档 说明 反馈 问题 报告 安全 漏洞 许可证 许可 声明 发行说明 版本说明 about help docs documentation readme feedback issue bug report security vulnerability license licenses notices release notes", scope: "Workspace service · this page", source: "The notes inside the release the Workspace service runs, the license texts served with this page, and the project's pages on GitHub.", effect: "Read-only. Links open GitHub outside Yuzuno; nothing is sent from here.", target: { kind: "editor", editor: "about" } },
 ];
 
+/** The editors this version shows in the interface language (T-189); the
+ * others, and the rest of Yuzuno, stay in English. */
+export const translatedEditors: readonly SettingsEditor[] = ["language", "input", "time", "shortcuts"];
+
+/** Search finds an entry by its words in either language, whichever is
+ * shown (T-189): its English and Chinese title, scope and category. */
 export function findSettings(query: string): readonly SettingEntry[] {
   const words = query.normalize("NFKC").toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
   return settingsCatalog.filter((entry) => {
     const category = settingsCategories.find((category) => category.id === entry.category)!;
-    const text = `${entry.title} ${entry.keywords} ${entry.scope} ${category.label}`.normalize("NFKC").toLocaleLowerCase();
+    const zh = entriesZh[entry.id] ?? {};
+    const text = [entry.title, entry.keywords, entry.scope, category.label, zh.title, zh.scope, categoriesZh[entry.category].label]
+      .filter(Boolean).join(" ").normalize("NFKC").toLocaleLowerCase();
     return words.every((word) => text.includes(word));
   });
+}
+
+/** An entry's visible text in `language`; what the table lacks stays English. */
+export function localizedEntry(entry: SettingEntry, language: Language): SettingEntry {
+  if (language !== "zh-Hans") return entry;
+  const zh = entriesZh[entry.id] ?? {};
+  const target = entry.target.kind === "unavailable" && zh.reason ? { ...entry.target, reason: zh.reason } : entry.target;
+  return { ...entry, title: zh.title ?? entry.title, scope: zh.scope ?? entry.scope, source: zh.source ?? entry.source, effect: zh.effect ?? entry.effect, target };
+}
+/** A category's label and description in `language`. */
+export function localizedCategory(id: SettingsCategory, language: Language): { label: string; description: string } {
+  const category = settingsCategories.find((item) => item.id === id)!;
+  return language === "zh-Hans" ? categoriesZh[id] : category;
 }

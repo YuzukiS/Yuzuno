@@ -21,6 +21,8 @@ import { AboutSection } from "./AboutSection";
 import { AppearanceSection } from "./AppearanceSettings";
 import { SharedAppearanceSection } from "./SharedAppearance";
 import { InputPreferencesSection } from "./InputPreferences";
+import { LanguagePreferencesSection } from "./LanguagePreferences";
+import { langTag, strings, useLanguage } from "./i18n";
 import { TimePreferencesSection } from "./TimePreferences";
 import { ShortcutHelpSection } from "./ShortcutHelp";
 import { DeviceTransferSection } from "./DeviceTransfer";
@@ -365,6 +367,12 @@ export function WorkspaceUpdatesHost({
   );
 }
 
+// The Settings dialog's own title and close button (T-189).
+const settingsDialogText = strings(
+  { title: "Settings", description: "Find a setting, check what it affects and open its editor.", close: "Close dialog" },
+  { title: "设置", description: "查找一项设置，了解它影响什么，并打开它的编辑页。", close: "关闭对话框" },
+);
+
 export function WorkspaceUpdates({
   open,
   onOpenChange,
@@ -386,6 +394,8 @@ export function WorkspaceUpdates({
   chain: UpdateChainControl;
   navigation?: SettingsNavigation;
 }) {
+  const language = useLanguage();
+  const dialog = settingsDialogText(language);
   const [activeEditor, setActiveEditor] = useState<SettingsEditor | null>("updates");
   const [action, setAction] = useState("");
   const [error, setError] = useState("");
@@ -763,10 +773,12 @@ export function WorkspaceUpdates({
     <Modal
       open={open}
       onOpenChange={onOpenChange}
-      title="Settings"
-      description="Find a setting, check what it affects and open its editor."
+      title={dialog.title}
+      description={dialog.description}
       wide
       className="settings-modal"
+      lang={langTag(language)}
+      closeLabel={dialog.close}
     >
       <SettingsCenter
         navigation={navigation}
@@ -1005,6 +1017,7 @@ export function WorkspaceUpdates({
           )}
           {tab === "input" && <InputPreferencesSection />}
           {tab === "time" && <TimePreferencesSection />}
+          {tab === "language" && <LanguagePreferencesSection />}
           {tab === "shortcuts" && <ShortcutHelpSection />}
           {tab === "transfer" && <DeviceTransferSection />}
           {tab === "agent-defaults" && <AgentDefaults active={open} />}

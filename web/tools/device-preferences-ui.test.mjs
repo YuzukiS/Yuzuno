@@ -16,8 +16,7 @@ import { JSDOM } from "jsdom";
 // and Restore defaults. The keyboard shortcuts help lists the shortcuts as they
 // work here (Return as the preference says; the desktop app's own only
 // there), and every key it lists is handled where it says. Settings' search
-// finds both sections and Clock & time zone; the interface language stays
-// unavailable.
+// finds both sections, Clock & time zone and Language.
 const root = fileURLToPath(new URL("../", import.meta.url));
 await mkdir(path.join(root, "node_modules/.cache"), { recursive: true });
 const temp = await mkdtemp(path.join(root, "node_modules/.cache/device-preferences-ui-"));
@@ -283,7 +282,7 @@ test("the help lists Return as the send key makes it, and the desktop app's shor
   }
 });
 
-test("Settings finds both sections and Clock & time zone by their words; the interface language stays unavailable", () => {
+test("Settings finds both sections, Clock & time zone and Language by their words", () => {
   const w = page();
   try {
     const found = (query) => Array.from(w.findSettings(query), (entry) => `${entry.title}: ${entry.target.kind}${entry.target.editor ? ` ${entry.target.editor}` : ""}`);
@@ -293,7 +292,7 @@ test("Settings finds both sections and Clock & time zone by their words; the int
     assert.deepEqual(found("时区"), ["Clock & time zone: editor time"]);
     assert.deepEqual(found("12 24"), ["Clock & time zone: editor time"]);
     assert.deepEqual(found("24-hour"), ["Clock & time zone: editor time"]);
-    assert.deepEqual(found("语言"), ["Language: unavailable"]);
+    assert.deepEqual(found("语言"), ["Language: editor language"]);
   } finally {
     w.close();
   }
