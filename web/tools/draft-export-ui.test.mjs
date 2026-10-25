@@ -112,6 +112,13 @@ test("a chosen draft is shown whole, pasted text included, and saved as a text f
   // An older version's draft is shown the same way.
   p.row("a2").querySelector("button").click();
   await until(() => /legacy words$/.test(p.shown() || ""), "the older version's draft");
+  // Another Agent joins the Workspace: the list is read again and the open draft stays.
+  p.w.renderDrafts({ active: true, agents: [...agents, { id: "a6", name: "Elm" }] });
+  await tick(); await tick();
+  assert.match(p.shown() || "", /legacy words$/, "the open draft stays while its Agent is listed");
+  // Its Agent is no longer listed: the open draft is put away.
+  p.w.renderDrafts({ active: true, agents: agents.filter((agent) => agent.id !== "a2") });
+  await until(() => p.shown() === undefined, "the draft of an Agent no longer listed is put away");
   assert.deepEqual(p.writes, [], "nothing is written");
 });
 

@@ -26,15 +26,28 @@ export function DraftExport({ active, agents }: { active: boolean; agents: { id:
   const [save, setSave] = useState<{ state: "saving"; name: string } | { state: "notSaved"; why: string } | null>(null);
 
   // Read again when shown and when the Workspace's Agents change, not on every
-  // render: the list may be a new array each time.
+  // render: the list may be a new array each time. Shown again, it starts
+  // afresh; when only the Agents change, an open draft stays while its Agent
+  // is still listed.
   const latest = useRef(agents);
   latest.current = agents;
+  const shownNow = useRef(shown);
+  shownNow.current = shown;
+  const wasActive = useRef(false);
   const agentsKey = agents?.map((agent) => `${agent.id}\u0000${agent.name}\u0000${agent.closedAt ?? ""}`).join("\u0001") ?? null;
   useEffect(() => {
-    if (!active || !latest.current) return;
-    setListing(listDrafts(readStorage(), latest.current));
-    setShown(null);
-    setSave(null);
+    const listed = latest.current;
+    if (!active || !listed) {
+      wasActive.current = active;
+      return;
+    }
+    setListing(listDrafts(readStorage(), listed));
+    const open = shownNow.current;
+    if (!wasActive.current || !open || !listed.some((agent) => agent.id === open.agentId)) {
+      setShown(null);
+      setSave(null);
+    }
+    wasActive.current = true;
   }, [active, agentsKey]);
 
   function open(row: DraftRow) {
