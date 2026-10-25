@@ -397,7 +397,7 @@ test("the Claude Agent SDK: locked or declared version, the copy in use, an earl
     }],
     [sdkStatus({ runtime: { kind: "other" }, sdk: { state: "none" }, copy: { state: "notNeeded" } }), {
       "Claude Agent SDK": `No · Not in the runtime · Neither the SDK nor claude-agent-sdk.json is in this Core's runtime (not an installed release's). Core read it ${at(SDK_READ)}.`,
-      "SDK copy": "Yes · Not needed · The runtime carries the SDK, so Core runs it as it is.",
+      "SDK copy": "No · Nothing to prepare · Core runs this runtime as it is, and it has no SDK for its Claude bridge.",
     }],
     [sdkStatus({ runtime: { kind: "missing" }, sdk: { state: "unknown" }, copy: { state: "unknown" } }), {
       "Claude Agent SDK": `Unknown · Not known · Core has no Claude runtime set up, so no SDK is known. Core read it ${at(SDK_READ)}.`,

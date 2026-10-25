@@ -276,7 +276,9 @@ function sdkFacts(read: RuntimeRead["sdk"]): { sdk: Fact; sdkCopy: Fact } {
   const copy = status.copy;
   const sdkCopy =
     copy.state === "notNeeded"
-      ? fact("yes", "Not needed", "The runtime carries the SDK, so Core runs it as it is.")
+      ? sdk.state === "none"
+        ? fact("no", "Nothing to prepare", "Core runs this runtime as it is, and it has no SDK for its Claude bridge.")
+        : fact("yes", "Not needed", "The runtime carries the SDK, so Core runs it as it is.")
       : copy.state === "inUse"
         ? fact("yes", "In use", `${copy.copy ? `${copyText(copy.copy)}. ` : ""}Core prepared or found this copy in this run; its Claude bridges run from it.`)
         : copy.state === "found"
