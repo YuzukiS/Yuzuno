@@ -5,6 +5,8 @@ const message = document.querySelector('#connection-message');
 const startRow = document.querySelector('#start-row');
 const startButton = document.querySelector('#start-button');
 const startHint = document.querySelector('#start-hint');
+const savedSection = document.querySelector('#saved-cores');
+const savedList = document.querySelector('#saved-list');
 const invoke = window.__TAURI__?.core?.invoke;
 
 // The saved Core this app may start in WSL ({ coreUrl, distro, confirmed }),
@@ -26,6 +28,88 @@ function offerFrom(info) {
     : `This Workspace says its Core is in WSL (${startable.distro}). Start it here only if it is installed in this computer's WSL; a Core on another computer starts there.`;
 }
 let unreachable = false;
+
+// The Workspaces saved here, as connection_info answers them. Saved is not
+// reachable: this draws what is written down and claims nothing about it.
+// A list that could not be read is not an empty list, and is not drawn as
+// one: nothing is listed, and the message says why.
+function drawSaved(info) {
+  const saved = info.savedError ? [] : info.saved ?? [];
+  savedSection.hidden = saved.length === 0;
+  savedList.replaceChildren();
+  for (const entry of saved) {
+    const item = document.createElement('li');
+    if (info.selected === entry.id) item.dataset.selected = 'true';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'saved-open';
+    open.append(Object.assign(document.createElement('span'), { className: 'saved-name', textContent: entry.name }));
+    open.append(Object.assign(document.createElement('span'), { className: 'saved-url', textContent: entry.url }));
+    // Two Workspaces may share a name, and an address alone does not tell
+    // them apart either: which one this is, is its workspace.
+    open.append(
+      Object.assign(document.createElement('span'), {
+        className: 'saved-workspace',
+        textContent: entry.workspaceId ? `workspace ${entry.workspaceId}` : 'not opened yet on this computer',
+      }),
+    );
+    // Only one entry may start a Core, and only where this app can start
+    // one: the Mac never reports this, whatever a record carries.
+    if (entry.startable) {
+      open.append(
+        Object.assign(document.createElement('span'), {
+          className: 'saved-start',
+          textContent: 'can start its Core in WSL',
+        }),
+      );
+    }
+    open.addEventListener('click', () => {
+      address.value = entry.url;
+      void connect();
+    });
+    const rename = document.createElement('button');
+    rename.type = 'button';
+    rename.className = 'saved-rename secondary';
+    rename.textContent = 'Rename';
+    rename.setAttribute('aria-label', `Rename ${entry.name}`);
+    rename.addEventListener('click', () => void renameEntry(entry));
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'saved-remove secondary';
+    remove.textContent = 'Remove';
+    remove.setAttribute('aria-label', `Remove ${entry.name}`);
+    remove.addEventListener('click', () => void removeEntry(entry));
+    item.append(open, rename, remove);
+    savedList.append(item);
+  }
+}
+
+async function renameEntry(entry) {
+  const name = window.prompt(`What should this computer call ${entry.url}?`, entry.name);
+  if (name === null) return;
+  try {
+    drawSaved(await invoke('rename_core', { entry: entry.id, name }));
+    show('Renamed. That is the name on this computer; the workspace itself is unchanged.');
+  } catch (error) {
+    show(String(error), true);
+  }
+}
+
+async function removeEntry(entry) {
+  // What removing does, and what it does not, before it is done.
+  const sure = window.confirm(
+    `Remove \u201C${entry.name}\u201D from this computer?\n\n` +
+      'This forgets its address here, and any start profile saved for it. It changes nothing on the workspace, and nothing it is doing stops.',
+  );
+  if (!sure) return;
+  try {
+    drawSaved(await invoke('remove_core', { entry: entry.id }));
+    show(`\u201C${entry.name}\u201D is no longer saved on this computer.`);
+  } catch (error) {
+    show(String(error), true);
+  }
+}
+
 
 function show(text, error = false) {
   message.textContent = text;
@@ -113,7 +197,15 @@ async function init() {
     const info = await invoke('connection_info');
     address.value = info.coreUrl;
     offerFrom(info);
-    if (info.error) show(info.error, true);
+    drawSaved(info);
+    if (info.savedError) {
+      // Not "enter it again and it will be saved": connecting is refused
+      // while this is so, and nothing is written over what is saved.
+      show(
+        `The workspaces saved on this computer could not be used (${info.savedError}). What is saved has not been changed. Until they can be read, this app will not open a workspace, because it could not tell which one answered.`,
+        true,
+      );
+    } else if (info.error) show(info.error, true);
     else if (info.autoConnect) await connect();
     else show('Choose a workspace, then connect.');
   } catch (error) {
