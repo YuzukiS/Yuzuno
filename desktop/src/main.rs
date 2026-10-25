@@ -532,9 +532,12 @@ async fn open_core(
         ));
     }
     // A Core that sends no Workspace answers an empty string, and one may
-    // send more than this keeps: both are absent, not a value. Comparing one
-    // would call an older Core at a saved address a different Workspace, and
-    // writing one would make the record unreadable from then on.
+    // send more than this keeps. Neither is absent: at an address already
+    // bound to a Workspace, an empty answer cannot confirm the one saved
+    // there, and an answer too long to keep could not be written back
+    // without making the record unreadable from then on. Only an address
+    // bound to nothing opens on an answer this cannot check, and it then
+    // records nothing -- which is how an older Core still connects.
     let here = saved.entries().iter().find(|entry| entry.url == core);
     let named = here.map(|entry| entry.name.clone()).unwrap_or_else(|| entries::name_for(&core));
     let answered = match entries::opening(here.and_then(|entry| entry.workspace_id.as_deref()), &workspace) {

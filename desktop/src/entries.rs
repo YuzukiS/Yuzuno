@@ -535,6 +535,27 @@ mod tests {
     }
 
     #[test]
+    fn nothing_is_written_that_could_not_be_read_back() {
+        // The failure this guards: an entry written with a workspaceId the
+        // reader rejects makes the whole record unusable, and a record that
+        // cannot be read refuses every connection, rename and removal. This
+        // is the write side, and `opening` does not stand in for it: that
+        // decides whether to open at all, while this decides what may be
+        // put on disk once something is being saved.
+        for bad in ["", &"w".repeat(WORKSPACE_LIMIT + 1)] {
+            let entries = vec![entry("core-1", "Home", "http://127.0.0.1:4317", Some(bad), None)];
+            let refused = record(&entries, Some("core-1")).unwrap_err();
+            assert!(refused.contains("could not read back"), "{refused}");
+        }
+        // A name beyond what the reader takes is refused the same way.
+        let long = vec![entry("core-1", &"n".repeat(NAME_LIMIT + 1), "http://127.0.0.1:4317", None, None)];
+        assert!(record(&long, None).unwrap_err().contains("could not read back"));
+        // And what it does accept still writes.
+        let fine = vec![entry("core-1", "Home", "http://127.0.0.1:4317", Some("w-one"), None)];
+        assert!(record(&fine, Some("core-1")).is_ok());
+    }
+
+    #[test]
     fn a_workspace_nobody_named_is_called_after_its_address_and_port() {
         assert_eq!(name_for(&core("http://127.0.0.1:4317")), "127.0.0.1:4317");
         assert_eq!(name_for(&core("http://127.0.0.1:4318")), "127.0.0.1:4318", "the port tells two local Cores apart");
