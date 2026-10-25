@@ -219,7 +219,7 @@ test("a refusal from the Workspace before this one is not shown here, and leaves
     await tick();
     page.button("Submit answers").click();
     await tick();
-    assert.equal(page.button("Submit answers").disabled, true, "it is sending");
+    assert.ok(page.button("Sending answers…"), "it is sending");
     // The Core at this address now answers as another Workspace.
     page.render({ draftIdentity: JSON.stringify(["ws-other", "a:result1"]), onSubmit: submit });
     await tick();
@@ -228,6 +228,10 @@ test("a refusal from the Workspace before this one is not shown here, and leaves
       "/home/me/project",
       "this Workspace's form is its own",
     );
+    assert.ok(
+      page.button("Submit answers"),
+      "and is not left sending the other Workspace's answers",
+    );
     refuse();
     await tick();
     assert.doesNotMatch(
@@ -235,10 +239,9 @@ test("a refusal from the Workspace before this one is not shown here, and leaves
       /Native rejected/,
       "the other Workspace's refusal is not shown here",
     );
-    assert.equal(
-      page.button("Submit answers").disabled,
-      false,
-      "and this form is not left sending",
+    assert.ok(
+      page.button("Submit answers") && !page.button("Submit answers").disabled,
+      "and this form can still be submitted",
     );
     assert.deepEqual(page.errors, []);
   } finally {

@@ -174,19 +174,19 @@ export function useConversationSend(
     // Native pending approvals use their own respond endpoint and stay usable.
     if (detail?.collaboration?.ready === false)
       throw new Error(detail.collaboration.error || "Reconnect to confirm the workspace collaboration connection. Your text is kept.");
-    if (inFlight.current.has(`${workspaceId}\n${agentId}`))
+    // This send belongs to the Workspace it starts in, and to that
+    // Workspace's records, whatever this window moves to while it runs.
+    // Sending, and the refusal of a second send, are per Workspace and Agent
+    // together: the same Agent id in another Workspace is another Agent, and
+    // neither its composer nor its spinner is this send's business.
+    const startedIn = workspaceId;
+    const busy = `${startedIn}\n${agentId}`;
+    if (inFlight.current.has(busy))
       throw new Error("A message is already being sent.");
     if (harness === "claude" && question)
       throw new Error("Claude answers in the conversation; reply with a new message.");
     const key = `${agentId}:${clarification ? `form:${clarification.resultId}:${clarification.formId}` : question ? `${question.turnId}:${question.itemId}` : "composer"}`;
-    // This send belongs to the Workspace it starts in, and to that
-    // Workspace's records, whatever this window moves to while it runs.
-    const startedIn = workspaceId;
     const kept = records(startedIn);
-    // Sending, and the refusal of a second send, are per Workspace and Agent
-    // together: the same Agent id in another Workspace is another Agent, and
-    // neither its composer nor its spinner is this send's business.
-    const busy = `${startedIn}\n${agentId}`;
     // A message whose delivery became unknown is never sent again; sending
     // the same text after that is a new message with its own id.
     const previousInput = kept[key];

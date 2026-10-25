@@ -195,10 +195,10 @@ test("a send that outlives a move to another Workspace stays the first one's", a
   );
 });
 
-test("coming back to a Workspace settles the records it is using, not an old snapshot", async (t) => {
-  // A -> B -> A: reading A's records again must not hand the send that is
-  // still running a bucket the window has replaced, or settling it would
-  // write that snapshot over records saved since the return.
+test("coming back to a Workspace keeps the records the window is using, so a send still running settles those", async (t) => {
+  // A -> B -> A. Reading A's records again into a new object would hand a
+  // send that is still running a snapshot, and settling it would write that
+  // over whatever the window has since put in A's records.
   const f = await fixture(t, { workspace: "ws-here", outbox: {} });
   let answer;
   globalThis.fetch = async (url, init) => {
@@ -212,23 +212,22 @@ test("coming back to a Workspace settles the records it is using, not an old sna
     sending = f.hook().submit("sent before leaving");
   });
   const input = f.calls[0].body;
+  const using = f.hook().pendingInputs;
+  assert.deepEqual(using, { "a:composer": input });
   await f.move("ws-there");
+  assert.deepEqual(f.hook().pendingInputs, {}, "the other Workspace has its own records");
   await f.move("ws-here");
-  // Back here, another unsent record is saved for a second Agent.
-  const other = { clientMessageId: "other-id", text: "another Agent's unsent text", expectedTurnId: "turn1", question: null };
-  localStorage.setItem(
-    "yuzuno.outbox",
-    JSON.stringify({ ...outboxFile(), "ws-here": { ...outbox("ws-here"), "b:composer": other } }),
+  assert.equal(
+    f.hook().pendingInputs,
+    using,
+    "back here, these are the same records -- not a second copy of them",
   );
   await act(async () => {
     answer({ input, status: "accepted", turnId: "t1", error: null });
     await sending;
   });
-  assert.deepEqual(
-    outbox("ws-here"),
-    { "b:composer": other },
-    "the finished send removed only its own record",
-  );
+  assert.deepEqual(using, {}, "and the send that finished settled those");
+  assert.deepEqual(outboxFile(), {}, "nothing is left on disk for either Workspace");
 });
 
 test("sending one Workspace's Agent leaves the same Agent id in another free to send", async (t) => {
