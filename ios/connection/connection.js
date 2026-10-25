@@ -156,8 +156,13 @@ function drawRemembered(saved) {
 async function forgetAddress(known) {
   const sure = window.confirm(
     `Forget which workspace was at ${known.url}?\n\n` +
-      `This iPhone will stop remembering that workspace ${known.workspaceId} was there, so the next workspace ` +
-      'that answers at this address will be opened.\n\n' +
+      (known.workspaceId
+        ? `This iPhone will stop remembering that workspace ${known.workspaceId} was there, so the next workspace ` +
+          'that answers at this address will be opened.'
+        : 'This iPhone will stop recording which workspace was at this address. The workspaces saved for it keep ' +
+          'their names and their address; only what was recorded about which one is there is forgotten, so the ' +
+          'next workspace that answers will be opened.') +
+      '\n\n' +
       'What is stored for this address stays. Drafts, reading places and signed-in state are still there, and a ' +
       'workspace opened here afterwards may read them. This does not delete them, and does not connect to anything.\n\n' +
       'To keep a workspace apart from them, give it an address of its own instead.',
@@ -237,6 +242,16 @@ async function connect() {
         show(
           `${result.profileName} did not say which workspace it is, so this iPhone could not check it is the one ` +
             'saved at that address. Nothing was opened and nothing saved here has changed.',
+          true,
+        );
+      } else if (result.identity === 'conflict') {
+        // Removing one of them is not the way out: that would make the other
+        // one's workspace the address's, and nobody knows whose stored data
+        // is there. Forgetting what is recorded for the address is.
+        show(
+          `This iPhone has two saved workspaces at ${result.url} that record different workspaces, so it cannot ` +
+            'tell which one is there and did not open it. Forget what it has recorded for that address, below; ' +
+            'that keeps both of them and clears nothing stored for the address.',
           true,
         );
       } else if (result.identity === 'unkeepable') {

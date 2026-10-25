@@ -164,6 +164,37 @@ impl Saved {
         }
     }
 
+    /// Whether this record holds two *different* Workspaces for one
+    /// address. Two labels for one address are allowed -- one recording
+    /// none and one recording w, or both recording the same -- but two
+    /// different identifiers are two answers to one question, and nothing
+    /// may choose between them.
+    ///
+    /// Answered per address, and the record stays readable. Refusing the
+    /// whole record was the first thing tried and it was worse than the
+    /// problem: the build before this one could write such a record (it
+    /// compared only the opened profile's own identity), so an upgrade
+    /// turned a working list of up to sixteen Workspaces into one that
+    /// every command refused -- connect, rename, remove and forget alike --
+    /// with no way back inside the app. Keeping the list readable means the
+    /// one address is refused and the rest still work, and removing either
+    /// label clears it.
+    pub fn conflicted(&self, url: &Url) -> bool {
+        let mut seen: Option<&str> = None;
+        for workspace in self
+            .profiles()
+            .iter()
+            .filter(|profile| profile.url == *url)
+            .filter_map(|profile| profile.workspace_id.as_deref())
+        {
+            match seen {
+                Some(before) if before != workspace => return true,
+                _ => seen = Some(workspace),
+            }
+        }
+        false
+    }
+
     pub fn remembered(&self) -> &[Remembered] {
         match self {
             Saved::Profiles { remembered, .. } => remembered,
@@ -182,11 +213,11 @@ impl Saved {
         // unbound while another label at it knows better: that opened a
         // different Workspace onto the first one's stored data.
         //
-        // Two labels at one address cannot disagree in a record this app
-        // will read: `read_bytes` refuses one that records two different
-        // Workspaces for one address, so there is no winner to pick here,
-        // and `save` cannot write one either -- it reads back what it is
-        // about to write, through that same reader.
+        // Where two labels at one address disagree, this answers with the
+        // first that knows one -- but nothing may act on that: `conflicted`
+        // says so for that address and the connection is refused before any
+        // of this is used. See `conflicted` for why the record stays
+        // readable rather than being refused whole.
         if self.profiles().iter().any(|profile| profile.url == *url) {
             return self
                 .profiles()
@@ -253,22 +284,6 @@ pub fn read_bytes(bytes: &[u8]) -> Saved {
             // One unusable entry makes the record unusable rather than
             // quietly dropping a Workspace someone saved.
             _ => return Saved::Unreadable("one of its Workspaces is not one this app opens".into()),
-        }
-    }
-    // At most one *distinct* Workspace per address. Two labels for one
-    // address are allowed and stay allowed -- one recording none and one
-    // recording w ("None/A"), or both recording the same ("A/A"). Two
-    // different identifiers at one address are two answers to one question:
-    // nothing may choose between them, and choosing would open a Workspace
-    // onto another's stored data. Such a record is refused whole, in either
-    // order, and its bytes are left exactly as they are.
-    for (at, profile) in profiles.iter().enumerate() {
-        let Some(mine) = profile.workspace_id.as_deref() else { continue };
-        if profiles[..at]
-            .iter()
-            .any(|kept| kept.url == profile.url && kept.workspace_id.as_deref().is_some_and(|theirs| theirs != mine))
-        {
-            return Saved::Unreadable("it records two different workspaces for one address".into());
         }
     }
     let mut remembered: Vec<Remembered> = Vec::new();
@@ -452,6 +467,67 @@ pub fn settle(before: &Saved, profiles: &[Profile]) -> (Vec<Profile>, Vec<Rememb
     }
     // An address is listed or remembered, never both.
     remembered.retain(|known| !profiles.iter().any(|profile| profile.url == known.url));
+    (profiles, remembered)
+}
+
+/// How many *different* Workspaces this record holds for `url`.
+fn identities_at(profiles: &[Profile], url: &Url) -> usize {
+    let mut seen: Vec<&str> = Vec::new();
+    for workspace in profiles
+        .iter()
+        .filter(|profile| profile.url == *url)
+        .filter_map(|profile| profile.workspace_id.as_deref())
+    {
+        if !seen.contains(&workspace) {
+            seen.push(workspace);
+        }
+    }
+    seen.len()
+}
+
+/// Whether a change may be written, given what the record held before.
+///
+/// The one thing it forbids: an address that held two different Workspaces
+/// may not come out of a change holding exactly one. Removing a label,
+/// renaming it or pointing it elsewhere would otherwise make the survivor's
+/// identity the address's own -- choosing a winner by deletion, when the
+/// whole point is that nobody knows which Workspace the data stored there
+/// belongs to.
+///
+/// Coming out with *none* is allowed: that is `forget_identities`, which the
+/// person asks for explicitly. Coming out still holding both is allowed: the
+/// conflict simply stays. So the protection cannot be lifted by an ordinary
+/// edit, and `Err` names the address to say so.
+pub fn keeps_conflicts(before: &Saved, profiles: &[Profile]) -> Result<(), Url> {
+    for profile in before.profiles() {
+        if identities_at(before.profiles(), &profile.url) > 1 && identities_at(profiles, &profile.url) == 1 {
+            return Err(profile.url.clone());
+        }
+    }
+    Ok(())
+}
+
+/// Forget every Workspace this record has recorded for one address, and
+/// nothing else. The way out of a conflict, and only on an explicit ask.
+///
+/// The labels at that address stay, with their names and their addresses;
+/// only what each recorded about *which* Workspace was there is forgotten.
+/// No other address is touched, and nothing stored for this one is read,
+/// moved or cleared -- it cannot be, from here. Afterwards the address is
+/// simply unknown again, so a later deliberate open records what answers.
+pub fn forget_identities(before: &Saved, url: &Url) -> (Vec<Profile>, Vec<Remembered>) {
+    let profiles: Vec<Profile> = before
+        .profiles()
+        .iter()
+        .map(|profile| {
+            if profile.url == *url {
+                Profile { workspace_id: None, ..profile.clone() }
+            } else {
+                profile.clone()
+            }
+        })
+        .collect();
+    let remembered = before.remembered().iter().filter(|known| known.url != *url).cloned().collect();
     (profiles, remembered)
 }
 
@@ -788,6 +864,11 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    fn record_bytes<'a>(path: &'a std::path::Path, profiles: &[Profile], remembered: &[Remembered]) -> &'a std::path::Path {
+        save(path, profiles, profiles.first().map(|p| p.id.as_str()), remembered).expect("a clean record writes");
+        path
+    }
+
     fn core_at(address: &str) -> Url {
         crate::core_url::parse(address).unwrap()
     }
@@ -860,58 +941,88 @@ mod tests {
     }
 
     #[test]
-    fn two_different_workspaces_at_one_address_are_refused_either_way_round() {
+    fn two_different_workspaces_at_one_address_refuse_that_address_and_nothing_else() {
         let (dir, path) = folder();
-        let a = |id: &str| profile(id, "Home", "https://one.example.ts.net", Some("w-a"));
-        let b = |id: &str| profile(id, "Home again", "https://one.example.ts.net", Some("w-b"));
+        let a = profile("core-1", "Home", "https://one.example.ts.net", Some("w-a"));
+        let b = profile("core-2", "Home again", "https://one.example.ts.net", Some("w-b"));
+        let c = profile("core-3", "Studio", "https://two.example.ts.net", Some("w-c"));
+        let here = core_at("https://one.example.ts.net");
+        let there = core_at("https://two.example.ts.net");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
 
-        // Both orders. Refusing only one answer is not safety: the record
-        // itself holds two answers for one address, so it is refused whole.
-        for (first, second) in [("core-1", "core-2"), ("core-2", "core-1")] {
-            let listed = if first == "core-1" { vec![a(first), b(second)] } else { vec![b(first), a(second)] };
-            // The writer will not produce it: it reads back what it writes.
-            let refused = save(&path, &listed, Some(first), &[]).unwrap_err().to_string();
-            assert!(refused.contains("could not read back"), "{refused}");
-            assert!(refused.contains("two different workspaces for one address"), "{refused}");
-            assert_eq!(read(&path), Saved::Never, "nothing was written");
-
-            // And a record already on disk is refused by the reader, with its
-            // bytes left exactly as they are.
+        // A record the build before this one could write, in both orders.
+        // It stays readable: refusing it whole left every command refusing,
+        // with up to sixteen Workspaces and no way back inside the app.
+        for two in [vec![a.clone(), b.clone()], vec![b.clone(), a.clone()]] {
+            let listed = [two[0].clone(), two[1].clone(), c.clone()];
             let text = format!(
-                r#"{{"version":1,"profiles":[{},{}],"selected":"{first}"}}"#,
+                r#"{{"version":1,"profiles":[{},{},{}],"selected":"{}"}}"#,
                 serde_json::to_string(&listed[0].to_json()).unwrap(),
-                serde_json::to_string(&listed[1].to_json()).unwrap()
+                serde_json::to_string(&listed[1].to_json()).unwrap(),
+                serde_json::to_string(&listed[2].to_json()).unwrap(),
+                listed[0].id
             );
             std::fs::write(&path, &text).unwrap();
-            assert_eq!(
-                read(&path),
-                Saved::Unreadable("it records two different workspaces for one address".into()),
-                "order {first} then {second}"
-            );
+            let saved = read(&path);
+
+            // Readable and whole: nothing of theirs is lost.
+            assert!(unusable(&saved).is_none(), "{saved:?}");
+            assert_eq!(saved.profiles().len(), 3, "every saved Workspace is still listed");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "the bytes are untouched");
 
-            // Nothing may be decided from it, so neither answer gets through:
-            // `unusable` is what `connect_core` refuses on, before it selects,
-            // writes or navigates. No winner is picked for either answer.
-            let saved = read(&path);
-            assert!(unusable(&saved).is_some(), "a connection is refused while this is so");
-            assert_eq!(saved.profiles(), &[], "it answers no profiles");
-            assert_eq!(saved.workspace_for(&core_at("https://one.example.ts.net")), None);
-            // And settle cannot launder it into something writable: it is
-            // handed no profiles, so it claims nothing about the address.
-            assert_eq!(settle(&saved, saved.profiles()).1, vec![], "no binding invented from a refused record");
+            // That one address is refused, whichever is answered. Neither is
+            // a winner; an answer that cannot be checked is refused too.
+            assert!(saved.conflicted(&here));
+            for answer in ["w-a", "w-b", "", &"w".repeat(WORKSPACE_LIMIT + 1)] {
+                assert!(saved.conflicted(&here), "still refused when answered {answer:?}");
+            }
+            // The other address is untouched and still opens.
+            assert!(!saved.conflicted(&there));
+            assert_eq!(opening(saved.workspace_for(&there), "w-c"), Opening::Open(Some("w-c".into())));
             std::fs::remove_file(&path).unwrap();
         }
 
-        // The legal duplicates stay legal and usable.
-        for listed in [vec![a("core-1"), a("core-2")], vec![profile("core-1", "Home", "https://one.example.ts.net", None), a("core-2")]] {
-            save(&path, &listed, Some("core-1"), &[]).expect("two labels for one address are allowed");
-            let saved = read(&path);
-            assert_eq!(saved.profiles().len(), 2);
-            assert_eq!(saved.workspace_for(&core_at("https://one.example.ts.net")), Some("w-a"));
-            assert_eq!(opening(saved.workspace_for(&core_at("https://one.example.ts.net")), "w-b"), Opening::Changed);
-            std::fs::remove_file(&path).unwrap();
+        // Ordinary edits cannot lift the protection: removing one label would
+        // make the survivor's identity the address's, which is choosing a
+        // winner by deletion when nobody knows whose stored data is there.
+        let saved = read(record_bytes(&path, &[a.clone(), b.clone(), c.clone()], &[]));
+        for left in [vec![a.clone(), c.clone()], vec![b.clone(), c.clone()]] {
+            assert_eq!(keeps_conflicts(&saved, &left), Err(here.clone()), "an ordinary edit may not clear it");
+        }
+        // And `settle` neither flattens it nor hands either label a binding.
+        let (profiles, remembered) = settle(&saved, saved.profiles());
+        assert!(read(record_bytes(&path, &profiles, &remembered)).conflicted(&here), "settle keeps it");
+        assert_eq!(remembered, vec![], "nothing is remembered for a listed address");
+
+        // The way out, only on an explicit ask: forget what is recorded about
+        // that one address. The labels and their addresses stay, their
+        // identities go, and nothing stored is touched.
+        let (profiles, remembered) = forget_identities(&saved, &here);
+        assert_eq!(remembered, Vec::<Remembered>::new(), "an address with labels is not remembered");
+        let cleared = read(record_bytes(&path, &profiles, &remembered));
+        assert!(!cleared.conflicted(&here), "the address is answerable again");
+        assert_eq!(cleared.profiles().len(), 3, "no Workspace was removed");
+        for kept in cleared.profiles().iter().filter(|kept| kept.url == here) {
+            assert_eq!(kept.workspace_id, None, "its identity is forgotten");
+            assert!(kept.name == "Home" || kept.name == "Home again", "its name is kept: {}", kept.name);
+        }
+        // Only that address: the other one keeps its binding.
+        assert_eq!(cleared.workspace_for(&there), Some("w-c"));
+        // Nothing is opened by forgetting: the address is simply unknown, so
+        // the next answer is recorded only by a later, deliberate open.
+        assert_eq!(opening(cleared.workspace_for(&here), "w-a"), Opening::Open(Some("w-a".into())));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_damaged_record_is_still_a_damaged_record() {
+        // A semantic conflict is not a broken file and must not be dressed as
+        // one; a broken file keeps the protection it always had.
+        let (dir, path) = folder();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for bad in [r#"{"profiles":"#, r#"{"profiles":{}}"#, "not json at all"] {
+            std::fs::write(&path, bad).unwrap();
+            assert!(matches!(read(&path), Saved::Unreadable(_)), "{bad}");
         }
         std::fs::remove_dir_all(dir).unwrap();
     }

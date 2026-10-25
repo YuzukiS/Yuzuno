@@ -116,6 +116,24 @@ async fn connect_core(
     // are different situations and a person can act on each: another
     // Workspace is at this address; this one cannot be checked against what
     // is saved; the answer is too long for this app to keep.
+    // Two labels at this address recording different Workspaces: nothing
+    // may choose between them, so this address is refused and nothing is
+    // selected, written or navigated to. The rest of the list still works,
+    // and removing either label clears it -- which is why such a record is
+    // kept readable instead of refused whole.
+    if saved.conflicted(&core) {
+        return Ok(serde_json::json!({
+            "url": core.as_str(),
+            "opened": false,
+            "identity": "conflict",
+            "profileName": known
+                .as_ref()
+                .map(|known| known.name.clone())
+                .unwrap_or_else(|| core_profiles::name_for(&core)),
+            "savedWorkspaceId": serde_json::Value::Null,
+            "workspaceId": serde_json::Value::Null,
+        }));
+    }
     // What this knows about the address, whether or not a profile is listed
     // for it. A profile that was removed leaves its address remembered, so
     // saving a new profile for that address goes through the same check as
@@ -253,13 +271,21 @@ fn forget_address(app: AppHandle, url: String) -> Result<serde_json::Value, Stri
             "The Workspaces saved on this iPhone could not be read ({reason}). Nothing of what is saved has been changed."
         ));
     }
-    let Some(remembered) = core_profiles::forgetting(saved.remembered(), &address) else {
-        return Err("This iPhone does not remember a workspace for that address.".into());
-    };
-    let profiles = saved.profiles().to_vec();
     let selected = match &saved {
         core_profiles::Saved::Profiles { selected, .. } => selected.clone(),
         _ => None,
+    };
+    // Two things are forgotten the same way, because to the person they are
+    // one thing -- what this iPhone recorded about which Workspace was at an
+    // address. Either it is an address with no profile left, or it is one
+    // whose profiles disagree. Both keep every profile, name and address,
+    // and neither clears a byte of what is stored for the address.
+    let (profiles, remembered) = if saved.conflicted(&address) {
+        core_profiles::forget_identities(&saved, &address)
+    } else if let Some(remembered) = core_profiles::forgetting(saved.remembered(), &address) {
+        (saved.profiles().to_vec(), remembered)
+    } else {
+        return Err("This iPhone does not remember a workspace for that address.".into());
     };
     write_profiles(&app, &profiles, selected.as_deref(), &remembered)
 }
@@ -272,6 +298,15 @@ fn write_profiles(
     selected: Option<&str>,
     remembered: &[core_profiles::Remembered],
 ) -> Result<serde_json::Value, String> {
+    // An address that held two different Workspaces may not come out of this
+    // holding one: that would make the survivor's identity the address's own,
+    // which is choosing a winner by deletion. Forgetting what is recorded for
+    // that address is the way out, and it is asked for explicitly.
+    if let Err(address) = core_profiles::keeps_conflicts(&read_profiles(app), profiles) {
+        return Err(format!(
+            "This iPhone has two saved workspaces at {address} that record different workspaces, so it cannot tell which one is there. Forget what it has recorded for that address first; that changes no other address, and clears nothing stored for this one."
+        ));
+    }
     saved_core_file(app)
         .ok_or_else(|| std::io::Error::other("this app has no data folder to keep it in"))
         .and_then(|file| core_profiles::save(&file, profiles, selected, remembered))
