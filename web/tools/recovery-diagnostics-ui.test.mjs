@@ -568,9 +568,9 @@ test("Settings shows the diagnostics first: Preview copies, saves and sends noth
     const text = shownText(p);
     assert.match(text, /^Recent errors on this device: /m);
     p.button("Copy", section).click();
-    await waitFor(() => p.copied.length === 1, "the shown text is copied");
-    assert.equal(p.copied[0], text);
-    assert.match(section.textContent, /Copied\. Nothing was sent anywhere/);
+    await waitFor(() => /Copied\. Nothing was sent anywhere/.test(section.textContent), "the copy is said");
+    assert.deepEqual(p.copied, [text], "exactly the shown text is copied");
+    assert.match(text, /^Gathered: \S+$/m, "the text says when it was gathered, not that it was copied");
     p.button("Download .txt", section).click();
     await waitFor(() => saves.links.length === 1, "a download is asked for");
     assert.match(saves.links[0].download, /^yuzuno-diagnostics-[\dTZ-]+\.txt$/);
