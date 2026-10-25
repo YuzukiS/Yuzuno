@@ -152,7 +152,8 @@ const scopeText = strings({
   atBase: (sha) => `（基准 ${sha}）`,
   policyChanged: "此 PR 修改了策略文件；修改只对之后的审查生效。",
   invalid: "无效",
-  unusable: (path, at, error, changed) => `范围策略 ${path}${at} 无法使用（${error}）：所有变更路径仍在范围内。${changed}`,
+  // No space after the closing full-width bracket of `at`.
+  unusable: (path, at, error, changed) => `范围策略 ${path}${at || " "}无法使用（${error}）：所有变更路径仍在范围内。${changed}`,
   rules: (path, at, n, changed) => `范围策略 ${path}${at}：${n} 条排除规则。被排除的路径仍未审查，审查不会通过。${changed}`,
   review: (id) => `审查 ${id}`,
   run: (id) => `CI 运行 ${id}`,
