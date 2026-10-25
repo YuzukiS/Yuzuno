@@ -226,4 +226,17 @@ async fn a_retention_preview_lists_a_folder_only_from_cores_own_port_and_changes
     let (status, conflict) = call(&local, "POST", "/api/workspace/backup/retention/remove", Some(other), false).await;
     assert_eq!((status, conflict["code"].as_str()), (StatusCode::CONFLICT, Some("idempotency_conflict")), "{conflict}");
     assert!(folder.join("second/manifest.json").is_file(), "the newest is never removed");
+    // A space budget (T-196, slice 5): optional; the count alone is unchanged, a budget the newest
+    // doesn't fit in keeps it and says so, and a budget of nothing is refused.
+    let (status, count) = call(&local, "POST", "/api/workspace/backup/retention/preview", Some(json!({"folder": folder, "keep": 1})), false).await;
+    assert_eq!(status, StatusCode::OK, "{count}");
+    assert!(count.get("budget").is_none() && count["sizeBasis"].as_str().unwrap().contains("nothing is measured on disk"), "{count}");
+    let (status, tiny) = call(&local, "POST", "/api/workspace/backup/retention/preview", Some(json!({"folder": folder, "keep": 1, "budgetBytes": 1})), false).await;
+    assert_eq!(status, StatusCode::OK, "{tiny}");
+    assert_eq!(tiny["budget"]["state"], "over", "{tiny}");
+    let second = tiny["entries"].as_array().unwrap().iter().find(|e| e["name"] == "second").unwrap();
+    assert_eq!(second["verdict"], "keep", "{tiny}");
+    let (status, zero) = call(&local, "POST", "/api/workspace/backup/retention/preview", Some(json!({"folder": folder, "keep": 1, "budgetBytes": 0})), false).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(zero["error"].as_str().unwrap().contains("space budget"), "{zero}");
 }
