@@ -161,24 +161,23 @@ async function once(workspaceId: string) {
   });
 }
 
+const subscribe = (listener: () => void) => {
+  listeners.add(listener);
+  // Another window turned it on or off, or applied a revision.
+  const off = onDeviceValueChange(KEY, changed);
+  return () => {
+    listeners.delete(listener);
+    off();
+  };
+};
+
 /** What following is for `workspaceId` in this window now. */
 export function useFollow(workspaceId: string | null): {
   revision: number | null;
   condition: FollowCondition | null;
   stop: FollowStop | null;
 } {
-  useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      // Another window turned it on or off, or applied a revision.
-      const off = onDeviceValueChange(KEY, changed);
-      return () => {
-        listeners.delete(listener);
-        off();
-      };
-    },
-    () => version,
-  );
+  useSyncExternalStore(subscribe, () => version);
   if (!workspaceId) return { revision: null, condition: null, stop: null };
   const revision = followedRevision(workspaceId);
   return {
