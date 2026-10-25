@@ -116,7 +116,34 @@ async fn connect_core(
     // are different situations and a person can act on each: another
     // Workspace is at this address; this one cannot be checked against what
     // is saved; the answer is too long for this app to keep.
-    let before = known.as_ref().and_then(|known| known.workspace_id.as_deref());
+    // Two labels at this address recording different Workspaces: nothing
+    // may choose between them, so this address is refused and nothing is
+    // selected, written or navigated to. The rest of the list still works,
+    // which is why such a record is kept readable instead of refused whole.
+    // Removing a label does *not* clear it -- that would make the survivor's
+    // identity the address's own. Forgetting what is recorded for the
+    // address does, and the person asks for that.
+    if saved.conflicted(&core) {
+        return Ok(serde_json::json!({
+            "url": core.as_str(),
+            "opened": false,
+            "identity": "conflict",
+            "address": core.as_str(),
+            "profileName": known
+                .as_ref()
+                .map(|known| known.name.clone())
+                .unwrap_or_else(|| core_profiles::name_for(&core)),
+            "savedWorkspaceId": serde_json::Value::Null,
+            "workspaceId": serde_json::Value::Null,
+        }));
+    }
+    // What this knows about the address, whether or not a profile is listed
+    // for it. A profile that was removed leaves its address remembered, so
+    // saving a new profile for that address goes through the same check as
+    // opening an existing one -- otherwise removing and connecting again
+    // would be a way around the refusal, onto the stored data of the
+    // Workspace that left.
+    let before = saved.workspace_for(&core);
     let named = known
         .as_ref()
         .map(|known| known.name.clone())
@@ -138,9 +165,12 @@ async fn connect_core(
         core_profiles::Opening::Unverified => return refusal("unverified"),
         core_profiles::Opening::Unkeepable => return refusal("unkeepable"),
     };
-    *state.selected.lock().map_err(|_| "Connection state unavailable.".to_owned())? = Some(core.clone());
-    // What is written down after opening it: the profile asked for, updated,
-    // or a new one. A Workspace is never written twice under one profile.
+    // What would be written down after opening it: the profile asked for,
+    // updated, or a new one. A Workspace is never written twice under one
+    // profile. Built first and checked before anything is selected, written
+    // or navigated to -- this command retargets a profile, so it can move a
+    // label off an address whose labels disagree, and that would leave the
+    // address with one identity and the protection silently gone.
     let selected_id = match known {
         Some(known) => {
             if let Some(kept) = profiles.iter_mut().find(|kept| kept.id == known.id) {
@@ -166,9 +196,29 @@ async fn connect_core(
             id
         }
     };
+    // The same decision every other write goes through, and the only way to
+    // a settled list: `committing` will not hand one back without it. A
+    // semantic refusal is a refusal to open, not a save that failed --
+    // answering `opened: true` with `saved: false` would offer to open it
+    // without saving, which is the very thing being refused.
+    let (profiles, remembered) = match core_profiles::committing(&saved, &profiles, None) {
+        Ok(settled) => settled,
+        Err(address) => {
+            return Ok(serde_json::json!({
+                "url": core.as_str(),
+                "opened": false,
+                "identity": "conflict",
+                "address": address.as_str(),
+                "profileName": named,
+                "savedWorkspaceId": serde_json::Value::Null,
+                "workspaceId": serde_json::Value::Null,
+            }))
+        }
+    };
+    *state.selected.lock().map_err(|_| "Connection state unavailable.".to_owned())? = Some(core.clone());
     let written = saved_core_file(&app)
         .ok_or_else(|| std::io::Error::other("this app has no data folder to keep it in"))
-        .and_then(|file| core_profiles::save(&file, &profiles, Some(&selected_id)));
+        .and_then(|file| core_profiles::save(&file, &profiles, Some(&selected_id), &remembered));
     let mut answer = serde_json::json!({
         "url": core.as_str(),
         "opened": true,
@@ -204,7 +254,11 @@ fn rename_core(app: AppHandle, profile: String, name: String) -> Result<serde_js
         return Err("That Workspace is not saved on this iPhone.".into());
     };
     kept.name = name.to_owned();
-    write_profiles(&app, &profiles, selected.as_deref())
+    let (profiles, remembered) = core_profiles::committing(&saved, &profiles, None)
+        .map_err(|address| format!(
+            "This iPhone has two saved workspaces at {address} that record different workspaces, so it cannot tell which one is there. Forget what it has recorded for that address first; that changes no other address, and clears nothing stored for this one."
+        ))?;
+    write_profiles(&app, &profiles, selected.as_deref(), &remembered)
 }
 
 /// Forgets a saved Workspace on this iPhone. It removes nothing on the Core
@@ -222,15 +276,77 @@ fn remove_core(app: AppHandle, profile: String) -> Result<serde_json::Value, Str
     }
     profiles.retain(|kept| kept.id != profile);
     let selected = selected.filter(|id| *id != profile);
-    write_profiles(&app, &profiles, selected.as_deref())
+    let (profiles, remembered) = core_profiles::committing(&saved, &profiles, None)
+        .map_err(|address| format!(
+            "This iPhone has two saved workspaces at {address} that record different workspaces, so it cannot tell which one is there. Forget what it has recorded for that address first; that changes no other address, and clears nothing stored for this one."
+        ))?;
+    write_profiles(&app, &profiles, selected.as_deref(), &remembered)
+}
+
+/// Forgets which Workspace was at one address this iPhone no longer lists,
+/// and nothing else.
+///
+/// What it does not do is the point of it being a step of its own. It does
+/// not connect to anything, does not open anything, and clears none of what
+/// is stored for that address -- it cannot, from here. Afterwards the
+/// address is simply unknown again, so the next Workspace to answer there
+/// is opened, and may find the drafts, reading places and signed-in state
+/// the previous one left. Whoever asks for this is choosing that, which is
+/// why it is never done as part of removing a Workspace.
+#[tauri::command]
+fn forget_address(app: AppHandle, url: String) -> Result<serde_json::Value, String> {
+    let address = core_url::parse(&url)?;
+    let saved = read_profiles(&app);
+    if let Some(reason) = core_profiles::unusable(&saved) {
+        return Err(format!(
+            "The Workspaces saved on this iPhone could not be read ({reason}). Nothing of what is saved has been changed."
+        ));
+    }
+    let selected = match &saved {
+        core_profiles::Saved::Profiles { selected, .. } => selected.clone(),
+        _ => None,
+    };
+    // Two things are forgotten the same way, because to the person they are
+    // one thing -- what this iPhone recorded about which Workspace was at an
+    // address. Either it is an address with no profile left, or it is one
+    // whose profiles disagree. Both keep every profile, name and address,
+    // and neither clears a byte of what is stored for the address.
+    let asked = if saved.conflicted(&address) {
+        core_profiles::forget_identities(&saved, &address).0
+    } else if core_profiles::forgetting(saved.remembered(), &address).is_some() {
+        saved.profiles().to_vec()
+    } else {
+        return Err("This iPhone does not remember a workspace for that address.".into());
+    };
+    // Through the same door as every other change, naming the address being
+    // forgotten so that nothing carries its Workspace back -- which is what
+    // happened when this wrote its own list: the address was re-bound in the
+    // same breath as it was forgotten, and the write was then refused.
+    let (profiles, remembered) = core_profiles::committing(&saved, &asked, Some(&address))
+        .map_err(|at| format!("This iPhone could not forget that address because the workspaces saved at {at} disagree. Nothing was changed."))?;
+    write_profiles(&app, &profiles, selected.as_deref(), &remembered)
 }
 
 /// Writes the list and says what the page should show now. A refused write
 /// changes nothing, and is reported rather than taken as done.
-fn write_profiles(app: &AppHandle, profiles: &[core_profiles::Profile], selected: Option<&str>) -> Result<serde_json::Value, String> {
+fn write_profiles(
+    app: &AppHandle,
+    profiles: &[core_profiles::Profile],
+    selected: Option<&str>,
+    remembered: &[core_profiles::Remembered],
+) -> Result<serde_json::Value, String> {
+    // An address that held two different Workspaces may not come out of this
+    // holding one: that would make the survivor's identity the address's own,
+    // which is choosing a winner by deletion. Forgetting what is recorded for
+    // that address is the way out, and it is asked for explicitly.
+    if let Err(address) = core_profiles::keeps_conflicts(&read_profiles(app), profiles) {
+        return Err(format!(
+            "This iPhone has two saved workspaces at {address} that record different workspaces, so it cannot tell which one is there. Forget what it has recorded for that address first; that changes no other address, and clears nothing stored for this one."
+        ));
+    }
     saved_core_file(app)
         .ok_or_else(|| std::io::Error::other("this app has no data folder to keep it in"))
-        .and_then(|file| core_profiles::save(&file, profiles, selected))
+        .and_then(|file| core_profiles::save(&file, profiles, selected, remembered))
         .map_err(|error| format!("This iPhone could not save the change ({error}). The list is as it was."))?;
     Ok(read_profiles(app).to_json())
 }
@@ -304,7 +420,7 @@ pub fn run() {
         // app, T-104).
         .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         .manage(Connection { client, selected })
-        .invoke_handler(tauri::generate_handler![saved_cores, connect_core, rename_core, remove_core])
+        .invoke_handler(tauri::generate_handler![saved_cores, connect_core, rename_core, remove_core, forget_address])
         .setup(move |app| {
             let outside = app.handle().clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
