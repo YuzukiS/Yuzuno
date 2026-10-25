@@ -211,8 +211,14 @@ export function RuntimeSection({
               <FactRow label="Version" fact={view.core.version} />
               <FactRow label="Release" fact={view.core.release} />
               <FactRow label="State" fact={view.core.ready} />
+              <FactRow label="Claude Agent SDK" fact={view.core.sdk} />
+              <FactRow label="SDK copy" fact={view.core.sdkCopy} />
             </dl>
-            <p className="runtime-note">Updated from Versions & updates; installing is never started here.</p>
+            <p className="runtime-note">
+              Updated from Versions & updates; installing is never started here. The Claude Agent SDK is what Core's
+              Claude bridge runs and comes with Core's Claude runtime; Claude Code's CLI is another program, listed
+              under Machines. Reading it prepares and downloads nothing.
+            </p>
           </section>
           <section className="runtime-group" aria-labelledby="runtime-client">
             <h4 id="runtime-client">This device</h4>
