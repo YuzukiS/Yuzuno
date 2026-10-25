@@ -70,7 +70,7 @@ Only you can do this, on your Mac, with your own Apple Account; nothing here is 
 
 `tauri ios dev` serves the frontend from the Mac over the local network: an app installed that way asks for local network permission and stops working away from the Mac. `tauri ios build` packs the connection page into the app instead, so it keeps working on its own.
 
-Signing uses a private key in your login keychain, so it has to run in your own graphical session. Over SSH on one Mac, `codesign` ended with `errSecInternalComponent` while `security` reported `User interaction is not allowed.`; installing the built app needs no keychain.
+Signing reads a private key from a keychain. Over SSH on one Mac that key could not be reached: `codesign` ended with `errSecInternalComponent` while `security` reported `User interaction is not allowed.`, and the build was signed in the owner's own graphical session instead. Installing the built app needs no keychain.
 
 An app signed with a free personal team stops launching after about seven days. Building and installing it again from the Mac is what brings it back.
 
