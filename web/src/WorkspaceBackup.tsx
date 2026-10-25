@@ -26,7 +26,8 @@ type Operation = {
   kind: "backup" | "check" | "restore" | "remove";
   state: "running" | "succeeded" | "failed" | "stopped" | "interrupted";
   step: string;
-  request: Record<string, string>;
+  /** As started; an automatic removal (T-196) says `automatic`. */
+  request: Record<string, string | number | boolean | undefined>;
   startedAt: string;
   finishedAt: string | null;
   error: string | null;
@@ -34,8 +35,9 @@ type Operation = {
     restoredTo?: string;
     nextSteps?: string[];
     notes?: string[];
-    /** A removal (T-196): what it removed and the backup it read back whole first. */
-    removed?: string;
+    /** A removal (T-196): what it removed and the backup it read back whole first;
+     * an automatic one (slice 6) lists what it removed. */
+    removed?: string | Pass["removed"];
     freedEstimateBytes?: number | null;
     keptChecked?: string;
   }) | null;
@@ -54,6 +56,31 @@ type View = {
   /** Absent from a Core before T-196. */
   schedule?: Schedule;
 };
+/** What one automatic removal pass did (core retention::prune). */
+type Pass = {
+  removed: { name: string; freedEstimateBytes?: number | null }[];
+  skipped: { name: string; reason: string }[];
+  left: number;
+  removedEstimateBytes?: number;
+  keptCheckedName?: string;
+  sizeBasis: string;
+};
+/** Automatic removal after each daily backup that succeeds (T-196, slice 6),
+ * as confirmed for the schedule's folder. */
+type Retention = { keep: number; budgetBytes?: number; folder: string; confirmedAt: string };
+/** What automatic removal did after one run, apart from its backup. */
+type Cleanup = {
+  state: "due" | "running" | "succeeded" | "failed" | "stopped" | "interrupted" | "not_run";
+  keep: number;
+  budgetBytes?: number;
+  folder: string;
+  decidedAt: string;
+  operationId: string | null;
+  reason: string | null;
+  error: string | null;
+  result: Pass | null;
+  finishedAt: string | null;
+};
 /** The daily backup (T-196): a time of day in UTC, a folder each run writes a
  * new folder in, the next slot and the last run as its operation ended. */
 type Schedule = {
@@ -61,6 +88,9 @@ type Schedule = {
   timeUtc: string;
   folder: string | null;
   nextRunAt: string | null;
+  /** Absent from a Core before slice 6. */
+  retention?: Retention | null;
+  retentionNote?: string | null;
   lastRun: {
     slot: string;
     missed: number;
@@ -70,6 +100,7 @@ type Schedule = {
     state: "running" | "succeeded" | "failed" | "stopped" | "interrupted" | "not_started";
     error: string | null;
     finishedAt: string | null;
+    cleanup?: Cleanup | null;
   } | null;
 };
 type Precheck = {
@@ -97,6 +128,8 @@ const steps: Record<string, string> = {
   remove: "Removing the old backup",
 };
 const kinds = { backup: "Backup", check: "Check", restore: "Restore", remove: "Removal" } as const;
+/** An automatic removal (T-196, slice 6) is said as one. */
+const kindName = (op: Operation) => (op.request.automatic ? "Automatic removal" : kinds[op.kind]);
 
 function bytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -411,7 +444,7 @@ export function WorkspaceBackup({ active }: { active: boolean }) {
               .filter((op) => op.id !== watched?.id)
               .map((op) => (
                 <li key={op.id} data-state={op.state}>
-                  {kinds[op.kind]} · {op.state}
+                  {kindName(op)} · {op.state}
                   {op.finishedAt ? ` · ${new Date(op.finishedAt).toLocaleString()}` : ""}
                   {op.request.to || op.request.path ? ` · ${op.request.to || op.request.path}` : ""}
                   {op.kind === "remove" && op.request.name ? ` · ${op.request.name}` : ""}
@@ -445,6 +478,37 @@ function lastRunText(run: NonNullable<Schedule["lastRun"]>) {
       return `Last run, for ${utc(run.slot)}, did not start: ${run.error ?? "no reason was given"}.${made}`;
     default:
       return `Last run, for ${utc(run.slot)}, ${run.state === "failed" ? "failed" : run.state}: ${run.error ?? "no reason was given"}.${made}`;
+  }
+}
+
+/** What an automatic removal pass removed, by the sizes manifests declared. */
+function passText(pass: Pass) {
+  const n = pass.removed.length;
+  const removed = n
+    ? `Removed ${n} old ${n === 1 ? "backup" : "backups"}: ${pass.removed.map((r) => r.name).join(", ")}${
+        pass.removedEstimateBytes ? `, about ${bytes(pass.removedEstimateBytes)} as their manifests declared (disk use can differ)` : ""
+      }.${pass.keptCheckedName ? ` First, ${pass.keptCheckedName} was read back whole.` : ""}`
+    : "Nothing needed removing.";
+  const skipped = pass.skipped.length ? ` Not removed: ${pass.skipped.map((s) => `${s.name} (${s.reason})`).join("; ")}.` : "";
+  const left = pass.left > 0 ? ` ${pass.left} more wait for the next run that succeeds.` : "";
+  return removed + skipped + left;
+}
+
+/** What automatic removal did after the last run: said apart from its backup. */
+function cleanupText(cleanup: Cleanup) {
+  switch (cleanup.state) {
+    case "due":
+      return "Removing old backups after this run waits for another backup, check or restore to end.";
+    case "running":
+      return "Removing old backups after this run…";
+    case "succeeded":
+      return `After this run: ${cleanup.result ? passText(cleanup.result) : "done."}`;
+    case "not_run":
+      return `Old backups were not removed after this run: ${cleanup.reason ?? "no reason was given"}.`;
+    default:
+      return `Removing old backups after this run ${cleanup.state === "interrupted" ? "was interrupted" : cleanup.state}: ${
+        cleanup.error ?? "no reason was given"
+      }. The backup itself is as said above; this is not tried again on its own.`;
   }
 }
 
@@ -485,7 +549,9 @@ function DailyBackup({ schedule, canChange, onSaved }: {
           <span className="settings-row-title">Daily backup</span>
           <span className="settings-row-help">
             {schedule.enabled
-              ? `Every day at ${schedule.timeUtc} UTC (${localTime(schedule.timeUtc)} on this device), into a new folder in ${schedule.folder}. Old backups are never deleted.`
+              ? `Every day at ${schedule.timeUtc} UTC (${localTime(schedule.timeUtc)} on this device), into a new folder in ${schedule.folder}. ${
+                  schedule.retention ? "Old backups there are removed as Automatic removal below says." : "Old backups are never deleted."
+                }`
               : "Off. When on, Core backs up once a day while it runs, as Back up does; a day it was stopped or asleep is made up once."}
           </span>
         </span>
@@ -530,6 +596,201 @@ function DailyBackup({ schedule, canChange, onSaved }: {
           {lastRunText(run)}
         </p>
       )}
+      {run?.cleanup && (
+        <p
+          className={["failed", "stopped", "interrupted"].includes(run.cleanup.state) ? "workspace-backup-error" : "workspace-backup-note"}
+          data-cleanup={run.cleanup.state}
+        >
+          {cleanupText(run.cleanup)}
+        </p>
+      )}
+      {schedule.retention !== undefined && <AutoRemoval schedule={schedule} canChange={canChange} onSaved={onSaved} />}
+      {error && (
+        <p className="workspace-backup-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** The preview Core gives for the schedule's folder (retention.rs), as much of it as this needs. */
+type RemovalPreview = {
+  folder: string;
+  keep: number;
+  entries: { name: string; verdict: "keep" | "remove" | "protected" | "unknown" | "ignored"; reason: string }[];
+  unreadableNames: number;
+  removableEstimateBytes: number;
+  removableUnknownSizes: number;
+  sizeBasis: string;
+  budget?: { bytes: number; state: "met" | "over" | "unknown"; reason: string };
+};
+const GIB = 1024 ** 3;
+
+/** Automatic removal of old daily backups (T-196, slice 6): off until turned
+ * on here, for the schedule's folder, after a preview of what it would
+ * remove now. Turning it on removes nothing; after each daily backup that
+ * succeeds Core removes what such a preview offers then, as Remove… does. */
+function AutoRemoval({ schedule, canChange, onSaved }: {
+  schedule: Schedule;
+  canChange: boolean;
+  onSaved: (schedule: Schedule) => void;
+}) {
+  const on = schedule.retention ?? null;
+  const [keep, setKeep] = useState(String(on?.keep ?? 7));
+  const [budget, setBudget] = useState(on?.budgetBytes ? String(Math.round((on.budgetBytes / GIB) * 100) / 100) : "");
+  const [preview, setPreview] = useState<RemovalPreview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const count = Number(keep);
+  const gib = Number(budget);
+  const budgetBytes = budget.trim() === "" ? undefined : Math.max(1, Math.round(gib * GIB));
+  const valid =
+    Number.isInteger(count) && count >= 1 && count <= 100 && (budget.trim() === "" || (Number.isFinite(gib) && gib > 0 && gib <= 1024 * 1024));
+  const folder = schedule.folder;
+  // Confirmed only as previewed: these settings, for the schedule's folder as it is now.
+  const previewed =
+    !!preview && !!folder && preview.folder === folder && preview.keep === count && (preview.budget?.bytes ?? undefined) === budgetBytes;
+  const same = !!on && on.keep === count && (on.budgetBytes ?? undefined) === budgetBytes && on.folder === folder;
+
+  async function call<T>(path: string, body: object) {
+    setBusy(true);
+    setError("");
+    try {
+      return await api<T>(path, { method: "POST", body: JSON.stringify(body) });
+    } catch (e) {
+      setError(errorText(e));
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function runPreview() {
+    setPreview(null);
+    const answer = await call<RemovalPreview>("/workspace/backup/retention/preview", {
+      folder,
+      keep: count,
+      ...(budgetBytes === undefined ? {} : { budgetBytes }),
+    });
+    if (answer) setPreview(answer);
+  }
+  async function turnOn() {
+    if (!preview) return;
+    const answer = await call<{ schedule: Schedule }>("/workspace/backup/schedule/retention", {
+      enabled: true,
+      keep: preview.keep,
+      ...(preview.budget ? { budgetBytes: preview.budget.bytes } : {}),
+      folder: preview.folder,
+    });
+    if (answer) {
+      setPreview(null);
+      onSaved(answer.schedule);
+    }
+  }
+  async function turnOff() {
+    const answer = await call<{ schedule: Schedule }>("/workspace/backup/schedule/retention", { enabled: false });
+    if (answer) {
+      setPreview(null);
+      onSaved(answer.schedule);
+    }
+  }
+
+  const removable = preview?.entries.filter((e) => e.verdict === "remove") ?? [];
+  const kept = preview?.entries.filter((e) => e.verdict === "keep").length ?? 0;
+  const held = preview?.entries.filter((e) => e.verdict === "protected" || e.verdict === "unknown").length ?? 0;
+  return (
+    <div className="settings-group workspace-backup-auto-removal" aria-label="Automatic removal">
+      <div className="settings-row workspace-backup-row">
+        <span className="settings-row-main">
+          <span className="settings-row-title">Automatic removal</span>
+          <span className="settings-row-help" data-auto-removal={on ? "on" : "off"}>
+            {on
+              ? `On since ${utc(on.confirmedAt)}: after each daily backup that succeeds, Core keeps the latest ${on.keep}${
+                  on.budgetBytes ? ` within ${bytes(on.budgetBytes)} (by the sizes their manifests declare)` : ""
+                } in ${on.folder} and removes older backups of this Workspace there, at most 20 at a time.`
+              : "Off: old daily backups are never removed on their own."}{" "}
+            A protected backup or one that can't be judged is never removed, and each removal first reads a kept backup
+            back whole, as Remove… does. A failed, stopped or interrupted backup removes nothing; nothing is retried on its
+            own.
+          </span>
+        </span>
+      </div>
+      {schedule.retentionNote && (
+        <p className="workspace-backup-error" role="status">
+          {schedule.retentionNote}.
+        </p>
+      )}
+      {canChange && !folder && <p className="settings-row-help">Save a folder for the daily backup first.</p>}
+      {canChange && folder && (
+        <div className="settings-row workspace-backup-row">
+          <input
+            className="settings-input backup-retention-keep"
+            type="number"
+            min={1}
+            max={100}
+            aria-label="Daily backups to keep"
+            value={keep}
+            onChange={(e) => {
+              setKeep(e.target.value);
+              setPreview(null);
+            }}
+          />
+          <input
+            className="settings-input backup-retention-keep"
+            type="number"
+            min={0}
+            step="any"
+            aria-label="Space budget for daily backups in GiB (optional)"
+            placeholder="No budget"
+            value={budget}
+            onChange={(e) => {
+              setBudget(e.target.value);
+              setPreview(null);
+            }}
+          />
+          <button type="button" disabled={!valid || busy} onClick={() => void runPreview()}>
+            Preview
+          </button>
+          {on && (
+            <button type="button" disabled={busy} onClick={() => void turnOff()}>
+              Turn off
+            </button>
+          )}
+        </div>
+      )}
+      {preview && (
+        <div className="backup-retention-result" role="region" aria-label="Automatic removal preview">
+          <p role="status">
+            In {preview.folder} now, keeping the latest {preview.keep}
+            {preview.budget && ` within ${bytes(preview.budget.bytes)}`} would keep {kept} and remove {removable.length}
+            {removable.length > 0 && ` (about ${bytes(preview.removableEstimateBytes)} as their manifests declare)`}; {held}{" "}
+            protected or can't be judged.
+            {preview.unreadableNames > 0 && " Some names can't be read, so nothing in this folder would be removed."}
+          </p>
+          {preview.budget && (
+            <p className={preview.budget.state === "met" ? "workspace-backup-note" : "workspace-backup-error"}>{preview.budget.reason}.</p>
+          )}
+          {removable.length > 0 && (
+            <ul aria-label="Would be removed now">
+              {removable.map((e) => (
+                <li key={e.name}>
+                  <code>{e.name}</code> · {e.reason}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="settings-row-help">
+            Turning it on removes nothing now. After each daily backup that succeeds, Core previews this folder again
+            and removes what that preview offers then. {preview.sizeBasis}
+          </p>
+          {previewed && !same && (
+            <button type="button" disabled={busy} onClick={() => void turnOn()}>
+              {on ? "Save these settings" : "Turn on automatic removal"}
+            </button>
+          )}
+          {previewed && same && <p className="settings-row-help">These are the settings on now.</p>}
+        </div>
+      )}
       {error && (
         <p className="workspace-backup-error" role="alert">
           {error}
@@ -549,19 +810,19 @@ function OperationView({ op, canStop }: { op: Operation; canStop: boolean }) {
   useEffect(() => {
     if (said) stopLine.current?.scrollIntoView?.({ block: "nearest" });
   }, [said]);
-  const label = `${kinds[op.kind]} ${op.state === "running" ? "running" : op.state}`;
+  const label = `${kindName(op)} ${op.state === "running" ? "running" : op.state}`;
   return (
     <div className="workspace-backup-operation" data-state={op.state} aria-label={label}>
       <p className="workspace-backup-operation-title" role="status">
         {op.state === "running"
-          ? `${kinds[op.kind]}: ${steps[op.step] ?? op.step}…`
+          ? `${kindName(op)}: ${steps[op.step] ?? op.step}…`
           : op.state === "succeeded"
-            ? `${kinds[op.kind]} finished`
+            ? `${kindName(op)} finished`
             : op.state === "stopped"
-              ? `${kinds[op.kind]} stopped; nothing it was writing was kept`
+              ? `${kindName(op)} stopped; nothing it was writing was kept`
               : op.state === "interrupted"
-                ? `${kinds[op.kind]} interrupted when Core stopped; nothing it was writing was kept`
-                : `${kinds[op.kind]} failed at “${steps[op.step] ?? op.step}”`}
+                ? `${kindName(op)} interrupted when Core stopped; nothing it was writing was kept`
+                : `${kindName(op)} failed at “${steps[op.step] ?? op.step}”`}
       </p>
       {canStop && (
         <button
@@ -600,6 +861,13 @@ function OperationView({ op, canStop }: { op: Operation; canStop: boolean }) {
 
 function Result({ op }: { op: Operation }) {
   const result = op.result!;
+  if (op.kind === "remove" && Array.isArray(result.removed)) {
+    return (
+      <div className="workspace-backup-result">
+        <p>{passText(result as unknown as Pass)}</p>
+      </div>
+    );
+  }
   if (op.kind === "remove") {
     return (
       <div className="workspace-backup-result">

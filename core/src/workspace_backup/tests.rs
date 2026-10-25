@@ -581,7 +581,7 @@ async fn a_scheduled_run_is_an_ordinary_checked_backup_and_leaves_the_schedule_o
             running(&data, &store, &target, ctl)?;
             Ok(json!({}))
         })
-    }).unwrap();
+    }, |_, _, _| unreachable!("no cleanup while automatic removal is off")).unwrap();
     let id = planner.get().last_run.unwrap().operation_id.unwrap();
     for _ in 0..500 {
         if backups.get(&id).unwrap().state != "running" {
@@ -589,7 +589,7 @@ async fn a_scheduled_run_is_an_ordinary_checked_backup_and_leaves_the_schedule_o
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    planner.tick(&backups, at("2026-10-26T03:01:00Z"), |_, _| unreachable!("one run per slot")).unwrap();
+    planner.tick(&backups, at("2026-10-26T03:01:00Z"), |_, _| unreachable!("one run per slot"), |_, _, _| unreachable!("no cleanup")).unwrap();
     let run = planner.get().last_run.unwrap();
     assert_eq!((run.state.as_str(), run.error), ("succeeded", None));
     assert_eq!(run.to, folder.join("yuzuno-backup-20261026T0300Z"));
@@ -932,4 +932,117 @@ fn under_a_space_budget_a_backup_whose_size_cant_be_trusted_is_never_offered_for
     let refused = remove(&folder, rule, "b-1", &sha, &me, Vec::new, &Control::named("untrusted"), retention::MAX_ENTRIES).unwrap_err().to_string();
     assert!(refused.contains("not one that could be removed now: Its declared size can't be trusted"), "{refused}");
     assert!(folder.join("b-1").is_dir());
+}
+
+/// The names left in `folder`, without dotted leftovers.
+fn backups_in(folder: &Path) -> Vec<String> {
+    entries(folder).into_iter().filter(|name| !name.starts_with('.')).collect()
+}
+
+#[test]
+fn an_automatic_pass_removes_what_the_rule_offers_oldest_first_after_reading_a_kept_one_back_whole() {
+    use retention::{prune, Rule, PASS_LIMIT};
+    let root = tempfile::tempdir().unwrap();
+    let (folder, me, _) = three_backups(root.path());
+    let (_, other_made, _) = backed_up(&root.path().join("elsewhere"));
+    rewrite_manifest(&copy_of(&other_made, &folder.join("other")), |m| m["workspaceId"] = json!("ws-someone-else"));
+    // Nothing to remove under the rule: nothing is read back, nothing removed.
+    let none = prune(&folder, Rule { keep: 5, budget_bytes: None }, &me, Vec::new, &Control::named("auto0"), 500, PASS_LIMIT).unwrap();
+    assert_eq!((none["removed"].clone(), none.get("keptChecked").is_none()), (json!([]), true));
+    // At most one per pass: the oldest; the rest wait for the next.
+    let one = prune(&folder, Rule { keep: 1, budget_bytes: None }, &me, Vec::new, &Control::named("auto1"), 500, 1).unwrap();
+    assert_eq!((one["removed"][0]["name"].clone(), one["left"].clone(), one["keptCheckedName"].clone()), (json!("b-1"), json!(1), json!("b-3")));
+    let rest = prune(&folder, Rule { keep: 1, budget_bytes: None }, &me, Vec::new, &Control::named("auto2"), 500, PASS_LIMIT).unwrap();
+    assert_eq!(rest["removed"].as_array().unwrap().iter().map(|r| r["name"].clone()).collect::<Vec<_>>(), vec![json!("b-2")]);
+    assert!(rest["removedEstimateBytes"].as_u64().unwrap() > 0 && rest["sizeBasis"].as_str().unwrap().contains("nothing is measured on disk"));
+    // Another Workspace's backup is protected; the kept one reads back whole.
+    assert_eq!(backups_in(&folder), vec!["b-3", "other"]);
+    verify(&folder.join("b-3")).unwrap();
+}
+
+#[test]
+fn an_automatic_pass_stops_at_the_first_removal_that_fails_and_says_what_it_removed() {
+    use retention::{prune, Rule, PASS_LIMIT};
+    let root = tempfile::tempdir().unwrap();
+    let (folder, me, _) = three_backups(root.path());
+    // Nothing kept reads back whole: nothing is removed.
+    let saved = fs::read(folder.join("b-3").join(DATABASE)).unwrap();
+    fs::write(folder.join("b-3").join(DATABASE), b"damaged").unwrap();
+    let before = listing(&folder);
+    let refused = prune(&folder, Rule { keep: 1, budget_bytes: None }, &me, Vec::new, &Control::named("auto3"), 500, PASS_LIMIT).unwrap_err().to_string();
+    assert!(refused.contains("could be read back whole just now") && refused.contains("nothing was removed"), "{refused}");
+    assert_eq!(listing(&folder), before);
+    fs::write(folder.join("b-3").join(DATABASE), saved).unwrap();
+    // b-1 goes; b-2 can only be partly removed: the pass stops there and says both.
+    let locked = folder.join("b-2").join(FILES);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+    let error = prune(&folder, Rule { keep: 1, budget_bytes: None }, &me, Vec::new, &Control::named("auto4"), 500, PASS_LIMIT).unwrap_err().to_string();
+    let aside = folder.join(".b-2.removing-auto4");
+    fs::set_permissions(aside.join(FILES), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(error.contains("b-2 was partly removed") && error.contains("before it, 1 backup was removed (b-1)") && error.contains("the rest are left as they are"), "{error}");
+    assert_eq!(backups_in(&folder), vec!["b-3"]);
+    assert!(aside.is_dir(), "what is left stays, for the user to see");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daily_backup_that_succeeds_runs_its_cleanup_once_through_the_removal_path() {
+    let root = tempfile::tempdir().unwrap();
+    let data = workspace(root.path());
+    let folder = root.path().join("daily");
+    fs::create_dir(&folder).unwrap();
+    // An older backup of this Workspace already in the folder.
+    backup(&data, &folder.join("old-1")).unwrap();
+    rewrite_manifest(&folder.join("old-1"), |m| m["createdAt"] = json!("2026-10-01T03:00:00Z"));
+    let store = running_core(&data);
+    let me = store.workspace_id().unwrap();
+    let backups = Arc::new(online::Backups::open(&data));
+    let planner = schedule::Planner::open(&data);
+    let at = |text: &str| chrono::DateTime::parse_from_rfc3339(text).unwrap().with_timezone(&chrono::Utc);
+    planner.set(true, "03:00", Some(folder.clone()), at("2026-10-25T04:00:00Z")).unwrap();
+    planner.set_retention(true, 1, None, Some(&folder), at("2026-10-25T04:00:00Z")).unwrap();
+    let start = |request: &str, to: &Path| {
+        let (data, store, target) = (data.clone(), store.clone(), to.to_path_buf());
+        backups.start("backup", request, json!({"to": to}), |_| None, move |ctl| {
+            running(&data, &store, &target, ctl)?;
+            Ok(json!({}))
+        })
+    };
+    let prune = |request: &str, to: &Path, rule: retention::Rule| {
+        let (journal, target, me) = (backups.clone(), to.to_path_buf(), me.clone());
+        backups.start("remove", request, json!({"folder": to, "keep": rule.keep, "automatic": true}), |_| None, move |ctl| {
+            retention::prune(&target, rule, &me, || journal.all(), ctl, retention::MAX_ENTRIES, retention::PASS_LIMIT)
+        })
+    };
+    let settle = |id: String| {
+        let backups = backups.clone();
+        async move {
+            for _ in 0..1000 {
+                if backups.get(&id).unwrap().state != "running" && backups.current().is_none() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            panic!("operation {id} did not end");
+        }
+    };
+    planner.tick(&backups, at("2026-10-26T03:00:30Z"), start, |_, _, _| unreachable!("not while the backup runs")).unwrap();
+    assert!(folder.join("old-1").is_dir(), "nothing removed while the backup runs");
+    settle(planner.get().last_run.unwrap().operation_id.unwrap()).await;
+    planner.tick(&backups, at("2026-10-26T03:01:00Z"), |_, _| unreachable!("one run per slot"), prune).unwrap();
+    let cleanup = planner.get().last_run.unwrap().cleanup.unwrap();
+    assert_eq!(cleanup.state, "running");
+    settle(cleanup.operation_id.unwrap()).await;
+    planner.tick(&backups, at("2026-10-26T03:01:30Z"), |_, _| unreachable!(), |_, _, _| unreachable!("once per run")).unwrap();
+    let run = planner.get().last_run.unwrap();
+    let cleanup = run.cleanup.unwrap();
+    assert_eq!((run.state.as_str(), cleanup.state.as_str()), ("succeeded", "succeeded"), "{:?}", cleanup.error);
+    let result = cleanup.result.unwrap();
+    assert_eq!(result["removed"][0]["name"], json!("old-1"));
+    assert_eq!(result["keptCheckedName"], json!("yuzuno-backup-20261026T0300Z"), "the new backup was read back whole first");
+    assert_eq!(backups_in(&folder), vec!["yuzuno-backup-20261026T0300Z"]);
+    verify(&run.to).unwrap();
+    // The operation is a removal like a confirmed one, marked automatic.
+    let op = backups.all().into_iter().find(|op| op.request_id == "retention-20261026T0300Z").unwrap();
+    assert_eq!((op.kind.as_str(), op.request["automatic"].clone()), ("remove", json!(true)));
+    planner.tick(&backups, at("2026-10-26T09:00:00Z"), |_, _| unreachable!(), |_, _, _| unreachable!("once per run")).unwrap();
 }

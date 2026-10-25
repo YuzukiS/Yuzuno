@@ -4,7 +4,8 @@ import { api, errorText } from "./api";
 /** T-196: what keeping only the latest backups in one folder would do, as
  * Core previews it (core/src/workspace_backup/retention.rs), and (slice 3)
  * removing one of those that could be removed, once the user confirms that
- * one. Nothing removes backups on its own. Core reads each manifest and
+ * one; removal without that is only the daily backup's Automatic removal
+ * (slice 6, WorkspaceBackup.tsx), which the user turns on. Core reads each manifest and
  * checks no files for the preview, so sizes are estimates and no backup is
  * called verified; Check reads one back, as Check a backup does. A removal is
  * judged again by Core, which first reads another backup back whole.
@@ -122,8 +123,9 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
         <span className="settings-row-main">
           <span className="settings-row-title">Keep the latest backups</span>
           <span className="settings-row-help">
-            What keeping only the latest backups in one folder would keep, and what it could remove. A backup is removed
-            only when you confirm that one; nothing removes backups on its own.
+            What keeping only the latest backups in one folder would keep, and what it could remove. Here a backup is
+            removed only when you confirm that one; the daily backup's Automatic removal, when you turn it on above, is
+            its own setting.
           </span>
           <span className="settings-row-help">
             A space budget is optional. With one, of the latest only as many are kept as fit in it together, by the sizes
