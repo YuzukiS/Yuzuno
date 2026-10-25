@@ -23,14 +23,22 @@ type Summary = {
 type Operation = {
   id: string;
   requestId: string;
-  kind: "backup" | "check" | "restore";
+  kind: "backup" | "check" | "restore" | "remove";
   state: "running" | "succeeded" | "failed" | "stopped" | "interrupted";
   step: string;
   request: Record<string, string>;
   startedAt: string;
   finishedAt: string | null;
   error: string | null;
-  result: (Summary & { restoredTo?: string; nextSteps?: string[]; notes?: string[] }) | null;
+  result: (Summary & {
+    restoredTo?: string;
+    nextSteps?: string[];
+    notes?: string[];
+    /** A removal (T-196): what it removed and the backup it read back whole first. */
+    removed?: string;
+    freedEstimateBytes?: number | null;
+    keptChecked?: string;
+  }) | null;
 };
 type View = {
   canChange: boolean;
@@ -76,7 +84,7 @@ type Precheck = {
   notes: string[];
 };
 /** A request sent and not yet answered: a retry sends it again as is. */
-type Pending = { path: string; body: Record<string, string> & { requestId: string } };
+type Pending = { path: string; body: Record<string, string | number> & { requestId: string } };
 
 const steps: Record<string, string> = {
   start: "Starting",
@@ -84,8 +92,11 @@ const steps: Record<string, string> = {
   files: "Copying files",
   verify: "Reading the backup back",
   check: "Checking the restored Workspace",
+  preview: "Checking the folder",
+  recheck: "Checking the folder again",
+  remove: "Removing the old backup",
 };
-const kinds = { backup: "Backup", check: "Check", restore: "Restore" } as const;
+const kinds = { backup: "Backup", check: "Check", restore: "Restore", remove: "Removal" } as const;
 
 function bytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -386,6 +397,9 @@ export function WorkspaceBackup({ active }: { active: boolean }) {
           defaultFolder={view?.schedule?.folder ?? null}
           busy={busy}
           onCheck={(path) => void send({ path: "/workspace/backups/check", body: { requestId: requestId(), path } })}
+          onRemove={(target) =>
+            void send({ path: "/workspace/backup/retention/remove", body: { requestId: requestId(), ...target } })
+          }
         />
       )}
 
@@ -400,6 +414,7 @@ export function WorkspaceBackup({ active }: { active: boolean }) {
                   {kinds[op.kind]} · {op.state}
                   {op.finishedAt ? ` · ${new Date(op.finishedAt).toLocaleString()}` : ""}
                   {op.request.to || op.request.path ? ` · ${op.request.to || op.request.path}` : ""}
+                  {op.kind === "remove" && op.request.name ? ` · ${op.request.name}` : ""}
                 </li>
               ))}
           </ul>
@@ -585,6 +600,17 @@ function OperationView({ op, canStop }: { op: Operation; canStop: boolean }) {
 
 function Result({ op }: { op: Operation }) {
   const result = op.result!;
+  if (op.kind === "remove") {
+    return (
+      <div className="workspace-backup-result">
+        <p>
+          Removed <code>{result.removed}</code>
+          {result.freedEstimateBytes ? `, about ${bytes(result.freedEstimateBytes)} as its manifest declared` : ""}. First,{" "}
+          <code>{result.keptChecked}</code> was read back whole. A removed backup can't be brought back.
+        </p>
+      </div>
+    );
+  }
   if (op.kind === "restore") {
     return (
       <div className="workspace-backup-result">
