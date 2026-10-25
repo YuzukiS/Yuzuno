@@ -230,10 +230,11 @@ impl Workspace {
             Ok(answer) if answer["stopped"] == true => None,
             Ok(answer) if answer["stopped"] == false => Some(Ok(format!("Claude's host on {machine} refused: {}", reason(&answer)))),
             Ok(answer) => Some(Err(reason(&answer))),
-            // Answered by the bridge itself: a host from an earlier Core
-            // passed the request on, and nothing stopped.
-            Err(error) if error.downcast_ref::<crate::claude::Rejected>().is_some() => Some(Ok(format!(
-                "the Claude host on {machine} is from an earlier version and can't confirm a stop ({error})"
+            // The bridge's own answer to an op it doesn't know: the host
+            // passed the request on (it predates host_stop), and nothing
+            // stopped. Any other refusal can't say so, and isn't known.
+            Err(error) if error.downcast_ref::<crate::claude::Rejected>().is_some_and(|e| e.to_string() == "Unknown operation") => Some(Ok(format!(
+                "the Claude host on {machine} doesn't support a confirmed stop (it passed the request on: {error})"
             ))),
             Err(error) => Some(Err(error.to_string())),
         };
@@ -377,7 +378,8 @@ mod tests {
     /// Stands in for SSH and a machine's Claude host (remote-host.mjs) behind
     /// it: answers as an idle bridge, and `host_stop` as `mode` says: `ok`,
     /// `busy`, `older` (an earlier host passes it on and its bridge refuses),
-    /// `unconfirmed`, or `lost` (SSH ends with no answer). Logs every op.
+    /// `rejected` (another refusal), `unconfirmed`, or `lost` (SSH ends with
+    /// no answer). Logs every op.
     const HOST: &str = r#"
 const [log, mode] = process.argv.slice(2);
 const fs = require('node:fs');
@@ -392,6 +394,7 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
   if (mode === 'ok') return reply({ stopped: true, exit: { code: 0, signal: null } });
   if (mode === 'busy') return reply({ stopped: false, reason: 'Claude on this machine is not idle' });
   if (mode === 'older') return out({ type: 'response', id: c.id, error: 'Unknown operation' });
+  if (mode === 'rejected') return out({ type: 'response', id: c.id, error: 'Runtime is closed' });
   if (mode === 'unconfirmed') return reply({ stopped: null, reason: 'the Claude bridge on this machine only ended after SIGTERM' });
   process.exit(0);
 });
@@ -466,7 +469,7 @@ process.stdin.on('end', () => process.exit(0));
     /// request to its bridge, withdraws the choice: nothing changed.
     #[tokio::test]
     async fn an_ssh_claude_host_that_refuses_or_is_older_changes_nothing() {
-        for (machine, mode, said) in [("t184-ssh-busy", "busy", "refused: Claude on this machine is not idle"), ("t184-ssh-older", "older", "earlier version")] {
+        for (machine, mode, said) in [("t184-ssh-busy", "busy", "refused: Claude on this machine is not idle"), ("t184-ssh-older", "older", "doesn't support a confirmed stop")] {
             let dir = tempfile::tempdir().unwrap();
             let Some(ws) = ssh_claude(dir.path(), machine, mode).await else { return };
             let error = ws.disconnect_agent("a").await.unwrap_err().to_string();
@@ -480,13 +483,14 @@ process.stdin.on('end', () => process.exit(0));
         }
     }
 
-    /// A stop the host can't confirm, or an answer SSH lost, is not called a
+    /// A stop the host can't confirm, a refusal other than the older host's,
+    /// or an answer SSH lost, is not called a
     /// Disconnect, yet nothing starts the Agent again: not a send, a mail
     /// Start or recovery (claude_ensure), nor a Core restart. The user's
     /// Reconnect resumes the same session.
     #[tokio::test]
     async fn an_unconfirmed_ssh_claude_stop_holds_the_agent_until_the_users_reconnect() {
-        for (machine, mode) in [("t184-ssh-unconfirmed", "unconfirmed"), ("t184-ssh-lost", "lost")] {
+        for (machine, mode) in [("t184-ssh-unconfirmed", "unconfirmed"), ("t184-ssh-rejected", "rejected"), ("t184-ssh-lost", "lost")] {
             let dir = tempfile::tempdir().unwrap();
             let Some(ws) = ssh_claude(dir.path(), machine, mode).await else { return };
             let error = ws.disconnect_agent("a").await.unwrap_err().to_string();
