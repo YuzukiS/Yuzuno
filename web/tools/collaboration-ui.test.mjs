@@ -1148,3 +1148,166 @@ test("opened at the Workspace section of a task Core no longer has, the board sa
     page.close();
   }
 });
+
+// T-189: the Tasks and Messages window in Chinese. What people and Agents
+// wrote, names, links and Core's errors stay as written; a language switch
+// keeps what is open and typed and starts nothing.
+function chinese(page) {
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+}
+function speak(page, language) {
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+  page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+}
+function quietCore(answers = {}) {
+  return (operation, body) => {
+    if (operation in answers) return typeof answers[operation] === "function" ? answers[operation](body) : answers[operation];
+    if (operation === "workspaces") return { taskId: "T-1", repositories: [], workspaces: [] };
+    if (operation === "github_links" || operation === "github_refresh") return { links: [], repositories: [] };
+    if (operation === "delivery_get") return { flow: null, settings: { harness: "codex", model: "gpt-6.1-sol" } };
+    if (operation === "peers_list") return { peers: [] };
+    if (operation.startsWith("pr-reviews")) return { reviews: [], hasMore: false, nextBefore: null };
+    if (operation.startsWith("pr-operations")) return { operations: [], repositories: [], hasMore: false, nextBefore: null };
+    throw new Error(operation);
+  };
+}
+const activities = [
+  { seq: 1, taskId: "T-1", kind: "created", actor: user, at: "2026-10-12T12:00:00Z" },
+  { seq: 2, taskId: "T-1", kind: "comment", body: "Bounds look right to me.", actor: { kind: "agent", id: "dev-2", name: "Dev 2" }, at: "2026-10-12T12:05:00Z" },
+];
+
+test("the task list and a task read in Chinese; what was written stays as written (T-189)", async () => {
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false, counts: { todo: 0, doing: 1, blocked: 0, review: 0, done: 0, cancelled: 0 } },
+    task_get: { task: task(), activities, executions: [], hasMore: false },
+  }));
+  try {
+    chinese(page);
+    page.render();
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the task card");
+    const body = () => page.document.body.textContent;
+    assert.match(body(), /一起工作的地方/);
+    assert.ok(button(page, "任务") && button(page, "消息") && button(page, "新建任务"));
+    assert.match(body(), /我们在做的/);
+    const show = field(page, "显示");
+    assert.deepEqual([...show.options].slice(0, 4).map((option) => option.textContent), ["未结束的任务", "全部任务", "待办", "进行中"]);
+    assert.ok(field(page, "项目") && field(page, "负责人"));
+    assert.equal(field(page, "负责人").options[0].textContent, "所有人");
+    assert.ok(page.document.querySelector('[aria-label="刷新任务"]'));
+    const card = page.document.querySelector(".collab-task-card");
+    assert.match(card.textContent, /进行中/);
+    assert.match(card.textContent, /File preview opens at the right line/, "the title as written");
+    assert.match(card.textContent, /Preview the requested line and explain invalid positions\./, "the description as written");
+    assert.match(body(), /显示 1 个符合条件的任务中的 1 个/);
+    card.click();
+    await waitFor(() => page.document.querySelector('[aria-label="任务详情"]') && /对话与动态/.test(body()), "the task in Chinese");
+    for (const label of ["全部任务", "相关 Job", "交给 Agent", "编辑任务", "添加结果", "管理", "添加备注"])
+      assert.ok(button(page, label), label);
+    assert.match(body(), /工作内容/);
+    assert.match(body(), /创建了此任务/);
+    assert.match(body(), /Bounds look right to me\./, "a note as written");
+    assert.doesNotMatch(body(), /Give to agent|Edit task|Conversation & updates|What we’re making|Showing 1 of/);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("switching the language keeps an open edit, its typed draft and the open task, and asks Core nothing again (T-189)", async () => {
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false },
+    task_get: { task: task(), activities, executions: [], hasMore: false },
+  }));
+  try {
+    chinese(page);
+    page.render();
+    (await waitFor(() => page.document.querySelector(".collab-task-card"), "the task card")).click();
+    await waitFor(() => button(page, "编辑任务"), "the task");
+    click(page, "编辑任务");
+    await tick();
+    await value(page, field(page, "任务标题"), "预览时打开正确的行");
+    const asked = () => page.calls.filter((call) => ["task_list", "task_get", "peer_read"].includes(call.operation)).length;
+    const before = asked();
+    speak(page, "en");
+    await waitFor(() => page.document.querySelector('[aria-label="Task details"]'), "the task in English");
+    await tick(100);
+    assert.equal(field(page, "Task title").value, "预览时打开正确的行", "the draft stays");
+    assert.ok(button(page, "Save changes"), "the edit stays open");
+    assert.equal(page.document.querySelector(".collab-task-card.selected")?.dataset.taskId, "T-1", "the task stays open");
+    assert.equal(asked(), before, "no request is started again");
+    assert.equal(page.calls.filter((call) => call.operation === "task_update").length, 0, "nothing is saved");
+  } finally {
+    page.close();
+  }
+});
+
+test("a new task reads in Chinese and Core's refusal stays as written, keeping the draft (T-189)", async () => {
+  const page = mount(quietCore({
+    task_list: { tasks: [], hasMore: false },
+    task_create: { httpStatus: 400, error: "Title is too long for this Core" },
+  }));
+  try {
+    chinese(page);
+    page.render();
+    await waitFor(() => /暂时清闲/.test(page.document.body.textContent), "the empty list in Chinese");
+    click(page, "新建任务");
+    await waitFor(() => page.document.querySelector('[aria-label="新建任务"]'), "the new task form");
+    const form = page.document.querySelector('[aria-label="新建任务"]');
+    assert.match(form.textContent, /一件要做的事/);
+    assert.match(form.textContent, /描述 可选/);
+    assert.equal(field(page, "任务标题").placeholder, "你想让什么成为可能？");
+    assert.match(form.textContent, /指定负责人可以明确责任/);
+    await value(page, field(page, "任务标题"), "一个很长的标题");
+    click(page, "创建任务");
+    await waitFor(() => form.querySelector('[role="alert"]'), "Core's refusal");
+    assert.match(form.querySelector('[role="alert"]').textContent, /Title is too long for this Core/);
+    assert.equal(field(page, "任务标题").value, "一个很长的标题");
+  } finally {
+    page.close();
+  }
+});
+
+test("Messages reads in Chinese; bodies, names and delivery facts are said, not invented (T-189)", async () => {
+  const base = {
+    sender: { kind: "agent", id: "dev-2", name: "Dev 2" },
+    recipient: { kind: "agent", id: "dev-1", name: "Dev 1" },
+    threadId: "m-1",
+    taskId: "T-1",
+    createdAt: "2026-10-12T12:00:00Z",
+    source: { agentId: "dev-2", turnId: "source-turn" },
+  };
+  const messages = [
+    { ...base, id: "m-1", seq: 1, body: "The bounds check is ready.", firstReadAt: null, delivery: { state: "pending", detail: {} } },
+    { ...base, id: "m-2", seq: 2, priority: "urgent", replyTo: "m-1", body: "Reply with the report.", firstReadAt: null,
+      delivery: { state: "delivered", detail: { mode: "steer", turnId: "recipient-turn" } } },
+    { ...base, id: "m-3", seq: 3, body: "Read already.", firstReadAt: "2026-10-12T12:10:00Z", delivery: { state: "delivered", detail: {} } },
+  ];
+  const page = mount(quietCore({
+    task_list: { tasks: [task()], hasMore: false },
+    peer_read: { messages, hasMore: false },
+  }));
+  try {
+    chinese(page);
+    page.render();
+    await tick();
+    click(page, "消息");
+    await waitFor(() => /The bounds check is ready\./.test(page.document.body.textContent), "the messages");
+    const text = page.document.body.textContent;
+    assert.match(text, /队友之间的对话/);
+    assert.equal(field(page, "邮箱").options[0].textContent, "所有 Agent");
+    assert.match(text, /发给 Dev 1/);
+    assert.match(text, /紧急/);
+    assert.match(text, /在邮箱中等待/);
+    assert.match(text, /已通知收件方/);
+    assert.match(text, /通过进行中的回合/);
+    assert.match(text, /收件方已读取/);
+    assert.ok(button(page, "回复之前的一条消息"));
+    assert.ok(page.document.querySelector('[aria-label="查看任务 T-1"]'));
+    assert.ok(button(page, "发件方会话") && button(page, "收件方会话"));
+    assert.doesNotMatch(text, /Waiting in mailbox|Recipient notified|Fetched by recipient/);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+

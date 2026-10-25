@@ -10,7 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Compartment, EditorState, Prec } from "@codemirror/state";
+import { Compartment, EditorState, Facet, Prec } from "@codemirror/state";
 import {
   history,
   historyKeymap,
@@ -47,6 +47,7 @@ import {
 } from "./composer-draft";
 import { slashCommands, withCodexSkills, withModelControl, type CommandList, type SlashCommand } from "./slash-commands";
 import { api } from "./api";
+import { strings, useStrings } from "./i18n";
 import "./pasted-text.css";
 import "./slash-commands.css";
 
@@ -74,25 +75,66 @@ type Props = {
   sendKey?: SendKey;
 };
 
+// The paste block's own words (T-189); the pasted text is never translated.
+const text = strings({
+  empty: "Empty text",
+  lines: (lines: number) => `${lines} ${lines === 1 ? "line" : "lines"}`,
+  viewLabel: (chip: string) => `${chip}. View and edit`,
+  rule: "Long pastes (12+ lines or 2,000+ characters) fold into a block. Open it to view or edit.",
+  preview: "Preview · open to view and edit the full text",
+  numbered: (n: number) => `Pasted text #${n}`,
+  pasted: "Pasted text",
+  description: "View or edit the complete text. Saving changes does not send a message.",
+  full: "Full pasted text",
+  kept: "Original indentation and empty lines are kept.",
+  crlf: "CRLF line endings are retained for CRLF text; mixed endings use LF after editing.",
+  lf: "Edits use LF line endings.",
+  remove: "Remove block",
+  save: "Save changes",
+}, {
+  empty: "空文本",
+  lines: (lines) => `${lines} 行`,
+  viewLabel: (chip) => `${chip}。查看并编辑`,
+  rule: "较长的粘贴内容（12 行以上或 2,000 个字符以上）会折叠成一个块。打开它即可查看或编辑。",
+  preview: "预览 · 打开以查看并编辑全文",
+  numbered: (n) => `粘贴的文本 #${n}`,
+  pasted: "粘贴的文本",
+  description: "查看或编辑完整文本。保存更改不会发送消息。",
+  full: "完整的粘贴文本",
+  kept: "原有的缩进和空行会保留。",
+  crlf: "CRLF 文本会保留 CRLF 换行符；混合换行符在编辑后改用 LF。",
+  lf: "编辑后使用 LF 换行符。",
+  remove: "移除此块",
+  save: "保存更改",
+});
+type PasteWords = ReturnType<typeof text>;
+// The words in the editor's blocks and previews: a language change redraws
+// the blocks and leaves the draft, its selection and history as they are.
+const pasteWords = Facet.define<PasteWords, PasteWords>({
+  combine: (values) => values[0] ?? text("en"),
+});
+
 class PasteWidget extends WidgetType {
   constructor(
     readonly paste: PastedText,
     readonly open: (id: string, button: HTMLElement) => void,
+    readonly words: PasteWords,
   ) {
     super();
   }
   eq(other: PasteWidget) {
-    return other.paste === this.paste;
+    return other.paste === this.paste && other.words === this.words;
   }
   toDOM() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "pasted-text-chip";
     button.dataset.pasteId = this.paste.id;
-    button.textContent = `${textLabel(this.paste.text) || "Empty text"} · ${this.paste.lines} ${this.paste.lines === 1 ? "line" : "lines"}`;
-    button.setAttribute("aria-label", `${button.textContent}. View and edit`);
+    const t = this.words;
+    button.textContent = `${textLabel(this.paste.text) || t.empty} · ${t.lines(this.paste.lines)}`;
+    button.setAttribute("aria-label", t.viewLabel(button.textContent));
     // The rule lives here rather than as a standing line under the draft.
-    button.title = "Long pastes (12+ lines or 2,000+ characters) fold into a block. Open it to view or edit.";
+    button.title = t.rule;
     button.setAttribute("aria-haspopup", "dialog");
     button.addEventListener("click", (event) => {
       event.preventDefault();
@@ -118,6 +160,9 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
     const view = useRef<EditorView | null>(null);
     const callbacks = useRef(props);
     callbacks.current = props;
+    const t = useStrings(text);
+    const words = useRef(t);
+    words.current = t;
     const published = useRef(props.draft);
     const histories = useRef(
       new Map<string, { state: EditorState; draft: ComposerDraft }>(),
@@ -145,6 +190,7 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
     const openRef = useRef(open);
     openRef.current = open;
     const configure = () => [
+      pasteWords.of(words.current),
       placeholder(callbacks.current.placeholder),
       EditorState.readOnly.of(!!callbacks.current.readOnly),
       EditorView.editable.of(!callbacks.current.readOnly),
@@ -203,12 +249,14 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
           ]),
           options.current.of(configure()),
           EditorView.lineWrapping,
-          EditorView.decorations.compute([pasteField], (state) =>
+          EditorView.decorations.compute([pasteField, pasteWords], (state) =>
             Decoration.set(
               state.field(pasteField).anchors.map((a) =>
                 Decoration.replace({
-                  widget: new PasteWidget(a.paste, (id, button) =>
-                    openRef.current(id, button),
+                  widget: new PasteWidget(
+                    a.paste,
+                    (id, button) => openRef.current(id, button),
+                    state.facet(pasteWords),
                   ),
                   inclusive: false,
                 }).range(a.from, a.from + 1),
@@ -239,8 +287,7 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
                   const pre = document.createElement("pre");
                   pre.textContent = anchor.paste.preview;
                   const hint = document.createElement("small");
-                  hint.textContent =
-                    "Preview · open to view and edit the full text";
+                  hint.textContent = v.state.facet(pasteWords).preview;
                   dom.append(pre, hint);
                   return {
                     dom,
@@ -398,7 +445,7 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
       view.current?.dispatch({
         effects: options.current.reconfigure(configure()),
       });
-    }, [props.label, props.placeholder, props.readOnly, props.slashCommands]);
+    }, [props.label, props.placeholder, props.readOnly, props.slashCommands, t]);
     useImperativeHandle(ref, () => ({
       focus: () => view.current?.focus(),
       focusEnd() {
@@ -451,8 +498,8 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
           onOpenChange={(value) => {
             if (!value) setOpened(null);
           }}
-          title={active ? `Pasted text #${active.paste.number}` : "Pasted text"}
-          description="View or edit the complete text. Saving changes does not send a message."
+          title={active ? t.numbered(active.paste.number) : t.pasted}
+          description={t.description}
           wide
           onCloseAutoFocus={(event) => {
             event.preventDefault();
@@ -461,10 +508,10 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
           }}
         >
           <label className="pasted-text-source-label">
-            Full pasted text
+            {t.full}
             <textarea
               className="pasted-text-source"
-              aria-label="Full pasted text"
+              aria-label={t.full}
               value={edited}
               spellCheck={false}
               readOnly={props.readOnly}
@@ -475,10 +522,8 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
             />
           </label>
           <p className="pasted-text-edit-note">
-            Original indentation and empty lines are kept.{" "}
-            {active?.paste.text.includes("\r\n")
-              ? "CRLF line endings are retained for CRLF text; mixed endings use LF after editing."
-              : "Edits use LF line endings."}
+            {t.kept}{" "}
+            {active?.paste.text.includes("\r\n") ? t.crlf : t.lf}
           </p>
           <div className="pasted-text-dialog-actions">
             <button
@@ -499,7 +544,7 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
                 setOpened(null);
               }}
             >
-              Remove block
+              {t.remove}
             </button>
             <button
               type="button"
@@ -507,7 +552,7 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
               disabled={props.readOnly}
               onClick={save}
             >
-              Save changes
+              {t.save}
             </button>
           </div>
         </Modal>

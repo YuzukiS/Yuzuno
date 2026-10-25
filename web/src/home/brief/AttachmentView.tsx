@@ -14,6 +14,8 @@ import { errorText } from "../../api";
 import { ImagePreview } from "../../ImageAttachments";
 import { sourceTarget } from "../../intelligent-ui/contract.ts";
 import { usePointFix, type PointFixSource } from "../../point-fix";
+import { useStrings } from "../../i18n";
+import { briefText } from "./brief-text";
 import type { SectionAttachment } from "../types";
 import { useBrief } from "./BriefContext";
 import { attachmentUrl, formatTime, type AttachmentsProps } from "./brief-catalog";
@@ -225,17 +227,18 @@ function DataPreview({ url, attachment }: { url: string; attachment: SectionAtta
   const format = formatOf(attachment);
   // JSON has no readable prefix; a large file opens in full instead.
   const whole = format === "json" && attachment.size > PREVIEW_BYTES;
+  const t = useStrings(briefText);
   const preview = usePreview(format && !whole ? snapshotKey(url, attachment) : null, async (signal) => {
     const { text, truncated } = await readPart(url, "head", signal);
     return previewRows(text, format!, truncated);
   });
   if (!format || whole)
-    return <p className="brief-attachment-note">{whole ? "Too large to preview here." : "No preview for this format."}</p>;
-  if (preview.state === "loading") return <Placeholder text="Loading preview…" />;
-  if (preview.state === "error") return <Placeholder text={`Preview unavailable. ${preview.error}`} />;
+    return <p className="brief-attachment-note">{whole ? t.tooLarge : t.noPreview}</p>;
+  if (preview.state === "loading") return <Placeholder text={t.loadingPreview} />;
+  if (preview.state === "error") return <Placeholder text={t.previewUnavailable(preview.error)} />;
   return (
     <div className="brief-preview">
-      <div className="brief-preview-frame brief-preview-scroll" tabIndex={0} role="region" aria-label={`${attachment.name} preview`}>
+      <div className="brief-preview-frame brief-preview-scroll" tabIndex={0} role="region" aria-label={t.previewOf(attachment.name)}>
         <table>
           <thead>
             <tr>
@@ -258,7 +261,7 @@ function DataPreview({ url, attachment }: { url: string; attachment: SectionAtta
         </table>
       </div>
       <small>
-        {preview.more ? `First ${preview.rows.length} rows` : `${preview.rows.length} ${preview.rows.length === 1 ? "row" : "rows"}`}
+        {preview.more ? t.firstRows(preview.rows.length) : t.rows(preview.rows.length)}
       </small>
     </div>
   );
@@ -266,6 +269,7 @@ function DataPreview({ url, attachment }: { url: string; attachment: SectionAtta
 
 function TextTail({ url, attachment }: { url: string; attachment: SectionAttachment }) {
   const name = attachment.name;
+  const t = useStrings(briefText);
   const preview = usePreview(snapshotKey(url, attachment), async (signal) => {
     const { text, truncated } = await readPart(url, "tail", signal);
     const lines = text.replace(/\r?\n$/, "").split(/\r?\n/);
@@ -276,14 +280,14 @@ function TextTail({ url, attachment }: { url: string; attachment: SectionAttachm
   useLayoutEffect(() => {
     if (preview.state === "ready" && box.current) box.current.scrollTop = box.current.scrollHeight;
   }, [preview]);
-  if (preview.state === "loading") return <Placeholder text="Loading preview…" />;
-  if (preview.state === "error") return <Placeholder text={`Preview unavailable. ${preview.error}`} />;
+  if (preview.state === "loading") return <Placeholder text={t.loadingPreview} />;
+  if (preview.state === "error") return <Placeholder text={t.previewUnavailable(preview.error)} />;
   return (
     <div className="brief-preview">
-      <pre ref={box} className="brief-preview-frame brief-tail" tabIndex={0} aria-label={`${name}, last lines`}>
+      <pre ref={box} className="brief-preview-frame brief-tail" tabIndex={0} aria-label={t.lastLinesOf(name)}>
         {preview.lines.join("\n")}
       </pre>
-      <small>{preview.more ? `Last ${preview.lines.length} lines` : `${preview.lines.length} lines`}</small>
+      <small>{preview.more ? t.lastLines(preview.lines.length) : t.lines(preview.lines.length)}</small>
     </div>
   );
 }
@@ -308,6 +312,7 @@ type Shown = { url: string; version: number; takenAt: string; title: string; own
 
 function Attachment({ name, caption }: { name: string; caption?: string }) {
   const time = useTimeDisplay();
+  const t = useStrings(briefText);
   const { projectId, section } = useBrief();
   const markUp = usePointFix();
   const [shown, setShown] = useState<Shown | null>(null);
@@ -319,7 +324,7 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
           <Paperclip size={14} aria-hidden="true" />
           <strong>{name}</strong>
         </header>
-        <p className="brief-attachment-note">This attachment is no longer part of the section.</p>
+        <p className="brief-attachment-note">{t.attachmentGone}</p>
       </div>
     );
   const Icon = icons[attachment.kind] || Paperclip;
@@ -351,8 +356,8 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
         <Icon size={14} aria-hidden="true" />
         <strong title={attachment.name}>{attachment.name}</strong>
         {attachment.mayChange && (
-          <span className="brief-chip" data-state="changed" title="Only referenced: the file may have changed since it was attached">
-            May have changed
+          <span className="brief-chip" data-state="changed" title={t.mayChangeTitle}>
+            {t.mayChange}
           </span>
         )}
         {!attachment.snapshot && attachment.path && (
@@ -360,12 +365,12 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
         )}
         {image ? (
           <button type="button" className="brief-attachment-open" onClick={preview}>
-            Open
+            {t.openFile}
           </button>
         ) : (
           kept && (
             <a className="brief-attachment-open" href={url} target="_blank" rel="noopener noreferrer">
-              {attachment.kind === "pdf" ? "Open PDF" : "Open"}
+              {attachment.kind === "pdf" ? t.openPdf : t.openFile}
               <ArrowUpRight size={11} aria-hidden="true" />
             </a>
           )
@@ -374,7 +379,7 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
       {label && <p className="brief-attachment-caption">{label}</p>}
       <small className="brief-attachment-meta">
         {attachment.kind !== "link" && <>{bytes(attachment.size)} · </>}
-        {attachment.snapshot ? "Snapshot" : "Referenced"}{" "}
+        {attachment.snapshot ? t.snapshot : t.referenced}{" "}
         <time dateTime={attachment.takenAt}>{formatTime(attachment.takenAt, time)}</time>
       </small>
       {attachment.kind === "link" ? (
@@ -384,12 +389,12 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
             <ArrowUpRight size={11} aria-hidden="true" />
           </a>
         ) : (
-          <p className="brief-attachment-note">{attachment.url || "No address."}</p>
+          <p className="brief-attachment-note">{attachment.url || t.noAddress}</p>
         )
       ) : !attachment.snapshot ? (
-        <p className="brief-attachment-note">Not kept by Yuzuno, so there is nothing to preview.</p>
+        <p className="brief-attachment-note">{t.notKept}</p>
       ) : attachment.kind === "image" ? (
-        <button type="button" className="brief-image" aria-label={`Open image ${attachment.name}`} onClick={preview}>
+        <button type="button" className="brief-image" aria-label={t.openImage(attachment.name)} onClick={preview}>
           {/* A new snapshot under the same name loads again. */}
           <img key={attachment.takenAt} src={url} alt={label || attachment.name} loading="lazy" decoding="async" />
         </button>
@@ -403,8 +408,8 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
           open={!!shown}
           src={shown?.url ?? ""}
           name={attachment.name}
-          description={`${label ? `${label} · ` : ""}Snapshot ${formatTime(shown?.takenAt ?? attachment.takenAt, time)}`}
-          unavailable="This image snapshot can't be read from this Core. It may have been removed with an older version of the card."
+          description={t.imageSnapshot(label ?? "", formatTime(shown?.takenAt ?? attachment.takenAt, time))}
+          unavailable={t.imageUnavailable}
           onClose={() => setShown(null)}
           onAnnotate={markUp && shown ? () => {
             const at = shown;
@@ -425,12 +430,13 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
 export const FIRST_ATTACHMENTS = 4;
 
 export function BriefAttachments({ items }: AttachmentsProps) {
+  const t = useStrings(briefText);
   const [all, setAll] = useState(false);
   const folds = items.length > FIRST_ATTACHMENTS + 2;
   const shown = folds && !all ? items.slice(0, FIRST_ATTACHMENTS) : items;
   return (
     <div className="brief-attachments-block">
-      <ul className="brief-attachments" aria-label="Attachments">
+      <ul className="brief-attachments" aria-label={t.attachments}>
         {shown.map((item) => (
           <li key={item.name}>
             <Attachment name={item.name} caption={item.caption} />
@@ -439,7 +445,7 @@ export function BriefAttachments({ items }: AttachmentsProps) {
       </ul>
       {folds && (
         <button type="button" className="quiet-button brief-attachments-more" aria-expanded={all} onClick={() => setAll(!all)}>
-          {all ? `Show the first ${FIRST_ATTACHMENTS}` : `Show all ${items.length} attachments`}
+          {all ? t.showFirst(FIRST_ATTACHMENTS) : t.showAll(items.length)}
         </button>
       )}
     </div>

@@ -158,7 +158,12 @@ const ciText = strings({
   run: (number: number) => `Run #${number}`,
   lastSeen: (running: boolean) => `Last seen ${running ? "running" : "waiting"}`,
   queuedAt: "Queued",
+  startedAt: "Started",
   finishedAt: "Finished",
+  dockWatching: (count: number) => `Watching ${count} CI subscription(s)`,
+  dockClosed: "CI monitoring closed",
+  dockNoRuns: "No Actions runs observed yet",
+  dockHistory: "Retained subscription history",
   checking: "Checking with GitHub…",
   checked: (at: string) => `Checked with GitHub at ${at}.`,
   recent: (at: string) => `Checked with GitHub moments ago, at ${at}; not asked again.`,
@@ -257,7 +262,12 @@ const ciText = strings({
   run: (number) => `运行 #${number}`,
   lastSeen: (running) => `最后一次看到时${running ? "正在运行" : "正在等待"}`,
   queuedAt: "排队",
+  startedAt: "开始",
   finishedAt: "完成",
+  dockWatching: (count) => `正在监视 ${count} 个 CI 订阅`,
+  dockClosed: "CI 监视已关闭",
+  dockNoRuns: "尚未观察到 Actions 运行",
+  dockHistory: "保留的订阅历史",
   checking: "正在向 GitHub 检查…",
   checked: (at) => `已于 ${at} 向 GitHub 检查。`,
   recent: (at) => `刚刚已向 GitHub 检查（${at}），未再次询问。`,
@@ -465,12 +475,12 @@ const runMoments = (run: Run, t: CiText) =>
     [t.finishedAt, runUnfinished(run) ? null : run.updatedAt],
   ]);
 /** Its latest moment, for the dock: finished, else started, else queued. */
-const runLatest = (run: Run) =>
+const runLatest = (run: Run, t: CiText) =>
   !runUnfinished(run)
-    ? moments([["Finished", run.updatedAt]])
+    ? moments([[t.finishedAt, run.updatedAt]])
     : run.startedAt
-      ? moments([["Started", run.startedAt]])
-      : moments([["Queued", run.createdAt]]);
+      ? moments([[t.startedAt, run.startedAt]])
+      : moments([[t.queuedAt, run.createdAt]]);
 /** How long a run took, or had taken when Core last looked. */
 function ranFor(run: Run) {
   const end = Date.parse(runUnfinished(run) ? run.observedAt : run.updatedAt);
@@ -510,6 +520,7 @@ export function ConversationCi({
   runs: Run[];
   more: number;
 }) {
+  const t = ciText(useLanguage());
   if (!page.runs.length && !page.subscriptions.length) return null;
   const active = page.subscriptions.filter((s) => s.active).length;
   return (
@@ -523,11 +534,11 @@ export function ConversationCi({
           key={r.id}
           className="conversation-job"
           status={runMark(r)}
-          state={runLabel(r)}
+          state={runLabel(r, t)}
           name={r.name}
-          sub={`${runLabel(r)} · ${r.repository.split("/").pop()}`}
-          detail={`${r.repository} · ${r.headSha.slice(0, 8)} · attempt ${r.attempt}`}
-          when={runLatest(r)}
+          sub={`${runLabel(r, t)} · ${r.repository.split("/").pop()}`}
+          detail={`${r.repository} · ${r.headSha.slice(0, 8)} · ${t.attempt(r.attempt)}`}
+          when={runLatest(r, t)}
           onOpen={() => open({ agentId, runKey: r.id })}
         />
       ))}
@@ -535,17 +546,9 @@ export function ConversationCi({
         <WorkDockItem
           className="conversation-job"
           status={active ? "pending" : "unknown"}
-          state={
-            active
-              ? `Watching ${active} CI subscription(s)`
-              : "CI monitoring closed"
-          }
+          state={active ? t.dockWatching(active) : t.dockClosed}
           name="GitHub Actions"
-          detail={
-            active
-              ? "No Actions runs observed yet"
-              : "Retained subscription history"
-          }
+          detail={active ? t.dockNoRuns : t.dockHistory}
           onOpen={() => open({ agentId })}
         />
       )}

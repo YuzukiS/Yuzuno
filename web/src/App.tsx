@@ -164,7 +164,7 @@ import { useAgentDetail } from "./useAgentDetail";
 import { useRefreshTrigger } from "./refresh-trigger";
 import { coreConnection } from "./connection-status";
 import { langTag, useLanguage } from "./i18n";
-import { shellText } from "./shell-text";
+import { shellText, type ShellWords } from "./shell-text";
 import "./connection-status.css";
 import { OutgoingMessages } from "./OutgoingMessages";
 import { sendingInTurn } from "./delivery-note";
@@ -198,9 +198,6 @@ import type { QuestionSource } from "./types";
 import { Home, type HomeTarget } from "./home/Home";
 import { useOpenAsks } from "./home/open-asks";
 import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
-
-// Core fits a large image to Yuzuno's Claude budget (core/src/input_images.rs).
-const CLAUDE_IMAGE_NOTE = "Large images are scaled or compressed when sent to Claude · originals are kept";
 
 type TurnProps = ComponentProps<typeof Turn>;
 /** Streamed changes replace only the Turn they touch; the others keep their
@@ -408,9 +405,10 @@ export function App() {
   // A message link (T-166) or a saved reading position opens like a source.
   // `progress`: a place shared from another browser (T-170), restored by how
   // far into the message it was; `thread`: the native session it was read in.
-  const [catchupSource, setCatchupSource] = useState<(CatchupItem & { openDetails?: boolean; link?: MessageLink; restore?: number; progress?: number; thread?: string }) | null>(null);
+  const [catchupSource, setCatchupSource] = useState<(CatchupItem & { openDetails?: boolean; link?: MessageLink; restore?: number; progress?: number; thread?: string; where?: "desktop" | "browser" }) | null>(null);
   const [sourceJump, setSourceJump] = useState(false);
-  const [sourceNotice, setSourceNotice] = useState("");
+  // What the source strip says about a place that is gone, worded on show (T-189).
+  const [sourceNotice, setSourceNotice] = useState<((t: ShellWords) => string) | null>(null);
   // A message link waiting for the Workspace to load.
   const [incomingLink, setIncomingLink] = useState<AppLink | null>(null);
   // Where the shown conversation was last being read, kept when it is left.
@@ -1109,23 +1107,25 @@ export function App() {
     const owner = workspace?.agents.find(a => a.id === catchupSource.agentId);
     // An earlier native session is said first, for a saved place too (T-170).
     const thread = catchupSource.link?.threadId ?? catchupSource.thread;
-    const gone = thread && owner?.threadId && thread !== owner.threadId
-      ? `This message was in an earlier native session of ${catchupSource.agentName}, not the current one. Showing ${catchupSource.restore !== undefined ? "the latest messages" : "the conversation"}.`
+    const name = catchupSource.agentName;
+    const gone: ((t: ShellWords) => string) | null = thread && owner?.threadId && thread !== owner.threadId
+      ? t => t.earlierSession(name, catchupSource.restore !== undefined)
       : catchupSource.restore !== undefined
-        ? "Where you left off is no longer in this conversation. Showing the latest messages."
+        ? t => t.leftOffGone
         : catchupSource.link
-          ? `This message is no longer in ${catchupSource.agentName}’s conversation, for example after Rewind. Showing the conversation.`
-          : "";
+          ? t => t.linkGone(name)
+          : null;
     if (currentDetail.conversation && catchupSource.turnId) {
       const loaded = currentDetail.turns.find(t => t.id === catchupSource.turnId);
       if (!loaded || (catchupSource.itemId && catchupSource.itemId !== `yuzuno-plan-${loaded.id}` && !loaded.items.some(i => i.id === catchupSource.itemId))) {
-        if (detailError) { setSourceNotice(`Could not load the original: ${detailError}`); return; }
+        if (detailError) { setSourceNotice(() => (t: ShellWords) => t.originalFailed(detailError)); return; }
         const wanted = {turnId:catchupSource.turnId, ...(catchupSource.itemId && catchupSource.itemId !== `yuzuno-plan-${catchupSource.turnId}` ? {itemId:catchupSource.itemId} : {})};
         if (live.missing === JSON.stringify(wanted)) {
           // Core has no such Turn or Item: say so once, at the latest
           // messages, instead of asking for it again.
-          if (catchupSource.restore !== undefined) { setNotice(gone); backToLatest(); return; }
-          setSourceNotice(gone || (catchupSource.itemId ? "The original reply is unavailable. Showing the available conversation." : "The original turn is unavailable. Showing this conversation."));
+          if (catchupSource.restore !== undefined) { setNotice(gone?.(shell) ?? ""); backToLatest(); return; }
+          const itemId = catchupSource.itemId;
+          setSourceNotice(() => gone ?? ((t: ShellWords) => (itemId ? t.replyGone : t.turnGone)));
           stickToBottom.current = true;
           scroll.current?.scrollTo({ top: scroll.current.scrollHeight });
           setSourceJump(false);
@@ -1160,18 +1160,18 @@ export function App() {
         : null) ||
       turn;
     const absent = (!!catchupSource.itemId && !message) || (!!catchupSource.turnId && !turn);
-    if (absent && catchupSource.restore !== undefined) { setNotice(gone); backToLatest(); return; }
-    setSourceNotice(
+    if (absent && catchupSource.restore !== undefined) { setNotice(gone?.(shell) ?? ""); backToLatest(); return; }
+    const said: ((t: ShellWords) => string) | null =
       catchupSource.kind === "pending" && !request
-        ? "This request is no longer pending. Showing its conversation."
+        ? t => t.requestGone
         : absent && gone
           ? gone
         : catchupSource.itemId && !message
-          ? "The original reply is unavailable. Showing the available conversation."
+          ? t => t.replyGone
           : catchupSource.turnId && !turn
-            ? "The original turn is unavailable. Showing this conversation."
-            : "",
-    );
+            ? t => t.turnGone
+            : null;
+    setSourceNotice(() => said);
     stickToBottom.current = false;
     if (target) {
       const disclosures: HTMLDetailsElement[] = [];
@@ -1430,7 +1430,7 @@ export function App() {
     item: CatchupItem,
     origin: "home" | "rail" = "home",
     openDetails = false,
-    extra: { link?: MessageLink; restore?: number; progress?: number; thread?: string } = {},
+    extra: { link?: MessageLink; restore?: number; progress?: number; thread?: string; where?: "desktop" | "browser" } = {},
   ) {
     setPhoneList(false);
     revealAgent(workspace?.agents.find((a) => a.id === item.agentId));
@@ -1442,7 +1442,7 @@ export function App() {
     setSelected(item.agentId);
     setHomeOpen(false);
     setCatchupSource({ ...item, openDetails, ...extra });
-    setSourceNotice("");
+    setSourceNotice(null);
     setSourceJump(true);
     setJumpToTurn(null);
   }
@@ -1485,7 +1485,7 @@ export function App() {
       { id: `handoff:${owner.id}`, agentId: owner.id, agentName: owner.name, kind: "progress",
         title: offer.handoff.label === "desktop" ? "Where you were reading in the desktop app" : "Where you were reading in another browser",
         body: "", turnId: offer.handoff.turnId, itemId: offer.handoff.itemId, seq: owner.lastSeq },
-      "rail", false, { restore: 0, progress: offer.handoff.progress ?? 0, thread: offer.handoff.threadId },
+      "rail", false, { restore: 0, progress: offer.handoff.progress ?? 0, thread: offer.handoff.threadId, where: offer.handoff.label },
     );
   }
   function dismissReading() {
@@ -2458,7 +2458,7 @@ export function App() {
               <div
                 className="conversation-actions"
                 role="group"
-                aria-label="Conversation tools"
+                aria-label={shell.conversationTools}
               >
                 {!isOpenCode && <AgentSettings
                   key={`settings-${selected}`}
@@ -2562,12 +2562,10 @@ export function App() {
             {readingOffer?.agentId === selected && (!catchupSource || (catchupSource.restore !== undefined && catchupSource.progress === undefined)) && (
               <div className="source-navigation reading-offer" role="status">
                 <span>
-                  Continue where you were reading{" "}
-                  {readingOffer.handoff.label === "desktop" ? "in the desktop app" : "in another browser"} ·{" "}
-                  {ageText(readingOffer.handoff.ageSeconds)}
+                  {shell.continueReading(readingOffer.handoff.label === "desktop" ? "desktop" : "browser", ageText(readingOffer.handoff.ageSeconds, language === "zh-Hans"))}
                 </span>
-                <button className="secondary-button" onClick={continueReading}>Continue</button>
-                <button className="quiet-button" onClick={dismissReading}>Not now</button>
+                <button className="secondary-button" onClick={continueReading}>{shell.continue}</button>
+                <button className="quiet-button" onClick={dismissReading}>{shell.notNow}</button>
               </div>
             )}
             {catchupSource?.agentId === selected && (
@@ -2581,14 +2579,12 @@ export function App() {
                   }
                 >
                   <ArrowLeft size={13} />
-                  {sourceOrigin === "home"
-                    ? "Back to Home"
-                    : "Back to latest"}
+                  {sourceOrigin === "home" ? shell.backHome : shell.backLatest}
                 </button>
                 <span role="status">
-                  {sourceNotice || (catchupSource.progress !== undefined ? catchupSource.title
-                    : catchupSource.restore !== undefined ? "Where you left off"
-                    : catchupSource.link ? "Linked message" : "Original source")}
+                  {sourceNotice?.(shell) || (catchupSource.progress !== undefined ? (catchupSource.where ? shell.readingIn(catchupSource.where) : catchupSource.title)
+                    : catchupSource.restore !== undefined ? shell.leftOff
+                    : catchupSource.link ? shell.linked : shell.original)}
                 </span>
               </div>
             )}
@@ -2960,8 +2956,7 @@ export function App() {
                   )}
                   {unconfirmedMessage && (
                     <div className="message-delivery-notice" role="status">
-                      Message delivery is not confirmed. Your text is kept; it
-                      will not be sent twice.
+                      {shell.unconfirmedDelivery}
                       <button
                         type="button"
                         className="inline-link"
@@ -2972,7 +2967,7 @@ export function App() {
                             .catch((e) => setActionError(errorText(e)))
                         }
                       >
-                        Check delivery
+                        {shell.checkDelivery}
                       </button>
                     </div>
                   )}
@@ -2982,7 +2977,7 @@ export function App() {
                       {actionError}
                       <button
                         className="icon-button"
-                        aria-label="Dismiss error"
+                        aria-label={shell.dismissError}
                         onClick={() => setActionError("")}
                       >
                         <X size={13} />
@@ -3017,15 +3012,15 @@ export function App() {
                   <PastedTextComposer
                     ref={composer}
                     agentId={selected}
-                    label={`Message ${agent.name}`}
+                    label={shell.message(agent.name)}
                     placeholder={
                       previewMode
-                        ? "This is a read-only design preview…"
+                        ? shell.preview
                         : cannotSendWhileWorking
-                          ? "Your draft will be ready when this turn finishes…"
+                          ? shell.waitTurn
                           : busy
-                            ? "Add a thought while your agent works…"
-                            : `A task, a question, a new idea for ${agent.name}…`
+                            ? shell.addThought
+                            : shell.ask(agent.name)
                     }
                     draft={draft}
                     readOnly={previewMode || draftBlocked}
@@ -3039,7 +3034,7 @@ export function App() {
                     onImages={files => void imageUploads.add(files)}
                     onSubmit={() => void send()}
                   />
-                  <ImageAttachments images={draft.images || []} description={agent?.harness === "claude" ? CLAUDE_IMAGE_NOTE : undefined} onRemove={previewMode || draftBlocked ? undefined : id => setDraft(selected, current => ({ ...current, images: current.images?.filter(image => image.id !== id) }))}
+                  <ImageAttachments images={draft.images || []} description={agent?.harness === "claude" ? shell.claudeImages : undefined} onRemove={previewMode || draftBlocked ? undefined : id => setDraft(selected, current => ({ ...current, images: current.images?.filter(image => image.id !== id) }))}
                     annotateThumbnails onAnnotate={previewMode || draftBlocked ? undefined : image => markUpDraftImage(image)} />
                   {/* Every chosen skill shows, so one that is not this Agent's can be removed. */}
                   <SkillChips skills={draft.skills || []}
@@ -3050,25 +3045,25 @@ export function App() {
                   {draftBlocked && !previewMode && <DraftRecovery key={selected} onDiscard={() => discardSavedDraft(selected)} />}
                   <div className="composer-bottom">
                     <div className="composer-tools">
-                      <input ref={imagePicker} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden aria-label="Choose images" onChange={event => { const files = Array.from(event.target.files || []); event.target.value = ""; void imageUploads.add(files); }} />
+                      <input ref={imagePicker} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden aria-label={shell.chooseImages} onChange={event => { const files = Array.from(event.target.files || []); event.target.value = ""; void imageUploads.add(files); }} />
                       {/* Agents that cannot take images keep the button, quieted, so
                           its tooltip can say why. */}
                       <button
                         type="button"
                         className="composer-tool"
-                        aria-label={imageUploads.busy ? "Saving images…" : "Add images"}
+                        aria-label={imageUploads.busy ? shell.savingImages : shell.addImages}
                         aria-disabled={!imageSupported || undefined}
                         disabled={previewMode || draftBlocked || imageUploads.busy}
                         title={
                           imageSupported
-                            ? `Add images · paste or choose PNG, JPEG or WebP, up to 8 per message; a photo over 10 MiB or 24 megapixels is made smaller here first${agent?.harness === "claude" ? ` · ${CLAUDE_IMAGE_NOTE}` : ""}`
-                            : "Images are available for Codex and Claude Agents"
+                            ? shell.addImagesTitle(agent?.harness === "claude" ? shell.claudeImages : null)
+                            : shell.imagesOnly
                         }
                         onClick={() => { if (imageSupported) imagePicker.current?.click(); }}
                       >
                         {imageUploads.busy ? <LoaderCircle size={15} className="spin" /> : <ImagePlus size={15} />}
                       </button>
-                      <input ref={pointFixPicker} type="file" accept="image/png,image/jpeg,image/webp" hidden aria-label="Choose an image to mark" onChange={event => {
+                      <input ref={pointFixPicker} type="file" accept="image/png,image/jpeg,image/webp" hidden aria-label={shell.chooseToMark} onChange={event => {
                         const file = event.target.files?.[0];
                         event.target.value = "";
                         if (file) openPointFix({ name: file.name || "Screenshot", ownerId: selected, provenance: `an image you chose (${file.name || "pasted"})`, load: async () => file });
@@ -3076,8 +3071,8 @@ export function App() {
                       <button
                         type="button"
                         className="composer-tool"
-                        aria-label="Mark up an image"
-                        title="Point & Fix · mark areas on a screenshot or image and add your notes to a draft"
+                        aria-label={shell.markUp}
+                        title={shell.markUpTitle}
                         disabled={previewMode}
                         onClick={() => pointFixPicker.current?.click()}
                       >
@@ -3099,13 +3094,13 @@ export function App() {
                         <span className="composer-keys">
                           {!returnSends(sendKey, touchKeyboard()) ? (
                             <>
-                              <kbd>↵</kbd> New line{" "}
-                              <kbd>{shortcutModifier} ↵</kbd> Send
+                              <kbd>↵</kbd> {shell.newLine}{" "}
+                              <kbd>{shortcutModifier} ↵</kbd> {shell.send}
                             </>
                           ) : (
                             <>
-                              <kbd>↵</kbd> Send{" "}
-                              <kbd>⇧ ↵</kbd> New line
+                              <kbd>↵</kbd> {shell.send}{" "}
+                              <kbd>⇧ ↵</kbd> {shell.newLine}
                             </>
                           )}
                         </span>
@@ -3116,7 +3111,7 @@ export function App() {
                         <button
                           type="button"
                           className="interrupt-button"
-                          title="Interrupt · Esc"
+                          title={shell.interruptTitle}
                           disabled={previewMode || interrupting}
                           onClick={() => void interrupt()}
                         >
@@ -3125,7 +3120,7 @@ export function App() {
                           ) : (
                             <Square size={11} fill="currentColor" />
                           )}
-                          {interrupting ? "Interrupting…" : "Interrupt"}
+                          {interrupting ? shell.interrupting : shell.interrupt}
                         </button>
                       )}
                       <button
@@ -3142,25 +3137,21 @@ export function App() {
                           previewMode ||
                           !!workspaceError
                         }
-                        aria-label={
-                          sendTurnId
-                            ? "Send while working"
-                            : "Send message"
-                        }
+                        aria-label={sendTurnId ? shell.sendWhileWorking : shell.sendMessage}
                         title={
                           cannotSendWhileWorking || closed
-                            ? "Wait for this turn to finish, or interrupt"
+                            ? shell.waitOrInterrupt
                             : holdForRecovery
                               ? recovery === "collaboration"
-                                ? "Reconnect and check the workspace connection first"
+                                ? shell.reconnectWorkspace
                                 : recovery === "missing"
-                                  ? "End the unconfirmed turn, or check again, first"
+                                  ? shell.endOrCheck
                                   : recovery === "disconnected"
-                                    ? "Reconnect it first: you disconnected this agent"
-                                    : "Reconnect and check the last turn first"
+                                    ? shell.reconnectDisconnected
+                                    : shell.reconnectLast
                               : sendTurnId && !isClaude
-                              ? "Add input to the current turn"
-                              : "Send message"
+                              ? shell.addInput
+                              : shell.sendMessage
                         }
                       >
                         {sending ? (

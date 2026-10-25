@@ -37,6 +37,10 @@ import "./collaboration.css";
 import { GitHubLinks, GitHubSummary, type GitHubLink } from "./GitHubLinks";
 import { TaskWorkspaces } from "./TaskWorkspaces";
 import { relative } from "./home/format";
+import { useLanguage, useStrings } from "./i18n";
+import { boardText } from "./collaboration-text";
+
+type BoardText = ReturnType<typeof boardText>;
 
 type TaskStatus =
   | "todo"
@@ -46,14 +50,6 @@ type TaskStatus =
   | "done"
   | "cancelled";
 type ResultStatus = "review" | "done";
-const statuses: Record<TaskStatus, string> = {
-  todo: "To do",
-  doing: "In progress",
-  blocked: "Blocked",
-  review: "To review",
-  done: "Done",
-  cancelled: "Cancelled",
-};
 type Person = { kind: "user" | "agent" | "system"; id: string; name: string };
 type ExecutionSource = {
   agentId: string;
@@ -164,8 +160,8 @@ const taskDraft = (task: SharedTask): TaskDraft => ({
   blocker: task.blocker || "",
   projectId: task.projectId || "",
 });
-const actorName = (actor?: Person | null) =>
-  actor?.name || (actor?.kind === "user" ? "You" : "Agent");
+const actorName = (actor: Person | null | undefined, t: BoardText) =>
+  actor?.name || (actor?.kind === "user" ? t.you : t.agent);
 const activeAgents = (agents: Agent[]) =>
   agents.filter((agent) => !agent.closedAt);
 const timeLabel = (value?: string) =>
@@ -240,14 +236,6 @@ export function taskLine(task: SharedTask) {
           : task.description;
   return plainLine(text || "");
 }
-const emptyLine: Record<TaskStatus, string> = {
-  todo: "No description yet",
-  doing: "No progress reported yet",
-  blocked: "No reason given yet",
-  review: "No result yet",
-  done: "No result recorded",
-  cancelled: "No description",
-};
 /** A task's result is the current one while it waits for review or is done. */
 export const currentResult = (task: SharedTask) =>
   !!task.result && (task.status === "review" || task.status === "done");
@@ -322,10 +310,11 @@ function useMutation() {
 }
 
 function Status({ status }: { status: TaskStatus }) {
+  const t = useStrings(boardText);
   return (
     <span className={`collab-status status-${status}`}>
       <span />
-      {statuses[status] || status}
+      {t.statuses[status] || status}
     </span>
   );
 }
@@ -355,7 +344,7 @@ function PersonSelect({
   onChange,
   agents,
   label,
-  empty = "Unassigned",
+  empty,
   disabled = false,
 }: {
   value: string;
@@ -365,6 +354,7 @@ function PersonSelect({
   empty?: string;
   disabled?: boolean;
 }) {
+  const t = useStrings(boardText);
   return (
     <label className="collab-field">
       <span>{label}</span>
@@ -373,19 +363,18 @@ function PersonSelect({
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
       >
-        <option value="">{empty}</option>
+        <option value="">{empty ?? t.unassigned}</option>
         {value && !activeAgents(agents).some((agent) => agent.id === value) && (
           <option value={value}>
-            {agents.find((agent) => agent.id === value)?.name ||
-              "Previous agent"}{" "}
-            · unavailable
+            {agents.find((agent) => agent.id === value)?.name || t.previousAgent}
+            {t.unavailableSuffix}
           </option>
         )}
         {activeAgents(agents).map((agent) => (
           <option key={agent.id} value={agent.id}>
             {agent.name}
             {agent.remote ? ` · ${agent.remote.machine.name}` : ""}
-            {agent.status === "offline" ? " · offline" : ""}
+            {agent.status === "offline" ? t.offlineSuffix : ""}
           </option>
         ))}
       </select>
@@ -398,21 +387,25 @@ function ProjectSelect({
   value,
   onChange,
   projects,
-  label = "Project",
+  label,
 }: {
   value: string;
   onChange: (id: string) => void;
   projects: Project[];
   label?: string;
 }) {
+  const t = useStrings(boardText);
   const current = projects.find((project) => project.id === value);
   return (
     <label className="collab-field">
-      <span>{label}</span>
+      <span>{label ?? t.project}</span>
       <select value={value} onChange={(event) => onChange(event.target.value)}>
-        <option value="">No project</option>
+        <option value="">{t.noProject}</option>
         {current?.archivedAt && (
-          <option value={current.id}>{current.name} · archived</option>
+          <option value={current.id}>
+            {current.name}
+            {t.archivedSuffix}
+          </option>
         )}
         {activeProjects(projects).map((project) => (
           <option key={project.id} value={project.id}>
@@ -477,6 +470,8 @@ export function CollaborationBoard({
   /** A link to one task, optionally to one of its reviews. */
   focus?: { taskId: string; reviewId?: string; section?: "workspaces"; at: number } | null;
 }) {
+  const t = useStrings(boardText);
+  const language = useLanguage();
   const [tab, setTab] = useState<"tasks" | "messages">("tasks");
   const [page, setPage] = useState<TaskPage | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -751,7 +746,7 @@ export function CollaborationBoard({
         <span
           className={`collab-row-line${line ? "" : " is-empty"}`}
         >
-          {line || emptyLine[task.status]}
+          {line || t.emptyLine[task.status]}
         </span>
         <span className="collab-row-meta">
           <span className="collab-row-owner">
@@ -762,7 +757,7 @@ export function CollaborationBoard({
               </>
             ) : (
               <span>
-                {task.assignee?.name || "Not assigned yet"}
+                {task.assignee?.name || t.notAssigned}
               </span>
             )}
           </span>
@@ -776,15 +771,15 @@ export function CollaborationBoard({
           {currentResult(task) && (
             <span className="collab-has-result">
               <Check size={13} />
-              Result
+              {t.result}
             </span>
           )}
           <time
             className="collab-row-time"
             dateTime={task.updatedAt}
-            title={`Updated ${timeLabel(task.updatedAt)}`}
+            title={t.updatedAt(timeLabel(task.updatedAt))}
           >
-            {relative(task.updatedAt)}
+            {relative(task.updatedAt, language)}
           </time>
         </span>
       </button>
@@ -804,11 +799,11 @@ export function CollaborationBoard({
       open={open}
       onOpenChange={onOpenChange}
       wide
-      title="A place to work together"
-      description="Shared tasks, conversations, and the work they lead to."
+      title={t.title}
+      description={t.description}
     >
       <div className="collaboration">
-        <div className="collab-tabs" role="tablist" aria-label="Collaboration">
+        <div className="collab-tabs" role="tablist" aria-label={t.tabs}>
           <button
             role="tab"
             aria-selected={tab === "tasks"}
@@ -816,7 +811,7 @@ export function CollaborationBoard({
             onClick={() => setTab("tasks")}
           >
             <ClipboardList size={17} />
-            Tasks
+            {t.tasks}
           </button>
           <button
             role="tab"
@@ -825,23 +820,20 @@ export function CollaborationBoard({
             onClick={() => setTab("messages")}
           >
             <MessageCircle size={17} />
-            Messages
+            {t.messages}
           </button>
         </div>
         {disabled ? (
           <div className="collab-empty">
             <Leaf size={34} />
-            <h3>Your shared workspace</h3>
-            <p>
-              Open the connected workspace to manage tasks and follow your
-              agents’ collaboration.
-            </p>
+            <h3>{t.disabledTitle}</h3>
+            <p>{t.disabledText}</p>
           </div>
         ) : tab === "tasks" ? (
           <section
             id="collab-tasks"
             role="tabpanel"
-            aria-label="Tasks"
+            aria-label={t.tasks}
             className={`collab-task-layout ${detailOpen ? "with-detail" : leaving ? "detail-leaving" : ""}`}
             data-entry={entry}
             onTransitionEnd={(event) => {
@@ -853,8 +845,8 @@ export function CollaborationBoard({
             <div className="collab-task-list">
               <div className="collab-list-heading">
                 <div>
-                  <h3>What we’re making</h3>
-                  <p>A home for work worth keeping track of.</p>
+                  <h3>{t.listTitle}</h3>
+                  <p>{t.listIntro}</p>
                 </div>
                 <button
                   className="primary-button collab-new"
@@ -866,19 +858,19 @@ export function CollaborationBoard({
                   }}
                 >
                   <Plus size={16} />
-                  New task
+                  {t.newTask}
                 </button>
               </div>
               <div className="collab-filters">
                 <label className="collab-field">
-                  <span>Show</span>
+                  <span>{t.show}</span>
                   <select
                     value={status}
                     onChange={(event) => setStatus(event.target.value)}
                   >
-                    <option value="active">Open tasks</option>
-                    <option value="all">All tasks</option>
-                    {Object.entries(statuses).map(([value, label]) => (
+                    <option value="active">{t.openTasks}</option>
+                    <option value="all">{t.allTasks}</option>
+                    {Object.entries(t.statuses).map(([value, label]) => (
                       <option key={value} value={value}>
                         {label}
                       </option>
@@ -886,35 +878,35 @@ export function CollaborationBoard({
                   </select>
                 </label>
                 <label className="collab-field">
-                  <span>Project</span>
+                  <span>{t.project}</span>
                   <select
                     value={projectFilter}
                     onChange={(event) =>
                       setProjectFilter(event.target.value as ProjectScope)
                     }
                   >
-                    <option value={ALL_PROJECTS}>All projects</option>
+                    <option value={ALL_PROJECTS}>{t.allProjects}</option>
                     {activeProjects(projects).map((project) => (
                       <option key={project.id} value={projectScope(project.id)}>
                         {project.name}
                       </option>
                     ))}
-                    <option value={NO_PROJECT}>No project</option>
+                    <option value={NO_PROJECT}>{t.noProject}</option>
                   </select>
                 </label>
                 <PersonSelect
                   agents={agents}
                   value={owner}
                   onChange={setOwner}
-                  label="Owner"
-                  empty="Everyone"
+                  label={t.owner}
+                  empty={t.everyone}
                 />
                 <button
                   className="icon-button"
                   disabled={loading}
                   onClick={refresh}
-                  aria-label="Refresh tasks"
-                  title="Refresh tasks"
+                  aria-label={t.refreshTasks}
+                  title={t.refreshTasks}
                 >
                   <RefreshCw size={17} className={loading ? "spin" : ""} />
                 </button>
@@ -922,20 +914,20 @@ export function CollaborationBoard({
               <ErrorNote text={error} />
               {outdated && (
                 <div className="collab-outdated" role="status">
-                  <span>Tasks changed since these pages loaded.</span>
+                  <span>{t.outdated}</span>
                   <button
                     className="text-button"
                     disabled={loading}
                     onClick={refresh}
                   >
-                    Refresh tasks
+                    {t.refreshTasks}
                   </button>
                 </div>
               )}
               {!page && (loading || !error) ? (
                 <div className="collab-loading">
                   <LoaderCircle className="spin" size={20} />
-                  Gathering your tasks…
+                  {t.gathering}
                 </div>
               ) : (
                 <>
@@ -946,14 +938,10 @@ export function CollaborationBoard({
                     <div className="collab-empty">
                       <Leaf size={34} />
                       <h3>
-                        {filtered
-                          ? "A little breathing room"
-                          : "Make room for your next idea"}
+                        {filtered ? t.emptyFilteredTitle : t.emptyTitle}
                       </h3>
                       <p>
-                        {filtered
-                          ? "No tasks match these filters."
-                          : "Start with a title. Add an agent, a note, or a result as the work takes shape."}
+                        {filtered ? t.emptyFiltered : t.emptyText}
                       </p>
                       <button
                         className="secondary-button"
@@ -964,7 +952,7 @@ export function CollaborationBoard({
                         }}
                       >
                         <Plus size={15} />
-                        Create a task
+                        {t.createTask}
                       </button>
                     </div>
                   )}
@@ -974,7 +962,7 @@ export function CollaborationBoard({
                         <section
                           key={group.status}
                           className={`collab-group group-${group.status}`}
-                          aria-label={`${statuses[group.status]}, ${group.tasks.length}`}
+                          aria-label={t.group(t.statuses[group.status], group.tasks.length)}
                         >
                           <h4 className="collab-group-head">
                             <Status status={group.status} />
@@ -995,19 +983,18 @@ export function CollaborationBoard({
                   )}
                   {page && tasks.length > 0 && (
                     <p className="collab-list-count" role="status">
-                      Showing {tasks.length} of {total}{" "}
-                      {filtered ? "matching tasks" : "tasks"}
+                      {t.showing(tasks.length, total, filtered)}
                     </p>
                   )}
                   {page?.hasMore && (
                     <div className="collab-load-more">
-                      <p>More tasks match these filters.</p>
+                      <p>{t.moreMatch}</p>
                       <button
                         className="secondary-button"
                         disabled={loading || page.nextAfterSeq == null}
                         onClick={() => void loadTasks(page.nextAfterSeq!)}
                       >
-                        Load more tasks
+                        {t.loadMore}
                       </button>
                     </div>
                   )}
@@ -1080,6 +1067,7 @@ function NewTask({
   onClose: () => void;
   onSaved: (task: SharedTask) => void;
 }) {
+  const t = useStrings(boardText);
   const [draft, setDraft] = useState({
     ...emptyTask,
     projectId: initialProjectId,
@@ -1100,16 +1088,16 @@ function NewTask({
     if (answer) onSaved(answer.task);
   }
   return (
-    <aside className="collab-detail" aria-label="New task">
+    <aside className="collab-detail" aria-label={t.newTask}>
       <div className="collab-detail-top">
         <span className="collab-eyebrow">
           <Leaf size={15} />
-          Something to work on
+          {t.eyebrow}
         </span>
         <button
           className="icon-button"
           onClick={onClose}
-          aria-label="Close new task"
+          aria-label={t.closeNew}
         >
           <X size={17} />
         </button>
@@ -1120,12 +1108,12 @@ function NewTask({
         className="collab-form"
       >
         <label className="collab-field">
-          <span>Task title</span>
+          <span>{t.taskTitle}</span>
           <input
             autoFocus
             required
             maxLength={240}
-            placeholder="What would you like to make possible?"
+            placeholder={t.titlePlaceholder}
             value={draft.title}
             onChange={(event) =>
               setDraft({ ...draft, title: event.target.value })
@@ -1134,11 +1122,11 @@ function NewTask({
         </label>
         <label className="collab-field">
           <span>
-            Description <small>optional</small>
+            {t.descriptionLabel} <small>{t.optional}</small>
           </span>
           <textarea
             rows={5}
-            placeholder="Scope, a little context, or what a good result looks like."
+            placeholder={t.descriptionPlaceholder}
             value={draft.description}
             onChange={(event) =>
               setDraft({ ...draft, description: event.target.value })
@@ -1151,17 +1139,14 @@ function NewTask({
           onChange={(assigneeAgentId) =>
             setDraft({ ...draft, assigneeAgentId })
           }
-          label="Owner"
+          label={t.owner}
         />
         <ProjectSelect
           projects={projects}
           value={draft.projectId}
           onChange={(projectId) => setDraft({ ...draft, projectId })}
         />
-        <p className="collab-hint">
-          Adding an owner keeps track of responsibility. You can send the task
-          to them once it’s created.
-        </p>
+        <p className="collab-hint">{t.ownerHint}</p>
         <ErrorNote text={mutation.error} />
         <button
           className="primary-button"
@@ -1172,7 +1157,7 @@ function NewTask({
           ) : (
             <Plus size={15} />
           )}
-          Create task
+          {t.create}
         </button>
       </MutationForm>
     </aside>
@@ -1202,6 +1187,7 @@ function TaskPane({
   /** Opened at its Workspace section (from Data & storage, T-193). */
   focusWorkspaces?: boolean;
 }) {
+  const t = useStrings(boardText);
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [draft, setDraft] = useState<TaskDraft | null>(null);
   const [editBase, setEditBase] = useState<SharedTask | null>(null);
@@ -1222,7 +1208,7 @@ function TaskPane({
   const [submitDelivery, setSubmitDelivery] = useState(false);
   useEffect(() => { setSubmitDelivery(false); }, [deliveryCandidate?.flowId, deliveryCandidate?.round]);
   const [links, setLinks] = useState<ResultLink[]>([]);
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState<"" | "sent">("");
   // Linking, PR operations, review and delivery setup: shown on request.
   const [managing, setManaging] = useState(false);
   const mutation = useMutation();
@@ -1314,9 +1300,7 @@ function TaskPane({
       setDispatching(false);
       setInstruction("");
       setUrgent(false);
-      setNotice(
-        "Task sent. You can follow the work in the agent’s conversation.",
-      );
+      setNotice("sent");
       changed(answer.task);
     }
   };
@@ -1366,7 +1350,7 @@ function TaskPane({
             <div className="collab-section-heading">
               <h4>
                 {task.result && !current ? <History size={16} /> : <Check size={16} />}
-                {task.result && !current ? "Earlier result" : "The result"}
+                {task.result && !current ? t.earlierResult : t.theResult}
               </h4>
               <button
                 className="text-button"
@@ -1380,7 +1364,7 @@ function TaskPane({
                   mutation.clearError();
                 }}
               >
-                {task.result ? "Update result" : "Add result"}
+                {task.result ? t.updateResult : t.addResult}
               </button>
             </div>
             {task.result ? (
@@ -1403,16 +1387,14 @@ function TaskPane({
                       ) : (
                         <span key={index}>
                           {link.label || link.url}
-                          <small>Link unavailable</small>
+                          <small>{t.linkUnavailable}</small>
                         </span>
                       );
                     })}
                   </div>
                 )}
                 <p className="collab-hint">
-                  Reported by {actorName(task.result.reportedBy)}
-                  {task.result.reportedAt &&
-                    ` · ${timeLabel(task.result.reportedAt)}`}
+                  {t.reportedBy(actorName(task.result.reportedBy, t), task.result.reportedAt ? timeLabel(task.result.reportedAt) : "")}
                 </p>
                 {task.result.source &&
                   agents.some(
@@ -1427,15 +1409,13 @@ function TaskPane({
                         )
                       }
                     >
-                      View original conversation
+                      {t.viewOriginal}
                       <ArrowUpRight size={14} />
                     </button>
                   )}
               </>
             ) : (
-              <p className="collab-hint">
-                The finished work and useful links will live here.
-              </p>
+              <p className="collab-hint">{t.resultHint}</p>
             )}
             {reporting && (
               <MutationForm
@@ -1445,31 +1425,28 @@ function TaskPane({
               >
                 {task.version !== resultVersion && (
                   <div className="collab-conflict" role="status">
-                    <p>
-                      The task changed. Review the current result above before
-                      saving yours.
-                    </p>
+                    <p>{t.resultConflict}</p>
                     <button
                       type="button"
                       className="text-button"
                       onClick={() => setResultVersion(task.version)}
                     >
-                      Use the current version and keep my result
+                      {t.useCurrent}
                     </button>
                   </div>
                 )}
                 <label className="collab-field">
-                  <span>Result summary</span>
+                  <span>{t.resultSummary}</span>
                   <textarea
                     required
                     rows={4}
-                    placeholder="What changed, and what should someone look at?"
+                    placeholder={t.resultPlaceholder}
                     value={result}
                     onChange={(event) => setResult(event.target.value)}
                   />
                 </label>
                 <label className="collab-field">
-                  <span>After adding this result</span>
+                  <span>{t.afterResult}</span>
                   <select
                     value={resultStatus}
                     onChange={(event) =>
@@ -1478,15 +1455,15 @@ function TaskPane({
                       )
                     }
                   >
-                    <option value="review">Ready to review</option>
-                    <option value="done">Done</option>
+                    <option value="review">{t.readyReview}</option>
+                    <option value="done">{t.done}</option>
                   </select>
                 </label>
-                {deliveryCandidate && resultStatus === "review" && <label className="delivery-submit"><input type="checkbox" checked={submitDelivery} onChange={event => setSubmitDelivery(event.target.checked)} />Start the authorized review and CI for {deliveryCandidate.headSha.slice(0, 8)} with this result (round {deliveryCandidate.round}).</label>}
+                {deliveryCandidate && resultStatus === "review" && <label className="delivery-submit"><input type="checkbox" checked={submitDelivery} onChange={event => setSubmitDelivery(event.target.checked)} />{t.startDelivery(deliveryCandidate.headSha.slice(0, 8), deliveryCandidate.round)}</label>}
                 {links.map((link, index) => (
                   <div className="collab-link-fields" key={index}>
                     <label className="collab-field">
-                      <span>Link label</span>
+                      <span>{t.linkLabel}</span>
                       <input
                         value={link.label}
                         onChange={(event) =>
@@ -1501,7 +1478,7 @@ function TaskPane({
                       />
                     </label>
                     <label className="collab-field">
-                      <span>Web address</span>
+                      <span>{t.webAddress}</span>
                       <input
                         type="url"
                         required
@@ -1527,7 +1504,7 @@ function TaskPane({
                       onClick={() =>
                         setLinks(links.filter((_, i) => i !== index))
                       }
-                      aria-label={`Remove link ${index + 1}`}
+                      aria-label={t.removeLink(index + 1)}
                     >
                       <X size={15} />
                     </button>
@@ -1540,15 +1517,12 @@ function TaskPane({
                   onClick={() => setLinks([...links, { label: "", url: "" }])}
                 >
                   <Plus size={14} />
-                  Add a web link
+                  {t.addLink}
                 </button>
                 {links.some(
                   (link) => link.url && !safeCollaborationLink(link.url),
                 ) && (
-                  <p className="collab-hint">
-                    Use an http or https address. Local files are available in
-                    the agent’s conversation.
-                  </p>
+                  <p className="collab-hint">{t.httpHint}</p>
                 )}
                 <button
                   className="primary-button"
@@ -1559,33 +1533,33 @@ function TaskPane({
                   }
                 >
                   <Check size={15} />
-                  Save result
+                  {t.saveResult}
                 </button>
               </MutationForm>
             )}
           </section>
   );
   return (
-    <aside className="collab-detail" aria-label="Task details">
+    <aside className="collab-detail" aria-label={t.details}>
       <div className="collab-detail-top">
         {/* Beside the list a close button; alone (narrow), a way back to it. */}
         <button className="collab-back" onClick={onClose}>
           <ArrowLeft size={16} />
-          All tasks
+          {t.allTasks}
         </button>
         <button
           className="icon-button"
           onClick={() => void load()}
           disabled={loading}
-          aria-label="Refresh task details"
+          aria-label={t.refreshDetails}
         >
           <RefreshCw size={16} className={loading ? "spin" : ""} />
         </button>
         <button
           className="icon-button collab-close"
           onClick={onClose}
-          aria-label="Close task"
-          title="Close"
+          aria-label={t.closeTask}
+          title={t.close}
         >
           <X size={17} />
         </button>
@@ -1595,7 +1569,7 @@ function TaskPane({
         !readError && (
           <div className="collab-loading">
             <LoaderCircle size={18} className="spin" />
-            Opening task…
+            {t.opening}
           </div>
         )
       ) : (
@@ -1607,7 +1581,7 @@ function TaskPane({
                 {task.id}
               </span>
               <span className="collab-task-project">
-                {projectName(task.projectId, projects) || "No project"}
+                {projectName(task.projectId, projects) || t.noProject}
               </span>
             </div>
             <h3>{task.title}</h3>
@@ -1624,11 +1598,11 @@ function TaskPane({
                   </button>
                 </>
               ) : (
-                <span>{task.assignee?.name || "Not assigned yet"}</span>
+                <span>{task.assignee?.name || t.notAssigned}</span>
               )}
             </div>
             <div className="collab-task-actions">
-              <button className="secondary-button" onClick={() => openJobs({taskId:task.id})}>Related jobs</button>
+              <button className="secondary-button" onClick={() => openJobs({taskId:task.id})}>{t.relatedJobs}</button>
               {/* A reference in an Agent's draft (T-152), unlike Give to agent below. */}
               <SendToAgentButton source={() => taskHandoff(task)} />
               <button
@@ -1642,7 +1616,7 @@ function TaskPane({
                 }}
               >
                 <Send size={15} />
-                Give to agent
+                {t.give}
               </button>
               <button
                 className="secondary-button"
@@ -1655,21 +1629,18 @@ function TaskPane({
                   mutation.clearError();
                 }}
               >
-                Edit task
+                {t.edit}
               </button>
             </div>
           </div>
           <ErrorNote text={mutation.error} />
           {mutation.error && editing && (
-            <p className="collab-hint">
-              Your edits are still here. Refresh to see the current task before
-              applying them again.
-            </p>
+            <p className="collab-hint">{t.editsKept}</p>
           )}
           {notice && (
             <p className="collab-notice" role="status">
               <Check size={15} />
-              {notice}
+              {notice === "sent" ? t.sent : null}
             </p>
           )}
           {dispatching && (
@@ -1678,21 +1649,21 @@ function TaskPane({
               onSubmit={dispatch}
               className="collab-form collab-inset"
             >
-              <h4>Send this work along</h4>
+              <h4>{t.sendAlong}</h4>
               <PersonSelect
                 agents={agents}
                 value={toAgentId}
                 onChange={setToAgentId}
-                label="Send to"
-                empty="Choose an agent"
+                label={t.sendTo}
+                empty={t.chooseAgent}
               />
               <label className="collab-field">
                 <span>
-                  A note <small>optional</small>
+                  {t.note} <small>{t.optional}</small>
                 </span>
                 <textarea
                   rows={3}
-                  placeholder="Anything they should keep in mind?"
+                  placeholder={t.notePlaceholder}
                   value={instruction}
                   onChange={(event) => setInstruction(event.target.value)}
                 />
@@ -1703,13 +1674,9 @@ function TaskPane({
                   checked={urgent}
                   onChange={(event) => setUrgent(event.target.checked)}
                 />
-                <span>Urgent · notify during current work</span>
+                <span>{t.urgent}</span>
               </label>
-              <p className="collab-hint">
-                Normal messages wait until the current turn ends. Urgent
-                messages request a reminder during current work. Offline
-                messages wait for reconnection.
-              </p>
+              <p className="collab-hint">{t.urgencyHint}</p>
               <button
                 className="primary-button"
                 disabled={
@@ -1719,7 +1686,7 @@ function TaskPane({
                 }
               >
                 <Send size={14} />
-                Assign and send
+                {t.assignSend}
               </button>
             </MutationForm>
           )}
@@ -1731,38 +1698,17 @@ function TaskPane({
             >
               {task.version !== editVersion && (
                 <div className="collab-conflict" role="status">
-                  <p>
-                    This task changed while you were editing. Your draft is
-                    kept.
-                  </p>
+                  <p>{t.conflict}</p>
                   <details>
-                    <summary>Compare with the current task</summary>
+                    <summary>{t.compare}</summary>
                     <dl>
                       {Object.keys(taskPatch(editBase!, draft)).map((key) => (
                         <div key={key}>
-                          <dt>
-                            {
-                              (
-                                {
-                                  title: "Title",
-                                  description: "Description",
-                                  status: "Status",
-                                  assigneeAgentId: "Owner",
-                                  progress: "Progress",
-                                  blocker: "Blocker",
-                                  projectId: "Project",
-                                } as Record<string, string>
-                              )[key]
-                            }
-                          </dt>
+                          <dt>{t.fields[key]}</dt>
                           <dd>
                             {key === "projectId"
-                              ? projectName(task.projectId, projects) ||
-                                "No project"
-                              : String(
-                                  taskDraft(task)[key as keyof TaskDraft] ||
-                                    "Not set",
-                                )}
+                              ? projectName(task.projectId, projects) || t.noProject
+                              : String(taskDraft(task)[key as keyof TaskDraft] || t.notSet)}
                           </dd>
                         </div>
                       ))}
@@ -1773,12 +1719,12 @@ function TaskPane({
                     className="text-button"
                     onClick={() => setEditVersion(task.version)}
                   >
-                    Keep my changed fields on this version
+                    {t.keepFields}
                   </button>
                 </div>
               )}
               <label className="collab-field">
-                <span>Task title</span>
+                <span>{t.taskTitle}</span>
                 <input
                   required
                   maxLength={240}
@@ -1789,7 +1735,7 @@ function TaskPane({
                 />
               </label>
               <label className="collab-field">
-                <span>Description</span>
+                <span>{t.descriptionLabel}</span>
                 <textarea
                   rows={4}
                   value={draft.description}
@@ -1800,7 +1746,7 @@ function TaskPane({
               </label>
               <div className="collab-form-pair">
                 <label className="collab-field">
-                  <span>Task status</span>
+                  <span>{t.taskStatus}</span>
                   <select
                     value={draft.status}
                     onChange={(event) =>
@@ -1810,7 +1756,7 @@ function TaskPane({
                       })
                     }
                   >
-                    {Object.entries(statuses).map(([value, label]) => (
+                    {Object.entries(t.statuses).map(([value, label]) => (
                       <option key={value} value={value}>
                         {label}
                       </option>
@@ -1823,7 +1769,7 @@ function TaskPane({
                   onChange={(assigneeAgentId) =>
                     setDraft({ ...draft, assigneeAgentId })
                   }
-                  label="Owner"
+                  label={t.owner}
                 />
               </div>
               <ProjectSelect
@@ -1833,7 +1779,7 @@ function TaskPane({
               />
               <label className="collab-field">
                 <span>
-                  Latest progress <small>optional</small>
+                  {t.latestProgress} <small>{t.optional}</small>
                 </span>
                 <textarea
                   rows={2}
@@ -1845,7 +1791,7 @@ function TaskPane({
               </label>
               <label className="collab-field">
                 <span>
-                  What’s in the way? <small>optional</small>
+                  {t.inTheWay} <small>{t.optional}</small>
                 </span>
                 <textarea
                   rows={2}
@@ -1861,7 +1807,7 @@ function TaskPane({
                   disabled={mutation.pending || !draft.title.trim()}
                 >
                   <Check size={15} />
-                  Save changes
+                  {t.saveChanges}
                 </button>
                 <button
                   type="button"
@@ -1869,7 +1815,7 @@ function TaskPane({
                   disabled={mutation.pending}
                   onClick={() => setEditing(false)}
                 >
-                  Cancel
+                  {t.cancel}
                 </button>
               </div>
             </MutationForm>
@@ -1878,28 +1824,28 @@ function TaskPane({
             <section className="collab-blocker">
               <CircleAlert size={18} />
               <div>
-                <h4>Waiting on</h4>
+                <h4>{t.waitingOn}</h4>
                 <p>{task.blocker}</p>
               </div>
             </section>
           )}
           {task.progress && (
             <section className="collab-section">
-              <h4>Where things stand</h4>
+              <h4>{t.whereThingsStand}</h4>
               <Prose text={task.progress} />
             </section>
           )}
           {task.result && resultSection}
           {!editing && task.description && (
             <section className="collab-section">
-              <h4>The work</h4>
+              <h4>{t.theWork}</h4>
               <Prose text={task.description} />
             </section>
           )}
           {!task.result && resultSection}
-          <section className="collab-section collab-delivery" aria-label="Delivery">
+          <section className="collab-section collab-delivery" aria-label={t.delivery}>
             <div className="collab-section-heading">
-              <h4>Delivery</h4>
+              <h4>{t.delivery}</h4>
               <button
                 type="button"
                 className="quiet-button"
@@ -1907,7 +1853,7 @@ function TaskPane({
                 onClick={() => setManaging((value) => !value)}
               >
                 <Settings2 size={14} />
-                {managing ? "Done" : "Manage"}
+                {managing ? t.manageDone : t.manage}
               </button>
             </div>
             <GitHubLinks
@@ -1928,7 +1874,7 @@ function TaskPane({
           <TaskWorkspaces key={`workspaces-${task.id}`} taskId={task.id} materialsWorktree={task.materials?.worktree} focused={focusWorkspaces} />
           {!!detail.executions?.length && (
             <section className="collab-section">
-              <h4>Related conversations</h4>
+              <h4>{t.relatedConversations}</h4>
               <div className="collab-executions">
                 {detail.executions.map((source, index) => {
                   const agent = agents.find(
@@ -1951,7 +1897,7 @@ function TaskPane({
                       className="collab-hint"
                       key={`${source.agentId}:${source.turnId || index}`}
                     >
-                      Conversation from a removed agent
+                      {t.removedAgent}
                     </span>
                   );
                 })}
@@ -1959,29 +1905,18 @@ function TaskPane({
             </section>
           )}
           <section className="collab-section">
-            <h4>Conversation & updates</h4>
+            <h4>{t.activity}</h4>
             <div className="collab-activity">
               {detail.activities.map((activity) => (
                 <article key={activity.seq}>
                   <div className="collab-activity-heading">
-                    <strong>{actorName(activity.actor)}</strong>
+                    <strong>{actorName(activity.actor, t)}</strong>
                     <time>{timeLabel(activity.at)}</time>
                   </div>
                   {activity.body ? (
                     <Prose text={activity.body} />
                   ) : (
-                    <p className="collab-hint">
-                      {
-                        {
-                          created: "Created this task",
-                          updated: "Updated the task",
-                          claimed: "Picked up this task",
-                          result: "Shared a result",
-                          dispatched: "Sent this task to an agent",
-                          comment: "Added a note",
-                        }[activity.kind]
-                      }
-                    </p>
+                    <p className="collab-hint">{t.activityKinds[activity.kind]}</p>
                   )}
                   {activity.source &&
                     agents.some(
@@ -1996,7 +1931,7 @@ function TaskPane({
                           )
                         }
                       >
-                        View conversation
+                        {t.viewConversation}
                         <ArrowUpRight size={13} />
                       </button>
                     )}
@@ -2009,7 +1944,7 @@ function TaskPane({
                 disabled={loading || detail.nextAfterSeq == null}
                 onClick={() => void load(detail.nextAfterSeq!)}
               >
-                More updates
+                {t.moreUpdates}
               </button>
             )}
             <MutationForm
@@ -2018,22 +1953,22 @@ function TaskPane({
               onSubmit={addComment}
             >
               <label className="collab-field">
-                <span>Add a note</span>
+                <span>{t.addNoteLabel}</span>
                 <textarea
                   rows={3}
-                  placeholder="A useful update, question, or thought…"
+                  placeholder={t.commentPlaceholder}
                   value={comment}
                   onChange={(event) => setComment(event.target.value)}
                 />
               </label>
               <div className="collab-comment-foot">
-                <span>Shared on this task</span>
+                <span>{t.sharedOnTask}</span>
                 <button
                   className="secondary-button"
                   disabled={mutation.pending || !comment.trim()}
                 >
                   <MessageCircle size={14} />
-                  Add note
+                  {t.addNote}
                 </button>
               </div>
             </MutationForm>
@@ -2055,6 +1990,7 @@ function Messages({
   onOpenTask: (id: string, reviewId?: string) => void;
   revision: number;
 }) {
+  const t = useStrings(boardText);
   const [mailbox, setMailbox] = useState("");
   const [page, setPage] = useState<MessagePage | null>(null);
   const [loading, setLoading] = useState(false);
@@ -2110,31 +2046,28 @@ function Messages({
     <section
       id="collab-messages"
       role="tabpanel"
-      aria-label="Messages"
+      aria-label={t.messages}
       className="collab-messages"
     >
       <div className="collab-mailbox">
         <div className="collab-list-heading">
           <div>
-            <h3>A conversation between teammates</h3>
-            <p>
-              Follow who is helping whom, what they shared, and the work it
-              belongs to.
-            </p>
+            <h3>{t.msgTitle}</h3>
+            <p>{t.msgIntro}</p>
           </div>
         </div>
         <div className="collab-filters">
           <label className="collab-field">
-            <span>Mailbox</span>
+            <span>{t.mailbox}</span>
             <select
               value={mailbox}
               onChange={(event) => setMailbox(event.target.value)}
             >
-              <option value="">All agents</option>
+              <option value="">{t.allAgents}</option>
               {agents.map((agent) => (
                 <option key={agent.id} value={agent.id}>
                   {agent.name}
-                  {agent.closedAt ? " · closed" : ""}
+                  {agent.closedAt ? t.closedSuffix : ""}
                 </option>
               ))}
             </select>
@@ -2143,7 +2076,7 @@ function Messages({
             className="icon-button"
             disabled={loading}
             onClick={() => void load()}
-            aria-label="Refresh messages"
+            aria-label={t.refreshMessages}
           >
             <RefreshCw size={17} className={loading ? "spin" : ""} />
           </button>
@@ -2152,17 +2085,13 @@ function Messages({
         {!page && loading ? (
           <div className="collab-loading">
             <LoaderCircle size={18} className="spin" />
-            Opening the mailbox…
+            {t.openingMailbox}
           </div>
         ) : !page?.messages.length && !error ? (
           <div className="collab-empty">
             <Inbox size={33} />
-            <h3>Quiet for now</h3>
-            <p>
-              {mailbox
-                ? "Messages sent to this agent will appear here."
-                : "Messages between your agents will appear here."}
-            </p>
+            <h3>{t.quiet}</h3>
+            <p>{mailbox ? t.quietAgent : t.quietAll}</p>
           </div>
         ) : (
           <div className="collab-message-list">
@@ -2178,16 +2107,16 @@ function Messages({
                   tabIndex={-1}
                 >
                   <div className="collab-message-heading">
-                    <strong>{senderAgent?.name || actorName(sender)}</strong>
+                    <strong>{senderAgent?.name || actorName(sender, t)}</strong>
                     <span>
-                      to{" "}
-                      {agents.find((agent) => agent.id === message.recipient.id)
-                        ?.name ||
-                        message.recipient.name ||
-                        "previous agent"}
+                      {t.to(
+                        agents.find((agent) => agent.id === message.recipient.id)?.name ||
+                          message.recipient.name ||
+                          t.previousAgentLower,
+                      )}
                     </span>
                     {message.priority === "urgent" && (
-                      <span className="collab-urgent-badge">Urgent</span>
+                      <span className="collab-urgent-badge">{t.urgentBadge}</span>
                     )}
                     <time>{timeLabel(message.createdAt)}</time>
                   </div>
@@ -2208,18 +2137,16 @@ function Messages({
                           original?.focus({ preventScroll: true });
                         }}
                       >
-                        Reply to an earlier message
+                        {t.replyEarlier}
                         <ArrowUpRight size={12} />
                       </button>
                     ) : (
-                      <span className="collab-reply-label">
-                        Reply to an earlier message
-                      </span>
+                      <span className="collab-reply-label">{t.replyEarlier}</span>
                     ))}
                   {message.taskId && (
                     <button
                       className="collab-message-task"
-                      aria-label={`View task ${message.taskId}`}
+                      aria-label={t.viewTask(message.taskId)}
                       onClick={() => onOpenTask(message.taskId!)}
                     >
                       <ClipboardList size={13} />
@@ -2236,7 +2163,7 @@ function Messages({
                           onOpenTask(message.taskId!, message.reviewId!)
                         }
                       >
-                        <span>Open review</span>
+                        <span>{t.openReview}</span>
                         <ArrowUpRight size={12} />
                       </button>
                     )}
@@ -2244,21 +2171,11 @@ function Messages({
                   <div className="collab-message-footer">
                     <span>
                       {message.firstReadAt
-                        ? "Fetched by recipient"
+                        ? t.fetched
                         : message.delivery?.state === "sending" &&
                             message.delivery?.detail?.mode === "hook"
-                          ? "Awaiting tool boundary"
-                          : (
-                              {
-                                pending: "Waiting in mailbox",
-                                sending: "Notifying recipient",
-                                delivered: "Recipient notified",
-                                accepted: "Recipient notified",
-                                uncertain: "Reminder unconfirmed",
-                                error: "Reminder unavailable",
-                                failed: "Reminder unavailable",
-                              } as Record<string, string>
-                            )[message.delivery?.state] || "Saved in mailbox"}
+                          ? t.awaitingTool
+                          : t.deliveryStates[message.delivery?.state] || t.savedInMailbox}
                     </span>
                     {message.delivery?.state === "delivered" &&
                       typeof message.delivery?.detail?.mode === "string" &&
@@ -2266,18 +2183,7 @@ function Messages({
                         message.delivery.detail.mode,
                       ) && (
                         <span className="collab-delivery-mode">
-                          {
-                            {
-                              steer: "Via active turn",
-                              start: "Via new turn",
-                              hook: "Via native hook",
-                            }[
-                              message.delivery.detail.mode as
-                                | "steer"
-                                | "start"
-                                | "hook"
-                            ]
-                          }
+                          {t.modes[message.delivery.detail.mode as string]}
                         </span>
                       )}
                     {senderAgent && (
@@ -2290,7 +2196,7 @@ function Messages({
                           )
                         }
                       >
-                        Sender conversation
+                        {t.senderConversation}
                         <ArrowUpRight size={12} />
                       </button>
                     )}
@@ -2307,7 +2213,7 @@ function Messages({
                             )
                           }
                         >
-                          Recipient conversation
+                          {t.recipientConversation}
                           <ArrowUpRight size={12} />
                         </button>
                       )}
@@ -2323,7 +2229,7 @@ function Messages({
             disabled={loading || page.nextAfterSeq == null}
             onClick={() => void load(page.nextAfterSeq!)}
           >
-            Load more messages
+            {t.loadMoreMessages}
           </button>
         )}
       </div>
