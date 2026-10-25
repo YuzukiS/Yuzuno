@@ -1783,6 +1783,42 @@ test("context changes save without applying and stay open for explicit same-agen
   } finally { page.close(); }
 });
 
+test("a context save whose status can't be read again says it saved, not that it failed (T-187)", async () => {
+  const settings = { reasoningEffort: "low", approvalPolicy: "on-request", sandbox: "workspace-write" };
+  const context = { supported: true, settingsSubmitted: false, canApply: true, observedWindowTokens: 258400, observedStale: true };
+  const catalog = { permissions: permissionCatalog, context, models: [{ id: "test-model", model: "test-model", displayName: "Test model",
+    defaultReasoningEffort: "low", supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Fast" }, { reasoningEffort: "high", description: "More reasoning" }] }] };
+  let reads = 0;
+  const page = await mount({ settings, contextSettings: context,
+    // The editor's first read works; the one after saving finds Codex gone.
+    modelsResponse: async () => ++reads === 1
+      ? { ok: true, status: 200, json: async () => catalog, text: async () => JSON.stringify(catalog) }
+      : { ok: false, status: 503, text: async () => "Codex didn't answer model/list" },
+    settingsResponse: async (_url, init) => {
+      Object.assign(settings, JSON.parse(init.body).settings);
+      return { ok: true, status: 200, json: async () => ({}) };
+    } });
+  try {
+    page.document.querySelector('[aria-label="Agent settings"]').click();
+    await until(() => page.document.querySelector('[aria-label="Context window tokens"]')?.disabled === false, "the editor is ready");
+    const windowInput = page.document.querySelector('[aria-label="Context window tokens"]');
+    Object.getOwnPropertyDescriptor(page.window.HTMLInputElement.prototype, "value").set.call(windowInput, "872000");
+    windowInput.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    await pause();
+    button(page, "Save").click();
+    await until(() => page.document.querySelector('[role="dialog"]')?.textContent.includes("Saved, but the context status couldn’t be read again"),
+      "the save is said to have worked");
+    assert.equal(reads, 2, "the status was read again once");
+    const dialog = page.document.querySelector('[role="dialog"]');
+    assert.equal(dialog.querySelector('[role="alert"]'), null, "no failure is shown for a save that worked");
+    assert.match(dialog.textContent, /Codex didn't answer model\/list\)\. Refresh it before applying/);
+    assert.deepEqual(page.calls.filter((r) => r.init.method === "POST").map((r) => r.url), ["/api/agents/a/settings"], "nothing applied");
+    assert.equal(settings.contextWindow, 872000);
+    assert.equal(page.document.querySelector('[aria-label="Context window tokens"]').value, "872000", "the input stays");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("saved context can reset with unsupported or unavailable runtime catalogs without applying", async () => {
   for (const unavailable of [false, true]) {
     const settings = { reasoningEffort: "high", approvalPolicy: "on-request", sandbox: "workspace-write",
