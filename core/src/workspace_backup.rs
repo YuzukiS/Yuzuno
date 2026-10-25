@@ -41,6 +41,7 @@ use std::{
 };
 
 pub mod online;
+pub mod retention;
 pub mod schedule;
 #[cfg(test)]
 mod tests;
