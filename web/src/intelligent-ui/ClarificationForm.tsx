@@ -88,6 +88,11 @@ function Form({
         typed.current = false;
         setValues(readClarificationDraft(localStorage, key, form));
         setErrors({});
+        // A submission of the Workspace before this one is no longer this
+        // form's: it cannot leave this one busy or showing its refusal.
+        inFlight.current = false;
+        setBusy(false);
+        setFailure("");
       }
       setStorageError("");
     } catch (error) {
@@ -140,6 +145,13 @@ function Form({
       document.getElementById(`${domId}-${first}`)?.focus();
       return;
     }
+    // This submission belongs to the key these answers were typed under. If
+    // the Core at this address answers as another Workspace while it runs,
+    // its refusal is not that Workspace's to show and must not leave that
+    // Workspace's form busy (T-195): the move resets those itself.
+    // `from` is that key; a null one is a form shown before this window knew
+    // its Workspace, and is still its own submission.
+    const from = belongTo.current;
     inFlight.current = true;
     setBusy(true);
     setFailure("");
@@ -147,10 +159,13 @@ function Form({
       // Capture exactly the values the user explicitly submitted.
       await onSubmit(structuredClone(values));
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : String(error));
+      if (belongTo.current === from)
+        setFailure(error instanceof Error ? error.message : String(error));
     } finally {
-      setBusy(false);
-      inFlight.current = false;
+      if (belongTo.current === from) {
+        setBusy(false);
+        inFlight.current = false;
+      }
     }
   }
   return (

@@ -195,6 +195,75 @@ test("a send that outlives a move to another Workspace stays the first one's", a
   );
 });
 
+test("coming back to a Workspace settles the records it is using, not an old snapshot", async (t) => {
+  // A -> B -> A: reading A's records again must not hand the send that is
+  // still running a bucket the window has replaced, or settling it would
+  // write that snapshot over records saved since the return.
+  const f = await fixture(t, { workspace: "ws-here", outbox: {} });
+  let answer;
+  globalThis.fetch = async (url, init) => {
+    f.calls.push({ url, body: JSON.parse(init.body) });
+    return new Promise((resolve) => {
+      answer = (receipt) => resolve({ ok: true, json: async () => receipt });
+    });
+  };
+  let sending;
+  await act(async () => {
+    sending = f.hook().submit("sent before leaving");
+  });
+  const input = f.calls[0].body;
+  await f.move("ws-there");
+  await f.move("ws-here");
+  // Back here, another unsent record is saved for a second Agent.
+  const other = { clientMessageId: "other-id", text: "another Agent's unsent text", expectedTurnId: "turn1", question: null };
+  localStorage.setItem(
+    "yuzuno.outbox",
+    JSON.stringify({ ...outboxFile(), "ws-here": { ...outbox("ws-here"), "b:composer": other } }),
+  );
+  await act(async () => {
+    answer({ input, status: "accepted", turnId: "t1", error: null });
+    await sending;
+  });
+  assert.deepEqual(
+    outbox("ws-here"),
+    { "b:composer": other },
+    "the finished send removed only its own record",
+  );
+});
+
+test("sending one Workspace's Agent leaves the same Agent id in another free to send", async (t) => {
+  const f = await fixture(t, { workspace: "ws-here", outbox: {} });
+  globalThis.fetch = async (url, init) => {
+    f.calls.push({ url, body: JSON.parse(init.body) });
+    return new Promise(() => {});
+  };
+  let sending;
+  await act(async () => {
+    sending = f.hook().submit("still sending here");
+  });
+  assert.equal(f.hook().sending, true);
+  void sending;
+  await f.move("ws-there");
+  assert.equal(
+    f.hook().sending,
+    false,
+    "the other Workspace's Agent of the same id is not shown as sending",
+  );
+  // And it can send: the refusal of a second send is per Workspace and Agent.
+  globalThis.fetch = async (url, init) => {
+    f.calls.push({ url, body: JSON.parse(init.body) });
+    return { ok: true, json: async () => ({ input: JSON.parse(init.body), status: "accepted", turnId: "t1", error: null }) };
+  };
+  await act(async () => {
+    await f.hook().submit("sent from there");
+  });
+  assert.deepEqual(
+    f.calls.map((c) => c.body.text),
+    ["still sending here", "sent from there"],
+    "it was not refused as already sending",
+  );
+});
+
 test("a record saved before the outbox was kept per Workspace is left alone, not retried here", async (t) => {
   const before = {
     clientMessageId: "unattributed-id",

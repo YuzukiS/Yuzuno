@@ -205,6 +205,47 @@ test("answers typed before this window knows its Workspace are kept, reach disk 
   }
 });
 
+test("a refusal from the Workspace before this one is not shown here, and leaves this form usable", async () => {
+  const page = mount();
+  let refuse;
+  const submit = () => new Promise((_, reject) => { refuse = () => reject(Error("Native rejected this reply")); });
+  try {
+    page.render({ onSubmit: submit });
+    await tick();
+    const input = page.document.querySelector("textarea");
+    Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(input, "answered here");
+    input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    page.document.querySelector('input[value="keyboard"]').click();
+    await tick();
+    page.button("Submit answers").click();
+    await tick();
+    assert.equal(page.button("Submit answers").disabled, true, "it is sending");
+    // The Core at this address now answers as another Workspace.
+    page.render({ draftIdentity: JSON.stringify(["ws-other", "a:result1"]), onSubmit: submit });
+    await tick();
+    assert.equal(
+      page.document.querySelector("textarea").value,
+      "/home/me/project",
+      "this Workspace's form is its own",
+    );
+    refuse();
+    await tick();
+    assert.doesNotMatch(
+      page.document.body.textContent,
+      /Native rejected/,
+      "the other Workspace's refusal is not shown here",
+    );
+    assert.equal(
+      page.button("Submit answers").disabled,
+      false,
+      "and this form is not left sending",
+    );
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 test("IME does not submit, Escape stays inside the form, and uncertain receipts prevent another send", async () => {
   const page = mount();
   let escaped = 0;

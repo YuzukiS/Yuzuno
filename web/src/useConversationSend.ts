@@ -67,14 +67,22 @@ export function useConversationSend(
   harness?: "codex" | "claude" | "opencode",
   detail?: AgentDetail | null,
 ) {
-  // A failed send may contain a large paste. Load its retry record once,
-  // rather than parsing the full body again on every composer keystroke.
-  const [outbox] = useState<{ current: Outbox }>(() => ({ current: {} }));
-  // `App.tsx` has no Workspace id until /api/workspace answers, so the
-  // records are read when it is known -- once per Workspace, not per
-  // keystroke -- and nothing is read while it is not. In-window memory is
-  // this window's alone, so it is kept across a Workspace that goes unknown;
-  // only what reaches or comes from disk is bound to a Workspace.
+  // A failed send may contain a large paste. Each Workspace's records are
+  // read once per window, rather than parsing the full body again on every
+  // composer keystroke, and they keep one object while this window lives:
+  // leaving a Workspace and coming back hands a send that is still running
+  // the same records the window is using, so settling it cannot write an old
+  // snapshot over records added since. `App.tsx` has no Workspace id until
+  // /api/workspace answers, and nothing is read while it has none.
+  const buckets = useRef(new Map<string, Outbox>());
+  function records(workspace: string): Outbox {
+    let kept = buckets.current.get(workspace);
+    if (!kept) {
+      kept = workspace ? load(workspace) : {};
+      buckets.current.set(workspace, kept);
+    }
+    return kept;
+  }
   const loadedFor = useRef("");
   // Which Workspace this window is in now, for a send that is still running
   // from the one before it.
@@ -90,7 +98,6 @@ export function useConversationSend(
     if (!workspaceId || loadedFor.current === workspaceId) return;
     const first = !loadedFor.current;
     loadedFor.current = workspaceId;
-    outbox.current = load(workspaceId);
     if (first) return;
     // The Core at this address now answers as another Workspace. A delivery
     // of a send made in the one before it is not this Workspace's to show,
@@ -99,7 +106,7 @@ export function useConversationSend(
     // Workspace that has them, and are read from it (T-195).
     setOutgoing((messages) => (messages.length ? [] : messages));
     synchronized.current.clear();
-  }, [workspaceId, outbox]);
+  }, [workspaceId]);
   useEffect(() => {
     if (!detail || detail.agent.id !== agentId) return;
     const ids = new Set<string>(detail.conversation?.nativeClientIds || []);
@@ -149,11 +156,11 @@ export function useConversationSend(
   // Workspace it started in, and never this Workspace's records under the
   // other one's name. Nothing is written against a Workspace this window
   // does not know yet.
-  const persist = (records: Outbox, workspace: string) => {
+  const persist = (bucket: Outbox, workspace: string) => {
     if (!workspace) return;
     try {
       const file = readFile();
-      if (Object.keys(records).length) file[workspace] = records;
+      if (Object.keys(bucket).length) file[workspace] = bucket;
       else delete file[workspace];
       localStorage.setItem(storageKey, JSON.stringify(file));
     } catch {
@@ -167,7 +174,7 @@ export function useConversationSend(
     // Native pending approvals use their own respond endpoint and stay usable.
     if (detail?.collaboration?.ready === false)
       throw new Error(detail.collaboration.error || "Reconnect to confirm the workspace collaboration connection. Your text is kept.");
-    if (inFlight.current.has(agentId))
+    if (inFlight.current.has(`${workspaceId}\n${agentId}`))
       throw new Error("A message is already being sent.");
     if (harness === "claude" && question)
       throw new Error("Claude answers in the conversation; reply with a new message.");
@@ -175,15 +182,19 @@ export function useConversationSend(
     // This send belongs to the Workspace it starts in, and to that
     // Workspace's records, whatever this window moves to while it runs.
     const startedIn = workspaceId;
-    const records = outbox.current;
+    const kept = records(startedIn);
+    // Sending, and the refusal of a second send, are per Workspace and Agent
+    // together: the same Agent id in another Workspace is another Agent, and
+    // neither its composer nor its spinner is this send's business.
+    const busy = `${startedIn}\n${agentId}`;
     // A message whose delivery became unknown is never sent again; sending
     // the same text after that is a new message with its own id.
-    const kept = records[key];
+    const previousInput = kept[key];
     const previous = detail?.messageReceipts?.some(
-      (r) => r.input.clientMessageId === kept?.clientMessageId && r.status === "unknown",
+      (r) => r.input.clientMessageId === previousInput?.clientMessageId && r.status === "unknown",
     )
       ? undefined
-      : kept;
+      : previousInput;
     // Presentation edits cannot create a second native send after response loss.
     // A retry retains the original receipt payload and its display boundaries.
     const input: MessageInput =
@@ -201,9 +212,9 @@ export function useConversationSend(
             question,
             ...(clarification ? { clarification: structuredClone(clarification) } : {}),
           };
-    records[key] = input;
-    persist(records, startedIn);
-    inFlight.current.add(agentId);
+    kept[key] = input;
+    persist(kept, startedIn);
+    inFlight.current.add(busy);
     setSendingFor([...inFlight.current]);
     showReceipt({ input, status: "sending", turnId: null, error: null }, startedIn);
     let received = false;
@@ -221,8 +232,8 @@ export function useConversationSend(
       // Rejected and unknown are final: the draft stays, and sending it
       // again is a new message.
       if (sent || receipt.status === "rejected" || receipt.status === "unknown") {
-        delete records[key];
-        persist(records, startedIn);
+        delete kept[key];
+        persist(kept, startedIn);
       }
       if (!sent)
         throw new Error(
@@ -233,8 +244,8 @@ export function useConversationSend(
     } catch (error) {
       if (!received && error instanceof HttpError && error.code === "message_not_submitted") {
         received = true;
-        delete records[key];
-        persist(records, startedIn);
+        delete kept[key];
+        persist(kept, startedIn);
         if (current.current === startedIn) {
           setOutgoing(messages => messages.filter(m =>
             m.agentId !== agentId || m.receipt.input.clientMessageId !== input.clientMessageId));
@@ -255,8 +266,8 @@ export function useConversationSend(
             turnId: null,
             error: error.message,
           }, startedIn);
-          delete records[key];
-          persist(records, startedIn);
+          delete kept[key];
+          persist(kept, startedIn);
         } else {
           showReceipt({
             input,
@@ -279,9 +290,14 @@ export function useConversationSend(
         }, startedIn);
       throw error;
     } finally {
-      inFlight.current.delete(agentId);
+      inFlight.current.delete(busy);
       setSendingFor([...inFlight.current]);
     }
   }
-  return { submit, sending: sendingFor.includes(agentId), outgoing, pendingInputs: outbox.current };
+  return {
+    submit,
+    sending: sendingFor.includes(`${workspaceId}\n${agentId}`),
+    outgoing,
+    pendingInputs: records(workspaceId),
+  };
 }

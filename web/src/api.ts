@@ -89,6 +89,12 @@ export function post<T>(path: string, body: unknown = {}): Promise<T> {
  * answer to the old Workspace's request for a different Agent. The earlier
  * request is not aborted: it may already have taken effect, and it still
  * clears itself when it settles. It is simply no longer anyone's to wait on.
+ *
+ * The map is not cleared when the Workspace changes, so a request under one
+ * key is the only one under it and could clear itself safely. Comparing
+ * first is guarding the property rather than relying on that: a second
+ * request under a key still held would otherwise be taken out of the map by
+ * the first one settling.
  */
 let requestWorkspace = "";
 export function scopeRequests(workspaceId: string) {
