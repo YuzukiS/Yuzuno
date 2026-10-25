@@ -108,6 +108,8 @@ test('failed link keeps draft; switching tasks discards late replies',async()=>{
 // names stay as written; the typed URL, the open checks and the notice stay.
 async function speak(p,language){p.w.localStorage.setItem('yuzuno.language',JSON.stringify({language}));p.w.dispatchEvent(new p.w.StorageEvent('storage',{key:'yuzuno.language'}));await pause(100);}
 const taskPanel=p=>p.doc.querySelector('.collab-delivery .github-panel');
+// What the task and its delivery panel ask of Core.
+const collaboration=(p,from)=>p.calls.slice(from).map(c=>c.url).filter(u=>/\/collaboration\/|\/pr-reviews|\/pr-operations/.test(u));
 test('a task\'s links follow a language change; the draft, open checks and notice stay and nothing is requested',async()=>{
  const stale={...object(9),stale:true,error:'unavailable: offline'};
  const p=await mount({links:[object(8),stale]});try{
@@ -135,14 +137,17 @@ test('a task\'s links follow a language change; the draft, open checks and notic
   const summary=p.doc.querySelector('.github-summary');
   assert.equal(summary.getAttribute('aria-label'),'已链接的 GitHub 工作');
   assert.match(summary.textContent,/repo#8开放检查通过.*repo#9开放上次已知：检查通过/);
-  // Nothing asked of Core or GitHub: no github_links, github_refresh,
-  // task_list, task_get or task_update, and no link or unlink.
-  assert.deepEqual(p.calls.slice(before).map(c=>c.url),[]);
+  // Nothing asked of the task's Core endpoints: no github_links,
+  // github_refresh, task_list, task_get, task_update, pr-reviews or
+  // pr-operations, no link or unlink.
+  // (The status bar's own background read of jobs, reviews and CI may land
+  // here; it follows Jobs events, not the language.)
+  assert.deepEqual(collaboration(p,before),[]);
   await speak(p,'en');
   assert.equal(taskPanel(p).getAttribute('aria-label'),'GitHub delivery');
   assert.match(taskPanel(p).querySelector('.github-notice').textContent,/^Linked\./);
   assert.equal(taskPanel(p).querySelector('.github-link-form input').value,'https://github.com/owner/repo/pull/11 草稿');
-  assert.equal(p.calls.length,before);
+  assert.deepEqual(collaboration(p,before),[]);
   assert.deepEqual(p.errors,[]);
  }finally{p.close();}
 });
