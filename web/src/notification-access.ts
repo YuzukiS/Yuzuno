@@ -1,13 +1,15 @@
 /**
  * What this device's system lets the Workspace do with notifications, read
- * from the browser itself (T-188). A preference to be notified is not this:
+ * from the browser itself (T-188), or, in the desktop app on macOS, as macOS
+ * told the app (`system: "macos"`; `quiet`: allowed to Notification Center
+ * only, without a banner or sound). A preference to be notified is not this:
  * it takes effect only where the system allows it.
  */
 export type NotificationAccess =
-  | { state: "unsupported"; reason: UnsupportedReason }
-  | { state: "not-requested" }
-  | { state: "allowed" }
-  | { state: "denied" }
+  | { state: "unsupported"; reason: UnsupportedReason; detail?: string }
+  | { state: "not-requested"; system?: "macos" }
+  | { state: "allowed"; system?: "macos"; quiet?: boolean }
+  | { state: "denied"; system?: "macos" }
   /** The desktop app hands them to the system (T-188, Windows). Whether the
    * system then shows them is its own notification settings', which the app
    * cannot read: not "allowed", and nothing to ask. */
@@ -21,8 +23,10 @@ export type NotificationAccess =
  *   iPhone, outside a Home Screen app).
  * - `page-only`: the browser refused to show one from the page itself; it
  *   would need a service worker, which the Workspace does not have.
+ * - `unread`: the desktop app on macOS couldn't tell what macOS allows it
+ *   (`detail` says why, when it can): taken for neither allowed nor denied.
  */
-export type UnsupportedReason = "app" | "insecure" | "no-api" | "page-only";
+export type UnsupportedReason = "app" | "insecure" | "no-api" | "page-only" | "unread";
 
 type NotificationApi = {
   readonly permission: string;
@@ -38,8 +42,14 @@ type ShownNotification = {
 /** The desktop app's way to the system's notifications, where it has one
  * (desktop-notifier.ts). It hands one on, or, for one meant for while the
  * user looks elsewhere (`whenAway`), holds it back while its window is in
- * front: it answers whether it handed it on, nothing more. */
-export type DesktopNotifier = { notify(title: string, body: string, whenAway: boolean): Promise<boolean> };
+ * front: it answers whether it handed it on, nothing more. On macOS it also
+ * says what macOS allows it, and can ask macOS, once (`macos`). */
+export type DesktopNotifier = {
+  notify(title: string, body: string, whenAway: boolean): Promise<boolean>;
+  macos?: { authorization: DesktopAuthorization; reason?: string; request(): Promise<DesktopNotifier | null> };
+};
+/** What macOS allows the desktop app (desktop/src/notification_text.rs). */
+export type DesktopAuthorization = "not-requested" | "allowed" | "quiet" | "denied" | "unknown";
 
 /** The parts of the browser this reads: the app passes the window's, a test its own. */
 export type NotificationHost = {
@@ -76,8 +86,26 @@ export function desktopText(text: string, max: number, lines = false): string {
 // Learned from a refused test notification; it does not change on this page.
 const pageOnly = new WeakSet<NotificationApi>();
 
+function macosAccess({ authorization, reason }: NonNullable<DesktopNotifier["macos"]>): NotificationAccess {
+  switch (authorization) {
+    case "allowed":
+      return { state: "allowed", system: "macos" };
+    case "quiet":
+      return { state: "allowed", system: "macos", quiet: true };
+    case "not-requested":
+      return { state: "not-requested", system: "macos" };
+    case "denied":
+      return { state: "denied", system: "macos" };
+    default:
+      return { state: "unsupported", reason: "unread", ...(reason ? { detail: reason } : {}) };
+  }
+}
+
 export function notificationAccess(host: NotificationHost): NotificationAccess {
-  if (host.native) return host.desktop ? { state: "through-app" } : { state: "unsupported", reason: "app" };
+  if (host.native) {
+    if (host.desktop?.macos) return macosAccess(host.desktop.macos);
+    return host.desktop ? { state: "through-app" } : { state: "unsupported", reason: "app" };
+  }
   if (!host.isSecureContext) return { state: "unsupported", reason: "insecure" };
   const api = host.Notification;
   if (!api || typeof api.requestPermission !== "function") return { state: "unsupported", reason: "no-api" };
@@ -94,11 +122,14 @@ export function notificationAccess(host: NotificationHost): NotificationAccess {
 
 /**
  * Asks the system, from the user's own click only. Once answered, it is not
- * asked again: a denial is changed in the browser's settings for this site.
+ * asked again: a denial is changed in the browser's settings for this site,
+ * or in macOS's System Settings. The desktop app's failure to ask is thrown.
  */
 export async function requestNotificationAccess(host: NotificationHost): Promise<NotificationAccess> {
   const before = notificationAccess(host);
   if (before.state !== "not-requested") return before;
+  const macos = host.native ? host.desktop?.macos : undefined;
+  if (macos) return notificationAccess({ ...host, desktop: await macos.request() });
   const api = host.Notification as NotificationApi;
   await new Promise<void>((answered) => {
     try {
@@ -117,7 +148,8 @@ export async function requestNotificationAccess(host: NotificationHost): Promise
  * - `shown`: it showed it. The system can still keep it out of sight (a
  *   Focus or do-not-disturb mode), which a page cannot see.
  * - `handed`: the desktop app handed it to the system, which reports
- *   nothing back: whether it was shown is not known.
+ *   nothing back (on macOS: that it accepted it): whether it was shown is
+ *   not known.
  * - `held`: the desktop app held it back, its window being in front (only
  *   for one meant for while the user looks elsewhere).
  * - `unconfirmed`: no report within the wait.
@@ -139,7 +171,8 @@ export function showSystemNotification(
   { waitMs = 5_000, opened, whenAway = false }: { waitMs?: number; opened?: () => void; whenAway?: boolean } = {},
 ): Promise<TestOutcome> {
   const access = notificationAccess(host);
-  if (access.state === "through-app" && host.desktop) {
+  if (host.native && host.desktop) {
+    if (!reachesSystem(access)) return Promise.resolve({ outcome: "refused", access });
     // No click reaches the page from there: `opened` is not used (T-188).
     return host.desktop
       .notify(desktopText(title, DESKTOP_TITLE_MAX), desktopText(options.body ?? "", DESKTOP_BODY_MAX, true), whenAway)

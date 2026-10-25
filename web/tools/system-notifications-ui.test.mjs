@@ -226,6 +226,28 @@ test("in the desktop app that can notify, a change read while away is handed to 
   }
 });
 
+// T-188: on macOS, only while macOS allows them, as the app says; nothing in the background asks macOS.
+test("in the desktop app on macOS, a change goes to the app only while macOS allows it, and is never a reason to ask", async () => {
+  const macos = (authorization) => ({ supported: authorization === "allowed" || authorization === "quiet", system: "macos", authorization });
+  for (const authorization of ["allowed", "quiet"]) {
+    // Looked at, as the page says: the app decides from its window, as on Windows.
+    const page = mount({ shell: { answer: macos(authorization) }, looking: true });
+    await page.read([agent("a", { status: "working" })]);
+    await page.read([result("a")]);
+    assert.deepEqual(page.invoked, [["desktop_notifications"], ["desktop_notify", { title: "Mori finished", body: "The Turn finished.", whenAway: true }]], authorization);
+    assert.deepEqual(page.shown, []);
+    page.close();
+  }
+  for (const authorization of ["not-requested", "denied", "unknown"]) {
+    const page = mount({ shell: { answer: macos(authorization) } });
+    await page.read([agent("a", { status: "working" })]);
+    await page.read([result("a")]);
+    assert.deepEqual(page.invoked, [["desktop_notifications"]], authorization);
+    assert.deepEqual(page.shown, []);
+    page.close();
+  }
+});
+
 test("in the desktop app that can notify, a daily backup's last run is read once the app says so, with nothing else rendering again", async () => {
   const page = mount({
     shell: { answer: { supported: true, system: "windows" } },

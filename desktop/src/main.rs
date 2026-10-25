@@ -353,7 +353,7 @@ async fn open_core(
             )
             .map_err(|e| format!("Could not enable desktop updates: {e}"))?;
         // System notifications, likewise from the selected workspace only
-        // (T-188): this app's two commands, never the plugin's own.
+        // (T-188): this app's own commands, never the plugin's.
         window
             .add_capability(
                 CapabilityBuilder::new(format!(
@@ -364,7 +364,8 @@ async fn open_core(
                 .webview("main")
                 .remote(format!("{}/*", core.origin().ascii_serialization()))
                 .permission("allow-desktop-notifications")
-                .permission("allow-desktop-notify"),
+                .permission("allow-desktop-notify")
+                .permission("allow-desktop-notifications-request"),
             )
             .map_err(|e| format!("Could not enable system notifications: {e}"))?;
         updates.forget();
@@ -634,7 +635,8 @@ fn main() {
             update::desktop_update_check,
             update::desktop_update_install,
             notify::desktop_notifications,
-            notify::desktop_notify
+            notify::desktop_notify,
+            notify::desktop_notifications_request
         ])
         .setup(move |app| {
             // An update's installer restarts this app with its launch

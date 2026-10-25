@@ -2,7 +2,8 @@
 //! a title and a body, each bounded, with no control characters but the
 //! body's line breaks. The page shortens its own text to these bounds; a
 //! longer or odd one is refused here, not cut. And when: one meant for
-//! while the user looks elsewhere goes only while the window is not in front.
+//! while the user looks elsewhere goes only while the window is not in front,
+//! and, on macOS, only while macOS allows this app's notifications.
 
 /// At most this many characters (Unicode scalar values) in a title.
 pub const TITLE_MAX: usize = 120;
@@ -34,6 +35,46 @@ pub fn checked<'a>(title: &'a str, body: &'a str) -> Result<(&'a str, &'a str), 
 /// looking (a test, a failed backup) always goes.
 pub fn shown_now(when_away: bool, focused: bool, minimized: bool) -> bool {
     !when_away || !focused || minimized
+}
+
+/// Whether the system allows this app's notifications, as it last said
+/// (macOS). It is read again before each one is sent, never kept.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Allowed {
+    /// The user has not been asked yet.
+    NotRequested,
+    Yes,
+    /// Allowed quietly: to Notification Center, without a banner or sound.
+    Quiet,
+    /// Turned off for this app, in the system's settings: it is not asked again.
+    Denied,
+    /// A state this app does not know: taken for neither allowed nor denied.
+    Unknown,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl Allowed {
+    /// The page's word for it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Allowed::NotRequested => "not-requested",
+            Allowed::Yes => "allowed",
+            Allowed::Quiet => "quiet",
+            Allowed::Denied => "denied",
+            Allowed::Unknown => "unknown",
+        }
+    }
+
+    /// Whether one may be handed to the system now.
+    pub fn sends(self) -> bool {
+        matches!(self, Allowed::Yes | Allowed::Quiet)
+    }
+
+    /// Whether the user may be asked: only before they have answered.
+    pub fn asks(self) -> bool {
+        self == Allowed::NotRequested
+    }
 }
 
 #[cfg(test)]
@@ -68,5 +109,16 @@ mod tests {
         assert!(checked("Two\nlines", "").is_err(), "a title is one line");
         assert!(checked("Title", "a\u{1b}[31mred").is_err());
         assert!(checked("Title", "a\rb").is_err());
+    }
+
+    #[test]
+    fn only_an_allowed_state_sends_and_only_an_unasked_one_asks() {
+        let all = [Allowed::NotRequested, Allowed::Yes, Allowed::Quiet, Allowed::Denied, Allowed::Unknown];
+        let words: Vec<_> = all.iter().map(|a| a.word()).collect();
+        assert_eq!(words, ["not-requested", "allowed", "quiet", "denied", "unknown"]);
+        let sends: Vec<_> = all.iter().filter(|a| a.sends()).copied().collect();
+        assert_eq!(sends, [Allowed::Yes, Allowed::Quiet]);
+        let asks: Vec<_> = all.iter().filter(|a| a.asks()).copied().collect();
+        assert_eq!(asks, [Allowed::NotRequested], "a denial, or a state this app doesn't know, is never asked again");
     }
 }
