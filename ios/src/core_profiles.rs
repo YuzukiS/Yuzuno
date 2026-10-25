@@ -34,6 +34,40 @@ pub const NAME_LIMIT: usize = 60;
 /// The longest `workspaceId` this app keeps. A Core's health answer is read
 /// up to 64 KiB, far more than a record this app can read back holds.
 pub const WORKSPACE_LIMIT: usize = 200;
+/// How many addresses this iPhone remembers the Workspace of once their
+/// profile is gone. Reaching it refuses the change rather than forgetting
+/// the oldest: dropping one would quietly give back an address whose stored
+/// data it is protecting. `LIMIT` still bounds the whole record, so with
+/// addresses and identifiers at their longest the record runs out of room
+/// before this count does.
+pub const REMEMBERED_LIMIT: usize = 128;
+
+/// An address this iPhone remembers the Workspace of, with no profile saved
+/// for it. Removing a profile took the address off the list, but what the
+/// web view stored for that address stayed; this is the little needed to
+/// keep a *different* Workspace from being opened onto it. The address and
+/// the identity, and deliberately nothing else: no name, and none of the
+/// stored data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Remembered {
+    pub url: Url,
+    pub workspace_id: String,
+}
+
+impl Remembered {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({ "url": self.url.as_str(), "workspaceId": self.workspace_id })
+    }
+
+    fn from_json(value: &serde_json::Value) -> Option<Self> {
+        let url = crate::core_url::parse(value.get("url")?.as_str()?).ok()?;
+        let workspace_id = value.get("workspaceId")?.as_str()?;
+        if workspace_id.is_empty() || workspace_id.len() > WORKSPACE_LIMIT {
+            return None;
+        }
+        Some(Self { url, workspace_id: workspace_id.to_owned() })
+    }
+}
 
 /// One named Workspace.
 #[derive(Debug, Clone, PartialEq)]
@@ -92,7 +126,12 @@ pub enum Saved {
     Never,
     /// The profiles this app would connect to now, and which was last
     /// opened, when that one is still among them.
-    Profiles { profiles: Vec<Profile>, selected: Option<String> },
+    Profiles {
+        profiles: Vec<Profile>,
+        selected: Option<String>,
+        /// Addresses with no profile whose Workspace is still remembered.
+        remembered: Vec<Remembered>,
+    },
     /// A record that cannot be used, and why. It is left as it is; the next
     /// successful save replaces it.
     Unreadable(String),
@@ -104,10 +143,14 @@ impl Saved {
     pub fn to_json(&self) -> serde_json::Value {
         match self {
             Saved::Never => serde_json::json!({ "state": "never", "profiles": [] }),
-            Saved::Profiles { profiles, selected } => serde_json::json!({
+            Saved::Profiles { profiles, selected, remembered } => serde_json::json!({
                 "state": "saved",
                 "profiles": profiles.iter().map(Profile::to_json).collect::<Vec<_>>(),
                 "selected": selected,
+                // Shown because they are why a connection there can be
+                // refused, and a refusal with no visible cause looks like a
+                // fault.
+                "remembered": remembered.iter().map(Remembered::to_json).collect::<Vec<_>>(),
             }),
             Saved::Unreadable(reason) => serde_json::json!({ "state": "unreadable", "reason": reason, "profiles": [] }),
         }
@@ -120,6 +163,27 @@ impl Saved {
             _ => &[],
         }
     }
+
+    pub fn remembered(&self) -> &[Remembered] {
+        match self {
+            Saved::Profiles { remembered, .. } => remembered,
+            _ => &[],
+        }
+    }
+
+    /// The Workspace this record knows for `url`: the profile saved at that
+    /// address, or failing that the address this still remembers. One place
+    /// answers it, so a removed profile cannot quietly leave the address
+    /// unbound while its stored data is still there.
+    pub fn workspace_for(&self, url: &Url) -> Option<&str> {
+        if let Some(profile) = self.profiles().iter().find(|profile| profile.url == *url) {
+            return profile.workspace_id.as_deref();
+        }
+        self.remembered()
+            .iter()
+            .find(|known| known.url == *url)
+            .map(|known| known.workspace_id.as_str())
+    }
 }
 
 pub fn read(path: &Path) -> Saved {
@@ -131,10 +195,18 @@ pub fn read(path: &Path) -> Saved {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Saved::Never,
         Err(error) => return Saved::Unreadable(format!("it could not be read ({error})")),
     };
+    read_bytes(&bytes)
+}
+
+/// The record, from the bytes of one. Split out from [`read`] so a save can
+/// be checked by reading back what it is about to write, through this very
+/// reader rather than through a second copy of its rules kept in step with
+/// it by hand.
+pub fn read_bytes(bytes: &[u8]) -> Saved {
     if bytes.len() as u64 > LIMIT {
         return Saved::Unreadable("it is not a saved Workspace record".into());
     }
-    let Ok(record) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+    let Ok(record) = serde_json::from_slice::<serde_json::Value>(bytes) else {
         return Saved::Unreadable("it is not a saved Workspace record".into());
     };
     // The record one address at a time, from before this app kept names.
@@ -144,7 +216,9 @@ pub fn read(path: &Path) -> Saved {
                 Ok(url) => {
                     let profile = Profile { id: "core".into(), name: name_for(&url), url, workspace_id: None };
                     let selected = Some(profile.id.clone());
-                    Saved::Profiles { profiles: vec![profile], selected }
+                    // The one-address record had nowhere to remember an
+                    // address it no longer listed, so there is none to read.
+                    Saved::Profiles { profiles: vec![profile], selected, remembered: Vec::new() }
                 }
                 Err(_) => Saved::Unreadable("its address is not one this app opens".into()),
             },
@@ -166,7 +240,38 @@ pub fn read(path: &Path) -> Saved {
             _ => return Saved::Unreadable("one of its Workspaces is not one this app opens".into()),
         }
     }
-    if profiles.is_empty() {
+    let mut remembered: Vec<Remembered> = Vec::new();
+    match record.get("remembered") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(listed) => {
+            let Some(listed) = listed.as_array() else {
+                return Saved::Unreadable("it is not a saved Workspace record".into());
+            };
+            if listed.len() > REMEMBERED_LIMIT {
+                return Saved::Unreadable("it remembers more addresses than this app keeps".into());
+            }
+            for value in listed {
+                match Remembered::from_json(value) {
+                    // One address this cannot use makes the record unusable,
+                    // as a listed Workspace does: dropping it would hand back
+                    // an address whose stored data it was keeping apart.
+                    None => return Saved::Unreadable("one of the addresses it remembers is not one this app opens".into()),
+                    Some(known) if remembered.iter().any(|kept: &Remembered| kept.url == known.url) => {
+                        return Saved::Unreadable("it remembers one address twice".into())
+                    }
+                    // An address is listed or remembered, never both: two
+                    // records of one address could disagree about which
+                    // Workspace is there, and nothing may choose between them.
+                    Some(known) if profiles.iter().any(|profile| profile.url == known.url) => {
+                        return Saved::Unreadable("it remembers a Workspace for an address it also lists".into())
+                    }
+                    Some(known) => remembered.push(known),
+                }
+            }
+        }
+    }
+    // A remembered address is something saved, so this is no first launch.
+    if profiles.is_empty() && remembered.is_empty() {
         return Saved::Never;
     }
     let selected = record
@@ -174,7 +279,7 @@ pub fn read(path: &Path) -> Saved {
         .and_then(serde_json::Value::as_str)
         .filter(|id| profiles.iter().any(|profile| profile.id == *id))
         .map(str::to_owned);
-    Saved::Profiles { profiles, selected }
+    Saved::Profiles { profiles, selected, remembered }
 }
 
 /// What the Workspace that answered lets this app do with the address.
@@ -249,6 +354,56 @@ pub fn unusable(saved: &Saved) -> Option<&str> {
     }
 }
 
+/// What to remember after a change to the list. Every address already
+/// remembered stays; a profile that is gone leaves its address remembered,
+/// when a Core there had named a Workspace; and an address a profile now
+/// has is listed rather than remembered.
+///
+/// Why it exists: removing a profile used to drop its `workspaceId` with
+/// it, leaving the address bound to nothing while what the web view stored
+/// for it stayed. The next Core to answer there -- any Core -- was then
+/// opened onto the previous Workspace's conversations, drafts and reading
+/// places. Remembering costs an address and an identifier, and nothing is
+/// cleared to pay for it.
+pub fn remembering(before: &Saved, profiles: &[Profile]) -> Vec<Remembered> {
+    let mut remembered = before.remembered().to_vec();
+    for gone in before.profiles() {
+        if profiles.iter().any(|profile| profile.url == gone.url) {
+            continue;
+        }
+        let Some(workspace_id) = gone.workspace_id.clone() else {
+            // Nothing was ever known about this address, so there is nothing
+            // to protect and nothing to claim.
+            continue;
+        };
+        let known = Remembered { url: gone.url.clone(), workspace_id };
+        // An address already remembered is updated in place: it takes no
+        // further room.
+        match remembered.iter_mut().find(|kept| kept.url == known.url) {
+            Some(kept) => *kept = known,
+            None => remembered.push(known),
+        }
+    }
+    remembered.retain(|known| !profiles.iter().any(|profile| profile.url == known.url));
+    remembered
+}
+
+/// Forget what this remembers about one address, and only that. `None` when
+/// the address is not remembered, so the caller says so rather than
+/// reporting a change it did not make.
+///
+/// What is forgotten is the record of which Workspace was there. Nothing
+/// stored for the address is read, moved or cleared by this -- it cannot be,
+/// from here -- so a Workspace opened there afterwards may still find the
+/// previous one's drafts. That is what makes this a deliberate step of its
+/// own rather than part of removing a profile.
+pub fn forgetting(remembered: &[Remembered], url: &Url) -> Option<Vec<Remembered>> {
+    if !remembered.iter().any(|known| known.url == *url) {
+        return None;
+    }
+    Some(remembered.iter().filter(|known| known.url != *url).cloned().collect())
+}
+
 /// A name for a Workspace nobody has named yet: its host, which is what the
 /// person typed and recognises.
 pub fn name_for(url: &Url) -> String {
@@ -267,23 +422,41 @@ pub fn next_id(profiles: &[Profile]) -> String {
 
 /// Saves `profiles` with `selected` as the one last opened. On an error
 /// nothing is changed: the old record, if any, is still the one read.
-pub fn save(path: &Path, profiles: &[Profile], selected: Option<&str>) -> io::Result<()> {
-    save_with(path, profiles, selected, |staged, path| std::fs::rename(staged, path))
+pub fn save(
+    path: &Path,
+    profiles: &[Profile],
+    selected: Option<&str>,
+    remembered: &[Remembered],
+) -> io::Result<()> {
+    save_with(path, profiles, selected, remembered, |staged, path| std::fs::rename(staged, path))
 }
 
 fn save_with(
     path: &Path,
     profiles: &[Profile],
     selected: Option<&str>,
+    remembered: &[Remembered],
     rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
 ) -> io::Result<()> {
     if profiles.len() > PROFILE_LIMIT {
         return Err(io::Error::other(format!("this app keeps up to {PROFILE_LIMIT} Workspaces")));
     }
+    if remembered.len() > REMEMBERED_LIMIT {
+        return Err(io::Error::other(format!(
+            "this app remembers the Workspace of up to {REMEMBERED_LIMIT} addresses it no longer lists. Nothing was changed. Forget an address it remembers to make room, which forgets only that record of which Workspace was there."
+        )));
+    }
+    if let Some(both) = remembered.iter().find(|known| profiles.iter().any(|profile| profile.url == known.url)) {
+        return Err(io::Error::other(format!(
+            "\u{201C}{}\u{201D} would be both listed and remembered, and the two could disagree about which Workspace is there",
+            both.url
+        )));
+    }
     let record = serde_json::json!({
         "version": 1,
         "profiles": profiles.iter().map(Profile::to_json).collect::<Vec<_>>(),
         "selected": selected,
+        "remembered": remembered.iter().map(Remembered::to_json).collect::<Vec<_>>(),
     });
     let text = record.to_string();
     // Never write what this app could not read back. `read` would answer
@@ -292,6 +465,17 @@ fn save_with(
     // Refusing leaves the old record, which is still the one read.
     if text.len() as u64 > LIMIT {
         return Err(io::Error::other("this record is larger than this app reads back"));
+    }
+    // And checked by doing it, through `read_bytes` -- the very reader a
+    // later launch uses -- rather than by restating that reader's rules
+    // here and keeping the two in step by hand. The size rule above was
+    // copied here while the rest were not, which is how a record this app
+    // could write but not read stayed reachable.
+    match read_bytes(text.as_bytes()) {
+        Saved::Profiles { .. } | Saved::Never => {}
+        Saved::Unreadable(reason) => {
+            return Err(io::Error::other(format!("this app could not read back what it was about to save ({reason})")))
+        }
     }
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder)?;
@@ -350,8 +534,8 @@ mod tests {
             profile("core-1", "Home", "https://one.example.ts.net", Some("w-one")),
             profile("core-2", "Studio", "https://two.example.ts.net:8444", None),
         ];
-        save(&path, &kept, Some("core-2")).unwrap();
-        assert_eq!(read(&path), Saved::Profiles { profiles: kept, selected: Some("core-2".into()) });
+        save(&path, &kept, Some("core-2"), &[]).unwrap();
+        assert_eq!(read(&path), Saved::Profiles { profiles: kept, selected: Some("core-2".into()), remembered: Vec::new() });
         assert!(!path.with_extension("json.new").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -366,8 +550,8 @@ mod tests {
             profile("core-2", "Home", "https://two.example.ts.net", Some("w-two")),
             profile("core-3", "Home again", "https://one.example.ts.net", Some("w-one")),
         ];
-        save(&path, &kept, None).unwrap();
-        let Saved::Profiles { profiles, selected } = read(&path) else { panic!("{:?}", read(&path)) };
+        save(&path, &kept, None, &[]).unwrap();
+        let Saved::Profiles { profiles, selected, .. } = read(&path) else { panic!("{:?}", read(&path)) };
         assert_eq!(profiles, kept);
         assert_eq!(selected, None, "none was opened");
         std::fs::remove_dir_all(dir).unwrap();
@@ -383,6 +567,7 @@ mod tests {
             Saved::Profiles {
                 profiles: vec![profile("core", "one.example.ts.net", "https://one.example.ts.net", None)],
                 selected: Some("core".into()),
+                remembered: Vec::new(),
             },
             "an address saved by an older version is still offered, with no workspace known for it yet"
         );
@@ -393,12 +578,12 @@ mod tests {
     fn a_save_that_cannot_write_keeps_the_old_record() {
         let (dir, path) = folder();
         let before_profiles = vec![profile("core-1", "Home", "https://one.example.ts.net", None)];
-        save(&path, &before_profiles, Some("core-1")).unwrap();
+        save(&path, &before_profiles, Some("core-1"), &[]).unwrap();
         let before = std::fs::read(&path).unwrap();
         std::fs::create_dir(path.with_extension("json.new")).unwrap();
-        assert!(save(&path, &[profile("core-2", "Other", "https://two.example.ts.net", None)], None).is_err());
+        assert!(save(&path, &[profile("core-2", "Other", "https://two.example.ts.net", None)], None, &[]).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);
-        assert_eq!(read(&path), Saved::Profiles { profiles: before_profiles, selected: Some("core-1".into()) });
+        assert_eq!(read(&path), Saved::Profiles { profiles: before_profiles, selected: Some("core-1".into()), remembered: Vec::new() });
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -406,9 +591,9 @@ mod tests {
     fn a_save_whose_rename_fails_keeps_the_old_record_and_removes_what_it_staged() {
         let (dir, path) = folder();
         let before_profiles = vec![profile("core-1", "Home", "https://one.example.ts.net", None)];
-        save(&path, &before_profiles, None).unwrap();
+        save(&path, &before_profiles, None, &[]).unwrap();
         let before = std::fs::read(&path).unwrap();
-        let failed = save_with(&path, &[profile("core-2", "Other", "https://two.example.ts.net", None)], None, |staged, _| {
+        let failed = save_with(&path, &[profile("core-2", "Other", "https://two.example.ts.net", None)], None, &[], |staged, _: &Path| {
             assert!(staged.is_file(), "written whole before the rename");
             Err(io::Error::other("rename refused"))
         });
@@ -424,7 +609,7 @@ mod tests {
         let many: Vec<Profile> = (0..PROFILE_LIMIT + 1)
             .map(|n| profile(&format!("core-{n}"), "Home", &format!("https://n{n}.example.ts.net"), None))
             .collect();
-        let refused = save(&path, &many, None).unwrap_err();
+        let refused = save(&path, &many, None, &[]).unwrap_err();
         assert!(refused.to_string().contains("keeps up to"), "{refused}");
         assert_eq!(read(&path), Saved::Never, "nothing was written");
         std::fs::remove_dir_all(dir).unwrap();
@@ -447,11 +632,11 @@ mod tests {
                 )
             })
             .collect();
-        save(&path, &full, Some("core-0")).unwrap();
+        save(&path, &full, Some("core-0"), &[]).unwrap();
         assert!(std::fs::metadata(&path).unwrap().len() <= LIMIT, "written within what read accepts");
         assert_eq!(
             read(&path),
-            Saved::Profiles { profiles: full, selected: Some("core-0".into()) },
+            Saved::Profiles { profiles: full, selected: Some("core-0".into()), remembered: Vec::new() },
             "read back whole, so no later connect starts from an empty list"
         );
         std::fs::remove_dir_all(dir).unwrap();
@@ -522,7 +707,7 @@ mod tests {
     #[test]
     fn an_empty_list_is_a_first_launch() {
         let (dir, path) = folder();
-        save(&path, &[], None).unwrap();
+        save(&path, &[], None, &[]).unwrap();
         assert_eq!(read(&path), Saved::Never);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -533,6 +718,138 @@ mod tests {
         std::fs::create_dir_all(&path).unwrap();
         let Saved::Unreadable(why) = read(&path) else { panic!("{:?}", read(&path)) };
         assert!(why.starts_with("it could not be read ("), "{why}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn known(address: &str, workspace: &str) -> Remembered {
+        Remembered { url: crate::core_url::parse(address).unwrap(), workspace_id: workspace.into() }
+    }
+
+    #[test]
+    fn removing_a_profile_leaves_its_address_remembered() {
+        let (dir, path) = folder();
+        let home = profile("core-1", "Home", "https://one.example.ts.net", Some("w-one"));
+        save(&path, &[home], Some("core-1"), &[]).unwrap();
+        let before = read(&path);
+
+        // The failure this exists for: the profile went, its workspaceId went
+        // with it, and the address was bound to nothing -- while what the web
+        // view stored for it stayed.
+        let after = remembering(&before, &[]);
+        assert_eq!(after, vec![known("https://one.example.ts.net", "w-one")]);
+        save(&path, &[], None, &after).unwrap();
+        let saved = read(&path);
+        assert_eq!(saved.profiles(), &[]);
+        assert_eq!(saved.workspace_for(&crate::core_url::parse("https://one.example.ts.net").unwrap()), Some("w-one"));
+        // A remembered address is not a first launch: Never here would offer
+        // to save the first Workspace that answers.
+        assert!(!matches!(saved, Saved::Never));
+
+        // And it is no way around the refusal: another Workspace at that
+        // address is still refused, one that cannot be checked still is, and
+        // the one that was there still opens.
+        let address = crate::core_url::parse("https://one.example.ts.net").unwrap();
+        assert_eq!(opening(saved.workspace_for(&address), "w-two"), Opening::Changed);
+        assert_eq!(opening(saved.workspace_for(&address), ""), Opening::Unverified);
+        assert_eq!(opening(saved.workspace_for(&address), "w-one"), Opening::Open(Some("w-one".into())));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_address_nobody_named_leaves_nothing_remembered() {
+        let (dir, path) = folder();
+        let home = profile("core-1", "Home", "https://one.example.ts.net", None);
+        save(&path, &[home], Some("core-1"), &[]).unwrap();
+        // No Core there ever said which Workspace it was, so there is nothing
+        // to protect and nothing is claimed about the address.
+        assert_eq!(remembering(&read(&path), &[]), vec![]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_address_is_listed_or_remembered_and_never_both_on_this_iphone() {
+        let (dir, path) = folder();
+        let home = profile("core-1", "Home", "https://one.example.ts.net", Some("w-one"));
+        let same = vec![known("https://one.example.ts.net", "w-two")];
+        // Writing both is refused: the two could disagree about which
+        // Workspace is there, and nothing may choose between them.
+        let refused = save(&path, &[home.clone()], Some("core-1"), &same).unwrap_err().to_string();
+        assert!(refused.contains("both listed and remembered"), "{refused}");
+        assert_eq!(read(&path), Saved::Never, "nothing was written");
+
+        // Reading such a record refuses it rather than preferring one side.
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            br#"{"version":1,"profiles":[{"id":"core-1","name":"Home","url":"https://one.example.ts.net/","workspaceId":"w-one"}],"selected":"core-1","remembered":[{"url":"https://one.example.ts.net/","workspaceId":"w-two"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(read(&path), Saved::Unreadable("it remembers a Workspace for an address it also lists".into()));
+
+        // A profile taking a remembered address takes the record with it.
+        let (dir2, path2) = folder();
+        save(&path2, &[], None, &same).unwrap();
+        assert_eq!(remembering(&read(&path2), &[home]), vec![]);
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(dir2).unwrap();
+    }
+
+    #[test]
+    fn forgetting_an_address_on_this_iphone_forgets_only_that_one() {
+        let (dir, path) = folder();
+        let two = vec![known("https://one.example.ts.net", "w-one"), known("https://two.example.ts.net", "w-two")];
+        let left = forgetting(&two, &crate::core_url::parse("https://one.example.ts.net").unwrap())
+            .expect("it was remembered");
+        assert_eq!(left, vec![known("https://two.example.ts.net", "w-two")]);
+        // An address this does not remember is not a silent success.
+        assert_eq!(forgetting(&two, &crate::core_url::parse("https://three.example.ts.net").unwrap()), None);
+        // Afterwards the address is unknown again -- the whole effect.
+        save(&path, &[], None, &left).unwrap();
+        assert_eq!(read(&path).workspace_for(&crate::core_url::parse("https://one.example.ts.net").unwrap()), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn remembering_more_addresses_than_this_iphone_keeps_changes_nothing() {
+        let (dir, path) = folder();
+        let full: Vec<Remembered> = (0..REMEMBERED_LIMIT)
+            .map(|n| known(&format!("https://a{n}.example.ts.net"), &format!("w-{n}")))
+            .collect();
+        save(&path, &[], None, &full).expect("the limit itself fits");
+        let before = std::fs::read(&path).unwrap();
+
+        let mut over = full.clone();
+        over.push(known("https://over.example.ts.net", "w-over"));
+        let refused = save(&path, &[], None, &over).unwrap_err().to_string();
+        assert!(refused.contains(&REMEMBERED_LIMIT.to_string()), "{refused}");
+        // Refused, not evicted: dropping the oldest would hand back an
+        // address whose stored data it was keeping apart.
+        assert!(refused.contains("Nothing was changed"), "{refused}");
+        assert!(refused.contains("forgets only that record"), "{refused}");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "the record is as it was");
+
+        // An address already remembered is updated in place and takes no
+        // further room, even at the limit.
+        let mut again = full.clone();
+        again[0] = known("https://a0.example.ts.net", "w-moved");
+        assert_eq!(again.len(), REMEMBERED_LIMIT);
+        save(&path, &[], None, &again).expect("an update takes no further room");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_save_is_checked_by_reading_it_back_through_the_same_reader() {
+        let (dir, path) = folder();
+        // A remembered identifier the reader would reject is refused by the
+        // writer, because the writer asks the reader rather than keeping its
+        // own copy of the rules.
+        let bad = vec![Remembered {
+            url: crate::core_url::parse("https://one.example.ts.net").unwrap(),
+            workspace_id: "w".repeat(WORKSPACE_LIMIT + 1),
+        }];
+        let refused = save(&path, &[], None, &bad).unwrap_err().to_string();
+        assert!(refused.contains("could not read back"), "{refused}");
+        assert_eq!(read(&path), Saved::Never, "nothing was written");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -608,6 +925,7 @@ mod tests {
             unusable(&Saved::Profiles {
                 profiles: vec![profile("core-1", "Home", "https://one.example.ts.net", None)],
                 selected: None,
+                remembered: Vec::new(),
             }),
             None
         );
@@ -642,6 +960,10 @@ mod tests {
                 profile("core-2", "Studio", "https://two.example.ts.net", None),
             ],
             selected: Some("core-1".into()),
+            remembered: vec![Remembered {
+                url: crate::core_url::parse("https://gone.example.ts.net").unwrap(),
+                workspace_id: "w-gone".into(),
+            }],
         };
         let json = saved.to_json();
         assert_eq!(
@@ -652,6 +974,11 @@ mod tests {
                 "profiles": [
                     {"id":"core-1","name":"Home","url":"https://one.example.ts.net/","workspaceId":"w-one"},
                     {"id":"core-2","name":"Studio","url":"https://two.example.ts.net/"},
+                ],
+                // The page is told which addresses are remembered, because
+                // they are why a connection there can be refused.
+                "remembered": [
+                    {"url":"https://gone.example.ts.net/","workspaceId":"w-gone"},
                 ],
             })
         );

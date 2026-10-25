@@ -438,6 +438,89 @@ test('renaming and removing change this iPhone only, and removing asks first', a
   } finally { dom.window.close(); }
 });
 
+const withRemembered = {
+  ...two,
+  remembered: [{ url: 'https://gone.example.ts.net/', workspaceId: 'w-three' }],
+};
+
+test('an address with no workspace saved is shown as remembered, and forgetting it says what stays', async () => {
+  const calls = [];
+  let asked = '';
+  let record = withRemembered;
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'saved_cores') return record;
+    if (command === 'forget_address') {
+      record = { ...withRemembered, remembered: [] };
+      return record;
+    }
+  });
+  try {
+    const document = dom.window.document;
+    const section = document.querySelector('#remembered');
+    assert.equal(section.hidden, false, 'the reason a connection there is refused is visible');
+    const item = document.querySelector('#remembered-list li');
+    assert.match(item.textContent, /gone\.example\.ts\.net/);
+    assert.match(item.textContent, /w-three was here/);
+    // It is not one of the saved Workspaces: nothing offers to open it.
+    assert.equal(document.querySelectorAll('#saved-list li').length, 2);
+    assert.equal(item.querySelector('.saved-open'), null, 'no way to open an address nothing is saved at');
+
+    dom.window.confirm = (text) => {
+      asked = text;
+      return true;
+    };
+    item.querySelector('.saved-forget').click();
+    await settle();
+
+    // What it asks has to be what it does: the stored data stays, another
+    // workspace here may read it, and a separate address is the real remedy.
+    assert.match(asked, /stored for this address stays/i);
+    assert.match(asked, /drafts, reading places and signed-in state are still there/i);
+    assert.match(asked, /may read them/i);
+    assert.match(asked, /does not delete them/i);
+    assert.match(asked, /does not connect to anything/i);
+    assert.match(asked, /address of its own/i);
+    // It must never be dressed up as clearing or resetting the data.
+    assert.doesNotMatch(asked, /clears? (your|the) data|delete the drafts|reset|wipe/i);
+
+    assert.equal(calls.at(-1).command, 'forget_address');
+    assert.equal(calls.at(-1).args.url, 'https://gone.example.ts.net/');
+    assert.equal(document.querySelector('#remembered').hidden, true, 'it is no longer remembered');
+    assert.match(
+      document.querySelector('[role="status"]').textContent,
+      /no longer remembers which workspace was at .*gone.*still there/,
+    );
+  } finally { dom.window.close(); }
+});
+
+test('forgetting an address is not done unconfirmed, and removing a Workspace never forgets one', async () => {
+  const calls = [];
+  const dom = await mount(async (command, args) => {
+    calls.push(command);
+    if (command === 'saved_cores') return withRemembered;
+    if (command === 'remove_core')
+      return { ...withRemembered, selected: null, profiles: withRemembered.profiles.filter((p) => p.id !== args.profile) };
+  });
+  try {
+    const document = dom.window.document;
+    dom.window.confirm = () => false;
+    document.querySelector('#remembered-list li .saved-forget').click();
+    await settle();
+    assert.equal(calls.filter((command) => command === 'forget_address').length, 0);
+    assert.equal(document.querySelectorAll('#remembered-list li').length, 1);
+
+    // Removing a saved Workspace must not forget an address as well: it is a
+    // deliberate second step, never chained onto the first.
+    dom.window.confirm = () => true;
+    document.querySelector('#saved-list li .saved-remove').click();
+    await settle();
+    assert.equal(calls.at(-1), 'remove_core', 'the removal itself went through');
+    assert.equal(calls.filter((command) => command === 'forget_address').length, 0, 'removal forgets no address');
+    assert.equal(document.querySelectorAll('#remembered-list li').length, 1, 'and the address is still remembered');
+  } finally { dom.window.close(); }
+});
+
 test('removing is not done when it is not confirmed', async () => {
   const calls = [];
   const dom = await mount(

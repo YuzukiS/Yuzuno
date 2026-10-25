@@ -7,6 +7,8 @@ const message = document.querySelector('#connection-message');
 const unsaved = document.querySelector('#open-unsaved');
 const savedSection = document.querySelector('#saved-cores');
 const savedList = document.querySelector('#saved-list');
+const rememberedSection = document.querySelector('#remembered');
+const rememberedList = document.querySelector('#remembered-list');
 const identity = document.querySelector('#identity-check');
 const identityText = document.querySelector('#identity-text');
 const identityCancel = document.querySelector('#identity-cancel');
@@ -23,6 +25,7 @@ function busy(on) {
   nameField.disabled = on;
   unsaved.disabled = on;
   for (const control of savedList.querySelectorAll('button')) control.disabled = on;
+  for (const control of rememberedList.querySelectorAll('button')) control.disabled = on;
 }
 
 // What "Open without saving" opens: the Workspace that just answered, while
@@ -115,6 +118,61 @@ function drawSaved(saved) {
     item.append(open, rename, remove);
     savedList.append(item);
   }
+  drawRemembered(saved);
+}
+
+// Addresses with no profile whose Workspace this iPhone still remembers.
+// They are shown because they are the reason a connection there can be
+// refused, and a refusal whose cause is invisible looks like a fault.
+function drawRemembered(saved) {
+  const addresses = saved?.remembered ?? [];
+  rememberedSection.hidden = addresses.length === 0;
+  rememberedList.replaceChildren();
+  for (const known of addresses) {
+    const item = document.createElement('li');
+    item.append(Object.assign(document.createElement('span'), { className: 'saved-url', textContent: known.url }));
+    item.append(
+      Object.assign(document.createElement('span'), {
+        className: 'saved-workspace',
+        textContent: `workspace ${known.workspaceId} was here`,
+      }),
+    );
+    const forget = document.createElement('button');
+    forget.type = 'button';
+    forget.className = 'saved-forget';
+    forget.textContent = 'Forget';
+    forget.setAttribute('aria-label', `Forget which workspace was at ${known.url}`);
+    forget.addEventListener('click', () => forgetAddress(known));
+    item.append(forget);
+    rememberedList.append(item);
+  }
+}
+
+// Forgetting which Workspace was at an address, and nothing else. A step of
+// its own on purpose: never part of removing a workspace, it connects to
+// nothing, and it clears nothing. What it says has to be exactly what it
+// does -- the stored data stays, and the next workspace to answer there may
+// read it.
+async function forgetAddress(known) {
+  const sure = window.confirm(
+    `Forget which workspace was at ${known.url}?\n\n` +
+      `This iPhone will stop remembering that workspace ${known.workspaceId} was there, so the next workspace ` +
+      'that answers at this address will be opened.\n\n' +
+      'What is stored for this address stays. Drafts, reading places and signed-in state are still there, and a ' +
+      'workspace opened here afterwards may read them. This does not delete them, and does not connect to anything.\n\n' +
+      'To keep a workspace apart from them, give it an address of its own instead.',
+  );
+  if (!sure) return;
+  busy(true);
+  try {
+    drawSaved(await invoke('forget_address', { url: known.url }));
+    show(
+      `This iPhone no longer remembers which workspace was at ${known.url}. What is stored for that address is still there.`,
+    );
+  } catch (error) {
+    show(String(error), true);
+  }
+  busy(false);
 }
 
 async function renameProfile(profile) {
@@ -135,7 +193,8 @@ async function removeProfile(profile) {
   // What removing does, and what it does not, before it is done.
   const sure = window.confirm(
     `Remove “${profile.name}” from this iPhone?\n\n` +
-      'This forgets its address here. It changes nothing on the workspace, and nothing it is doing stops.',
+      'This takes it off the list here. It changes nothing on the workspace, and nothing it is doing stops.\n\n' +
+      'What is stored for its address is not cleared, and this iPhone goes on remembering which workspace was there, so a different one is not opened onto it. That is listed separately and can be forgotten on its own.',
   );
   if (!sure) return;
   busy(true);
