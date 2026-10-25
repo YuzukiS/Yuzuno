@@ -119,13 +119,16 @@ async fn connect_core(
     // Two labels at this address recording different Workspaces: nothing
     // may choose between them, so this address is refused and nothing is
     // selected, written or navigated to. The rest of the list still works,
-    // and removing either label clears it -- which is why such a record is
-    // kept readable instead of refused whole.
+    // which is why such a record is kept readable instead of refused whole.
+    // Removing a label does *not* clear it -- that would make the survivor's
+    // identity the address's own. Forgetting what is recorded for the
+    // address does, and the person asks for that.
     if saved.conflicted(&core) {
         return Ok(serde_json::json!({
             "url": core.as_str(),
             "opened": false,
             "identity": "conflict",
+            "address": core.as_str(),
             "profileName": known
                 .as_ref()
                 .map(|known| known.name.clone())
@@ -162,9 +165,12 @@ async fn connect_core(
         core_profiles::Opening::Unverified => return refusal("unverified"),
         core_profiles::Opening::Unkeepable => return refusal("unkeepable"),
     };
-    *state.selected.lock().map_err(|_| "Connection state unavailable.".to_owned())? = Some(core.clone());
-    // What is written down after opening it: the profile asked for, updated,
-    // or a new one. A Workspace is never written twice under one profile.
+    // What would be written down after opening it: the profile asked for,
+    // updated, or a new one. A Workspace is never written twice under one
+    // profile. Built first and checked before anything is selected, written
+    // or navigated to -- this command retargets a profile, so it can move a
+    // label off an address whose labels disagree, and that would leave the
+    // address with one identity and the protection silently gone.
     let selected_id = match known {
         Some(known) => {
             if let Some(kept) = profiles.iter_mut().find(|kept| kept.id == known.id) {
@@ -190,7 +196,26 @@ async fn connect_core(
             id
         }
     };
-    let (profiles, remembered) = core_profiles::settle(&saved, &profiles);
+    // The same decision every other write goes through, and the only way to
+    // a settled list: `committing` will not hand one back without it. A
+    // semantic refusal is a refusal to open, not a save that failed --
+    // answering `opened: true` with `saved: false` would offer to open it
+    // without saving, which is the very thing being refused.
+    let (profiles, remembered) = match core_profiles::committing(&saved, &profiles, None) {
+        Ok(settled) => settled,
+        Err(address) => {
+            return Ok(serde_json::json!({
+                "url": core.as_str(),
+                "opened": false,
+                "identity": "conflict",
+                "address": address.as_str(),
+                "profileName": named,
+                "savedWorkspaceId": serde_json::Value::Null,
+                "workspaceId": serde_json::Value::Null,
+            }))
+        }
+    };
+    *state.selected.lock().map_err(|_| "Connection state unavailable.".to_owned())? = Some(core.clone());
     let written = saved_core_file(&app)
         .ok_or_else(|| std::io::Error::other("this app has no data folder to keep it in"))
         .and_then(|file| core_profiles::save(&file, &profiles, Some(&selected_id), &remembered));
@@ -229,7 +254,10 @@ fn rename_core(app: AppHandle, profile: String, name: String) -> Result<serde_js
         return Err("That Workspace is not saved on this iPhone.".into());
     };
     kept.name = name.to_owned();
-    let (profiles, remembered) = core_profiles::settle(&saved, &profiles);
+    let (profiles, remembered) = core_profiles::committing(&saved, &profiles, None)
+        .map_err(|address| format!(
+            "This iPhone has two saved workspaces at {address} that record different workspaces, so it cannot tell which one is there. Forget what it has recorded for that address first; that changes no other address, and clears nothing stored for this one."
+        ))?;
     write_profiles(&app, &profiles, selected.as_deref(), &remembered)
 }
 
@@ -248,7 +276,10 @@ fn remove_core(app: AppHandle, profile: String) -> Result<serde_json::Value, Str
     }
     profiles.retain(|kept| kept.id != profile);
     let selected = selected.filter(|id| *id != profile);
-    let (profiles, remembered) = core_profiles::settle(&saved, &profiles);
+    let (profiles, remembered) = core_profiles::committing(&saved, &profiles, None)
+        .map_err(|address| format!(
+            "This iPhone has two saved workspaces at {address} that record different workspaces, so it cannot tell which one is there. Forget what it has recorded for that address first; that changes no other address, and clears nothing stored for this one."
+        ))?;
     write_profiles(&app, &profiles, selected.as_deref(), &remembered)
 }
 
@@ -280,13 +311,19 @@ fn forget_address(app: AppHandle, url: String) -> Result<serde_json::Value, Stri
     // address. Either it is an address with no profile left, or it is one
     // whose profiles disagree. Both keep every profile, name and address,
     // and neither clears a byte of what is stored for the address.
-    let (profiles, remembered) = if saved.conflicted(&address) {
-        core_profiles::forget_identities(&saved, &address)
-    } else if let Some(remembered) = core_profiles::forgetting(saved.remembered(), &address) {
-        (saved.profiles().to_vec(), remembered)
+    let asked = if saved.conflicted(&address) {
+        core_profiles::forget_identities(&saved, &address).0
+    } else if core_profiles::forgetting(saved.remembered(), &address).is_some() {
+        saved.profiles().to_vec()
     } else {
         return Err("This iPhone does not remember a workspace for that address.".into());
     };
+    // Through the same door as every other change, naming the address being
+    // forgotten so that nothing carries its Workspace back -- which is what
+    // happened when this wrote its own list: the address was re-bound in the
+    // same breath as it was forgotten, and the write was then refused.
+    let (profiles, remembered) = core_profiles::committing(&saved, &asked, Some(&address))
+        .map_err(|at| format!("This iPhone could not forget that address because the workspaces saved at {at} disagree. Nothing was changed."))?;
     write_profiles(&app, &profiles, selected.as_deref(), &remembered)
 }
 

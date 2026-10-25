@@ -177,8 +177,10 @@ impl Saved {
     /// turned a working list of up to sixteen Workspaces into one that
     /// every command refused -- connect, rename, remove and forget alike --
     /// with no way back inside the app. Keeping the list readable means the
-    /// one address is refused and the rest still work, and removing either
-    /// label clears it.
+    /// one address is refused and the rest still work. Removing a label does
+    /// not clear it -- see `keeps_conflicts`, which refuses that -- because
+    /// the survivor's identity would silently become the address's.
+    /// `forget_identities` clears it, and the person asks for that.
     pub fn conflicted(&self, url: &Url) -> bool {
         let mut seen: Option<&str> = None;
         for workspace in self
@@ -422,7 +424,7 @@ pub fn unusable(saved: &Saved) -> Option<&str> {
 ///   address stay in agreement.
 ///
 /// Nothing is cleared to pay for any of this.
-pub fn settle(before: &Saved, profiles: &[Profile]) -> (Vec<Profile>, Vec<Remembered>) {
+fn settle(before: &Saved, profiles: &[Profile], forgetting: Option<&Url>) -> (Vec<Profile>, Vec<Remembered>) {
     let mut profiles = profiles.to_vec();
     let mut remembered = before.remembered().to_vec();
 
@@ -444,6 +446,12 @@ pub fn settle(before: &Saved, profiles: &[Profile]) -> (Vec<Profile>, Vec<Rememb
     }
 
     for (url, workspace) in knew {
+        if forgetting == Some(&url) {
+            // This address is being forgotten on purpose. Carrying its
+            // Workspace onto a label here, or remembering it, would undo the
+            // very thing that was asked for.
+            continue;
+        }
         let still_listed: Vec<usize> = profiles
             .iter()
             .enumerate()
@@ -468,6 +476,26 @@ pub fn settle(before: &Saved, profiles: &[Profile]) -> (Vec<Profile>, Vec<Rememb
     // An address is listed or remembered, never both.
     remembered.retain(|known| !profiles.iter().any(|profile| profile.url == known.url));
     (profiles, remembered)
+}
+
+/// What to write after a change, or the address that forbids it.
+///
+/// The only way to a settled list from outside this module, so the check
+/// cannot be skipped by a caller that forgets it. `connect_core` did exactly
+/// that: it built its own list, set the selection and saved directly, so the
+/// one rule that protects a disputed address was never consulted on the path
+/// that can retarget a label off one.
+/// `forgetting` names the one address whose recorded Workspaces are being
+/// deliberately forgotten, so nothing carries them back. For every other
+/// change it is `None`.
+pub fn committing(
+    before: &Saved,
+    profiles: &[Profile],
+    forgetting: Option<&Url>,
+) -> Result<(Vec<Profile>, Vec<Remembered>), Url> {
+    let (profiles, remembered) = settle(before, profiles, forgetting);
+    keeps_conflicts(before, &profiles)?;
+    Ok((profiles, remembered))
 }
 
 /// How many *different* Workspaces this record holds for `url`.
@@ -887,7 +915,7 @@ mod tests {
         // The failure this exists for: the profile went, its workspaceId went
         // with it, and the address was bound to nothing -- while what the web
         // view stored for it stayed.
-        let (_, after) = settle(&before, &[]);
+        let (_, after) = settle(&before, &[], None);
         assert_eq!(after, vec![known("https://one.example.ts.net", "w-one")]);
         save(&path, &[], None, &after).unwrap();
         let saved = read(&path);
@@ -928,7 +956,7 @@ mod tests {
         // And removing the label that carried it does not lose it: the
         // address is still listed, so it cannot be remembered, and the
         // remaining label takes the Workspace the address is known to hold.
-        let (profiles, remembered) = settle(&saved, &[unnamed]);
+        let (profiles, remembered) = settle(&saved, &[unnamed], None);
         assert_eq!(remembered, vec![], "still listed, so not remembered");
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].workspace_id.as_deref(), Some("w-one"), "the address kept its Workspace");
@@ -1007,7 +1035,7 @@ mod tests {
             "whichever label moves, the address it left keeps its protection"
         );
         // And `settle` neither flattens it nor hands either label a binding.
-        let (profiles, remembered) = settle(&saved, saved.profiles());
+        let (profiles, remembered) = settle(&saved, saved.profiles(), None);
         assert!(read(record_bytes(&path, &profiles, &remembered)).conflicted(&here), "settle keeps it");
         assert_eq!(remembered, vec![], "nothing is remembered for a listed address");
 
@@ -1032,6 +1060,31 @@ mod tests {
     }
 
     #[test]
+    fn the_only_way_to_a_settled_list_is_through_the_check() {
+        // `settle` is not reachable outside this module, so a caller cannot
+        // get a list to write without the disputed-address check. This is
+        // what `connect_core` got wrong: it built its own list, selected and
+        // saved directly, and the check never ran on the one path that can
+        // point a label away from a disputed address.
+        let (dir, path) = folder();
+        let a = profile("core-1", "Home", "https://one.example.ts.net", Some("w-a"));
+        let b = profile("core-2", "Home again", "https://one.example.ts.net", Some("w-b"));
+        let here = core_at("https://one.example.ts.net");
+        let saved = read(record_bytes(&path, &[a.clone(), b.clone()], &[]));
+
+        // Retargeting one away is what connect_core does; it is refused here.
+        let moved = profile("core-2", "Home again", "https://three.example.ts.net", Some("w-b"));
+        assert_eq!(committing(&saved, &[a.clone(), moved], None), Err(here.clone()));
+        // So is dropping one.
+        assert_eq!(committing(&saved, &[a.clone()], None), Err(here.clone()));
+        // Keeping both is fine, and so is forgetting the address outright.
+        assert!(committing(&saved, &[a.clone(), b.clone()], None).is_ok());
+        let (forgotten, _) = forget_identities(&saved, &here);
+        assert!(committing(&saved, &forgotten, Some(&here)).is_ok(), "the explicit way out still writes");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn a_damaged_record_is_still_a_damaged_record() {
         // A semantic conflict is not a broken file and must not be dressed as
         // one; a broken file keeps the protection it always had.
@@ -1051,7 +1104,7 @@ mod tests {
         save(&path, &[home], Some("core-1"), &[]).unwrap();
         // No Core there ever said which Workspace it was, so there is nothing
         // to protect and nothing is claimed about the address.
-        assert_eq!(settle(&read(&path), &[]).1, vec![]);
+        assert_eq!(settle(&read(&path), &[], None).1, vec![]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1078,7 +1131,7 @@ mod tests {
         // A profile taking a remembered address takes the record with it.
         let (dir2, path2) = folder();
         save(&path2, &[], None, &same).unwrap();
-        assert_eq!(settle(&read(&path2), &[home]).1, vec![]);
+        assert_eq!(settle(&read(&path2), &[home], None).1, vec![]);
         std::fs::remove_dir_all(dir).unwrap();
         std::fs::remove_dir_all(dir2).unwrap();
     }

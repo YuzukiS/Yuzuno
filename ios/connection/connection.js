@@ -124,8 +124,29 @@ function drawSaved(saved) {
 // Addresses with no profile whose Workspace this iPhone still remembers.
 // They are shown because they are the reason a connection there can be
 // refused, and a refusal whose cause is invisible looks like a fault.
+// Addresses whose saved workspaces disagree about which workspace is there.
+// Derived from the list itself, every time it is drawn: the app refuses such
+// an address, and the way out is to forget what it recorded for it, so there
+// has to be something here to press. They are not written into `remembered`
+// -- an address is listed or remembered, never both -- and nothing new is
+// kept on disk for them.
+function disputed(profiles) {
+  const byAddress = new Map();
+  for (const profile of profiles) {
+    if (!profile.workspaceId) continue;
+    const seen = byAddress.get(profile.url) ?? new Set();
+    seen.add(profile.workspaceId);
+    byAddress.set(profile.url, seen);
+  }
+  return [...byAddress].filter(([, seen]) => seen.size > 1).map(([url]) => url);
+}
+
 function drawRemembered(saved) {
-  const addresses = saved?.remembered ?? [];
+  const profiles = saved?.savedError ? [] : saved?.profiles ?? [];
+  const addresses = [
+    ...disputed(profiles).map((url) => ({ url, disputed: true })),
+    ...(saved?.remembered ?? []),
+  ];
   rememberedSection.hidden = addresses.length === 0;
   rememberedList.replaceChildren();
   for (const known of addresses) {
@@ -134,7 +155,9 @@ function drawRemembered(saved) {
     item.append(
       Object.assign(document.createElement('span'), {
         className: 'saved-workspace',
-        textContent: `workspace ${known.workspaceId} was here`,
+        textContent: known.disputed
+          ? 'two saved workspaces here record different workspaces'
+          : `workspace ${known.workspaceId} was here`,
       }),
     );
     const forget = document.createElement('button');
@@ -142,6 +165,7 @@ function drawRemembered(saved) {
     forget.className = 'saved-forget';
     forget.textContent = 'Forget';
     forget.setAttribute('aria-label', `Forget which workspace was at ${known.url}`);
+    if (known.disputed) item.dataset.disputed = 'true';
     forget.addEventListener('click', () => forgetAddress(known));
     item.append(forget);
     rememberedList.append(item);
@@ -247,11 +271,14 @@ async function connect() {
       } else if (result.identity === 'conflict') {
         // Removing one of them is not the way out: that would make the other
         // one's workspace the address's, and nobody knows whose stored data
-        // is there. Forgetting what is recorded for the address is.
+        // is there. Forgetting what is recorded for the address is -- and the
+        // address may not be the one just typed, when a saved workspace was
+        // about to be pointed away from a disputed one.
         show(
-          `This iPhone has two saved workspaces at ${result.url} that record different workspaces, so it cannot ` +
-            'tell which one is there and did not open it. Forget what it has recorded for that address, below; ' +
-            'that keeps both of them and clears nothing stored for the address.',
+          `This iPhone has two saved workspaces at ${result.address ?? result.url} that record different ` +
+            'workspaces, so it cannot tell which one is there, and nothing was opened or changed. Forget what it ' +
+            'has recorded for that address, under “Addresses this iPhone remembers” below; that keeps both of ' +
+            'them and clears nothing stored for the address.',
           true,
         );
       } else if (result.identity === 'unkeepable') {
