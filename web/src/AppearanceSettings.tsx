@@ -30,61 +30,90 @@ import {
   readAppearanceFile,
   type AppearanceField,
   type AppearanceFileContents,
+  type FileRefusal,
 } from "./appearance-file";
-import { SaveStatus } from "./SaveStatus";
+import { strings, useLanguage, type Language } from "./i18n";
+import { SaveStatus, saveRefusalReason } from "./SaveStatus";
+import type { SaveOutcome } from "./device-storage";
 
-const themes: {
-  value: ThemePreference;
-  label: string;
-  note: string;
-  icon: typeof Sun;
-}[] = [
-  { value: "light", label: "Light", note: "Daylight", icon: Sun },
-  { value: "dark", label: "Dark", note: "Low light", icon: Moon },
-  {
-    value: "system",
-    label: "System",
-    note: "Follow your device",
-    icon: Monitor,
+// Appearance's words (T-189), in the interface language. Values and the file
+// keep their ids ("garden", "dark"); only how they are named changes.
+const text = strings({
+  title: "Appearance",
+  intro: "Make yourself comfortable. Changes apply as you choose and stay on this device.",
+  current: "In effect now",
+  compactList: " · Compact list",
+  palette: "Palette",
+  palettes: { garden: "Garden", yuzu: "Yuzu", graphite: "Graphite", pine: "Pine", sunroom: "Sunroom" } as Record<Palette, string>,
+  theme: "Theme",
+  themes: { light: ["Light", "Daylight"], dark: ["Dark", "Low light"], system: ["System", "Follow your device"] } as Record<ThemePreference, [string, string]>,
+  textSize: "Text size",
+  textSizeHelp: "Conversation text, controls and file previews grow together. Below 14 px only conversation text gets smaller, so controls stay legible.",
+  agentList: "Agent list",
+  agentListHelp: "Each Agent's report or update stays in its conversation either way, and anything that needs you still shows.",
+  agentLists: {
+    detailed: ["Detailed", "The latest report or update under each name"],
+    compact: ["Compact", "Name and status only"],
+  } as Record<AgentListDensity, [string, string]>,
+  projectGroups: "Project groups",
+  projectGroupsHelp: "How the Agent list sets projects apart when it shows All projects. Each group folds, and its + starts a new agent in it.",
+  groups: {
+    headers: ["Headers", "Small titles and a thin line"],
+    cards: ["Cards", "A light card for each project"],
+    bands: ["Colour bands", "A thin project colour beside each"],
+    none: ["No grouping", "One list, as before"],
+  } as Record<ProjectGroupStyle, [string, string]>,
+  dock: "Conversation dock",
+  dockHelp: "The most of each the left edge of a conversation shows, what is running or queued first. 0 hides that group there; the Jobs panel still lists everything.",
+  docks: { jobs: "Local jobs", actions: "GitHub Actions", subAgents: "Sub-agents" } as Record<keyof DockLimits, string>,
+  turnDock: "Turn dock",
+  turnDockHelp: "The right edge of a conversation: how many turns around the one you are reading show their number, and how many short bars lead on to further turns on each side. 0 numbered turns hides the dock; scrolling and Back to latest still work.",
+  numbered: "Numbered turns",
+  bars: "Bars on each side",
+  hidden: "Hidden",
+  none: "None",
+  preview: "A little preview",
+}, {
+  title: "外观",
+  intro: "让自己用得舒服。更改在你选择时生效，并保存在此设备上。",
+  current: "当前生效",
+  compactList: " · 紧凑列表",
+  palette: "配色",
+  palettes: { garden: "花园", yuzu: "柚子", graphite: "石墨", pine: "松林", sunroom: "阳光房" },
+  theme: "主题",
+  themes: { light: ["浅色", "日间"], dark: ["深色", "弱光环境"], system: ["系统", "跟随你的设备"] },
+  textSize: "文字大小",
+  textSizeHelp: "会话文字、控件和文件预览一起变大。小于 14 px 时只有会话文字变小，控件保持清晰可读。",
+  agentList: "Agent 列表",
+  agentListHelp: "无论选哪种，每个 Agent 的报告或更新都留在它的会话中，需要你处理的事情也照样显示。",
+  agentLists: { detailed: ["详细", "每个名称下显示最新的报告或更新"], compact: ["紧凑", "只显示名称和状态"] },
+  projectGroups: "项目分组",
+  projectGroupsHelp: "Agent 列表显示 All projects 时如何区分各个项目。每组都可以折叠，组上的 + 会在其中新建 Agent。",
+  groups: {
+    headers: ["标题", "小标题加一条细线"],
+    cards: ["卡片", "每个项目一张浅色卡片"],
+    bands: ["色带", "每项旁边一条细细的项目颜色"],
+    none: ["不分组", "一个列表，与以前一样"],
   },
+  dock: "会话侧栏",
+  dockHelp: "会话左侧每类最多显示几项，正在运行或排队的排在前面。0 会在那里隐藏这一组；Jobs 面板仍会列出全部。",
+  docks: { jobs: "本地 Job", actions: "GitHub Actions", subAgents: "子 Agent" },
+  turnDock: "Turn 栏",
+  turnDockHelp: "会话右侧：你正在阅读的 Turn 周围有几个显示编号，以及两侧各有几条通往更多 Turn 的短条。编号 Turn 为 0 时隐藏此栏；滚动和 Back to latest 仍然可用。",
+  numbered: "编号 Turn",
+  bars: "每侧短条",
+  hidden: "隐藏",
+  none: "无",
+  preview: "小小预览",
+});
+const themeIcons: Record<ThemePreference, typeof Sun> = { light: Sun, dark: Moon, system: Monitor };
+const themeOrder: ThemePreference[] = ["light", "dark", "system"];
+const projectGroupOrder: ProjectGroupStyle[] = ["headers", "cards", "bands", "none"];
+const agentLists: { value: AgentListDensity; icon: typeof Sun; rows: number }[] = [
+  { value: "detailed", icon: Rows2, rows: 2 },
+  { value: "compact", icon: Rows4, rows: 3 },
 ];
-const projectGroupChoices: {
-  value: ProjectGroupStyle;
-  label: string;
-  note: string;
-}[] = [
-  { value: "headers", label: "Headers", note: "Small titles and a thin line" },
-  { value: "cards", label: "Cards", note: "A light card for each project" },
-  { value: "bands", label: "Colour bands", note: "A thin project colour beside each" },
-  { value: "none", label: "No grouping", note: "One list, as before" },
-];
-const agentLists: {
-  value: AgentListDensity;
-  label: string;
-  note: string;
-  icon: typeof Sun;
-  rows: number;
-}[] = [
-  {
-    value: "detailed",
-    label: "Detailed",
-    note: "The latest report or update under each name",
-    icon: Rows2,
-    rows: 2,
-  },
-  {
-    value: "compact",
-    label: "Compact",
-    note: "Name and status only",
-    icon: Rows4,
-    rows: 3,
-  },
-];
-const dockLimits: { key: keyof DockLimits; label: string }[] = [
-  { key: "jobs", label: "Local jobs" },
-  { key: "actions", label: "GitHub Actions" },
-  { key: "subAgents", label: "Sub-agents" },
-];
+const dockOrder: (keyof DockLimits)[] = ["jobs", "actions", "subAgents"];
 /** One count on a slider, its name before it and its value, or what 0
  * means, after. */
 function CountSlider({
@@ -122,14 +151,6 @@ function CountSlider({
   );
 }
 
-const paletteLabels: Record<Palette, string> = {
-  garden: "Garden",
-  yuzu: "Yuzu",
-  graphite: "Graphite",
-  pine: "Pine",
-  sunroom: "Sunroom",
-};
-
 /** Appearance, one category of Settings: how Yuzuno looks on this device.
  * It shows the choice in effect, which is the saved one unless this device
  * refused to save it (T-187); then it says so, keeps the choice, and offers
@@ -138,10 +159,11 @@ const paletteLabels: Record<Palette, string> = {
 export function AppearanceSection() {
   const appearance = useAppearance();
   const save = useAppearanceSave();
+  const t = text(useLanguage());
   function update(next: Partial<Appearance>) {
     saveAppearance({ ...appearance, ...next });
   }
-  const theme = themes.find((t) => t.value === appearance.theme)?.label;
+  const theme = t.themes[appearance.theme][0];
   return (
     <section
       className="settings-section appearance-settings"
@@ -149,20 +171,17 @@ export function AppearanceSection() {
     >
       <header className="settings-section-heading">
         <div>
-          <h3 id="settings-appearance-title">Appearance</h3>
-          <p>
-            Make yourself comfortable. Changes apply as you choose and stay
-            on this device.
-          </p>
+          <h3 id="settings-appearance-title">{t.title}</h3>
+          <p>{t.intro}</p>
         </div>
-        <span className="settings-current" title="In effect now">
-          {paletteLabels[appearance.palette]} · {theme} · {appearance.fontSize} px
-          {appearance.agentList === "compact" && " · Compact list"}
+        <span className="settings-current" title={t.current}>
+          {t.palettes[appearance.palette]} · {theme} · {appearance.fontSize} px
+          {appearance.agentList === "compact" && t.compactList}
         </span>
       </header>
       <div className="settings-group appearance-group">
         <fieldset className="appearance-field">
-          <legend>Palette</legend>
+          <legend>{t.palette}</legend>
           <div className="palette-options">
             {palettes.map((palette) => (
               <label
@@ -182,7 +201,7 @@ export function AppearanceSection() {
                   <i />
                   <i />
                 </span>
-                <span>{paletteLabels[palette]}</span>
+                <span>{t.palettes[palette]}</span>
                 <Check
                   size={13}
                   className="palette-selected"
@@ -193,9 +212,12 @@ export function AppearanceSection() {
           </div>
         </fieldset>
         <fieldset className="appearance-field">
-          <legend>Theme</legend>
+          <legend>{t.theme}</legend>
           <div className="theme-options">
-            {themes.map(({ value, label, note, icon: Icon }) => (
+            {themeOrder.map((value) => {
+              const [label, note] = t.themes[value];
+              const Icon = themeIcons[value];
+              return (
               <label
                 key={value}
                 className={`theme-choice theme-choice-${value}`}
@@ -219,15 +241,13 @@ export function AppearanceSection() {
                 </span>
                 <small>{note}</small>
               </label>
-            ))}
+              );
+            })}
           </div>
         </fieldset>
         <fieldset className="appearance-field">
-          <legend>Text size</legend>
-          <p className="appearance-help">
-            Conversation text, controls and file previews grow together. Below
-            14 px only conversation text gets smaller, so controls stay legible.
-          </p>
+          <legend>{t.textSize}</legend>
+          <p className="appearance-help">{t.textSizeHelp}</p>
           <div className="font-size-slider">
             <span className="font-size-end" aria-hidden="true" style={{ fontSize: MIN_FONT_SIZE }}>
               Aa
@@ -239,7 +259,7 @@ export function AppearanceSection() {
               max={MAX_FONT_SIZE}
               step={1}
               value={appearance.fontSize}
-              aria-label="Text size"
+              aria-label={t.textSize}
               aria-valuetext={`${appearance.fontSize} px`}
               onChange={(event) => update({ fontSize: Number(event.target.value) })}
             />
@@ -252,13 +272,12 @@ export function AppearanceSection() {
           </div>
         </fieldset>
         <fieldset className="appearance-field">
-          <legend>Agent list</legend>
-          <p className="appearance-help">
-            Each Agent's report or update stays in its conversation either
-            way, and anything that needs you still shows.
-          </p>
+          <legend>{t.agentList}</legend>
+          <p className="appearance-help">{t.agentListHelp}</p>
           <div className="agent-list-options">
-            {agentLists.map(({ value, label, note, icon: Icon, rows }) => (
+            {agentLists.map(({ value, icon: Icon, rows }) => {
+              const [label, note] = t.agentLists[value];
+              return (
               <label
                 key={value}
                 className={`theme-choice agent-list-choice agent-list-choice-${value}`}
@@ -286,17 +305,17 @@ export function AppearanceSection() {
                 </span>
                 <small>{note}</small>
               </label>
-            ))}
+              );
+            })}
           </div>
         </fieldset>
         <fieldset className="appearance-field">
-          <legend>Project groups</legend>
-          <p className="appearance-help">
-            How the Agent list sets projects apart when it shows All
-            projects. Each group folds, and its + starts a new agent in it.
-          </p>
+          <legend>{t.projectGroups}</legend>
+          <p className="appearance-help">{t.projectGroupsHelp}</p>
           <div className="project-group-options">
-            {projectGroupChoices.map(({ value, label, note }) => (
+            {projectGroupOrder.map((value) => {
+              const [label, note] = t.groups[value];
+              return (
               <label
                 key={value}
                 className={`theme-choice project-group-choice project-group-choice-${value}`}
@@ -332,25 +351,22 @@ export function AppearanceSection() {
                 </span>
                 <small>{note}</small>
               </label>
-            ))}
+              );
+            })}
           </div>
         </fieldset>
         <fieldset className="appearance-field">
-          <legend>Conversation dock</legend>
-          <p className="appearance-help">
-            The most of each the left edge of a conversation shows, what is
-            running or queued first. 0 hides that group there; the Jobs panel
-            still lists everything.
-          </p>
+          <legend>{t.dock}</legend>
+          <p className="appearance-help">{t.dockHelp}</p>
           <div className="dock-limits">
-            {dockLimits.map(({ key, label }) => (
+            {dockOrder.map((key) => (
               <CountSlider
                 key={key}
                 name={`appearance-dock-${key}`}
-                label={label}
+                label={t.docks[key]}
                 value={appearance.dock[key]}
                 max={MAX_DOCK_LIMIT}
-                zero="Hidden"
+                zero={t.hidden}
                 onChange={(value) =>
                   update({ dock: { ...appearance.dock, [key]: value } })
                 }
@@ -359,30 +375,25 @@ export function AppearanceSection() {
           </div>
         </fieldset>
         <fieldset className="appearance-field">
-          <legend>Turn dock</legend>
-          <p className="appearance-help">
-            The right edge of a conversation: how many turns around the one
-            you are reading show their number, and how many short bars lead
-            on to further turns on each side. 0 numbered turns hides the
-            dock; scrolling and Back to latest still work.
-          </p>
+          <legend>{t.turnDock}</legend>
+          <p className="appearance-help">{t.turnDockHelp}</p>
           <div className="dock-limits">
             <CountSlider
               name="appearance-turn-numbers"
-              label="Numbered turns"
+              label={t.numbered}
               value={appearance.turnDock.numbers}
               max={MAX_TURN_NUMBERS}
-              zero="Hidden"
+              zero={t.hidden}
               onChange={(numbers) =>
                 update({ turnDock: { ...appearance.turnDock, numbers } })
               }
             />
             <CountSlider
               name="appearance-turn-bars"
-              label="Bars on each side"
+              label={t.bars}
               value={appearance.turnDock.bars}
               max={MAX_TURN_BARS}
-              zero="None"
+              zero={t.none}
               onChange={(bars) =>
                 update({ turnDock: { ...appearance.turnDock, bars } })
               }
@@ -391,8 +402,9 @@ export function AppearanceSection() {
         </fieldset>
         <div className="appearance-preview">
           <span className="appearance-preview-label">
-            <Type size={13} /> A little preview
+            <Type size={13} /> {t.preview}
           </span>
+          {/* Sample text, in the languages it shows; never translated. */}
           <p>Room for your next idea.</p>
           <p lang="zh-CN">让每个想法，都有舒服的落脚处。</p>
           <code>const next = "something good";</code>
@@ -412,38 +424,128 @@ export function AppearanceSection() {
   );
 }
 
-export const fieldLabels: Record<AppearanceField, string> = {
-  palette: "Palette",
-  theme: "Theme",
-  fontSize: "Text size",
-  agentList: "Agent list",
-  projectGroups: "Project groups",
-  "dock.jobs": "Conversation dock: Local jobs",
-  "dock.actions": "Conversation dock: GitHub Actions",
-  "dock.subAgents": "Conversation dock: Sub-agents",
-  "turnDock.numbers": "Turn dock: Numbered turns",
-  "turnDock.bars": "Turn dock: Bars on each side",
-};
+/** A setting's name as the controls above name it, in `language`. */
+export function fieldLabel(field: AppearanceField, language: Language = "en"): string {
+  const t = text(language);
+  const parts: Record<AppearanceField, string> = {
+    palette: t.palette,
+    theme: t.theme,
+    fontSize: t.textSize,
+    agentList: t.agentList,
+    projectGroups: t.projectGroups,
+    "dock.jobs": `${t.dock}: ${t.docks.jobs}`,
+    "dock.actions": `${t.dock}: ${t.docks.actions}`,
+    "dock.subAgents": `${t.dock}: ${t.docks.subAgents}`,
+    "turnDock.numbers": `${t.turnDock}: ${t.numbered}`,
+    "turnDock.bars": `${t.turnDock}: ${t.bars}`,
+  };
+  // A colon between a group and its part: a full-width one in Chinese.
+  return language === "zh-Hans" ? parts[field].replace(": ", "：") : parts[field];
+}
 
-/** A setting's value as the controls above name it. */
-export function fieldText(field: AppearanceField, value: string | number): string {
+/** A setting's value as the controls above name it, in `language`. A value
+ * this version doesn't name is shown as the file wrote it. */
+export function fieldText(field: AppearanceField, value: string | number, language: Language = "en"): string {
+  const t = text(language);
   switch (field) {
     case "palette":
-      return paletteLabels[value as Palette];
+      return t.palettes[value as Palette] ?? String(value);
     case "theme":
-      return themes.find((t) => t.value === value)?.label ?? String(value);
+      return t.themes[value as ThemePreference]?.[0] ?? String(value);
     case "fontSize":
       return `${value} px`;
     case "agentList":
-      return agentLists.find((a) => a.value === value)?.label ?? String(value);
+      return t.agentLists[value as AgentListDensity]?.[0] ?? String(value);
     case "projectGroups":
-      return projectGroupChoices.find((p) => p.value === value)?.label ?? String(value);
+      return t.groups[value as ProjectGroupStyle]?.[0] ?? String(value);
     case "turnDock.bars":
-      return value === 0 ? "None" : String(value);
+      return value === 0 ? t.none : String(value);
     default:
-      return value === 0 ? "Hidden" : String(value);
+      return value === 0 ? t.hidden : String(value);
   }
 }
+
+/** What the file part said last, as what happened, so it is worded in the
+ * language shown, also after a switch. */
+type FileMessage =
+  | { kind: "tooLarge"; name: string }
+  | { kind: "unreadable"; name: string }
+  | { kind: "refused"; refusal: FileRefusal }
+  | { kind: "notImported"; outcome: Extract<SaveOutcome, { saved: false }> }
+  | { kind: "imported"; count: number; name: string };
+
+// A refused file's reason: its English as the reader wrote it; in Chinese, by
+// its code.
+const refusalZh = (refusal: FileRefusal) =>
+  ({
+    notJson: "此文件不是 JSON，因此不是外观导出文件",
+    notExport: "此文件不是 Yuzuno 的外观导出文件",
+    newer: `此文件来自更新的 Yuzuno（外观文件版本 ${refusal.version}），此版本只能读取版本 ${refusal.reads}`,
+    unknownVersion: "此文件的版本不是 Yuzuno 认识的版本",
+    empty: "此文件不含外观设置",
+  })[refusal.code] ?? refusal.error;
+const fileText = strings({
+  group: "Appearance file",
+  title: "Move Appearance to another device",
+  help: "A file of the settings above as they are in effect: palette, theme, text size, Agent list, project groups and docks. Accounts, permissions, folders and conversations are never in it. Importing shows each setting beside yours before anything changes.",
+  export: "Export to a file",
+  import: "Import from a file…",
+  choose: "Choose an Appearance file",
+  preview: "Import preview",
+  from: (name: string, exportedAt: string | null) =>
+    `From ${name}${exportedAt ? `, exported ${exportedAt}` : ""}. Ticked settings are taken from the file; the others stay as they are.`,
+  now: (value: string) => `Now: ${value}`,
+  same: "File: the same",
+  file: (value: string) => `File: ${value}`,
+  invalid: (value: string) => `File: ${value}, not a value Yuzuno accepts; kept as now`,
+  unknown: (names: string) => `Not Appearance settings this version knows, so left out: ${names}`,
+  apply: (count: number) => (count ? `Apply ${count} selected` : "Nothing to apply"),
+  cancel: "Cancel",
+  message: (message: FileMessage): string => {
+    switch (message.kind) {
+      case "tooLarge":
+        return `${message.name} is larger than 16 KiB, too large for an Appearance export, so it was not read. Nothing was changed.`;
+      case "unreadable":
+        return `${message.name} could not be read. Nothing was changed.`;
+      case "refused":
+        return `${message.refusal.error}. Nothing was changed.`;
+      case "notImported":
+        return `Not imported: ${message.outcome.detail}. Nothing was changed; your Appearance stays as it is.`;
+      case "imported":
+        return `Imported ${message.count} ${message.count === 1 ? "setting" : "settings"} from ${message.name}; saved on this device.`;
+    }
+  },
+}, {
+  group: "外观文件",
+  title: "把外观移到另一台设备",
+  help: "一个文件，包含上面这些设置当前生效的值：配色、主题、文字大小、Agent 列表、项目分组和侧栏。账户、权限、文件夹和会话从不在其中。导入时会先把每项设置与你的并排显示，再做任何更改。",
+  export: "导出到文件",
+  import: "从文件导入…",
+  choose: "选择外观文件",
+  preview: "导入预览",
+  from: (name, exportedAt) => `来自 ${name}${exportedAt ? `，导出于 ${exportedAt}` : ""}。勾选的设置取自文件，其他的保持不变。`,
+  now: (value) => `当前：${value}`,
+  same: "文件：相同",
+  file: (value) => `文件：${value}`,
+  invalid: (value) => `文件：${value}，不是 Yuzuno 接受的值；保持当前`,
+  unknown: (names) => `此版本不认识的外观设置，因此未包含：${names}`,
+  apply: (count) => (count ? `应用所选的 ${count} 项` : "没有可应用的"),
+  cancel: "取消",
+  message: (message) => {
+    switch (message.kind) {
+      case "tooLarge":
+        return `${message.name} 大于 16 KiB，作为外观导出文件太大，因此没有读取。没有更改任何内容。`;
+      case "unreadable":
+        return `无法读取 ${message.name}。没有更改任何内容。`;
+      case "refused":
+        return `${refusalZh(message.refusal)}。没有更改任何内容。`;
+      case "notImported":
+        return `未导入：${saveRefusalReason(message.outcome, "zh-Hans")}。没有更改任何内容，你的外观保持不变。`;
+      case "imported":
+        return `已从 ${message.name} 导入 ${message.count} 项设置，并保存到此设备。`;
+    }
+  },
+});
 
 function readText(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -459,16 +561,18 @@ function readText(file: File): Promise<string> {
  * ticked where they differ, and applies only the ticked ones, once saved on
  * this device; a file it can't use, Cancel or a refused save change nothing. */
 function AppearanceFile({ appearance }: { appearance: Appearance }) {
+  const language = useLanguage();
+  const t = fileText(language);
   const [file, setFile] = useState<{ name: string; contents: AppearanceFileContents } | null>(null);
   const [chosen, setChosen] = useState<AppearanceField[]>([]);
-  const [said, setSaid] = useState<{ error: boolean; text: string; n: number } | null>(null);
+  const [said, setSaid] = useState<{ error: boolean; message: FileMessage; n: number } | null>(null);
   const picker = useRef<HTMLInputElement>(null);
   const line = useRef<HTMLParagraphElement>(null);
   // In a short pane the line can lie below the button pressed.
   useEffect(() => {
     if (said?.error) line.current?.scrollIntoView?.({ block: "nearest" });
   }, [said]);
-  const say = (error: boolean, text: string) => setSaid((old) => ({ error, text, n: (old?.n ?? 0) + 1 }));
+  const say = (error: boolean, message: FileMessage) => setSaid((old) => ({ error, message, n: (old?.n ?? 0) + 1 }));
   const differs = (field: AppearanceField, contents: AppearanceFileContents) => {
     const value = contents.values[field];
     return value !== undefined && value !== fieldValue(appearance, field);
@@ -490,19 +594,19 @@ function AppearanceFile({ appearance }: { appearance: Appearance }) {
     setFile(null);
     if (!picked) return;
     if (picked.size > MAX_APPEARANCE_FILE_BYTES) {
-      say(true, `${picked.name} is larger than 16 KiB, too large for an Appearance export, so it was not read. Nothing was changed.`);
+      say(true, { kind: "tooLarge", name: picked.name });
       return;
     }
     let text: string;
     try {
       text = await readText(picked);
     } catch {
-      say(true, `${picked.name} could not be read. Nothing was changed.`);
+      say(true, { kind: "unreadable", name: picked.name });
       return;
     }
     const read = readAppearanceFile(text);
     if ("error" in read) {
-      say(true, `${read.error}. Nothing was changed.`);
+      say(true, { kind: "refused", refusal: read });
       return;
     }
     setFile({ name: picked.name, contents: read.contents });
@@ -512,40 +616,36 @@ function AppearanceFile({ appearance }: { appearance: Appearance }) {
     if (!file || !selected.length) return;
     const outcome = importAppearance(importedAppearance(appearance, file.contents, selected));
     if (!outcome.saved) {
-      say(true, `Not imported: ${outcome.detail}. Nothing was changed; your Appearance stays as it is.`);
+      say(true, { kind: "notImported", outcome });
       return;
     }
     setFile(null);
-    say(false, `Imported ${selected.length} ${selected.length === 1 ? "setting" : "settings"} from ${file.name}; saved on this device.`);
+    say(false, { kind: "imported", count: selected.length, name: file.name });
   }
   const exportedAt = file?.contents.exportedAt && !Number.isNaN(Date.parse(file.contents.exportedAt))
     ? new Date(file.contents.exportedAt).toLocaleString()
     : null;
 
   return (
-    <div className="settings-group appearance-file" aria-label="Appearance file">
+    <div className="settings-group appearance-file" aria-label={t.group}>
       <div className="settings-row">
         <span className="settings-row-main">
-          <span className="settings-row-title">Move Appearance to another device</span>
-          <span className="settings-row-help">
-            A file of the settings above as they are in effect: palette, theme, text size, Agent list, project groups
-            and docks. Accounts, permissions, folders and conversations are never in it. Importing shows each setting
-            beside yours before anything changes.
-          </span>
+          <span className="settings-row-title">{t.title}</span>
+          <span className="settings-row-help">{t.help}</span>
         </span>
         <span className="settings-row-action appearance-file-buttons">
           <button type="button" onClick={exportFile}>
-            Export to a file
+            {t.export}
           </button>
           <button type="button" onClick={() => picker.current?.click()}>
-            Import from a file…
+            {t.import}
           </button>
           <input
             ref={picker}
             type="file"
             accept="application/json,.json"
             hidden
-            aria-label="Choose an Appearance file"
+            aria-label={t.choose}
             onChange={(event) => {
               const picked = event.target.files?.[0];
               event.target.value = "";
@@ -555,24 +655,21 @@ function AppearanceFile({ appearance }: { appearance: Appearance }) {
         </span>
       </div>
       {file && (
-        <div className="appearance-file-preview" role="group" aria-label="Import preview">
-          <p>
-            From {file.name}
-            {exportedAt ? `, exported ${exportedAt}` : ""}. Ticked settings are taken from the file; the others stay as
-            they are.
-          </p>
+        <div className="appearance-file-preview" role="group" aria-label={t.preview}>
+          {/* The file's name, as the system wrote it, is never translated. */}
+          <p>{t.from(file.name, exportedAt)}</p>
           <ul>
             {appearanceFields.map((field) => {
               const value = file.contents.values[field];
               const bad = file.contents.invalid.find((item) => item.field === field);
               if (value === undefined && !bad) return null;
-              const now = fieldText(field, fieldValue(appearance, field));
+              const now = fieldText(field, fieldValue(appearance, field), language);
               if (value === undefined)
                 return (
                   <li key={field} data-state="invalid">
-                    <span className="appearance-file-name">{fieldLabels[field]}</span>
-                    <span>Now: {now}</span>
-                    <span>File: {bad!.value}, not a value Yuzuno accepts; kept as now</span>
+                    <span className="appearance-file-name">{fieldLabel(field, language)}</span>
+                    <span>{t.now(now)}</span>
+                    <span>{t.invalid(bad!.value)}</span>
                   </li>
                 );
               const same = !differs(field, file.contents);
@@ -587,22 +684,20 @@ function AppearanceFile({ appearance }: { appearance: Appearance }) {
                         setChosen((old) => (event.target.checked ? [...old, field] : old.filter((f) => f !== field)))
                       }
                     />
-                    {fieldLabels[field]}
+                    {fieldLabel(field, language)}
                   </label>
-                  <span>Now: {now}</span>
-                  <span>{same ? "File: the same" : `File: ${fieldText(field, value)}`}</span>
+                  <span>{t.now(now)}</span>
+                  <span>{same ? t.same : t.file(fieldText(field, value, language))}</span>
                 </li>
               );
             })}
           </ul>
           {file.contents.unknown.length > 0 && (
-            <p className="settings-row-help">
-              Not Appearance settings this version knows, so left out: {file.contents.unknown.join(", ")}
-            </p>
+            <p className="settings-row-help">{t.unknown(file.contents.unknown.join(", "))}</p>
           )}
           <div className="appearance-file-buttons">
             <button type="button" disabled={!selected.length} onClick={apply}>
-              {selected.length ? `Apply ${selected.length} selected` : "Nothing to apply"}
+              {t.apply(selected.length)}
             </button>
             <button
               type="button"
@@ -611,7 +706,7 @@ function AppearanceFile({ appearance }: { appearance: Appearance }) {
                 setSaid(null);
               }}
             >
-              Cancel
+              {t.cancel}
             </button>
           </div>
         </div>
@@ -622,7 +717,7 @@ function AppearanceFile({ appearance }: { appearance: Appearance }) {
           className={said.error ? "appearance-file-error" : "appearance-file-done"}
           role={said.error ? "alert" : "status"}
         >
-          {said.text}
+          {t.message(said.message)}
         </p>
       )}
     </div>
