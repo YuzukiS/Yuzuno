@@ -11,20 +11,56 @@ import type {
 
 const storageKey = "yuzuno.outbox";
 export type OutgoingMessage = { agentId: string; receipt: MessageReceipt };
-function load(): Record<string, MessageInput> {
+type Outbox = Record<string, MessageInput>;
+
+/**
+ * Which Workspace's unsent records these are (T-195). Two saved Workspaces
+ * can sit at one address, and their Agents can share an id; one flat map
+ * keyed by Agent alone let a retry in one Workspace reuse the other's client
+ * message id, so Core would have deduplicated the two against each other and
+ * one Workspace's message would never have arrived.
+ *
+ * The file is a Workspace's id to its records, each still keyed
+ * `<agent>:<slot>` as before, so what this hook hands out is one Workspace's
+ * bucket and nothing else: another Workspace's records are not reachable
+ * rather than merely unread. Writing merges into the file, so a Workspace
+ * open in another tab keeps its own.
+ */
+function readFile(): Record<string, unknown> {
   try {
     const value = JSON.parse(localStorage.getItem(storageKey) || "{}");
     return value && typeof value === "object" && !Array.isArray(value)
-      ? value
+      ? (value as Record<string, unknown>)
       : {};
   } catch {
     return {};
   }
 }
 
+/** One message, as a record written before the outbox was kept per Workspace
+ * sits at the top of the file. It says which Agent but not which Workspace,
+ * so it is left exactly as it is and never read into one: handing it to
+ * whichever Workspace is open would be attributing it by guesswork. Sending
+ * that text again is then a new message with its own id, and Core still
+ * never re-sends an input whose delivery is uncertain. */
+const isMessage = (value: unknown): boolean =>
+  !!value &&
+  typeof value === "object" &&
+  typeof (value as MessageInput).clientMessageId === "string";
+
+function load(workspace: string): Outbox {
+  if (!workspace) return {};
+  const bucket = readFile()[workspace];
+  if (!bucket || typeof bucket !== "object" || Array.isArray(bucket) || isMessage(bucket)) return {};
+  return Object.fromEntries(
+    Object.entries(bucket as Record<string, unknown>).filter(([, input]) => isMessage(input)),
+  ) as Outbox;
+}
+
 // Retain the same client id after an HTTP failure, including across a reload.
 // Core owns durable delivery receipts and never re-sends an uncertain input.
 export function useConversationSend(
+  workspaceId: string,
   agentId: string,
   turnId: string | null,
   refresh: () => void,
@@ -33,7 +69,18 @@ export function useConversationSend(
 ) {
   // A failed send may contain a large paste. Load its retry record once,
   // rather than parsing the full body again on every composer keystroke.
-  const [outbox] = useState(() => ({ current: load() }));
+  const [outbox] = useState<{ current: Outbox }>(() => ({ current: {} }));
+  // `App.tsx` has no Workspace id until /api/workspace answers, so the
+  // records are read when it is known -- once per Workspace, not per
+  // keystroke -- and nothing is read while it is not. In-window memory is
+  // this window's alone, so it is kept across a Workspace that goes unknown;
+  // only what reaches or comes from disk is bound to a Workspace.
+  const loadedFor = useRef("");
+  useEffect(() => {
+    if (!workspaceId || loadedFor.current === workspaceId) return;
+    loadedFor.current = workspaceId;
+    outbox.current = load(workspaceId);
+  }, [workspaceId, outbox]);
   const inFlight = useRef(new Set<string>());
   const [sendingFor, setSendingFor] = useState<string[]>([]);
   const [outgoing, setOutgoing] = useState<OutgoingMessage[]>([]);
@@ -79,8 +126,13 @@ export function useConversationSend(
         : messages.map((m, i) => (i === index ? next : m));
     });
   const persist = () => {
+    // Nothing is written against a Workspace this window does not know yet.
+    if (!workspaceId) return;
     try {
-      localStorage.setItem(storageKey, JSON.stringify(outbox.current));
+      const file = readFile();
+      if (Object.keys(outbox.current).length) file[workspaceId] = outbox.current;
+      else delete file[workspaceId];
+      localStorage.setItem(storageKey, JSON.stringify(file));
     } catch {
       /* In-memory retry protection still applies. */
     }

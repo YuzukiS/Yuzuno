@@ -5,13 +5,17 @@ import { history, undo, redo, isolateHistory } from "@codemirror/commands";
 import {
   DraftStorage,
   copiedDraft,
+  draftIdentity,
+  draftIdentityParts,
   draftText,
   emptyDraft,
   hasDraftContent,
   lineCount,
   pastedText,
+  savedDraftAgents,
   shouldFoldPaste,
   textDraft,
+  unattributedDraftAgents,
 } from "../src/composer-draft.ts";
 import {
   draftDocument,
@@ -143,16 +147,114 @@ function memory() {
       data.set(key, value);
     },
     removeItem: (key) => data.delete(key),
+    // Enumeration, as `savedDraftAgents`/`unattributedDraftAgents` read it.
+    get length() {
+      return data.size;
+    },
+    key: (index) => [...data.keys()][index] ?? null,
   };
 }
-test("legacy and block drafts survive refresh; nearby typing only saves small references", () => {
+test("one Agent id in two Workspaces keeps two drafts, bodies included", () => {
   const disk = memory();
+  // Two saved Workspaces can sit at one address and their Agents can share an
+  // id; keyed by Agent alone, each handed the other its unsent draft (T-195).
+  const here = draftIdentity("ws-here", "a"),
+    there = draftIdentity("ws-there", "a");
+  assert.notEqual(here, there);
+  const mine = pastedText(body, 1),
+    yours = pastedText(body.replace(/first/, "theirs"), 1);
+  new DraftStorage(disk).save(here, {
+    version: 1,
+    nextNumber: 2,
+    parts: [{ kind: "text", text: "mine " }, mine],
+  });
+  new DraftStorage(disk).save(there, {
+    version: 1,
+    nextNumber: 2,
+    parts: [{ kind: "text", text: "theirs " }, yours],
+  });
+  assert.equal(draftText(new DraftStorage(disk).load(here)), "mine " + body);
+  assert.equal(
+    draftText(new DraftStorage(disk).load(there)),
+    "theirs " + body.replace(/first/, "theirs"),
+    "The other Workspace's draft is its own, not a copy of this one",
+  );
+  // Sending in one Workspace leaves the other's draft and its body alone.
+  new DraftStorage(disk).remove(here);
+  assert.equal(draftText(new DraftStorage(disk).load(here)), "");
+  assert.equal(
+    draftText(new DraftStorage(disk).load(there)),
+    "theirs " + body.replace(/first/, "theirs"),
+  );
+  assert.deepEqual(savedDraftAgents(disk, "ws-there"), ["a"]);
+  assert.deepEqual(savedDraftAgents(disk, "ws-here"), []);
+  assert.deepEqual(
+    savedDraftAgents(disk, ""),
+    [],
+    "A Workspace this window does not know yet owns nothing",
+  );
+});
+
+test("a draft cannot be spelled without the Workspace it belongs to", () => {
+  assert.throws(() => draftIdentity("", "a"), /Workspace/);
+  assert.deepEqual(draftIdentityParts(draftIdentity("ws", "a")), {
+    workspace: "ws",
+    agent: "a",
+  });
+  // Nothing is attributed by guessing: anything that is not a two-string
+  // array naming a Workspace reads as unattributed, not as some Workspace's.
+  for (const identity of [
+    "a",
+    "",
+    "not JSON",
+    JSON.stringify(["ws"]),
+    JSON.stringify(["ws", "a", "extra"]),
+    JSON.stringify(["", "a"]),
+    JSON.stringify([1, "a"]),
+    JSON.stringify({ workspace: "ws", agent: "a" }),
+  ])
+    assert.equal(draftIdentityParts(identity), null, identity);
+});
+
+test("drafts saved before Workspace scoping are reported, never read into a Workspace", () => {
+  const disk = memory();
+  // Both older shapes: a key of the Agent alone, and the string map.
+  new DraftStorage(disk).save("a", textDraft("written before scoping"));
   disk.setItem(
     "yuzuno.drafts",
-    JSON.stringify({ a: "legacy", b: "keep other Agent" }),
+    JSON.stringify({ a: "older still", b: "another Agent" }),
   );
+  const before = new Map(disk.data);
+  const identity = draftIdentity("ws-here", "a");
+  assert.equal(
+    draftText(new DraftStorage(disk).load(identity)),
+    "",
+    "An unattributed draft is not handed to whichever Workspace is open",
+  );
+  assert.deepEqual(
+    savedDraftAgents(disk, "ws-here"),
+    [],
+    "...and it does not count as this Workspace's",
+  );
+  assert.deepEqual(unattributedDraftAgents(disk).sort(), ["a", "b"]);
+  // Reported, not claimed: reading leaves every older key exactly as it was.
+  assert.deepEqual([...disk.data], [...before]);
+  // Saving this Workspace's own draft still does not disturb them.
+  new DraftStorage(disk).save(identity, textDraft("mine"));
+  assert.equal(draftText(new DraftStorage(disk).load(identity)), "mine");
+  assert.equal(
+    disk.getItem("yuzuno.composer.v1:a"),
+    before.get("yuzuno.composer.v1:a"),
+  );
+  assert.equal(disk.getItem("yuzuno.drafts"), before.get("yuzuno.drafts"));
+  assert.deepEqual(unattributedDraftAgents(disk).sort(), ["a", "b"]);
+  assert.deepEqual(savedDraftAgents(disk, "ws-here"), ["a"]);
+});
+
+test("block drafts survive refresh; nearby typing only saves small references", () => {
+  const disk = memory();
   const storage = new DraftStorage(disk);
-  assert.equal(draftText(storage.load("a")), "legacy");
+  storage.save("b", textDraft("keep other Agent"));
   const paste = pastedText(body.repeat(1500), 1);
   const draft = {
     version: 1,
@@ -183,7 +285,7 @@ test("legacy and block drafts survive refresh; nearby typing only saves small re
   assert.equal(
     draftText(new DraftStorage(disk).load("a")),
     "",
-    "A sent/deleted legacy draft cannot return",
+    "A sent/deleted draft cannot return",
   );
 });
 

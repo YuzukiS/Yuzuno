@@ -58,6 +58,7 @@ import {
   post,
   reconnectAgent,
   interruptAgent,
+  scopeRequests,
   shortcutModifier,
 } from "./api";
 import { nativeControl } from "./slash-commands";
@@ -363,6 +364,11 @@ export function App() {
   // Which Workspace this window is in. Empty until /api/workspace answers,
   // and the drafts below are neither read nor written while it is (T-195).
   const workspaceId = workspace?.workspace?.id || "";
+  // Declared first, so a request started by any effect or control below is
+  // shared only within the Workspace it was started in (T-195).
+  useEffect(() => {
+    scopeRequests(previewMode ? "" : workspaceId);
+  }, [workspaceId]);
   const { draft, getDraft, setDraft, clearIfUnchanged, preserveDrafts, removeDraft, copyDraft, discardSavedDraft, draftError, draftBlocked } = useComposerDraft(workspaceId, selected);
   const [interrupting, setInterrupting] = useState(false);
   const [actionError, setActionError] = useState("");
@@ -829,6 +835,7 @@ export function App() {
     outgoing,
     pendingInputs,
   } = useConversationSend(
+    previewMode ? "" : workspaceId,
     selected,
     sendTurnId,
     refresh,
@@ -2362,7 +2369,7 @@ export function App() {
         />
       </aside>
 
-      <ClarificationHost.Provider value={{ detail: currentDetail, outgoing, pendingInputs, readOnly: previewMode, submit: submitMessage, refresh }}>
+      <ClarificationHost.Provider value={{ workspaceId, detail: currentDetail, outgoing, pendingInputs, readOnly: previewMode, submit: submitMessage, refresh }}>
       {/* On a phone the list or the context panel covers it, still mounted. */}
       <main className="main-panel" inert={listShown || (phone && inspectorShown) ? true : undefined}>
         {(workspaceError || core.browser) && (
