@@ -699,3 +699,93 @@ test("a project's reviewer is set and cleared on its page as one pair, and inher
     q.close();
   }
 });
+
+// T-189: the reviews follow the interface language, changed in another
+// window. What the reviewer, GitHub and Core said stays as written.
+const speak = (p, language) => {
+  p.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+  p.window.dispatchEvent(new p.window.StorageEvent("storage", { key: "yuzuno.language" }));
+};
+test("reviews follow a language change; the recipient, an open report and a retried start's request stay, and nothing is asked again", async () => {
+  const finding = { title: "Guard the empty list", body: "`items[0]` panics when empty.", path: "core/src/lib.rs", startLine: 4, endLine: 6, revision: "b".repeat(40), priority: 1 };
+  const reviewed = {
+    ...run, id: "run-zh", outdated: false, conclusion: "changes_requested", policyVersion: 3,
+    reasonCodes: ["coverage_incomplete", "brand_new_reason"], findings: [finding], explanation: "The model's own explanation.",
+    coverage: { version: 3, fileCount: 2, coveredFileCount: 1, deliveredCompleteDiffs: 1, fullAddedSourceCount: 0 },
+    contextReads: [{ tool: "source_read", error: "Line range is outside the file", requested: { path: "web/src/App.tsx", startLine: 9000, endLine: 9100 } }],
+    scope: {
+      version: 1, counts: { covered: 1, unsupported: 1 },
+      policy: { state: "invalid", path: ".yuzuno/review-scope.json", revision: "a".repeat(40), error: "expected `rules` array" },
+      paths: [
+        { path: "core/ok.rs", state: "covered" },
+        { path: "helper/helper.exe", state: "unsupported", reason: "binary", head: { blobSha: "2".repeat(40) }, facts: [{ kind: "unsupported", reason: "binary" }] },
+      ],
+    },
+    evidence: [{ id: "e1", path: "helper/helper.exe", kind: "artifact_hash", reference: { jobId: "job-12345678abc" }, artifactSha256: "e".repeat(64),
+      artifactMatchesHeadContent: false, note: "Built by the release job", registeredBy: { name: "Dev 2" }, binding: "this_candidate" }],
+  };
+  const p = mount((url, body) => {
+    if (url.includes("peers_list")) return { peers: [{ id: "dev-2", name: "Dev 2" }] };
+    if (url === "/api/pr-reviews" && body) return new Error("Response lost");
+    if (url.includes("/run-zh?")) return { ...reviewed, rawReport: "原始 native report, as the reviewer wrote it" };
+    return page([reviewed]);
+  });
+  const select = () => p.doc.querySelector(".pr-review-recipient select");
+  const report = () => [...p.doc.querySelectorAll("article > details")].at(-1);
+  try {
+    p.window.renderReviews({ taskId: "T-1", links: [link], disabled: false });
+    await waitFor(() => button(p, "Review PR") && !button(p, "Review PR").disabled && select().options.length === 2);
+    Object.getOwnPropertyDescriptor(p.window.HTMLSelectElement.prototype, "value").set.call(select(), "dev-2");
+    select().dispatchEvent(new p.window.Event("change", { bubbles: true }));
+    report().open = true;
+    await waitFor(() => report().querySelector("pre").textContent === "原始 native report, as the reviewer wrote it");
+    button(p, "Review PR").click();
+    await waitFor(() => p.doc.querySelector('[role="alert"]') && !button(p, "Review PR").disabled);
+    const before = p.calls.length;
+    speak(p, "zh-Hans");
+    await tick();
+    await tick();
+    const section = p.doc.querySelector(".pr-reviews");
+    assert.equal(section.getAttribute("aria-label"), "PR 审查");
+    const text = section.textContent;
+    for (const words of [
+      "用 Codex（gpt-6.1-sol）审查整个 PR。", "完成后通知", "只在此任务中显示", "要求修改",
+      "2 个文件中已覆盖 1 个 · 1 个通过完整 diff · 0 个通过新增文件的完整源码",
+      "审查范围 · 2 个变更路径中已覆盖 1 个 · 无法作为文本审查 1 个",
+      "范围策略 .yuzuno/review-scope.json（基准 aaaaaaaa）无法使用（expected `rules` array）：所有变更路径仍在范围内。",
+      "1 次上下文读取 · 1 次失败", "源文件 web/src/App.tsx · 失败：Line range is outside the file", "审查 ID：run-zh",
+    ]) assert.ok(text.includes(words), words);
+    assert.equal(section.querySelector("header strong").textContent, "owner/repo#1 · 第 2 轮");
+    assert.deepEqual([...section.querySelectorAll('[aria-label="审查原因"] li')].map((li) => li.textContent),
+      ["审查覆盖不完整", "无法识别的审查原因：brand_new_reason"]);
+    assert.deepEqual([...section.querySelectorAll('[aria-label="审查范围之外的路径"] li')].map((li) => li.textContent),
+      ["helper/helper.exe · 无法作为文本审查（二进制文件） · blob 22222222"]);
+    assert.deepEqual([...section.querySelectorAll('[aria-label="登记的证据"] li')].map((li) => li.textContent), [
+      "helper/helper.exe · 产物哈希 · Job job-1234 · 登记的 SHA-256 eeeeeeeeeeee，与被审查 head 的内容不同 · 绑定到此候选（身份匹配） · 由 Dev 2 登记；Core 没有获取或验证该引用 · 作者备注：Built by the release job",
+    ]);
+    // As written: Core's status, harness and model, the reviewer's words and the finding.
+    for (const kept of ["completed", "Claude Code · native-model", "The model's own explanation.", "Guard the empty list", "`items[0]` panics when empty.", "core/src/lib.rs:4–6"])
+      assert.ok(text.includes(kept), kept);
+    assert.ok(button(p, "审查 PR"));
+    assert.equal(select().value, "dev-2", "the recipient stays chosen");
+    assert.equal(select().getAttribute("aria-label"), "审查结果的接收方");
+    assert.ok(report().open, "the report stays open");
+    assert.equal(report().querySelector("summary").textContent, "原始报告");
+    assert.equal(report().querySelector("pre").textContent, "原始 native report, as the reviewer wrote it");
+    // Nothing asked of Core: no pr-reviews list, report, start or cancel, no peers_list.
+    assert.deepEqual(p.calls.slice(before).map((c) => c.url), []);
+    button(p, "审查 PR").click();
+    await waitFor(() => p.calls.filter((c) => c.url === "/api/pr-reviews").length === 2);
+    const starts = p.calls.filter((c) => c.url === "/api/pr-reviews");
+    assert.equal(starts[1].body.requestId, starts[0].body.requestId, "the same start, asked again");
+    assert.equal(starts[1].body.notifyAgentId, "dev-2");
+    speak(p, "en");
+    await tick();
+    assert.ok(report().open);
+    assert.equal(report().querySelector("summary").textContent, "Original report");
+    assert.match(p.doc.body.textContent, /Review coverage is incomplete/);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
