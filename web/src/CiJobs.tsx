@@ -154,7 +154,7 @@ const ciText = strings({
   stoppedExpired: "Stopped / expired",
   notObserved: "Not observed yet",
   pr: (number: number) => `PR #${number}`,
-  commit: (sha: string, branch: string, event: string) => `Commit ${sha} · ${branch} · ${event}`,
+  commit: (sha: string, branch: string | null | undefined, event: string | null | undefined) => `Commit ${sha} · ${branch} · ${event}`,
   run: (number: number) => `Run #${number}`,
   lastSeen: (running: boolean) => `Last seen ${running ? "running" : "waiting"}`,
   queuedAt: "Queued",
