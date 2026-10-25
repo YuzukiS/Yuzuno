@@ -303,6 +303,7 @@ test("Codex on the Core host: the default model shows with its source; Codex's o
   const namedBody = await submit(named);
   assert.deepEqual([namedBody.model, namedBody.reasoningEffort], ["m-small", "low"]);
   // Claude Code keeps its own path: no Codex default, no effort chosen here.
+  await until(() => !named.document.querySelector("fieldset.remote-form-fields")?.disabled, "the form usable after the create");
   await pick(named, "Harness", "claude");
   await until(() => labels(named, "Model")[0] === "Harness default", "Claude's models");
   assert.equal(group(named, "Reasoning effort"), null);
