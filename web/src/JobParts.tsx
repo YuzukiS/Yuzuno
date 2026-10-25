@@ -4,13 +4,21 @@
 // status marks.
 import { Fragment, useState, type DragEvent, type ReactNode } from "react";
 import { StatusMark } from "./WorkDock";
+import { strings, useStrings } from "./i18n";
 
 /** Where a row belongs: still going, or ended however it ended. */
 export type Placement = "active" | "done";
-const groups: { key: Placement; title: string }[] = [
-  { key: "active", title: "Running and queued" },
-  { key: "done", title: "Finished" },
-];
+const groups: Placement[] = ["active", "done"];
+// The list's own words (T-189).
+const text = strings({
+  active: "Running and queued",
+  finished: "Finished",
+  more: (count: number) => `Show ${count} more`,
+}, {
+  active: "运行中与排队",
+  finished: "已结束",
+  more: (count) => `再显示 ${count} 个`,
+});
 /** Finished rows shown before the rest fold behind "Show N more". */
 const FOLDED = 10;
 
@@ -67,7 +75,7 @@ export function StateGroups<T extends { id: string }>({
   row,
   empty,
   children,
-  historyLabel = "Finished",
+  historyLabel,
 }: {
   label: string;
   items: readonly T[];
@@ -82,13 +90,14 @@ export function StateGroups<T extends { id: string }>({
   /** CI history can contain runs whose monitoring stopped before completion. */
   historyLabel?: string;
 }) {
+  const t = useStrings(text);
   const [unfolded, setUnfolded] = useState(false);
   let folded = false;
   return (
     <div className="job-list" role="group" aria-label={label}>
       {items.length
-        ? groups.map(({ key, title }) => {
-            if (key === "done") title = historyLabel;
+        ? groups.map((key) => {
+            const title = key === "done" ? historyLabel ?? t.finished : t.active;
             const rows = items.filter((item) => place(item) === key);
             if (!rows.length) return null;
             const folds =
@@ -118,7 +127,7 @@ export function StateGroups<T extends { id: string }>({
                     className="job-group-more"
                     onClick={() => setUnfolded(true)}
                   >
-                    Show {rows.length - shown.length} more
+                    {t.more(rows.length - shown.length)}
                   </button>
                 )}
               </section>
