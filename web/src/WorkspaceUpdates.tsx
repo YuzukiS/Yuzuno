@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type { SettingsEditor } from "./settings-catalog";
 import { SettingsCenter, type SettingsNavigation } from "./SettingsCenter";
+import { RuntimeSection } from "./RuntimeSection";
 import { AppearanceSection } from "./AppearanceSettings";
 import { InputPreferencesSection } from "./InputPreferences";
 import { ShortcutHelpSection } from "./ShortcutHelp";
@@ -27,6 +28,8 @@ import { StorageOverview } from "./StorageOverview";
 import { ReviewSettings } from "./ReviewSettings";
 import { HomePresentationSettings } from "./HomePresentationSettings";
 import { NotificationSettings } from "./NotificationSettings";
+import { WorkspaceBackup } from "./WorkspaceBackup";
+import { RemoteAccessSettings } from "./RemoteAccessSettings";
 import { api, errorText, HttpError } from "./api";
 import {
   loadedRelease,
@@ -981,12 +984,20 @@ export function WorkspaceUpdates({
           {tab === "diagnostics" && <DiagnosticsCopy />}
           {tab === "history" && <HistoryComposition />}
           {tab === "storage" && <StorageOverview active={open && visible} updates={status ? { managed: status.managed, storage: status.storage } : null} />}
+          {tab === "runtime" && (
+            <RuntimeSection
+              active={open && visible}
+              onOpenMachines={navigation && !navigation.disabled ? () => navigation.onNavigate({ kind: "machines" }) : undefined}
+            />
+          )}
           {tab === "appearance" && <AppearanceSection />}
           {tab === "input" && <InputPreferencesSection />}
           {tab === "shortcuts" && <ShortcutHelpSection />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
           {tab === "notifications" && <NotificationSettings />}
+          {tab === "backup" && <WorkspaceBackup active={open && visible} />}
+          {tab === "remote" && <RemoteAccessSettings active={open && visible} />}
         </>}
       />
     </Modal>

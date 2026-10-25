@@ -1,20 +1,25 @@
-//! Workspace backup and restore (T-192), first slice.
+//! Workspace backup and restore (T-192).
 //!
 //! A backup is a folder a person can read. `manifest.json` says what is in it
 //! (each file with its size and SHA-256), what was left out and why, and what
 //! a Workspace backup never covers. `workspace.sqlite` is a consistent copy
 //! of the database with the Workspace's own credentials removed, and `files/`
-//! holds the folders Core keeps beside the database. The database copy an
-//! update makes (updates/helper.rs) is one file for recovering from that
-//! update, not this.
+//! holds the files Core keeps beside the database that the copy names. The
+//! database copy an update makes (updates/helper.rs) is one file for
+//! recovering from that update, not this.
 //!
-//! This slice backs up a Workspace no Core is using: it takes the Workspace's
-//! own lock, and no Job may be unfinished, since Jobs outlive Core and write
-//! in jobs/. It restores into a new or empty folder only, never over a
-//! Workspace. Nothing is reported as done before every byte was read back and
-//! checked: a backup is written beside its destination and renamed into place
-//! once verified, a restore likewise beside its target, and on any error that
-//! folder is removed and nothing else has changed.
+//! The command line backs up a Workspace no Core is using (`backup`, under
+//! the Workspace's own lock); a running Core backs up its own (`running`,
+//! from one of its readers, slice 2). Both refuse while a Job has not ended:
+//! Jobs outlive Core, write in jobs/ and are reached by unit names a restored
+//! copy would share. Files are chosen by the database copy, not by what lies
+//! in the folder: a Job, review or Agent the copy does not name is left out,
+//! and every Brief attachment it names must be there. A restore goes into a
+//! new or empty folder only, never over a Workspace. Nothing is reported as
+//! done before every byte was read back and checked: a backup is written
+//! beside its destination and renamed into place once verified, a restore
+//! likewise beside its target, and on any error or stop that folder is
+//! removed and nothing else has changed.
 use crate::updates::{
     package::STORAGE,
     storage::{verify_records, Storage, RECORD_LAYOUT},
@@ -29,23 +34,32 @@ use std::{
     fs::{self, File},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
 };
 
+pub mod online;
 #[cfg(test)]
 mod tests;
 
 pub const FORMAT: &str = "yuzuno-workspace-backup";
-pub const VERSION: u32 = 1;
+/// 2: the files are exactly ones the database copy names (`Named`).
+/// 1: slice 1, which copied Core's folders whole; still checked and restored.
+pub const VERSION: u32 = 2;
+const OLDEST: u32 = 1;
 const DATABASE: &str = "workspace.sqlite";
 const MANIFEST: &str = "manifest.json";
 const FILES: &str = "files";
 /// Room kept free beyond what is written, as the update backup keeps.
-const MARGIN: u64 = 64 * 1024 * 1024;
+pub(crate) const MARGIN: u64 = 64 * 1024 * 1024;
 /// The Workspace's own credentials: a bearer token per Agent for its Yuzuno
 /// MCP connection (collaboration_mcp.rs), which Core makes again on demand.
 const CREDENTIALS: &str = "collaboration.mcp.agent.*";
 
-/// Folders Core keeps its own files in, copied whole.
+/// Folders Core keeps its own files in; what is copied from each is chosen
+/// by the database copy (`Named`).
 pub(crate) const INCLUDED: &[&str] = &["input-images", "brief-attachments", "pr-reviews", "jobs"];
 /// Names in the Workspace folder left out, with the reason the manifest gives.
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[
@@ -56,11 +70,16 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("claude-runtime", "A cache of the Claude runtime, which Core rebuilds"),
     ("desktop-updates", "Downloaded desktop release packages"),
     ("opencode", "OpenCode's own session databases: native session data, like Codex and Claude histories"),
+    (online::JOURNAL, "This Core's record of its backups and restores"),
 ];
 const OTHER: &str = "Not made by this Core version; not copied";
 const SPECIAL: &str = "A link or special file; a backup holds regular files only";
 const NOT_FOLDER: &str = "Not a folder, as this Core keeps it; not copied";
 const NOT_UTF8: &str = "Its name is not UTF-8; not copied";
+const TEMPORARY: &str = "A temporary file Core removes on its own";
+const REVIEW_CACHE: &str = "A review's temporary Git object cache";
+const NOT_IN_COPY: &str = "Not named by the backup's database copy (made after it, or no longer named)";
+const RUNNING_REVIEW: &str = "A review still running in the database copy; its record restores as not finished";
 /// What a Workspace backup never holds: it is kept outside the Workspace.
 pub(crate) const NOT_COVERED: &[&str] = &[
     "Native CLI accounts, keys and configuration (Codex, Claude Code, OpenCode)",
@@ -70,6 +89,10 @@ pub(crate) const NOT_COVERED: &[&str] = &[
     "The managed Core install: its releases and the database copies updates make",
     "Each device's browser preferences and drafts",
 ];
+/// A running Core cannot copy a database that is not in WAL mode without
+/// holding up its writes (db.rs).
+const NO_WAL: &str = "This Workspace's database is not in WAL mode, so a copy taken while Core runs would hold up its writes. \
+    Stop Core and use yuzuno-workspace --backup-to";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -149,38 +172,154 @@ struct Facts {
     credentials: i64,
 }
 
+/// What a caller watches and stops: the step reached, the scratch folder a
+/// backup or restore writes beside its destination, and a stop request,
+/// honoured between steps and between files.
+#[derive(Default)]
+pub struct Control {
+    /// Names the scratch folder (`.<name>.partial-<id>`, `.<name>.restoring-<id>`);
+    /// a new random one when empty.
+    id: String,
+    stop: AtomicBool,
+    step: Mutex<&'static str>,
+    scratch: Mutex<Option<PathBuf>>,
+    /// Called at each step before the stop request is read (tests only).
+    #[cfg(test)]
+    pub(crate) at_step: Mutex<Option<Box<dyn Fn(&str) + Send>>>,
+}
+
+/// A backup or restore ended by a stop request.
+#[derive(Debug)]
+pub struct Stopped;
+impl std::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Stopped on request")
+    }
+}
+impl std::error::Error for Stopped {}
+
+impl Control {
+    /// A Control whose scratch folders are named after `id` (an operation's).
+    pub fn named(id: &str) -> Self {
+        Self { id: id.to_owned(), ..Self::default() }
+    }
+    fn suffix(&self) -> String {
+        if self.id.is_empty() { uuid::Uuid::new_v4().simple().to_string() } else { self.id.clone() }
+    }
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+    pub fn step(&self) -> &'static str {
+        *self.step.lock().unwrap()
+    }
+    /// The folder being written beside the destination, while it exists.
+    pub fn scratch(&self) -> Option<PathBuf> {
+        self.scratch.lock().unwrap().clone()
+    }
+    fn at(&self, step: &'static str) -> Result<()> {
+        *self.step.lock().unwrap() = step;
+        #[cfg(test)]
+        if let Some(hook) = &*self.at_step.lock().unwrap() {
+            hook(step);
+        }
+        if self.stop.load(Ordering::SeqCst) {
+            return Err(Stopped.into());
+        }
+        Ok(())
+    }
+    fn scratching(&self, path: Option<PathBuf>) {
+        *self.scratch.lock().unwrap() = path;
+    }
+}
+
 /// Backs up the Workspace in `data`, which no Core may be using, into the
 /// new folder `out`.
 pub fn backup(data: &Path, out: &Path) -> Result<Manifest> {
     ensure!(fs::symlink_metadata(data.join(DATABASE)).is_ok_and(|meta| meta.is_file()),
         "{} holds no Workspace database; nothing was written", data.display());
     let data = fs::canonicalize(data).with_context(|| format!("Cannot read {}", data.display()))?;
-    let (parent, out) = new_folder(out)?;
-    ensure!(!out.starts_with(&data), "A backup cannot be put inside the Workspace it backs up ({}); nothing was written",
-        data.display());
+    new_folder(out)?;
     let _lock = crate::store::lock_workspace(&data.join(DATABASE))
         .context("Stop the Core using this Workspace before backing it up; nothing was written")?;
     let source = crate::data_dir::read_only(&data.join(DATABASE))?;
     let unfinished = crate::data_dir::unfinished_jobs(&source)?;
     ensure!(unfinished == 0, "{unfinished} Job(s) have not ended; back up the Workspace once they have. Nothing was written");
-    let (planned, mut excluded) = plan(&data)?;
+    make(&data, out, &Control::default(), |path| copy_snapshot(&source, path))
+}
+
+/// Backs up the Workspace of this running Core, `data`, into the new folder
+/// `out`. The database is copied from one of Core's own readers in one read
+/// transaction: a committed snapshot, taken without waiting for or holding up
+/// the writer (WAL mode only). Every Brief attachment file is held first, so
+/// none the copy names can be removed before it is copied. A Job unfinished
+/// in that snapshot refuses the backup: it is read from the copy itself.
+pub fn running(data: &Path, store: &crate::store::Store, out: &Path, ctl: &Control) -> Result<Manifest> {
+    // By the path Core keeps them under: collect_garbage compares the same.
+    let _held = crate::project_brief::hold_attachments(data)?;
+    let data = fs::canonicalize(data).with_context(|| format!("Cannot read {}", data.display()))?;
+    make(&data, out, ctl, |path| {
+        let reader = store.db.read()?;
+        wal_only(&reader)?;
+        copy_snapshot(&reader, path)
+    })
+}
+
+/// Refuses a database not in WAL mode, which a running Core cannot copy
+/// without holding up its writes.
+pub fn wal_only(db: &Connection) -> Result<()> {
+    let mode: String = db.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    ensure!(mode.eq_ignore_ascii_case("wal"), NO_WAL);
+    Ok(())
+}
+
+/// Jobs that have not ended (as data_dir::unfinished_jobs counts them), with
+/// their names.
+pub fn unfinished_jobs(db: &Connection) -> Result<Vec<(String, String)>> {
+    if !table(db, "local_jobs")? {
+        return Ok(Vec::new());
+    }
+    let mut query = db.prepare(
+        "SELECT id, COALESCE(json_extract(data,'$.name'), '') FROM local_jobs WHERE reserved=1 OR status IN ('queued','waiting') ORDER BY seq")?;
+    let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+fn table(db: &Connection, name: &str) -> Result<bool> {
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [name], |row| row.get(0))?)
+}
+
+/// A backup of `data` (canonical) into the new folder `out`, its database
+/// copied into the path `snapshot` is given.
+fn make(data: &Path, out: &Path, ctl: &Control, snapshot: impl FnOnce(&Path) -> Result<()>) -> Result<Manifest> {
+    let (parent, out) = new_folder(out)?;
+    ensure!(!out.starts_with(data), "A backup cannot be put inside the Workspace it backs up ({}); nothing was written",
+        data.display());
     let mut wal = data.join(DATABASE).into_os_string();
     wal.push("-wal");
     // The copy, and VACUUM's temporary copy of it.
     let database = fs::metadata(data.join(DATABASE))?.len().saturating_add(fs::metadata(wal).map_or(0, |meta| meta.len()));
-    let required = planned.iter().map(|(_, bytes)| *bytes).sum::<u64>()
-        .saturating_add(database.saturating_mul(2)).saturating_add(MARGIN);
-    room(&parent, required).context("Nothing was written")?;
-    let partial = parent.join(format!(".{}.partial-{}", name(&out)?, uuid::Uuid::new_v4().simple()));
+    room(&parent, database.saturating_mul(2).saturating_add(MARGIN)).context("Nothing was written")?;
+    let partial = parent.join(format!(".{}.partial-{}", name(&out)?, ctl.suffix()));
+    ctl.scratching(Some(partial.clone()));
     let result = (|| -> Result<Manifest> {
         private_dirs(&partial)?;
-        let (database, removed, workspace_id) = copy_database(&source, &partial.join(DATABASE))?;
+        ctl.at("database")?;
+        snapshot(&partial.join(DATABASE))?;
+        // On the copy itself: a Job unfinished in the snapshot refuses it.
+        let unfinished = unfinished_jobs(&crate::data_dir::read_only(&partial.join(DATABASE))?)?;
+        ensure!(unfinished.is_empty(), "{} Job(s) have not ended: {}. Back up once they have", unfinished.len(),
+            unfinished.iter().map(|(id, name)| format!("{name} ({id})")).collect::<Vec<_>>().join(", "));
+        let (database, removed, workspace_id) = finish_copy(&partial.join(DATABASE))?;
+        ctl.at("files")?;
+        let (planned, mut excluded) = select(data, &crate::data_dir::read_only(&partial.join(DATABASE))?)?;
         excluded.insert(0, Excluded {
             path: format!("{DATABASE}: workspace_meta {CREDENTIALS}"),
             reason: format!("The Workspace's own MCP credentials ({removed} removed from the copy); Core makes new ones when an Agent connects"),
         });
+        room(&parent, planned.iter().map(|(_, bytes)| *bytes).sum::<u64>().saturating_add(MARGIN))?;
         let mut files = Vec::new();
         for (path, bytes) in &planned {
+            ctl.at("files")?;
             let (copied, sha256) = copy_file(&data.join(path), &partial.join(FILES).join(path))?;
             ensure!(copied == *bytes, "{path} changed while it was being copied");
             files.push(FileEntry { path: path.clone(), bytes: copied, sha256 });
@@ -200,6 +339,7 @@ pub fn backup(data: &Path, out: &Path) -> Result<Manifest> {
         file.write_all(&serde_json::to_vec_pretty(&manifest)?)?;
         file.sync_all()?;
         // Read back whole, as anyone checking it later would.
+        ctl.at("verify")?;
         let checked = verify(&partial)?;
         sync_dir(&partial)?;
         fs::rename(&partial, &out).with_context(|| format!("Cannot put the backup at {}", out.display()))?;
@@ -209,6 +349,7 @@ pub fn backup(data: &Path, out: &Path) -> Result<Manifest> {
     if result.is_err() {
         let _ = fs::remove_dir_all(&partial);
     }
+    ctl.scratching(None);
     result.context("The backup was not made; nothing was left behind")
 }
 
@@ -240,27 +381,49 @@ pub fn verify(dir: &Path) -> Result<Manifest> {
         let (actual, digest) = hash_file(&dir.join(path))?;
         ensure!(actual == *bytes && digest == *sha256, "{path} differs from its manifest entry: {actual} bytes, SHA-256 {digest}");
     }
-    let facts = read_only_facts(&dir.join(DATABASE), Role::Backup)?;
-    agrees(&facts, &manifest)?;
+    let db = crate::data_dir::read_only(&dir.join(DATABASE))?;
+    agrees(&facts(&db, Role::Backup)?, &manifest)?;
+    let named = Named::read(&db)?;
+    if manifest.version >= 2 {
+        named.check(&manifest.files)?;
+    } else {
+        // Version 1 copied the folders whole: it may hold files the copy
+        // does not name, but must hold every attachment file it does.
+        named.attachments_held(&manifest.files)?;
+    }
     Ok(manifest)
 }
 
 /// Restores a backup into `target`, a new or empty folder, and checks the
 /// Workspace there before it is put in place.
 pub fn restore(backup: &Path, target: &Path) -> Result<Restored> {
+    restore_with(backup, target, None, &Control::default())
+}
+
+/// As `restore`, never into or around `keep_out` (a running Core's own
+/// Workspace), reporting to and stopping on `ctl`.
+pub fn restore_with(backup: &Path, target: &Path, keep_out: Option<&Path>, ctl: &Control) -> Result<Restored> {
+    ctl.at("verify")?;
     let manifest = verify(backup)?;
     let backup = fs::canonicalize(backup)?;
     let (parent, target, existing) = restore_target(target)?;
     ensure!(!target.starts_with(&backup) && !backup.starts_with(&target),
         "The backup and the restored Workspace cannot be inside each other; nothing was changed");
+    if let Some(running) = keep_out {
+        let running = fs::canonicalize(running)?;
+        ensure!(!target.starts_with(&running) && !running.starts_with(&target),
+            "A backup is not restored into or around the Workspace this Core uses; nothing was changed");
+    }
     let bytes = manifest.files.iter().map(|file| file.bytes).sum::<u64>().saturating_add(manifest.database.bytes);
     room(&parent, bytes.saturating_add(MARGIN)).context("Nothing was changed")?;
-    let staging = parent.join(format!(".{}.restoring-{}", name(&target)?, uuid::Uuid::new_v4().simple()));
+    let staging = parent.join(format!(".{}.restoring-{}", name(&target)?, ctl.suffix()));
+    ctl.scratching(Some(staging.clone()));
     let result = (|| -> Result<Restored> {
         private_dirs(&staging)?;
         let mut copies = vec![(PathBuf::from(DATABASE), manifest.database.bytes, manifest.database.sha256.clone())];
         copies.extend(manifest.files.iter().map(|file| (PathBuf::from(FILES).join(&file.path), file.bytes, file.sha256.clone())));
         for (path, bytes, sha256) in &copies {
+            ctl.at("files")?;
             let to = staging.join(path.strip_prefix(FILES).unwrap_or(path.as_path()));
             let (copied, digest) = copy_file(&backup.join(path), &to)?;
             ensure!(copied == *bytes && digest == *sha256, "{} changed while it was being restored", path.display());
@@ -268,6 +431,7 @@ pub fn restore(backup: &Path, target: &Path) -> Result<Restored> {
             let (written, digest) = hash_file(&to)?;
             ensure!(written == *bytes && digest == *sha256, "{} was not written intact", path.display());
         }
+        ctl.at("check")?;
         let facts = read_only_facts(&staging.join(DATABASE), Role::Backup)?;
         agrees(&facts, &manifest)?;
         sync_dir(&staging)?;
@@ -301,21 +465,111 @@ pub fn restore(backup: &Path, target: &Path) -> Result<Restored> {
     if result.is_err() {
         let _ = fs::remove_dir_all(&staging);
     }
+    ctl.scratching(None);
     result.context("Nothing was restored; nothing else was changed")
 }
 
-/// The files to copy (path, bytes), and the names left out.
-fn plan(data: &Path) -> Result<(Vec<(String, u64)>, Vec<Excluded>)> {
+/// What the database copy names: the Agents, Jobs, reviews and Brief
+/// attachment files whose folders and files a backup holds.
+#[derive(Default)]
+struct Named {
+    agents: BTreeSet<String>,
+    jobs: BTreeSet<String>,
+    finished_reviews: BTreeSet<String>,
+    running_reviews: BTreeSet<String>,
+    attachments: BTreeSet<String>,
+}
+
+impl Named {
+    fn read(db: &Connection) -> Result<Self> {
+        let ids = |table_name: &str, sql: &str| -> Result<BTreeSet<String>> {
+            if !table(db, table_name)? {
+                return Ok(BTreeSet::new());
+            }
+            let mut query = db.prepare(sql)?;
+            let rows = query.query_map([], |row| row.get::<_, String>(0))?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        };
+        Ok(Self {
+            agents: ids("agents", "SELECT id FROM agents")?,
+            jobs: ids("local_jobs", "SELECT id FROM local_jobs")?,
+            finished_reviews: ids("pr_reviews", "SELECT id FROM pr_reviews WHERE status NOT IN ('preparing','running')")?,
+            running_reviews: ids("pr_reviews", "SELECT id FROM pr_reviews WHERE status IN ('preparing','running')")?,
+            attachments: ids("project_brief_snapshots", "SELECT DISTINCT sha256 FROM project_brief_snapshots")?,
+        })
+    }
+
+    /// Whether `folder/entry` (an entry directly in one of the copied
+    /// folders) belongs in the backup, or why not.
+    fn decide(&self, folder: &str, entry: &str) -> Result<(), &'static str> {
+        let named = match folder {
+            "input-images" if entry.starts_with(".tmp") => return Err(TEMPORARY),
+            "input-images" => self.agents.contains(entry),
+            "brief-attachments" if entry.starts_with(".tmp-") => return Err(TEMPORARY),
+            "brief-attachments" => self.attachments.contains(entry),
+            "pr-reviews" if self.running_reviews.contains(entry) => return Err(RUNNING_REVIEW),
+            "pr-reviews" => self.finished_reviews.contains(entry),
+            "jobs" => self.jobs.contains(entry) || (entry.starts_with("host-") && entry.ends_with(".py")),
+            _ => false,
+        };
+        if named { Ok(()) } else { Err(NOT_IN_COPY) }
+    }
+
+    /// Why a name inside a kept entry is left out, if it is.
+    fn skip(folder: &str, name: &str) -> Option<&'static str> {
+        match folder {
+            "input-images" if name.starts_with(".tmp") => Some(TEMPORARY),
+            "pr-reviews" if name == "objects.git" => Some(REVIEW_CACHE),
+            _ => None,
+        }
+    }
+
+    /// The files a backup holds are exactly ones this copy names, and every
+    /// Brief attachment file it names is among them.
+    fn check(&self, files: &[FileEntry]) -> Result<()> {
+        for file in files {
+            let mut parts = file.path.split('/');
+            let (folder, entry) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+            if let Err(reason) = self.decide(folder, entry) {
+                bail!("The backup holds {}, which its database copy does not name ({reason})", file.path);
+            }
+            if let Some(reason) = parts.find_map(|name| Self::skip(folder, name)) {
+                bail!("The backup holds {}, which a backup leaves out ({reason})", file.path);
+            }
+        }
+        self.attachments_held(files)
+    }
+
+    /// Every Brief attachment file this copy names is among `files`.
+    fn attachments_held(&self, files: &[FileEntry]) -> Result<()> {
+        let held: BTreeSet<&str> = files.iter().filter_map(|file| file.path.strip_prefix("brief-attachments/")).collect();
+        if let Some(missing) = self.attachments.iter().find(|sha| !held.contains(sha.as_str())) {
+            bail!("The database copy names the Brief attachment file {missing}, which the backup does not hold");
+        }
+        Ok(())
+    }
+}
+
+/// The files to copy (path, bytes), chosen by what the database copy names,
+/// and every name left out with its reason.
+fn select(data: &Path, copy: &Connection) -> Result<(Vec<(String, u64)>, Vec<Excluded>)> {
+    let named = Named::read(copy)?;
     let (mut files, mut excluded) = (Vec::new(), Vec::new());
     for name in names(data, "", &mut excluded)? {
         if name == DATABASE {
             continue;
         }
         if INCLUDED.contains(&name.as_str()) {
-            if fs::symlink_metadata(data.join(&name))?.is_dir() {
-                walk(data, &name, &mut files, &mut excluded)?;
-            } else {
+            if !fs::symlink_metadata(data.join(&name))?.is_dir() {
                 excluded.push(Excluded { path: name, reason: NOT_FOLDER.into() });
+                continue;
+            }
+            for entry in names(data, &name, &mut excluded)? {
+                let path = joined(&name, &entry);
+                match named.decide(&name, &entry) {
+                    Ok(()) => walk(data, &name, &path, &mut files, &mut excluded)?,
+                    Err(reason) => excluded.push(Excluded { path, reason: reason.into() }),
+                }
             }
         } else if let Some((_, reason)) = EXCLUDED.iter().find(|(known, _)| *known == name) {
             excluded.push(Excluded { path: name, reason: (*reason).into() });
@@ -323,6 +577,8 @@ fn plan(data: &Path) -> Result<(Vec<(String, u64)>, Vec<Excluded>)> {
             excluded.push(Excluded { path: name, reason: OTHER.into() });
         }
     }
+    let chosen: Vec<FileEntry> = files.iter().map(|(path, bytes)| FileEntry { path: path.clone(), bytes: *bytes, sha256: String::new() }).collect();
+    named.check(&chosen).context("The Workspace does not hold what its database names")?;
     Ok((files, excluded))
 }
 
@@ -345,17 +601,22 @@ fn joined(rel: &str, name: &str) -> String {
     if rel.is_empty() { name.into() } else { format!("{rel}/{name}") }
 }
 
-fn walk(root: &Path, rel: &str, files: &mut Vec<(String, u64)>, excluded: &mut Vec<Excluded>) -> Result<()> {
-    for name in names(root, rel, excluded)? {
-        let path = joined(rel, &name);
-        let meta = fs::symlink_metadata(root.join(&path)).with_context(|| format!("Cannot read {path}"))?;
-        if meta.is_file() {
-            files.push((path, meta.len()));
-        } else if meta.is_dir() {
-            walk(root, &path, files, excluded)?;
-        } else {
-            excluded.push(Excluded { path, reason: SPECIAL.into() });
+/// `rel`, a file or a folder in one of the copied folders (`folder`), with
+/// everything in it but what `Named::skip` leaves out.
+fn walk(root: &Path, folder: &str, rel: &str, files: &mut Vec<(String, u64)>, excluded: &mut Vec<Excluded>) -> Result<()> {
+    let meta = fs::symlink_metadata(root.join(rel)).with_context(|| format!("Cannot read {rel}"))?;
+    if meta.is_file() {
+        files.push((rel.to_owned(), meta.len()));
+    } else if meta.is_dir() {
+        for name in names(root, rel, excluded)? {
+            let path = joined(rel, &name);
+            match Named::skip(folder, &name) {
+                Some(reason) => excluded.push(Excluded { path, reason: reason.into() }),
+                None => walk(root, folder, &path, files, excluded)?,
+            }
         }
+    } else {
+        excluded.push(Excluded { path: rel.to_owned(), reason: SPECIAL.into() });
     }
     Ok(())
 }
@@ -391,14 +652,14 @@ fn check_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-fn read_manifest(dir: &Path) -> Result<Manifest> {
+pub(crate) fn read_manifest(dir: &Path) -> Result<Manifest> {
     let path = dir.join(MANIFEST);
     let meta = fs::symlink_metadata(&path).with_context(|| format!("{} has no {MANIFEST}; it is not a Workspace backup", dir.display()))?;
     ensure!(meta.is_file() && meta.len() <= 64 * 1024 * 1024, "{MANIFEST} is not a regular file of at most 64 MiB");
     let value: Value = serde_json::from_slice(&fs::read(&path)?).context("The backup manifest is not JSON")?;
     ensure!(value["format"] == FORMAT, "{} is not a Workspace backup (format {})", dir.display(), value["format"]);
-    ensure!(value["version"] == VERSION,
-        "This backup has format version {}; this Core reads version {VERSION}. Use the Core that made it", value["version"]);
+    ensure!(value["version"].as_u64().is_some_and(|v| (OLDEST as u64..=VERSION as u64).contains(&v)),
+        "This backup has format version {}; this Core reads versions {OLDEST} to {VERSION}. Use the Core that made it", value["version"]);
     serde_json::from_value(value).context("The backup manifest is not one this Core can read")
 }
 
@@ -456,10 +717,9 @@ fn agrees(facts: &Facts, manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
-/// Copies the Workspace database whole, in one pass under one read
-/// transaction, then removes the credentials from the copy and leaves no
-/// trace of them in its free pages.
-fn copy_database(source: &Connection, path: &Path) -> Result<(Database, usize, String)> {
+/// Copies the database `source` reads, whole, in one pass under one read
+/// transaction, into the new file `path`.
+fn copy_snapshot(source: &Connection, path: &Path) -> Result<()> {
     drop(new_file(path)?);
     let mut target = Connection::open(path)?;
     {
@@ -467,7 +727,15 @@ fn copy_database(source: &Connection, path: &Path) -> Result<(Database, usize, S
         let step = backup.step(-1)?;
         ensure!(matches!(step, rusqlite::backup::StepResult::Done), "The database could not be copied in one pass");
     }
-    // One file, no write-ahead log beside it; Core turns WAL on when it opens it.
+    target.close().map_err(|(_, error)| error)?;
+    Ok(())
+}
+
+/// Readies a database copy: one file with no write-ahead log beside it (Core
+/// turns WAL on when it opens it), the credentials removed and no trace of
+/// them left in its free pages, and the copy checked whole.
+fn finish_copy(path: &Path) -> Result<(Database, usize, String)> {
+    let target = Connection::open(path)?;
     target.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA secure_delete=ON;")?;
     let removed = target.execute("DELETE FROM workspace_meta WHERE key GLOB ?1", [CREDENTIALS])?;
     target.execute_batch("VACUUM")?;
@@ -570,7 +838,7 @@ fn new_folder(path: &Path) -> Result<(PathBuf, PathBuf)> {
 }
 
 /// Where a restore may go: a new folder, or an empty one (the flag).
-fn restore_target(path: &Path) -> Result<(PathBuf, PathBuf, bool)> {
+pub(crate) fn restore_target(path: &Path) -> Result<(PathBuf, PathBuf, bool)> {
     let (parent, full) = beside(path)?;
     match fs::symlink_metadata(&full) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((parent, full, false)),
@@ -587,7 +855,7 @@ fn restore_target(path: &Path) -> Result<(PathBuf, PathBuf, bool)> {
     }
 }
 
-fn beside(path: &Path) -> Result<(PathBuf, PathBuf)> {
+pub(crate) fn beside(path: &Path) -> Result<(PathBuf, PathBuf)> {
     let name = match path.components().next_back() {
         Some(Component::Normal(name)) => name.to_owned(),
         _ => bail!("{} does not name a folder", path.display()),
@@ -607,7 +875,7 @@ thread_local! {
     static AVAILABLE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
-fn room(path: &Path, required: u64) -> Result<()> {
+pub(crate) fn room(path: &Path, required: u64) -> Result<()> {
     #[cfg(test)]
     if let Some(available) = AVAILABLE.with(|cell| cell.get()) {
         ensure!(available >= required, "Not enough space: need {required} bytes, available {available} bytes");

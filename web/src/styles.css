@@ -3269,3 +3269,40 @@ p {
 :root[data-keyboard] .app.phone .turn-dock {
   display: none;
 }
+/* When the keyboard or a phone held sideways leaves the panel less room
+   than the composer area needs, the composer and its Send row stay on
+   screen whole (T-170: Safari showed them cut off below the keyboard and
+   below a sideways screen). The notices above the composer give way and
+   scroll within what is left, down to nothing (Reconnect is also in the
+   conversation's menu); a long draft scrolls inside the editor, kept to a
+   part of the short screen but never below its one empty line (64px). */
+.app.phone .composer-area {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 1;
+  min-height: 0;
+}
+.app.phone .composer-area > .composer-notices {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.app.phone .composer-area > :is(.composer, .composer-footnote) {
+  flex: none;
+}
+:root[data-keyboard] .app.phone .pasted-text-composer .cm-scroller {
+  max-height: max(64px, calc(var(--visual-height, 100dvh) * 0.3));
+}
+@media (max-height: 500px) {
+  .app.phone .pasted-text-composer .cm-scroller {
+    max-height: max(64px, 20dvh);
+  }
+}
+/* A short screen can leave the conversation itself no height; its dock
+   buttons, kept at its foot, then rose over the conversation's header and
+   covered its menu, where Reconnect also is. The header stays above them;
+   an open dock and its scrim still cover it. */
+.app.phone .conversation-header {
+  position: relative;
+  z-index: 5;
+}

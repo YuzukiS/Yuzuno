@@ -1087,6 +1087,48 @@ test("a step Core refuses or fails ends the chain once, with its reason, and is 
   } finally { g.w.close(); }
 });
 
+// Phone access is one of Settings' editors (T-185 in T-187's Settings): its
+// card under Connections & devices opens it in place. It reads Core's view
+// only while it is shown, and again each time it is shown.
+test("phone access opens from Connections & devices and reads Core's view each time it is shown", async () => {
+  const f = await mount();
+  const view = JSON.parse(
+    await readFile(new URL("./fixtures/remote-access-views.json", import.meta.url), "utf8"),
+  ).appliedVerified;
+  const answer = f.w.fetch;
+  f.w.fetch = async (url, init = {}) => {
+    if (!url.includes("/api/remote-access")) return answer(url, init);
+    f.calls.push({ url, method: init.method || "GET" });
+    return { ok: true, status: 200, json: async () => structuredClone(view), text: async () => JSON.stringify(view) };
+  };
+  const reads = () => f.calls.filter((c) => c.url.includes("/api/remote-access")).length;
+  const editor = () => f.w.document.querySelector("#settings-editor-remote");
+  const openPhone = async () => {
+    f.w.document.querySelector("#settings-tab-connections").click();
+    assert.ok(await f.press("Open Phone & remote access"), "Connections & devices offers phone access");
+    assert.ok(await until(() => editor() && !editor().hidden && /pc\.tail0\.ts\.net/.test(editor().textContent)), "the phone editor shows Core's view");
+  };
+  try {
+    await f.open();
+    f.w.document.querySelector("#settings-tab-connections").click();
+    assert.ok(await until(() => !!f.button("Open Phone & remote access")));
+    assert.equal(reads(), 0, "finding the setting reads nothing");
+    await openPhone();
+    assert.equal(reads(), 1);
+    f.w.document.querySelector("#settings-tab-updates").click();
+    assert.ok(await until(() => editor()?.hidden === true), "another category hides it, still mounted");
+    await polls(f);
+    assert.equal(reads(), 1, "hidden, it reads nothing");
+    await openPhone();
+    assert.ok(await until(() => reads() === 2), "shown again, it reads Core's view again");
+    await f.close();
+    await wait(300);
+    assert.equal(reads(), 2, "closed, it reads nothing");
+    assert.deepEqual(f.calls.filter((c) => c.url.includes("/api/remote-access") && c.method !== "GET"), []);
+    assert.deepEqual(f.errors, []);
+  } finally { f.w.close(); }
+});
+
 // Data & storage is one of Settings' editors (T-193): its card under Data,
 // privacy & recovery opens it in place. It reads Core's overview only while
 // it is shown, and again each time it is shown.
@@ -1096,7 +1138,7 @@ test("data & storage opens from Data, privacy & recovery and reads Core's overvi
     format: 1, readAt: "2026-10-24T22:00:00Z", dataDir: "/fixture/data",
     entries: [{ name: "jobs", what: "jobs", kind: "folder", backup: "copied", backupReason: null }],
     unreadable: null, database: { pageSize: 4096, pages: 10, freePages: 0 }, jobs: { total: 0, unfinished: 0 },
-    native: [], notInBackup: [], measurement: null, bounds: { entries: 1000000, seconds: 30 },
+    native: [], notInBackup: [],
   };
   const answer = f.w.fetch;
   f.w.fetch = async (url, init = {}) => {
