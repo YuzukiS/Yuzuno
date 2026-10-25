@@ -25,6 +25,7 @@ import { Modal } from "./components";
 import { DesktopUpdate } from "./DesktopUpdate";
 import { DiagnosticsCopy } from "./RecoveryPage";
 import { HistoryComposition } from "./HistoryComposition";
+import { DraftExport } from "./DraftExport";
 import { ReviewSettings } from "./ReviewSettings";
 import { AgentDefaults } from "./AgentDefaults";
 import { HomePresentationSettings } from "./HomePresentationSettings";
@@ -984,6 +985,7 @@ export function WorkspaceUpdates({
           {tab === "updates" && <DesktopUpdate preserveDrafts={preserveDrafts} />}
           {tab === "diagnostics" && <DiagnosticsCopy />}
           {tab === "history" && <HistoryComposition />}
+          {tab === "drafts" && <DraftExport active={open && visible} agents={navigation?.agents ?? null} />}
           {tab === "runtime" && (
             <RuntimeSection
               active={open && visible}

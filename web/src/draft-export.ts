@@ -1,0 +1,83 @@
+// T-193 slice 3: one Agent's draft saved on this device, as a text file the
+// user saves. Read through DraftStorage (composer-draft.ts) on storage that
+// cannot be written; nothing here changes, sends or clears a draft.
+import {
+  DraftStorage,
+  savedDraftAgents,
+  savedDraftSummary,
+  type ComposerDraft,
+  type SavedDraftSummary,
+} from "./composer-draft";
+
+export type DraftRow = { agentId: string; name: string; closed: boolean; summary: Exclude<SavedDraftSummary, { state: "none" }> };
+export type DraftListing =
+  | { available: false; reason: string }
+  | { available: true; rows: DraftRow[]; otherAgents: number };
+
+/** Storage that can only be read: a slip that writes fails instead of changing a draft. */
+export function readOnly(storage: Pick<Storage, "getItem">): Pick<Storage, "getItem" | "setItem" | "removeItem"> {
+  return {
+    getItem: (key) => storage.getItem(key),
+    setItem: () => {
+      throw new Error("Draft export only reads");
+    },
+    removeItem: () => {
+      throw new Error("Draft export only reads");
+    },
+  };
+}
+
+/** Drafts of this Workspace's Agents, from manifests alone: no paste body is
+ * read. Drafts of Agents this Workspace doesn't list are only counted. */
+export function listDrafts(
+  storage: Pick<Storage, "getItem" | "key" | "length"> | null,
+  agents: readonly { id: string; name: string; closedAt?: string | null }[],
+): DraftListing {
+  if (!storage) return { available: false, reason: "this browser gives Yuzuno no storage here" };
+  try {
+    const rows: DraftRow[] = [];
+    for (const agent of agents) {
+      const summary = savedDraftSummary(storage, agent.id);
+      if (summary.state !== "none") rows.push({ agentId: agent.id, name: agent.name || "Unnamed Agent", closed: !!agent.closedAt, summary });
+    }
+    const known = new Set(agents.map((agent) => agent.id));
+    const otherAgents = savedDraftAgents(storage).filter((id) => !known.has(id) && savedDraftSummary(storage, id).state !== "none").length;
+    return { available: true, rows, otherAgents };
+  } catch (error) {
+    return { available: false, reason: `this browser refused to read its storage (${error instanceof Error ? error.message : String(error)})` };
+  }
+}
+
+/** The whole saved draft of one Agent: its text and pasted texts in order;
+ * images and skills are named by count and name only. */
+export function draftExportText(draft: ComposerDraft, agentName: string, at = new Date()): string {
+  const lines = [
+    `Yuzuno draft for ${agentName}`,
+    `Exported ${at.toISOString()} from the copy saved on this device. Text typed since it was last saved is not included.`,
+  ];
+  if (draft.images?.length)
+    lines.push(`Images in the draft: ${draft.images.length} (references only; the images themselves are not in this file)`);
+  if (draft.skills?.length) lines.push(`Skills chosen: ${draft.skills.map((skill) => skill.name).join(", ")}`);
+  const body = draft.parts
+    .map((part) =>
+      part.kind === "text"
+        ? part.text
+        : `\n[Pasted text #${part.number}, ${part.lines} ${part.lines === 1 ? "line" : "lines"}]\n${part.text}\n[End of pasted text #${part.number}]\n`,
+    )
+    .join("");
+  return `${lines.join("\n")}\n\n${body}`;
+}
+
+/** One Agent's saved draft, opened only when the user chooses it. */
+export function exportDraft(storage: Pick<Storage, "getItem">, agentId: string, agentName: string): { text: string } | { error: string } {
+  try {
+    return { text: draftExportText(new DraftStorage(readOnly(storage)).load(agentId), agentName) };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export function draftFileName(agentName: string, at = new Date()): string {
+  const name = agentName.replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "agent";
+  return `yuzuno-draft-${name}-${at.toISOString().replace(/[:.]/g, "-")}.txt`;
+}
