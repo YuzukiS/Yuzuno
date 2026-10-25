@@ -100,28 +100,6 @@ pub fn unusable(saved: &Saved) -> Option<&str> {
     }
 }
 
-/// Whether the Workspace that answered is the one an entry was saved for.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Identity {
-    Same,
-    /// Another Workspace at this entry's address. A desktop Core is often
-    /// told apart by its port, but one port serves one Workspace at a time:
-    /// the same `127.0.0.1:4317` answers as another Workspace after it is
-    /// set up again, which is the same origin and so the same stored state.
-    Changed,
-    /// Nothing to compare: never opened here, or a Core too old to name its
-    /// Workspace. Not the same as having compared them.
-    Unknown,
-}
-
-pub fn identity(known: Option<&str>, answered: Option<&str>) -> Identity {
-    match (known, answered) {
-        (Some(known), Some(answered)) if known == answered => Identity::Same,
-        (Some(_), Some(_)) => Identity::Changed,
-        _ => Identity::Unknown,
-    }
-}
-
 fn name_ok(name: &str) -> bool {
     !name.is_empty() && name.chars().count() <= NAME_LIMIT
 }
@@ -130,17 +108,48 @@ fn workspace_ok(workspace: &str) -> bool {
     !workspace.is_empty() && workspace.len() <= WORKSPACE_LIMIT
 }
 
-/// The `workspaceId` a Core answered with, when it is one this keeps.
-///
-/// A Core that sends none answers an empty string here, and one may send
-/// more than this keeps. Neither is a Workspace this can be compared with or
-/// written down: both are **absent**, not a value. Storing one would make
-/// the record unreadable on the next launch -- and a record that cannot be
-/// read refuses every connection, rename and removal -- while comparing one
-/// would call an older Core at a saved address a different Workspace.
-pub fn accepted_workspace(answered: &str) -> Option<&str> {
-    workspace_ok(answered).then_some(answered)
+/// What a Core's answer lets this do with the entry saved at its address.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Opening {
+    /// Open it, and record this identity for that entry. `None` when there
+    /// is none to record and none was saved: nothing is claimed either way.
+    Open(Option<String>),
+    /// It named another Workspace than the one saved here.
+    Changed,
+    /// It named none, and this address is bound to one. The binding is not
+    /// downgraded to unknown so the door can be opened: an answer that names
+    /// nothing cannot show this is the same Workspace, and opening it anyway
+    /// is the draft-sharing case this refuses. An entry bound to nothing is
+    /// a different matter -- there is nothing to contradict.
+    Unverified,
+    /// It named one longer than this keeps. Refused outright rather than
+    /// kept as absent: storing it would make the saved list unreadable, and
+    /// treating it as absent would open an address whose answer this cannot
+    /// check. The record is left as it is.
+    Unkeepable,
 }
+
+/// `known` is what the entry at this address recorded; `answered` is what
+/// the Core just said, where a Core that names none says nothing at all.
+pub fn opening(known: Option<&str>, answered: &str) -> Opening {
+    if answered.is_empty() {
+        return match known {
+            Some(_) => Opening::Unverified,
+            None => Opening::Open(None),
+        };
+    }
+    if !workspace_ok(answered) {
+        return Opening::Unkeepable;
+    }
+    match known {
+        Some(known) if known != answered => Opening::Changed,
+        _ => Opening::Open(Some(answered.to_owned())),
+    }
+}
+
+
+
+
 
 /// A name for a Workspace nobody has named: its host and port, which is what
 /// was typed. A desktop Core is usually on loopback, where the port is what
@@ -504,40 +513,25 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_this_does_not_keep_is_absent_rather_than_a_value() {
-        // A Core that sends none answers an empty string here.
-        assert_eq!(accepted_workspace(""), None);
-        assert_eq!(accepted_workspace(&"w".repeat(WORKSPACE_LIMIT + 1)), None);
-        assert_eq!(accepted_workspace("w-one"), Some("w-one"));
-        // Absent compares as unknown, so an older Core at a saved address is
-        // not called a different Workspace.
-        assert_eq!(identity(Some("w-one"), accepted_workspace("")), Identity::Unknown);
-    }
-
-    #[test]
-    fn nothing_is_written_that_could_not_be_read_back() {
-        // The failure this guards: an entry written with a workspaceId the
-        // reader rejects makes the whole record unusable, and a record that
-        // cannot be read refuses every connection, rename and removal.
-        for bad in ["", &"w".repeat(WORKSPACE_LIMIT + 1)] {
-            let entries = vec![entry("core-1", "Home", "http://127.0.0.1:4317", Some(bad), None)];
-            let refused = record(&entries, Some("core-1")).unwrap_err();
-            assert!(refused.contains("could not read back"), "{refused}");
-        }
-        // A name beyond what the reader takes is refused the same way.
-        let long = vec![entry("core-1", &"n".repeat(NAME_LIMIT + 1), "http://127.0.0.1:4317", None, None)];
-        assert!(record(&long, None).unwrap_err().contains("could not read back"));
-        // And what it does accept still writes.
-        let fine = vec![entry("core-1", "Home", "http://127.0.0.1:4317", Some("w-one"), None)];
-        assert!(record(&fine, Some("core-1")).is_ok());
-    }
-
-    #[test]
-    fn the_workspace_that_answered_is_compared_with_the_one_saved_for_it() {
-        assert_eq!(identity(Some("w-one"), Some("w-one")), Identity::Same);
-        assert_eq!(identity(Some("w-one"), Some("w-two")), Identity::Changed);
-        assert_eq!(identity(None, Some("w-one")), Identity::Unknown);
-        assert_eq!(identity(Some("w-one"), None), Identity::Unknown);
+    fn a_bound_address_is_never_opened_on_an_answer_that_cannot_confirm_it() {
+        // Bound here, and the Core names none: unverifiable, not "unknown so
+        // go ahead". This is the case a laxer reading of the earlier fix got
+        // wrong -- it turned a refusal into an opening.
+        assert_eq!(opening(Some("w-one"), ""), Opening::Unverified);
+        // Bound here, and it names another: changed.
+        assert_eq!(opening(Some("w-one"), "w-two"), Opening::Changed);
+        // Bound here, and it names the same: open, and keep it.
+        assert_eq!(opening(Some("w-one"), "w-one"), Opening::Open(Some("w-one".into())));
+        // Nothing bound: an older Core that names none still opens, and
+        // nothing is recorded for it.
+        assert_eq!(opening(None, ""), Opening::Open(None));
+        assert_eq!(opening(None, "w-one"), Opening::Open(Some("w-one".into())));
+        // Longer than this keeps: refused either way, bound or not. Keeping
+        // it would make the list unreadable; calling it absent would open an
+        // address whose answer cannot be checked.
+        let long = "w".repeat(WORKSPACE_LIMIT + 1);
+        assert_eq!(opening(Some("w-one"), &long), Opening::Unkeepable);
+        assert_eq!(opening(None, &long), Opening::Unkeepable);
     }
 
     #[test]

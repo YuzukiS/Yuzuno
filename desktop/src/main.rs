@@ -535,15 +535,26 @@ async fn open_core(
     // send more than this keeps: both are absent, not a value. Comparing one
     // would call an older Core at a saved address a different Workspace, and
     // writing one would make the record unreadable from then on.
-    let answered = entries::accepted_workspace(&workspace);
-    if let Some(entry) = saved.entries().iter().find(|entry| entry.url == core) {
-        if entries::identity(entry.workspace_id.as_deref(), answered) == entries::Identity::Changed {
+    let here = saved.entries().iter().find(|entry| entry.url == core);
+    let named = here.map(|entry| entry.name.clone()).unwrap_or_else(|| entries::name_for(&core));
+    let answered = match entries::opening(here.and_then(|entry| entry.workspace_id.as_deref()), &workspace) {
+        entries::Opening::Open(answered) => answered,
+        entries::Opening::Changed => {
             return Err(format!(
-                "“{}” answered as a different workspace than the one saved under that name, so it was not opened. Its conversations, drafts and reading places are that other workspace's. Save it at an address of its own, or remove the saved workspace first — that forgets its drafts here along with it.",
-                entry.name
-            ));
+                "“{named}” answered as a different workspace than the one saved under that name, so it was not opened. Its conversations, drafts and reading places are that other workspace's. Save it at an address of its own, or remove the saved workspace first — that forgets its drafts here along with it."
+            ))
         }
-    }
+        entries::Opening::Unverified => {
+            return Err(format!(
+                "“{named}” answered without saying which workspace it is, so this app could not check it is the one saved at that address and did not open it. Nothing of what is saved has been changed."
+            ))
+        }
+        entries::Opening::Unkeepable => {
+            return Err(format!(
+                "“{named}” answered with a workspace identifier longer than this app keeps, so it was not opened and nothing was written. What is saved is as it was."
+            ))
+        }
+    };
     // Only a Core on this computer can say where it is installed; the Mac
     // app and other platforms never start one.
     let offered = if cfg!(windows) && is_loopback(&core) {
@@ -615,7 +626,7 @@ async fn open_core(
         None => previous.filter(|saved| saved.core == core && saved.workspace_id == workspace),
     };
     *start = kept;
-    remember_opened(window.app_handle(), &core, answered, start.as_ref());
+    remember_opened(window.app_handle(), &core, answered.as_deref(), start.as_ref());
     Ok(desktop_url(&core).into())
 }
 
