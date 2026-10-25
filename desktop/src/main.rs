@@ -245,6 +245,39 @@ struct ConnectionInfo {
     start_distro: Option<String>,
     /// This computer's start entry has accepted that installation before.
     start_confirmed: bool,
+    /// The Workspaces saved here, and which one was last opened. Saved is
+    /// not reachable: this says what is written down, never that any of it
+    /// answers. `savedError` says the list could not be read, which is not
+    /// an empty list.
+    saved: Vec<SavedEntry>,
+    selected: Option<String>,
+    saved_error: Option<String>,
+}
+
+/// One saved Workspace, as the connection page reads it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedEntry {
+    id: String,
+    name: String,
+    url: String,
+    /// What the Core there last answered with, when one has.
+    workspace_id: Option<String>,
+    /// Whether this is the one entry that may start a Core. Only a Core on
+    /// this computer can be started, and only the Windows app starts one.
+    startable: bool,
+}
+
+impl SavedEntry {
+    fn of(entry: &entries::Entry) -> Self {
+        Self {
+            id: entry.id.clone(),
+            name: entry.name.clone(),
+            url: entry.url.as_str().to_owned(),
+            workspace_id: entry.workspace_id.clone(),
+            startable: cfg!(windows) && entry.startable(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -318,6 +351,7 @@ fn connection_info(
         .map_err(|_| "Connection state unavailable.")?
         .clone()
         .filter(|start| start.core.as_str() == core_url);
+    let saved = read_entries(window.app_handle());
     Ok(ConnectionInfo {
         core_url,
         start_distro: shown.as_ref().map(|start| start.wsl_distro.clone()),
@@ -328,6 +362,88 @@ fn connection_info(
             .cloned()
             .filter(|_| selected.is_none()),
         auto_connect: state.first_open.swap(false, Ordering::Relaxed),
+        saved: saved.entries().iter().map(SavedEntry::of).collect(),
+        selected: match &saved {
+            entries::Saved::Entries { selected, .. } => selected.clone(),
+            _ => None,
+        },
+        saved_error: entries::unusable(&saved).map(str::to_owned),
+    })
+}
+
+/// Renames a saved Workspace. Its address, the Workspace it points at and
+/// which one may start a Core are untouched: a name is this person's label.
+#[tauri::command]
+fn rename_core(window: WebviewWindow, entry: String, name: String) -> Result<ConnectionInfo, String> {
+    require_connection_page(&window)?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Give this workspace a name.".into());
+    }
+    if name.chars().count() > entries::NAME_LIMIT {
+        return Err(format!("A name can be up to {} characters.", entries::NAME_LIMIT));
+    }
+    change_entries(&window, |list| {
+        let kept = list
+            .iter_mut()
+            .find(|kept| kept.id == entry)
+            .ok_or("That workspace is not saved on this computer.")?;
+        kept.name = name.to_owned();
+        Ok(())
+    })
+}
+
+/// Forgets a saved Workspace here. It changes nothing on the Core and stops
+/// nothing it is doing; its start profile goes with it rather than to
+/// another entry.
+#[tauri::command]
+fn remove_core(window: WebviewWindow, entry: String) -> Result<ConnectionInfo, String> {
+    require_connection_page(&window)?;
+    change_entries(&window, |list| {
+        if !list.iter().any(|kept| kept.id == entry) {
+            return Err("That workspace is not saved on this computer.");
+        }
+        list.retain(|kept| kept.id != entry);
+        Ok(())
+    })
+}
+
+/// Reads the list, changes it, writes it, and answers with what the page
+/// should show now. A record that could not be read is changed by nothing:
+/// it reports no entries, so any list built from it would replace every
+/// Workspace the file still holds.
+fn change_entries(
+    window: &WebviewWindow,
+    change: impl FnOnce(&mut Vec<entries::Entry>) -> Result<(), &'static str>,
+) -> Result<ConnectionInfo, String> {
+    let saved = read_entries(window.app_handle());
+    if let Some(reason) = entries::unusable(&saved) {
+        return Err(format!(
+            "The workspaces saved on this computer could not be read ({reason}). Nothing of what is saved has been changed."
+        ));
+    }
+    let selected = match &saved {
+        entries::Saved::Entries { selected, .. } => selected.clone(),
+        _ => None,
+    };
+    let mut list = saved.entries().to_vec();
+    change(&mut list)?;
+    let selected = selected.filter(|id| list.iter().any(|kept| kept.id == *id));
+    write_entries(window.app_handle(), &list, selected.as_deref())
+        .map_err(|error| format!("This computer could not save the change ({error}). The list is as it was."))?;
+    let saved = read_entries(window.app_handle());
+    Ok(ConnectionInfo {
+        core_url: String::new(),
+        start_distro: None,
+        start_confirmed: false,
+        error: None,
+        auto_connect: false,
+        saved: saved.entries().iter().map(SavedEntry::of).collect(),
+        selected: match &saved {
+            entries::Saved::Entries { selected, .. } => selected.clone(),
+            _ => None,
+        },
+        saved_error: entries::unusable(&saved).map(str::to_owned),
     })
 }
 
@@ -711,6 +827,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             connection_info,
             connect_core,
+            rename_core,
+            remove_core,
             start_core,
             set_appearance,
             update::desktop_update_status,
