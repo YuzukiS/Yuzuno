@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Bell, Bot, Cpu, Database, FolderKanban, Palette, RefreshCw, Search, Server, type LucideIcon } from "lucide-react";
+import { ArrowRight, Bell, Bot, ChevronRight, Cpu, Database, FolderKanban, Palette, RefreshCw, Search, Server, type LucideIcon } from "lucide-react";
 import type { Agent, Project } from "./types";
 import { langTag, strings, TranslatedPart, useLanguage, useStrings } from "./i18n";
 import { entryShortTitle, findSettings, localizedCategory, localizedEntry, settingsCatalog, settingsCategories, translatedEditors, type SettingEntry, type SettingsCategory, type SettingsDestination, type SettingsEditor } from "./settings-catalog";
@@ -220,8 +220,9 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
  * effect on request. */
 function EntryAbout({ entry }: { entry: SettingEntry }) {
   const t = useStrings(text);
-  return <details className="settings-entry-about">
-    <summary><strong>{t.scope}</strong>{t.gap}{entry.scope}</summary>
+  // The daily disclosure (updates.css .update-details): a chevron, small type.
+  return <details className="settings-entry-about update-details">
+    <summary><ChevronRight size={13} aria-hidden="true" /><span><strong>{t.scope}</strong>{t.gap}{entry.scope}</span></summary>
     <p><strong>{t.source}</strong>{t.gap}{entry.source}</p>
     <p><strong>{t.effect}</strong>{t.gap}{entry.effect}</p>
   </details>;
