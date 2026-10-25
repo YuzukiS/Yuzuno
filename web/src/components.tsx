@@ -54,7 +54,7 @@ import { SubAgentAnchors } from "./SubAgentPanels";
 import { ActivityElapsed } from "./ActivityElapsed";
 import { activityStartedAt } from "./activity-time";
 import { timeMarkKey, turnFooter, type Moment } from "./conversation-time";
-import type { ClockFormat } from "./time-preferences";
+import type { TimeDisplay } from "./time-preferences";
 import { MessageTime, TurnFooter } from "./ConversationTime";
 import { AgentReply } from "./intelligent-ui/AgentReply";
 import { TurnResults } from "./intelligent-ui/TurnResults";
@@ -688,7 +688,7 @@ export function Turn({
   isLatestAgentTurn = false,
   loadedNumbering = false,
   timeMarks,
-  clock,
+  time,
   backgroundShells,
 }: {
   turn: NativeTurn;
@@ -711,8 +711,8 @@ export function Turn({
   loadedNumbering?: boolean;
   /** Minute marks for the whole conversation, from conversationTimeMarks. */
   timeMarks?: ReadonlyMap<string, Moment>;
-  /** This device's clock format, which `timeMarks` were written with too. */
-  clock: ClockFormat;
+  /** How this device writes times, as `timeMarks` were written too. */
+  time: TimeDisplay;
   /** Shown only on the latest agent turn. */
   backgroundShells?: BackgroundShells | null;
 }) {
@@ -742,7 +742,7 @@ export function Turn({
   );
   const running = /inProgress|running/.test(turn.status);
   const timeOf = (item: NativeItem) => timeMarks?.get(timeMarkKey(turn.id, item.id));
-  const footer = running ? [] : turnFooter(turn, isLatestAgentTurn ? backgroundShells : null, clock);
+  const footer = running ? [] : turnFooter(turn, isLatestAgentTurn ? backgroundShells : null, time);
   const footerAt = blocks.reduce(
     (last, block, i) => block.kind === "message" && block.item.phase !== "commentary" ? i : last, -1,
   );

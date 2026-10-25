@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useClockFormat } from "../time-preferences";
+import { useTimeDisplay } from "../time-preferences";
 import {
   ArrowDown,
   ArrowUp,
@@ -171,7 +171,7 @@ function History30({
   /** Not in the design preview: who can be replied to, and which entries a reply may refer to. */
   reply?: { workspaceId: string; agents: Agent[]; referable: Section[] };
 }) {
-  const clock = useClockFormat();
+  const time = useTimeDisplay();
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   if (!sections.length) return null;
   return (
@@ -199,7 +199,7 @@ function History30({
                   <span className={`home-kind kind-${section.kind}`}>{section.kind}</span>
                   {section.title}
                   <small>
-                    {section.owner.name} · <span title={absolute(section.updatedAt, clock)}>{relative(section.updatedAt)}</span>
+                    {section.owner.name} · <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt)}</span>
                   </small>
                 </summary>
                 {/* Read only when opened: history never costs the live view. */}
@@ -251,7 +251,7 @@ export function HomePanel({
   onChanged: () => void;
   onSeen: (projectId: string, marks: SeenMark[]) => Promise<void>;
 }) {
-  const clock = useClockFormat();
+  const time = useTimeDisplay();
   const id = panel.project.id;
   const [choice, setChoice] = useState(() => readPanelChoice(workspaceId, id));
   const [more, setMore] = useState(false);
@@ -488,7 +488,7 @@ export function HomePanel({
                       {item.agentName}
                     </button>
                     <span className="home-error-message">{item.message}</span>
-                    <small title={absolute(item.at, clock)}>{relative(item.at)}</small>
+                    <small title={absolute(item.at, time)}>{relative(item.at)}</small>
                   </div>
                 ))}
               </div>
@@ -527,7 +527,7 @@ export function HomePanel({
                       {item.agentName}
                     </button>{" "}
                     {missingText[item.outcome] || "ended a turn without a recorded Brief update"}
-                    <small title={absolute(item.at, clock)}> · {relative(item.at)}</small>
+                    <small title={absolute(item.at, time)}> · {relative(item.at)}</small>
                   </li>
                 ))}
               </ul>
