@@ -307,15 +307,18 @@ struct RemoveRequest {
 
 /// Removes one backup the user confirmed. A request the folder as it is now
 /// does not allow is refused at once; one it allows starts the operation,
-/// which judges again before it removes anything.
+/// which judges again before it removes anything. A request already made
+/// gets its operation back (or a conflict), whatever the folder holds now.
 async fn remove_route(State(ws): State<Arc<Workspace>>, Json(body): Json<RemoveRequest>) -> Result<Response, ApiError> {
     let folder = online::absolute("folder", &body.folder)?;
     let workspace = ws.stored(|store| store.workspace_id()).await?;
     let operations = ws.backups.all();
-    let (f, n, h, w) = (folder.clone(), body.name.clone(), body.manifest_sha256.clone(), workspace.clone());
-    let judged = tokio::task::spawn_blocking(move || judge(&f, body.keep, &n, &h, &w, &operations, MAX_ENTRIES)).await?;
-    if let Err(error) = judged {
-        return Err(anyhow::anyhow!("{error:#}; nothing was removed").into());
+    if !operations.iter().any(|op| op.request_id == body.request_id) {
+        let (f, n, h, w) = (folder.clone(), body.name.clone(), body.manifest_sha256.clone(), workspace.clone());
+        let judged = tokio::task::spawn_blocking(move || judge(&f, body.keep, &n, &h, &w, &operations, MAX_ENTRIES)).await?;
+        if let Err(error) = judged {
+            return Err(anyhow::anyhow!("{error:#}; nothing was removed").into());
+        }
     }
     let request = json!({"folder": folder, "keep": body.keep, "name": body.name, "manifestSha256": body.manifest_sha256});
     let backups = ws.backups.clone();

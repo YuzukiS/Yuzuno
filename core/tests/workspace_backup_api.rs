@@ -201,4 +201,24 @@ async fn a_retention_preview_lists_a_folder_only_from_cores_own_port_and_changes
     let reason = refused["error"].as_str().unwrap();
     assert!(reason.contains("not one that could be removed now: One of the latest 1") && reason.ends_with("nothing was removed"), "{refused}");
     assert!(folder.join("first/manifest.json").is_file() && folder.join("photos").is_dir(), "nothing was removed");
+    // With a newer backup, the older one is removed once; the same request again gets that operation back.
+    let (status, started) = call(&local, "POST", "/api/workspace/backups", Some(json!({"requestId":"b2","to":folder.join("second")})), false).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    assert_eq!(finished(&local, started["operation"]["id"].as_str().unwrap()).await["state"], "succeeded");
+    let (_, preview) = call(&local, "POST", "/api/workspace/backup/retention/preview", Some(json!({"folder": folder, "keep": 1})), false).await;
+    let first = preview["entries"].as_array().unwrap().iter().find(|e| e["name"] == "first").unwrap().clone();
+    assert_eq!(first["verdict"], "remove", "{preview}");
+    let remove = json!({"requestId":"rm2","folder":folder,"keep":1,"name":"first","manifestSha256":first["manifestSha256"]});
+    let (status, started) = call(&local, "POST", "/api/workspace/backup/retention/remove", Some(remove.clone()), false).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{started}");
+    let id = started["operation"]["id"].as_str().unwrap().to_owned();
+    let done = finished(&local, &id).await;
+    assert_eq!((done["state"].clone(), done["result"]["keptCheckedName"].clone()), (json!("succeeded"), json!("second")), "{done}");
+    assert!(!folder.join("first").exists() && folder.join("second/manifest.json").is_file());
+    let (status, again) = call(&local, "POST", "/api/workspace/backup/retention/remove", Some(remove), false).await;
+    assert_eq!((status, again["operation"]["id"].as_str(), again["operation"]["state"].as_str()), (StatusCode::ACCEPTED, Some(id.as_str()), Some("succeeded")), "{again}");
+    let other = json!({"requestId":"rm2","folder":folder,"keep":1,"name":"second","manifestSha256":"other"});
+    let (status, conflict) = call(&local, "POST", "/api/workspace/backup/retention/remove", Some(other), false).await;
+    assert_eq!((status, conflict["code"].as_str()), (StatusCode::CONFLICT, Some("idempotency_conflict")), "{conflict}");
+    assert!(folder.join("second/manifest.json").is_file(), "the newest is never removed");
 }
