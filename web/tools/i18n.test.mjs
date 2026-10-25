@@ -52,7 +52,7 @@ test("Settings' search finds an entry by its words in either language", () => {
   assert.deepEqual(titles("外观与交互 发送键"), ["Sending messages"]);
 });
 
-test("the editors this version translates are the device's own: Language, Sending messages, Clock & time zone, Keyboard shortcuts", () => {
-  assert.deepEqual([...translatedEditors], ["language", "input", "time", "shortcuts"]);
+test("the editors this version translates: Language, Sending messages, Clock & time zone, Keyboard shortcuts, Appearance, Move preferences", () => {
+  assert.deepEqual([...translatedEditors], ["language", "input", "time", "shortcuts", "appearance", "transfer"]);
   for (const editor of translatedEditors) assert.ok(settingsCatalog.some((entry) => entry.target.kind === "editor" && entry.target.editor === editor), editor);
 });

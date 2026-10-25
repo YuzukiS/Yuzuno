@@ -97,26 +97,38 @@ export const named = (name: string) => (name.length > NAME_LENGTH ? `${name.slic
 /** Reads an Appearance export. A file that is not one, or of a version this
  * device does not read, is refused as a whole; otherwise each field is taken
  * only when this device would read its value back as saved. */
-export function readAppearanceFile(text: string): { contents: AppearanceFileContents } | { error: string } {
+/** Why a file was refused as a whole: its English (`error`), and the same
+ * as a code with what the words need, for the interface language (T-189). */
+export type FileRefusal = {
+  error: string;
+  code: "notJson" | "notExport" | "newer" | "unknownVersion" | "empty";
+  /** For "newer": the file's version, and the one this version reads. */
+  version?: number;
+  reads?: number;
+};
+
+export function readAppearanceFile(text: string): { contents: AppearanceFileContents } | FileRefusal {
   let data: unknown;
   try {
     data = JSON.parse(text);
   } catch {
-    return { error: "This file isn’t JSON, so it isn’t an Appearance export" };
+    return { error: "This file isn’t JSON, so it isn’t an Appearance export", code: "notJson" };
   }
   if (!isObject(data) || data.format !== APPEARANCE_FILE) {
-    return { error: "This file isn’t a Yuzuno Appearance export" };
+    return { error: "This file isn’t a Yuzuno Appearance export", code: "notExport" };
   }
   if (data.version !== APPEARANCE_FILE_VERSION) {
-    return {
-      error:
-        Number.isInteger(data.version) && (data.version as number) > APPEARANCE_FILE_VERSION
-          ? `This file is from a newer Yuzuno (Appearance file version ${data.version}); this version reads version ${APPEARANCE_FILE_VERSION}`
-          : "This file’s version isn’t one Yuzuno knows",
-    };
+    return Number.isInteger(data.version) && (data.version as number) > APPEARANCE_FILE_VERSION
+      ? {
+          error: `This file is from a newer Yuzuno (Appearance file version ${data.version}); this version reads version ${APPEARANCE_FILE_VERSION}`,
+          code: "newer",
+          version: data.version as number,
+          reads: APPEARANCE_FILE_VERSION,
+        }
+      : { error: "This file’s version isn’t one Yuzuno knows", code: "unknownVersion" };
   }
   const saved = data.appearance;
-  if (!isObject(saved)) return { error: "This file holds no Appearance settings" };
+  if (!isObject(saved)) return { error: "This file holds no Appearance settings", code: "empty" };
   const group = readAppearanceGroup(saved, Object.keys(data).filter((name) => !TOP.includes(name)));
   return {
     contents: {
