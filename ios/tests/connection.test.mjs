@@ -251,6 +251,51 @@ test('two saved Workspaces are listed apart, by workspace, though they share a n
   } finally { dom.window.close(); }
 });
 
+test('an answer that cannot confirm the saved Workspace opens nothing', async () => {
+  // The regression: a Core at an address already bound to a Workspace that
+  // names none -- or names one too long to keep -- used to be let through,
+  // and the page navigated to the Core's own origin, which is the storage
+  // the refusal exists to keep apart.
+  for (const [identity, expected] of [
+    ['unverified', /did not say which workspace it is/],
+    ['unkeepable', /longer than this iPhone keeps/],
+    // A reason this build of the page does not know must still not open.
+    ['something-new', /did not open that workspace/],
+  ]) {
+    const calls = [];
+    const dom = await mount(async (command, args) => {
+      calls.push({ command, args });
+      if (command === 'saved_cores') return two;
+      if (command === 'connect_core')
+        return {
+          url: args.url,
+          opened: false,
+          identity,
+          profileName: 'Home',
+          savedWorkspaceId: 'w-one',
+          workspaceId: identity === 'unverified' ? null : 'w-' + 'x'.repeat(300),
+        };
+    });
+    try {
+      const document = dom.window.document;
+      document.querySelector('#saved-list li .saved-open').click();
+      await settle();
+      const status = document.querySelector('[role="status"]');
+      assert.match(status.textContent, expected, identity);
+      assert.equal(status.dataset.error, 'true', identity);
+      // Nothing claimed it opened. (The page navigates right after saying
+      // so, and JSDOM has no navigation to count, so what it said is the
+      // honest observable here.)
+      assert.doesNotMatch(status.textContent, /Opening your workspace|Found it/, identity);
+      // Nor did it fall through to the could-not-save path, which is where
+      // an unrecognised refusal used to land.
+      assert.doesNotMatch(status.textContent, /could not save its address/, identity);
+      // Only the one ask: a refusal is not retried.
+      assert.equal(calls.filter((call) => call.command === 'connect_core').length, 1, identity);
+    } finally { dom.window.close(); }
+  }
+});
+
 test('a saved Workspace that answers as another one is refused, not offered', async () => {
   const calls = [];
   const dom = await mount(async (command, args) => {

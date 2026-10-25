@@ -177,28 +177,55 @@ pub fn read(path: &Path) -> Saved {
     Saved::Profiles { profiles, selected }
 }
 
-/// Whether the Workspace that answered is the one a profile was saved for.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Identity {
-    /// The same Workspace: its `workspaceId` is the one saved for it.
-    Same,
+/// What the Workspace that answered lets this app do with the address.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Opening {
+    /// Open it, and record this identity for the profile. `None` when the
+    /// Core named none and nothing was saved for the address either: an
+    /// older Core still connects, and nothing is claimed about it.
+    Open(Option<String>),
     /// A different Workspace at this profile's address. A name and an
     /// address are this person's labels; the Workspace is what answered, and
     /// another one's conversations, drafts and reading places are not this
     /// one's.
     Changed,
-    /// Nothing to compare: the profile has never been opened here, or this
-    /// Core is old enough not to name its Workspace. Not the same as `Same`:
-    /// it is unknown, and is said to be.
-    Unknown,
+    /// The address is bound to a Workspace and the Core named none, so there
+    /// is nothing to check the saved one against.
+    ///
+    /// This is not `Open`. Treating "cannot be checked" as "nothing to
+    /// compare, go ahead" is how a bound address was opened on an answer
+    /// that proves nothing: a Core that simply does not say which Workspace
+    /// it is was enough to pass the refusal and reach the origin whose
+    /// stored drafts the refusal exists to keep apart. An address bound to
+    /// nothing is a different matter -- there is nothing to contradict.
+    Unverified,
+    /// The Core named one longer than this app keeps. Refused outright
+    /// rather than treated as absent: storing it would make the saved record
+    /// unreadable, and calling it absent would open an address whose answer
+    /// cannot be checked. The record is left as it is.
+    Unkeepable,
 }
 
-/// `known` is what a profile recorded; `answered` is what the Core just sent.
-pub fn identity(known: Option<&str>, answered: Option<&str>) -> Identity {
-    match (known, answered) {
-        (Some(known), Some(answered)) if known == answered => Identity::Same,
-        (Some(_), Some(_)) => Identity::Changed,
-        _ => Identity::Unknown,
+/// `known` is what the profile at this address recorded; `answered` is what
+/// the Core just said, where a Core that names none says nothing at all.
+///
+/// The answer is classified here, not thinned out before it arrives: an
+/// over-long identifier that is discarded on the way in becomes
+/// indistinguishable from a Core that named none, which is the same
+/// downgrade by a different route.
+pub fn opening(known: Option<&str>, answered: &str) -> Opening {
+    if answered.is_empty() {
+        return match known {
+            Some(_) => Opening::Unverified,
+            None => Opening::Open(None),
+        };
+    }
+    if answered.len() > WORKSPACE_LIMIT {
+        return Opening::Unkeepable;
+    }
+    match known {
+        Some(known) if known != answered => Opening::Changed,
+        _ => Opening::Open(Some(answered.to_owned())),
     }
 }
 
@@ -510,16 +537,33 @@ mod tests {
     }
 
     #[test]
-    fn the_workspace_that_answered_is_compared_with_the_one_saved_for_it() {
-        assert_eq!(identity(Some("w-one"), Some("w-one")), Identity::Same);
+    fn a_bound_address_is_never_opened_on_an_answer_that_cannot_confirm_it() {
+        assert_eq!(opening(Some("w-one"), "w-one"), Opening::Open(Some("w-one".into())));
         // The same address and the same name, a different Workspace.
-        assert_eq!(identity(Some("w-one"), Some("w-two")), Identity::Changed);
-        // Never opened here yet: there is nothing to compare, and that is
-        // not the same as having compared them.
-        assert_eq!(identity(None, Some("w-one")), Identity::Unknown);
-        // A Core too old to name its Workspace: still a Core, still unknown.
-        assert_eq!(identity(Some("w-one"), None), Identity::Unknown);
-        assert_eq!(identity(None, None), Identity::Unknown);
+        assert_eq!(opening(Some("w-one"), "w-two"), Opening::Changed);
+        // Never opened here yet: there is nothing to contradict, so it opens
+        // and the identity is recorded.
+        assert_eq!(opening(None, "w-one"), Opening::Open(Some("w-one".into())));
+
+        // The regression this exists for. A Core that names no Workspace at
+        // an address already bound to one proves nothing, and used to be
+        // let through as "unknown, go ahead".
+        assert_eq!(opening(Some("w-one"), ""), Opening::Unverified);
+        // An identifier longer than this keeps is refused, bound or not. It
+        // must not be discarded into "named none" either: that is the same
+        // downgrade arriving by another route.
+        let long = "w".repeat(WORKSPACE_LIMIT + 1);
+        assert_eq!(opening(Some("w-one"), &long), Opening::Unkeepable);
+        assert_eq!(opening(None, &long), Opening::Unkeepable);
+        // Exactly at the limit is kept, not refused.
+        let edge = "w".repeat(WORKSPACE_LIMIT);
+        assert_eq!(opening(None, &edge), Opening::Open(Some(edge.clone())));
+
+        // An address bound to nothing, answered by a Core too old to name a
+        // Workspace: this is the one case that still opens, and it records
+        // nothing. The iPhone keeps WORKSPACE_LIMIT at 200, its own bound.
+        assert_eq!(opening(None, ""), Opening::Open(None));
+        assert_eq!(WORKSPACE_LIMIT, 200, "the iPhone's own bound, not the desktop's");
     }
 
     /// What `connect_core` does when the page names no profile: the saved
