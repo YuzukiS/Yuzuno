@@ -52,7 +52,7 @@ async fn defaults_reach_only_new_agents_and_say_where_each_value_came_from() {
     let (_, before) = call(&router, "POST", "/api/agents", Some(json!({"name":"Before","cwd":cwd}))).await;
     assert_eq!(before["harness"], "codex");
     assert!(before["settings"].get("permissionPreset").is_none(), "{before}");
-    assert_eq!(before["defaultSources"], json!({"harness":"builtin","permission":"builtin"}));
+    assert_eq!(before["defaultSources"], json!({"harness":"builtin","permission":"builtin","model":"builtin","effort":"builtin"}));
 
     let (status, saved) = call(&router, "POST", "/api/agent-defaults",
         Some(json!({"codexPermissionPreset":"config","claudePermissionMode":"auto"}))).await;
@@ -61,11 +61,11 @@ async fn defaults_reach_only_new_agents_and_say_where_each_value_came_from() {
     let (_, codex) = call(&router, "POST", "/api/agents", Some(json!({"name":"Codex","cwd":cwd}))).await;
     assert_eq!(codex["settings"]["permissionPreset"], "config");
     assert!(codex["settings"].get("permissionMode").is_none(), "a Claude default does not reach a Codex Agent");
-    assert_eq!(codex["defaultSources"], json!({"harness":"builtin","permission":"workspace"}));
+    assert_eq!(codex["defaultSources"], json!({"harness":"builtin","permission":"workspace","model":"builtin","effort":"builtin"}));
     let (_, own) = call(&router, "POST", "/api/agents",
         Some(json!({"name":"Own","cwd":cwd,"harness":"codex","permissionPreset":"ask"}))).await;
     assert_eq!(own["settings"]["permissionPreset"], "ask");
-    assert_eq!(own["defaultSources"], json!({"harness":"request","permission":"request"}));
+    assert_eq!(own["defaultSources"], json!({"harness":"request","permission":"request","model":"builtin","effort":"builtin"}));
 
     let (status, refused) = call(&router, "POST", "/api/agents",
         Some(json!({"name":"Wrong","cwd":cwd,"harness":"codex","permissionMode":"auto"}))).await;
@@ -118,7 +118,7 @@ async fn a_projects_overrides_reach_only_new_agents_in_it_and_null_inherits_agai
 
     let (_, inside) = call(&router, "POST", "/api/agents", Some(json!({"name":"Inside","cwd":cwd,"projectId":id}))).await;
     assert_eq!(inside["settings"]["permissionPreset"], "auto", "{inside}");
-    assert_eq!(inside["defaultSources"], json!({"harness":"builtin","permission":"project"}));
+    assert_eq!(inside["defaultSources"], json!({"harness":"builtin","permission":"project","model":"builtin","effort":"builtin"}));
     let (_, outside) = call(&router, "POST", "/api/agents", Some(json!({"name":"Outside","cwd":cwd}))).await;
     assert_eq!((outside["settings"]["permissionPreset"].clone(), outside["defaultSources"]["permission"].clone()), (json!("config"), json!("workspace")));
     let (_, asked) = call(&router, "POST", "/api/agents", Some(json!({"name":"Asked","cwd":cwd,"projectId":id,"permissionPreset":"ask"}))).await;

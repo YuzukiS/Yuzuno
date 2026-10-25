@@ -71,7 +71,7 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, projectId]);
   // Only from a Core that has model defaults: an older one doesn't report them.
-  const modelDefaults = !!view?.effective.codexModel;
+  const modelDefaults = !!view?.effective?.codexModel;
   useEffect(() => {
     if (!active || !modelDefaults) return;
     const controller = new AbortController();
