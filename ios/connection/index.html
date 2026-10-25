@@ -30,6 +30,11 @@
         <p class="hint">Saved on this iPhone. Whether one answers is known only when you open it.</p>
         <ul id="saved-list"></ul>
       </section>
+      <section id="remembered" class="saved" aria-labelledby="remembered-heading" hidden>
+        <h2 id="remembered-heading">Addresses this iPhone remembers</h2>
+        <p class="hint">No workspace is saved at these addresses, but this iPhone remembers which one was there, so a different workspace is not opened onto what is stored for that address.</p>
+        <ul id="remembered-list"></ul>
+      </section>
       <form id="connection-form" novalidate>
         <label for="core-url">Workspace address</label>
         <div class="address-row"><input id="core-url" name="url" type="url" inputmode="url" placeholder="https://your-core.your-tailnet.ts.net" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-describedby="address-hint connection-message" required /><button id="connect-button" type="submit">Connect <span aria-hidden="true">↗</span></button></div>
