@@ -221,6 +221,10 @@ export function QuotaResumeNotice({
   );
 }
 
+/** Open Agent panels hear a Workspace default saved in Settings (T-190):
+ * Core sends no Agent event for it when nothing waits or is armed. */
+const workspaceDefaultSaved = new Set<(enabled: boolean) => void>();
+
 /** "At a glance": this agent's choice, or the workspace default. */
 export function AutoContinueSetting({
   detail,
@@ -230,11 +234,23 @@ export function AutoContinueSetting({
   disabled: boolean;
 }) {
   const agentId = detail.agent.id;
-  const { view, setView, error, setError } = useAutoContinue(
+  const { view, setView, error, setError, reload } = useAutoContinue(
     agentId,
     detail.agent.status,
   );
   const [busy, setBusy] = useState(false);
+  // Core confirmed it, so it is shown at once; the rest of this Agent's
+  // view (an armed or cancelled continue) is read again.
+  useEffect(() => {
+    const hear = (enabled: boolean) => {
+      setView((current) => current && { ...current, workspace: enabled, enabled: current.agent ?? enabled });
+      void reload();
+    };
+    workspaceDefaultSaved.add(hear);
+    return () => {
+      workspaceDefaultSaved.delete(hear);
+    };
+  }, [agentId]);
   if (!view) return <div id="agent-auto-continue" tabIndex={-1} className="auto-continue-setting">
     <dt>Usage limit</dt>
     <dd role={error ? "alert" : "status"}>{error || "Loading this Agent’s usage-limit policy…"}</dd>
@@ -371,7 +387,8 @@ const defaultText = strings({
  * (an Agent's own choice, else this, else off), so a change applies to the
  * Agents that follow it now, existing ones included. What is shown after a
  * save is Core's own answer to it, never read again, so a saved change is
- * not reported as failed; only a refused or failed save says so.
+ * not reported as failed; only a refused or failed save says so. An open
+ * Agent panel is told, and reads its own view again.
  */
 export function AutoContinueDefault({ active }: { active: boolean }) {
   const t = useStrings(defaultText);
@@ -402,6 +419,7 @@ export function AutoContinueDefault({ active }: { active: boolean }) {
       const value = await post<WorkspaceDefault>("/claude/auto-continue", { enabled });
       setView(value);
       setDraft(value.enabled);
+      workspaceDefaultSaved.forEach((hear) => hear(value.enabled));
     } catch (e) {
       setError(errorText(e));
     } finally {

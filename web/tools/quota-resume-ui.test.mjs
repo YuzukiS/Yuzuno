@@ -27,7 +27,8 @@ import {QuotaResumeNotice, AutoContinueSetting, AutoContinueDefault} from ${JSON
 const root = createRoot(document.getElementById('root'));
 window.renderNotice = props => root.render(<QuotaResumeNotice {...props}/>);
 window.renderSetting = props => root.render(<dl><AutoContinueSetting {...props}/></dl>);
-window.renderDefault = props => root.render(<AutoContinueDefault {...props}/>);`,
+window.renderDefault = props => root.render(<AutoContinueDefault {...props}/>);
+window.renderBoth = props => root.render(<><dl><AutoContinueSetting {...props}/></dl><AutoContinueDefault active/></>);`,
   );
   const result = await build({
     root,
@@ -251,11 +252,13 @@ test("Settings sets the Workspace default with no Agent chosen, says where it co
 });
 
 test("a save that fails says so and keeps what Core has; an older Core that doesn't say what is saved offers no Use built-in (T-190)", async () => {
-  let refuse = false;
+  let refuse = false, realm;
   const page = mount((url, init) => {
-    if (init.method === "POST" && refuse) throw new Error("Core is restarting");
+    // An error of the page's own realm, as its fetch would reject with.
+    if (init.method === "POST" && refuse) throw new realm.Error("Core is restarting");
     return { enabled: true };
   });
+  realm = page.window;
   try {
     page.window.renderDefault({ active: true });
     await tick();
@@ -285,6 +288,33 @@ test("the Workspace default reads in Chinese when the interface is Chinese (T-19
     assert.match(text(page), /已为此 Workspace 设置：重置后继续。/);
     assert.equal(inEffect(page), "重置后继续");
     assert.ok(button(page, "使用内置"));
+  } finally {
+    page.close();
+  }
+});
+
+test("an open Agent panel shows the Workspace default Settings saved, and reads its view again (T-190)", async () => {
+  const core = { saved: null };
+  const page = mount((url, init) => {
+    if (url.endsWith("/api/claude/auto-continue")) {
+      if (init.method === "POST") core.saved = JSON.parse(init.body).enabled;
+      return { enabled: core.saved ?? false, saved: core.saved };
+    }
+    return { workspace: core.saved ?? false, agent: null, enabled: core.saved ?? false, intent: null, stopped: null };
+  });
+  try {
+    page.window.renderBoth({ detail, disabled: false });
+    await tick();
+    const panel = page.document.querySelector('[aria-label="After Claude’s usage limit resets"]');
+    assert.equal(panel.selectedOptions[0].textContent, "Default · wait for you");
+    choose(page, "on");
+    await tick();
+    button(page, "Save default").click();
+    await tick();
+    assert.equal(panel.selectedOptions[0].textContent, "Default · continue", "no Agent event needed");
+    const after = page.calls.findIndex((c) => c.method === "POST");
+    assert.ok(page.calls.slice(after + 1).some((c) => c.url === "/api/agents/a/claude/auto-continue" && c.method === "GET"), "the panel read its view again");
+    assert.deepEqual(page.errors, []);
   } finally {
     page.close();
   }
