@@ -1,5 +1,5 @@
 import { Component, Fragment, useState, type ReactNode } from "react";
-import { Copy, RefreshCw, RotateCcw } from "lucide-react";
+import { Copy, Download, Eye, RefreshCw, RotateCcw } from "lucide-react";
 import { diagnosticsText, gatherFacts, recordError, recordedErrors } from "./diagnostics";
 import "./diagnostics.css";
 
@@ -120,9 +120,68 @@ export class AppRecovery extends Component<{ children: ReactNode }, { failed: bo
   }
 }
 
+/**
+ * Settings' diagnostics (T-193): the text is gathered and shown first, and
+ * leaves this window only when the user then copies it or saves it as a text
+ * file. Nothing is written to the clipboard or saved before that.
+ */
+function useDiagnosticsPreview() {
+  const [text, setText] = useState<string | null>(null);
+  const [state, setState] = useState<"idle" | "reading" | "shown" | "copied" | "select" | "saving" | "notSaved">("idle");
+  const [saved, setSaved] = useState("");
+  const [why, setWhy] = useState("");
+  async function preview() {
+    if (state === "reading") return;
+    setState("reading");
+    let value: string;
+    try {
+      value = diagnosticsText(await gatherFacts());
+    } catch {
+      value = diagnosticsText(null);
+    }
+    setText(value);
+    setState("shown");
+  }
+  // While Preview again gathers, the text shown is about to change: nothing leaves.
+  async function copy() {
+    if (text === null || state === "reading") return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("no clipboard");
+      await navigator.clipboard.writeText(text);
+      setState("copied");
+    } catch {
+      setState("select");
+    }
+  }
+  function download() {
+    if (text === null || state === "reading") return;
+    const name = `yuzuno-diagnostics-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+    try {
+      const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+      try {
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = name;
+        document.body.append(link);
+        link.click();
+        link.remove();
+      } finally {
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+      // The page can ask for a download; whether the file was saved is the browser's to say.
+      setSaved(name);
+      setState("saving");
+    } catch (error) {
+      setWhy(error instanceof Error && error.message ? error.message : String(error));
+      setState("notSaved");
+    }
+  }
+  return { text, state, saved, why, preview, copy, download };
+}
+
 /** The same diagnostics while the app works: in Settings, next to the versions. */
 export function DiagnosticsCopy() {
-  const { text, state, copy } = useDiagnosticsCopy();
+  const { text, state, saved, why, preview, copy, download } = useDiagnosticsPreview();
   const errors = recordedErrors().length;
   return (
     <section id="settings-diagnostics" className="settings-section diagnostics-section" aria-label="Diagnostics">
@@ -131,14 +190,45 @@ export function DiagnosticsCopy() {
           <h3>Diagnostics</h3>
           <p>
             Versions, connection and the errors this window recorded ({errors === 0 ? "none" : errors}), to paste
-            into a report. No conversations, drafts or credentials; nothing is sent anywhere.
+            into a report. No conversations, drafts or credentials. Preview it first: nothing is copied, saved or
+            sent until you choose.
           </p>
         </div>
-        <button type="button" className="secondary-button" onClick={() => void copy()} disabled={state === "reading"}>
-          <Copy size={14} aria-hidden="true" /> Copy diagnostics
+        <button type="button" className="secondary-button" onClick={() => void preview()} disabled={state === "reading"}>
+          <Eye size={14} aria-hidden="true" /> {text === null ? "Preview diagnostics" : "Preview again"}
         </button>
       </header>
+      {state === "reading" && (
+        <p className="diagnostics-note" role="status">
+          Gathering…
+        </p>
+      )}
+      {state === "shown" && (
+        <p className="diagnostics-note" role="status">
+          This is the whole text. Nothing has been copied, saved or sent.
+        </p>
+      )}
+      {state === "saving" && (
+        <p className="diagnostics-note" role="status">
+          Your browser was asked to save {saved}. If no file appears, select the text below and copy it.
+        </p>
+      )}
+      {state === "notSaved" && (
+        <p className="diagnostics-note" role="alert">
+          The download could not start ({why}). Select the text below and copy it.
+        </p>
+      )}
       <DiagnosticsText text={text} state={state} />
+      {text !== null && (
+        <div className="diagnostics-actions">
+          <button type="button" className="secondary-button" onClick={() => void copy()} disabled={state === "reading"}>
+            <Copy size={14} aria-hidden="true" /> Copy
+          </button>
+          <button type="button" className="secondary-button" onClick={download} disabled={state === "reading"}>
+            <Download size={14} aria-hidden="true" /> Download .txt
+          </button>
+        </div>
+      )}
     </section>
   );
 }
