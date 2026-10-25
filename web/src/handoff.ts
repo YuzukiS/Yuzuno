@@ -1,3 +1,4 @@
+import type { Language } from "./i18n.ts";
 import type { Agent } from "./types";
 
 /**
@@ -61,13 +62,32 @@ export function handoffLabel(source: HandoffSource) {
   return source.excerpt ? `an excerpt from ${source.agentName}` : `a message from ${source.agentName}’s conversation`;
 }
 
+// Why a handoff is refused, in the interface language (T-189); the Agent's
+// name as it is. Plain tables: handoff.test.mjs imports this file in Node.
+// What a handoff adds to a draft is the message itself and stays English.
+type Refusals = { gone: string; closed: (name: string) => string; own: (name: string) => string; empty: string };
+const refusals: Record<Language, Refusals> = {
+  en: {
+    gone: "That Agent is no longer in this Workspace.",
+    closed: (name) => `${name} is closed and cannot receive messages.`,
+    own: (name) => `This already comes from ${name}’s conversation.`,
+    empty: "There is no text to send.",
+  },
+  "zh-Hans": {
+    gone: "该 Agent 已不在此 Workspace 中。",
+    closed: (name) => `${name} 已关闭，无法接收消息。`,
+    own: (name) => `这本来就来自 ${name} 的会话。`,
+    empty: "没有可发送的文字。",
+  },
+};
+
 /** Why this cannot go to that Agent, or null. */
-export function handoffRefusal(source: HandoffSource, target: Agent | undefined): string | null {
-  if (!target) return "That Agent is no longer in this Workspace.";
-  if (target.closedAt) return `${target.name} is closed and cannot receive messages.`;
-  if (source.kind === "message" && source.agentId === target.id)
-    return `This already comes from ${target.name}’s conversation.`;
-  if (source.kind === "message" && !source.text.trim()) return "There is no text to send.";
+export function handoffRefusal(source: HandoffSource, target: Agent | undefined, language: Language = "en"): string | null {
+  const t = refusals[language];
+  if (!target) return t.gone;
+  if (target.closedAt) return t.closed(target.name);
+  if (source.kind === "message" && source.agentId === target.id) return t.own(target.name);
+  if (source.kind === "message" && !source.text.trim()) return t.empty;
   return null;
 }
 
