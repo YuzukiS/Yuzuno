@@ -57,6 +57,14 @@ pub struct Backups {
     file: PathBuf,
     state: Mutex<Vec<Operation>>,
     running: Mutex<Option<(String, Arc<Control>)>>,
+    /// Taken before a write copies the operations and held until it has
+    /// written them, so writes happen one at a time, each with the
+    /// operations as they are when it writes.
+    pub(super) writing: Mutex<()>,
+    /// Runs once, in the next write, between its copy of the operations and
+    /// writing them: a test holds a write there.
+    #[cfg(test)]
+    pub(super) between_copy_and_write: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// Why an operation was not started.
@@ -93,15 +101,32 @@ impl Backups {
             op.finished_at = Some(now());
             changed = true;
         }
-        let backups = Self { file, state: Mutex::new(operations), running: Mutex::new(None) };
+        let backups = Self {
+            file,
+            state: Mutex::new(operations),
+            running: Mutex::new(None),
+            writing: Mutex::new(()),
+            #[cfg(test)]
+            between_copy_and_write: Mutex::new(None),
+        };
         if changed {
             let _ = backups.save();
         }
         backups
     }
 
+    /// Writes the journal as it is now: an earlier copy never lands over a
+    /// later one. Locks: `writing`, then `state` only to copy.
     fn save(&self) -> Result<()> {
+        let _writing = self.writing.lock().unwrap();
         let operations = self.state.lock().unwrap().clone();
+        #[cfg(test)]
+        {
+            let hold = self.between_copy_and_write.lock().unwrap().take();
+            if let Some(hold) = hold {
+                hold();
+            }
+        }
         crate::updates::package::atomic_json(&self.file, &operations)
     }
 
@@ -232,12 +257,15 @@ impl Backups {
                 }
             }
         }
+        // Its end is written before it lets go of its place, so the next
+        // operation starts only after, and a free place means the journal
+        // has its end (main CI 40175308220's failure fits a removal started
+        // in between, whose write this one's older copy landed over).
+        let _ = self.save();
         let mut running = self.running.lock().unwrap();
         if running.as_ref().is_some_and(|(r, _)| r == id) {
             *running = None;
         }
-        drop(running);
-        let _ = self.save();
     }
 }
 
