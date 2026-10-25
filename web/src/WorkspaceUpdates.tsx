@@ -26,6 +26,7 @@ import { DesktopUpdate } from "./DesktopUpdate";
 import { DiagnosticsCopy } from "./RecoveryPage";
 import { HistoryComposition } from "./HistoryComposition";
 import { ReviewSettings } from "./ReviewSettings";
+import { AgentDefaults } from "./AgentDefaults";
 import { HomePresentationSettings } from "./HomePresentationSettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { WorkspaceBackup } from "./WorkspaceBackup";
@@ -992,6 +993,7 @@ export function WorkspaceUpdates({
           {tab === "appearance" && <AppearanceSection />}
           {tab === "input" && <InputPreferencesSection />}
           {tab === "shortcuts" && <ShortcutHelpSection />}
+          {tab === "agent-defaults" && <AgentDefaults active={open} />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}
           {tab === "notifications" && <NotificationSettings />}

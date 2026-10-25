@@ -3,7 +3,17 @@ import { api, errorText } from "./api";
 import type { Model } from "./types";
 import "./pr-reviews.css";
 
-type Settings = { harness: "codex" | "claude"; model: string };
+type Settings = {
+  harness: "codex" | "claude";
+  model: string;
+  /** Whether this Workspace chose the reviewer (T-190); older Cores don't say. */
+  source?: "workspace" | "builtin";
+  builtIn?: { harness: "codex" | "claude"; model: string };
+};
+const reviewerName = (s: { harness: string; model: string }, label?: string) =>
+  `${s.harness === "claude" ? "Claude Code" : "Codex"} · ${
+    s.harness === "codex" && s.model === "gpt-6.1-sol" ? "GPT-6.1 Sol" : label || s.model
+  }`;
 export function ReviewSettings({ active }: { active: boolean }) {
   const [saved, setSaved] = useState<Settings | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
@@ -65,9 +75,24 @@ export function ReviewSettings({ active }: { active: boolean }) {
       setSaved(
         await api<Settings>("/pr-reviews/settings", {
           method: "POST",
-          body: JSON.stringify(draft),
+          body: JSON.stringify({ harness: draft.harness, model: draft.model }),
         }),
       );
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+  /** Deletes this Workspace's choice: new reviews use the built-in reviewer. */
+  async function useBuiltIn() {
+    if (saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      const value = await api<Settings>("/pr-reviews/settings", { method: "DELETE" });
+      setSaved(value);
+      setDraft(value);
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -90,6 +115,14 @@ export function ReviewSettings({ active }: { active: boolean }) {
             Choose the reviewer for new PR reviews requested from tasks or by
             Agents. Running reviews keep their original settings.
           </p>
+          {saved?.source && (
+            <p className="settings-row-help review-settings-source" data-source={saved.source}>
+              {saved.source === "workspace" ? "Set for this Workspace" : "Built in"}
+              {saved.builtIn && saved.source === "workspace"
+                ? `. Built in: ${reviewerName(saved.builtIn)}.`
+                : "."}
+            </p>
+          )}
         </div>
         {saved && (
           <span className="settings-current" title="In use now">
@@ -171,21 +204,28 @@ export function ReviewSettings({ active }: { active: boolean }) {
             </select>
           </label>
           {/* Saving is offered only once something has changed. */}
-          {(changed || saving) && (
+          {(changed || saving || saved?.source === "workspace") && (
             <div className="settings-row settings-row-end">
               <div className="settings-row-action">
-                <button
-                  type="button"
-                  className="primary-button"
-                  disabled={
-                    saving ||
-                    !draft.model ||
-                    (draft.harness === "claude" && (loading || !selected))
-                  }
-                  onClick={() => void save()}
-                >
-                  {saving ? "Saving…" : "Save review settings"}
-                </button>
+                {saved?.source === "workspace" && (
+                  <button type="button" className="secondary-button" disabled={saving} onClick={() => void useBuiltIn()}>
+                    Use built-in
+                  </button>
+                )}
+                {(changed || saving) && (
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={
+                      saving ||
+                      !draft.model ||
+                      (draft.harness === "claude" && (loading || !selected))
+                    }
+                    onClick={() => void save()}
+                  >
+                    {saving ? "Saving…" : "Save review settings"}
+                  </button>
+                )}
               </div>
             </div>
           )}

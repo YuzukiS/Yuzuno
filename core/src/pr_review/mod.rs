@@ -46,7 +46,7 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
     Router::new()
         .route(
             "/api/pr-reviews/settings",
-            get(settings::get).post(settings::set),
+            get(settings::get).post(settings::set).delete(settings::reset),
         )
         .route("/api/pr-reviews", get(list).post(start))
         .route("/api/pr-reviews/{id}", get(report))
