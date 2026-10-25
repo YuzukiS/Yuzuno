@@ -93,7 +93,7 @@ function core(overrides = {}) {
   };
 }
 
-function mount(answers, { release = "core-20261024-c215011", desktop } = {}) {
+function mount(answers, { release = "core-20261024-c215011", desktop, iphone } = {}) {
   const calls = [];
   const invoked = [];
   const dom = new JSDOM(
@@ -116,6 +116,8 @@ function mount(answers, { release = "core-20261024-c215011", desktop } = {}) {
   };
   if (desktop)
     window.__TAURI__ = { core: { invoke: async (command) => { invoked.push(command); return desktop; } } };
+  // What the iPhone app's window script defines (ios/src/app_version.js).
+  if (iphone !== undefined) Object.defineProperty(window, "__YUZUNO_IPHONE_APP__", { value: iphone });
   window.eval(bundle);
   const document = window.document;
   // Each fact by its group and name, as "State · text · detail".
@@ -149,7 +151,7 @@ test("it shows Core, this device and each machine's last check, each fact with w
   assert.deepEqual(page.facts(page.group("This device")), {
     "This page": "Yes · core-20261024-c215011 · The same release as Core.",
     "Desktop app": "Unknown · Not known here · This page isn't open in the desktop app, so it can't read the app's version.",
-    "iPhone app": "Unknown · Not reported · The iPhone app doesn't report its version to this page.",
+    "iPhone app": "Unknown · Not known here · This page isn't open in the iPhone app, or that app is older and doesn't report its version.",
   });
   const host = page.machine("Core host");
   assert.match(host.querySelector(".runtime-checked").textContent, /^Last checked 5 min ago \(.+\)$/);
@@ -362,6 +364,30 @@ test("in the desktop app its version is read from the app's own status, never an
     await tick();
     assert.equal(other.facts(other.group("This device"))["Desktop app"], said);
     assert.deepEqual(other.invoked, ["desktop_update_status"]);
+    other.close();
+  }
+});
+
+test("in the iPhone app its version is the one the app's window script gives the page: no request, no call into the app; a language switch reads nothing again", async () => {
+  const page = mount(core(), { iphone: Object.freeze({ version: "0.1.0" }) });
+  page.window.show();
+  await tick();
+  assert.equal(page.facts(page.group("This device"))["iPhone app"], "Yes · 0.1.0 · As this iPhone app reports it: the version it was built as.");
+  assert.deepEqual([...page.calls].sort(), [...READS].sort(), "only Core's reads");
+  assert.deepEqual(page.invoked, [], "nothing of the app is called");
+  // Chosen in another window: the same read, in Chinese, the version as it came.
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+  page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+  await tick();
+  assert.equal(page.facts(page.group("此设备"))["iPhone 应用"], "是 · 0.1.0 · 由此 iPhone 应用报告：它构建时的版本。");
+  assert.deepEqual([...page.calls].sort(), [...READS].sort(), "the switch reads nothing again");
+  page.close();
+  // Anything but a version is not taken for one.
+  for (const iphone of [Object.freeze({ version: "<b>1</b>" }), Object.freeze({ version: "" }), Object.freeze({}), null, "0.1.0"]) {
+    const other = mount(core(), { iphone });
+    other.window.show();
+    await tick();
+    assert.equal(other.facts(other.group("This device"))["iPhone app"], "Unknown · Not known · The iPhone app's report of its version couldn't be read.", JSON.stringify(iphone));
     other.close();
   }
 });

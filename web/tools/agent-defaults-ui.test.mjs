@@ -290,3 +290,101 @@ test("a default model the Core host no longer offers, or a catalog that can't be
   broken.window.renderDefaults();
   await until(() => /Couldn’t read this Core host’s Codex models: .*Codex is not signed in/.test(broken.document.body.textContent), "the catalog failure said");
 });
+
+const claudeCatalog = [
+  { id: "sonnet", model: "sonnet", displayName: "Sonnet", supportsAutoMode: true },
+  { id: "haiku", model: "haiku", displayName: "Haiku", supportsAutoMode: false },
+];
+const claudeView = (saved) => {
+  const base = modelView(saved);
+  return {
+    ...base,
+    builtIn: { ...base.builtIn, claudeModel: null },
+    effective: { ...base.effective, claudeModel: { value: saved.claudeModel ?? null, source: saved.claudeModel ? "workspace" : "builtin" } },
+  };
+};
+const claudeReads = (page) => page.calls.filter((c) => c.url.endsWith("/models?harness=claude")).length;
+
+test("a default Claude Code model comes from the Core host's Claude catalog, read once its choice is opened, and only to a Core that has it", async () => {
+  let saved = {};
+  const page = mount((url, method, body) => {
+    if (url.endsWith("/models?harness=claude")) return [200, { models: claudeCatalog }];
+    if (url.endsWith("/models")) return [200, { models: catalog }];
+    if (method === "POST") saved = Object.fromEntries(Object.entries({ ...saved, ...body }).filter(([, v]) => v !== null));
+    return [200, claudeView(saved)];
+  });
+  page.window.renderDefaults();
+  await until(() => select(page, "Codex model for new Agents")?.options.length === 3, "the editor with its Codex models");
+  const text = () => page.document.querySelector("#settings-agent-defaults")?.textContent ?? "";
+  assert.match(text(), /Built in: Claude Code’s own default/);
+  assert.equal(claudeReads(page), 0, "Claude Code's catalog is not read until its choice is opened");
+  select(page, "Claude Code model for new Agents").dispatchEvent(new page.window.FocusEvent("focusin", { bubbles: true }));
+  await until(() => select(page, "Claude Code model for new Agents").options.length === 3, "Claude Code's models");
+  const options = [...select(page, "Claude Code model for new Agents").options].map((o) => o.textContent.trim());
+  assert.deepEqual(options, ["Built in · Claude Code’s own default", "Sonnet", "Haiku"]);
+  await choose(page, "Claude Code model for new Agents", "haiku");
+  assert.match(text(), /haiku can’t run in Auto mode/);
+  await choose(page, "Claude Code model for new Agents", "sonnet");
+  assert.doesNotMatch(text(), /can’t run in Auto mode/);
+  button(page, "Save").click();
+  await until(() => posts(page).length === 1 && /Set for this Workspace: sonnet\./.test(text()), "the saved model");
+  assert.deepEqual(posts(page)[0].body, { claudeModel: "sonnet" }, "its own field; Codex's untouched");
+  button(page, "Use built-in for all").click();
+  await until(() => posts(page).length === 2, "everything built in");
+  assert.deepEqual(posts(page)[1].body, { harness: null, codexPermissionPreset: null, claudePermissionMode: null, codexModel: null, codexReasoningEffort: null, claudeModel: null });
+  assert.equal(claudeReads(page), 1);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a saved Claude Code model is checked at once: one no longer offered, or a catalog that can't be read, is said", async () => {
+  const stale = mount((url) => (url.endsWith("/models?harness=claude") ? [200, { models: claudeCatalog }] : url.endsWith("/models") ? [200, { models: catalog }] : [200, claudeView({ claudeModel: "gone" })]));
+  stale.window.renderDefaults();
+  await until(() => /gone is no longer offered by this Core host’s Claude Code/.test(stale.document.body.textContent), "the stale default said");
+  assert.ok([...select(stale, "Claude Code model for new Agents").options].some((o) => o.textContent.trim() === "gone (no longer offered)"));
+  const broken = mount((url) => (url.endsWith("/models?harness=claude") ? [500, { error: "Claude Code is not signed in" }] : url.endsWith("/models") ? [200, { models: catalog }] : [200, claudeView({ claudeModel: "sonnet" })]));
+  broken.window.renderDefaults();
+  await until(() => /Couldn’t read this Core host’s Claude Code models: .*Claude Code is not signed in/.test(broken.document.body.textContent), "the catalog failure said");
+  assert.equal(select(broken, "Claude Code model for new Agents").value, "sonnet", "the saved choice still shown");
+});
+
+test("a project's defaults in Chinese (T-189): inherited values and where they come from are worded, and so is a save; a language change keeps the choice and asks Core nothing", async () => {
+  const workspace = { harness: "claude", claudePermissionMode: "auto" };
+  let own = {};
+  const page = mount((url, method, body) => {
+    if (method === "POST") own = Object.fromEntries(Object.entries({ ...own, ...body }).filter(([, v]) => v !== null));
+    return [200, projectView(workspace, own)];
+  });
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+  page.window.renderProjectDefaults("p1");
+  await until(() => select(page, "新 Agent 的 Harness"), "the project editor in Chinese");
+  const section = (label) => page.document.querySelector(`[aria-label="${label}"]`);
+  const options = (label) => [...select(page, label).options].map((o) => o.textContent.trim());
+  assert.equal(section("此项目的新 Agent 默认值").querySelector("h3").textContent, "新 Agent 默认值");
+  assert.equal(section("此项目的新 Agent 默认值").getAttribute("lang"), "zh-Hans", "its own lang on an English project page");
+  assert.match(section("此项目的新 Agent 默认值").textContent, /已为此 Workspace 设置：Claude Code。/);
+  assert.deepEqual(options("新 Agent 的 Harness"), ["继承 · Claude Code（已为此 Workspace 设置）", "Codex", "Claude Code"]);
+  assert.deepEqual(options("新 Agent 的 Codex 权限"), ["继承 · 请求批准（内置）", "跟随 Codex 配置", "请求批准", "替我批准", "完全访问"]);
+  assert.deepEqual(options("新 Agent 的 Claude Code 权限"), ["继承 · 自动模式（已为此 Workspace 设置）", "操作前询问", "自动模式"]);
+  await choose(page, "新 Agent 的 Codex 权限", "auto");
+  button(page, "保存").click();
+  await until(() => /已为此项目保存/.test(section("此项目的新 Agent 默认值").textContent), "the save, said in Chinese");
+  assert.deepEqual(posts(page)[0].body, { codexPermissionPreset: "auto" }, "the same request as in English");
+  const switchTo = (language) => {
+    page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+    page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+  };
+  // Changed in another window: the line about the save is worded again, nothing asked.
+  const before = page.calls.length;
+  switchTo("en");
+  await until(() => select(page, "Harness for new Agents"), "English again");
+  assert.match(section("New Agent defaults for this project").textContent, /Saved for this project/);
+  assert.equal(section("New Agent defaults for this project").getAttribute("lang"), "en");
+  assert.equal(select(page, "Codex permissions for new Agents").value, "auto");
+  await choose(page, "Harness for new Agents", "codex");
+  switchTo("zh-Hans");
+  await until(() => select(page, "新 Agent 的 Harness"), "Chinese again");
+  assert.equal(select(page, "新 Agent 的 Harness").value, "codex", "the unsaved choice stays");
+  assert.ok(button(page, "保存"), "still to save");
+  assert.equal(page.calls.length, before, "a language change reads and writes nothing");
+  assert.deepEqual(page.errors, []);
+});

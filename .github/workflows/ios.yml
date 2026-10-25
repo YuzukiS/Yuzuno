@@ -103,6 +103,7 @@ jobs:
           npm --prefix ../web ci --ignore-scripts --no-audit --no-fund
           node tests/connection.test.mjs
           node tests/new_window_links.test.mjs
+          node tests/app_version.test.mjs
 
       # The pinned Tauri CLI, built fresh; nothing is cached.
       - name: Tauri CLI ${{ env.TAURI_CLI_VERSION }}
@@ -132,6 +133,12 @@ jobs:
           executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
           echo "app: $app; identifier: $identifier; platform: $platform; executable: $executable"
           [ "$identifier" = dev.yuzuno.ios ] || { echo "::error::identifier is $identifier"; exit 1; }
+          # The version the app gives its pages (src/app_version.js) is its
+          # package version, tauri.conf.json's: the bundle declares that one.
+          declared=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")
+          package=$(node -p 'require("./tauri.conf.json").version')
+          echo "CFBundleShortVersionString: $declared; tauri.conf.json version: $package"
+          [ "$declared" = "$package" ] || { echo "::error::the bundle declares $declared, not the package version $package"; exit 1; }
           [ "$platform" = iPhoneSimulator ] || { echo "::error::platform is $platform"; exit 1; }
           lipo -archs "$app/$executable" | grep -qx arm64 || { echo "::error::not an arm64 executable: $(lipo -archs "$app/$executable")"; exit 1; }
           xcrun vtool -show-build "$app/$executable" | grep -E 'platform|minos'

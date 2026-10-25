@@ -240,3 +240,43 @@ async fn a_retention_preview_lists_a_folder_only_from_cores_own_port_and_changes
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(zero["error"].as_str().unwrap().contains("space budget"), "{zero}");
 }
+
+/// Automatic removal of old daily backups (T-196, slice 6): off by default,
+/// turned on only from Core's own port for the folder the page previewed,
+/// removing nothing when turned on; a folder change turns it off.
+#[tokio::test(flavor = "multi_thread")]
+async fn automatic_removal_is_off_until_turned_on_for_the_previewed_folder_from_cores_own_port() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    let ws = Workspace::new(data.clone(), "/tmp".into(), "unused-codex".into()).unwrap();
+    let remote = server::remote_router(ws.clone(), tmp.path().join("assets"), None, RemoteEntry::new(ORIGIN, LOGIN).unwrap());
+    let local = server::router(ws, tmp.path().join("assets"));
+    let (daily, other) = (tmp.path().join("daily"), tmp.path().join("other"));
+    std::fs::create_dir(&daily).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    std::fs::create_dir(daily.join("an-old-folder")).unwrap();
+    let (_, view) = call(&local, "GET", "/api/workspace/backup", None, false).await;
+    assert_eq!((view["schedule"]["retention"].clone(), view["schedule"]["retentionNote"].clone()), (Value::Null, Value::Null), "off by default: {view}");
+    let on = json!({"enabled":true,"keep":2,"budgetBytes":1073741824u64,"folder":daily});
+    let (status, refused) = call(&local, "POST", "/api/workspace/backup/schedule/retention", Some(on.clone()), false).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(refused["error"].as_str().unwrap().contains("save the daily backup's folder first"), "{refused}");
+    let (status, _) = call(&local, "POST", "/api/workspace/backup/schedule", Some(json!({"enabled":true,"timeUtc":"03:00","folder":daily})), false).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(&remote, "POST", "/api/workspace/backup/schedule/retention", Some(on.clone()), true).await;
+    assert!(unrouted(status), "a phone cannot turn it on: {status}");
+    for wrong in [json!({"enabled":true,"keep":2,"folder":other}), json!({"enabled":true,"folder":daily}), json!({"enabled":true,"keep":0,"folder":daily})] {
+        let (status, refused) = call(&local, "POST", "/api/workspace/backup/schedule/retention", Some(wrong.clone()), false).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{wrong}: {refused}");
+    }
+    let (status, set) = call(&local, "POST", "/api/workspace/backup/schedule/retention", Some(on), false).await;
+    assert_eq!(status, StatusCode::OK, "{set}");
+    assert_eq!((set["schedule"]["retention"]["keep"].clone(), set["schedule"]["retention"]["budgetBytes"].clone()), (json!(2), json!(1073741824u64)));
+    assert!(daily.join("an-old-folder").is_dir(), "turning it on removes nothing");
+    let (status, moved) = call(&local, "POST", "/api/workspace/backup/schedule", Some(json!({"enabled":true,"timeUtc":"03:00","folder":other})), false).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(moved["schedule"]["retention"], Value::Null);
+    assert!(moved["schedule"]["retentionNote"].as_str().unwrap().contains("folder changed"), "{moved}");
+    let (status, off) = call(&local, "POST", "/api/workspace/backup/schedule/retention", Some(json!({"enabled":false})), false).await;
+    assert_eq!((status, off["schedule"]["retentionNote"].clone()), (StatusCode::OK, Value::Null));
+}

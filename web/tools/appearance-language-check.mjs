@@ -11,6 +11,8 @@
 //  - Move preferences in Chinese: a file that isn't JSON and a clock this
 //    version doesn't have are said in Chinese; switched back to English,
 //    the same lines are English;
+//  - the shared preset beside Appearance: English, then Chinese with its
+//    Workspace ID, revision and time as they came;
 //  - the clock format and time zone are left as they were; nothing is
 //    written to Core.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/appearance-language-check.mjs
@@ -69,6 +71,9 @@ await page.route("**/*", async (route) => {
     "/api/agents/a": { agent, pending: [], messageReceipts: [], artifacts: [], turns: [] },
     "/api/home": home, "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget,
     "/api/jobs": noJobs, "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
+    // The Workspace's shared preset, as core/src/appearance_preset.rs answers it.
+    "/api/appearance-preset": { workspaceId: "3333cccc-0000-4000-8000-000000000003",
+      preset: { version: 1, revision: 2, savedAt: "2026-10-25T03:00:00.000Z", savedVia: "remote", appearance: { palette: "yuzu" } } },
   }[path];
   if (json) return route.fulfill({ json });
   if (path.startsWith("/api/")) return route.fulfill({ json: {} });
@@ -147,6 +152,9 @@ try {
   let box = await toAppearance("Appearance & interaction");
   assert.equal(await box.locator("#settings-appearance-title").textContent(), "Appearance");
   assert.equal(await box.getAttribute("lang"), "en");
+  await box.locator(".appearance-preset-status", { hasText: "revision 2" }).waitFor({ timeout: 10_000 });
+  const presetEn = await box.locator(".appearance-preset-status").textContent();
+  assert.match(presetEn, /^Workspace 3333cccc: shared preset revision 2, saved .+ through the remote entry\.$/);
   const englishFile = await exported(box, "Export to a file");
   await box.locator('.appearance-file input[type="file"]').setInputFiles({ name: "appearance.json", mimeType: "application/json", buffer: Buffer.from(appearanceFile) });
   await box.locator(".appearance-file-preview").waitFor({ timeout: 10_000 });
@@ -171,6 +179,21 @@ try {
   assert.equal(after.apply, "应用所选的 2 项");
   await page.screenshot({ path: join(output, "appearance-preview-zh.png") });
   check("switched to Chinese, the open preview is Chinese: the same file, the same ticks", { after });
+
+  // The shared preset beside it: Chinese too; its Workspace ID, revision and time as they came.
+  await box.locator(".appearance-preset-status", { hasText: "修订 2" }).waitFor({ timeout: 10_000 });
+  const preset = await box.locator("#settings-appearance-preset").evaluate((el) => ({
+    lang: el.getAttribute("lang"),
+    heading: el.querySelector("h3").textContent,
+    status: el.querySelector(".appearance-preset-status").textContent,
+    device: el.querySelector(".appearance-follow-status")?.textContent ?? null,
+    buttons: [...el.querySelectorAll("button")].map((b) => b.textContent),
+  }));
+  assert.deepEqual([preset.lang, preset.heading], ["zh-Hans", "共享外观预设"]);
+  assert.match(preset.status, /^Workspace 3333cccc：共享预设修订 2，保存于 .+，经由远程入口。$/);
+  assert.equal(preset.device, "使用自己的外观；不跟随此 Workspace 的预设。");
+  assert.deepEqual(preset.buttons, ["用此设备的外观替换它", "预览…", "重新读取", "跟随此预设…"]);
+  check("the shared preset beside it: English, then Chinese with its Workspace ID, revision and time as they came", { presetEn, preset });
 
   // A refused save, in Chinese: nothing changes.
   const appearanceBefore = await stored("yuzuno.appearance");
