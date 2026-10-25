@@ -1,6 +1,6 @@
 {
   "identifier": "connection",
-  "description": "Only the embedded connection page may choose and check a Core URL, name and forget the workspaces saved here, and start the saved Core in WSL. It may also move, minimize, maximize and close its frameless window.",
+  "description": "Only the embedded connection page may choose and check a Core URL, name and remove the workspaces saved here, forget which workspace was at an address it no longer lists, and start the saved Core in WSL. It may also move, minimize, maximize and close its frameless window. Nothing here clears what a web view stored for an address.",
   "local": true,
   "windows": [
     "main"
@@ -10,6 +10,7 @@
     "allow-connect-core",
     "allow-rename-core",
     "allow-remove-core",
+    "allow-forget-address",
     "allow-start-core",
     "allow-set-appearance",
     "core:window:allow-is-decorated",
