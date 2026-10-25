@@ -80,6 +80,73 @@ export function exportDraft(storage: Pick<Storage, "getItem">, agentId: string, 
   }
 }
 
+/** One draft in the file of several: its Agent's ID and the name listed for
+ * it, and its text in order with its pasted texts as they were; images by
+ * count and skills by name only. */
+export type ExportedDraft = {
+  agentId: string;
+  name: string;
+  closed: boolean;
+  savedBy: "thisVersion" | "earlierVersion";
+  parts: ({ kind: "text"; text: string } | { kind: "paste"; number: number; lines: number; text: string })[];
+  images: number;
+  skills: string[];
+};
+export const DRAFTS_FORMAT = "yuzuno-drafts";
+export type DraftsFailure = { agentId: string; name: string; reason: string };
+
+/** The chosen drafts, each read now and only these, through storage that
+ * cannot be written: as they are now, which another window may have changed
+ * since the list was read. All or nothing: when any can't be read, or is no
+ * longer saved, those are named and no file is made. */
+export function exportDrafts(
+  storage: Pick<Storage, "getItem">,
+  rows: readonly DraftRow[],
+  at = new Date(),
+): { text: string; count: number } | { failed: DraftsFailure[] } {
+  const drafts: ExportedDraft[] = [];
+  const failed: DraftsFailure[] = [];
+  const read = new DraftStorage(readOnly(storage));
+  for (const row of rows) {
+    const now = savedDraftSummary(storage, row.agentId);
+    if (now.state === "none" || now.state === "damaged") {
+      failed.push({ agentId: row.agentId, name: row.name, reason: now.state === "none" ? "it is no longer saved here" : now.reason });
+      continue;
+    }
+    try {
+      const draft = read.load(row.agentId);
+      drafts.push({
+        agentId: row.agentId,
+        name: row.name,
+        closed: row.closed,
+        savedBy: now.state === "legacy" ? "earlierVersion" : "thisVersion",
+        parts: draft.parts.map((part) =>
+          part.kind === "text" ? { kind: "text", text: part.text } : { kind: "paste", number: part.number, lines: part.lines, text: part.text },
+        ),
+        images: draft.images?.length ?? 0,
+        skills: (draft.skills ?? []).map((skill) => skill.name),
+      });
+    } catch (error) {
+      failed.push({ agentId: row.agentId, name: row.name, reason: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  if (failed.length) return { failed };
+  const file = {
+    format: DRAFTS_FORMAT,
+    version: 1,
+    exportedAt: at.toISOString(),
+    note:
+      "The copies saved in this browser for this site when exported: text typed since it was last saved is not included. " +
+      "Each draft is saved under its Agent's ID only: the Workspace it was written in is not recorded. Images are counted, not included.",
+    drafts,
+  };
+  return { text: `${JSON.stringify(file, null, 2)}\n`, count: drafts.length };
+}
+
+export function draftsFileName(at = new Date()): string {
+  return `yuzuno-drafts-${at.toISOString().replace(/[:.]/g, "-")}.json`;
+}
+
 export function draftFileName(agentName: string, at = new Date()): string {
   const name = agentName.replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "agent";
   return `yuzuno-draft-${name}-${at.toISOString().replace(/[:.]/g, "-")}.txt`;

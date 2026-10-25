@@ -49,14 +49,16 @@ const agents = [
   { id: "a5", name: "Rowan" },
 ];
 
-function mount({ refuse = false } = {}) {
+function mount({ refuse = false, extra = {} } = {}) {
   const vc = new VirtualConsole();
   const errors = [], reads = [], writes = [], saves = { blobs: [], links: [], fail: null };
   vc.on("jsdomError", (error) => errors.push(error.message));
   const dom = new JSDOM('<div id="root"></div>', { url: "http://isolated.test/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole: vc });
   const w = dom.window, doc = w.document;
-  for (const [key, value] of Object.entries(seed)) w.localStorage.setItem(key, value);
-  const proto = w.Storage.prototype, get = proto.getItem;
+  for (const [key, value] of Object.entries({ ...seed, ...extra })) w.localStorage.setItem(key, value);
+  const proto = w.Storage.prototype, get = proto.getItem, set = proto.setItem;
+  // Another window's write, past the page's own (which records and refuses them).
+  const elsewhere = (key, value) => set.call(w.localStorage, key, value);
   proto.getItem = function (key) { reads.push(key); return get.call(this, key); };
   proto.setItem = function (key) { writes.push(`set ${key}`); };
   proto.removeItem = function (key) { writes.push(`remove ${key}`); };
@@ -69,7 +71,9 @@ function mount({ refuse = false } = {}) {
   const row = (id) => doc.querySelector(`[data-agent="${id}"]`);
   const shown = () => doc.querySelector("#settings-drafts textarea")?.value;
   const blobText = (blob) => new Promise((resolve) => { const r = new w.FileReader(); r.onload = () => resolve(r.result); r.readAsText(blob); });
-  return { w, doc, errors, reads, writes, saves, section, row, shown, blobText, close: () => w.close() };
+  const tick = (id) => row(id).querySelector('input[type="checkbox"]');
+  const button = (text) => [...section().querySelectorAll("button")].find((b) => b.textContent.trim() === text);
+  return { w, doc, errors, reads, writes, saves, section, row, shown, blobText, tick, button, elsewhere, close: () => w.close() };
 }
 
 test("the list reads manifests only, shows this Workspace's drafts as they are, and counts the others", async (t) => {
@@ -146,4 +150,90 @@ test("storage the browser refuses is said, and nothing is listed", async (t) => 
   await until(() => p.section()?.querySelector('[role="alert"]'), "the refusal");
   assert.equal(p.section().querySelector('[role="alert"]').textContent, "Drafts can't be read: this browser gives Yuzuno no storage here.");
   assert.equal(p.doc.querySelectorAll("[data-agent]").length, 0);
+});
+
+// T-193: several drafts, ticked, saved together as one versioned file.
+const second = { "yuzuno.composer.v1:a6": JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "the other Cedar's words" }] }) };
+const twins = [...agents, { id: "a6", name: "Cedar" }];
+
+test("ticked drafts are read only when downloaded, kept apart by Agent ID under one name, and saved as one versioned file", async (t) => {
+  const p = mount({ extra: second }); t.after(p.close);
+  p.w.renderDrafts({ active: true, agents: twins });
+  await until(() => p.row("a6"), "the list");
+  assert.equal(p.tick("a3") === null, true, "a damaged draft can't be ticked");
+  assert.equal(p.button("Download selected (.json)").disabled, true, "nothing ticked, nothing to save");
+  for (const id of ["a6", "a1", "a2"]) p.tick(id).click();
+  await until(() => /3 drafts chosen/.test(p.section().textContent), "the choice");
+  assert.deepEqual(p.reads.filter((key) => key.startsWith("yuzuno.paste.v1:")), [], "ticking reads no pasted text");
+  p.button("Download selected (.json)").click();
+  await until(() => p.saves.links.length === 1, "a download is asked for");
+  assert.match(p.saves.links[0], /^yuzuno-drafts-[\dTZ-]+\.json$/);
+  assert.equal(p.saves.blobs[0].type, "application/json;charset=utf-8");
+  const file = JSON.parse(await p.blobText(p.saves.blobs[0]));
+  assert.deepEqual({ format: file.format, version: file.version }, { format: "yuzuno-drafts", version: 1 });
+  assert.match(file.exportedAt, /^\d{4}-\d\d-\d\dT/);
+  assert.match(file.note, /text typed since it was last saved is not included\. Each draft is saved under its Agent's ID only: the Workspace it was written in is not recorded\./);
+  // In list order, each its own, as saved: pasted text in place, images only counted.
+  assert.deepEqual(file.drafts, [
+    { agentId: "a1", name: "Cedar", closed: false, savedBy: "thisVersion", images: 1, skills: [],
+      parts: [{ kind: "text", text: "Hello there " }, { kind: "paste", number: 1, lines: 2, text: "PASTED BODY line one\nline two" }] },
+    { agentId: "a2", name: "Pine", closed: true, savedBy: "earlierVersion", images: 0, skills: [], parts: [{ kind: "text", text: "legacy words" }] },
+    { agentId: "a6", name: "Cedar", closed: false, savedBy: "thisVersion", images: 0, skills: [], parts: [{ kind: "text", text: "the other Cedar's words" }] },
+  ]);
+  assert.ok(!JSON.stringify(file).includes("screen.png"), "no image is in the file, not even by name");
+  assert.deepEqual(p.reads.filter((key) => key.startsWith("yuzuno.paste.v1:")), ["yuzuno.paste.v1:a1:b1"], "only the ticked drafts' pasted text is read");
+  assert.match(p.section().textContent, /Your browser was asked to save yuzuno-drafts-[\dTZ-]+\.json \(3 drafts\)\./);
+  assert.deepEqual(p.writes, [], "nothing is written");
+  // The one-draft text file is as before.
+  p.row("a1").querySelector("button").click();
+  await until(() => p.shown(), "the chosen draft");
+  p.button("Download .txt").click();
+  await until(() => p.saves.links.length === 2);
+  assert.match(p.saves.links[1], /^yuzuno-draft-Cedar-[\dTZ-]+\.txt$/);
+  assert.deepEqual(p.errors, []);
+});
+
+test("when a ticked draft can't be read, nothing is downloaded, it is named, the choice stays, and untick it saves the rest", async (t) => {
+  const p = mount(); t.after(p.close);
+  p.w.renderDrafts({ active: true, agents });
+  await until(() => p.row("a5"));
+  p.tick("a1").click();
+  p.tick("a5").click();
+  await until(() => /2 drafts chosen/.test(p.section().textContent));
+  p.button("Download selected (.json)").click();
+  const alert = await until(() => p.section().querySelector(".draft-export-many [role=\"alert\"]"), "the failure is said");
+  assert.equal(alert.textContent, "Nothing was downloaded: 1 of 2 chosen drafts can't be read (Rowan: Saved pasted text is missing). Untick it to save the rest.");
+  assert.equal(p.saves.links.length, 0, "no partial file");
+  assert.deepEqual([p.tick("a1").checked, p.tick("a5").checked], [true, true], "the choice stays");
+  assert.deepEqual(p.writes, [], "the drafts are left as they are");
+  p.tick("a5").click();
+  await until(() => /1 draft chosen/.test(p.section().textContent));
+  p.button("Download selected (.json)").click();
+  await until(() => p.saves.links.length === 1, "the rest is saved");
+  assert.deepEqual(JSON.parse(await p.blobText(p.saves.blobs[0])).drafts.map((d) => d.agentId), ["a1"]);
+  assert.deepEqual(p.writes, []);
+});
+
+test("ticked drafts are saved as they are when downloaded: one another window re-saved says so, one it emptied is named, not saved empty", async (t) => {
+  const p = mount(); t.after(p.close);
+  p.w.renderDrafts({ active: true, agents });
+  await until(() => p.row("a2"));
+  p.tick("a1").click();
+  p.tick("a2").click();
+  await until(() => /2 drafts chosen/.test(p.section().textContent));
+  // Another window, after the list was read: Pine's draft saved in this version's form, Cedar's emptied.
+  p.elsewhere("yuzuno.composer.v1:a2", JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "re-saved words" }] }));
+  p.elsewhere("yuzuno.composer.v1:a1", JSON.stringify({ version: 1, nextNumber: 1, parts: [] }));
+  p.button("Download selected (.json)").click();
+  const alert = await until(() => p.section().querySelector(".draft-export-many [role=\"alert\"]"), "the emptied draft is said");
+  assert.equal(alert.textContent, "Nothing was downloaded: 1 of 2 chosen drafts can't be read (Cedar: it is no longer saved here). Untick it to save the rest.");
+  assert.equal(p.saves.links.length, 0);
+  p.tick("a1").click();
+  await until(() => /1 draft chosen/.test(p.section().textContent));
+  p.button("Download selected (.json)").click();
+  await until(() => p.saves.links.length === 1);
+  assert.deepEqual(JSON.parse(await p.blobText(p.saves.blobs[0])).drafts, [
+    { agentId: "a2", name: "Pine", closed: true, savedBy: "thisVersion", images: 0, skills: [], parts: [{ kind: "text", text: "re-saved words" }] },
+  ]);
+  assert.deepEqual(p.writes, [], "the page wrote nothing");
 });

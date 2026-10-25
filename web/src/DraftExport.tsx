@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Download, Eye } from "lucide-react";
-import { draftFileName, exportDraft, listDrafts, type DraftListing, type DraftRow } from "./draft-export";
+import { draftFileName, draftsFileName, exportDraft, exportDrafts, listDrafts, type DraftListing, type DraftRow, type DraftsFailure } from "./draft-export";
 import "./diagnostics.css";
 import "./draft-export.css";
 
@@ -13,17 +13,41 @@ function readStorage(): Storage | null {
 }
 
 type Shown = { agentId: string; name: string } & ({ text: string } | { error: string });
+type Many = { state: "saving"; name: string; count: number } | { state: "failed"; failed: DraftsFailure[]; of: number } | { state: "notSaved"; why: string };
+
+/** Asks the browser to save `text` as `name`; the error that stopped it, or null. */
+function saveFile(name: string, text: string, type: string): string | null {
+  try {
+    const url = URL.createObjectURL(new Blob([text], { type }));
+    try {
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = name;
+      document.body.append(link);
+      link.click();
+      link.remove();
+    } finally {
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+    return null;
+  } catch (error) {
+    return error instanceof Error && error.message ? error.message : String(error);
+  }
+}
 
 /**
  * Settings → Draft storage (T-193): the drafts this browser keeps for the
  * Agent IDs this Workspace lists (a draft records no Workspace). One is opened
- * only when chosen, shown whole, and saved as a text file only when asked.
- * Nothing here changes, sends or clears a draft.
+ * only when chosen, shown whole, and saved as a text file only when asked;
+ * several ticked are read only when saved together, as one file. Nothing
+ * here changes, sends or clears a draft.
  */
 export function DraftExport({ active, agents }: { active: boolean; agents: { id: string; name: string; closedAt?: string | null }[] | null }) {
   const [listing, setListing] = useState<DraftListing | null>(null);
   const [shown, setShown] = useState<Shown | null>(null);
   const [save, setSave] = useState<{ state: "saving"; name: string } | { state: "notSaved"; why: string } | null>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [many, setMany] = useState<Many | null>(null);
 
   // Read again when shown and when the Workspace's Agents change, not on every
   // render: the list may be a new array each time. Shown again, it starts
@@ -41,12 +65,18 @@ export function DraftExport({ active, agents }: { active: boolean; agents: { id:
       wasActive.current = active;
       return;
     }
-    setListing(listDrafts(readStorage(), listed));
+    const next = listDrafts(readStorage(), listed);
+    setListing(next);
     const open = shownNow.current;
     if (!wasActive.current || !open || !listed.some((agent) => agent.id === open.agentId)) {
       setShown(null);
       setSave(null);
     }
+    // Shown again, nothing is ticked; otherwise only drafts still listed stay ticked.
+    const again = !wasActive.current;
+    const kept = new Set(next.available ? next.rows.filter((row) => row.summary.state !== "damaged").map((row) => row.agentId) : []);
+    setSelected((was) => (again ? new Set() : new Set([...was].filter((id) => kept.has(id)))));
+    if (again) setMany(null);
     wasActive.current = true;
   }, [active, agentsKey]);
 
@@ -60,23 +90,32 @@ export function DraftExport({ active, agents }: { active: boolean; agents: { id:
   function download() {
     if (!shown || !("text" in shown)) return;
     const name = draftFileName(shown.name);
-    try {
-      const url = URL.createObjectURL(new Blob([shown.text], { type: "text/plain;charset=utf-8" }));
-      try {
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = name;
-        document.body.append(link);
-        link.click();
-        link.remove();
-      } finally {
-        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      }
-      // The page can ask for a download; whether the file was saved is the browser's to say.
-      setSave({ state: "saving", name });
-    } catch (error) {
-      setSave({ state: "notSaved", why: error instanceof Error && error.message ? error.message : String(error) });
-    }
+    const why = saveFile(name, shown.text, "text/plain;charset=utf-8");
+    // The page can ask for a download; whether the file was saved is the browser's to say.
+    setSave(why === null ? { state: "saving", name } : { state: "notSaved", why });
+  }
+
+  function toggle(agentId: string) {
+    setMany(null);
+    setSelected((was) => {
+      const next = new Set(was);
+      if (!next.delete(agentId)) next.add(agentId);
+      return next;
+    });
+  }
+
+  /** The ticked drafts, read now, as one file; none if any can't be read. */
+  function downloadSelected() {
+    if (!listing?.available) return;
+    const rows = listing.rows.filter((row) => selected.has(row.agentId));
+    if (!rows.length) return;
+    const storage = readStorage();
+    if (!storage) return setMany({ state: "notSaved", why: "this browser gives Yuzuno no storage here" });
+    const made = exportDrafts(storage, rows);
+    if ("failed" in made) return setMany({ state: "failed", failed: made.failed, of: rows.length });
+    const name = draftsFileName();
+    const why = saveFile(name, made.text, "application/json;charset=utf-8");
+    setMany(why === null ? { state: "saving", name, count: made.count } : { state: "notSaved", why });
   }
 
   return (
@@ -87,8 +126,9 @@ export function DraftExport({ active, agents }: { active: boolean; agents: { id:
           <p>
             Drafts saved in this browser for this site, shown for the Agents this Workspace lists. A draft is saved under
             its Agent's ID only: which Workspace it was written in is not recorded, so a matching Agent doesn't prove it.
-            Choose one to see it whole, then save it as a text file. These are the copies saved on this device: text typed
-            in an open conversation since it was last saved is not in them. Nothing here sends, changes or clears a draft.
+            Choose one to see it whole, then save it as a text file, or tick several to save them together as one file.
+            These are the copies saved on this device: text typed in an open conversation since it was last saved is not
+            in them. Nothing here sends, changes or clears a draft.
           </p>
         </div>
       </header>
@@ -105,6 +145,14 @@ export function DraftExport({ active, agents }: { active: boolean; agents: { id:
             {listing.rows.map((row) => (
               <li key={row.agentId} data-agent={row.agentId}>
                 <span className="draft-export-name">
+                  {row.summary.state !== "damaged" && (
+                    <input
+                      type="checkbox"
+                      checked={selected.has(row.agentId)}
+                      onChange={() => toggle(row.agentId)}
+                      aria-label={`Choose the draft for ${row.name}`}
+                    />
+                  )}
                   {row.name}
                   {row.closed ? " (closed)" : ""}
                 </span>
@@ -117,6 +165,31 @@ export function DraftExport({ active, agents }: { active: boolean; agents: { id:
               </li>
             ))}
           </ul>
+          {listing.rows.some((row) => row.summary.state !== "damaged") && (
+            <div className="draft-export-many">
+              <button type="button" className="secondary-button" disabled={selected.size === 0} onClick={downloadSelected}>
+                <Download size={14} aria-hidden="true" /> Download selected (.json)
+              </button>
+              <p className="diagnostics-note" role="status">
+                {many?.state === "saving"
+                  ? `Your browser was asked to save ${many.name} (${many.count} ${many.count === 1 ? "draft" : "drafts"}). If no file appears, show each draft and copy it.`
+                  : selected.size === 0
+                    ? "Tick drafts to save them together as one file (JSON), each with its Agent's ID and name. Their pasted texts are read only then."
+                    : `${selected.size} ${selected.size === 1 ? "draft" : "drafts"} chosen. Their pasted texts are read only when you download.`}
+              </p>
+              {many?.state === "failed" && (
+                <p className="updates-error" role="alert">
+                  Nothing was downloaded: {many.failed.length} of {many.of} chosen {many.of === 1 ? "draft" : "drafts"} can't be
+                  read ({many.failed.map((f) => `${f.name}: ${f.reason}`).join("; ")}). Untick {many.failed.length === 1 ? "it" : "them"} to save the rest.
+                </p>
+              )}
+              {many?.state === "notSaved" && (
+                <p className="updates-error" role="alert">
+                  The download could not start ({many.why}). Show each draft and copy it.
+                </p>
+              )}
+            </div>
+          )}
           {listing.otherAgents > 0 && (
             <p className="diagnostics-note">
               {listing.otherAgents} saved {listing.otherAgents === 1 ? "draft is" : "drafts are"} for Agent IDs this
