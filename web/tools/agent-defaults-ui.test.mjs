@@ -346,3 +346,45 @@ test("a saved Claude Code model is checked at once: one no longer offered, or a 
   await until(() => /Couldn’t read this Core host’s Claude Code models: .*Claude Code is not signed in/.test(broken.document.body.textContent), "the catalog failure said");
   assert.equal(select(broken, "Claude Code model for new Agents").value, "sonnet", "the saved choice still shown");
 });
+
+test("a project's defaults in Chinese (T-189): inherited values and where they come from are worded, and so is a save; a language change keeps the choice and asks Core nothing", async () => {
+  const workspace = { harness: "claude", claudePermissionMode: "auto" };
+  let own = {};
+  const page = mount((url, method, body) => {
+    if (method === "POST") own = Object.fromEntries(Object.entries({ ...own, ...body }).filter(([, v]) => v !== null));
+    return [200, projectView(workspace, own)];
+  });
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+  page.window.renderProjectDefaults("p1");
+  await until(() => select(page, "新 Agent 的 Harness"), "the project editor in Chinese");
+  const section = (label) => page.document.querySelector(`[aria-label="${label}"]`);
+  const options = (label) => [...select(page, label).options].map((o) => o.textContent.trim());
+  assert.equal(section("此项目的新 Agent 默认值").querySelector("h3").textContent, "新 Agent 默认值");
+  assert.equal(section("此项目的新 Agent 默认值").getAttribute("lang"), "zh-Hans", "its own lang on an English project page");
+  assert.match(section("此项目的新 Agent 默认值").textContent, /已为此 Workspace 设置：Claude Code。/);
+  assert.deepEqual(options("新 Agent 的 Harness"), ["继承 · Claude Code（已为此 Workspace 设置）", "Codex", "Claude Code"]);
+  assert.deepEqual(options("新 Agent 的 Codex 权限"), ["继承 · 请求批准（内置）", "跟随 Codex 配置", "请求批准", "替我批准", "完全访问"]);
+  assert.deepEqual(options("新 Agent 的 Claude Code 权限"), ["继承 · 自动模式（已为此 Workspace 设置）", "操作前询问", "自动模式"]);
+  await choose(page, "新 Agent 的 Codex 权限", "auto");
+  button(page, "保存").click();
+  await until(() => /已为此项目保存/.test(section("此项目的新 Agent 默认值").textContent), "the save, said in Chinese");
+  assert.deepEqual(posts(page)[0].body, { codexPermissionPreset: "auto" }, "the same request as in English");
+  const switchTo = (language) => {
+    page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+    page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+  };
+  // Changed in another window: the line about the save is worded again, nothing asked.
+  const before = page.calls.length;
+  switchTo("en");
+  await until(() => select(page, "Harness for new Agents"), "English again");
+  assert.match(section("New Agent defaults for this project").textContent, /Saved for this project/);
+  assert.equal(section("New Agent defaults for this project").getAttribute("lang"), "en");
+  assert.equal(select(page, "Codex permissions for new Agents").value, "auto");
+  await choose(page, "Harness for new Agents", "codex");
+  switchTo("zh-Hans");
+  await until(() => select(page, "新 Agent 的 Harness"), "Chinese again");
+  assert.equal(select(page, "新 Agent 的 Harness").value, "codex", "the unsaved choice stays");
+  assert.ok(button(page, "保存"), "still to save");
+  assert.equal(page.calls.length, before, "a language change reads and writes nothing");
+  assert.deepEqual(page.errors, []);
+});

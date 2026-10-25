@@ -3,14 +3,13 @@ import { LoaderCircle, RefreshCw } from "lucide-react";
 import { checkModels, readRuntime, runtimeView, type Fact, type MachineFacts, type ModelChecks, type RuntimeRead } from "./runtime-status";
 import { ClaudeMcpStatus } from "./ClaudeMcpStatus";
 import { CodexMcpStatus } from "./CodexMcpStatus";
-import { EnglishPart } from "./EnglishPart";
 import { strings, useLanguage, useStrings } from "./i18n";
 import type { Agent } from "./types";
 import "./runtime-section.css";
 
 // The section's own words (T-189). Names, versions, releases, paths,
-// accounts and what Core or a CLI said come as they are; each Agent's MCP
-// report is the shared MCP view's, still in English.
+// accounts and what Core or a CLI said come as they are. Each Agent's MCP
+// report is the shared MCP panels', given this section's language.
 const text = strings({
   states: { yes: "Yes", no: "No", unknown: "Unknown" } as Record<"yes" | "no" | "unknown", string>,
   coreHost: "Core host",
@@ -87,7 +86,7 @@ const text = strings({
     "像“新建 Agent”对话框打开时那样，列出此主机上 Codex 和 Claude Code 的模型。如果 Codex 无法列出，Core 会像对话框那样把它标为未连接。",
   mcp: "MCP 服务",
   mcpNote:
-    "按各 Agent 的 harness 报告的显示。Claude Code：它会话的最近一次报告；“Refresh”会询问该会话一次。Codex：它连接启动时收到的报告；读取不会询问 Codex。显示某个 Agent 不会询问任何内容。配置和登录仍在各自的 CLI 中。下方每个 Agent 的 MCP 详情仍为英文。",
+    "按各 Agent 的 harness 报告的显示。Claude Code：它会话的最近一次报告；“Refresh”会询问该会话一次。Codex：它连接启动时收到的报告；读取不会询问 Codex。显示某个 Agent 不会询问任何内容。配置和登录仍在各自的 CLI 中。",
   agent: "Agent",
   noMcpAgents: "没有打开的 Claude Code 或 Codex Agent 可报告 MCP 服务。",
   openCode: (n) => `${n} 个 OpenCode Agent：此版本中 OpenCode 不向 Yuzuno 报告 MCP 状态。`,
@@ -201,16 +200,15 @@ function MachineCard({ machine, onCheckModels, checkingModels = false }: {
  * connection received; reading asks Codex nothing. A harness without a
  * report is named, not guessed. */
 function McpServices({ agents }: { agents: Agent[] }) {
-  const t = useStrings(text);
+  const language = useLanguage();
+  const t = text(language);
   const open = agents.filter((agent) => !agent.closedAt);
   const listed = open.filter((agent) => agent.harness === "claude" || (agent.harness ?? "codex") === "codex");
   const others = open.length - listed.length;
   const [chosen, setChosen] = useState("");
   const agent = listed.find((item) => item.id === chosen) ?? listed[0];
-  const where = (item: Agent, host: string) => (item.remote ? item.remote.machine.name : host);
-  const label = (item: Agent, host = t.coreHost) => `${item.name} · ${item.harness === "claude" ? "Claude Code" : "Codex"} · ${where(item, host)}`;
-  // The MCP report below is the shared view's, in English, heading included.
-  const heading = (item: Agent) => label(item, text("en").coreHost);
+  const where = (item: Agent) => (item.remote ? item.remote.machine.name : t.coreHost);
+  const label = (item: Agent) => `${item.name} · ${item.harness === "claude" ? "Claude Code" : "Codex"} · ${where(item)}`;
   return (
     <section className="runtime-group runtime-mcp" aria-labelledby="runtime-mcp">
       <h4 id="runtime-mcp">{t.mcp}</h4>
@@ -227,13 +225,11 @@ function McpServices({ agents }: { agents: Agent[] }) {
               ))}
             </select>
           </label>
-          <EnglishPart>
-            {agent.harness === "claude" ? (
-              <ClaudeMcpStatus agent={agent} cachedOnOpen heading={heading(agent)} headingLevel={5} />
-            ) : (
-              <CodexMcpStatus agent={agent} heading={heading(agent)} headingLevel={5} anchor={false} />
-            )}
-          </EnglishPart>
+          {agent.harness === "claude" ? (
+            <ClaudeMcpStatus agent={agent} cachedOnOpen heading={label(agent)} headingLevel={5} language={language} />
+          ) : (
+            <CodexMcpStatus agent={agent} heading={label(agent)} headingLevel={5} anchor={false} language={language} />
+          )}
         </>
       ) : (
         <p className="runtime-note">{t.noMcpAgents}</p>

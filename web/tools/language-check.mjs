@@ -164,10 +164,10 @@ try {
     const language = await editorState(box);
     assert.deepEqual(language, { lang: "zh-Hans", heading: "界面语言", status: "已保存到此设备", alert: null, checked: ["zh-Hans"] });
     const coverage = await box.locator(".input-preferences-fixed").textContent();
-    assert.match(coverage, /“界面语言”、“发送消息”、“时钟与时区”、“键盘快捷键”、“主题、文字与布局”、“把偏好移到另一台设备”、“数据与存储概览”、“复制诊断信息”、“通知偏好”、“关于与帮助”、“Home 展示”、“代码审查”、“手机与远程访问”、“运行环境与版本”/);
+    assert.match(coverage, /“界面语言”、“发送消息”、“时钟与时区”、“键盘快捷键”、“主题、文字与布局”、“把偏好移到另一台设备”、“数据与存储概览”、“复制诊断信息”、“通知偏好”、“关于与帮助”、“Home 展示”、“代码审查”、“手机与远程访问”、“运行环境与版本”、“新 Agent 默认值”/);
     assert.match(coverage, /仍为英文/);
     assert.match(coverage, /系统通知（包括测试通知）也仍为英文/);
-    assert.match(coverage, /“运行环境与版本”中各 Agent 的 MCP 详情/);
+    assert.match(coverage, /项目页面中的“新 Agent 默认值”也会随之显示/);
     assert.equal(await stored(page, "yuzuno.language"), '{"language":"zh-Hans"}');
     assert.equal(await stored(page, "yuzuno.time"), TIME, "the clock format and time zone are left as they were");
     await page.screenshot({ path: join(output, "language-zh.png") });
@@ -201,8 +201,9 @@ try {
     assert.equal(help.heading, "键盘快捷键");
     assert.deepEqual(help.groups, ["任何地方", "撰写消息", "阅读会话", "Home", "列表与对话框"]);
     for (const key of ["Ctrl", "Return", "Shift", "Esc", "Tab"]) assert.ok(help.keys.includes(key), key);
+    // New Agent defaults has had model and reasoning defaults since #266.
     const models = await search(page, "推理");
-    assert.deepEqual(models, ["模型、推理与权限"]);
+    assert.deepEqual(models, ["模型、推理与权限", "新 Agent 默认值"]);
     const agentsListed = await page.locator(".settings-catalog-card select option").allTextContents();
     assert.deepEqual(agentsListed, ["选择一个 Agent…", "Mori"], "an Agent's name stays as it was written");
     check("Clock & time zone, Sending messages and Keyboard shortcuts are in Chinese; key names, Agent names and time zones stay as written", { help });

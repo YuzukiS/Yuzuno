@@ -52,7 +52,7 @@ test("Settings' search finds an entry by its words in either language", () => {
   assert.deepEqual(titles("外观与交互 发送键"), ["Sending messages"]);
 });
 
-test("the editors this version translates: Language, Sending messages, Clock & time zone, Keyboard shortcuts, Appearance, Move preferences, Data & storage, Copy diagnostics, Notification preferences, About & help, Home presentation, Code review, Phone & remote access, Runtime & versions", () => {
-  assert.deepEqual([...translatedEditors], ["language", "input", "time", "shortcuts", "appearance", "transfer", "storage", "diagnostics", "notifications", "about", "home", "review", "remote", "runtime"]);
+test("the editors this version translates: Language, Sending messages, Clock & time zone, Keyboard shortcuts, Appearance, Move preferences, Data & storage, Copy diagnostics, Notification preferences, About & help, Home presentation, Code review, Phone & remote access, Runtime & versions, New Agent defaults", () => {
+  assert.deepEqual([...translatedEditors], ["language", "input", "time", "shortcuts", "appearance", "transfer", "storage", "diagnostics", "notifications", "about", "home", "review", "remote", "runtime", "agent-defaults"]);
   for (const editor of translatedEditors) assert.ok(settingsCatalog.some((entry) => entry.target.kind === "editor" && entry.target.editor === editor), editor);
 });

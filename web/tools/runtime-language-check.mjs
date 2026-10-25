@@ -6,8 +6,8 @@
 //  - the language changed in another window: the section is Chinese, with
 //    versions, releases, paths, accounts, sign-in methods, the SDK registry
 //    and what Core or a CLI said as they came; the chosen Agent and the model
-//    results kept; the Agent's MCP report still English, marked lang=en;
-//    nothing read again, no model listed, no MCP report asked for;
+//    results kept; the Agent's MCP report in Chinese too, its server names
+//    as reported; nothing read again, no model listed, no MCP report asked for;
 //  - back to English in another window: the section is as it was;
 //  - nothing is written to Core.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/runtime-language-check.mjs
@@ -134,7 +134,7 @@ const state = (box) => box.evaluate((el) => {
   const harness = (m, name) => [...m.querySelectorAll(".runtime-harness")].find((h) => h.querySelector("h6").textContent === name);
   const host = machine("Core host"), box = machine("Build box");
   const mcp = el.querySelector(".runtime-mcp");
-  const english = mcp.querySelector('[lang="en"]');
+  const panel = mcp.querySelector(".claude-mcp-status");
   return {
     lang: el.getAttribute("lang"),
     heading: el.querySelector("h3").textContent,
@@ -147,8 +147,11 @@ const state = (box) => box.evaluate((el) => {
     modelsButton: host.querySelector(".runtime-models-check button").textContent,
     chosen: mcp.querySelector("select").value,
     options: [...mcp.querySelectorAll("select option")].map((o) => o.textContent),
-    mcpEnglish: !!english,
-    mcpText: english?.textContent ?? null,
+    mcpLang: panel.closest("[lang]").getAttribute("lang"),
+    mcpHeading: panel.querySelector("h5").textContent,
+    mcpServer: [...panel.querySelectorAll(".mcp-server-list li")].map((li) => [li.querySelector(".mcp-server-name").textContent, li.querySelector(".mcp-server-state").textContent]),
+    mcpNote: panel.querySelector(".mcp-status-note").textContent,
+    mcpButton: panel.querySelector(".section-title button").getAttribute("aria-label"),
   };
 });
 
@@ -170,7 +173,7 @@ try {
   assert.match(en.codex.Models, /^Yes2 modelsDefault GPT-6 · checked .+$/);
   assert.match(en.claude.Models, new RegExp(`^NoCouldn't list models.*${CLAUDE_ERROR}.* · checked .+$`));
   assert.match(en.host.checked, /^Last checked 5 min ago \(.+\)$/);
-  assert.ok(en.mcpEnglish && /Ready at startup/.test(en.mcpText), "Kiri's MCP report");
+  assert.deepEqual([en.mcpLang, en.mcpHeading, en.mcpServer, en.mcpButton], ["en", "Kiri · Codex · Core host", [["github", "Ready at startup"]], "Read MCP startup reports again"], "Kiri's MCP report");
   check("Runtime & versions in English: models checked, an Agent chosen for MCP services", { codexModels: en.codex.Models });
 
   // ---- Changed to Chinese in another window.
@@ -193,11 +196,11 @@ try {
   assert.match(zh.claude["模型"], new RegExp(`^否无法列出模型.*${CLAUDE_ERROR}.* · 检查于 .+$`), "its error as the CLI said it");
   assert.equal(zh.modelsButton, "检查模型");
   assert.deepEqual([zh.chosen, zh.options], ["x1", ["Mori · Claude Code · Core 主机", "Kiri · Codex · Core 主机"]], "the chosen Agent kept");
-  assert.ok(zh.mcpEnglish, "the MCP report is marked lang=en");
-  assert.equal(zh.mcpText, en.mcpText, "the MCP report as it was, in English");
+  assert.deepEqual([zh.mcpLang, zh.mcpHeading, zh.mcpServer, zh.mcpButton], ["zh-Hans", "Kiri · Codex · Core 主机", [["github", "启动时就绪"]], "重新读取 MCP 启动报告"], "the MCP report in Chinese, the server's name as reported");
+  assert.match(zh.mcpNote, /^此连接收到的启动状态/);
   assert.deepEqual(sectionReads(meanwhile), []);
   await page.screenshot({ path: join(output, "runtime-zh.png") });
-  check("changed to Chinese in another window: the section is Chinese, Core's and the CLIs' values as they came, the model check and chosen Agent kept, the MCP report English; nothing read", { meanwhile });
+  check("changed to Chinese in another window: the section is Chinese, Core's and the CLIs' values as they came, the model check and chosen Agent kept, the MCP report in Chinese with its server names as reported; nothing read", { meanwhile });
 
   // ---- Back to English in another window.
   meanwhile = await elsewhere("en", box, "Runtime & versions");
