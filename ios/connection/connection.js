@@ -315,7 +315,13 @@ async function start() {
   }
   const saved = await invoke('saved_cores').catch((error) => ({ state: 'unreadable', reason: String(error), profiles: [] }));
   drawSaved(saved);
-  if (saved?.state === 'saved') {
+  if (saved?.state === 'saved' && saved.profiles.length === 0) {
+    // Nothing is saved to open, but some addresses are remembered, so this
+    // is not a first launch either: the record holds something. Asking for
+    // an address is what there is to do, and the remembered ones are listed
+    // below so a refusal there is not a surprise.
+    show('Enter your workspace address to begin.');
+  } else if (saved?.state === 'saved') {
     const selected = saved.profiles.find((profile) => profile.id === saved.selected);
     if (selected) edit(selected);
     show(

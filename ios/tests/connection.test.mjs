@@ -494,6 +494,27 @@ test('an address with no workspace saved is shown as remembered, and forgetting 
   } finally { dom.window.close(); }
 });
 
+test('with nothing saved but an address remembered, the page asks for an address', async () => {
+  // The record holds something, so this is not a first launch -- but there
+  // is nothing to open either. It must not say "Your last workspace. Open
+  // it", which is what every state 'saved' used to say.
+  const dom = await mount(async (command) => {
+    if (command === 'saved_cores')
+      return { state: 'saved', selected: null, profiles: [], remembered: [{ url: 'https://gone.example.ts.net/', workspaceId: 'w-three' }] };
+  });
+  try {
+    const document = dom.window.document;
+    const status = document.querySelector('[role="status"]');
+    assert.match(status.textContent, /Enter your workspace address/);
+    assert.doesNotMatch(status.textContent, /Your last workspace|Choose a workspace to open/);
+    // Nothing is listed to open, and the remembered address is shown, so a
+    // refusal there has a visible cause.
+    assert.equal(document.querySelectorAll('#saved-list li').length, 0);
+    assert.equal(document.querySelector('#remembered').hidden, false);
+    assert.match(document.querySelector('#remembered-list li').textContent, /w-three was here/);
+  } finally { dom.window.close(); }
+});
+
 test('forgetting an address is not done unconfirmed, and removing a Workspace never forgets one', async () => {
   const calls = [];
   const dom = await mount(async (command, args) => {

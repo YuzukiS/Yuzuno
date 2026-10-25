@@ -172,7 +172,7 @@ async fn connect_core(
             id
         }
     };
-    let remembered = core_profiles::remembering(&saved, &profiles);
+    let (profiles, remembered) = core_profiles::settle(&saved, &profiles);
     let written = saved_core_file(&app)
         .ok_or_else(|| std::io::Error::other("this app has no data folder to keep it in"))
         .and_then(|file| core_profiles::save(&file, &profiles, Some(&selected_id), &remembered));
@@ -211,7 +211,7 @@ fn rename_core(app: AppHandle, profile: String, name: String) -> Result<serde_js
         return Err("That Workspace is not saved on this iPhone.".into());
     };
     kept.name = name.to_owned();
-    let remembered = core_profiles::remembering(&saved, &profiles);
+    let (profiles, remembered) = core_profiles::settle(&saved, &profiles);
     write_profiles(&app, &profiles, selected.as_deref(), &remembered)
 }
 
@@ -230,7 +230,7 @@ fn remove_core(app: AppHandle, profile: String) -> Result<serde_json::Value, Str
     }
     profiles.retain(|kept| kept.id != profile);
     let selected = selected.filter(|id| *id != profile);
-    let remembered = core_profiles::remembering(&saved, &profiles);
+    let (profiles, remembered) = core_profiles::settle(&saved, &profiles);
     write_profiles(&app, &profiles, selected.as_deref(), &remembered)
 }
 

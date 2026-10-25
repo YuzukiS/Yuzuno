@@ -176,8 +176,21 @@ impl Saved {
     /// answers it, so a removed profile cannot quietly leave the address
     /// unbound while its stored data is still there.
     pub fn workspace_for(&self, url: &Url) -> Option<&str> {
-        if let Some(profile) = self.profiles().iter().find(|profile| profile.url == *url) {
-            return profile.workspace_id.as_deref();
+        // Any profile at this address, not the first one listed. Two
+        // profiles may label one address ("Home" and "Home again"), and a
+        // label that records no Workspace must not make the address look
+        // unbound while another label at it knows better: that opened a
+        // different Workspace onto the first one's stored data.
+        //
+        // Should two labels at one address disagree, the first that knows
+        // one decides, so a different answer is refused rather than opened.
+        // Refusing is the safe direction; `settle` keeps them in agreement.
+        if self.profiles().iter().any(|profile| profile.url == *url) {
+            return self
+                .profiles()
+                .iter()
+                .filter(|profile| profile.url == *url)
+                .find_map(|profile| profile.workspace_id.as_deref());
         }
         self.remembered()
             .iter()
@@ -354,38 +367,74 @@ pub fn unusable(saved: &Saved) -> Option<&str> {
     }
 }
 
-/// What to remember after a change to the list. Every address already
-/// remembered stays; a profile that is gone leaves its address remembered,
-/// when a Core there had named a Workspace; and an address a profile now
-/// has is listed rather than remembered.
+/// What the list and the remembered addresses become after a change: one
+/// rule, in one place -- **an address never loses the Workspace it was known
+/// to hold.**
 ///
-/// Why it exists: removing a profile used to drop its `workspaceId` with
-/// it, leaving the address bound to nothing while what the web view stored
-/// for it stayed. The next Core to answer there -- any Core -- was then
-/// opened onto the previous Workspace's conversations, drafts and reading
-/// places. Remembering costs an address and an identifier, and nothing is
-/// cleared to pay for it.
-pub fn remembering(before: &Saved, profiles: &[Profile]) -> Vec<Remembered> {
+/// Why it exists: removing a profile used to drop its `workspaceId` with it,
+/// leaving the address bound to nothing while what the web view stored for
+/// it stayed. The next Core to answer there -- any Core -- was then opened
+/// onto the previous Workspace's conversations, drafts and reading places.
+///
+/// Two profiles may label one address, so "removed" is not the same as "no
+/// longer listed". Both cases are handled, and they differ:
+///
+/// * **No label left at the address.** It is remembered: the address and the
+///   identifier, nothing else.
+/// * **A label is still there.** The address stays listed, so it cannot also
+///   be remembered -- the record would then hold two answers for one
+///   address. Instead a label that records no Workspace takes the one the
+///   address is known to hold. Removing the label that happened to carry it
+///   therefore does not leave the address unbound, and the labels at one
+///   address stay in agreement.
+///
+/// Nothing is cleared to pay for any of this.
+pub fn settle(before: &Saved, profiles: &[Profile]) -> (Vec<Profile>, Vec<Remembered>) {
+    let mut profiles = profiles.to_vec();
     let mut remembered = before.remembered().to_vec();
-    for gone in before.profiles() {
-        if profiles.iter().any(|profile| profile.url == gone.url) {
-            continue;
+
+    // Every address the record knew a Workspace for, as it was. A profile
+    // that recorded one speaks for its address; so does a remembered one.
+    let mut knew: Vec<(Url, String)> = Vec::new();
+    let note = |url: &Url, workspace: &str, knew: &mut Vec<(Url, String)>| {
+        if !knew.iter().any(|(at, _)| at == url) {
+            knew.push((url.clone(), workspace.to_owned()));
         }
-        let Some(workspace_id) = gone.workspace_id.clone() else {
-            // Nothing was ever known about this address, so there is nothing
-            // to protect and nothing to claim.
-            continue;
-        };
-        let known = Remembered { url: gone.url.clone(), workspace_id };
-        // An address already remembered is updated in place: it takes no
-        // further room.
-        match remembered.iter_mut().find(|kept| kept.url == known.url) {
-            Some(kept) => *kept = known,
-            None => remembered.push(known),
+    };
+    for profile in before.profiles() {
+        if let Some(workspace) = profile.workspace_id.as_deref() {
+            note(&profile.url, workspace, &mut knew);
         }
     }
+    for known in before.remembered() {
+        note(&known.url, &known.workspace_id, &mut knew);
+    }
+
+    for (url, workspace) in knew {
+        let still_listed: Vec<usize> = profiles
+            .iter()
+            .enumerate()
+            .filter(|(_, profile)| profile.url == url)
+            .map(|(at, _)| at)
+            .collect();
+        if still_listed.is_empty() {
+            match remembered.iter_mut().find(|kept| kept.url == url) {
+                // An address already remembered is updated in place: it
+                // takes no further room.
+                Some(kept) => kept.workspace_id = workspace,
+                None => remembered.push(Remembered { url, workspace_id: workspace }),
+            }
+            continue;
+        }
+        for at in still_listed {
+            if profiles[at].workspace_id.is_none() {
+                profiles[at].workspace_id = Some(workspace.clone());
+            }
+        }
+    }
+    // An address is listed or remembered, never both.
     remembered.retain(|known| !profiles.iter().any(|profile| profile.url == known.url));
-    remembered
+    (profiles, remembered)
 }
 
 /// Forget what this remembers about one address, and only that. `None` when
@@ -735,7 +784,7 @@ mod tests {
         // The failure this exists for: the profile went, its workspaceId went
         // with it, and the address was bound to nothing -- while what the web
         // view stored for it stayed.
-        let after = remembering(&before, &[]);
+        let (_, after) = settle(&before, &[]);
         assert_eq!(after, vec![known("https://one.example.ts.net", "w-one")]);
         save(&path, &[], None, &after).unwrap();
         let saved = read(&path);
@@ -756,13 +805,46 @@ mod tests {
     }
 
     #[test]
+    fn two_labels_at_one_address_cannot_make_it_look_unbound() {
+        let (dir, path) = folder();
+        // "Home again" is a second label for one address, which this app
+        // allows. Only one of them records the Workspace.
+        let unnamed = profile("core-1", "Home", "https://one.example.ts.net", None);
+        let named = profile("core-2", "Home again", "https://one.example.ts.net", Some("w-one"));
+        save(&path, &[unnamed.clone(), named.clone()], Some("core-2"), &[]).unwrap();
+        let saved = read(&path);
+        let address = crate::core_url::parse("https://one.example.ts.net").unwrap();
+
+        // The regression: the label without a Workspace was listed first, so
+        // the address looked unbound and a different Workspace opened onto
+        // the stored data of the one that is there.
+        assert_eq!(saved.workspace_for(&address), Some("w-one"), "any label at the address, not the first");
+        assert_eq!(opening(saved.workspace_for(&address), "w-two"), Opening::Changed);
+        assert_eq!(opening(saved.workspace_for(&address), ""), Opening::Unverified);
+
+        // And removing the label that carried it does not lose it: the
+        // address is still listed, so it cannot be remembered, and the
+        // remaining label takes the Workspace the address is known to hold.
+        let (profiles, remembered) = settle(&saved, &[unnamed]);
+        assert_eq!(remembered, vec![], "still listed, so not remembered");
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].workspace_id.as_deref(), Some("w-one"), "the address kept its Workspace");
+        // Written and read back, so this is what a later launch sees.
+        save(&path, &profiles, Some("core-1"), &remembered).unwrap();
+        let left = read(&path);
+        assert_eq!(left.workspace_for(&address), Some("w-one"));
+        assert_eq!(opening(left.workspace_for(&address), "w-two"), Opening::Changed);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn an_address_nobody_named_leaves_nothing_remembered() {
         let (dir, path) = folder();
         let home = profile("core-1", "Home", "https://one.example.ts.net", None);
         save(&path, &[home], Some("core-1"), &[]).unwrap();
         // No Core there ever said which Workspace it was, so there is nothing
         // to protect and nothing is claimed about the address.
-        assert_eq!(remembering(&read(&path), &[]), vec![]);
+        assert_eq!(settle(&read(&path), &[]).1, vec![]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -789,7 +871,7 @@ mod tests {
         // A profile taking a remembered address takes the record with it.
         let (dir2, path2) = folder();
         save(&path2, &[], None, &same).unwrap();
-        assert_eq!(remembering(&read(&path2), &[home]), vec![]);
+        assert_eq!(settle(&read(&path2), &[home]).1, vec![]);
         std::fs::remove_dir_all(dir).unwrap();
         std::fs::remove_dir_all(dir2).unwrap();
     }
