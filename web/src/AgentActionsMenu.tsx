@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CircleStop, MoreHorizontal, RotateCw, Settings2, SlidersHorizontal, Square, Unplug } from "lucide-react";
+import { CircleStop, Link2, MoreHorizontal, RotateCw, Settings2, SlidersHorizontal, Square, Unplug } from "lucide-react";
 import { agentMenuItems, type AgentActionHandlers, type AgentMenuAction, type AgentMenuItem } from "./agent-actions";
 import type { Agent } from "./types";
 import "./agent-actions.css";
@@ -36,6 +36,7 @@ const icons: Record<AgentMenuAction, typeof RotateCw> = {
   interrupt: Square,
   disconnect: Unplug,
   settings: SlidersHorizontal,
+  copyLink: Link2,
   manage: Settings2,
 };
 
@@ -77,9 +78,9 @@ export function AgentActionsMenu({
   const open = useCallback(
     (at: MenuPoint, align: OpenMenu["align"], returnTo: HTMLElement | null, focus: OpenMenu["focus"] = "first") => {
       setPlaced(null);
-      setMenu({ id: agent.id, name: agent.name, items: agentMenuItems(agent, { missingTurns: missingTurns && !!handlers.endMissing, disconnect: !!handlers.disconnect }), at, align, returnTo, focus });
+      setMenu({ id: agent.id, name: agent.name, items: agentMenuItems(agent, { missingTurns: missingTurns && !!handlers.endMissing, disconnect: !!handlers.disconnect, link: !!handlers.copyLink }), at, align, returnTo, focus });
     },
-    [agent, missingTurns, handlers.endMissing, handlers.disconnect],
+    [agent, missingTurns, handlers.endMissing, handlers.disconnect, handlers.copyLink],
   );
   const close = useCallback((refocus: boolean) => {
     const was = current.current;
@@ -196,6 +197,9 @@ export function AgentActionsMenu({
         break;
       case "disconnect":
         handlers.disconnect?.(target.id);
+        break;
+      case "copyLink":
+        handlers.copyLink?.(target.id);
         break;
     }
   }
