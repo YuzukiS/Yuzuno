@@ -75,7 +75,9 @@ test("eight categories and bilingual search expose real scope, without fake cont
   for (const [term, title, scope] of [
     ["预算", "Core host Job budget", "Core execution machine"],
     ["默认目录", "Project directories, repositories & services", "Selected project"],
-    ["自动继续", "Continue after Claude’s usage limit resets", "Workspace default"],
+    ["自动继续", "Continue after Claude’s usage limit resets", "Scope: Selected local Claude Agent"],
+    // Its Workspace default has its own editor, needing no Agent (T-190).
+    ["自动继续", "Continue after a usage limit: Workspace default", "Scope: This Workspace · local Claude Agents without their own choice"],
     ["上下文", "Context window & compaction", "Selected Codex Agent"],
     ["手机访问", "Phone & remote access", "Workspace service"],
   ]) {
