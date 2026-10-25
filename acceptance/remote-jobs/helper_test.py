@@ -157,34 +157,38 @@ class HelperTests(unittest.TestCase):
     def test_a_stop_it_could_not_confirm_writes_no_outcome_and_the_same_attempt_settles_later(self):
         """The supervisor's own final decision, not just the primitives it
         uses (T-186). While this machine cannot be asked for its processes,
-        the command's exit must not be turned into a terminal result: that
-        would release the attempt's reservation while its group may still be
-        running. Once it can be asked again, the same attempt settles."""
+        the command's exit must not be turned into a terminal result: Core
+        reads a terminal result as settled and lets the attempt's reservation
+        go, while its group may still be running. Once the machine can be
+        asked again, this same attempt settles on the path that already
+        exists.
+
+        The hook is named when the attempt starts, so its supervisor inherits
+        it, but the file appears only once the command is running: enumeration
+        has to work for a start to be accepted at all.
+        """
         unreadable = Path(self.tmp.name) / "pids-unreadable"
-        unreadable.write_text("while this exists, the machine cannot be asked\n")
-        attempt = self.attempt("exit 0")
         blind_env = {"YUZUNO_JOBS_PIDS_UNREADABLE_FILE": str(unreadable)}
-        # The supervisor inherits this, so its own checks fail too.
+        attempt = self.attempt("sleep 2")
         started = self.call(dict(attempt, action="start"), env_extra=blind_env)
-        self.assertEqual(started["status"], "started",
-                         "the attempt starts: the failure is in checking its group, not in running it")
+        self.assertEqual(started["status"], "started", started)
         folder = self.folder(attempt)
         result = folder / "result.json"
-        # Long enough that the supervisor has waited on the command, given up
-        # on BLIND_LIMIT seconds of failed enumeration, and ended.
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline and (folder / "supervisor.json").exists() and not result.exists():
-            if not alive_supervisor(folder):
-                break
+        # From here this machine cannot be asked, the supervisor included.
+        unreadable.write_text("while this exists, the machine cannot be asked\n")
+        # The command exits, then its supervisor gives up on BLIND_LIMIT
+        # seconds of failed enumeration and ends.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and alive_supervisor(folder):
             time.sleep(0.2)
+        self.assertFalse(alive_supervisor(folder), "its supervisor ended")
         self.assertFalse(result.exists(),
                          "no outcome is written for a group this machine could not be asked about")
-        # And the attempt is not reported as settled either.
         blind = self.call(self.bound(attempt, "status"), env_extra=blind_env)
         self.assertEqual(blind["status"], "unclear", blind)
 
-        # The machine can be asked again: the same attempt converges on the
-        # recovery path that already exists, rather than needing a new one.
+        # Asked again: the attempt is still held, not settled, and the
+        # existing recovery closes this same attempt.
         unreadable.unlink()
         lost = self.call(self.bound(attempt, "status"))
         self.assertEqual(lost["status"], "lost", lost)
