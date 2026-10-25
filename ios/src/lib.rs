@@ -4,8 +4,8 @@
 //! desktop app does (desktop/README.md). Nothing but the window runs on the
 //! phone: Codex, the Workspace and its agents stay on the Core host.
 
+mod core_profiles;
 mod core_url;
-mod saved_core;
 // The desktop app's rule for recognizing a Core, shared as is.
 #[path = "../../desktop/src/health.rs"]
 mod health;
@@ -28,38 +28,171 @@ fn saved_core_file(app: &AppHandle) -> Option<PathBuf> {
     app.path().app_data_dir().ok().map(|dir| dir.join("core.json"))
 }
 
-/// The Core last connected from the page (`saved_core::Saved`, as the page
-/// reads it): none yet, one this app would accept now, or a record that
-/// cannot be used, which is not taken for a first launch.
+/// The named Workspaces this iPhone keeps (`core_profiles::Saved`, as the
+/// page reads it): none yet, those this app would accept now, or a record
+/// that cannot be used, which is not taken for a first launch. None of them
+/// is said to be reachable: that is only known once one is connected to.
 #[tauri::command]
-fn saved_core(app: AppHandle) -> serde_json::Value {
-    match saved_core_file(&app) {
-        Some(file) => saved_core::read(&file).to_json(),
-        None => saved_core::Saved::Unreadable("this app has no data folder to keep it in".into()).to_json(),
+fn saved_cores(app: AppHandle) -> serde_json::Value {
+    read_profiles(&app).to_json()
+}
+
+fn read_profiles(app: &AppHandle) -> core_profiles::Saved {
+    match saved_core_file(app) {
+        Some(file) => core_profiles::read(&file),
+        None => core_profiles::Saved::Unreadable("this app has no data folder to keep it in".into()),
     }
 }
 
 /// Opens the Core at `url` once it answers as a Yuzuno Core: the window may
-/// then show that origin. The answer says whether it was also saved for the
-/// next launch (`saved`, else `saveError`): a Core that answered but could
-/// not be saved is not reported as unreachable, nor as saved.
+/// then show that origin. The answer says whether it was also saved
+/// (`saved`, else `saveError`): a Core that answered but could not be saved
+/// is not reported as unreachable, nor as saved.
+///
+/// `profile` names a saved Workspace this is meant to be. When that profile
+/// already knows a `workspaceId` and the Core answers with another one, this
+/// opens nothing and says so: a Workspace that shares a name or an address
+/// with the saved one is still a different Workspace, and its drafts,
+/// reading places and unsent answers are not that one's. The page then asks
+/// what to do, and a later call with `accept` set carries that answer back.
 #[tauri::command]
-async fn connect_core(app: AppHandle, state: State<'_, Connection>, url: String) -> Result<serde_json::Value, String> {
+async fn connect_core(
+    app: AppHandle,
+    state: State<'_, Connection>,
+    url: String,
+    profile: Option<String>,
+    name: Option<String>,
+    accept: Option<bool>,
+) -> Result<serde_json::Value, String> {
     let core = core_url::parse(&url)?;
-    check_health(&state.client, &core).await?;
+    let workspace = check_health(&state.client, &core).await?;
+    let saved = read_profiles(&app);
+    let mut profiles = saved.profiles().to_vec();
+    let known = profile
+        .as_deref()
+        .and_then(|id| profiles.iter().find(|kept| kept.id == id))
+        .cloned();
+    // The Workspace this profile was last opened at, against the one that
+    // just answered. Only a profile that already knows one can disagree.
+    if let Some(known) = known.as_ref() {
+        let before = known.workspace_id.as_deref();
+        if core_profiles::identity(before, workspace.as_deref()) == core_profiles::Identity::Changed
+            && accept != Some(true)
+        {
+            return Ok(serde_json::json!({
+                "url": core.as_str(),
+                "opened": false,
+                "identity": "changed",
+                "profileName": known.name,
+                "savedWorkspaceId": before,
+                "workspaceId": workspace,
+            }));
+        }
+    }
     *state.selected.lock().map_err(|_| "Connection state unavailable.".to_owned())? = Some(core.clone());
-    let saved = saved_core_file(&app)
+    // What is written down after opening it: the profile asked for, updated,
+    // or a new one. A Workspace is never written twice under one profile.
+    let selected_id = match known {
+        Some(known) => {
+            if let Some(kept) = profiles.iter_mut().find(|kept| kept.id == known.id) {
+                kept.url = core.clone();
+                if let Some(answered) = workspace.clone() {
+                    kept.workspace_id = Some(answered);
+                }
+                if let Some(name) = name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
+                    kept.name = name.chars().take(core_profiles::NAME_LIMIT).collect();
+                }
+            }
+            known.id
+        }
+        None => {
+            let id = core_profiles::next_id(&profiles);
+            let name = name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(|name| name.chars().take(core_profiles::NAME_LIMIT).collect())
+                .unwrap_or_else(|| core_profiles::name_for(&core));
+            profiles.push(core_profiles::Profile { id: id.clone(), name, url: core.clone(), workspace_id: workspace.clone() });
+            id
+        }
+    };
+    let written = saved_core_file(&app)
         .ok_or_else(|| std::io::Error::other("this app has no data folder to keep it in"))
-        .and_then(|file| saved_core::save(&file, &core));
-    Ok(match saved {
-        Ok(()) => serde_json::json!({ "url": core.as_str(), "saved": true }),
-        Err(error) => serde_json::json!({ "url": core.as_str(), "saved": false, "saveError": error.to_string() }),
-    })
+        .and_then(|file| core_profiles::save(&file, &profiles, Some(&selected_id)));
+    let mut answer = serde_json::json!({
+        "url": core.as_str(),
+        "opened": true,
+        "identity": "known",
+        "profile": selected_id,
+        "workspaceId": workspace,
+        "saved": written.is_ok(),
+    });
+    if let Err(error) = written {
+        answer["saveError"] = serde_json::json!(error.to_string());
+    }
+    Ok(answer)
+}
+
+/// Renames a saved Workspace. Its address and the Workspace it points at are
+/// untouched: a name is this person's label, not an identity.
+#[tauri::command]
+fn rename_core(app: AppHandle, profile: String, name: String) -> Result<serde_json::Value, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Give this Workspace a name.".into());
+    }
+    if name.chars().count() > core_profiles::NAME_LIMIT {
+        return Err(format!("A name can be up to {} characters.", core_profiles::NAME_LIMIT));
+    }
+    let saved = read_profiles(&app);
+    let mut profiles = saved.profiles().to_vec();
+    let selected = match &saved {
+        core_profiles::Saved::Profiles { selected, .. } => selected.clone(),
+        _ => None,
+    };
+    let Some(kept) = profiles.iter_mut().find(|kept| kept.id == profile) else {
+        return Err("That Workspace is not saved on this iPhone.".into());
+    };
+    kept.name = name.to_owned();
+    write_profiles(&app, &profiles, selected.as_deref())
+}
+
+/// Forgets a saved Workspace on this iPhone. It removes nothing on the Core
+/// and signs nothing out: it is this iPhone's own list.
+#[tauri::command]
+fn remove_core(app: AppHandle, profile: String) -> Result<serde_json::Value, String> {
+    let saved = read_profiles(&app);
+    let mut profiles = saved.profiles().to_vec();
+    let selected = match &saved {
+        core_profiles::Saved::Profiles { selected, .. } => selected.clone(),
+        _ => None,
+    };
+    if !profiles.iter().any(|kept| kept.id == profile) {
+        return Err("That Workspace is not saved on this iPhone.".into());
+    }
+    profiles.retain(|kept| kept.id != profile);
+    let selected = selected.filter(|id| *id != profile);
+    write_profiles(&app, &profiles, selected.as_deref())
+}
+
+/// Writes the list and says what the page should show now. A refused write
+/// changes nothing, and is reported rather than taken as done.
+fn write_profiles(app: &AppHandle, profiles: &[core_profiles::Profile], selected: Option<&str>) -> Result<serde_json::Value, String> {
+    saved_core_file(app)
+        .ok_or_else(|| std::io::Error::other("this app has no data folder to keep it in"))
+        .and_then(|file| core_profiles::save(&file, profiles, selected))
+        .map_err(|error| format!("This iPhone could not save the change ({error}). The list is as it was."))?;
+    Ok(read_profiles(app).to_json())
 }
 
 /// Whether `core` answers `/api/health` as a Yuzuno Core: no redirect, at
-/// most 64 KiB, as the desktop app reads it.
-async fn check_health(client: &reqwest::Client, core: &Url) -> Result<(), String> {
+/// most 64 KiB, as the desktop app reads it. On success it answers with the
+/// `workspaceId` that Core named, which tells one Workspace from another at
+/// the same address or under the same name. A Core old enough not to send
+/// one answers `None`: it is still a Core, and this app then has no identity
+/// to compare, which it says rather than assuming they match.
+async fn check_health(client: &reqwest::Client, core: &Url) -> Result<Option<String>, String> {
     let url = core.join("api/health").map_err(|_| "This address is not valid.".to_owned())?;
     let mut response = client.get(url).send().await.map_err(|_| {
         "Your Workspace is not reachable. Check its address, and that this iPhone is connected to your private network.".to_owned()
@@ -91,7 +224,11 @@ async fn check_health(client: &reqwest::Client, core: &Url) -> Result<(), String
     if !health::is_core(product, application) {
         return Err("This address is reachable, but it is not a Yuzuno Workspace.".into());
     }
-    Ok(())
+    Ok(health
+        .get("workspaceId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|workspace| !workspace.is_empty())
+        .map(str::to_owned))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -110,7 +247,7 @@ pub fn run() {
         // app, T-104).
         .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         .manage(Connection { client, selected })
-        .invoke_handler(tauri::generate_handler![saved_core, connect_core])
+        .invoke_handler(tauri::generate_handler![saved_cores, connect_core, rename_core, remove_core])
         .setup(move |app| {
             let outside = app.handle().clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
