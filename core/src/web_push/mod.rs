@@ -452,7 +452,7 @@ fn authorization(ws: &Workspace, key: &crypto::Vapid, aud: &str, sub: &str) -> R
     Ok(key.authorization(&token))
 }
 
-async fn post(ws: &Workspace, out: &Outgoing) -> Answer {
+async fn push_to(ws: &Workspace, out: &Outgoing) -> Answer {
     #[cfg(test)]
     if let Some(fake) = ws.web_push.test_post.get() {
         return fake(out);
@@ -486,7 +486,7 @@ async fn send_one(ws: &Workspace, key: &crypto::Vapid, to: &Subscription, notice
         })
     })();
     match made {
-        Ok(out) => post(ws, &out).await,
+        Ok(out) => push_to(ws, &out).await,
         Err(error) => Answer::Refused(0, format!("not sent: {error:#}")),
     }
 }
