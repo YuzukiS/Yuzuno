@@ -147,7 +147,7 @@ test("switching Agents shows each one's own last report: old as old, offline as 
   assert.equal(group.querySelector(".mcp-server-state").dataset.state, "unknown", "an old Connected is not shown as connected now");
 
   await page.choose("ume");
-  await until(() => /Ume · Core host/.test(group.querySelector("h5").textContent) && /disconnected/.test(group.textContent), "Ume's report");
+  await until(() => /Ume · Claude Code · Core host/.test(group.querySelector("h5").textContent) && /disconnected/.test(group.textContent), "Ume's report");
   assert.match(group.textContent, /Claude Code is disconnected or has not started/);
   assert.doesNotMatch(group.textContent, /signed out|logged out/i, "offline is not said as signed out");
   assert.equal(page.button("Refresh MCP status").disabled, true, "an offline session is not asked");
