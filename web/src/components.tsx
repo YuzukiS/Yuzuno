@@ -63,6 +63,7 @@ import { useStreamReveal } from "./stream-reveal";
 import { useToolMotion } from "./tool-motion";
 import { langTag, useLanguage, useStrings } from "./i18n";
 import { turnWords, type TurnWords } from "./turn-text";
+import { requestWords, shownError } from "./request-text";
 import "./tool-activity.css";
 import { QuestionAnchor } from "./QuestionAnchor";
 import { ClaudeCheckpointButton } from "./ClaudeCheckpoint";
@@ -1087,6 +1088,8 @@ function CodexPendingCard({
   draftScope?: string | null;
 }) {
   const questions = request.params.questions as CodexQuestion[] | undefined;
+  const language = useLanguage();
+  const t = requestWords(language);
   // An unsent answer survives a refresh; a secret one is not kept (T-170).
   const draft = useRequestDraft(questions ? draftScope : null, request, (saved) => codexAnswers(saved, questions || []));
   const [sending, setSending] = useState(false);
@@ -1154,34 +1157,25 @@ function CodexPendingCard({
       className={`pending-card${highlightSource ? " source-highlight" : ""}`}
       id={`request-${request.id}`}
       tabIndex={-1}
+      lang={langTag(language)}
     >
       <div className="pending-heading">
         <ShieldCheck size={17} />
         <strong>
-          {questions
-            ? "A quick question for you"
-            : approval
-              ? "Your permission is needed"
-              : "Input needed"}
+          {questions ? t.question : approval ? t.permission : t.input}
         </strong>
-        <span className="pending-tag">Needs you</span>
+        <span className="pending-tag">{t.needsYou}</span>
       </div>
       {subAgent && (
         <p className="pending-source">
-          From sub-agent <strong>{subAgent.path || "of this Agent"}</strong>.
-          Your answer goes only to this sub-agent.
+          {t.fromSubAgent}<strong lang="">{subAgent.path || t.ofThisAgent}</strong>{t.onlySubAgent}
         </p>
       )}
       {request.stale && (
-        <p className="inline-error">
-          This request is from a previous connection. Reconnect and confirm its
-          current state before responding.
-        </p>
+        <p className="inline-error">{t.staleCodex}</p>
       )}
       {responseSent && (
-        <p className="field-hint">
-          Response sent. Waiting for the harness to confirm.
-        </p>
+        <p className="field-hint">{t.sentHarness}</p>
       )}
       {questions ? (
         <form
@@ -1199,7 +1193,7 @@ function CodexPendingCard({
         >
           {questions.map((q) => (
             <fieldset key={q.id}>
-              <legend>{q.question}</legend>
+              <legend lang="">{q.question}</legend>
               {q.options?.map((o) => (
                 <label className="answer-option" key={o.label}>
                   <input
@@ -1211,20 +1205,16 @@ function CodexPendingCard({
                       setAnswers((a) => ({ ...a, [q.id]: o.label }))
                     }
                   />
-                  <span>
+                  <span lang="">
                     <strong>{o.label}</strong>
                     <small>{o.description}</small>
                   </span>
                 </label>
               ))}
               <input
-                aria-label={`Your answer: ${q.question}`}
+                aria-label={t.yourAnswer(q.question)}
                 type={q.isSecret ? "password" : "text"}
-                placeholder={
-                  q.options?.length
-                    ? "Or write your own answer…"
-                    : "Your answer…"
-                }
+                placeholder={q.options?.length ? t.ownAnswer : t.answerPlaceholder}
                 value={
                   q.options?.some((o) => o.label === answers[q.id])
                     ? ""
@@ -1245,14 +1235,13 @@ function CodexPendingCard({
               questions.some((q) => !answers[q.id]?.trim())
             }
           >
-            {sending && <LoaderCircle size={14} className="spin" />}Send answer
+            {sending && <LoaderCircle size={14} className="spin" />}{t.sendAnswer}
           </button>
         </form>
       ) : approval ? (
         <>
           <p>
-            {request.params.reason ||
-              "Review this action before allowing the agent to continue."}
+            {request.params.reason || t.reviewAction}
           </p>
           {request.params.command && (
             <pre>
@@ -1275,47 +1264,41 @@ function CodexPendingCard({
                     </summary>
                     <pre>{change.diff}</pre>
                     {change.truncated && (
-                      <p className="field-hint">This diff is cut here; the sub-agent proposed more.</p>
+                      <p className="field-hint">{t.diffCut}</p>
                     )}
                   </details>
                 ))
               ) : (
-                <p>
-                  The sub-agent did not show its proposed changes to Yuzuno.
-                  Decline unless you know what it will change.
-                </p>
+                <p>{t.noChanges}</p>
               )}
               {!!childChanges?.omitted && (
-                <p className="field-hint">{childChanges.omitted} more files are not shown.</p>
+                <p className="field-hint">{t.moreFiles(childChanges.omitted)}</p>
               )}
               {request.params.grantRoot && (
-                <p className="mono-small">Scope: {request.params.grantRoot}</p>
+                <p className="mono-small">{t.scope(request.params.grantRoot)}</p>
               )}
             </div>
           ) : request.method === "item/fileChange/requestApproval" && (
             <div className="file-approval-context">
-              <p>
-                Review the proposed file changes in this turn’s execution
-                details before approving.
-              </p>
+              <p>{t.reviewFiles}</p>
               {request.params.grantRoot && (
-                <p className="mono-small">Scope: {request.params.grantRoot}</p>
+                <p className="mono-small">{t.scope(request.params.grantRoot)}</p>
               )}
               {request.params.path && (
-                <p className="mono-small">Path: {request.params.path}</p>
+                <p className="mono-small">{t.path(request.params.path)}</p>
               )}
               {request.params.itemId && (
                 <button
                   className="inline-link"
                   onClick={onViewChanges}
                 >
-                  View proposed changes <ArrowUpRight size={12} />
+                  {t.viewChanges} <ArrowUpRight size={12} />
                 </button>
               )}
             </div>
           )}
           <details className="request-details">
-            <summary>Request details</summary>
+            <summary>{t.details}</summary>
             <pre>{JSON.stringify(visibleParams, null, 2)}</pre>
           </details>
           <div className="button-row">
@@ -1324,37 +1307,34 @@ function CodexPendingCard({
               disabled={disabled || sending || !canDecide("accept")}
               onClick={() => void respond({ decision: "accept" })}
             >
-              Allow once
+              {t.allowOnce}
             </button>
-            {canDecide("acceptForSession") && <button className="secondary-button" disabled={disabled || sending} onClick={() => void respond({ decision: "acceptForSession" })}>Allow for this session</button>}
+            {canDecide("acceptForSession") && <button className="secondary-button" disabled={disabled || sending} onClick={() => void respond({ decision: "acceptForSession" })}>{t.allowSession}</button>}
             <button
               className="secondary-button"
               disabled={disabled || sending || !canDecide("decline")}
               onClick={() => void respond({ decision: "decline" })}
             >
-              Decline
+              {t.decline}
             </button>
             <button
               className="quiet-button"
               disabled={disabled || sending || !canDecide("cancel")}
               onClick={() => void respond({ decision: "cancel" })}
             >
-              {subAgent ? "Cancel sub-agent’s turn" : "Cancel turn"}
+              {subAgent ? t.cancelSub : t.cancelTurn}
             </button>
           </div>
         </>
       ) : (
         <>
-          <p>
-            This request needs a control that is not available yet. Its contents
-            are preserved below.
-          </p>
+          <p>{t.noControl}</p>
           <pre>{JSON.stringify(visibleParams, null, 2)}</pre>
         </>
       )}
       {error && !(unconfirmedAnswer.unconfirmed && responseSent) && (
         <p role="alert" className="inline-error">
-          {error}
+          {shownError(error, t)}
         </p>
       )}
       {unconfirmedAnswer.unconfirmed && !responseSent && (
