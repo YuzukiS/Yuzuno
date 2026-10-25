@@ -597,21 +597,21 @@ process.stdin.on('end', () => process.exit(0));
         /// `native-thread` idle (active while `busy` exists in its folder), no
         /// background terminals; logs every call.
         const CODEX: &str = r#"#!/usr/bin/python3
-    import json, sys, pathlib
-    root = pathlib.Path(__file__).parent
-    for line in sys.stdin:
-        req = json.loads(line)
-        with (root / 'calls.jsonl').open('a') as log: log.write(json.dumps(req) + '\n')
-        if 'id' not in req: continue
-        method, params = req.get('method'), req.get('params', {})
-        status = 'active' if (root / 'busy').exists() else 'idle'
-        result = {}
-        if method in ['thread/resume', 'thread/read']:
-            result = {'thread': {'id': 'native-thread', 'status': {'type': status}, 'turns': []}, 'model': 'test'}
-        elif method == 'thread/backgroundTerminals/list':
-            result = {'data': [], 'nextCursor': None}
-        print(json.dumps({'id': req['id'], 'result': result}), flush=True)
-    "#;
+import json, sys, pathlib
+root = pathlib.Path(__file__).parent
+for line in sys.stdin:
+    req = json.loads(line)
+    with (root / 'calls.jsonl').open('a') as log: log.write(json.dumps(req) + '\n')
+    if 'id' not in req: continue
+    method, params = req.get('method'), req.get('params', {})
+    status = 'active' if (root / 'busy').exists() else 'idle'
+    result = {}
+    if method in ['thread/resume', 'thread/read']:
+        result = {'thread': {'id': 'native-thread', 'status': {'type': status}, 'turns': []}, 'model': 'test'}
+    elif method == 'thread/backgroundTerminals/list':
+        result = {'data': [], 'nextCursor': None}
+    print(json.dumps({'id': req['id'], 'result': result}), flush=True)
+"#;
 
         /// The machine's helper as a stand-in: `ensure` gives a new runtime
         /// instance each time; `stop` answers as `stop` says now: `ok` (that
