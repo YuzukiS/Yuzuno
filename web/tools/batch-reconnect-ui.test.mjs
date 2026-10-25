@@ -135,6 +135,28 @@ test("it lists only Agents that can be reconnected, chooses none of them, and is
   page.close();
 });
 
+test("an Agent the user disconnected is listed but left out of Select all; ticked, it is reconnected too (T-184)", async () => {
+  const page = mount();
+  page.window.render([agent("a"), agent("b", { disconnectedAt: "2026-10-25T04:00:00Z" })]);
+  await tick();
+  page.trigger().click();
+  await tick();
+  assert.deepEqual(page.rows(), ["A [ ] Offline", "B [ ] Disconnected by you; tick it to reconnect it"]);
+  page.secondary().click();
+  await tick();
+  assert.deepEqual(page.rows(), ["A [x] Offline", "B [ ] Disconnected by you; tick it to reconnect it"], "Select all leaves it out");
+  assert.equal(page.secondary().textContent, "Clear");
+  page.toggle("B");
+  await tick();
+  assert.deepEqual(page.rows().map((row) => row.split(" ")[1]), ["[x]", "[x]"], "the user can choose it");
+  page.primary().click();
+  await tick();
+  assert.deepEqual(page.sent().sort(), [reconnectUrl("a"), reconnectUrl("b")].sort());
+  for (const call of page.calls) call.answer({ body: connected(agent(call.url.includes("/a/") ? "a" : "b")) });
+  await tick();
+  page.close();
+});
+
 test("at most three run at once; each row says what Core answered; a failure stays chosen and can be retried", async () => {
   const page = mount();
   const five = ["a", "b", "c", "d", "e"].map((id) => agent(id));
