@@ -34,9 +34,9 @@ import {SharedAppearanceSection} from ${src("SharedAppearance.tsx")};
 import {useAppearanceFollow} from ${src("appearance-follow.ts")};
 import {appearanceInEffect, importAppearance, initializeAppearance, saveAppearance} from ${src("appearance.ts")};
 const root = createRoot(document.getElementById('root'));
-// As App.tsx: the Workspace shown, whether the live events are open, and a count of announced saves.
-function Harness({workspaceId, connected, nudge}) {
-  useAppearanceFollow(workspaceId, connected, nudge);
+// As App.tsx: the Workspace shown, the live events' state, and a count of announced saves.
+function Harness({workspaceId, connection, nudge}) {
+  useAppearanceFollow(workspaceId, connection, nudge);
   return <SharedAppearanceSection active/>;
 }
 window.start = () => initializeAppearance();
@@ -117,14 +117,16 @@ function client(server, name, saved = null) {
   if (saved) window.localStorage.setItem(KEY, JSON.stringify(saved));
   const storage = window.Storage.prototype;
   const original = storage.setItem;
-  const props = { workspaceId: W1, connected: true, nudge: 0 };
+  const props = { workspaceId: W1, connection: "open", nudge: 0 };
   const page = {
     name, window, props, server,
-    get connected() { return props.connected; },
+    get connected() { return props.connection === "open"; },
     render: () => window.render({ ...props }),
     event() { props.nudge++; page.render(); },
-    disconnect() { props.connected = false; page.render(); },
-    reconnect() { props.connected = true; page.render(); },
+    disconnect() { props.connection = "reconnecting"; page.render(); },
+    reconnect() { props.connection = "open"; page.render(); },
+    /** A new page load: the live events are still connecting. */
+    loading() { props.connection = "connecting"; page.render(); },
     workspace(id) { props.workspaceId = id; page.render(); },
     stored: () => window.localStorage.getItem(KEY),
     follow: () => JSON.parse(window.localStorage.getItem(FOLLOW) ?? "null"),
@@ -266,6 +268,13 @@ test("offline, the Appearance in effect stays and nothing is sent; reconnected, 
   assert.equal(server.gets, gets + 1, "one read on reconnecting");
   assert.equal(b.follow().workspaces[W1].revision, 3);
   assert.equal(server.puts.length, 0, "nothing was ever sent back");
+
+  // A page load's first "connecting" is not offline, and reads nothing yet.
+  b.loading();
+  await tick(50);
+  assert.match(b.device(), /Follows this Workspace’s shared preset: revision 3/);
+  assert.doesNotMatch(b.device(), /isn’t connected/);
+  assert.equal(b.button("Try again"), undefined, "nothing to try again");
   b.close();
 });
 

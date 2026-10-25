@@ -1,4 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
+import type { EventConnection } from "./useWorkspaceEvents";
 import { errorText, NetworkError } from "./api";
 import { appearanceInEffect, importAppearance, onAppearanceEdit } from "./appearance";
 import { appearanceFields, importedAppearance } from "./appearance-file";
@@ -188,9 +189,11 @@ export function useFollow(workspaceId: string | null): {
 }
 
 /** Keeps this window following `workspaceId`'s preset when this device
- * does: `connected` is the live events being open, `nudge` a count of
- * announced saves and resets. An edit of Appearance here stops it. */
-export function useAppearanceFollow(workspaceId: string, connected: boolean, nudge: number) {
+ * does: `connection` is the live events' state, `nudge` a count of
+ * announced saves and resets. Only a lost connection ("reconnecting") is
+ * offline; the first "connecting" of a page load is not. An edit of
+ * Appearance here stops it. */
+export function useAppearanceFollow(workspaceId: string, connection: EventConnection, nudge: number) {
   useEffect(() => {
     if (!workspaceId) return;
     return onAppearanceEdit(() => {
@@ -199,10 +202,10 @@ export function useAppearanceFollow(workspaceId: string, connected: boolean, nud
   }, [workspaceId]);
   useEffect(() => {
     if (!workspaceId || followedRevision(workspaceId) === null) return;
-    if (!connected) {
+    if (connection === "reconnecting") {
       set(workspaceId, { kind: "offline" });
       return;
     }
-    void catchUp(workspaceId);
-  }, [workspaceId, connected, nudge]);
+    if (connection === "open") void catchUp(workspaceId);
+  }, [workspaceId, connection, nudge]);
 }

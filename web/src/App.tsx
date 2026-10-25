@@ -636,7 +636,7 @@ export function App() {
   const projects = workspace?.projects || [];
   const workspaceId = workspace?.workspace?.id || "";
   // Read when Core announces a save, the events reset or reconnect; never polled.
-  useAppearanceFollow(previewMode ? "" : workspaceId, eventConnection === "open", presetRevision);
+  useAppearanceFollow(previewMode ? "" : workspaceId, eventConnection, presetRevision);
   const readingPositions = useMemo(
     () => (workspaceId && !previewMode ? localReadingPositions(workspaceId) : null),
     [workspaceId],
