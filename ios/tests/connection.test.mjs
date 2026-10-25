@@ -288,6 +288,18 @@ test('a saved Workspace that answers as another one is refused, not offered', as
     // would mix their unsent drafts.
     assert.equal(document.querySelector('#identity-open'), null, 'no way to open it anyway');
     assert.match(document.querySelector('#identity-text').textContent, /kept per agent, not per workspace/);
+    // Removing a saved Workspace takes it off this iPhone's list; it never
+    // reaches what the web view stored for that address, which is where the
+    // drafts are. So removal is not offered as a way to keep two Workspaces
+    // apart, and is not said to forget their drafts.
+    assert.doesNotMatch(
+      document.querySelector('#identity-text').textContent,
+      /forgets its drafts|clear.*drafts|removing .* drafts/i,
+    );
+    assert.match(
+      document.querySelector('#identity-text').textContent,
+      /only forgets what this iPhone saved about it/,
+    );
     assert.equal(
       [...document.querySelectorAll('#identity-check button')].length,
       1,
