@@ -1,6 +1,6 @@
 {
   "identifier": "connection",
-  "description": "Only the embedded connection page may choose and check a Core URL, and start the saved Core in WSL. It may also move, minimize, maximize and close its frameless window.",
+  "description": "Only the embedded connection page may choose and check a Core URL, name and forget the workspaces saved here, and start the saved Core in WSL. It may also move, minimize, maximize and close its frameless window.",
   "local": true,
   "windows": [
     "main"
@@ -8,6 +8,8 @@
   "permissions": [
     "allow-connection-info",
     "allow-connect-core",
+    "allow-rename-core",
+    "allow-remove-core",
     "allow-start-core",
     "allow-set-appearance",
     "core:window:allow-is-decorated",

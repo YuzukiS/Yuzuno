@@ -5,6 +5,8 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "connection_info",
             "connect_core",
+            "rename_core",
+            "remove_core",
             "start_core",
             "set_appearance",
             "desktop_update_status",

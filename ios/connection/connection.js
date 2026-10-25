@@ -44,8 +44,8 @@ function askAboutIdentity(result) {
     `“${result.profileName}” answered as a different workspace than the one saved under that name, ` +
     'so this app did not open it. It cannot keep the two apart here: both workspaces at one address share ' +
     'what this app stores for that address, and an unsent message is kept per agent, not per workspace, so ' +
-    'they would hand each other their drafts. Save this one at an address of its own, or remove the saved ' +
-    'workspace first — that forgets its drafts here along with it.';
+    'they would hand each other their drafts. Save this one at an address of its own. Removing the saved ' +
+    'workspace only forgets what this iPhone saved about it; it does not clear what is stored for that address.';
 }
 
 // Two addresses that differ only by a trailing slash are one address. The
