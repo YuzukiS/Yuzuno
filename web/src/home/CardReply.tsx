@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { Copy, LoaderCircle, MessageSquareReply, Send, Trash2, X } from "lucide-react";
 import { errorText, HttpError, shortcutModifier } from "../api";
+import { useStrings } from "../i18n";
 import type { Agent } from "../types";
 import { TargetPicker } from "./AskReply";
 import { dropPendingReply, outboxKey, pendingReply, sendReply } from "./home-api";
+import { homeText } from "./home-text";
 import type { Section } from "./types";
 
 /**
@@ -128,13 +130,10 @@ const olderCore = (error: unknown) =>
   error instanceof HttpError && /unknown field `(version|title)`/.test(errorText(error));
 
 /** Core's reason without its code, or why an older Core refused the reply. */
-function explain(error: unknown) {
-  if (olderCore(error))
-    return "This Core can't bind a reply to a card version yet, so nothing was sent. Update Core to reply to cards, or write to the Agent in its conversation.";
+function explain(error: unknown, t: ReturnType<typeof homeText>) {
+  if (olderCore(error)) return t.olderCore;
   return errorText(error).replace(/^(section_changed|section_removed):\s*/, "");
 }
-
-const ownerAway = { closed: "is closed", deleted: "was deleted", moved: "is no longer in this project" } as const;
 
 export function CardReply({
   section,
@@ -152,6 +151,7 @@ export function CardReply({
   /** Absent where the reply is the place's whole content (kept replies). */
   onClose?: () => void;
 }) {
+  const t = useStrings(homeText);
   const slot = cardReplySlot(workspaceId, projectId, section.key);
   const { draft, busy, error, sent } = useReplyState(slot);
   const ownerOpen = section.owner.state === "active" && agents.some((a) => a.id === section.owner.agentId);
@@ -177,7 +177,7 @@ export function CardReply({
   const change = (patch: Partial<CardDraft>) =>
     update(slot, { draft: { ...(replyState(slot).draft ?? draft), ...patch, at: new Date().toISOString() } });
   const target = agents.some((a) => a.id === draft.agentId) ? draft.agentId : "";
-  const name = agents.find((a) => a.id === target)?.name || "the Agent";
+  const name = agents.find((a) => a.id === target)?.name || t.theAgent;
   const changed = section.version !== draft.version;
   // An attempt Core has not answered: only its retry, unchanged, is safe.
   const unconfirmed = !busy && !!pendingReply(slot);
@@ -206,36 +206,36 @@ export function CardReply({
     } catch (e) {
       // Refused before it was read, so never submitted: no retry record.
       if (olderCore(e)) dropPendingReply(slot);
-      update(slot, { busy: false, error: explain(e) });
+      update(slot, { busy: false, error: explain(e, t) });
     }
   }
   return (
-    <div className="home-card-reply" role="group" aria-label={`Reply to “${draft.title}”`}>
+    <div className="home-card-reply" role="group" aria-label={t.replyLabel(draft.title)}>
       <div className="home-card-reply-head">
         <MessageSquareReply size={13} aria-hidden="true" />
         <span>
-          Reply to <strong>“{draft.title}”</strong> · version {draft.version}
+          {t.replyTo} <strong>“{draft.title}”</strong> · {t.version(draft.version)}
         </span>
         {onClose && (
-          <button type="button" className="icon-button" aria-label="Close the reply; the draft is kept" title="Close (the draft is kept)" onClick={onClose}>
+          <button type="button" className="icon-button" aria-label={t.closeReplyLabel} title={t.closeReply} onClick={onClose}>
             <X size={13} />
           </button>
         )}
       </div>
-      <TargetPicker agents={agents} value={target} onChange={(agentId) => change({ agentId })} disabled={busy} label="To" />
+      <TargetPicker agents={agents} value={target} onChange={(agentId) => change({ agentId })} disabled={busy} label={t.to} />
       {!ownerOpen && (
         <p className="home-note">
-          {section.owner.name} {section.owner.state === "active" ? "is not in this project" : ownerAway[section.owner.state]}; choose who should get this reply.
+          {t.chooseCardRecipient(section.owner.name, section.owner.state === "active" ? t.notInProject : t.ownerAway[section.owner.state])}
         </p>
       )}
       {changed && (
         <p className="home-note" role="status">
           {section.version > draft.version
-            ? `${section.owner.name} changed this card after you began (now version ${section.version}). `
-            : `This place shows version ${section.version}. `}
-          Your reply still refers to version {draft.version}, as you saw it; Home sends it only while it has that version.{" "}
+            ? t.changedAfter(section.owner.name, section.version)
+            : t.placeShows(section.version)}
+          {t.stillRefers(draft.version)}{" "}
           {unconfirmed ? (
-            "Send it again first: Core then says whether the earlier attempt arrived."
+            t.sendAgainFirst
           ) : (
             <button
               type="button"
@@ -246,13 +246,13 @@ export function CardReply({
                 update(slot, { error: "" });
               }}
             >
-              Refer it to version {section.version}
+              {t.referTo(section.version)}
             </button>
           )}
         </p>
       )}
       {unconfirmed && (
-        <p className="home-note">An earlier reply here was not confirmed. Sending the same text again will not deliver it twice.</p>
+        <p className="home-note">{t.notConfirmedHere}</p>
       )}
       <form
         className="home-text-reply"
@@ -262,11 +262,11 @@ export function CardReply({
         }}
       >
         <textarea
-          aria-label={`Reply to ${draft.title}`}
+          aria-label={t.replyField(draft.title)}
           value={draft.text}
           rows={2}
           maxLength={20_000}
-          placeholder={`A reply for ${name}…`}
+          placeholder={t.replyFor(name)}
           onChange={(event) => change({ text: event.target.value })}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing) return;
@@ -279,17 +279,15 @@ export function CardReply({
             }
           }}
         />
-        <button type="submit" className="primary-button" disabled={busy || !target || !draft.text.trim()} title={`Send (${shortcutModifier} Enter)`}>
+        <button type="submit" className="primary-button" disabled={busy || !target || !draft.text.trim()} title={t.sendTitle(shortcutModifier)}>
           {busy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
-          Send
+          {t.send}
         </button>
       </form>
-      {busy && <p className="home-note" role="status">Sending…</p>}
+      {busy && <p className="home-note" role="status">{t.sending}</p>}
       {sent && (
         <p className="home-note" role="status">
-          {sent.status === "queued"
-            ? `Queued for ${sent.to}, referring to version ${sent.version}; not confirmed as read yet.`
-            : `Sent to ${sent.to}, referring to version ${sent.version}.`}
+          {sent.status === "queued" ? t.queuedFor(sent.to, sent.version) : t.sentTo(sent.to, sent.version)}
         </p>
       )}
       {error && <p className="inline-error" role="alert">{error}</p>}
@@ -317,32 +315,31 @@ export function KeptCardReplies({
   /** History entries a reply may still refer to (referableHistory). */
   referable: Section[];
 }) {
+  const t = useStrings(homeText);
   const [, redraw] = useState(0);
   const kept = projectCardDrafts(workspaceId, projectId).filter(([, draft]) => !cardKeys.includes(draft.key));
   if (!kept.length) return null;
   return (
-    <div className="home-kept-replies" role="list" aria-label="Replies not sent">
+    <div className="home-kept-replies" role="list" aria-label={t.repliesNotSent}>
       {kept.map(([slot, draft]) => {
         const inHistory = referable.find((section) => section.key === draft.key);
         return (
           <div role="listitem" key={slot} className="home-kept-reply">
             {inHistory ? (
               <>
-                <p className="home-note">Your reply to “{draft.title}” is kept: that card is now in History, marked seen.</p>
+                <p className="home-note">{t.keptInHistory(draft.title)}</p>
                 <CardReply section={inHistory} projectId={projectId} workspaceId={workspaceId} agents={agents} />
               </>
             ) : (
               <>
-                <p className="home-note">
-                  Your reply to “{draft.title}” (version {draft.version}) was not sent: that card is no longer on Home.
-                </p>
+                <p className="home-note">{t.keptNotSent(draft.title, draft.version)}</p>
                 <blockquote>{draft.text}</blockquote>
               </>
             )}
             <span className="home-kept-reply-actions">
               {!inHistory && (
                 <button type="button" className="quiet-button" onClick={() => void navigator.clipboard?.writeText(draft.text)}>
-                  <Copy size={13} /> Copy text
+                  <Copy size={13} /> {t.copyText}
                 </button>
               )}
               <button
@@ -353,7 +350,7 @@ export function KeptCardReplies({
                   redraw((n) => n + 1);
                 }}
               >
-                <Trash2 size={13} /> Discard
+                <Trash2 size={13} /> {t.discard}
               </button>
             </span>
           </div>
