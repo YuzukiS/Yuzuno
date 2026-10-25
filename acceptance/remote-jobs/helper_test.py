@@ -33,6 +33,19 @@ USER_MANAGER = _FACTS if _FACTS["manager"] and _FACTS["busctl"] and "memory" in 
 USER_MANAGER_BUSCTL = shutil.which("busctl") or "busctl"
 
 
+def alive_supervisor(folder):
+    """Whether the supervisor recorded in this attempt's folder still runs."""
+    try:
+        pid = json.loads((folder / "supervisor.json").read_text())["pid"]
+    except (OSError, ValueError, KeyError):
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 def host_of(machine_id):
     return hashlib.sha256(b"yuzuno-jobs-host-v1:" + machine_id.encode()).hexdigest()[:32]
 
@@ -140,6 +153,91 @@ class HelperTests(unittest.TestCase):
                              capture_output=True, text=True, env=env, timeout=60)
         # A malformed nonce is never echoed: the line carries no nonce Core would accept.
         self.assertTrue(out.stdout.startswith(remote_job.MARK + "{"), out.stdout)
+
+    def test_a_stop_it_could_not_confirm_writes_no_outcome_and_the_same_attempt_settles_later(self):
+        """The supervisor's own final decision, not just the primitives it
+        uses (T-186). While this machine cannot be asked for its processes,
+        the command's exit must not be turned into a terminal result: Core
+        reads a terminal result as settled and lets the attempt's reservation
+        go, while its group may still be running. Once the machine can be
+        asked again, this same attempt settles on the path that already
+        exists -- as a cancel of the same attempt. The exit code the command
+        really had is not recovered: it was never written, and nothing here
+        reconstructs it.
+
+        The hook is named when the attempt starts, so its supervisor inherits
+        it, but the file appears only once the command is running: enumeration
+        has to work for a start to be accepted at all.
+        """
+        unreadable = Path(self.tmp.name) / "pids-unreadable"
+        blind_env = {"YUZUNO_JOBS_PIDS_UNREADABLE_FILE": str(unreadable)}
+        attempt = self.attempt("sleep 2")
+        started = self.call(dict(attempt, action="start"), env_extra=blind_env)
+        # A start answers running while its command is still going.
+        self.assertIn(started["status"], ("started", "running"), started)
+        folder = self.folder(attempt)
+        result = folder / "result.json"
+        # From here this machine cannot be asked, the supervisor included.
+        unreadable.write_text("while this exists, the machine cannot be asked\n")
+        # The command exits, then its supervisor gives up on BLIND_LIMIT
+        # seconds of failed enumeration and ends.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and alive_supervisor(folder):
+            time.sleep(0.2)
+        self.assertFalse(alive_supervisor(folder), "its supervisor ended")
+        self.assertFalse(result.exists(),
+                         "no outcome is written for a group this machine could not be asked about")
+        blind = self.call(self.bound(attempt, "status"), env_extra=blind_env)
+        self.assertEqual(blind["status"], "unclear", blind)
+
+        # Asked again: the attempt is still held, not settled, and the
+        # existing recovery closes this same attempt.
+        unreadable.unlink()
+        lost = self.call(self.bound(attempt, "status"))
+        self.assertEqual(lost["status"], "lost", lost)
+        self.assertEqual(lost["processes"], 0, lost)
+        self.call(self.bound(attempt, "cancel"))
+        settled = self.settle(attempt)
+        self.assertEqual(settled["result"]["status"], "cancelled", settled)
+
+    def test_a_stop_that_reached_nothing_is_retried_and_converges_when_the_machine_can_be_asked(self):
+        """The other half of the same control flow (T-186): the command is
+        still running, so the timeout's own first stop is the one that fails.
+        `why` is set once, so without a retry that single failed stop was the
+        last one ever asked for -- the group would keep running and the
+        attempt would never converge, even after the machine could be asked
+        again. The case above exits on its own and does not exercise this.
+        """
+        unreadable = Path(self.tmp.name) / "pids-unreadable"
+        blind_env = {"YUZUNO_JOBS_PIDS_UNREADABLE_FILE": str(unreadable)}
+        # Far longer than the window below: without the retry the supervisor
+        # only waits for the command to end by itself and then stops a group
+        # that is already gone, so a command that could finish in time would
+        # let this pass either way.
+        attempt = self.attempt("sleep 300", timeout=2)
+        started = self.call(dict(attempt, action="start"), env_extra=blind_env)
+        self.assertIn(started["status"], ("started", "running"), started)
+        pid = started["started"]["pid"]
+        folder = self.folder(attempt)
+        # Blind before the deadline, so it is the timeout's first stop that
+        # reaches nothing.
+        unreadable.write_text("while this exists, the machine cannot be asked\n")
+        # Past the deadline and past one whole BLIND_LIMIT of failing to ask.
+        time.sleep(9)
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            self.fail("nothing is signalled while the machine cannot be asked, so it still runs")
+        self.assertFalse((folder / "result.json").exists(),
+                         "and nothing terminal is written for it")
+
+        # Asked again: the stop that reached nothing is asked for again, and
+        # this same attempt converges on its timeout.
+        unreadable.unlink()
+        settled = self.settle(attempt, seconds=25)
+        self.assertEqual(settled["result"]["status"], "failed", settled)
+        self.assertIn("timeout", settled["result"]["reason"], settled)
+        self.assertTrue(gone(pid), "its command is stopped, not merely finished")
 
     def attempt(self, script, timeout=60, workspace="ws-1", limits=None):
         spec = {"argv": ["/bin/sh", "-c", script], "cwd": str(self.work), "env": {"PATH": "/usr/bin:/bin"},
@@ -1442,6 +1540,130 @@ class PauseTests(unittest.TestCase):
         self.assertEqual(state["result"]["status"], "failed")
         self.assertEqual(state["result"]["thawedToStop"]["wasFrozen"], True, state["result"])
         self.assertEqual((self.work / "term.txt").read_text(), "term\n")
+
+
+class EnumerationFailureTests(unittest.TestCase):
+    """A machine that cannot be asked for its processes is unknown, never
+    empty (T-186). The failure is injected at all_pids, the single place the
+    helper asks the machine, so this runs on any host; on macOS it is
+    proc_listpids answering 0 or less that raises it. Nothing is signalled and
+    no real attempt, reservation or machine is involved.
+
+    What this does not show: no reservation is actually taken or released
+    here, and the supervisor's own outcome note is not executed -- these are
+    the primitives every one of those paths goes through. overdue() is not
+    checked either: reaching its enumeration needs the recorded process to be
+    its own session's leader, and an enumeration it cannot do leaves it
+    False, which stops nothing -- the safe direction it already documents.
+    """
+
+    def setUp(self):
+        self.real_pids = remote_job.all_pids
+        self.real_send = remote_job.send
+        self.signalled = []
+        remote_job.send = lambda pid, signum, group: self.signalled.append((pid, signum))
+        # A record of this process's own session, so members() gets past its
+        # boot and leader checks and really does ask for the PID list.
+        sid = os.getsid(0)
+        leader = remote_job.proc(sid)
+        self.assertIsNotNone(leader, "this session's leader is readable")
+        self.group = {"bootId": remote_job.boot_id(), "pid": os.getpid(), "pgid": os.getpgid(0),
+                      "sid": sid, "starttime": leader["starttime"]}
+
+    def tearDown(self):
+        remote_job.all_pids = self.real_pids
+        remote_job.send = self.real_send
+
+    def blind(self):
+        def refuse():
+            raise remote_job.Unclear("this machine's processes could not be listed")
+        remote_job.all_pids = refuse
+
+    def blind_for(self, times):
+        """The first `times` listings fail, then they work: the machine comes
+        back while a stop is already under way."""
+        real, asked = self.real_pids, []
+
+        def maybe():
+            asked.append(None)
+            if len(asked) <= times:
+                raise remote_job.Unclear("this machine's processes could not be listed")
+            return real()
+        remote_job.all_pids = maybe
+
+    def test_all_pids_raises_rather_than_reporting_an_empty_machine(self):
+        """The failure injected at libproc, the single call all_pids makes, so
+        the raise itself is checked and not just its callers. DARWIN is forced
+        on so this runs on a host that has no libproc at all."""
+        answers = []
+
+        class Refusing:
+            def proc_listpids(self, flavour, typeinfo, buf, size):
+                answers.append(size)
+                return 0 if len(answers) > len(given) else given[len(answers) - 1]
+
+        was_darwin, was_libproc = remote_job.DARWIN, remote_job.LIBPROC
+        remote_job.DARWIN, remote_job.LIBPROC = True, Refusing()
+        try:
+            for case, given in (("the size probe fails", []), ("the read fails", [4096])):
+                with self.subTest(case):
+                    answers.clear()
+                    with self.assertRaises(remote_job.Unclear):
+                        self.real_pids()
+                    self.assertEqual(len(answers), len(given) + 1, "it stops at the failing call")
+        finally:
+            remote_job.DARWIN, remote_job.LIBPROC = was_darwin, was_libproc
+
+    def test_members_says_unknown_rather_than_no_processes(self):
+        # It really asks before the failure is injected: the check would pass
+        # vacuously if members() returned early on the boot or leader check.
+        self.assertIsInstance(remote_job.members(self.group), list)
+        self.blind()
+        with self.assertRaises(remote_job.Unclear):
+            remote_job.members(self.group)
+        self.assertIsNone(remote_job.live(self.group), "live() reports unknown as None")
+
+    def test_the_first_membership_it_can_see_is_termed_before_any_kill(self):
+        """None then members, from review of #362 (P3-1): a group that becomes
+        visible partway through a stop is asked to end before it is killed.
+        Nothing is signalled while the machine cannot be asked, so the 5 s
+        before a KILL has to run from that TERM and not from a time when
+        nothing was sent."""
+        self.blind_for(2)
+        self.assertIs(remote_job.stop(self.group, limit=3.0), False)
+        kinds = [signum for _, signum in self.signalled]
+        self.assertTrue(kinds, "it signals once it can see the group")
+        self.assertEqual(kinds[0], signal.SIGTERM, self.signalled)
+        self.assertNotIn(signal.SIGKILL, kinds,
+                         "no KILL inside the grace that TERM started")
+
+    def test_a_grace_already_given_is_not_restarted(self):
+        """`since` is the TERM an earlier call sent, which stop_lost checked
+        against this attempt, boot and process. A later call keeps it: a group
+        whose TERM went out long ago is not handed another 5 s each round."""
+        self.blind_for(2)
+        self.assertIs(remote_job.stop(self.group, limit=3.0, since=time.monotonic() - 10), False)
+        kinds = [signum for _, signum in self.signalled]
+        self.assertEqual(kinds[0], signal.SIGTERM, self.signalled)
+        self.assertIn(signal.SIGKILL, kinds, "the grace it was already given is not extended")
+
+    def test_stop_never_calls_an_unasked_machine_empty_and_signals_nothing(self):
+        self.blind()
+        # Bounded: this call's own limit, not BLIND_LIMIT, ends it.
+        self.assertIs(remote_job.stop(self.group, limit=0.3), False,
+                      "an enumeration failure is not a stopped group")
+        self.assertEqual(self.signalled, [], "nothing is signalled on a machine that cannot be asked")
+
+    def test_a_lost_attempt_is_not_stopped_or_recorded_on_an_unasked_machine(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            intent = {"attempt": str(uuid.uuid4())}
+            self.blind()
+            with self.assertRaises(remote_job.Unclear):
+                remote_job.stop_lost(root, intent, self.group)
+            self.assertFalse((root / "stopping.json").exists(),
+                             "no first TERM is recorded for a group that was never asked about")
+            self.assertEqual(self.signalled, [])
 
 
 if __name__ == "__main__":
