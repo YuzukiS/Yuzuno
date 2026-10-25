@@ -711,6 +711,10 @@ mod tests {
         let mut closed = d.clone();
         closed.agent.closed_at = Some("now".into());
         assert_eq!(cancel_reason(&closed, &i, true), Some("The agent was closed"));
+        // T-184: a waiting continue never restarts an Agent the user disconnected.
+        let mut disconnected = d.clone();
+        disconnected.agent.disconnected_at = Some("now".into());
+        assert_eq!(cancel_reason(&disconnected, &i, true), Some("You disconnected the agent"));
         let mut other = d.clone();
         other.agent.claude_session_id = Some("s2".into());
         assert_eq!(cancel_reason(&other, &i, true), Some("The Claude session changed"));

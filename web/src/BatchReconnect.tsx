@@ -49,6 +49,7 @@ function stateText(agent: Agent, outcome: BatchOutcome | undefined): string {
     }
   }
   const offer = reconnectOffer(agent);
+  if (offer === "reconnect" && agent.disconnectedAt) return "Disconnected by you; tick it to reconnect it";
   return offer === "connecting" ? "Reconnecting…" : offer === "check" ? "Result unconfirmed" : "Offline";
 }
 
@@ -99,7 +100,10 @@ export function BatchReconnect({
   };
   // Only what the dialog shows runs: a choice hidden by the scope does not.
   const ready = rows.filter((agent) => batch.selected.has(agent.id) && choosable(agent) && !pending(agent.id));
-  const offered = rows.filter((agent) => choosable(agent) && !pending(agent.id));
+  // One the user disconnected is reconnected only when they tick it
+  // themselves, never by Select all (T-184).
+  const offered = rows.filter((agent) => choosable(agent) && !pending(agent.id) && !agent.disconnectedAt);
+  const readyOffered = ready.filter((agent) => !agent.disconnectedAt);
   // Said again for a screen reader as answers come in.
   const counts = { reconnected: 0, notYet: 0, failed: 0, skipped: 0, going: 0 };
   for (const agent of rows) {
@@ -209,9 +213,9 @@ export function BatchReconnect({
             type="button"
             className="secondary-button"
             disabled={!offered.length}
-            onClick={() => choose(workspaceId, offered.map((agent) => agent.id), ready.length < offered.length)}
+            onClick={() => choose(workspaceId, offered.map((agent) => agent.id), readyOffered.length < offered.length)}
           >
-            {ready.length < offered.length ? "Select all" : "Clear"}
+            {readyOffered.length < offered.length ? "Select all" : "Clear"}
           </button>
           <button
             type="button"

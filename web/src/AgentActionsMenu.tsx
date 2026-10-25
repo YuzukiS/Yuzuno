@@ -76,9 +76,9 @@ export function AgentActionsMenu({
   const open = useCallback(
     (at: MenuPoint, align: OpenMenu["align"], returnTo: HTMLElement | null, focus: OpenMenu["focus"] = "first") => {
       setPlaced(null);
-      setMenu({ id: agent.id, name: agent.name, items: agentMenuItems(agent, { missingTurns: missingTurns && !!handlers.endMissing }), at, align, returnTo, focus });
+      setMenu({ id: agent.id, name: agent.name, items: agentMenuItems(agent, { missingTurns: missingTurns && !!handlers.endMissing, disconnect: !!handlers.disconnect }), at, align, returnTo, focus });
     },
-    [agent, missingTurns, handlers.endMissing],
+    [agent, missingTurns, handlers.endMissing, handlers.disconnect],
   );
   const close = useCallback((refocus: boolean) => {
     const was = current.current;
@@ -192,6 +192,9 @@ export function AgentActionsMenu({
         break;
       case "endMissing":
         handlers.endMissing?.(target.id);
+        break;
+      case "disconnect":
+        handlers.disconnect?.(target.id);
         break;
     }
   }
