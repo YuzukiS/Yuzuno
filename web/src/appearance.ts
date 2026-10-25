@@ -196,8 +196,23 @@ const subscribe = (listener: () => void) => {
     listeners.delete(listener);
   };
 };
+// A change the user made in this window: a choice, a reset or an import
+// (T-194). A device that follows the Workspace's shared preset stops on
+// one; that following's own apply is not one, nor is another window's save.
+const edits = new Set<() => void>();
+const edited = () => edits.forEach((listener) => listener());
+export function onAppearanceEdit(listener: () => void): () => void {
+  edits.add(listener);
+  return () => {
+    edits.delete(listener);
+  };
+}
 export function useAppearance(): Appearance {
   return useSyncExternalStore(subscribe, () => (current ??= readAppearance()));
+}
+/** The Appearance in effect in this window now, as `useAppearance` gives it. */
+export function appearanceInEffect(): Appearance {
+  return (current ??= readAppearance());
 }
 
 /** What this visit's last save or reset of Appearance did, or null. */
@@ -223,6 +238,7 @@ export function saveAppearance(appearance: Appearance): SaveOutcome {
   current = appearance;
   lastSave = { outcome, action: "save", attempt: ++attempts };
   listeners.forEach((listener) => listener());
+  edited();
   return outcome;
 }
 
@@ -237,14 +253,16 @@ export function retryAppearanceWrite(): SaveOutcome {
 
 /** Saves an imported `appearance` on this device and only then applies it
  * (T-194): unlike a choice made here, a refused write changes nothing, in
- * storage or in what is in effect. */
-export function importAppearance(appearance: Appearance): SaveOutcome {
+ * storage or in what is in effect. `followed` is the shared preset this
+ * device follows, applied by that following rather than by the user. */
+export function importAppearance(appearance: Appearance, { followed = false } = {}): SaveOutcome {
   const outcome = saveDeviceValue(STORAGE_KEY, appearance);
   if (!outcome.saved) return outcome;
   applyAppearance(appearance);
   current = appearance;
   lastSave = { outcome, action: "save", attempt: ++attempts };
   listeners.forEach((listener) => listener());
+  if (!followed) edited();
   return outcome;
 }
 
@@ -255,6 +273,7 @@ export function restoreDefaultAppearance(): SaveOutcome {
   current = defaultAppearance;
   lastSave = { outcome, action: "reset", attempt: ++attempts };
   listeners.forEach((listener) => listener());
+  edited();
   return outcome;
 }
 
