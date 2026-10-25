@@ -152,7 +152,7 @@ try {
   assert.match(zh.text, /12 条 Job 记录，1 条未完成。/);
   assert.match(zh.text, /Codex · Core 主机大小未知3 个 Agent（1 个已关闭） · 由 Codex 保存在那台电脑上它自己的文件夹中。/);
   assert.doesNotMatch(zh.text, /size unknown|Not in a backup|entries ·/);
-  assert.match(zh.tasks, /^任务工作目录中的构建输出任务已登记工作目录中由 Cargo 生成的构建输出.+不会预览或移除任何内容。任务选择任务…T-7 · Build cache · done打开它的 Workspace 部分$/, "a task by its ID, its title as it comes");
+  assert.match(zh.tasks, /^任务工作目录中的构建输出任务已登记工作目录中由 Cargo 生成的构建输出.+不会预览或移除任何内容。已归档的任务不在此列出。任务选择任务…T-7 · Build cache · done打开它的 Workspace 部分$/, "a task by its ID, its title as it comes");
   await page.screenshot({ path: join(output, "storage-zh.png") });
   check("Data & storage in Chinese; Core's reason, path and listed item, and a name this version doesn't know, as they come", { heading: zh.heading });
 

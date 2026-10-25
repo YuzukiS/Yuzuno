@@ -62,11 +62,14 @@ function mount(seed = {}, { tasks = { tasks: [], hasMore: false } } = {}) {
   w.fetch = async (url, init = {}) => {
     const method = init.method || "GET";
     calls.push({ url: String(url), method, body: init.body ? JSON.parse(init.body) : undefined });
-    if (String(url).endsWith("/api/collaboration/task_list") && tasks.httpStatus) {
-      const body = { error: tasks.error };
-      return { ok: false, status: tasks.httpStatus, json: async () => body, text: async () => JSON.stringify(body) };
+    // Core's task list: one answer, or one per request (by its body).
+    const listed = String(url).endsWith("/api/collaboration/task_list")
+      ? (typeof tasks === "function" ? tasks(JSON.parse(init.body)) : tasks) : null;
+    if (listed?.httpStatus) {
+      const body = { error: listed.error };
+      return { ok: false, status: listed.httpStatus, json: async () => body, text: async () => JSON.stringify(body) };
     }
-    const value = String(url).endsWith("/api/storage") ? overview() : String(url).endsWith("/api/collaboration/task_list") ? tasks : {};
+    const value = String(url).endsWith("/api/storage") ? overview() : listed ?? {};
     return { ok: true, status: 200, json: async () => structuredClone(value), text: async () => JSON.stringify(value) };
   };
   w.eval(bundle);
@@ -148,12 +151,15 @@ test("an install that isn't managed says so instead of showing 0", async (t) => 
 
 // T-193: a task chosen by its ID, opened at its own Workspace section; nothing here previews or removes.
 test("a task is chosen by its ID and only opened: nothing is previewed, removed, registered or started here", async (t) => {
-  const twins = { tasks: [{ id: "T-7", title: "Build cache", status: "done" }, { id: "T-8", title: "Build cache", status: "doing" }], hasMore: true };
-  const p = mount({}, { tasks: twins }); t.after(p.close);
+  // Core lists oldest first, a page at a time: both pages are read, the newest shown first.
+  const pages = (body) => body.afterSeq === 7
+    ? { tasks: [{ id: "T-8", seq: 8, title: "Build cache", status: "doing" }], hasMore: false, nextAfterSeq: 8 }
+    : { tasks: [{ id: "T-7", seq: 7, title: "Build cache", status: "done" }], hasMore: true, nextAfterSeq: 7 };
+  const p = mount({}, { tasks: pages }); t.after(p.close);
   const opened = [];
   p.w.renderStorage({ active: true, updates: managed, onOpenTaskWorkspaces: (id) => opened.push(id) });
   const select = await until(() => p.doc.querySelector("#settings-storage .storage-task-open select"), "the task choice");
-  assert.deepEqual([...select.options].map((o) => o.textContent), ["Choose a task…", "T-7 · Build cache · done", "T-8 · Build cache · doing"], "each by its ID, done ones too");
+  assert.deepEqual([...select.options].map((o) => o.textContent), ["Choose a task…", "T-8 · Build cache · doing", "T-7 · Build cache · done"], "each by its ID, done ones too, the newest first");
   const open = p.button("Open its Workspace section");
   assert.equal(open.disabled, true, "nothing chosen, nothing to open");
   const choose = (id) => {
@@ -172,14 +178,16 @@ test("a task is chosen by its ID and only opened: nothing is previewed, removed,
   assert.deepEqual(opened, ["T-7"], "the chosen ID, not the name both share");
   assert.match(p.text(), /regenerable Cargo build output, never source files, the folder or its branch/);
   assert.match(p.text(), /Choosing a task here only opens it: nothing is previewed or removed\./);
-  assert.match(p.text(), /The 2 most recently changed tasks are listed; open an older one from Tasks\./);
-  // Only reads: the overview and the task list, which is the board's own read.
-  assert.deepEqual(p.posts().map((c) => [c.url, c.body]), [["/api/collaboration/task_list", { limit: 100 }]]);
+  assert.match(p.text(), /Archived tasks are not listed\./);
+  assert.doesNotMatch(p.text(), /tasks are listed; open a later one/, "every page was read");
+  // Only reads: the overview and the task list's pages, the board's own read.
+  assert.deepEqual(p.posts().map((c) => [c.url, c.body]), [
+    ["/api/collaboration/task_list", { limit: 200 }], ["/api/collaboration/task_list", { limit: 200, afterSeq: 7 }]]);
   assert.ok(!p.calls.some((c) => /workspaces|cleanup|jobs/.test(c.url)), "no task folder is read, previewed or removed here");
   assert.deepEqual(p.errors, []);
 });
 
-test("a task list that can't be read says why; an empty one says so; without the way to the task board, the section says where", async (t) => {
+test("a task list that can't be read says why; an empty one says so; without the way to the task board, the section says where; past the pages it reads, it says which are listed", async (t) => {
   const failed = mount({}, { tasks: { httpStatus: 503, error: "Core is restarting" } }); t.after(failed.close);
   failed.w.renderStorage({ active: true, updates: managed, onOpenTaskWorkspaces: () => {} });
   const alert = await until(() => failed.doc.querySelector("#settings-storage .storage-part [role=\"alert\"]"), "the failure");
@@ -192,4 +200,12 @@ test("a task list that can't be read says why; an empty one says so; without the
   without.w.renderStorage({ active: true, updates: managed });
   await until(() => /Open a task's Workspace section from Tasks to remove its build output\./.test(without.text()), "where to go");
   assert.deepEqual(without.posts(), [], "without the way there, no task list is read");
+  // More pages than are read: the oldest are listed, and it says so.
+  const endless = mount({}, { tasks: (body) => {
+    const seq = (body.afterSeq ?? 0) + 1;
+    return { tasks: [{ id: `T-${seq}`, seq, title: "Old", status: "done" }], hasMore: true, nextAfterSeq: seq };
+  } }); t.after(endless.close);
+  endless.w.renderStorage({ active: true, updates: managed, onOpenTaskWorkspaces: () => {} });
+  await until(() => /Only the 10 oldest tasks are listed; open a later one from Tasks\./.test(endless.text()), "the pages it stopped at");
+  assert.equal(endless.posts().length, 10, "a bounded number of pages");
 });

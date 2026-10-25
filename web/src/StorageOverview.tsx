@@ -18,8 +18,32 @@ import "./storage-overview.css";
 type UpdatesStorage = { managed: boolean; storage: { releaseBytes: number; backupBytes: number; retainedReleases: number; keepReleases: number } };
 /** A Task as Core's task list gives it: only what choosing it needs. */
 type TaskChoice = { id: string; title: string; status: string };
-type TaskChoices = { tasks: TaskChoice[]; hasMore: boolean };
-const TASKS_LISTED = 100;
+/** `complete` is false when the pages read stopped before Core's last one. */
+type TaskChoices = { tasks: TaskChoice[]; complete: boolean };
+type TaskPage = { tasks?: TaskChoice[]; hasMore?: boolean; nextAfterSeq?: number };
+const TASK_PAGE = 200;
+const TASK_PAGES = 10;
+
+/**
+ * The Workspace's unarchived tasks, every status, as the task board pages
+ * them: Core lists them oldest first, so every page up to TASK_PAGES is read
+ * and the newest is shown first.
+ */
+async function readTaskChoices(signal: AbortSignal): Promise<TaskChoices> {
+  const tasks: TaskChoice[] = [];
+  let after = 0;
+  for (let read = 0; read < TASK_PAGES; read++) {
+    const page = await api<TaskPage>("/collaboration/task_list", {
+      method: "POST", body: JSON.stringify({ limit: TASK_PAGE, ...(after ? { afterSeq: after } : {}) }), signal,
+    });
+    tasks.push(...(Array.isArray(page?.tasks) ? page.tasks : []).filter((task) => typeof task?.id === "string" && !!task.id));
+    const next = page?.nextAfterSeq;
+    if (page?.hasMore !== true) return { tasks: tasks.reverse(), complete: true };
+    if (typeof next !== "number" || next <= after) break;
+    after = next;
+  }
+  return { tasks: tasks.reverse(), complete: false };
+}
 
 function readStorage(): Storage | null {
   try {
@@ -106,7 +130,7 @@ const text = strings({
   footer: "What each held Agent's stored history takes inside the database is in History & memory information. To report a problem, Copy diagnostics shows its text before anything is copied.",
   taskFolders: "Build output in task work folders",
   taskFoldersNote:
-    "Cargo's build output in a task's registered work folders can be removed from that task's Workspace section. It lists each folder, previews what would go and removes only what you then choose: regenerable Cargo build output, never source files, the folder or its branch. Whether it can run there, and why not, is what Core reports in that section. Choosing a task here only opens it: nothing is previewed or removed.",
+    "Cargo's build output in a task's registered work folders can be removed from that task's Workspace section. It lists each folder, previews what would go and removes only what you then choose: regenerable Cargo build output, never source files, the folder or its branch. Whether it can run there, and why not, is what Core reports in that section. Choosing a task here only opens it: nothing is previewed or removed. Archived tasks are not listed.",
   taskFoldersElsewhere: "Open a task's Workspace section from Tasks to remove its build output.",
   readingTasks: "Reading this Workspace's tasks…",
   tasksNotRead: (reason: string) => `The tasks could not be read: ${reason}`,
@@ -114,7 +138,7 @@ const text = strings({
   task: "Task",
   chooseTask: "Choose a task…",
   openFolders: "Open its Workspace section",
-  moreTasks: (count: number) => `The ${count} most recently changed tasks are listed; open an older one from Tasks.`,
+  moreTasks: (count: number) => `Only the ${count} oldest tasks are listed; open a later one from Tasks.`,
   entryLabel: (what: string) => entryLabels[what] ?? what,
   onDisk: (size: string, disk: string) => `${size} · ${disk} on disk`,
   link: "a link: not followed",
@@ -167,7 +191,7 @@ const text = strings({
   footer: "每个保留的 Agent 的历史在数据库中占用多少，见“历史与内存信息”。要报告问题，“复制诊断信息”会先显示文本，再复制任何内容。",
   taskFolders: "任务工作目录中的构建输出",
   taskFoldersNote:
-    "任务已登记工作目录中由 Cargo 生成的构建输出，可以在该任务的 Workspace 部分移除。那里列出每个目录，先预览将移除的内容，然后只移除你选中的部分：可再生成的 Cargo 构建输出，从不包括源代码、目录本身或其分支。能否在那里执行以及原因，以 Core 在那部分报告的为准。在这里选择任务只会打开它：不会预览或移除任何内容。",
+    "任务已登记工作目录中由 Cargo 生成的构建输出，可以在该任务的 Workspace 部分移除。那里列出每个目录，先预览将移除的内容，然后只移除你选中的部分：可再生成的 Cargo 构建输出，从不包括源代码、目录本身或其分支。能否在那里执行以及原因，以 Core 在那部分报告的为准。在这里选择任务只会打开它：不会预览或移除任何内容。已归档的任务不在此列出。",
   taskFoldersElsewhere: "从“任务”打开任务的 Workspace 部分，即可移除它的构建输出。",
   readingTasks: "正在读取此 Workspace 的任务…",
   tasksNotRead: (reason) => `无法读取任务：${reason}`,
@@ -175,7 +199,7 @@ const text = strings({
   task: "任务",
   chooseTask: "选择任务…",
   openFolders: "打开它的 Workspace 部分",
-  moreTasks: (count) => `只列出最近更改的 ${count} 个任务；更早的任务请从“任务”打开。`,
+  moreTasks: (count) => `只列出最早的 ${count} 个任务；更晚的任务请从“任务”打开。`,
   entryLabel: (what) => entryLabelsZh[what] ?? entryLabels[what] ?? what,
   onDisk: (size, disk) => `${size} · 磁盘上 ${disk}`,
   link: "链接：不跟随",
@@ -233,17 +257,16 @@ export function StorageOverview({ active, updates, onOpenTaskWorkspaces }: {
     return () => controller.abort();
   }, [active, refresh]);
 
-  // The Workspace's tasks, every status, as the task board lists them: a read.
+  // The Workspace's tasks to choose from (readTaskChoices): reads only.
   useEffect(() => {
     if (!active || !onOpenTaskWorkspaces) return;
     const controller = new AbortController();
     setTasksError("");
-    void api<TaskChoices>("/collaboration/task_list", { method: "POST", body: JSON.stringify({ limit: TASKS_LISTED }), signal: controller.signal })
-      .then((page) => {
+    void readTaskChoices(controller.signal)
+      .then((choices) => {
         if (controller.signal.aborted) return;
-        const tasks = (Array.isArray(page?.tasks) ? page.tasks : []).filter((task) => typeof task?.id === "string" && !!task.id);
-        setTaskChoices({ tasks, hasMore: page?.hasMore === true });
-        setChosenTask((was) => (tasks.some((task) => task.id === was) ? was : ""));
+        setTaskChoices(choices);
+        setChosenTask((was) => (choices.tasks.some((task) => task.id === was) ? was : ""));
       })
       .catch((e) => {
         if (!controller.signal.aborted) setTasksError(errorText(e));
@@ -358,7 +381,7 @@ export function StorageOverview({ active, updates, onOpenTaskWorkspaces }: {
             >
               {t.openFolders}
             </button>
-            {taskChoices.hasMore && <p className="storage-note">{t.moreTasks(taskChoices.tasks.length)}</p>}
+            {!taskChoices.complete && <p className="storage-note">{t.moreTasks(taskChoices.tasks.length)}</p>}
           </div>
         )}
       </section>
