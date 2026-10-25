@@ -563,3 +563,37 @@ fn a_version_1_backup_of_whole_folders_is_still_checked_and_restored() {
     rewrite_manifest(&out, |m| m["files"].as_array_mut().unwrap().retain(|f| f["path"] != ATTACHMENT));
     assert!(error(verify(&out)).contains("which the backup does not hold"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_scheduled_run_is_an_ordinary_checked_backup_and_leaves_the_schedule_out() {
+    let root = tempfile::tempdir().unwrap();
+    let data = workspace(root.path());
+    let store = running_core(&data);
+    let folder = root.path().join("daily");
+    fs::create_dir(&folder).unwrap();
+    let backups = Arc::new(online::Backups::open(&data));
+    let planner = schedule::Planner::open(&data);
+    let at = |text: &str| chrono::DateTime::parse_from_rfc3339(text).unwrap().with_timezone(&chrono::Utc);
+    planner.set(true, "03:00", Some(folder.clone()), at("2026-10-25T04:00:00Z")).unwrap();
+    planner.tick(&backups, at("2026-10-26T03:00:30Z"), |request, to| {
+        let (data, store, target) = (data.clone(), store.clone(), to.to_path_buf());
+        backups.start("backup", request, json!({"to": to}), |_| None, move |ctl| {
+            running(&data, &store, &target, ctl)?;
+            Ok(json!({}))
+        })
+    }).unwrap();
+    let id = planner.get().last_run.unwrap().operation_id.unwrap();
+    for _ in 0..500 {
+        if backups.get(&id).unwrap().state != "running" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    planner.tick(&backups, at("2026-10-26T03:01:00Z"), |_, _| unreachable!("one run per slot")).unwrap();
+    let run = planner.get().last_run.unwrap();
+    assert_eq!((run.state.as_str(), run.error), ("succeeded", None));
+    assert_eq!(run.to, folder.join("yuzuno-backup-20261026T0300Z"));
+    let manifest = verify(&run.to).unwrap();
+    assert_eq!(manifest.database.agents, 2);
+    assert!(manifest.excluded.iter().any(|e| e.path == schedule::FILE), "a restored copy starts with no schedule");
+}
