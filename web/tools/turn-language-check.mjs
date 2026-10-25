@@ -9,6 +9,9 @@
 //    open;
 //  - the file preview opened from the change, back in English in another
 //    window: it stays open with the file as it came, its own words English;
+//  - a Claude Agent's running background task: its card from the dock in
+//    English, then Chinese in another window, still open; its command as it
+//    came; no stop sent;
 //  - nothing posted but the reading place.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/turn-language-check.mjs
 import assert from "node:assert/strict";
@@ -44,6 +47,17 @@ const turns = [{
   ],
 }];
 const FILE = "# Notes\n\nfixture line\n";
+// A Claude Agent with a shell running in the background.
+const kaya = { ...agent, id: "k", name: "Kaya", harness: "claude", threadId: "native-k", cwd: "/fixture/kaya", model: "" };
+const kayaTurns = [{
+  id: "kt1", status: "completed", startedAt: started, completedAt: started + 30,
+  items: [
+    { id: "ku1", type: "userMessage", content: [{ type: "text", text: "Start the fixture watcher." }] },
+    { id: "kb1", type: "claudeToolUse", name: "Bash", status: "completed", input: { command: "npm run watch -- fixture", run_in_background: true },
+      output: "Started in the background.", backgroundTask: { taskId: "task-fixture", type: "local_bash", status: "running", description: "Fixture watcher", startedAt: new Date(started * 1000).toISOString() } },
+    { id: "kr1", type: "agentMessage", phase: "final_answer", text: "The watcher runs in the background." },
+  ],
+}];
 const home = { generatedAt: new Date().toISOString(), order: [], needsYou: [], projects: [] };
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 
@@ -60,7 +74,7 @@ await context.route("**/*", async (route) => {
   }
   if (path === "/other.html") return route.fulfill({ body: "<!doctype html><title>other</title>", contentType: "text/html" });
   if (path.startsWith("/api/")) report.reads.push(`${method} ${path}${url.search}`);
-  if (path === "/api/agents/a/reading") return route.fulfill({ json: method === "GET" ? { handoff: null } : { accepted: true, sourceSeq: 0 } });
+  if (/^\/api\/agents\/[ak]\/reading$/.test(path)) return route.fulfill({ json: method === "GET" ? { handoff: null } : { accepted: true, sourceSeq: 0 } });
   if (method !== "GET") {
     // A message sent, an interrupt or a draft handed to Core would be one of these.
     report.posts.push({ method, path });
@@ -71,8 +85,11 @@ await context.route("**/*", async (route) => {
     return route.fulfill({ body: FILE, contentType: "text/plain" });
   }
   const json = {
-    "/api/workspace": { workspace: { id: "ws-turn-language" }, agents: [agent], projects: [], runtime: { connected: true }, defaultCwd: "/fixture" },
+    "/api/workspace": { workspace: { id: "ws-turn-language" }, agents: [agent, kaya], projects: [], runtime: { connected: true }, defaultCwd: "/fixture" },
     "/api/agents/a": { agent, pending: [], messageReceipts: [], artifacts: [], turns },
+    "/api/agents/k": { agent: kaya, pending: [], messageReceipts: [], artifacts: [], turns: kayaTurns },
+    "/api/agents/k/claude/auto-continue": { workspace: false, agent: null, enabled: false, intent: null, stopped: null },
+    "/api/agents/k/claude/mcp-status": { state: "unavailable", reason: "not_observed", generation: null, sessionId: null, checkedAt: null, stale: false, freshForSeconds: 0, observation: null },
     "/api/home": home, "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates,
     "/api/jobs": { jobs: [], liveJobs: [], hasMore: false, nextBefore: null }, "/api/jobs/live": { agents: {} },
     "/api/ci": { runs: [], subscriptions: [], hasMore: false, nextBefore: null }, "/api/ci/live": { runs: [], subscriptions: [], hasMore: false, nextBefore: null },
@@ -167,6 +184,36 @@ try {
   await page.keyboard.press("Escape");
   await dialog().waitFor({ state: "detached", timeout: 10_000 });
   check("the file preview in Chinese, then English; open across the change, the file as it came", { zhPreview });
+
+  // ---- Kaya's background task: its card in English, then Chinese.
+  await page.locator('.agent-row[data-agent-id="k"]').click();
+  await page.locator("#turn-kt1").waitFor({ timeout: 10_000 });
+  const taskNode = page.locator('.work-dock-group[aria-label="Background tasks"] .work-dock-item');
+  await taskNode.waitFor({ timeout: 10_000 });
+  await taskNode.click();
+  const card = page.locator(".subagent-card");
+  await card.locator(".claude-task-stop button").waitFor({ timeout: 10_000 });
+  const taskCard = () => card.evaluate((el) => ({
+    label: el.getAttribute("aria-label"),
+    facts: [...el.querySelectorAll(".claude-subagent-facts dt")].map((dt) => dt.textContent),
+    command: el.querySelector(".claude-task-command")?.textContent,
+    stop: el.querySelector(".claude-task-stop button")?.textContent,
+    close: el.querySelector(".subagent-card-heading button:last-child")?.getAttribute("aria-label"),
+  }));
+  const enCard = await taskCard();
+  assert.equal(enCard.stop, "Stop this task");
+  assert.equal(enCard.command, "npm run watch -- fixture");
+  assert.deepEqual(enCard.facts.slice(0, 2), ["Status", "Kind"]);
+  await setLanguage("zh-Hans");
+  await card.locator(".claude-task-stop button", { hasText: "停止此任务" }).waitFor({ timeout: 10_000 });
+  const zhCard = await taskCard();
+  assert.deepEqual(zhCard.facts.slice(0, 2), ["状态", "类型"]);
+  assert.equal(zhCard.command, enCard.command, "the command as it came");
+  assert.equal(zhCard.close, "关闭");
+  assert.ok(await page.locator('.work-dock-group[aria-label="后台任务"]').count(), "the dock group in Chinese");
+  await page.keyboard.press("Escape");
+  await card.waitFor({ state: "detached", timeout: 10_000 });
+  check("Kaya's background task card in English, then Chinese, still open; the command as it came; no stop sent", { enCard, zhCard });
 
   assert.deepEqual(report.posts, [], "nothing sent");
   assert.deepEqual(report.unexpected, []);

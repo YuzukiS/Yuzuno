@@ -4,7 +4,8 @@ import { api, errorText, NO_ANSWER_REPLY, respondToRequest } from "./api";
 import { AnswerAgain, DraftNotSaved, useUnconfirmedAnswer } from "./unconfirmed-answer";
 import { choiceAnswers, choiceEmpty, useRequestDraft } from "./request-draft";
 import { claudeCodeFacts } from "./claude-runtime";
-import { strings, useStrings } from "./i18n";
+import { strings, useLanguage, useStrings } from "./i18n";
+import { cardWords } from "./subagent-text";
 import { callToward, formatUsage, turnSubAgents, type ClaudeSubAgentEntry, type ClaudeSubAgentRecord } from "./claude-subagents";
 import { Prose } from "./components";
 import { ConversationRows, useConversationDisclosure, useConversationTarget } from "./ConversationWindow";
@@ -141,16 +142,13 @@ export function ClaudeAwayFromTurn({ children }: { children: ReactNode }) {
 export function ClaudeSubAgentScope({ agentId, turn, live, children }: {
   agentId: string; turn: NativeTurn; live: boolean; children: ReactNode;
 }) {
+  const language = useLanguage();
   const value = useMemo(() => ({
-    agentId, turnId: turn.id, live, entries: new Map(turnSubAgents(turn, live).map(entry => [entry.key, entry])),
+    agentId, turnId: turn.id, live, entries: new Map(turnSubAgents(turn, live, language).map(entry => [entry.key, entry])),
     items: new Map(turn.items.map(item => [item.id, item])),
-  }), [agentId, turn, live]);
+  }), [agentId, turn, live, language]);
   return <SubAgentScopeContext.Provider value={value}>{children}</SubAgentScopeContext.Provider>;
 }
-
-const subAgentResults: Record<ClaudeSubAgentEntry["status"], string> = {
-  running: "Running", succeeded: "Completed", failed: "Failed", cancelled: "Stopped", unknown: "Unconfirmed",
-};
 
 /** A plan this long opens on request; a shorter one is shown whole. By
  *  length, not layout, so a short plan is never cut without a way to open it. */
@@ -159,22 +157,24 @@ const PLAN_CHARS = 1800;
 
 /** A plan as Markdown: the one Claude sent with ExitPlanMode (`input.plan`),
  *  or a Codex plan Item's text. `empty` says there is none. */
-export function PlanText({ plan, id, empty = "Claude sent no plan text." }: { plan: string; id: string; empty?: string }) {
+export function PlanText({ plan, id, empty }: { plan: string; id: string; empty?: string }) {
   const [open, setOpen] = useState(false);
+  const t = useStrings(cardWords);
   const long = plan.split("\n").length > PLAN_LINES || plan.length > PLAN_CHARS;
-  if (!plan.trim()) return <p className="claude-plan-empty">{empty}</p>;
+  if (!plan.trim()) return <p className="claude-plan-empty">{empty ?? t.noPlan}</p>;
   return <div className="claude-plan-text">
     <div id={id} className="claude-plan-body" data-collapsed={long && !open ? true : undefined}>
       <Prose text={plan} />
     </div>
     {long && <button type="button" className="inline-link claude-plan-toggle" aria-expanded={open} aria-controls={id}
-      onClick={() => setOpen(value => !value)}>{open ? "Show less" : "Show the full plan"}</button>}
+      onClick={() => setOpen(value => !value)}>{open ? t.showLess : t.showFullPlan}</button>}
   </div>;
 }
 
 /** Where Claude saved the plan (`input.planFilePath`), if it said. */
 function PlanFile({ path }: { path: unknown }) {
-  return typeof path === "string" && path ? <p className="claude-plan-file">Saved by Claude at <span className="mono-small">{path}</span></p> : null;
+  const t = useStrings(cardWords);
+  return typeof path === "string" && path ? <p className="claude-plan-file">{t.savedAt}<span className="mono-small">{path}</span></p> : null;
 }
 
 /** `notice` says when Core sent only a preview of the input or result. An
@@ -185,6 +185,7 @@ export function ClaudeTool({ item, unconfirmed, notice, opened, onOpenChange }: 
 }) {
   const scope = useContext(SubAgentScopeContext);
   const anchored = useContext(AnchorsContext);
+  const t = useStrings(cardWords);
   const entry = scope?.entries.get(item.id);
   const target = useConversationTarget(scope?.turnId ?? "");
   // A source link to one of its calls, or to a call of a sub-agent it
@@ -192,14 +193,14 @@ export function ClaudeTool({ item, unconfirmed, notice, opened, onOpenChange }: 
   const revealing = !!entry && !!scope && !!callToward(scope.items, target?.itemId, item.id);
   useLayoutEffect(() => { if (revealing && !opened) onOpenChange?.(true); }, [revealing]);
   const input = (item.input || {}) as Record<string, unknown>;
-  const name = String(item.name || "Tool");
+  const name = String(item.name || t.tool);
   const plan = name === "ExitPlanMode" && typeof input.plan === "string" ? input.plan : null;
   const hint = plan !== null ? planTitle(plan) : input.command || input.file_path || input.pattern || input.description || "";
   const running = entry ? entry.status === "running" : !unconfirmed && /inProgress|running/.test(item.status || "");
-  const result = entry ? entry.record?.background && entry.status === "running" ? "Running in the background" : subAgentResults[entry.status]
-    : unconfirmed || item.status === "unknown" ? "Unconfirmed" : item.status === "inProgress" ? plan !== null ? "Waiting for your review" : "Running"
+  const result = entry ? entry.record?.background && entry.status === "running" ? t.runningBackground : t.claudeSub[entry.status]
+    : unconfirmed || item.status === "unknown" ? t.unconfirmed : item.status === "inProgress" ? plan !== null ? t.waitingReview : t.running
       // Claude Code completes ExitPlanMode only when the plan is approved.
-      : plan !== null && item.status === "completed" ? "Approved" : plan !== null && item.status === "failed" ? "Not approved" : item.status;
+      : plan !== null && item.status === "completed" ? t.approved : plan !== null && item.status === "failed" ? t.notApproved : item.status;
   return <details className="tool-item claude-tool" id={anchored ? `item-${item.id}` : undefined} data-running={running || undefined}
     data-subagent-status={entry?.status} open={opened} onToggle={event => {
       if (event.target === event.currentTarget && event.currentTarget.open !== opened) onOpenChange?.(event.currentTarget.open);
@@ -212,9 +213,9 @@ export function ClaudeTool({ item, unconfirmed, notice, opened, onOpenChange }: 
       {notice}
       {entry && scope ? (opened ?? true) && <ClaudeSubAgentDetail agentId={scope.agentId} entry={entry} live={scope.live} item={item} /> : <>
         {plan !== null ? <>
-          <span className="section-eyebrow">PLAN</span><PlanText plan={plan} id={`plan-${item.id}`} /><PlanFile path={input.planFilePath} />
-        </> : <><span className="section-eyebrow">INPUT</span><pre>{JSON.stringify(input, null, 2)}</pre></>}
-        <span className="section-eyebrow">RESULT</span><pre>{item.output == null ? "No result yet." : typeof item.output === "string" ? item.output : JSON.stringify(item.output, null, 2)}</pre>
+          <span className="section-eyebrow">{t.plan}</span><PlanText plan={plan} id={`plan-${item.id}`} /><PlanFile path={input.planFilePath} />
+        </> : <><span className="section-eyebrow">{t.input}</span><pre>{JSON.stringify(input, null, 2)}</pre></>}
+        <span className="section-eyebrow">{t.result}</span><pre>{item.output == null ? t.noResultYet : typeof item.output === "string" ? item.output : JSON.stringify(item.output, null, 2)}</pre>
       </>}
     </div>
   </details>;
@@ -250,6 +251,8 @@ export function ClaudeSubAgentDetail({ agentId, entry, live, item, onNavigate }:
   onNavigate?: (turnId: string) => void;
 }) {
   const view = useFullItem(agentId, entry.turnId, entry.item);
+  const language = useLanguage();
+  const t = cardWords(language);
   // An Agent call too large for the conversation window came as a preview
   // keeping its sub-agent's facts; its goal and result are in the original.
   // Once read, the preview's facts stay current from Core and are laid over
@@ -291,7 +294,7 @@ export function ClaudeSubAgentDetail({ agentId, entry, live, item, onNavigate }:
   const input = (shown.input || {}) as Record<string, unknown>;
   const description = record?.description || (typeof input.description === "string" ? input.description : "");
   const goal = record?.prompt || (typeof input.prompt === "string" ? input.prompt : "");
-  const usage = formatUsage(record?.usage);
+  const usage = formatUsage(record?.usage, language);
   const scope = useContext(SubAgentScopeContext);
   const target = useConversationTarget(entry.turnId);
   // Its call on the way to a source link's target, however deeply nested.
@@ -306,50 +309,50 @@ export function ClaudeSubAgentDetail({ agentId, entry, live, item, onNavigate }:
   const returned = !record?.result && !running && (!record?.background || shown.status === "failed") ? outputText(shown.output) : "";
   return <div className="claude-subagent" data-subagent-status={entry.status}>
     <dl className="claude-subagent-facts">
-      <dt>Status</dt><dd>{entry.state}</dd>
-      {record?.type && <><dt>Type</dt><dd>{record.type}</dd></>}
-      <dt>Runs</dt><dd>{record?.remote ? "Remotely" : record?.background ? "In the background" : "In the foreground"}</dd>
-      {usage && <><dt>Usage</dt><dd>{usage}</dd></>}
-      {record?.taskId && <><dt>Task</dt><dd><code>{record.taskId}</code></dd></>}
+      <dt>{t.status}</dt><dd>{entry.state}</dd>
+      {record?.type && <><dt>{t.type}</dt><dd>{record.type}</dd></>}
+      <dt>{t.runsLabel}</dt><dd>{record?.remote ? t.remotely : record?.background ? t.inBackground : t.inForeground}</dd>
+      {usage && <><dt>{t.usage}</dt><dd>{usage}</dd></>}
+      {record?.taskId && <><dt>{t.task}</dt><dd><code>{record.taskId}</code></dd></>}
     </dl>
-    <section className="claude-subagent-part" aria-label="Goal">
-      <span className="section-eyebrow">GOAL</span>
+    <section className="claude-subagent-part" aria-label={t.goalLabel}>
+      <span className="section-eyebrow">{t.goalEyebrow}</span>
       {description && <p><strong>{description}</strong></p>}
-      {goal ? <p className="claude-subagent-text">{goal}{record?.promptTruncated && <span className="claude-subagent-muted"> … (shortened)</span>}</p>
-        : <p className="claude-subagent-muted">{preview ? "In the saved original of this call." : "Not reported by Claude"}</p>}
+      {goal ? <p className="claude-subagent-text">{goal}{record?.promptTruncated && <span className="claude-subagent-muted">{t.shortened}</span>}</p>
+        : <p className="claude-subagent-muted">{preview ? t.inOriginal : t.notReported}</p>}
     </section>
     {running && (record?.activity || record?.progress) && (
       <p className="claude-subagent-muted">{[record.activity, record.progress].filter(Boolean).join(" · ")}</p>
     )}
     {record?.error && <p className="claude-subagent-error" role="alert">{record.error}</p>}
-    <section className="claude-subagent-part" aria-label="Result">
-      <span className="section-eyebrow">RESULT</span>
-      {record?.result ? <p className="claude-subagent-text">{record.result}{record.resultTruncated && <span className="claude-subagent-muted"> … (shortened)</span>}</p>
+    <section className="claude-subagent-part" aria-label={t.resultLabel}>
+      <span className="section-eyebrow">{t.result}</span>
+      {record?.result ? <p className="claude-subagent-text">{record.result}{record.resultTruncated && <span className="claude-subagent-muted">{t.shortened}</span>}</p>
         : returned ? <p className={`claude-subagent-text${shown.status === "failed" ? " claude-subagent-error" : ""}`}>{returned}</p>
-          : <p className="claude-subagent-muted">{(preview || behind) && !running ? "In the saved original of this call."
-            : running ? "No result yet." : entry.status === "unknown" ? "No result was reported before its status became unknown." : "No result reported."}</p>}
+          : <p className="claude-subagent-muted">{(preview || behind) && !running ? t.inOriginal
+            : running ? t.noResultYet : entry.status === "unknown" ? t.noResultUnknown : t.noResult}</p>}
     </section>
     {(preview || reading || readError) && (
       <button type="button" className="inline-link" disabled={reading} onClick={() => void readOriginal()}>
-        {reading ? "Reading the full call…" : "Read the full call"}
+        {reading ? t.readingCall : t.readCall}
       </button>
     )}
     {readError && <p className="claude-subagent-error" role="alert">{readError.text}</p>}
     {!item && view.truncated && !view.expanded && (
-      <button type="button" className="inline-link" onClick={view.expand}>Show the full goal and result</button>
+      <button type="button" className="inline-link" onClick={view.expand}>{t.showGoalResult}</button>
     )}
     {!item && view.error && <p className="claude-subagent-error" role="alert">{view.error}</p>}
     {onNavigate && (
       // As the dock card's Codex details do (SubAgentPanels.tsx).
       <div className="subagent-card-actions">
         <button type="button" className="quiet-button" onClick={() => onNavigate(entry.turnId)}>
-          <ArrowUpRight size={12} aria-hidden /> Go to its Turn
+          <ArrowUpRight size={12} aria-hidden /> {t.goTurn}
         </button>
       </div>
     )}
     {entry.calls.length > 0 && <div className="claude-subagent-calls">
       <button type="button" className="claude-subagent-calls-toggle" aria-expanded={showCalls} onClick={() => setCallsOpen(!showCalls)}>
-        <ChevronRight size={12} aria-hidden />Its tool calls · {entry.calls.length}
+        <ChevronRight size={12} aria-hidden />{t.itsCalls(entry.calls.length)}
       </button>
       {showCalls && <ConversationRows id={`claude-subagent:${entry.turnId}:${entry.key}`} items={entry.calls} itemKey={call => call.id}
         estimate={() => 44} targetKey={targetCall}>
@@ -374,6 +377,7 @@ function PreviewCall({ agentId, turnId, item, unconfirmed }: CallProps) {
   const [error, setError] = useState("");
   const [opened, setOpened] = useConversationDisclosure(`tool:${turnId}:${item.id}`, true);
   const anchored = useContext(AnchorsContext);
+  const t = useStrings(cardWords);
   async function load() {
     setLoading(true);
     setError("");
@@ -389,9 +393,9 @@ function PreviewCall({ agentId, turnId, item, unconfirmed }: CallProps) {
     unconfirmed={unconfirmed && /inProgress|running/.test(original.status || "")} />;
   return <div className="history-item-preview" id={anchored ? `item-${item.id}` : undefined}
     data-item-id={anchored ? item.id : undefined} tabIndex={-1}>
-    <p>Large call · preview</p><pre>{item.text || "Open the original to read this call."}</pre>
+    <p>{t.largeCall}</p><pre>{item.text || t.openCall}</pre>
     <button type="button" className="inline-link" disabled={loading} onClick={() => void load()}>
-      {loading ? "Loading the full call…" : "View the full call"}
+      {loading ? t.loadingCall : t.viewCall}
     </button>
     {error && <p className="claude-subagent-error" role="alert">{error}</p>}
   </div>;
@@ -402,10 +406,11 @@ function ToolCall({ agentId, turnId, item, unconfirmed }: CallProps) {
   const view = useFullItem(agentId, turnId, item);
   const [opened, setOpened] = useConversationDisclosure(`tool:${turnId}:${item.id}`, false);
   const targeted = useConversationTarget(turnId)?.itemId === item.id;
+  const t = useStrings(cardWords);
   useLayoutEffect(() => { if (targeted && !opened) setOpened(true); }, [targeted]);
   const notice = view.error ? <p className="claude-subagent-error" role="alert">{view.error}</p>
-    : view.loading ? <p className="claude-subagent-muted">Loading the full input and result…</p>
-      : view.truncated && !view.expanded ? <button type="button" className="inline-link" onClick={view.expand}>Show the full input and result</button>
+    : view.loading ? <p className="claude-subagent-muted">{t.loadingIO}</p>
+      : view.truncated && !view.expanded ? <button type="button" className="inline-link" onClick={view.expand}>{t.showIO}</button>
         : null;
   return <ClaudeTool item={view.item} notice={notice} opened={opened} onOpenChange={setOpened}
     unconfirmed={unconfirmed && /inProgress|running/.test(item.status || "")} />;
