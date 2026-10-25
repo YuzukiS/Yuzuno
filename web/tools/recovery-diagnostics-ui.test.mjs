@@ -159,6 +159,9 @@ async function openSettingsEditor(p, title, selector) {
   return p.doc.querySelector(selector);
 }
 const openDiagnostics = (p) => openSettingsEditor(p, "Diagnostics", "#settings-diagnostics");
+// What was sent: Data opens at its storage overview (T-187), whose list of
+// tasks is a read that the collaboration API takes by POST; that is not sent.
+const sent = (p) => p.calls.filter((c) => c.method && c.method !== "GET" && !c.url.endsWith("/api/collaboration/task_list"));
 const shownText = (p) => p.doc.querySelector('textarea[aria-label="Diagnostics"]')?.value;
 // Settings shows the text first (T-193): Preview copies nothing; Copy then takes that text.
 async function previewAndCopy(p) {
@@ -218,7 +221,7 @@ test("Copy diagnostics on the recovery page: versions, the render error by kind 
     assert.match(text, /^1\. render · TypeError · once, \S+\n {3}read a property of null$/m, "a fixed summary, not the message");
     assert.doesNotMatch(text, /Cannot read|slice/, "the message itself is not kept");
     assert.doesNotMatch(text, /ws-private-id/, "Core's workspace id is not part of it");
-    assert.equal(p.calls.filter((c) => c.method && c.method !== "GET").length, 0, "copying sends nothing");
+    assert.equal(sent(p).length, 0, "copying sends nothing");
   } finally {
     p.close();
   }
@@ -411,7 +414,7 @@ test("Copy diagnostics adds Core's memory counters, read only for the text: numb
     for (const word of ["MemoryNoteSentinel", "ReasonSentinel", "ExtraFieldSentinel", "/home/person", "kernel process status"]) assert.ok(!text.includes(word), `${word} is not copied`);
     assert.equal(p.calls.filter((c) => c.url.endsWith("/api/diagnostics/memory")).length, 1, "read once, for this text");
     assert.ok(!(p.w.localStorage.getItem("yuzuno.diagnostics.v1") || "").includes("uordblks"), "the memory read is not stored");
-    assert.equal(p.calls.filter((c) => c.method && c.method !== "GET").length, 0, "copying sends nothing");
+    assert.equal(sent(p).length, 0, "copying sends nothing");
   } finally {
     p.close();
   }
@@ -506,7 +509,7 @@ test("the held Agents' stored history is read only when Measure is pressed: a ch
     assert.equal(historyCalls(p), 1, "and not read again by itself");
     p.button("Measure", section).click();
     await waitFor(() => historyCalls(p) === 2, "pressed again, read again");
-    assert.equal(p.calls.filter((c) => c.method && c.method !== "GET").length, 0, "measuring sends nothing");
+    assert.equal(sent(p).length, 0, "measuring sends nothing");
   } finally {
     p.close();
   }
