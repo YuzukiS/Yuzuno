@@ -108,21 +108,36 @@ async fn connect_core(
         Some(id) => profiles.iter().find(|kept| kept.id == id).cloned(),
         None => profiles.iter().find(|kept| kept.url == core).cloned(),
     };
-    // The Workspace this profile was last opened at, against the one that
-    // just answered. Only a profile that already knows one can disagree.
-    if let Some(known) = known.as_ref() {
-        let before = known.workspace_id.as_deref();
-        if core_profiles::identity(before, workspace.as_deref()) == core_profiles::Identity::Changed {
-            return Ok(serde_json::json!({
-                "url": core.as_str(),
-                "opened": false,
-                "identity": "changed",
-                "profileName": known.name,
-                "savedWorkspaceId": before,
-                "workspaceId": workspace,
-            }));
-        }
-    }
+    // What the Workspace that just answered lets this do with the address.
+    // Decided here, before the window is pointed anywhere and before a byte
+    // is written, so every refusal leaves the record exactly as it is.
+    //
+    // Only `Open` goes on. The three refusals are told apart because they
+    // are different situations and a person can act on each: another
+    // Workspace is at this address; this one cannot be checked against what
+    // is saved; the answer is too long for this app to keep.
+    let before = known.as_ref().and_then(|known| known.workspace_id.as_deref());
+    let named = known
+        .as_ref()
+        .map(|known| known.name.clone())
+        .unwrap_or_else(|| core_profiles::name_for(&core));
+    let answered_json = (!workspace.is_empty()).then(|| workspace.clone());
+    let refusal = |identity: &str| {
+        Ok(serde_json::json!({
+            "url": core.as_str(),
+            "opened": false,
+            "identity": identity,
+            "profileName": named,
+            "savedWorkspaceId": before,
+            "workspaceId": answered_json,
+        }))
+    };
+    let answered = match core_profiles::opening(before, &workspace) {
+        core_profiles::Opening::Open(answered) => answered,
+        core_profiles::Opening::Changed => return refusal("changed"),
+        core_profiles::Opening::Unverified => return refusal("unverified"),
+        core_profiles::Opening::Unkeepable => return refusal("unkeepable"),
+    };
     *state.selected.lock().map_err(|_| "Connection state unavailable.".to_owned())? = Some(core.clone());
     // What is written down after opening it: the profile asked for, updated,
     // or a new one. A Workspace is never written twice under one profile.
@@ -130,7 +145,7 @@ async fn connect_core(
         Some(known) => {
             if let Some(kept) = profiles.iter_mut().find(|kept| kept.id == known.id) {
                 kept.url = core.clone();
-                if let Some(answered) = workspace.clone() {
+                if let Some(answered) = answered.clone() {
                     kept.workspace_id = Some(answered);
                 }
                 if let Some(name) = name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
@@ -147,7 +162,7 @@ async fn connect_core(
                 .filter(|name| !name.is_empty())
                 .map(|name| name.chars().take(core_profiles::NAME_LIMIT).collect())
                 .unwrap_or_else(|| core_profiles::name_for(&core));
-            profiles.push(core_profiles::Profile { id: id.clone(), name, url: core.clone(), workspace_id: workspace.clone() });
+            profiles.push(core_profiles::Profile { id: id.clone(), name, url: core.clone(), workspace_id: answered.clone() });
             id
         }
     };
@@ -159,7 +174,7 @@ async fn connect_core(
         "opened": true,
         "identity": "known",
         "profile": selected_id,
-        "workspaceId": workspace,
+        "workspaceId": answered,
         "saved": written.is_ok(),
     });
     if let Err(error) = written {
@@ -226,7 +241,7 @@ fn write_profiles(app: &AppHandle, profiles: &[core_profiles::Profile], selected
 /// the same address or under the same name. A Core old enough not to send
 /// one answers `None`: it is still a Core, and this app then has no identity
 /// to compare, which it says rather than assuming they match.
-async fn check_health(client: &reqwest::Client, core: &Url) -> Result<Option<String>, String> {
+async fn check_health(client: &reqwest::Client, core: &Url) -> Result<String, String> {
     let url = core.join("api/health").map_err(|_| "This address is not valid.".to_owned())?;
     let mut response = client.get(url).send().await.map_err(|_| {
         "Your Workspace is not reachable. Check its address, and that this iPhone is connected to your private network.".to_owned()
@@ -258,13 +273,19 @@ async fn check_health(client: &reqwest::Client, core: &Url) -> Result<Option<Str
     if !health::is_core(product, application) {
         return Err("This address is reachable, but it is not a Yuzuno Workspace.".into());
     }
-    // Bounded like the record's other fields: a Core names a Workspace, and
-    // a record this app writes has to stay small enough to read back.
+    // The answer is handed on as it came, and classified by
+    // `core_profiles::opening`. It used to be filtered here: an identifier
+    // longer than the record keeps was dropped, which made it
+    // indistinguishable from a Core that named no Workspace at all -- and a
+    // Core that names none was then treated as "nothing to compare", so an
+    // address already bound to a Workspace opened on it. Whether an answer
+    // can be kept is a different question from whether it can be checked,
+    // and only the second one decides whether to open.
     Ok(health
         .get("workspaceId")
         .and_then(serde_json::Value::as_str)
-        .filter(|workspace| !workspace.is_empty() && workspace.len() <= core_profiles::WORKSPACE_LIMIT)
-        .map(str::to_owned))
+        .unwrap_or_default()
+        .to_owned())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
