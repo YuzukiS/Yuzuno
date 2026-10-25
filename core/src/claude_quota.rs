@@ -8,7 +8,9 @@
 //!   that same turn, said `rejected` with a `resetsAt` and no overage in use.
 //!   Any other failure (network, API, authentication) is not a usage limit;
 //! - the setting is on: off by default for the workspace, and each Agent can
-//!   turn it on or off for itself.
+//!   turn it on or off for itself. An Agent without its own choice follows
+//!   the workspace default as it is now, so changing (or clearing) that
+//!   default changes it for existing Agents too (T-190).
 //!
 //! Then one resume intent per failed turn is kept (`claude_quota_resumes`),
 //! naming the Agent, its session, the failed turn and Claude's reset. A little
@@ -40,7 +42,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
 
@@ -515,6 +517,26 @@ struct Setting {
     enabled: Option<bool>,
 }
 
+/// The workspace default: `true` or `false` saves it, `null` deletes it
+/// (back to the built-in off). Left out, it is refused, not cleared.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkspaceSetting {
+    #[serde(default, deserialize_with = "present")]
+    enabled: Option<Option<bool>>,
+}
+
+/// Left out (`None`), `null` (`Some(None)`) or a value.
+fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<bool>>, D::Error> {
+    Option::<bool>::deserialize(d).map(Some)
+}
+
+/// What applies (`enabled`, as before) and what is saved: `true`, `false`,
+/// or `null` for none (the built-in off).
+fn workspace_view(saved: Option<bool>) -> Value {
+    json!({"enabled": saved.unwrap_or(false), "saved": saved})
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct IntentRef {
@@ -522,15 +544,15 @@ struct IntentRef {
 }
 
 async fn workspace_setting(ApiState(ws): ApiState<Arc<Workspace>>) -> Result<Json<Value>, ApiError> {
-    let enabled = ws.stored(|s| { let db = s.db.read()?; Store::auto_continue_setting(&db, None) }).await?.unwrap_or(false);
-    Ok(Json(json!({"enabled":enabled})))
+    let saved = ws.stored(|s| { let db = s.db.read()?; Store::auto_continue_setting(&db, None) }).await?;
+    Ok(Json(workspace_view(saved)))
 }
 
-async fn set_workspace_setting(ApiState(ws): ApiState<Arc<Workspace>>, Json(input): Json<Setting>) -> Result<Json<Value>, ApiError> {
-    let enabled = input.enabled.context("Choose on or off for the workspace default")?;
+async fn set_workspace_setting(ApiState(ws): ApiState<Arc<Workspace>>, Json(input): Json<WorkspaceSetting>) -> Result<Json<Value>, ApiError> {
+    let enabled = input.enabled.context("Choose on or off for the workspace default, or null for the built-in one")?;
     let _permit = ws.admission.enter_work()?;
-    ws.set_claude_auto_continue(None, Some(enabled)).await?;
-    Ok(Json(json!({"enabled":enabled})))
+    ws.set_claude_auto_continue(None, enabled).await?;
+    Ok(Json(workspace_view(enabled)))
 }
 
 async fn agent_view(ApiState(ws): ApiState<Arc<Workspace>>, Path(id): Path<String>) -> Result<Json<View>, ApiError> {
@@ -644,6 +666,22 @@ mod tests {
     }
     fn stop(turn: &str, resets_at: i64, account: &str) -> Stop {
         Stop { turn_id: turn.into(), session_id: "s1".into(), resets_at, limit_type: Some("five_hour".into()), account: account.into() }
+    }
+
+    /// Clearing the workspace default is the built-in off again for every
+    /// Agent that follows it, existing ones too; an Agent's own choice stays.
+    #[test]
+    fn clearing_the_workspace_default_is_off_again_for_agents_that_follow_it() {
+        let (_dir, store) = store();
+        store.set_auto_continue(Some("own"), Some(true)).unwrap();
+        store.set_auto_continue(None, Some(true)).unwrap();
+        assert_eq!(store.auto_continue("follows").unwrap(), (true, None, true));
+        store.set_auto_continue(None, None).unwrap();
+        let db = store.db.read().unwrap();
+        assert_eq!(Store::auto_continue_setting(&db, None).unwrap(), None, "nothing saved");
+        drop(db);
+        assert_eq!(store.auto_continue("follows").unwrap(), (false, None, false));
+        assert_eq!(store.auto_continue("own").unwrap(), (false, Some(true), true), "its own choice stays");
     }
 
     #[test]

@@ -23,10 +23,12 @@ try {
     entry,
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
-import {QuotaResumeNotice, AutoContinueSetting} from ${JSON.stringify(path.join(root, "src/QuotaResume.tsx"))};
+import {QuotaResumeNotice, AutoContinueSetting, AutoContinueDefault} from ${JSON.stringify(path.join(root, "src/QuotaResume.tsx"))};
 const root = createRoot(document.getElementById('root'));
 window.renderNotice = props => root.render(<QuotaResumeNotice {...props}/>);
-window.renderSetting = props => root.render(<dl><AutoContinueSetting {...props}/></dl>);`,
+window.renderSetting = props => root.render(<dl><AutoContinueSetting {...props}/></dl>);
+window.renderDefault = props => root.render(<AutoContinueDefault {...props}/>);
+window.renderBoth = props => root.render(<><dl><AutoContinueSetting {...props}/></dl><AutoContinueDefault active/></>);`,
   );
   const result = await build({
     root,
@@ -194,3 +196,154 @@ test("the setting is this agent's choice or the workspace default", async () => 
     page.close();
   }
 });
+
+// T-190: the Workspace default in Settings, over a scripted Core that keeps
+// what is saved (null: nothing) and answers each save with what applies.
+function workspaceCore(saved) {
+  const state = { saved };
+  const answer = () => ({ enabled: state.saved ?? false, saved: state.saved });
+  return {
+    state,
+    responses: (url, init) => {
+      assert.match(url, /\/api\/claude\/auto-continue$/, "no Agent is read or changed");
+      if (init.method === "POST") state.saved = JSON.parse(init.body).enabled;
+      return answer();
+    },
+  };
+}
+const choose = (page, value) => {
+  const select = page.document.querySelector('[aria-label="After a usage limit resets"]');
+  Object.getOwnPropertyDescriptor(page.window.HTMLSelectElement.prototype, "value").set.call(select, value);
+  select.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+};
+const inEffect = (page) => page.document.querySelector(".auto-continue-default .settings-current").textContent;
+
+test("Settings sets the Workspace default with no Agent chosen, says where it comes from, and only Use built-in clears it (T-190)", async () => {
+  const core = workspaceCore(null);
+  const page = mount(core.responses);
+  try {
+    page.window.renderDefault({ active: true });
+    await tick();
+    assert.match(text(page), /Built in: wait for you\./);
+    assert.equal(inEffect(page), "Wait for you");
+    assert.match(text(page), /existing ones included/, "a chain that changes Agents following it, not a new-Agent default");
+    assert.doesNotMatch(text(page), /created from now on|only new Agents/);
+    // Absence as booleans: a failing assert on an element inspects the whole window.
+    assert.ok(!button(page, "Use built-in"), "nothing saved to clear");
+    assert.ok(!button(page, "Save default"), "nothing changed");
+    choose(page, "on");
+    await tick();
+    button(page, "Save default").click();
+    await tick();
+    assert.deepEqual(page.calls.at(-1), { url: "/api/claude/auto-continue", method: "POST", body: { enabled: true } });
+    assert.equal(page.calls.length, 2, "Core's answer to the save is what is shown; nothing is read again");
+    assert.match(text(page), /Set for this Workspace: continue after the reset\./);
+    assert.equal(inEffect(page), "Continue after the reset");
+    button(page, "Use built-in").click();
+    await tick();
+    assert.deepEqual(page.calls.at(-1).body, { enabled: null }, "an explicit null deletes it");
+    assert.equal(core.state.saved, null);
+    assert.match(text(page), /Built in: wait for you\./);
+    assert.equal(inEffect(page), "Wait for you");
+    assert.ok(!button(page, "Use built-in"), "no Use built-in");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a save that fails says so and keeps what Core has; an older Core that doesn't say what is saved offers no Use built-in (T-190)", async () => {
+  let refuse = false, realm;
+  const page = mount((url, init) => {
+    // An error of the page's own realm, as its fetch would reject with.
+    if (init.method === "POST" && refuse) throw new realm.Error("Core is restarting");
+    return { enabled: true };
+  });
+  realm = page.window;
+  try {
+    page.window.renderDefault({ active: true });
+    await tick();
+    assert.match(text(page), /This Core doesn’t say whether a default is saved\./);
+    assert.ok(!button(page, "Use built-in"), "no Use built-in");
+    refuse = true;
+    choose(page, "off");
+    await tick();
+    button(page, "Save default").click();
+    await tick();
+    assert.match(page.document.querySelector('[role="alert"]').textContent, /Core is restarting/);
+    assert.equal(inEffect(page), "Continue after the reset", "still what Core last said");
+    assert.ok(button(page, "Save default"), "the change can be saved again");
+  } finally {
+    page.close();
+  }
+});
+
+test("the Workspace default reads in Chinese when the interface is Chinese (T-190)", async () => {
+  const page = mount(workspaceCore(true).responses);
+  try {
+    page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+    page.window.renderDefault({ active: true });
+    await tick();
+    assert.equal(page.document.querySelector(".auto-continue-default h3").textContent, "用量限额后继续");
+    assert.match(text(page), /包括现有 Agent/);
+    assert.match(text(page), /已为此 Workspace 设置：重置后继续。/);
+    assert.equal(inEffect(page), "重置后继续");
+    assert.ok(button(page, "使用内置"));
+  } finally {
+    page.close();
+  }
+});
+
+test("an open Agent panel shows the Workspace default Settings saved, and reads its view again (T-190)", async () => {
+  const core = { saved: null };
+  const page = mount((url, init) => {
+    if (url.endsWith("/api/claude/auto-continue")) {
+      if (init.method === "POST") core.saved = JSON.parse(init.body).enabled;
+      return { enabled: core.saved ?? false, saved: core.saved };
+    }
+    return { workspace: core.saved ?? false, agent: null, enabled: core.saved ?? false, intent: null, stopped: null };
+  });
+  try {
+    page.window.renderBoth({ detail, disabled: false });
+    await tick();
+    const panel = page.document.querySelector('[aria-label="After Claude’s usage limit resets"]');
+    assert.equal(panel.selectedOptions[0].textContent, "Default · wait for you");
+    choose(page, "on");
+    await tick();
+    button(page, "Save default").click();
+    await tick();
+    assert.equal(panel.selectedOptions[0].textContent, "Default · continue", "no Agent event needed");
+    const after = page.calls.findIndex((c) => c.method === "POST");
+    assert.ok(page.calls.slice(after + 1).some((c) => c.url === "/api/agents/a/claude/auto-continue" && c.method === "GET"), "the panel read its view again");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a Workspace default saved from an Agent panel shows in open Settings too (T-190 R1)", async () => {
+  const core = { saved: null };
+  const page = mount((url, init) => {
+    if (url.endsWith("/api/claude/auto-continue")) {
+      if (init.method === "POST") core.saved = JSON.parse(init.body).enabled;
+      return { enabled: core.saved ?? false, saved: core.saved };
+    }
+    return { workspace: core.saved ?? false, agent: null, enabled: core.saved ?? false, intent: null, stopped: null };
+  });
+  try {
+    page.window.renderBoth({ detail, disabled: false });
+    await tick();
+    assert.match(text(page), /Built in: wait for you\./);
+    button(page, "Make the default: continue").click();
+    await tick();
+    assert.match(text(page), /Set for this Workspace: continue after the reset\./, "Settings shows what the panel saved");
+    assert.equal(inEffect(page), "Continue after the reset");
+    assert.ok(button(page, "Use built-in"), "and it can be cleared there");
+    const reads = page.calls.filter((c) => c.url === "/api/agents/a/claude/auto-continue" && c.method === "GET").length;
+    assert.equal(reads, 2, "the panel reads its own view again once, not again for its own notice");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+

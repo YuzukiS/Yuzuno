@@ -52,7 +52,7 @@ test("Settings' search finds an entry by its words in either language", () => {
   assert.deepEqual(titles("外观与交互 发送键"), ["Sending messages"]);
 });
 
-test("the editors this version translates: Language, Sending messages, Clock & time zone, Keyboard shortcuts, Appearance, Move preferences, Data & storage, Copy diagnostics, Notification preferences, About & help, Home presentation, Code review, Phone & remote access, Runtime & versions, New Agent defaults, Workspace backup & restore, History & memory information, Draft storage, Versions & updates (every Settings editor)", () => {
-  assert.deepEqual([...translatedEditors], ["language", "input", "time", "shortcuts", "appearance", "transfer", "storage", "diagnostics", "notifications", "about", "home", "review", "remote", "runtime", "agent-defaults", "backup", "history", "drafts", "updates"]);
+test("the editors this version translates: Language, Sending messages, Clock & time zone, Keyboard shortcuts, Appearance, Move preferences, Data & storage, Copy diagnostics, Notification preferences, About & help, Home presentation, Code review, Phone & remote access, Runtime & versions, New Agent defaults, Workspace backup & restore, History & memory information, Draft storage, Versions & updates, Continue after a usage limit: Workspace default (every Settings editor)", () => {
+  assert.deepEqual([...translatedEditors], ["language", "input", "time", "shortcuts", "appearance", "transfer", "storage", "diagnostics", "notifications", "about", "home", "review", "remote", "runtime", "agent-defaults", "backup", "history", "drafts", "updates", "auto-continue"]);
   for (const editor of translatedEditors) assert.ok(settingsCatalog.some((entry) => entry.target.kind === "editor" && entry.target.editor === editor), editor);
 });
