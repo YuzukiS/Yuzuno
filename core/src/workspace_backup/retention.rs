@@ -268,15 +268,56 @@ pub(crate) fn preview_within(folder: &Path, rule: impl Into<Rule>, workspace: &s
 
     // Newest first; the same time by name, newest name first.
     candidates.sort_by(|(a, x), (b, y)| b.cmp(a).then_with(|| y.name.cmp(&x.name)));
-    // The count first; then, with a budget, of the latest only as many as fit,
-    // newest first. Once one doesn't fit, the older ones go too; once a size
-    // can't be trusted, whether the older ones fit can't be judged.
-    let mut verdicts: Vec<(&'static str, String)> = Vec::with_capacity(candidates.len());
-    let mut total = Some(0u64);
+    // What stays whatever the budget is set aside first: this Workspace's
+    // backups (and folders that may be its) already protected or unknown, by
+    // the sizes they declare. Then the budget is shared out among the latest.
+    let reserved = entries.iter().filter(|e| stays_regardless(e, workspace)).filter_map(|e| e.estimate_bytes).fold(0u64, u64::saturating_add);
+    let mut verdicts = share(&candidates, rule, Some(reserved));
+    // The only checked backup, kept when none of those kept is: with a budget,
+    // its size is set aside too, and the budget shared out again. That keeps
+    // fewer, none of them checked, so the same one stays protected.
+    let protected = only_checked(&candidates, &verdicts);
+    if let (Some(index), Some(_)) = (protected, rule.budget_bytes) {
+        let size = candidates[index].1.estimate_bytes;
+        verdicts = share(&candidates, rule, size.map(|size| reserved.saturating_add(size)));
+    }
+    let protected = only_checked(&candidates, &verdicts);
+    let newest_bytes = candidates.first().and_then(|(_, e)| e.estimate_bytes);
+    for (index, ((_, mut found), (verdict, reason))) in candidates.into_iter().zip(verdicts).enumerate() {
+        if protected == Some(index) {
+            found.verdict = "protected";
+            found.reason = "The only backup with a successful check on record; kept until one of the latest is checked".into();
+        } else {
+            found.verdict = verdict;
+            found.reason = reason;
+        }
+        entries.push(found);
+    }
+    let removable = || entries.iter().filter(|e| e.verdict == "remove");
+    let removable_estimate_bytes = removable().filter_map(|e| e.estimate_bytes).fold(0u64, u64::saturating_add);
+    let removable_unknown_sizes = removable().filter(|e| e.estimate_bytes.is_none()).count();
+    let budget = rule.budget_bytes.map(|bytes| budget_outcome(&entries, workspace, bytes, newest_bytes));
+    Ok(Preview { folder: folder.into(), keep, entries, unreadable_names, removable_estimate_bytes, removable_unknown_sizes, size_basis: SIZE_BASIS, budget })
+}
+
+/// An entry already judged that stays whatever is kept, and may be this
+/// Workspace's: protected or unknown, and not another Workspace's.
+fn stays_regardless(entry: &Entry, workspace: &str) -> bool {
+    matches!(entry.verdict, "protected" | "unknown") && entry.workspace_id.as_deref().is_none_or(|id| id == workspace)
+}
+
+/// The verdicts for `candidates` (newest first) under `rule`: the latest
+/// `keep`, and with a budget only as many as fit in it with `reserved`
+/// (None: something that stays has no size to trust). The newest is kept
+/// whatever the budget; once one doesn't fit, the older ones go too; once a
+/// size can't be trusted, whether the older ones fit can't be judged.
+fn share(candidates: &[(DateTime<Utc>, Entry)], rule: Rule, reserved: Option<u64>) -> Vec<(&'static str, String)> {
+    let keep = rule.keep;
+    let mut total = reserved;
     let mut beyond = false;
-    for (index, (_, found)) in candidates.iter().enumerate() {
+    candidates.iter().enumerate().map(|(index, (_, found))| {
         let size = found.estimate_bytes;
-        verdicts.push(if index >= keep {
+        if index >= keep {
             ("remove", format!("Older than the latest {keep}"))
         } else if let Some(budget) = rule.budget_bytes {
             if index == 0 {
@@ -292,36 +333,28 @@ pub(crate) fn preview_within(folder: &Path, rule: impl Into<Rule>, workspace: &s
                     }
                     Some(_) => {
                         beyond = true;
-                        ("remove", format!("Beyond the space budget: with the newer ones kept, they would declare more than {}", size_text(budget)))
+                        ("remove", format!("Beyond the space budget: with what stays, it would declare more than {}", size_text(budget)))
                     }
                     None => {
                         total = None;
-                        ("unknown", "Its declared size, or a newer one's, can't be trusted, so whether it fits the space budget can't be judged".into())
+                        ("unknown", "Its declared size, or that of something that stays, can't be trusted, so whether it fits the space budget can't be judged".into())
                     }
                 }
             }
         } else {
             ("keep", format!("One of the latest {keep}"))
-        });
-    }
-    let newest_bytes = candidates.first().and_then(|(_, e)| e.estimate_bytes);
-    let mut checked_stays = candidates.iter().zip(&verdicts).any(|((_, e), (verdict, _))| *verdict != "remove" && e.last_checked_at.is_some());
-    for ((_, mut found), (verdict, reason)) in candidates.into_iter().zip(verdicts) {
-        if verdict == "remove" && !checked_stays && found.last_checked_at.is_some() {
-            found.verdict = "protected";
-            found.reason = "The only backup with a successful check on record; kept until one of the latest is checked".into();
-            checked_stays = true;
-        } else {
-            found.verdict = verdict;
-            found.reason = reason;
         }
-        entries.push(found);
+    }).collect()
+}
+
+/// The backup the only-check rule protects: the newest one with a successful
+/// check on record that would go, when none that stays has one.
+fn only_checked(candidates: &[(DateTime<Utc>, Entry)], verdicts: &[(&'static str, String)]) -> Option<usize> {
+    let checked = |index: usize| candidates[index].1.last_checked_at.is_some();
+    if (0..candidates.len()).any(|i| verdicts[i].0 != "remove" && checked(i)) {
+        return None;
     }
-    let removable = || entries.iter().filter(|e| e.verdict == "remove");
-    let removable_estimate_bytes = removable().filter_map(|e| e.estimate_bytes).fold(0u64, u64::saturating_add);
-    let removable_unknown_sizes = removable().filter(|e| e.estimate_bytes.is_none()).count();
-    let budget = rule.budget_bytes.map(|bytes| budget_outcome(&entries, workspace, bytes, newest_bytes));
-    Ok(Preview { folder: folder.into(), keep, entries, unreadable_names, removable_estimate_bytes, removable_unknown_sizes, size_basis: SIZE_BASIS, budget })
+    (0..candidates.len()).find(|&i| verdicts[i].0 == "remove" && checked(i))
 }
 
 /// Whether what stays fits in `bytes`: this Workspace's backups that are not
@@ -343,10 +376,14 @@ fn budget_outcome(entries: &[Entry], workspace: &str, bytes: u64, newest_bytes: 
         if let Some(newest) = newest_bytes {
             why.push(format!("the newest backup, always kept, declares {}", size_text(newest)));
         }
-        let protected: Vec<u64> = entries.iter().filter(|e| e.verdict == "protected" && e.workspace_id.as_deref() == Some(workspace)).filter_map(|e| e.estimate_bytes).collect();
-        if !protected.is_empty() {
-            let (count, total) = (protected.len(), protected.iter().fold(0u64, |a, b| a.saturating_add(*b)));
-            why.push(format!("{count} protected {} {}", if count == 1 { "backup declares" } else { "backups declare" }, size_text(total)));
+        for verdict in ["protected", "unknown"] {
+            let sizes: Vec<u64> = entries.iter().filter(|e| e.verdict == verdict && e.workspace_id.as_deref() == Some(workspace)).filter_map(|e| e.estimate_bytes).collect();
+            if sizes.is_empty() {
+                continue;
+            }
+            let (count, total) = (sizes.len(), size_text(sizes.iter().fold(0u64, |a, b| a.saturating_add(*b))));
+            let (one, more) = if verdict == "protected" { ("protected backup declares", "protected backups declare") } else { ("backup that can't be judged declares", "backups that can't be judged declare") };
+            why.push(format!("{count} {} {total}", if count == 1 { one } else { more }));
         }
         ("over", format!("what stays declares {kept}, more than {budget} ({}). Nothing protected or always kept is offered instead", why.join("; ")))
     };

@@ -569,7 +569,7 @@ test("a space budget is optional: sent only when given, what stays is said again
           reason: "what stays declares 800 MiB, more than 512 MiB (the newest backup, always kept, declares 400 MiB; 1 protected backup declares 400 MiB). Nothing protected or always kept is offered instead" },
         entries: [
           backup("24", "keep", "The newest backup: kept whatever the space budget"),
-          backup("23", "remove", "Beyond the space budget: with the newer ones kept, they would declare more than 512 MiB"),
+          backup("23", "remove", "Beyond the space budget: with what stays, it would declare more than 512 MiB"),
           backup("22", "protected", "The only backup with a successful check on record; kept until one of the latest is checked"),
         ] } };
     }

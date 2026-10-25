@@ -879,3 +879,29 @@ fn a_removal_under_a_space_budget_is_judged_again_under_that_budget() {
     assert_eq!(done["keptCheckedName"], "b-3");
     assert!(!folder.join("b-2").exists() && folder.join("b-1").is_dir() && folder.join("b-3").is_dir());
 }
+
+#[test]
+fn a_space_budget_sets_aside_what_stays_before_sharing_it_out() {
+    use retention::{preview, Rule};
+    fn verdicts(p: &retention::Preview) -> Vec<(&str, &'static str)> {
+        p.entries.iter().map(|e| (e.name.as_str(), e.verdict)).collect()
+    }
+    let root = tempfile::tempdir().unwrap();
+    let (folder, me, _) = three_backups(root.path());
+    let newest = preview(&folder, 3, &me, &[]).unwrap().entries.iter().find(|e| e.name == "b-3").unwrap().estimate_bytes.unwrap();
+    declare(&folder, "b-2", 2 << 20);
+    declare(&folder, "b-1", 1 << 20);
+    // The newest and b-2 fit in it, but not with b-1, the only checked one, which stays:
+    // b-2 goes, and what stays fits (review 1900f874).
+    let rule = Rule { keep: 3, budget_bytes: Some(newest + (5 << 19)) };
+    let checked = operation("check", "succeeded", json!({"path": folder.join("b-1")}), Some("2026-10-24T00:00:00Z"));
+    let shared = preview(&folder, rule, &me, &[checked]).unwrap();
+    assert_eq!(verdicts(&shared), [("b-3", "keep"), ("b-2", "remove"), ("b-1", "protected")]);
+    let budget = shared.budget.as_ref().unwrap();
+    assert_eq!((budget.state, budget.kept_estimate_bytes), ("met", newest + (1 << 20)), "{}", budget.reason);
+    // A backup of this Workspace whose time can't be read stays too, and is set aside the same way.
+    rewrite_manifest(&folder.join("b-1"), |m| m["createdAt"] = json!("not a time"));
+    let undated = preview(&folder, rule, &me, &[]).unwrap();
+    assert_eq!(verdicts(&undated), [("b-1", "unknown"), ("b-3", "keep"), ("b-2", "remove")]);
+    assert_eq!(undated.budget.as_ref().unwrap().state, "met");
+}
