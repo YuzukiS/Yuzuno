@@ -7,10 +7,10 @@ export const settingsCategories = [
   { id: "projects", label: "Projects & collaboration", description: "Project configuration and shared Workspace preferences." },
   { id: "jobs", label: "Jobs & resources", description: "Budgets apply to managed Jobs on the selected machine." },
   { id: "data", label: "Data, privacy & recovery", description: "Storage information and recovery capabilities." },
-  { id: "updates", label: "Updates & about", description: "Versions and updates for the Workspace service and desktop client." },
+  { id: "updates", label: "Updates & about", description: "Versions and updates for the Workspace service and desktop client, with help, release notes and licenses." },
 ] as const;
 export type SettingsCategory = typeof settingsCategories[number]["id"];
-export type SettingsEditor = "appearance" | "updates" | "home" | "review" | "diagnostics" | "history" | "runtime" | "input" | "shortcuts" | "notifications" | "backup" | "remote" | "agent-defaults";
+export type SettingsEditor = "appearance" | "updates" | "home" | "review" | "diagnostics" | "history" | "runtime" | "input" | "shortcuts" | "notifications" | "backup" | "remote" | "agent-defaults" | "about";
 export type SettingsDestination =
   | { kind: "agent"; section: "model" | "context" | "auto-continue"; agentId: string }
   | { kind: "project"; projectId: string }
@@ -34,7 +34,7 @@ export type SettingEntry = {
   target: SettingTarget;
 };
 export const settingsCatalog: readonly SettingEntry[] = [
-  { id: "appearance", category: "appearance", title: "Theme, text & layout", keywords: "外观 主题 字体 字号 密度 颜色 明暗 分组 dock turn", scope: "This device · this site", source: "Preferences saved in this browser or WebView; built-in defaults when unset.", effect: "Changes preview immediately. Storage must succeed to keep them after reopening.", target: { kind: "editor", editor: "appearance" } },
+  { id: "appearance", category: "appearance", title: "Theme, text & layout", keywords: "外观 主题 字体 字号 密度 颜色 明暗 分组 dock turn 导出 导入 文件 export import file", scope: "This device · this site", source: "Preferences saved in this browser or WebView; built-in defaults when unset.", effect: "Changes preview immediately. Storage must succeed to keep them after reopening. They can be exported to a file and imported after a preview.", target: { kind: "editor", editor: "appearance" } },
   { id: "send-key", category: "appearance", title: "Sending messages", keywords: "发送 发送键 回车 换行 输入法 enter return send newline composer ctrl cmd", scope: "This device · this site", source: "The choice saved in this browser or WebView; Automatic when unset.", effect: "Applies to the conversation’s composer at once. Storage must succeed to keep it after reopening.", target: { kind: "editor", editor: "input" } },
   { id: "shortcuts", category: "appearance", title: "Keyboard shortcuts", keywords: "快捷键 键盘 帮助 shortcuts keyboard hotkeys keys help", scope: "This device", source: "The shortcuts this version has, listed as they work on this device.", effect: "A list to read. Choosing other keys is not available in this version.", target: { kind: "editor", editor: "shortcuts" } },
   { id: "language", category: "appearance", title: "Language & time", keywords: "语言 时间 时区 12 24 小时制 language time zone clock locale", scope: "This device", source: "The interface uses its built-in language; dates and times use this browser’s locale and time zone.", effect: "How a time is shown never changes the time Yuzuno stores.", target: { kind: "unavailable", reason: "Choosing the interface language, time zone or 12/24-hour clock is not available in this version." } },
@@ -57,6 +57,7 @@ export const settingsCatalog: readonly SettingEntry[] = [
   { id: "drafts", category: "data", title: "Draft storage", keywords: "草稿 draft 缓存 设备 同步 origin", scope: "This device · this site", source: "Drafts are saved by this browser or WebView.", effect: "Changing the site address does not migrate drafts. Appearance resets do not clear drafts.", target: { kind: "unavailable", reason: "Cross-device draft sync is not available. A damaged draft has its own recovery controls in the conversation." } },
   { id: "updates", category: "updates", title: "Versions & updates", keywords: "更新 版本 关于 Core 客户端 桌面 client version about release", scope: "Workspace service · desktop client", source: "Installed Core and client versions, and available signed releases.", effect: "Checking installs nothing. Service updates and desktop updates have separate actions.", target: { kind: "editor", editor: "updates" } },
   { id: "runtime", category: "updates", title: "Runtime & versions", keywords: "版本 运行环境 CLI 登录 账户 连接 机器 兼容 MCP 服务 runtime version sign-in machine mcp services", scope: "Workspace service · each execution machine · this client", source: "Core's version, each machine's stored last check, Codex's connection on the Core host as Core holds it now, the Core host's Jobs budget, each Agent's last MCP report and this client's own version.", effect: "Read-only. Checks run from Machines; nothing here signs in, reconnects or updates. Reading the Jobs budget may have Core sample the GPUs; an MCP Refresh asks one Claude Code session.", target: { kind: "editor", editor: "runtime" } },
+  { id: "about", category: "updates", title: "About & help", keywords: "关于 帮助 文档 说明 反馈 问题 报告 安全 漏洞 许可证 许可 声明 发行说明 版本说明 about help docs documentation readme feedback issue bug report security vulnerability license licenses notices release notes", scope: "Workspace service · this page", source: "The notes inside the release the Workspace service runs, the license texts served with this page, and the project's pages on GitHub.", effect: "Read-only. Links open GitHub outside Yuzuno; nothing is sent from here.", target: { kind: "editor", editor: "about" } },
 ];
 
 export function findSettings(query: string): readonly SettingEntry[] {

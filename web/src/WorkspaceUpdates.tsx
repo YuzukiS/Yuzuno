@@ -17,6 +17,7 @@ import {
 import type { SettingsEditor } from "./settings-catalog";
 import { SettingsCenter, type SettingsNavigation } from "./SettingsCenter";
 import { RuntimeSection } from "./RuntimeSection";
+import { AboutSection } from "./AboutSection";
 import { AppearanceSection } from "./AppearanceSettings";
 import { InputPreferencesSection } from "./InputPreferences";
 import { ShortcutHelpSection } from "./ShortcutHelp";
@@ -766,7 +767,7 @@ export function WorkspaceUpdates({
         navigation={navigation}
         onEditorChange={setActiveEditor}
         attention={stage === "running" || stage === "reload" || stage === "prepared" || stage === "local" || stage === "published"}
-        renderEditor={(tab, visible) => <>
+        renderEditor={(tab, visible, openEditor) => <>
           {tab === "updates" && (
             <section
               className="settings-section"
@@ -998,6 +999,7 @@ export function WorkspaceUpdates({
           {tab === "notifications" && <NotificationSettings />}
           {tab === "backup" && <WorkspaceBackup active={open && visible} />}
           {tab === "remote" && <RemoteAccessSettings active={open && visible} />}
+          {tab === "about" && <AboutSection current={status?.current ?? null} openEditor={openEditor} />}
         </>}
       />
     </Modal>
