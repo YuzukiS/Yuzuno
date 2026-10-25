@@ -80,7 +80,10 @@ impl Saved {
         }
     }
 
-    /// The entry that may start a Core, when one may.
+    /// The entry that may start a Core, when one may. Reading convenience
+    /// for the checks here; the app asks each entry directly, where it has
+    /// one in hand.
+    #[cfg(test)]
     pub fn startable(&self) -> Option<&Entry> {
         self.entries().iter().find(|entry| entry.startable())
     }
@@ -219,9 +222,12 @@ pub fn read(bytes: &[u8]) -> Saved {
         return Saved::Unusable("it is not a saved Workspace record".into());
     };
     if record.get("entries").is_none() {
-        return match record.get("coreUrl").and_then(Value::as_str) {
-            Some(address) => match parse_core_url(address) {
-                Ok(url) => {
+        if record.get("coreUrl").and_then(Value::as_str).is_none() {
+            return Saved::Unusable("it is not a saved Workspace record".into());
+        }
+        return match crate::connection::saved_core(bytes) {
+            Some(url) => {
+                {
                     // The one-address reader this app already had, so the
                     // old record is read here exactly as it was read before:
                     // its `start` is that `coreUrl`'s, and a record from
@@ -240,12 +246,11 @@ pub fn read(bytes: &[u8]) -> Saved {
                     let selected = Some(entry.id.clone());
                     Saved::Entries { entries: vec![entry], selected }
                 }
-                // Kept apart on purpose: "this is not a Workspace record" and
-                // "its address is not one this app opens" send a person to
-                // two different places.
-                Err(_) => Saved::Unusable("its address is not one this app opens".into()),
-            },
-            None => Saved::Unusable("it is not a saved Workspace record".into()),
+            }
+            // Kept apart from "it is not a saved Workspace record" on
+            // purpose: the two send a person to different places, so which
+            // one it is was decided above.
+            None => Saved::Unusable("its address is not one this app opens".into()),
         };
     }
     let Some(listed) = record.get("entries").and_then(Value::as_array) else {
