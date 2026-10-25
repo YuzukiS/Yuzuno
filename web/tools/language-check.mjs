@@ -164,7 +164,7 @@ try {
     const language = await editorState(box);
     assert.deepEqual(language, { lang: "zh-Hans", heading: "界面语言", status: "已保存到此设备", alert: null, checked: ["zh-Hans"] });
     const coverage = await box.locator(".input-preferences-fixed").textContent();
-    assert.match(coverage, /“界面语言”、“发送消息”、“时钟与时区”、“键盘快捷键”、“主题、文字与布局”、“把偏好移到另一台设备”/);
+    assert.match(coverage, /“界面语言”、“发送消息”、“时钟与时区”、“键盘快捷键”、“主题、文字与布局”、“把偏好移到另一台设备”、“数据与存储概览”、“复制诊断信息”/);
     assert.match(coverage, /仍为英文/);
     assert.equal(await stored(page, "yuzuno.language"), '{"language":"zh-Hans"}');
     assert.equal(await stored(page, "yuzuno.time"), TIME, "the clock format and time zone are left as they were");
