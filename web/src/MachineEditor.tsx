@@ -8,8 +8,8 @@ import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import "./remote.css";
 
 // The editor's own words, in the language its page passes (T-189): Machines
-// passes the interface language; New agent, not yet translated, keeps
-// English. What the user types and Core's errors are shown as they are.
+// and New agent pass the interface language. What the user types and Core's
+// errors are shown as they are.
 const text = strings({
   editTitle: (name: string) => `Edit ${name}`,
   addTitle: "A place for remote work",

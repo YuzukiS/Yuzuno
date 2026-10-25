@@ -8,6 +8,8 @@ import {
   Monitor,
 } from "lucide-react";
 import { api, errorText, post } from "./api";
+import { useLanguage, type Language } from "./i18n";
+import { newAgentText, savedAgoIn } from "./new-agent-text";
 import { activeProjects } from "./projects";
 import type { Agent, AgentDetail, Project } from "./types";
 import "./session-import.css";
@@ -58,22 +60,15 @@ const RECENT_MS = 10 * 60 * 1000;
 const sessionId =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export function savedAgo(at: number | null, now = Date.now()) {
-  if (!at) return "at an unknown time";
-  const seconds = Math.max(0, Math.round((now - at) / 1000));
-  return seconds < 45
-    ? "just now"
-    : seconds < 3600
-      ? `${Math.max(1, Math.round(seconds / 60))} min ago`
-      : seconds < 86400
-        ? `${Math.round(seconds / 3600)} h ago`
-        : `${Math.round(seconds / 86400)} d ago`;
+/** In English unless a caller passes its language (T-189). */
+export function savedAgo(at: number | null, now = Date.now(), language: Language = "en") {
+  return savedAgoIn(language, at, now);
 }
 
-const folderName = (cwd: string | null) =>
-  cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() || cwd : "No folder";
-const plural = (count: number, word: string) =>
-  `${count} ${word}${count === 1 ? "" : "s"}`;
+const folderName = (cwd: string | null, none: string) =>
+  cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() || cwd : none;
+/** Why a typed ID wasn't read: worded when shown, so it follows the language. */
+const BAD_ID = Symbol("not a session ID");
 
 export function ImportClaudeSession({
   disabled,
@@ -90,6 +85,9 @@ export function ImportClaudeSession({
   projects?: Project[];
   initialProjectId?: string;
 }) {
+  const language = useLanguage();
+  const t = newAgentText(language);
+  const ago = (at: number | null) => savedAgo(at, Date.now(), language);
   const activeProjectList = activeProjects(projects);
   const [programmatic, setProgrammatic] = useState(false);
   const [folderFilter, setFolderFilter] = useState("");
@@ -110,7 +108,7 @@ export function ImportClaudeSession({
   );
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<string | typeof BAD_ID>("");
   const listRequest = useRef<AbortController | null>(null);
   const previewRequest = useRef<AbortController | null>(null);
   const importing = useRef(false);
@@ -198,9 +196,7 @@ export function ImportClaudeSession({
     event.preventDefault();
     const id = lookup.trim();
     if (!sessionId.test(id)) {
-      setError(
-        "Paste a Claude Code session ID, such as the one claude --resume shows.",
-      );
+      setError(BAD_ID);
       return;
     }
     void readPreview(id);
@@ -251,38 +247,24 @@ export function ImportClaudeSession({
 
   const warnings: string[] = [];
   if (preview) {
-    if (!folder)
-      warnings.push(
-        "Claude didn’t record a folder for this session, so it can’t continue here.",
-      );
-    else if (!preview.folderExists)
-      warnings.push(
-        `This session’s folder no longer exists, so it can’t continue here: ${folder}`,
-      );
-    if (preview.compacted)
-      warnings.push(
-        "Claude compacted this session earlier. What came before its summary isn’t in the saved history, so it isn’t shown.",
-      );
-    if (preview.images > 0)
-      warnings.push(
-        `${plural(preview.images, "image")} in your messages: Yuzuno shows where they were, not the images.`,
-      );
+    if (!folder) warnings.push(t.noFolderWarning);
+    else if (!preview.folderExists) warnings.push(t.folderGone(folder));
+    if (preview.compacted) warnings.push(t.compacted);
+    if (preview.images > 0) warnings.push(t.imagesShown(t.images(preview.images)));
     const at = preview.session.lastModified;
-    if (at && Date.now() - at < RECENT_MS)
-      warnings.push(
-        `Saved ${savedAgo(at)}: it may still be open in Claude Code.`,
-      );
+    if (at && Date.now() - at < RECENT_MS) warnings.push(t.mayBeOpen(ago(at)));
   }
+  const errorShown = error === BAD_ID ? t.claudeBadId : error;
 
   return (
     <div className="session-import create-form remote-create claude-session-import">
       <section
         className="claude-sessions"
-        aria-label="Claude Code sessions on this machine"
+        aria-label={t.claudeSessions}
       >
         <div className="session-preview-action">
           <span>
-            <Monitor size={13} /> Core host · Claude Code
+            <Monitor size={13} /> {t.coreHostClaude}
           </span>
           <label className="claude-sessions-filter">
             <input
@@ -291,7 +273,7 @@ export function ImportClaudeSession({
               disabled={disabled || busy}
               onChange={(e) => setProgrammatic(e.target.checked)}
             />
-            Include sessions started by apps and scripts
+            {t.includeScripts}
           </label>
         </div>
         <form
@@ -302,8 +284,8 @@ export function ImportClaudeSession({
           }}
         >
           <input
-            aria-label="Only sessions in this folder"
-            placeholder="Every folder, or one such as /home/you/app"
+            aria-label={t.folderFilter}
+            placeholder={t.folderFilterPlaceholder}
             value={folderFilter}
             onChange={(e) => setFolderFilter(e.target.value)}
             autoComplete="off"
@@ -315,7 +297,7 @@ export function ImportClaudeSession({
             className="secondary-button"
             disabled={disabled || busy || folderFilter.trim() === dir}
           >
-            Filter
+            {t.filter}
           </button>
         </form>
         {sessions.length > 0 && (
@@ -330,14 +312,14 @@ export function ImportClaudeSession({
                   onClick={() => void readPreview(s.sessionId)}
                 >
                   <strong>
-                    {s.title || s.firstPrompt || "Untitled session"}
+                    {s.title || s.firstPrompt || t.untitled}
                   </strong>
                   <span>
-                    {folderName(s.cwd)} · {savedAgo(s.lastModified)}
+                    {folderName(s.cwd, t.noFolder)} · {ago(s.lastModified)}
                     {s.gitBranch ? ` · ${s.gitBranch}` : ""}
                   </span>
                   {s.existingAgentId && (
-                    <em className="claude-session-badge">In workspace</em>
+                    <em className="claude-session-badge">{t.inWorkspace}</em>
                   )}
                 </button>
               </li>
@@ -346,7 +328,7 @@ export function ImportClaudeSession({
         )}
         {listing ? (
           <p className="remote-field-note" role="status">
-            <LoaderCircle size={13} className="spin" /> Reading saved sessions…
+            <LoaderCircle size={13} className="spin" /> {t.readingSessions}
           </p>
         ) : listError ? (
           <p role="alert" className="remote-field-error">
@@ -355,11 +337,7 @@ export function ImportClaudeSession({
         ) : (
           sessions.length === 0 &&
           !disabled && (
-            <p className="remote-field-note">
-              No saved Claude Code sessions
-              {programmatic ? "" : " that you started"}
-              {dir ? " in this folder" : " on this machine"}.
-            </p>
+            <p className="remote-field-note">{t.noSessions(programmatic, !!dir)}</p>
           )
         )}
         {next !== null && !listing && (
@@ -369,14 +347,14 @@ export function ImportClaudeSession({
             disabled={disabled || busy}
             onClick={() => void loadPage(next, programmatic, dir)}
           >
-            Show more
+            {t.showMore}
           </button>
         )}
       </section>
 
       <form onSubmit={readLookup}>
         <label htmlFor="claude-session-id">
-          Or a session ID
+          {t.orSessionId}
           <input
             id="claude-session-id"
             value={lookup}
@@ -389,7 +367,7 @@ export function ImportClaudeSession({
           />
         </label>
         <div className="session-preview-action">
-          <span>Reads sessions saved on your Core host only.</span>
+          <span>{t.coreHostOnly}</span>
           <button
             className="secondary-button"
             disabled={disabled || busy || loading || !lookup.trim()}
@@ -399,35 +377,32 @@ export function ImportClaudeSession({
             ) : (
               <History size={14} />
             )}
-            {loading ? "Reading session…" : "Preview session"}
+            {loading ? t.readingSession : t.previewSession}
           </button>
         </div>
       </form>
 
       {preview && (
         <form onSubmit={(e) => void importSession(e)}>
-          <section className="session-preview" aria-label="Session preview">
+          <section className="session-preview" aria-label={t.sessionPreview}>
             <div className="session-preview-heading">
               <span>
-                <CheckCircle2 size={14} />{" "}
-                {existing
-                  ? "Already in your workspace"
-                  : "Saved conversation found"}
+                <CheckCircle2 size={14} /> {existing ? t.alreadyIn : t.found}
               </span>
-              <span>{plural(preview.prompts, "prompt")}</span>
+              <span>{t.prompts(preview.prompts)}</span>
             </div>
             {preview.recent.length > 0 ? (
               <ol
                 className="claude-session-recent"
-                aria-label="Newest messages"
+                aria-label={t.newestMessages}
               >
                 {preview.recent.map((m, i) => (
                   <li key={i} data-role={m.role}>
-                    <span>{m.role === "user" ? "You" : "Claude"}</span>
+                    <span>{m.role === "user" ? t.you : "Claude"}</span>
                     <p>
                       {m.text}
                       {m.images
-                        ? `${m.text ? " " : ""}[${plural(m.images, "image")}]`
+                        ? `${m.text ? " " : ""}[${t.images(m.images)}]`
                         : ""}
                     </p>
                   </li>
@@ -435,22 +410,20 @@ export function ImportClaudeSession({
               </ol>
             ) : (
               <p className="session-preview-excerpt">
-                Claude saved no conversation in this session.
+                {t.emptySession}
               </p>
             )}
             <div className="session-preview-folder">
               <Folder size={14} />
-              <span>{folder || "No folder recorded"}</span>
+              <span>{folder || t.noFolderRecorded}</span>
             </div>
             <p className="session-preview-model">
-              Saved {savedAgo(preview.session.lastModified)}
+              {t.saved(ago(preview.session.lastModified))}
               {preview.session.gitBranch
                 ? ` · ${preview.session.gitBranch}`
                 : ""}
-              {preview.model ? ` · last used ${preview.model}` : ""}
-              {preview.subagents
-                ? ` · ${plural(preview.subagents, "sub-agent")}`
-                : ""}
+              {preview.model ? t.lastUsed(preview.model) : ""}
+              {preview.subagents ? ` · ${t.subagents(preview.subagents)}` : ""}
             </p>
           </section>
           {warnings.length > 0 && (
@@ -466,7 +439,7 @@ export function ImportClaudeSession({
               disabled={disabled || busy}
             >
               <label>
-                Agent name
+                {t.agentName}
                 <input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
@@ -475,13 +448,13 @@ export function ImportClaudeSession({
                 />
               </label>
               <label>
-                Project
+                {t.project}
                 <select
-                  aria-label="Project"
+                  aria-label={t.project}
                   value={projectId}
                   onChange={(e) => setProjectId(e.target.value)}
                 >
-                  <option value="">No project</option>
+                  <option value="">{t.noProject}</option>
                   {activeProjectList.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
@@ -490,26 +463,19 @@ export function ImportClaudeSession({
                 </select>
               </label>
               <label>
-                Folder
+                {t.folderLabel}
                 <input value={folder ?? ""} readOnly aria-readonly="true" />
               </label>
-              <p className="remote-field-note">
-                Claude saved this session under this folder, so it continues
-                there.
-              </p>
+              <p className="remote-field-note">{t.folderNote}</p>
             </fieldset>
           )}
           <p className="session-handoff-note">
-            Claude Code doesn’t lock sessions, so Yuzuno can’t tell whether this
-            one is still open in a terminal or editor. Close it there before you
-            send from here: two programs writing one session can mix up its
-            history.
-            {!existing &&
-              " Adding it runs nothing. Your first message here resumes this same session."}
+            {t.claudeHandoff}
+            {!existing && t.claudeAddsNothing}
           </p>
-          {error && (
+          {errorShown && (
             <p role="alert" className="remote-field-error">
-              {error}
+              {errorShown}
             </p>
           )}
           <div className="modal-actions">
@@ -519,7 +485,7 @@ export function ImportClaudeSession({
               onClick={close}
               disabled={busy}
             >
-              Cancel
+              {t.cancel}
             </button>
             <button
               className="primary-button"
@@ -530,21 +496,17 @@ export function ImportClaudeSession({
               ) : (
                 <ArrowRight size={15} />
               )}
-              {busy ? "Opening…" : existing ? "Open agent" : "Add to workspace"}
+              {busy ? t.opening : existing ? t.openAgent : t.addToWorkspace}
             </button>
           </div>
         </form>
       )}
-      {!preview && error && (
+      {!preview && errorShown && (
         <p role="alert" className="remote-field-error">
-          {error}
+          {errorShown}
         </p>
       )}
-      {disabled && (
-        <p className="remote-field-note">
-          Session import is disabled in the read-only design preview.
-        </p>
-      )}
+      {disabled && <p className="remote-field-note">{t.importDisabled}</p>}
     </div>
   );
 }

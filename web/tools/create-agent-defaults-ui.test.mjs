@@ -357,3 +357,49 @@ test("Claude Code on the Core host: the default model shows with its source, its
   assert.equal("model" in autoBody, false);
   for (const page of [inherit, own, auto]) assert.deepEqual(page.errors, []);
 });
+
+test("New agent follows a language change from another window, what was typed and chosen kept and nothing asked again (T-189)", async () => {
+  const page = mount(view({ harness: "codex" }));
+  const language = async (value) => {
+    page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: value }));
+    page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+    await tick();
+    await tick();
+  };
+  await page.open();
+  await until(() => picked(page, "Harness") === "codex", "the default harness");
+  await type(page, "Name", "Mikan");
+  await type(page, "Working folder", "/workspace/app");
+  await pick(page, "Harness", "claude");
+  await until(() => group(page, "Model")?.querySelector('input[value="haiku"]'), "Claude Code's models");
+  await pick(page, "Model", "haiku");
+  await pick(page, "Permissions", "default");
+  const chosen = (labels) => ({
+    name: page.document.querySelector('input[maxlength="60"]').value,
+    folder: page.document.querySelector(".input-with-icon input").value,
+    harness: picked(page, labels.harness),
+    model: picked(page, labels.model),
+    permission: picked(page, labels.permissions),
+    models: [...group(page, labels.model).querySelectorAll("label")].map((l) => l.textContent),
+  });
+  const english = { text: page.document.body.textContent, chosen: chosen({ harness: "Harness", model: "Model", permissions: "Permissions" }) };
+  assert.match(english.text, /A new little teammate.*Where to work.*Working folder.*Create agent/s);
+  const before = page.calls.length;
+  await language("zh-Hans");
+  const text = page.document.body.textContent;
+  assert.match(text, /一位新的小伙伴.*工作位置.*工作文件夹.*创建 Agent/s);
+  assert.match(text, /操作前询问/, "agent-defaults' own words in the chosen language");
+  assert.match(text, /使用你的 Core 主机上的 Claude Code 登录。/);
+  const zh = chosen({ harness: "Harness", model: "模型", permissions: "权限" });
+  assert.deepEqual(
+    { ...zh, models: zh.models.slice(1) },
+    { ...english.chosen, models: english.chosen.models.slice(1) },
+    "what was typed and chosen, and the model names, as they were",
+  );
+  assert.equal(page.document.querySelector(".modal").getAttribute("lang"), "zh-Hans");
+  await language("en");
+  assert.equal(page.document.body.textContent, english.text);
+  assert.deepEqual(chosen({ harness: "Harness", model: "Model", permissions: "Permissions" }), english.chosen);
+  assert.equal(page.calls.length, before, "changing the language reads and sends nothing");
+  assert.deepEqual(page.errors, []);
+});
