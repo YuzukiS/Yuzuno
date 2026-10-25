@@ -4,8 +4,9 @@ import { errorText, NO_ANSWER_REPLY, respondToRequest } from "./api";
 import { AnswerAgain, DraftNotSaved, useUnconfirmedAnswer } from "./unconfirmed-answer";
 import { choiceAnswers, choiceEmpty, useRequestDraft } from "./request-draft";
 import type { NativeItem, PendingRequest } from "./types";
-import { useStrings } from "./i18n";
+import { langTag, useLanguage, useStrings } from "./i18n";
 import { cardWords } from "./subagent-text";
+import { requestWords, shownError } from "./request-text";
 import "./opencode.css";
 
 /** One of OpenCode's questions (its QuestionInfo); `custom` is true unless OpenCode says otherwise. */
@@ -46,6 +47,8 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource, d
   request: PendingRequest; refresh: () => void; disabled: boolean; highlightSource?: boolean; draftScope?: string | null;
 }) {
   const question = request.method === "opencode/question";
+  const language = useLanguage();
+  const t = requestWords(language);
   const questions: Question[] = question && Array.isArray(request.params.questions) ? request.params.questions : [];
   // An unsent answer to a question survives a refresh (T-170).
   const draft = useRequestDraft(questions.length ? draftScope : null, request, saved => choiceAnswers(saved, questions.map((_, index) => String(index))));
@@ -80,44 +83,44 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource, d
   }
   const patterns = Array.isArray(request.params.patterns) ? request.params.patterns.map(String) : [];
   const metadata = request.params.metadata && Object.keys(request.params.metadata).length ? request.params.metadata : null;
-  return <section className={`pending-card opencode-request${highlightSource ? " source-highlight" : ""}`} id={`request-${request.id}`} tabIndex={-1}>
+  return <section className={`pending-card opencode-request${highlightSource ? " source-highlight" : ""}`} id={`request-${request.id}`} tabIndex={-1} lang={langTag(language)}>
     <div className="pending-heading">
       {question ? <MessageSquare size={17} /> : <ShieldCheck size={17} />}
-      <strong>{question ? "OpenCode has a question" : "OpenCode needs your permission"}</strong>
-      <span className="pending-tag">Needs you</span>
+      <strong>{question ? t.openQuestion : t.openPermission}</strong>
+      <span className="pending-tag">{t.needsYou}</span>
     </div>
-    {request.stale && <p className="inline-error">This request belongs to a closed connection. Reconnect to continue.</p>}
-    {request.params._responseSent && <p className="field-hint">Response sent. Waiting for OpenCode.</p>}
+    {request.stale && <p className="inline-error">{t.staleOpen}</p>}
+    {request.params._responseSent && <p className="field-hint">{t.sentOpen}</p>}
     {question ? <form onSubmit={e => { e.preventDefault(); void respond({ answers: questions.map(answer) }); }}>
       <fieldset disabled={locked} className="opencode-question-fields">
         {questions.map((q, index) => <fieldset key={index}>
-          <legend>{q.question}</legend>
-          {q.multiple && <p className="field-hint">Choose any that apply.</p>}
+          <legend lang="">{q.question}</legend>
+          {q.multiple && <p className="field-hint">{t.chooseAny}</p>}
           {q.options?.map(option => <label className="answer-option" key={option.label}>
             <input type={q.multiple ? "checkbox" : "radio"} name={`${request.id}-${index}`} checked={(answers[index] || []).includes(option.label)}
               onChange={e => { setAnswers(old => ({ ...old, [index]: q.multiple ? e.target.checked ? [...(old[index] || []), option.label] : (old[index] || []).filter(x => x !== option.label) : [option.label] })); if (!q.multiple) setFree(old => ({ ...old, [index]: "" })); }} />
-            <span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
+            <span lang=""><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
           </label>)}
-          {q.custom !== false && <input aria-label={`Your answer: ${q.question}`} placeholder="Or write your own answer…" value={free[index] || ""}
+          {q.custom !== false && <input aria-label={t.yourAnswer(q.question)} placeholder={t.ownAnswer} value={free[index] || ""}
             onChange={e => { setFree(old => ({ ...old, [index]: e.target.value })); if (!q.multiple) setAnswers(old => ({ ...old, [index]: [] })); }} />}
         </fieldset>)}
       </fieldset>
       {draft.notSaved && <DraftNotSaved />}
       <div className="opencode-actions">
-        <button className="primary-button" disabled={locked || !questions.length || questions.some((q, index) => !answer(q, index).length)}>{sending && <LoaderCircle size={14} className="spin" />}Send answer</button>
-        <button type="button" className="secondary-button" disabled={locked} onClick={() => void respond({ decision: "reject" })}>Decline</button>
+        <button className="primary-button" disabled={locked || !questions.length || questions.some((q, index) => !answer(q, index).length)}>{sending && <LoaderCircle size={14} className="spin" />}{t.sendAnswer}</button>
+        <button type="button" className="secondary-button" disabled={locked} onClick={() => void respond({ decision: "reject" })}>{t.decline}</button>
       </div>
     </form> : <>
-      <p>OpenCode asks to use <strong>{String(request.params.permission || "a tool")}</strong>{patterns.length ? " for:" : "."}</p>
+      <p>{t.asksUse}<strong>{String(request.params.permission || t.aTool)}</strong>{patterns.length ? t.forColon : t.period}</p>
       {patterns.length > 0 && <pre className="opencode-request-input">{patterns.join("\n")}</pre>}
       {metadata && <pre className="opencode-request-input">{JSON.stringify(metadata, null, 2)}</pre>}
       <div className="opencode-actions">
-        <button className="primary-button" disabled={locked} onClick={() => void respond({ decision: "once" })}>{sending && <LoaderCircle size={14} className="spin" />}Allow once</button>
-        <button className="secondary-button" disabled={locked} onClick={() => void respond({ decision: "reject" })}>Reject</button>
+        <button className="primary-button" disabled={locked} onClick={() => void respond({ decision: "once" })}>{sending && <LoaderCircle size={14} className="spin" />}{t.allowOnce}</button>
+        <button className="secondary-button" disabled={locked} onClick={() => void respond({ decision: "reject" })}>{t.reject}</button>
       </div>
-      <p className="field-hint">Applies only to this request; your OpenCode permission rules stay in place. OpenCode rejects this session’s other waiting requests along with this one.</p>
+      <p className="field-hint">{t.openHint}</p>
     </>}
-    {error && !(unconfirmedAnswer.unconfirmed && request.params._responseSent) && <p role="alert" className="inline-error">{error}</p>}
+    {error && !(unconfirmedAnswer.unconfirmed && request.params._responseSent) && <p role="alert" className="inline-error">{shownError(error, t)}</p>}
     {unconfirmedAnswer.unconfirmed && !request.params._responseSent && <AnswerAgain onClick={() => { setError(""); unconfirmedAnswer.answerAgain(); }} />}
   </section>;
 }
