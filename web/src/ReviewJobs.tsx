@@ -56,8 +56,8 @@ export const openTaskReview = (detail: { taskId: string; reviewId: string }) =>
 
 // The Reviews source in the interface language (T-189). Repositories, task
 // titles, model and harness names, SHAs, phases and Core's errors are shown
-// as they came; so are the review reasons, which the task's review panel
-// shares (review-outcome.ts).
+// as they came. The review reasons come from review-outcome.ts, as in the
+// task's review panel.
 const reviewText = strings({
   preparing: "Preparing",
   reviewing: "Reviewing",
@@ -520,6 +520,7 @@ function ReviewSummary({
   onOpenReport: (review: ReviewRow) => void;
   t: ReviewText;
 }) {
+  const language = useLanguage();
   const confirmed =
     harness(r.actualHarness) && r.actualModel
       ? `${harness(r.actualHarness)} · ${r.actualModel}`
@@ -552,7 +553,7 @@ function ReviewSummary({
       {r.error && <p className="inline-error">{r.error}</p>}
       {reviewReasons(r).length > 0 && (
         <ul className="job-footnote" aria-label={t.reasons}>
-          {reviewReasons(r).map((reason) => <li key={reason}>{reason}</li>)}
+          {reviewReasons(r, language).map((reason) => <li key={reason}>{reason}</li>)}
         </ul>
       )}
       <JobCard title={t.summary}>

@@ -66,10 +66,10 @@ const time = (value: string | null | undefined, never: string) =>
     : never;
 
 // A project's repositories in the language its page passes (T-189): the
-// Projects page passes the interface language, Home's repository details
-// keep English. A task's links and the summary on its card follow the
-// interface language. Repository names, titles, branches, commits, check
-// names and what GitHub or Core said are shown as they are.
+// Projects page and Home's repository details pass the interface language.
+// A task's links and the summary on its card follow the interface language.
+// Repository names, titles, branches, commits, check names and what GitHub
+// or Core said are shown as they are.
 const githubText = strings({
   states: {
     open: "Open",
