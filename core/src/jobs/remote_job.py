@@ -202,17 +202,30 @@ def darwin_proc(pid):
 
 
 def all_pids():
-    """Every PID on the machine: /proc on Linux, proc_listpids on macOS."""
+    """Every PID on the machine: /proc on Linux, proc_listpids on macOS.
+
+    Raises Unclear when the machine cannot be asked. A machine never has no
+    processes at all, so proc_listpids answering 0 or less means the question
+    failed, not that nothing is running. Returning [] for that would report a
+    live process group as gone: its reservation would be let go and its
+    outcome written while its processes still ran."""
+    # A test hook, inert unless the variable is set, in the shape of the ones
+    # this helper already reads: while that file exists this machine cannot be
+    # asked. It is the only way to reach, on any host, the failure that in
+    # truth only proc_listpids produces.
+    refuse = os.environ.get("YUZUNO_JOBS_PIDS_UNREADABLE_FILE")
+    if refuse and os.path.exists(refuse):
+        raise Unclear("this machine's processes could not be listed")
     if not DARWIN:
         return [int(name) for name in os.listdir("/proc") if name.isdigit()]
     size = LIBPROC.proc_listpids(DARWIN_PROC_ALL_PIDS, 0, None, 0)
     if size <= 0:
-        return []
+        raise Unclear("this machine's processes could not be listed")
     # Room for processes that start between the two calls.
     buf = (ctypes.c_int32 * (size // ctypes.sizeof(ctypes.c_int32) + 64))()
     got = LIBPROC.proc_listpids(DARWIN_PROC_ALL_PIDS, 0, ctypes.byref(buf), ctypes.sizeof(buf))
     if got <= 0:
-        return []
+        raise Unclear("this machine's processes could not be listed")
     return [int(each) for each in buf[:got // ctypes.sizeof(ctypes.c_int32)] if each > 0]
 
 
@@ -293,25 +306,63 @@ def send(pid, signum, group):
             os.close(handle)
 
 
+def live(group):
+    """The group's live processes, or None when this machine could not be
+    asked. None is not an empty group: a caller that cannot tell must not
+    report the group as stopped."""
+    try:
+        return members(group)
+    except Unclear:
+        return None
+
+
+# How long enumeration may keep failing before stop() gives its answer as
+# "not empty" rather than wait on a machine that cannot be asked at all.
+BLIND_LIMIT = 5
+
+
 def stop(group, limit=None, since=None):
     """TERM the group's checked members, KILL whatever is left from 5 s after
     the first TERM (`since`, this boot's monotonic time an earlier call sent
     it, or now), and go on until none is left (or for `limit` seconds of this
-    call). True once empty."""
+    call). True only once the group is known to be empty: while the machine
+    cannot be asked, nothing is signalled and nothing is called stopped, and
+    after BLIND_LIMIT of that this answers False rather than waiting on it.
+
+    The TERM goes to the first membership this call can actually see, which is
+    not always at its start: while the machine cannot be asked there is
+    nothing to signal, and a group that became visible later would otherwise
+    be KILLed without ever being asked to end. Without `since` the 5 s before
+    a KILL runs from that TERM rather than from a time nothing was signalled.
+    `since` is the TERM an earlier call already sent, checked against this
+    attempt, boot and process; it is kept, so a grace already given is never
+    restarted by a later call."""
     begin = time.monotonic()
-    first = begin if since is None else since
-    for pid in members(group):
-        send(pid, signal.SIGTERM, group)
+    first = since
+    termed = False
+    blind = None
     while True:
-        left = members(group)
-        if not left:
+        left = live(group)
+        if left == []:
             return True
         now = time.monotonic()
         if limit is not None and now - begin >= limit:
             return False
-        if now - first >= 5:
-            for pid in left:
-                send(pid, signal.SIGKILL, group)
+        if left is None:
+            blind = now if blind is None else blind
+            if now - blind >= BLIND_LIMIT:
+                return False
+        else:
+            blind = None
+            if not termed:
+                for pid in left:
+                    send(pid, signal.SIGTERM, group)
+                termed = True
+                if first is None:
+                    first = now
+            elif now - first >= 5:
+                for pid in left:
+                    send(pid, signal.SIGKILL, group)
         time.sleep(0.1)
 
 
@@ -866,6 +917,9 @@ try:
 except OSError:
     pass
 why = None
+# Whether the stop this supervisor asked for was confirmed; nothing to stop
+# yet counts as settled.
+stopped = True
 seen = {}
 sampled = 0.0
 thawed = None
@@ -886,14 +940,21 @@ while True:
             # A paused job is thawed first, so its processes can act on TERM.
             thawed = thaw_for_stop(root, intent) if held else None
             # Until nothing of the group is left; the leader is then a zombie.
-            stop(group)
+            stopped = stop(group)
+    elif not stopped:
+        # Last time this machine could not be asked, so nothing was
+        # signalled. A group that was never reached is not a stopped one:
+        # keep trying while the command is still being waited on.
+        stopped = stop(group)
     time.sleep(0.2)
 # The command has exited; nothing of its group may outlive it, and the
 # outcome is written only once nothing is left.
-leftovers = len(members(group))
-if held and leftovers:
+# None when this machine could not be asked: not reported as none left.
+remaining = live(group)
+leftovers = None if remaining is None else len(remaining)
+if held and leftovers != 0:
     thawed = thaw_for_stop(root, intent) or thawed
-stop(group)
+settled = stop(group)
 reader.join(5)
 if held:
     # Its keeper still holds the scope: the final accounting, then let it go.
@@ -909,7 +970,16 @@ if kept:
         pass
 code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
 signum = -code if code < 0 else None
-note = "; %d process(es) left in its process group were stopped" % leftovers if leftovers and why is None else ""
+if why is not None:
+    note = ""
+elif leftovers is None:
+    # Said rather than counted as none: the outcome never claims a group was
+    # empty on a machine that could not be asked.
+    note = "; whether any process was left in its process group could not be checked on this machine"
+elif leftovers:
+    note = "; %d process(es) left in its process group were stopped" % leftovers
+else:
+    note = ""
 extra = None
 if plan:
     used = dict(plan, held=held)
@@ -924,7 +994,18 @@ if plan:
     extra = {"limits": used}
 if thawed:
     extra = dict(extra or {}, thawedToStop=thawed)
-if why == "cancel" or (root / "cancel.json").exists():
+if not settled:
+    # Stopping was never confirmed: this machine could not be asked whether
+    # anything of the group is left. Nothing terminal is written here, and
+    # saying so in an outcome would not help -- an outcome releases the
+    # attempt's reservation while its processes may still be running. Instead
+    # this supervisor leaves no result.json and ends, which is the state Core
+    # already reads as lost: it keeps the slot and checks this same attempt
+    # again, and once the machine can be asked the existing recovery settles
+    # it. Before this, an unbounded stop() could only return once the group
+    # was empty, so the outcome below was safe to write unconditionally.
+    pass
+elif why == "cancel" or (root / "cancel.json").exists():
     outcome(root, intent, "cancelled", "Cancelled; its process group was stopped", code, signum, extra)
 elif why == "timeout":
     outcome(root, intent, "failed", "timeout after %d s; its process group was stopped" % spec["timeoutSeconds"],
