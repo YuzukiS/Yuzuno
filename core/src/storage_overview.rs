@@ -30,6 +30,7 @@ const KNOWN: &[(&str, &str)] = &[
     ("opencode", "opencode"),
     ("desktop-updates", "desktopDownloads"),
     (workspace_backup::online::JOURNAL, "backupOperations"),
+    (workspace_backup::schedule::FILE, "backupSchedule"),
 ];
 /// The one-off database copy record_rows makes before converting old Agents
 /// (`record_rows::backup_path`): `workspace.before-record-rows-<UTC>[-n].sqlite`.
