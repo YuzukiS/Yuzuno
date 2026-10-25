@@ -826,3 +826,114 @@ test("a page not opened on a loopback address says only that its connection reac
     page.close();
   }
 });
+
+// T-189: the Projects window in Chinese. Project, Agent and machine names,
+// folders, repository and service names and what Core says stay as written.
+const chinese = { "yuzuno.selected": "a", "yuzuno.language": { language: "zh-Hans" } };
+
+test("the Projects window reads in Chinese; names, folders and Core's words stay as written (T-189)", async () => {
+  const page = await mount({ storage: chinese });
+  try {
+    await fromScopeMenu(page, "管理项目");
+    const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
+    assert.match(dialog.textContent, /把长期工作分组/);
+    assert.ok(button(page, "无项目", dialog) && button(page, "新建项目", dialog));
+    assert.match(dialog.querySelector(".project-archived-list").textContent, /已归档.*Old study/, "the archived list, its project named as given");
+    button(page, "App", dialog).click();
+    await waitFor(() => button(page, "App", dialog)?.getAttribute("aria-current") === "true", "App is shown");
+    await waitFor(() => /还没有服务。/.test(dialog.textContent), "the services section has loaded");
+    const text = dialog.textContent;
+    assert.match(text, /项目名称/);
+    assert.ok(button(page, "重命名", dialog));
+    assert.match(text, /仓库/);
+    assert.match(text, /链接此项目使用的仓库。/);
+    assert.match(text, /服务/);
+    assert.match(text, /默认文件夹/);
+    assert.match(text, /不会移动现有 Agent/);
+    assert.ok(dialog.querySelector('[aria-label="Core host 上的默认文件夹"]'), "the machine named as Core names it");
+    assert.ok(dialog.querySelector('[aria-label="将 Mori 移出 App"]'));
+    assert.match(text, /\/home\/u\/app-collaboration/);
+    const add = dialog.querySelector(".project-add-agent select");
+    assert.equal(add.options[0].textContent, "添加 Agent…");
+    assert.ok([...add.options].some((option) => option.textContent === "Sora · 来自 Research"));
+    assert.ok(button(page, "归档项目", dialog));
+    assert.match(button(page, "删除", dialog).title, /仍关联 2 个 Agent 和 1 个任务；请改为归档/);
+    assert.doesNotMatch(text, /Default folders|Rename|No services yet|Archive project|Repositories/);
+
+    button(page, "无项目", dialog).click();
+    await waitFor(() => /无项目的 Agent/.test(dialog.textContent), "Without a project is shown");
+    assert.match(dialog.textContent, /在你选择之前不会分配任何项目。/);
+    assert.match(dialog.textContent, /\/home\/u\/scratch/);
+    assert.match(dialog.textContent, /Core 主机 · Loose/);
+    assert.ok(button(page, "创建项目", dialog));
+    assert.equal(dialog.querySelector(".project-suggestion select").options[0].textContent, "加入现有项目…");
+
+    button(page, "新建项目", dialog).click();
+    await waitFor(() => /新项目/.test(dialog.textContent), "the new project form");
+    assert.match(dialog.textContent, /Core host 上的默认文件夹/);
+    assert.match(dialog.textContent, /可选/);
+    assert.ok(button(page, "创建项目", dialog));
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a partly failed suggestion and a service read in Chinese, with Core's reasons as written (T-189)", async () => {
+  const page = await mount({ storage: chinese, failMove: ["e"] });
+  try {
+    await fromScopeMenu(page, "管理项目");
+    const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
+    button(page, "无项目", dialog).click();
+    await waitFor(() => /无项目的 Agent/.test(dialog.textContent), "Without a project is shown");
+    button(page, "创建项目", dialog).click();
+    await waitFor(() => /并非所有 Agent 都已加入/.test(dialog.textContent), "the partial result is explained");
+    assert.match(dialog.textContent, /已创建 scratch，但并非所有 Agent 都已加入（Loose: Agent is gone）。请在下方把它们加入 scratch。/);
+
+    button(page, "App", dialog).click();
+    const panel = await waitFor(() => dialog.querySelector('[aria-label="服务"]'), "the services panel");
+    await waitFor(() => /还没有服务。/.test(panel.textContent), "no services yet");
+    button(page, "添加", panel).click();
+    const form = await waitFor(() => panel.querySelector(".services-form"), "the form opens");
+    for (const label of ["名称", "机器", "该机器上的端口", "路径"])
+      assert.ok([...form.querySelectorAll("label")].some((l) => l.textContent.trim().startsWith(label)), label);
+    const [name, port] = form.querySelectorAll("input");
+    type(page, name, "Notebook");
+    choose(page, form.querySelector("select"), "gpu");
+    type(page, port, "8888");
+    type(page, form.querySelectorAll("input")[2], "/lab");
+    button(page, "添加服务", form).click();
+    await waitFor(() => page.services.length === 1 && /Notebook/.test(panel.textContent), "the service is registered");
+    assert.match(panel.textContent, /GPU box · 端口 8888 · \/lab · 由你添加/);
+    assert.match(panel.textContent, /未打开/);
+    page.answersHere.set(4380, () => "hello");
+    button(page, "打开", panel).click();
+    const note = await waitFor(() => panel.querySelector(".services-unreached"), "this computer does not reach it");
+    assert.match(note.textContent, /^这台电脑访问不到 Core 的端口 4380/);
+    assert.match(panel.textContent, /有响应 \(HTTP 200\) · Core 端口 4380/);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("an Agent's project is moved in Chinese from its actions (T-189)", async () => {
+  const page = await mount({ storage: { ...chinese, "yuzuno.projectScope.ws-1": "project:p-app" } });
+  try {
+    await waitFor(() => page.document.querySelector(".conversation-metadata .project-chip"), "Mori's conversation shows its project");
+    page.document.querySelector("button.agent-actions-button.conversation-action").click();
+    (await waitFor(() => page.document.querySelector('[role="menuitem"][data-action="manage"]'), "the actions menu offers its management")).click();
+    const dialog = await waitFor(() => dialogOf(page)?.querySelector(".agent-project-picker select") && dialogOf(page), "the project picker");
+    const picker = dialog.querySelector(".agent-project-picker");
+    assert.match(picker.textContent, /项目/);
+    assert.equal(picker.querySelector("select").options[0].textContent, "无项目");
+    assert.match(picker.textContent, /只改变 Mori 列在哪里。文件夹和会话保持不变。/);
+    choose(page, picker.querySelector("select"), "p-res");
+    button(page, "移动", picker).click();
+    await waitFor(() => page.calls.some((call) => call.url.endsWith("/agents/a/project")), "the move is sent");
+    assert.deepEqual(page.calls.find((call) => call.url.endsWith("/agents/a/project")).body, { projectId: "p-res" });
+  } finally {
+    page.close();
+  }
+});
+

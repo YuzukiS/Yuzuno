@@ -10,6 +10,7 @@ import {
   Unlink,
 } from "lucide-react";
 import { api, errorText } from "./api";
+import { strings, type Language } from "./i18n";
 import "./github-links.css";
 import { PrReviews } from "./PrReviews";
 import { PrOperations } from "./PrOperations";
@@ -67,7 +68,7 @@ const labels: Record<string, string> = {
   unknown: "Checks unknown",
   neutral: "Checks skipped / neutral",
 };
-const time = (value?: string | null) =>
+const time = (value?: string | null, never = "Never synced") =>
   value
     ? new Date(value).toLocaleString([], {
         month: "short",
@@ -75,7 +76,55 @@ const time = (value?: string | null) =>
         hour: "2-digit",
         minute: "2-digit",
       })
-    : "Never synced";
+    : never;
+
+// A project's repositories in the language its page passes (T-189): the
+// Projects page passes the interface language; a task's links, not yet
+// translated, keep English. Repository names and what GitHub or Core said
+// are shown as they are.
+const repoText = strings({
+  aria: "GitHub repositories",
+  title: "Repositories",
+  refresh: "Refresh GitHub",
+  refreshTip: "Refresh GitHub (requests are combined within 30 seconds)",
+  hint: "Link the repositories this project uses. A repository can belong to several projects.",
+  loading: "Loading links…",
+  unavailable: "GitHub links are unavailable from this Core.",
+  lastLoaded: " · Showing the last loaded links.",
+  unlink: (name: string) => `Unlink ${name}`,
+  unlinkTip: "Remove from this project; task links stay",
+  synced: (at: string) => `Synced ${at}`,
+  never: "Never synced",
+  lastKnown: " · Last known repository.",
+  empty: "No repositories linked yet.",
+  label: "Repository",
+  link: "Link",
+  linked: "Linked. GitHub and task status stay independent.",
+  removed: "Association removed. The GitHub object is unchanged.",
+  source: "Read via gh on the Core host · GitHub.com",
+  refreshing: " · Refreshing…",
+}, {
+  aria: "GitHub 仓库",
+  title: "仓库",
+  refresh: "刷新 GitHub",
+  refreshTip: "刷新 GitHub（30 秒内的请求会合并）",
+  hint: "链接此项目使用的仓库。一个仓库可以属于多个项目。",
+  loading: "正在加载链接…",
+  unavailable: "此 Core 不提供 GitHub 链接。",
+  lastLoaded: " · 显示上次加载的链接。",
+  unlink: (name) => `取消链接 ${name}`,
+  unlinkTip: "从此项目移除；任务链接保留",
+  synced: (at) => `同步于 ${at}`,
+  never: "从未同步",
+  lastKnown: " · 上次已知的仓库。",
+  empty: "还没有链接仓库。",
+  label: "仓库",
+  link: "链接",
+  linked: "已链接。GitHub 与任务状态彼此独立。",
+  removed: "已移除关联。GitHub 上的对象不受影响。",
+  source: "通过 Core 主机上的 gh 读取 · GitHub.com",
+  refreshing: " · 正在刷新…",
+});
 const safeUrl = (value: string) =>
   /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/(?:pull|issues)\/[1-9]\d*)?$/.test(
     value,
@@ -148,6 +197,7 @@ export function GitHubLinks({
   reviewId,
   manage = true,
   onManage,
+  language = "en",
 }: {
   projectId?: string;
   taskId?: string;
@@ -159,8 +209,13 @@ export function GitHubLinks({
   manage?: boolean;
   /** Asks the task to show its management controls. */
   onManage?: () => void;
+  /** The language of a project's repositories section; a task's links stay
+   * English for now. */
+  language?: Language;
 }) {
   const repoMode = !!projectId;
+  // A project's repositories follow `language`; a task's links keep English.
+  const t = repoText(repoMode ? language : "en");
   const managing = repoMode || manage;
   const scopeKey = projectId || taskId || "";
   const operation = repoMode ? "github_repositories" : "github_links";
@@ -187,7 +242,7 @@ export function GitHubLinks({
           signal: controller.signal,
         });
         if (!Array.isArray(value.links) || !Array.isArray(value.repositories))
-          throw new Error("GitHub links are unavailable from this Core.");
+          throw new Error(t.unavailable);
         if (mounted.current && stamp === generation.current) {
           setPage(value);
           setError("");
@@ -205,7 +260,7 @@ export function GitHubLinks({
         controllers.current.delete(controller);
       }
     },
-    [scopeKey, repoMode],
+    [scopeKey, repoMode, t.unavailable],
   );
   useEffect(() => {
     mounted.current = true;
@@ -239,11 +294,7 @@ export function GitHubLinks({
     const result = await request(operation, extra);
     if (result) {
       if (clear) setInput((current) => (current === submitted ? "" : current));
-      setNotice(
-        clear
-          ? "Linked. GitHub and task status stay independent."
-          : "Association removed. The GitHub object is unchanged.",
-      );
+      setNotice(clear ? t.linked : t.removed);
     }
     if (mounted.current) setBusy(false);
   };
@@ -252,19 +303,19 @@ export function GitHubLinks({
   return (
     <section
       className="github-panel"
-      aria-label={repoMode ? "GitHub repositories" : "GitHub delivery"}
+      aria-label={repoMode ? t.aria : "GitHub delivery"}
     >
       {!quiet && (
       <header>
         <h4>
           <Github size={16} />
-          {repoMode ? "Repositories" : "Pull requests and issues"}
+          {repoMode ? t.title : "Pull requests and issues"}
         </h4>
         <button
           type="button"
           className="icon-button"
-          aria-label="Refresh GitHub"
-          title="Refresh GitHub (requests are combined within 30 seconds)"
+          aria-label={t.refresh}
+          title={t.refreshTip}
           disabled={busy || !!page?.refreshing}
           onClick={() => void request("github_refresh")}
         >
@@ -273,21 +324,18 @@ export function GitHubLinks({
       </header>
       )}
       {repoMode && (
-        <p className="github-hint">
-          Link the repositories this project uses. A repository can belong to
-          several projects.
-        </p>
+        <p className="github-hint">{t.hint}</p>
       )}
       {!page && !error && (
         <p className="github-sync">
           <LoaderCircle size={13} className="spin" />
-          Loading links…
+          {t.loading}
         </p>
       )}
       {error && (
         <p role="alert" className="github-error">
           {error}
-          {page && " · Showing the last loaded links."}
+          {page && t.lastLoaded}
         </p>
       )}
       <div className="github-list">
@@ -304,8 +352,8 @@ export function GitHubLinks({
                     type="button"
                     className="icon-button"
                     disabled={busy}
-                    aria-label={`Unlink ${repo.fullName}`}
-                    title="Remove from this project; task links stay"
+                    aria-label={t.unlink(repo.fullName)}
+                    title={t.unlinkTip}
                     onClick={() =>
                       void mutate({ action: "unlink", repositoryId: repo.id })
                     }
@@ -313,10 +361,11 @@ export function GitHubLinks({
                     <Unlink size={13} />
                   </button>
                 </div>
-                <small>Synced {time(repo.syncedAt)}</small>
+                <small>{t.synced(time(repo.syncedAt, t.never))}</small>
                 {repo.error && (
                   <p className="github-error">
-                    {repo.error} · Last known repository.
+                    {repo.error}
+                    {t.lastKnown}
                   </p>
                 )}
               </article>
@@ -409,7 +458,7 @@ export function GitHubLinks({
       {page && !(repoMode ? page.repositories : page.links).length && (
         <p className="github-empty">
           {repoMode
-            ? "No repositories linked yet."
+            ? t.empty
             : "No Issue or PR linked yet. An Issue is optional."}
           {!managing && onManage && (
             <button type="button" className="secondary-button" onClick={onManage}>
@@ -430,7 +479,7 @@ export function GitHubLinks({
         }}
       >
         <label htmlFor={`github-${scopeKey}`}>
-          {repoMode ? "Repository" : "Issue or pull request URL"}
+          {repoMode ? t.label : "Issue or pull request URL"}
         </label>
         <div>
           <input
@@ -457,7 +506,7 @@ export function GitHubLinks({
             ) : (
               <Link2 size={14} />
             )}
-            Link
+            {t.link}
           </button>
         </div>
       </form>
@@ -467,8 +516,8 @@ export function GitHubLinks({
         </p>
       )}
       <p className="github-source">
-        Read via gh on the Core host · GitHub.com
-        {page?.refreshing ? " · Refreshing…" : ""}
+        {t.source}
+        {page?.refreshing ? t.refreshing : ""}
       </p>
         </>
       )}
