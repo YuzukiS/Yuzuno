@@ -81,6 +81,7 @@ async function mount({ saved = { enabled: true, categories: { backupFailed: true
     ] }] };
     else if (path === "/api/catchup") body = { items: [], generatedAt: "", source: "records", coverage: { fromSeq: 0, toSeq: 0 } };
     else if (path === "/api/workspace/backup/last-run") body = { lastRun: core.lastRun };
+    else if (path === "/api/machines") body = { machines: [] };
     else if (path === "/api/workspace/backup") body = {
       canChange: true, workspaceId: "ws-synthetic", canBackUp: true, refusals: [], unfinishedJobs: [], estimateBytes: 1024,
       current: null, recent: [], notCovered: [], schedule: { enabled: true, timeUtc: "03:00", folder: "/backups/daily", nextRunAt: "2026-10-27T03:00:00Z", lastRun: core.lastRun },
@@ -143,6 +144,22 @@ test("a failed daily backup is one notification, not repeated on a reconnect, an
     await pause(200);
     assert.deepEqual(posts(), postsBefore, "no backup, retry or removal is started");
     assert.equal(p.core.asked, 0, "the system is never asked from here");
+
+    // Settings left through a card that opens another dialog: opened again, it
+    // starts where it always does, not at Backup (review bbce8367, P3).
+    const search = p.d.querySelector('input[type="search"]');
+    Object.getOwnPropertyDescriptor(p.w.HTMLInputElement.prototype, "value").set.call(search, "Execution machines");
+    search.dispatchEvent(new p.w.Event("input", { bubbles: true }));
+    const leave = () => [...p.d.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith("Open Execution machines"));
+    await until(() => leave() && !leave().disabled, "the machines card");
+    leave().click();
+    await until(() => !p.d.querySelector("#settings-editor-backup"), "Settings closed");
+    for (const close of p.d.querySelectorAll('[aria-label="Close dialog"]')) close.click();
+    await pause(100);
+    p.d.querySelector('[aria-label="Settings and updates"]').click();
+    await until(() => p.d.querySelector("#settings-editor-updates"), "Settings again");
+    await pause(150);
+    assert.equal(p.d.querySelector("#settings-editor-backup") === null, true, "not at Backup again");
   } finally {
     p.close();
   }

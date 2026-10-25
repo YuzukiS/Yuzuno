@@ -855,6 +855,11 @@ export function App() {
       setPhoneList(false);
     } else if (notice.agentId) selectAgent(notice.agentId);
   }, backupRun);
+  // Settings closed, however (its own close, or a card that opens another
+  // dialog): a notification's request is used up, not repeated next time.
+  useEffect(() => {
+    if (!updatesOpen) setSettingsAt(null);
+  }, [updatesOpen]);
   const needsYou = totalPending + openAsks;
   const reviewDisplayed = useCallback(
     async (id: string, throughSeq: number) => {
@@ -3314,10 +3319,7 @@ export function App() {
       <WorkspaceUpdatesHost
         enabled={!previewMode}
         open={updatesOpen}
-        onOpenChange={(open) => {
-          setUpdatesOpen(open);
-          if (!open) setSettingsAt(null);
-        }}
+        onOpenChange={setUpdatesOpen}
         openAt={settingsAt}
         onNeedsReloadChange={setUpdatesNeedReload}
         navigation={{ agents: workspace?.agents || [], projects, disabled: previewMode, onNavigate: openSettingsDestination }}
