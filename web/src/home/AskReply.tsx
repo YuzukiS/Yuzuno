@@ -275,6 +275,13 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
       {form ? (
         <Clarification
           identity={`home:${context.workspaceId}:${context.projectId}:${section.key}`}
+          // Home's reply drafts already name their Workspace; this keeps the
+          // key they are saved under exactly as it was (T-195).
+          draftIdentity={
+            context.workspaceId
+              ? `home:${context.workspaceId}:${context.projectId}:${section.key}`
+              : null
+          }
           form={form}
           agentName={targetName}
           blockedReason={!target ? "Choose who should get the reply." : undefined}

@@ -27,7 +27,7 @@ window.errorText = errorText;
 window.errorMessage = message => errorText(new Error(message));
 const root = createRoot(document.getElementById('root'));
 function History({detail,selected}) {const h=useSessionHistory(detail,selected);React.useEffect(()=>{window.historyReady=true;});window.historyDetail=h.detail;return <div><p>{h.detail?.turns.map(t=>t.id).join(',')}</p><button disabled={h.loading||!h.detail?.history?.hasMore} onClick={()=>h.loadEarlier()}>Earlier</button>{h.error&&<span role="alert">{h.error}</span>}</div>}
-function Delivery({detail}) {const h=useConversationSend("agent-a",null,()=>{},"codex",detail);return <div><button onClick={()=>void h.submit("A delivery preview")}>Send</button><p id="outgoing">{JSON.stringify(h.outgoing)}</p></div>}
+function Delivery({detail}) {const h=useConversationSend("ws-1","agent-a",null,()=>{},"codex",detail);return <div><button onClick={()=>void h.submit("A delivery preview")}>Send</button><p id="outgoing">{JSON.stringify(h.outgoing)}</p></div>}
 window.renderDelivery = props => root.render(<Delivery {...props}/>);
 window.renderCreate = props => root.render(<RemoteCreateAgent {...props}/>);
 window.renderHistory = props => {window.historyReady=false;root.render(<History {...props}/>);};`,

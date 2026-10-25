@@ -45,19 +45,34 @@ export const noLiveJobs = { agents: {} };
 
 /** The draft saved for Agent `id`, pasted blocks included, or null when it
  * has none. Since long pastes became blocks (T-33) the composer saves
- * `yuzuno.composer.v1:<id>`; before its first save the editor shows the old
- * string draft, as DraftStorage.load does. Runs in the page. */
+ * `yuzuno.composer.v1:<identity>`, and since T-195 that identity is the
+ * Workspace and the Agent, so the key is found by the Agent it names: a
+ * fixture page is in one Workspace. Drafts saved before Workspaces were
+ * recorded are not read here, as the composer no longer reads them either.
+ * Runs in the page. */
 function readSavedDraft(id) {
-  const saved = localStorage.getItem("yuzuno.composer.v1:" + id);
-  if (!saved) {
-    const legacy = JSON.parse(localStorage.getItem("yuzuno.drafts") || "{}");
-    return typeof legacy?.[id] === "string" ? legacy[id] : null;
+  const prefix = "yuzuno.composer.v1:";
+  let identity = null;
+  for (let index = 0; index < localStorage.length; index++) {
+    const key = localStorage.key(index);
+    if (!key || !key.startsWith(prefix)) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(key.slice(prefix.length));
+    } catch {
+      continue;
+    }
+    if (Array.isArray(parsed) && parsed.length === 2 && parsed[1] === id) {
+      identity = key.slice(prefix.length);
+      break;
+    }
   }
-  return JSON.parse(saved).parts
+  if (identity === null) return null;
+  return JSON.parse(localStorage.getItem(prefix + identity)).parts
     .map((part) =>
       part.kind === "text"
         ? part.text
-        : (localStorage.getItem("yuzuno.paste.v1:" + id + ":" + part.bodyId) ?? ""),
+        : (localStorage.getItem("yuzuno.paste.v1:" + identity + ":" + part.bodyId) ?? ""),
     )
     .join("");
 }

@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ArrowRight, Check, LoaderCircle } from "lucide-react";
 import {
   clarificationDraftKey,
@@ -15,6 +15,18 @@ import "./clarification.css";
 type Props = {
   /** Authenticated source Agent + immutable published result ID. */
   identity: string;
+  /**
+   * Where unsent answers may be saved, or `null` to keep them in this window
+   * only (T-195). It must say which Workspace they belong to: two saved
+   * Workspaces can sit at one address and their Agents can share an id, so a
+   * key without one handed each Workspace the other's unsent answers.
+   *
+   * `null` is for a form that has no Workspace to be attributed to: one that
+   * cannot be answered at all, and one shown before this window knows which
+   * Workspace it is in. Separate from `identity`, which React keys this form
+   * by, so learning the Workspace does not throw away what is on screen.
+   */
+  draftIdentity: string | null;
   form: ClarificationProps;
   agentName: string;
   /** Delivery facts come from the existing message path, never a UI success timer. */
@@ -31,7 +43,7 @@ export function Clarification(props: Props) {
   return <Form key={`${props.identity}:${props.form.id}`} {...props} />;
 }
 function Form({
-  identity,
+  draftIdentity,
   form,
   agentName,
   delivery,
@@ -40,10 +52,11 @@ function Form({
   onCheck,
 }: Props) {
   const domId = useId();
-  const key = clarificationDraftKey(identity, form);
+  const key = draftIdentity && clarificationDraftKey(draftIdentity, form);
   const composing = useRef(false);
   const inFlight = useRef(false);
   const [initial] = useState(() => {
+    if (!key) return { values: initialClarificationValues(form), error: "" };
     try {
       return {
         values: readClarificationDraft(localStorage, key, form),
@@ -58,6 +71,33 @@ function Form({
   const [errors, setErrors] = useState<ClarificationErrors>({});
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
+  // Which key the answers on screen belong to. Learning the Workspace after
+  // this form was shown (none -> a key) keeps what is on screen, which is the
+  // person's own newer answer, and saves it. Moving to a different
+  // Workspace's key is a different Workspace's form: its own saved answers
+  // are read, and nothing carries over from the one before it (T-195).
+  const belongTo = useRef(key);
+  const typed = useRef(false);
+  useEffect(() => {
+    if (!key || belongTo.current === key) return;
+    const carry = belongTo.current === null && typed.current;
+    belongTo.current = key;
+    try {
+      if (carry) saveClarificationDraft(localStorage, key, values);
+      else {
+        typed.current = false;
+        setValues(readClarificationDraft(localStorage, key, form));
+        setErrors({});
+      }
+      setStorageError("");
+    } catch (error) {
+      setStorageError(
+        carry
+          ? "This draft is only in this window. Keep it open until your answers are sent."
+          : String(error),
+      );
+    }
+  }, [key, form, values]);
   const status = delivery?.status;
   const accepted = status === "accepted" || status === "queued";
   const uncertain =
@@ -78,6 +118,10 @@ function Form({
     setValues(next);
     setErrors((previous) => ({ ...previous, [id]: "" }));
     setFailure("");
+    typed.current = true;
+    // Nothing is written while there is no Workspace to attribute this to.
+    // The answers stay on screen, and reach disk as soon as there is one.
+    if (!key) return;
     try {
       saveClarificationDraft(localStorage, key, next);
       setStorageError("");
