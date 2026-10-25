@@ -52,7 +52,7 @@ const overview = () => ({
   ],
   notInBackup: ["Native session histories kept by Codex, Claude Code and OpenCode outside the Workspace"],
 });
-function mount(seed = {}) {
+function mount(seed = {}, { tasks = { tasks: [], hasMore: false } } = {}) {
   const vc = new VirtualConsole();
   const errors = [], calls = [];
   vc.on("jsdomError", (error) => errors.push(error.message));
@@ -61,8 +61,15 @@ function mount(seed = {}) {
   for (const [key, value] of Object.entries(seed)) w.localStorage.setItem(key, value);
   w.fetch = async (url, init = {}) => {
     const method = init.method || "GET";
-    calls.push({ url: String(url), method });
-    const value = String(url).endsWith("/api/storage") ? overview() : {};
+    calls.push({ url: String(url), method, body: init.body ? JSON.parse(init.body) : undefined });
+    // Core's task list: one answer, or one per request (by its body).
+    const listed = String(url).endsWith("/api/collaboration/task_list")
+      ? (typeof tasks === "function" ? tasks(JSON.parse(init.body)) : tasks) : null;
+    if (listed?.httpStatus) {
+      const body = { error: listed.error };
+      return { ok: false, status: listed.httpStatus, json: async () => body, text: async () => JSON.stringify(body) };
+    }
+    const value = String(url).endsWith("/api/storage") ? overview() : listed ?? {};
     return { ok: true, status: 200, json: async () => structuredClone(value), text: async () => JSON.stringify(value) };
   };
   w.eval(bundle);
@@ -140,4 +147,65 @@ test("an install that isn't managed says so instead of showing 0", async (t) => 
   await until(() => p.text().includes("Workspace database"));
   assert.match(p.text(), /This Core is not a managed install, so Yuzuno keeps no releases or update copies for it\./);
   assert.deepEqual(p.zeros(), [], "no 0 for releases it does not keep, or for any size not known");
+});
+
+// T-193: a task chosen by its ID, opened at its own Workspace section; nothing here previews or removes.
+test("a task is chosen by its ID and only opened: nothing is previewed, removed, registered or started here", async (t) => {
+  // Core lists oldest first, a page at a time: both pages are read, the newest shown first.
+  const pages = (body) => body.afterSeq === 7
+    ? { tasks: [{ id: "T-8", seq: 8, title: "Build cache", status: "doing" }], hasMore: false, nextAfterSeq: 8 }
+    : { tasks: [{ id: "T-7", seq: 7, title: "Build cache", status: "done" }], hasMore: true, nextAfterSeq: 7 };
+  const p = mount({}, { tasks: pages }); t.after(p.close);
+  const opened = [];
+  p.w.renderStorage({ active: true, updates: managed, onOpenTaskWorkspaces: (id) => opened.push(id) });
+  const select = await until(() => p.doc.querySelector("#settings-storage .storage-task-open select"), "the task choice");
+  assert.deepEqual([...select.options].map((o) => o.textContent), ["Choose a task…", "T-8 · Build cache · doing", "T-7 · Build cache · done"], "each by its ID, done ones too, the newest first");
+  const open = p.button("Open its Workspace section");
+  assert.equal(open.disabled, true, "nothing chosen, nothing to open");
+  const choose = (id) => {
+    Object.getOwnPropertyDescriptor(p.w.HTMLSelectElement.prototype, "value").set.call(select, id);
+    select.dispatchEvent(new p.w.Event("change", { bubbles: true }));
+  };
+  // A choice taken back leaves nothing to open, and nothing was opened.
+  choose("T-8");
+  await until(() => !p.button("Open its Workspace section").disabled, "a choice");
+  choose("");
+  await until(() => p.button("Open its Workspace section").disabled, "the choice taken back");
+  assert.deepEqual(opened, [], "choosing alone opens nothing");
+  choose("T-7");
+  await until(() => !p.button("Open its Workspace section").disabled, "the choice");
+  p.button("Open its Workspace section").click();
+  assert.deepEqual(opened, ["T-7"], "the chosen ID, not the name both share");
+  assert.match(p.text(), /regenerable Cargo build output, never source files, the folder or its branch/);
+  assert.match(p.text(), /Choosing a task here only opens it: nothing is previewed or removed\./);
+  assert.match(p.text(), /Archived tasks are not listed\./);
+  assert.doesNotMatch(p.text(), /tasks are listed; open a later one/, "every page was read");
+  // Only reads: the overview and the task list's pages, the board's own read.
+  assert.deepEqual(p.posts().map((c) => [c.url, c.body]), [
+    ["/api/collaboration/task_list", { limit: 200 }], ["/api/collaboration/task_list", { limit: 200, afterSeq: 7 }]]);
+  assert.ok(!p.calls.some((c) => /workspaces|cleanup|jobs/.test(c.url)), "no task folder is read, previewed or removed here");
+  assert.deepEqual(p.errors, []);
+});
+
+test("a task list that can't be read says why; an empty one says so; without the way to the task board, the section says where; past the pages it reads, it says which are listed", async (t) => {
+  const failed = mount({}, { tasks: { httpStatus: 503, error: "Core is restarting" } }); t.after(failed.close);
+  failed.w.renderStorage({ active: true, updates: managed, onOpenTaskWorkspaces: () => {} });
+  const alert = await until(() => failed.doc.querySelector("#settings-storage .storage-part [role=\"alert\"]"), "the failure");
+  assert.match(alert.textContent, /^The tasks could not be read: .*Core is restarting/);
+  assert.equal(failed.doc.querySelector(".storage-task-open") === null, true, "nothing to choose");
+  const empty = mount(); t.after(empty.close);
+  empty.w.renderStorage({ active: true, updates: managed, onOpenTaskWorkspaces: () => {} });
+  await until(() => /This Workspace has no tasks\./.test(empty.text()), "no tasks");
+  const without = mount(); t.after(without.close);
+  without.w.renderStorage({ active: true, updates: managed });
+  await until(() => /Open a task's Workspace section from Tasks to remove its build output\./.test(without.text()), "where to go");
+  assert.deepEqual(without.posts(), [], "without the way there, no task list is read");
+  // More pages than are read: the oldest are listed, and it says so.
+  const endless = mount({}, { tasks: (body) => {
+    const seq = (body.afterSeq ?? 0) + 1;
+    return { tasks: [{ id: `T-${seq}`, seq, title: "Old", status: "done" }], hasMore: true, nextAfterSeq: seq };
+  } }); t.after(endless.close);
+  endless.w.renderStorage({ active: true, updates: managed, onOpenTaskWorkspaces: () => {} });
+  await until(() => /Only the 10 oldest tasks are listed; open a later one from Tasks\./.test(endless.text()), "the pages it stopped at");
+  assert.equal(endless.posts().length, 10, "a bounded number of pages");
 });

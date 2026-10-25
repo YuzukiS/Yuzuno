@@ -22,3 +22,8 @@
   .storage-rows li { grid-template-columns: minmax(0, 1fr); }
   .storage-rows .storage-size { text-align: left; white-space: normal; }
 }
+/* Choosing a task to open its Workspace section (T-193). */
+.storage-task-open { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 12px; }
+.storage-task-open label { display: grid; gap: 4px; min-width: 0; max-width: 100%; }
+.storage-task-open select { max-width: 100%; }
+.storage-task-open .storage-note { flex-basis: 100%; }

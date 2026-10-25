@@ -1176,6 +1176,70 @@ test("data & storage opens from Data, privacy & recovery and reads Core's overvi
   } finally { f.w.close(); }
 });
 
+// From Data & storage (T-193), a task chosen by its ID opens on the task board
+// at its own Workspace section. The way there lists that task's folders and
+// previews, removes, registers and starts nothing.
+test("a task chosen in data & storage opens on the task board at its Workspace section, and nothing is previewed or removed", async () => {
+  const f = await mount();
+  const by = { kind: "user", id: "user", name: "User" };
+  const done = { id: "T-7", title: "Build cache", description: "", status: "done", assigneeAgentId: null, assignee: null,
+    progress: "", blocker: "", result: null, version: 1, createdBy: by, updatedBy: by,
+    createdAt: "2026-10-24T22:00:00Z", updatedAt: "2026-10-24T22:00:00Z" };
+  const twin = { ...done, id: "T-8", status: "doing" };
+  const folder = { id: "w1", path: "/work/build-cache", origin: "registered", state: "present",
+    git: { branch: "t-7", head: "0123456789abcdef", origin: "example/demo", repositoryId: 42, sameRepository: true, changes: { modified: 0, untracked: 0, complete: true } },
+    users: { agents: [], liveJobs: [], taskJobs: 0 } };
+  const view = {
+    format: 1, readAt: "2026-10-24T22:00:00Z", dataDir: "/fixture/data",
+    entries: [{ name: "jobs", what: "jobs", kind: "folder", backup: "copied", backupReason: null }],
+    unreadable: null, database: { pageSize: 4096, pages: 10, freePages: 0 }, jobs: { total: 0, unfinished: 0 },
+    native: [], notInBackup: [],
+  };
+  const answers = {
+    task_list: { tasks: [done, twin], hasMore: false },
+    github_links: { links: [], repositories: [] },
+    github_refresh: { links: [], repositories: [] },
+    delivery_get: { flow: null, settings: { harness: "codex", model: "gpt-6.1-sol" } },
+    peers_list: { peers: [] },
+    peer_read: { messages: [], hasMore: false },
+  };
+  const answer = f.w.fetch;
+  f.w.fetch = async (url, init = {}) => {
+    const body = init.body && JSON.parse(init.body);
+    const reply = (value) => {
+      f.calls.push({ url, method: init.method || "GET", body });
+      return { ok: true, status: 200, json: async () => structuredClone(value), text: async () => JSON.stringify(value) };
+    };
+    const operation = url.match(/\/api\/collaboration\/([a-z_]+)$/)?.[1];
+    if (url.endsWith("/api/storage")) return reply(view);
+    if (operation === "task_get") return reply({ task: body.taskId === "T-7" ? done : twin, activities: [], executions: [], hasMore: false });
+    if (operation && answers[operation]) return reply(answers[operation]);
+    if (url.endsWith("/api/tasks/T-7/workspaces")) return reply({ taskId: "T-7", repositories: [], workspaces: [folder] });
+    if (url.includes("/api/pr-reviews?")) return reply({ reviews: [], hasMore: false, nextBefore: null });
+    if (url.includes("/api/pr-operations?")) return reply({ operations: [], repositories: [], hasMore: false, nextBefore: null });
+    return answer(url, init);
+  };
+  const section = () => f.w.document.querySelector(".task-workspaces");
+  try {
+    await f.open();
+    f.w.document.querySelector("#settings-tab-data").click();
+    assert.ok(await f.press("Open Data & storage overview"), "Data, privacy & recovery offers it");
+    let select;
+    assert.ok(await until(() => (select = f.w.document.querySelector("#settings-editor-storage .storage-task-open select")) && select.options.length === 3), "the tasks to choose from");
+    Object.getOwnPropertyDescriptor(f.w.HTMLSelectElement.prototype, "value").set.call(select, "T-7");
+    select.dispatchEvent(new f.w.Event("change", { bubbles: true }));
+    assert.ok(await f.press("Open its Workspace section"), "the chosen task opens");
+    assert.ok(await until(() => !!section() && /\/work\/build-cache/.test(section().textContent)), "the task board at that task's Workspace section, its folders listed");
+    assert.ok(await until(() => f.w.document.activeElement === section().querySelector("h4")), "brought into view there");
+    assert.ok(await until(() => !f.w.document.querySelector("#settings-editor-storage")), "Settings has closed");
+    assert.deepEqual(f.calls.filter((c) => c.url.endsWith("/api/collaboration/task_get")).map((c) => c.body.taskId), ["T-7"], "the task by its ID, never its twin by name");
+    assert.deepEqual(f.calls.filter((c) => c.url.includes("/api/tasks/")).map((c) => `${c.method} ${c.url}`), ["GET /api/tasks/T-7/workspaces"], "its folders are only listed");
+    assert.ok(!f.calls.some((c) => /cleanup|\/api\/jobs/.test(c.url) && c.method !== "GET"), "nothing is previewed, removed or started");
+    assert.ok(f.button("Preview cleanup"), "the cleanup is the section's own, still to be asked for");
+    assert.deepEqual(f.errors, []);
+  } finally { f.w.close(); }
+});
+
 // Draft storage is one of Settings' editors (T-193 slice 3): its card under
 // Data, privacy & recovery opens it in place and lists this device's saved
 // drafts for the Workspace's Agents; one is shown whole only when chosen.

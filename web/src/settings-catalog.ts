@@ -18,7 +18,9 @@ export type SettingsDestination =
   | { kind: "agent"; section: "model" | "context" | "auto-continue"; agentId: string }
   | { kind: "project"; projectId: string }
   | { kind: "machines" }
-  | { kind: "jobs" };
+  | { kind: "jobs" }
+  /** That Task's own Workspace section (T-193), by its Task ID. */
+  | { kind: "taskWorkspaces"; taskId: string };
 export type SettingTarget =
   | { kind: "editor"; editor: SettingsEditor }
   | { kind: "agent"; section: "model" | "context" | "auto-continue" }

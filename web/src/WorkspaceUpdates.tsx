@@ -1010,7 +1010,13 @@ export function WorkspaceUpdates({
           {tab === "diagnostics" && <DiagnosticsCopy />}
           {tab === "history" && <HistoryComposition />}
           {tab === "drafts" && <DraftExport active={open && visible} agents={navigation?.agents ?? null} />}
-          {tab === "storage" && <StorageOverview active={open && visible} updates={status ? { managed: status.managed, storage: status.storage } : null} />}
+          {tab === "storage" && (
+            <StorageOverview
+              active={open && visible}
+              updates={status ? { managed: status.managed, storage: status.storage } : null}
+              onOpenTaskWorkspaces={navigation && !navigation.disabled ? (taskId) => navigation.onNavigate({ kind: "taskWorkspaces", taskId }) : undefined}
+            />
+          )}
           {tab === "runtime" && (
             <RuntimeSection
               active={open && visible}
