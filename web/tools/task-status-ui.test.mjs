@@ -149,3 +149,64 @@ test("shows Core's outcome: applied, declined, refused as stale, unanswered and 
     page.close();
   }
 });
+
+// T-189: the card follows the interface language, changed in another window.
+// The task's title, the Agent's and the person's reasons, names and Core's
+// words stay as written; the choice and the typed reason stay; nothing is
+// decided by the change.
+const speak = (page, language) => {
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+  page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+};
+test("the card follows a language change; the chosen status and typed reason stay and nothing is decided", async () => {
+  const page = mount();
+  const decided = [];
+  try {
+    page.render({ onDecide: (d) => decided.push(JSON.parse(JSON.stringify(d))) });
+    await tick();
+    page.choose("blocked");
+    const reason = page.document.querySelector("textarea");
+    Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(reason, "Waiting on the Mac lab");
+    reason.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    await tick();
+    speak(page, "zh-Hans");
+    await tick();
+    const card = page.document.querySelector(".task-status-card");
+    assert.equal(card.getAttribute("aria-label"), "T-88 的状态变更提议");
+    assert.equal(card.querySelector("h4").textContent, "对 T-88 的变更提议 · Independent Core");
+    const text = page.text();
+    for (const words of [
+      "当前进行中 · 版本 4 · Dev 3",
+      "Agent 提议待审阅：Merged, but cross-host acceptance is still open",
+      "T-88 从“进行中”变为“受阻”。",
+      "它的受阻原因会变成你填写的理由。",
+      "你修改了 Agent 的提议。",
+      "只有你的确认会改变任务。这里的其他操作都不会。",
+    ]) assert.ok(text.includes(words), words);
+    assert.deepEqual(page.buttons(), ["把 T-88 改为“受阻”", "拒绝"]);
+    assert.equal(page.document.querySelector("select").value, "blocked", "the choice stays");
+    assert.ok([...page.document.querySelectorAll("option")].some((o) => o.textContent === "待审阅（提议）"));
+    assert.equal(page.document.querySelector("textarea").value, "Waiting on the Mac lab", "the typed reason stays");
+    assert.deepEqual(decided, [], "nothing is decided by the change");
+    page.button("把 T-88 改为“受阻”").click();
+    assert.deepEqual(decided, [{ action: "confirm", status: "blocked", reason: "Waiting on the Mac lab", expectedVersion: 4 }]);
+    // Core's outcomes in Chinese, its own words and names as they are.
+    const stale = attempt({ state: "failed", taskVersion: null, error: "version_conflict: expected 4, current 5. Read the task before updating it" });
+    page.render({ view: view({ task: { ...task, version: 5 }, attempts: [stale] }), mine: "c1", onDecide: () => {} });
+    await tick();
+    assert.ok(page.text().includes("你在决定时 T-88 发生了变化（现在是版本 5，进行中）。没有做任何更改。请查看上面的情况后再确认。"));
+    page.render({ unanswered: { requestId: "c2", action: "confirm", status: "review", expectedVersion: 5 }, onDecide: () => {}, onCheck: () => {} });
+    await tick();
+    assert.ok(page.text().includes("Core 对你的确认的回答丢失了，所以不知道它是否已被记录。"));
+    assert.ok(page.button("再次检查"));
+    page.render({ view: view({ attempts: [attempt({})] }) });
+    await tick();
+    assert.ok(page.text().includes("You 已确认：T-88 现在是“待审阅”（版本 5）。"));
+    speak(page, "en");
+    await tick();
+    assert.ok(page.text().includes("You confirmed it: T-88 is now In review (version 5)."));
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});

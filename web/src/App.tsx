@@ -185,7 +185,7 @@ import { draftTextBlocks } from "./message-content";
 import { RequestSummary } from "./MessageContent";
 import { appendDraft, draftText, hasDraftContent, type ComposerDraft } from "./composer-draft";
 import { HandoffContext, HandoffDropStrip, type HandoffApi } from "./SendToAgent";
-import { handoffLabel, handoffRefusal, handoffText, type HandoffSource } from "./handoff";
+import { handoffLabel, handoffNotices, handoffRefusal, handoffText, type HandoffSource } from "./handoff";
 import { useComposerDraft } from "./useComposerDraft";
 import { DraftRecovery } from "./DraftRecovery";
 import { PendingQuestions, type PendingQuestionsHandle } from "./PendingQuestions";
@@ -1917,13 +1917,16 @@ export function App() {
    */
   function handoffToAgent(source: HandoffSource, targetId: string) {
     const target = workspace?.agents.find(a => a.id === targetId);
+    // Said in the interface language; what is added to the draft is the
+    // message itself, as it is (T-189).
+    const said = handoffNotices(language);
     const refusal = previewMode
-      ? "Drafts cannot be changed in this preview."
+      ? said.preview
       : targetId === selected && draftBlocked
-        ? "Recover or reset this Agent’s saved draft first; nothing was added."
-        : handoffRefusal(source, target);
+        ? said.recoverFirst
+        : handoffRefusal(source, target, language);
     if (refusal || !target) {
-      setNotice(refusal || "That Agent is no longer in this Workspace.");
+      setNotice(refusal || handoffRefusal(source, undefined, language) || "");
       return false;
     }
     const text = handoffText(source, target, new Date());
@@ -1939,7 +1942,7 @@ export function App() {
         added = false;
       }
       if (!added) {
-        setNotice(`${target.name}’s saved draft needs recovering first; nothing was added. Open ${target.name} to recover it.`);
+        setNotice(said.needsRecovery(target.name));
         return false;
       }
     }
@@ -1948,7 +1951,7 @@ export function App() {
     window.dispatchEvent(new Event("yuzuno:handoff-sent"));
     selectAgent(targetId);
     requestAnimationFrame(() => composer.current?.focus());
-    setNotice(`Added ${handoffLabel(source)} to ${target.name}’s draft. Edit it, then send.`);
+    setNotice(said.added(handoffLabel(source, language), target.name));
     return true;
   }
   /** Why that Agent's draft cannot take Point & Fix images of these sizes. */

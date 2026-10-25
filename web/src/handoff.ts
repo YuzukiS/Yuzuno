@@ -56,11 +56,49 @@ export type HandoffSource =
       artifacts: string[];
     };
 
-export function handoffLabel(source: HandoffSource) {
-  if (source.kind === "task") return `task ${source.taskId}`;
-  if (source.kind === "job") return `Job “${source.name}”`;
-  return source.excerpt ? `an excerpt from ${source.agentName}` : `a message from ${source.agentName}’s conversation`;
+export function handoffLabel(source: HandoffSource, language: Language = "en") {
+  const t = notices[language];
+  if (source.kind === "task") return t.task(source.taskId);
+  if (source.kind === "job") return t.job(source.name);
+  return source.excerpt ? t.excerpt(source.agentName) : t.message(source.agentName);
 }
+
+// What App says when a handoff is added to a draft or isn't (T-189); names
+// as they are. Plain tables, as below.
+type Notices = {
+  task: (id: string) => string;
+  job: (name: string) => string;
+  excerpt: (agent: string) => string;
+  message: (agent: string) => string;
+  added: (what: string, agent: string) => string;
+  preview: string;
+  recoverFirst: string;
+  needsRecovery: (agent: string) => string;
+};
+const notices: Record<Language, Notices> = {
+  en: {
+    task: (id) => `task ${id}`,
+    job: (name) => `Job “${name}”`,
+    excerpt: (agent) => `an excerpt from ${agent}`,
+    message: (agent) => `a message from ${agent}’s conversation`,
+    added: (what, agent) => `Added ${what} to ${agent}’s draft. Edit it, then send.`,
+    preview: "Drafts cannot be changed in this preview.",
+    recoverFirst: "Recover or reset this Agent’s saved draft first; nothing was added.",
+    needsRecovery: (agent) => `${agent}’s saved draft needs recovering first; nothing was added. Open ${agent} to recover it.`,
+  },
+  "zh-Hans": {
+    task: (id) => `任务 ${id}`,
+    job: (name) => `Job“${name}”`,
+    excerpt: (agent) => `${agent} 的一段摘录`,
+    message: (agent) => `${agent} 会话中的一条消息`,
+    added: (what, agent) => `已加入 ${agent} 的草稿：${what}。修改后再发送。`,
+    preview: "在此预览中无法更改草稿。",
+    recoverFirst: "请先恢复或重置此 Agent 已保存的草稿；没有加入任何内容。",
+    needsRecovery: (agent) => `${agent} 已保存的草稿需要先恢复；没有加入任何内容。打开 ${agent} 即可恢复。`,
+  },
+};
+/** App's notices about a handoff, in `language`. */
+export const handoffNotices = (language: Language = "en") => notices[language];
 
 // Why a handoff is refused, in the interface language (T-189); the Agent's
 // name as it is. Plain tables: handoff.test.mjs imports this file in Node.

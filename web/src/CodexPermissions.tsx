@@ -68,6 +68,9 @@ const text = strings({
   nextTurn: (reviewer, access) => `下一个 Turn：${reviewer} · ${access ?? ""}`,
   notLoaded: "无法载入权限选项。请重新打开设置以重试。",
 });
+/** A mode's label in `language`, for a caller that translates (T-189). */
+export const permissionLabelIn = (id: string | null | undefined, language: Language) =>
+  id ? text(language).modes[id as (typeof modes)[number]["id"]]?.label : undefined;
 
 export function CodexPermissions({
   settings,

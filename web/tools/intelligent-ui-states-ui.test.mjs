@@ -299,3 +299,60 @@ test("a preview without a result block is never read in full", async (t) => {
   assert.match(page.text(), /A long plain reply/);
   assert.equal(page.requests.length, 0);
 });
+
+// T-189: the words around a result follow the interface language. What the
+// Agent wrote, the JSON and the validator's code and place stay as written.
+test("the words around a result follow the language; what the Agent wrote and the JSON stay as written", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+  page.window.renderReply({ text: reply(JSON.stringify(comparison)) });
+  await until(() => page.document.querySelector(".interactive-result"), "result");
+  assert.equal(page.document.querySelector(".result-disclosure > summary").textContent, "交互结果");
+  assert.equal(page.document.querySelector(".result-original summary").textContent, "查看结果 JSON");
+  assert.ok(page.button("复制结果 JSON"));
+  assert.match(page.visible(), /Two options/, "the Agent's title as written");
+  assert.match(page.visible(), /B is cheaper\./, "the Agent's summary as written");
+  page.window.renderReply({ text: `Working on it.\n\n\`\`\`yuzuno-ui\n${JSON.stringify(comparison).slice(0, 60)}`, complete: false });
+  assert.match(page.visible(), /正在生成交互结果…/);
+  page.window.renderReply({ text: reply("{ not json") });
+  const note = page.document.querySelector('[data-result-state="format"]');
+  assert.equal(note.querySelector("p[role=status] span").textContent, "此交互结果无法显示：它的格式无效。");
+  const details = note.querySelector("details");
+  assert.equal(details.querySelector("summary").textContent, "详情与结果 JSON");
+  assert.ok(details.textContent.includes("代码invalid_json"), "the validator's code as it is");
+  assert.equal(details.querySelector("pre").textContent, "{ not json");
+  details.open = true;
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "en" }));
+  page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+  await tick();
+  assert.match(page.visible(), /its format isn’t valid/);
+  assert.ok(page.document.querySelector('[data-result-state="format"] details').open, "the open details stay open");
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+  page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+  page.window.renderParts();
+  await tick();
+  assert.match(page.text(), /结果的这一部分无法显示。/);
+  assert.match(page.text(), /Still here/);
+  assert.equal(page.requests.length, 0, "no requests, no messages, no model calls");
+});
+
+test("a form in a reply says why it can't be answered here in the interface language; its questions as written", async (t) => {
+  const { clarificationExample } = await import("../src/intelligent-ui/clarification.ts");
+  const page = mount();
+  t.after(page.close);
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+  const spec = {
+    root: "result",
+    elements: {
+      result: { type: "Result", props: { title: "Development preview", summary: "Confirm these settings." }, children: ["form"] },
+      form: { type: "Clarification", props: clarificationExample },
+    },
+  };
+  page.window.renderReply({ text: reply(JSON.stringify(spec)) });
+  await until(() => page.document.querySelector(".clarification-delivery"), "the form's notice");
+  assert.equal(page.document.querySelector(".clarification-delivery").textContent, "请让 Agent 发布这个表单，这样你的答案才能关联到原始会话。");
+  assert.match(page.text(), /Working directory必填/);
+  assert.match(page.text(), /Development preview/);
+  assert.equal(page.requests.length, 0, "nothing is sent");
+});

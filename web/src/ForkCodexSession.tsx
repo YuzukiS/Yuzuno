@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowUpRight,
   CircleAlert,
@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { errorText, post } from "./api";
 import { Modal } from "./components";
-import { permissionLabel } from "./CodexPermissions";
+import { permissionLabel, permissionLabelIn } from "./CodexPermissions";
 import { langTag, strings, useLanguage } from "./i18n";
 import type { Agent, AgentDetail, ForkOutcome, ForkPreview } from "./types";
 import "./session-import.css";
@@ -36,7 +36,7 @@ function saveRequests(value: Record<string, string>) {
   }
 }
 
-// The notice's own words (T-189); the Fork dialog below stays in English.
+// The notice's own words (T-189); the Fork dialog's are in forkText below.
 const writerText = strings({
   continuesIn: "This conversation continues in ",
   continuesFrom: (closed: boolean, turns: number) =>
@@ -52,6 +52,63 @@ const writerText = strings({
   conflict: "另一个 Codex 客户端仍占有此会话（即使它的 Turn 已经结束），因此无法在这里继续。请在该客户端中释放它后重试，或从官方 Codex 分叉继续。",
   tryAgain: "重试",
   fork: "在分叉中继续…",
+});
+
+// The Fork dialog's own words (T-189). The folder, model, reasoning effort,
+// project, the agent name typed, Core's warnings and its outcome message are
+// shown as they are.
+const forkText = strings({
+  title: "Continue in a Codex fork",
+  description: "Creates a new native Codex session and a new agent from this conversation’s history through its latest completed turn. Nothing happens until you confirm.",
+  reading: "Reading this session’s history…",
+  preview: "Fork preview",
+  copies: (turns: number) => `Copies ${turns} ${turns === 1 ? "turn" : "turns"}`,
+  later: (turns: number) => `${turns} later not included`,
+  history: (completed: string | null) =>
+    completed ? `History up to and including the latest completed turn, completed ${completed}.` : "History up to and including the latest completed turn.",
+  reasoning: (effort: string) => ` · ${effort} reasoning`,
+  currentPermissions: "Current permissions",
+  name: "Agent name",
+  note: (later: boolean): ReactNode => (
+    <>
+      This creates a <strong>new native session</strong> and a <strong>new agent</strong> with this folder, model, reasoning and
+      permissions. The original session, its client and this entry stay open; nothing is closed for you.
+      {later && " Later turns (running, interrupted or failed) stay with the original session."} Live sub-agents and the other
+      client’s tools don’t carry over. Your unsent draft is copied to the new agent’s message box (unless it already has one);
+      nothing is sent.
+    </>
+  ),
+  uncertain: "The fork result isn’t confirmed yet. ",
+  failed: "The fork didn’t complete. ",
+  cancel: "Cancel",
+  forking: "Forking…",
+  again: "Fork again anyway",
+  tryAgain: "Try again",
+  fork: "Fork and continue",
+}, {
+  title: "在 Codex 分叉中继续",
+  description: "用此会话截至最新已完成 Turn 的历史，创建一个新的原生 Codex 会话和一个新 Agent。确认之前不会发生任何事。",
+  reading: "正在读取此会话的历史…",
+  preview: "分叉预览",
+  copies: (turns) => `复制 ${turns} 个 Turn`,
+  later: (turns) => `之后的 ${turns} 个不包含在内`,
+  history: (completed) => (completed ? `历史截至并包括最新已完成的 Turn（完成于 ${completed}）。` : "历史截至并包括最新已完成的 Turn。"),
+  reasoning: (effort) => ` · 推理 ${effort}`,
+  currentPermissions: "当前权限",
+  name: "Agent 名称",
+  note: (later) => (
+    <>
+      这会用此文件夹、模型、推理和权限创建一个<strong>新的原生会话</strong>和一个<strong>新 Agent</strong>。原会话、它的客户端和这个条目都保持打开；不会替你关闭任何东西。
+      {later && "之后的 Turn（运行中、被中断或失败的）留在原会话中。"}运行中的子 Agent 和另一个客户端的工具不会带过去。你未发送的草稿会复制到新 Agent 的输入框（如果它还没有草稿）；不会发送任何内容。
+    </>
+  ),
+  uncertain: "分叉结果尚未确认。",
+  failed: "分叉没有完成。",
+  cancel: "取消",
+  forking: "正在分叉…",
+  again: "仍然再次分叉",
+  tryAgain: "重试",
+  fork: "分叉并继续",
 });
 
 /** Explains another client's ownership, or where the session continues. */
@@ -225,12 +282,14 @@ export function ForkCodexDialog({
     }
   }
 
+  const language = useLanguage();
+  const t = forkText(language);
   return (
     <Modal
       open={open}
       onOpenChange={(next) => !busy && onOpenChange(next)}
-      title="Continue in a Codex fork"
-      description="Creates a new native Codex session and a new agent from this conversation’s history through its latest completed turn. Nothing happens until you confirm."
+      title={t.title}
+      description={t.description}
     >
       <form
         className="session-import create-form codex-fork-dialog"
@@ -241,26 +300,22 @@ export function ForkCodexDialog({
       >
         {loading && (
           <p role="status" className="remote-field-note">
-            <LoaderCircle size={14} className="spin" /> Reading this session’s
-            history…
+            <LoaderCircle size={14} className="spin" /> {t.reading}
           </p>
         )}
         {preview && (
           <>
-            <section className="session-preview" aria-label="Fork preview">
+            <section className="session-preview" aria-label={t.preview}>
               <div className="session-preview-heading">
                 <span>
-                  <GitFork size={14} /> Copies {preview.includedTurns}{" "}
-                  {preview.includedTurns === 1 ? "turn" : "turns"}
+                  <GitFork size={14} /> {t.copies(preview.includedTurns)}
                 </span>
                 {preview.excludedTurns > 0 && (
-                  <span>{preview.excludedTurns} later not included</span>
+                  <span>{t.later(preview.excludedTurns)}</span>
                 )}
               </div>
               <p className="session-preview-excerpt">
-                {preview.throughCompletedAt
-                  ? `History up to and including the latest completed turn, completed ${new Date(preview.throughCompletedAt * 1000).toLocaleString()}.`
-                  : "History up to and including the latest completed turn."}
+                {t.history(preview.throughCompletedAt ? new Date(preview.throughCompletedAt * 1000).toLocaleString() : null)}
               </p>
               <div className="session-preview-folder">
                 <Folder size={14} />
@@ -269,11 +324,12 @@ export function ForkCodexDialog({
               <p className="session-preview-model">
                 {preview.model}
                 {preview.reasoningEffort
-                  ? ` · ${preview.reasoningEffort} reasoning`
+                  ? t.reasoning(preview.reasoningEffort)
                   : ""}
                 {" · "}
-                {permissionLabel(preview.permissionPreset) ||
-                  "Current permissions"}
+                {permissionLabelIn(preview.permissionPreset, language) ||
+                  permissionLabel(preview.permissionPreset) ||
+                  t.currentPermissions}
                 {preview.projectId
                   ? ` · ${projectLabel(preview.projectId)}`
                   : ""}
@@ -291,7 +347,7 @@ export function ForkCodexDialog({
               disabled={busy || !through}
             >
               <label>
-                Agent name
+                {t.name}
                 <input
                   value={name}
                   onChange={(event) => setName(event.target.value)}
@@ -300,24 +356,12 @@ export function ForkCodexDialog({
                 />
               </label>
             </fieldset>
-            <p className="session-handoff-note">
-              This creates a <strong>new native session</strong> and a{" "}
-              <strong>new agent</strong> with this folder, model, reasoning and
-              permissions. The original session, its client and this entry stay
-              open; nothing is closed for you.
-              {preview.excludedTurns > 0 &&
-                " Later turns (running, interrupted or failed) stay with the original session."}{" "}
-              Live sub-agents and the other client’s tools don’t carry over.
-              Your unsent draft is copied to the new agent’s message box (unless
-              it already has one); nothing is sent.
-            </p>
+            <p className="session-handoff-note">{t.note(preview.excludedTurns > 0)}</p>
           </>
         )}
         {outcome && (
           <p role="alert" className="remote-field-error">
-            {uncertain
-              ? "The fork result isn’t confirmed yet. "
-              : "The fork didn’t complete. "}
+            {uncertain ? t.uncertain : t.failed}
             {outcome.message}
           </p>
         )}
@@ -333,7 +377,7 @@ export function ForkCodexDialog({
             disabled={busy}
             onClick={() => onOpenChange(false)}
           >
-            Cancel
+            {t.cancel}
           </button>
           <button
             className="primary-button"
@@ -344,13 +388,7 @@ export function ForkCodexDialog({
             ) : (
               <GitFork size={15} />
             )}
-            {busy
-              ? "Forking…"
-              : uncertain
-                ? "Fork again anyway"
-                : outcome
-                  ? "Try again"
-                  : "Fork and continue"}
+            {busy ? t.forking : uncertain ? t.again : outcome ? t.tryAgain : t.fork}
           </button>
         </div>
       </form>

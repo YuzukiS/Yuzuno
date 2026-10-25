@@ -15,6 +15,8 @@ import { ResultChart } from "./ResultChart";
 import { SourceLinks } from "./SourceLinks";
 import { PublishedClarification } from "./ClarificationHost";
 import { PublishedTaskStatus } from "./TaskStatusProposal";
+import { resultText } from "./result-text";
+import { useStrings } from "../i18n";
 import "./intelligent-ui.css";
 
 function Continue({
@@ -26,6 +28,7 @@ function Continue({
   instruction: string;
   requiresSelection?: boolean;
 }) {
+  const t = useStrings(resultText);
   const { onDraft, selection, title } = useResult();
   const [addedDraft, setAddedDraft] = useState<string | null>(null);
   const draft = `Regarding your interactive result “${title}”:\n${instruction}${selection.length ? `\n\nSelected:\n${selection.map((row) => `- ${row}`).join("\n")}` : ""}`;
@@ -35,11 +38,7 @@ function Continue({
       <p>{instruction}</p>
       <div>
         <span>
-          {selection.length
-            ? `${selection.length} selected`
-            : requiresSelection
-              ? "Select an item to continue"
-              : "Ready when you are"}
+          {selection.length ? t.selected(selection.length) : requiresSelection ? t.selectFirst : t.ready}
         </span>
         <button
           type="button"
@@ -55,9 +54,7 @@ function Continue({
         </button>
       </div>
       <small role="status">
-        {added
-          ? "Added to your draft. You can edit it before sending."
-          : "Adds to your draft · you choose when to send"}
+        {added ? t.added : t.adds}
       </small>
     </div>
   );
@@ -75,13 +72,28 @@ class PartBoundary extends Component<{ children: ReactNode }, { failed: boolean 
   }
   render() {
     return this.state.failed ? (
-      <p className="result-part-error" role="status">
-        This part of the result couldn’t be displayed.
-      </p>
+      <PartFailed />
     ) : (
       this.props.children
     );
   }
+}
+function PartFailed() {
+  const t = useStrings(resultText);
+  return (
+    <p className="result-part-error" role="status">
+      {t.partFailed}
+    </p>
+  );
+}
+function SourcesPart({ ids }: { ids: string[] }) {
+  const t = useStrings(resultText);
+  return (
+    <div className="result-source-list">
+      <span>{t.sources}</span>
+      <SourceLinks ids={ids} />
+    </div>
+  );
 }
 export function guarded<P extends object>(Part: ComponentType<P>): ComponentType<P> {
   return function Guarded(props: P) {
@@ -124,12 +136,7 @@ const parts = {
     ),
     Table: ({ props }) => <ResultTable {...props} />,
     BarChart: ({ props }) => <ResultChart {...props} />,
-    Sources: ({ props }) => (
-      <div className="result-source-list">
-        <span>Sources</span>
-        <SourceLinks ids={props.items.map((item) => item.id)} />
-      </div>
-    ),
+    Sources: ({ props }) => <SourcesPart ids={props.items.map((item) => item.id)} />,
     Continue: ({ props }) => <Continue {...props} />,
     TaskStatus: ({ props }) => <PublishedTaskStatus proposal={props} />,
 } satisfies Parameters<typeof defineRegistry<typeof catalog>>[1]["components"];
@@ -157,6 +164,7 @@ export default function InteractiveResult({
   onDraft?: (text: string) => void;
   onInteract?: () => void;
 }) {
+  const t = useStrings(resultText);
   return (
     <div
       className="interactive-result"
@@ -173,7 +181,7 @@ export default function InteractiveResult({
       <details className="result-disclosure" open>
         <summary>
           <Yuzu size={19} />
-          <span>Interactive result</span>
+          <span>{t.title}</span>
           <ChevronRight size={14} />
         </summary>
         <ResultProvider
@@ -194,8 +202,8 @@ export default function InteractiveResult({
           </StateProvider>
         </ResultProvider>
         <details className="result-original">
-          <summary>View result JSON</summary>
-          <CopyButton text={raw} label="Copy result JSON" />
+          <summary>{t.viewJson}</summary>
+          <CopyButton text={raw} label={t.copy} />
           <pre>{raw}</pre>
         </details>
       </details>
