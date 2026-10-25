@@ -1,7 +1,10 @@
 // T-193 slice 3: Settings → Draft storage. The list reads draft manifests only;
 // one draft is opened only when chosen, shown whole and saved as a text file
 // only when asked; nothing is written, and drafts of Agents this Workspace
-// doesn't list are only counted. Synthetic drafts only.
+// doesn't list are only counted. A draft now says which Workspace it was
+// written in (T-195): another Workspace's is not shown or counted here, and
+// one saved before that was recorded is shown as exactly that. Synthetic
+// drafts only.
 import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -32,14 +35,23 @@ async function until(check, what = "Expected draft state") {
   assert.fail(`${what} did not appear`);
 }
 const image = { id: `${"a".repeat(64)}.png`, agentId: "a1", name: "screen.png", width: 10, height: 10, bytes: 100 };
+const WORKSPACE = "ws-1";
+/** The key a draft of this Workspace's Agent is saved under (T-195). */
+const mine = (agent) => JSON.stringify([WORKSPACE, agent]);
 const seed = {
-  "yuzuno.composer.v1:a1": JSON.stringify({ version: 1, nextNumber: 2, parts: [{ kind: "text", text: "Hello there " }, { kind: "paste", id: "p1", number: 1, bodyId: "b1" }], images: [image] }),
-  "yuzuno.paste.v1:a1:b1": "PASTED BODY line one\nline two",
+  [`yuzuno.composer.v1:${mine("a1")}`]: JSON.stringify({ version: 1, nextNumber: 2, parts: [{ kind: "text", text: "Hello there " }, { kind: "paste", id: "p1", number: 1, bodyId: "b1" }], images: [image] }),
+  [`yuzuno.paste.v1:${mine("a1")}:b1`]: "PASTED BODY line one\nline two",
+  // Saved before Workspaces were recorded: the Agent only, in the string map.
   "yuzuno.drafts": JSON.stringify({ a2: "legacy words" }),
-  "yuzuno.composer.v1:a3": "{damaged",
-  "yuzuno.composer.v1:a4": JSON.stringify({ version: 1, nextNumber: 1, parts: [] }),
-  "yuzuno.composer.v1:a5": JSON.stringify({ version: 1, nextNumber: 2, parts: [{ kind: "paste", id: "p9", number: 1, bodyId: "gone" }] }),
-  "yuzuno.composer.v1:zz": JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "another Workspace's words" }] }),
+  [`yuzuno.composer.v1:${mine("a3")}`]: "{damaged",
+  [`yuzuno.composer.v1:${mine("a4")}`]: JSON.stringify({ version: 1, nextNumber: 1, parts: [] }),
+  [`yuzuno.composer.v1:${mine("a5")}`]: JSON.stringify({ version: 1, nextNumber: 2, parts: [{ kind: "paste", id: "p9", number: 1, bodyId: "gone" }] }),
+  // This Workspace's, for an Agent it no longer lists: counted, not shown.
+  [`yuzuno.composer.v1:${mine("zz")}`]: JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "an unlisted Agent's words" }] }),
+  [`yuzuno.composer.v1:${mine("a7")}`]: JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "Willow's words" }] }),
+  // Another Workspace at this address, for an Agent ID this one also uses:
+  // neither shown nor counted here, and never read as this Workspace's.
+  [`yuzuno.composer.v1:${JSON.stringify(["ws-other", "a1"])}`]: JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "another Workspace's words" }] }),
 };
 const agents = [
   { id: "a1", name: "Cedar" },
@@ -47,6 +59,7 @@ const agents = [
   { id: "a3", name: "Maple" },
   { id: "a4", name: "Birch" },
   { id: "a5", name: "Rowan" },
+  { id: "a7", name: "Willow" },
 ];
 
 function mount({ refuse = false, extra = {} } = {}) {
@@ -73,13 +86,20 @@ function mount({ refuse = false, extra = {} } = {}) {
   w.URL.revokeObjectURL = () => {};
   w.HTMLAnchorElement.prototype.click = function () { saves.links.push(this.getAttribute("download")); };
   w.eval(bundle);
+  // Every render is in a Workspace, as the page is; a test that needs another
+  // one passes its own.
+  const render = w.renderDrafts;
+  w.renderDrafts = (props) => render({ workspaceId: WORKSPACE, ...props });
   const section = () => doc.querySelector("#settings-drafts");
-  const row = (id) => doc.querySelector(`[data-agent="${id}"]`);
+  const row = (id) => doc.querySelector(`[data-agent="${id}"]:not([data-unattributed])`);
+  /** A row for a draft that does not say which Workspace it was written in. */
+  const stranded = (id) => doc.querySelector(`[data-agent="${id}"][data-unattributed]`);
   const shown = () => doc.querySelector("#settings-drafts textarea")?.value;
   const blobText = (blob) => new Promise((resolve) => { const r = new w.FileReader(); r.onload = () => resolve(r.result); r.readAsText(blob); });
   const tick = (id) => row(id).querySelector('input[type="checkbox"]');
+  const tickStranded = (id) => stranded(id).querySelector('input[type="checkbox"]');
   const button = (text) => [...section().querySelectorAll("button")].find((b) => b.textContent.trim() === text);
-  return { w, doc, errors, reads, writes, saves, section, row, shown, blobText, tick, button, elsewhere, refusing, close: () => w.close() };
+  return { w, doc, errors, reads, writes, saves, section, row, stranded, shown, blobText, tick, tickStranded, button, elsewhere, refusing, close: () => w.close() };
 }
 
 test("the list reads manifests only, shows this Workspace's drafts as they are, and counts the others", async (t) => {
@@ -90,13 +110,27 @@ test("the list reads manifests only, shows this Workspace's drafts as they are, 
   p.w.renderDrafts({ active: true, agents });
   await until(() => p.row("a1"), "the list");
   assert.match(p.row("a1").textContent, /^Cedar12 characters of text, 1 pasted text, 1 image \(referenced; not saved in the file\) Show$/);
-  assert.match(p.row("a2").textContent, /^Pine \(closed\)Saved by an earlier version: 12 characters of text Show$/);
+  assert.equal(p.row("a2") === null, true, "a draft that does not name a Workspace is not shown as this one's");
+  assert.match(
+    p.stranded("a2").textContent,
+    /^Pine \(closed\)Workspace not recorded: Saved by an earlier version: 12 characters of text Show$/,
+    "it is shown as exactly what it is, under the name of the Agent ID it does say",
+  );
   assert.match(p.row("a3").textContent, /^MapleCan't be read \(.+\); left as it is\.$/, "a damaged draft is said, and offers nothing");
   assert.equal(p.row("a4") === null, true, "an empty saved draft is no draft");
-  assert.equal(p.row("zz") === null, true, "another Workspace's draft is not listed");
+  assert.equal(p.row("zz") === null, true, "a draft for an Agent this Workspace doesn't list is not shown");
   assert.match(p.section().textContent, /1 saved draft is for Agent IDs this Workspace doesn't list, so it is not shown here\./);
-  assert.match(p.section().textContent, /which Workspace it was written in is not recorded, so a matching Agent doesn't prove it/);
-  assert.ok(!p.section().textContent.includes("another Workspace's words"));
+  assert.match(p.section().textContent, /1 saved draft does not say which Workspace it was written in, from before Yuzuno recorded that\./);
+  assert.match(p.section().textContent, /A draft is saved under the Workspace and Agent it was written in, so another Workspace's drafts at this address are not shown here/);
+  assert.ok(
+    !p.section().textContent.includes("another Workspace's words"),
+    "the other Workspace's draft is neither shown nor counted",
+  );
+  assert.deepEqual(
+    p.reads.filter((key) => key.includes("ws-other")),
+    [],
+    "and it is not even read",
+  );
   assert.deepEqual(p.reads.filter((key) => key.startsWith("yuzuno.paste.v1:")), [], "no pasted text is read for the list");
   assert.deepEqual(p.writes, [], "nothing is written");
   assert.deepEqual(p.errors, []);
@@ -108,7 +142,7 @@ test("a chosen draft is shown whole, pasted text included, and saved as a text f
   await until(() => p.row("a1"));
   p.row("a1").querySelector("button").click();
   const text = await until(() => p.shown(), "the chosen draft");
-  assert.match(text, /^Yuzuno draft for Cedar\nExported \S+ from the copy saved in this browser for this site\. Text typed since it was last saved is not included\.\nSaved under the Agent's ID only: the Workspace it was written in is not recorded\.\n/);
+  assert.match(text, /^Yuzuno draft for Cedar\nExported \S+ from the copy saved in this browser for this site\. Text typed since it was last saved is not included\.\nSaved under the Workspace and Agent it was written in\.\n/);
   assert.match(text, /^Images in the draft: 1 \(references only; the images themselves are not in this file\)$/m);
   assert.match(text, /Hello there \n\[Pasted text #1, 2 lines\]\nPASTED BODY line one\nline two\n\[End of pasted text #1\]\n$/);
   assert.deepEqual(p.reads.filter((key) => key.startsWith("yuzuno.paste.v1:")), ["yuzuno.paste.v1:a1:b1"], "only the chosen draft's pasted text is read");
@@ -119,15 +153,27 @@ test("a chosen draft is shown whole, pasted text included, and saved as a text f
   assert.match(p.saves.links[0], /^yuzuno-draft-Cedar-[\dTZ-]+\.txt$/);
   assert.equal(await p.blobText(p.saves.blobs[0]), text, "the file holds the shown text");
   assert.match(p.section().textContent, /Your browser was asked to save yuzuno-draft-Cedar-[\dTZ-]+\.txt\./);
-  // An older version's draft is shown the same way.
-  p.row("a2").querySelector("button").click();
-  await until(() => /legacy words$/.test(p.shown() || ""), "the older version's draft");
+  // A draft that does not name a Workspace is shown the same way, and says so.
+  p.stranded("a2").querySelector("button").click();
+  await until(() => /legacy words$/.test(p.shown() || ""), "the draft saved before Workspaces were recorded");
+  assert.match(
+    p.shown(),
+    /^Yuzuno draft for Pine\nExported \S+ from the copy saved in this browser for this site\. Text typed since it was last saved is not included\.\nSaved before Yuzuno recorded the Workspace a draft belongs to: it names this Agent ID only, so which Workspace it was written in is not known\.\n/,
+  );
   // Another Agent joins the Workspace: the list is read again and the open draft stays.
   p.w.renderDrafts({ active: true, agents: [...agents, { id: "a6", name: "Elm" }] });
   await tick(); await tick();
-  assert.match(p.shown() || "", /legacy words$/, "the open draft stays while its Agent is listed");
-  // Its Agent is no longer listed: the open draft is put away.
+  assert.match(p.shown() || "", /legacy words$/, "the open draft stays");
+  // That Agent ID is no longer listed. The draft is still on this device and
+  // was never this Workspace's to begin with, so it stays -- named by its ID.
   p.w.renderDrafts({ active: true, agents: agents.filter((agent) => agent.id !== "a2") });
+  await until(() => p.stranded("a2")?.textContent.startsWith("a2"), "the row named by its Agent ID");
+  assert.match(p.shown() || "", /legacy words$/);
+  // An Agent this Workspace lists no longer: its draft is this Workspace's,
+  // so the open draft is put away with the row.
+  p.row("a1").querySelector("button").click();
+  await until(() => /PASTED BODY/.test(p.shown() || ""), "this Workspace's draft");
+  p.w.renderDrafts({ active: true, agents: agents.filter((agent) => agent.id !== "a1") });
   await until(() => p.shown() === undefined, "the draft of an Agent no longer listed is put away");
   assert.deepEqual(p.writes, [], "nothing is written");
 });
@@ -159,7 +205,7 @@ test("storage the browser refuses is said, and nothing is listed", async (t) => 
 });
 
 // T-193: several drafts, ticked, saved together as one versioned file.
-const second = { "yuzuno.composer.v1:a6": JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "the other Cedar's words" }] }) };
+const second = { [`yuzuno.composer.v1:${mine("a6")}`]: JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "the other Cedar's words" }] }) };
 const twins = [...agents, { id: "a6", name: "Cedar" }];
 
 test("ticked drafts are read only when downloaded, kept apart by Agent ID under one name, and saved as one versioned file", async (t) => {
@@ -168,7 +214,8 @@ test("ticked drafts are read only when downloaded, kept apart by Agent ID under 
   await until(() => p.row("a6"), "the list");
   assert.equal(p.tick("a3") === null, true, "a damaged draft can't be ticked");
   assert.equal(p.button("Download selected (.json)").disabled, true, "nothing ticked, nothing to save");
-  for (const id of ["a6", "a1", "a2"]) p.tick(id).click();
+  for (const id of ["a6", "a1"]) p.tick(id).click();
+  p.tickStranded("a2").click();
   await until(() => /3 drafts chosen/.test(p.section().textContent), "the choice");
   assert.deepEqual(p.reads.filter((key) => key.startsWith("yuzuno.paste.v1:")), [], "ticking reads no pasted text");
   p.button("Download selected (.json)").click();
@@ -178,16 +225,18 @@ test("ticked drafts are read only when downloaded, kept apart by Agent ID under 
   const file = JSON.parse(await p.blobText(p.saves.blobs[0]));
   assert.deepEqual({ format: file.format, version: file.version }, { format: "yuzuno-drafts", version: 1 });
   assert.match(file.exportedAt, /^\d{4}-\d\d-\d\dT/);
-  assert.match(file.note, /text typed since it was last saved is not included\. Each draft is saved under its Agent's ID only: the Workspace it was written in is not recorded\./);
+  assert.match(file.note, /text typed since it was last saved is not included\. Each draft says the Workspace and Agent it was written in, unless it was saved before Yuzuno recorded the Workspace \(workspace: notRecorded\)\./);
   // In list order, each its own, as saved: pasted text in place, images only counted.
   assert.deepEqual(file.drafts, [
-    { agentId: "a1", name: "Cedar", closed: false, savedBy: "thisVersion", images: 1, skills: [],
+    { agentId: "a1", name: "Cedar", closed: false, workspace: "thisWorkspace", savedBy: "thisVersion", images: 1, skills: [],
       parts: [{ kind: "text", text: "Hello there " }, { kind: "paste", number: 1, lines: 2, text: "PASTED BODY line one\nline two" }] },
-    { agentId: "a2", name: "Pine", closed: true, savedBy: "earlierVersion", images: 0, skills: [], parts: [{ kind: "text", text: "legacy words" }] },
-    { agentId: "a6", name: "Cedar", closed: false, savedBy: "thisVersion", images: 0, skills: [], parts: [{ kind: "text", text: "the other Cedar's words" }] },
+    { agentId: "a6", name: "Cedar", closed: false, workspace: "thisWorkspace", savedBy: "thisVersion", images: 0, skills: [], parts: [{ kind: "text", text: "the other Cedar's words" }] },
+    // Each draft says whether it names the Workspace it was written in, so a
+    // file holding both cannot be mistaken for all one Workspace's (T-195).
+    { agentId: "a2", name: "Pine", closed: true, workspace: "notRecorded", savedBy: "earlierVersion", images: 0, skills: [], parts: [{ kind: "text", text: "legacy words" }] },
   ]);
   assert.ok(!JSON.stringify(file).includes("screen.png"), "no image is in the file, not even by name");
-  assert.deepEqual(p.reads.filter((key) => key.startsWith("yuzuno.paste.v1:")), ["yuzuno.paste.v1:a1:b1"], "only the ticked drafts' pasted text is read");
+  assert.deepEqual(p.reads.filter((key) => key.startsWith("yuzuno.paste.v1:")), [`yuzuno.paste.v1:${mine("a1")}:b1`], "only the ticked drafts' pasted text is read");
   assert.match(p.section().textContent, /Your browser was asked to save yuzuno-drafts-[\dTZ-]+\.json \(3 drafts\)\./);
   assert.deepEqual(p.writes, [], "nothing is written");
   // The one-draft text file is as before.
@@ -223,13 +272,13 @@ test("when a ticked draft can't be read, nothing is downloaded, it is named, the
 test("ticked drafts are saved as they are when downloaded: one another window re-saved says so, one it emptied is named, not saved empty", async (t) => {
   const p = mount(); t.after(p.close);
   p.w.renderDrafts({ active: true, agents });
-  await until(() => p.row("a2"));
+  await until(() => p.row("a7"));
   p.tick("a1").click();
-  p.tick("a2").click();
+  p.tick("a7").click();
   await until(() => /2 drafts chosen/.test(p.section().textContent));
-  // Another window, after the list was read: Pine's draft saved in this version's form, Cedar's emptied.
-  p.elsewhere("yuzuno.composer.v1:a2", JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "re-saved words" }] }));
-  p.elsewhere("yuzuno.composer.v1:a1", JSON.stringify({ version: 1, nextNumber: 1, parts: [] }));
+  // Another window, after the list was read: Willow's draft re-saved, Cedar's emptied.
+  p.elsewhere(`yuzuno.composer.v1:${mine("a7")}`, JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "re-saved words" }] }));
+  p.elsewhere(`yuzuno.composer.v1:${mine("a1")}`, JSON.stringify({ version: 1, nextNumber: 1, parts: [] }));
   p.button("Download selected (.json)").click();
   const alert = await until(() => p.section().querySelector(".draft-export-many [role=\"alert\"]"), "the emptied draft is said");
   assert.equal(alert.textContent, "Nothing was downloaded: 1 of 2 chosen drafts can't be read (Cedar: it is no longer saved here). Untick it to save the rest.");
@@ -239,7 +288,7 @@ test("ticked drafts are saved as they are when downloaded: one another window re
   p.button("Download selected (.json)").click();
   await until(() => p.saves.links.length === 1);
   assert.deepEqual(JSON.parse(await p.blobText(p.saves.blobs[0])).drafts, [
-    { agentId: "a2", name: "Pine", closed: true, savedBy: "thisVersion", images: 0, skills: [], parts: [{ kind: "text", text: "re-saved words" }] },
+    { agentId: "a7", name: "Willow", closed: false, workspace: "thisWorkspace", savedBy: "thisVersion", images: 0, skills: [], parts: [{ kind: "text", text: "re-saved words" }] },
   ]);
   assert.deepEqual(p.writes, [], "the page wrote nothing");
 });
@@ -247,16 +296,16 @@ test("ticked drafts are saved as they are when downloaded: one another window re
 test("a ticked draft whose saved copy the browser refuses to read is named: nothing is downloaded, the choice stays, nothing is written", async (t) => {
   const p = mount(); t.after(p.close);
   p.w.renderDrafts({ active: true, agents });
-  await until(() => p.row("a2"));
+  await until(() => p.row("a7"));
   p.tick("a1").click();
-  p.tick("a2").click();
+  p.tick("a7").click();
   await until(() => /2 drafts chosen/.test(p.section().textContent));
-  p.refusing.add("yuzuno.composer.v1:a1");
+  p.refusing.add(`yuzuno.composer.v1:${mine("a1")}`);
   p.button("Download selected (.json)").click();
   const alert = await until(() => p.section().querySelector(".draft-export-many [role=\"alert\"]"), "the refused read is said");
   assert.match(alert.textContent, /^Nothing was downloaded: 1 of 2 chosen drafts can't be read \(Cedar: [^)]*insecure[^)]*\)\. Untick it to save the rest\.$/);
   assert.equal(p.saves.links.length, 0, "no partial file");
-  assert.deepEqual([p.tick("a1").checked, p.tick("a2").checked], [true, true], "the choice stays");
+  assert.deepEqual([p.tick("a1").checked, p.tick("a7").checked], [true, true], "the choice stays");
   assert.deepEqual(p.writes, [], "nothing is written");
   assert.deepEqual(p.errors, [], "no error escapes the page");
 });
@@ -273,9 +322,9 @@ test("switched to Chinese in another window, the page's words change and the cho
     p.w.dispatchEvent(new p.w.StorageEvent("storage", { key: "yuzuno.language" }));
   };
   p.w.renderDrafts({ active: true, agents });
-  await until(() => p.row("a2"));
+  await until(() => p.row("a7"));
   p.tick("a1").click();
-  p.tick("a2").click();
+  p.tick("a7").click();
   p.row("a1").querySelector("button").click();
   const text = await until(() => p.shown(), "the chosen draft");
   p.button("Download .txt").click();
@@ -284,14 +333,15 @@ test("switched to Chinese in another window, the page's words change and the cho
   language("zh-Hans");
   await until(() => p.section().querySelector("h3").textContent === "此设备上的草稿", "shown in Chinese");
   assert.match(p.row("a1").textContent, /^Cedar文本 12 个字符，粘贴的文本 1 段，图片 1 张（仅引用；不保存在文件中） 显示$/);
-  assert.match(p.row("a2").textContent, /^Pine（已关闭）由早期版本保存：文本 12 个字符 显示$/);
+  assert.match(p.stranded("a2").textContent, /^Pine（已关闭）未记录 Workspace：由早期版本保存：文本 12 个字符 显示$/);
   assert.match(p.row("a3").textContent, /^Maple无法读取（.+）；保持原样。$/, "the browser's words for a damaged draft, as it gave them");
   assert.match(p.section().textContent, /已选择 2 份草稿。只有在下载时才会读取它们粘贴的文本。/);
   assert.match(p.section().textContent, /另有 1 份已保存的草稿属于此 Workspace 未列出的 Agent ID，因此不在这里显示。/);
+  assert.match(p.section().textContent, /有 1 份已保存的草稿没有记录它写在哪个 Workspace（在 Yuzuno 开始记录之前保存）。/);
   assert.match(p.section().textContent, /已请求浏览器保存 yuzuno-draft-Cedar-[\dTZ-]+\.txt。如果没有出现文件，请选中下方文字并复制。/, "asked, not said to be saved");
   assert.equal(p.shown(), text, "the shown draft is as it was, its export text as written");
   assert.equal(p.section().querySelector("textarea").getAttribute("aria-label"), "Cedar 已保存的草稿");
-  assert.deepEqual([p.tick("a1").checked, p.tick("a2").checked], [true, true], "the choice stays");
+  assert.deepEqual([p.tick("a1").checked, p.tick("a7").checked], [true, true], "the choice stays");
   assert.deepEqual([draftReads().length, p.writes, p.saves.links.length], [read, [], 1], "no draft read, nothing written or downloaded");
   language("en");
   await until(() => p.section().querySelector("h3").textContent === "Drafts on this device", "back in English");
