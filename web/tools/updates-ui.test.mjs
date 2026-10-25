@@ -635,9 +635,11 @@ test("Apply and Reload never republish a clean stale draft after another window 
         assert.equal(savedDraftText(f.w.localStorage, "a"), oldBody);
 
         // Independent writer shares storage, while this window retains its
-        // already-saved snapshot and makes no further local edits.
+        // already-saved snapshot and makes no further local edits. It writes
+        // the key this Workspace's Agent is saved under (T-195): another
+        // Workspace's key would be a different draft, not this one edited.
         new DraftStorage(f.w.localStorage).save(
-          "a",
+          JSON.stringify(["fixture-workspace", "a"]),
           external === "edit"
             ? { version: 1, nextNumber: 2, parts: [pastedText(newBody, 1)] }
             : emptyDraft(),

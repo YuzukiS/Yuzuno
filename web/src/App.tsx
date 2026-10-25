@@ -487,6 +487,12 @@ export function App() {
     top: number;
   } | null>(null);
   currentSelected.current = selected;
+  // The Workspace this window is in now, for work that finishes later. An
+  // Agent id can name a different Agent in another Workspace at this
+  // address, so "the same Agent is still open" is only true within the
+  // Workspace the work started in (T-195).
+  const currentWorkspace = useRef(workspaceId);
+  currentWorkspace.current = workspaceId;
   // The Agent whose conversation is on screen now, for a reply that comes later.
   const shownConversation = useRef<string | null>(null);
   shownConversation.current = homeOpen || listShown ? null : selected;
@@ -1753,6 +1759,11 @@ export function App() {
     const target = selected;
     const sentDraft = draft;
     const text = draftText(sentDraft);
+    // This send belongs to the Workspace and Agent it starts in: what it
+    // says when it finishes is for them, not for whatever is open by then.
+    const startedIn = workspaceId;
+    const here = () =>
+      currentSelected.current === target && currentWorkspace.current === startedIn;
     setActionError("");
     searchReading.current = false;
     setHistoryReading(false);
@@ -1857,9 +1868,11 @@ export function App() {
         sentDraft.skills?.map(({ name, path }) => ({ name, path })));
       clearIfUnchanged(target, sentDraft);
       refresh();
-      if (currentSelected.current === target) composer.current?.focus();
+      if (here()) composer.current?.focus();
     } catch (e) {
-      if (currentSelected.current === target) setActionError(errorText(e));
+      // A failure from a send that started in another Workspace is not this
+      // Workspace's to show, even when the Agent id is the same.
+      if (here()) setActionError(errorText(e));
     }
   }
   function reviewStarted(agentId: string, sentDraft: ComposerDraft) {
