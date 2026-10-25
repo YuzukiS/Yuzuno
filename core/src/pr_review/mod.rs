@@ -48,6 +48,10 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
             "/api/pr-reviews/settings",
             get(settings::get).post(settings::set).delete(settings::reset),
         )
+        .route(
+            "/api/projects/{id}/review-settings",
+            get(settings::get_project).post(settings::set_project).delete(settings::reset_project),
+        )
         .route("/api/pr-reviews", get(list).post(start))
         .route("/api/pr-reviews/{id}", get(report))
         .route("/api/pr-reviews/{id}/cancel", post(cancel))
@@ -614,7 +618,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     let task = json!({"type":"string","description":crate::collaboration_store::TASK_ID});
     let definition = |name: &str, description: &str, properties: Value, required: &[&str]| json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}});
     vec![
-      definition("review_start","Explicitly request an independent read-only review with the Workspace review Harness/model settings of a task-linked PR. Returns reviewId immediately; Core continues after your turn ends and sends a normal system mailbox notification to you at completion/failure/cancellation. Finish your turn after acceptance; do not poll or sleep waiting for the review. Reuse requestId only for an identical retry, including after a lost reply. A new requestId is a new paid review round. Review findings, CI and task completion are separate; this does not merge, run source code or change task status.",json!({"requestId":text,"taskId":task,"linkId":text,
+      definition("review_start","Explicitly request an independent read-only review with the review Harness/model settings for its task (its project's, else the Workspace's, else built in) of a task-linked PR. Returns reviewId immediately; Core continues after your turn ends and sends a normal system mailbox notification to you at completion/failure/cancellation. Finish your turn after acceptance; do not poll or sleep waiting for the review. Reuse requestId only for an identical retry, including after a lost reply. A new requestId is a new paid review round. Review findings, CI and task completion are separate; this does not merge, run source code or change task status.",json!({"requestId":text,"taskId":task,"linkId":text,
         "baseSha":resolved("Optional: the PR's own base as github_links shows it (snapshot.baseSha), in lowercase; not the current tip of the target branch, which may have moved on. A malformed one is refused before any round starts; one that is no longer the PR's ends its round before a reviewer runs."),
         "headSha":resolved("Optional: the PR head as github_links shows it, in lowercase. A malformed one is refused before any round starts; one that is no longer the PR's ends its round before a reviewer runs."),
         "acknowledgeUnreviewable":{"type":"boolean","description":"Optional. When the latest completed round of this exact base and head found changed paths no round can cover (unsupported, too large, or excluded by the base's .yuzuno/review-scope.json), a new round is refused before it is created. true reviews the other paths anyway. It only acknowledges that those paths stay unreviewed: not an approval, not a lifted round limit, and the result is judged the same way."},
