@@ -21,7 +21,7 @@ const sample = (clock: ClockFormat) => {
 
 const choices: { value: ClockFormat; label: string; note: string }[] = [
   { value: "system", label: "System", note: "As this browser writes times for its language and region." },
-  { value: "h12", label: "12-hour", note: "Morning and evening hours from 1 to 12." },
+  { value: "h12", label: "12-hour", note: "Morning and evening hours, as this language writes a 12-hour clock." },
   { value: "h24", label: "24-hour", note: "Hours from 0 to 23." },
 ];
 

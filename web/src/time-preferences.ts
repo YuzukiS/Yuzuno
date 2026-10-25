@@ -19,7 +19,8 @@ import {
  */
 
 /** - `system`: this browser's locale decides, as before.
- * - `h12`: a 12-hour clock, written as this locale writes one.
+ * - `h12`: a 12-hour clock, written as this locale writes one (1–12 in
+ *   English, 0–11 in Japanese).
  * - `h24`: a 24-hour clock, 0–23. */
 export const clockFormats = ["system", "h12", "h24"] as const;
 export type ClockFormat = (typeof clockFormats)[number];
