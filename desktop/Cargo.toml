@@ -35,6 +35,11 @@ tauri-plugin-opener = "2"
 # System notifications (T-188): its Rust API only, through notify.rs.
 tauri-plugin-notification = "=2.7.0"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS notifications with the user's answer for this app (T-188), through
+# UNUserNotificationCenter: its async API only, through notify.rs.
+mac-usernotifications = { version = "=0.3.1", default-features = false }
+
 [target.'cfg(windows)'.dependencies]
 # Microsoft's maintained Win32 bindings; keep native caption behavior intact.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_Registry"] }

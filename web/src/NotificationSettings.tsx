@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { isNative } from "./api";
-import { useDesktopNotifier } from "./desktop-notifier";
+import { knownDesktopNotifier, useDesktopNotifier } from "./desktop-notifier";
 import {
   browserHost,
   notificationAccess,
@@ -53,7 +53,7 @@ const text = strings({
     },
     app: {
       label: "Not available in this app",
-      help: "This app can’t show system notifications here yet: the iPhone app, the desktop app on macOS or Linux, and older desktop apps. Yuzuno in a browser can.",
+      help: "This app can’t show system notifications here yet: the iPhone app, the desktop app on Linux, and older desktop apps. Yuzuno in a browser can.",
     },
     insecure: {
       label: "Not available on this page",
@@ -62,12 +62,38 @@ const text = strings({
     "page-only": { label: "Not available in this browser", help: "This browser shows notifications only through a service worker, which Yuzuno doesn’t use." },
     "no-api": { label: "Not available in this browser", help: "This browser has no notifications for web pages." },
   } as Record<"allowed" | "not-requested" | "denied" | "through-app" | "app" | "insecure" | "page-only" | "no-api", Access>,
+  // The desktop app on macOS, as macOS told it (T-188).
+  macos: {
+    allowed: {
+      label: "Allowed",
+      help: "macOS allows this app’s notifications. How they show is up to System Settings → Notifications → Yuzuno, and Focus.",
+    },
+    quiet: {
+      label: "Allowed quietly",
+      help: "macOS delivers this app’s notifications quietly: to Notification Center, without a banner or sound. To change that: System Settings → Notifications → Yuzuno.",
+    },
+    "not-requested": {
+      label: "Not asked yet",
+      help: "Turning notifications on, or sending a test, asks macOS once. Nothing is asked before you do.",
+    },
+    denied: {
+      label: "Off in macOS",
+      help: "macOS doesn’t allow this app’s notifications, and this app won’t ask again. To allow them: System Settings → Notifications → Yuzuno, then come back here. Your choices below are kept.",
+    },
+  } as Record<"allowed" | "quiet" | "not-requested" | "denied", Access>,
+  unread: (detail?: string): Access => ({
+    label: "Not available now",
+    help: `This app couldn’t tell whether macOS allows its notifications: ${detail ?? "macOS gave an answer this app doesn’t know"}.`,
+  }),
   shown: "Your browser reports it was shown. If you didn’t see it, your system may be holding notifications back (Focus or Do Not Disturb).",
   handed: "Handed to Windows. Windows doesn’t tell this app whether it showed it: if you didn’t see it, check Windows notification settings and Focus.",
+  handedMacos: "Accepted by macOS. If you didn’t see it, check this app in System Settings → Notifications, and Focus.",
+  handedQuiet: "Accepted by macOS, which delivers this app’s notifications quietly: to Notification Center, without a banner or sound.",
   held: "Not sent: this app’s window was in front.",
   unconfirmed: "Sent, but your browser didn’t report it as shown within 5 seconds.",
   failed: (message: string) => `Your browser couldn’t show it: ${message}`,
-  failedApp: (message: string) => `This app couldn’t hand it to Windows: ${message}`,
+  failedApp: (system: string, message: string) => `This app couldn’t hand it to ${system}: ${message}`,
+  askFailed: (message: string) => `macOS didn’t ask: ${message}.`,
   refused: (help: string) => `Not sent. ${help}`,
   off: "Off",
   muted: "Muted",
@@ -81,7 +107,9 @@ const text = strings({
   systemRow: "System notifications",
   notify: "Notify me on this device",
   asksFirst: "Turning this on asks this browser for permission first.",
+  asksMacos: "Turning this on asks macOS first.",
   chosenOnly: "Only for what you choose below.",
+  afterMacos: "Kept for when macOS allows this app’s notifications.",
   what: "What to notify about",
   preview: "Show what was written",
   previewHelp: "Off: only who and why. A notification can show on a locked screen.",
@@ -89,7 +117,7 @@ const text = strings({
   muteHelp: "Keeps your choices. Agents, their mail and the Workspace are unchanged.",
   test: "Test notification",
   testHelp: "Sends one now, even while you’re looking, and shows what your browser reported.",
-  testHelpApp: "Sends one now, even while you’re looking. This app can tell only whether Windows took it.",
+  testHelpApp: (system: string) => `Sends one now, even while you’re looking. This app can tell only whether ${system} took it.`,
   sendTest: "Send a test",
   inside: "Inside Yuzuno",
   insideHelp:
@@ -119,18 +147,34 @@ const text = strings({
     },
     app: {
       label: "此应用中不可用",
-      help: "此应用在这里暂时还不能显示系统通知：iPhone 应用、macOS 或 Linux 上的桌面应用，以及较旧的桌面应用。在浏览器中使用 Yuzuno 可以。",
+      help: "此应用在这里暂时还不能显示系统通知：iPhone 应用、Linux 上的桌面应用，以及较旧的桌面应用。在浏览器中使用 Yuzuno 可以。",
     },
     insecure: { label: "此页面不可用", help: "浏览器只会从安全页面发出通知：https:// 地址或 localhost。此页面的地址都不是。" },
     "page-only": { label: "此浏览器不可用", help: "此浏览器只通过 service worker 显示通知，而 Yuzuno 不使用 service worker。" },
     "no-api": { label: "此浏览器不可用", help: "此浏览器没有面向网页的通知。" },
   },
+  macos: {
+    allowed: { label: "已允许", help: "macOS 允许此应用的通知。通知如何显示，取决于“系统设置 → 通知 → Yuzuno”和专注模式。" },
+    quiet: {
+      label: "已允许（静默）",
+      help: "macOS 以静默方式递送此应用的通知：只进入通知中心，没有横幅或声音。如需更改：系统设置 → 通知 → Yuzuno。",
+    },
+    "not-requested": { label: "尚未询问", help: "开启通知或发送测试时，会询问 macOS 一次。在你这样做之前不会询问。" },
+    denied: {
+      label: "macOS 中已关闭",
+      help: "macOS 不允许此应用的通知，此应用也不会再次询问。如需允许：系统设置 → 通知 → Yuzuno，然后回到这里。你在下方的选择会保留。",
+    },
+  },
+  unread: (detail) => ({ label: "暂不可用", help: `此应用无法确定 macOS 是否允许它的通知：${detail ?? "macOS 给出了此应用不认识的状态"}。` }),
   shown: "你的浏览器报告已显示。如果你没有看到，可能是系统暂时拦下了通知（专注模式或勿扰模式）。",
   handed: "已交给 Windows。Windows 不会告诉此应用是否显示了它：如果你没有看到，请检查 Windows 的通知设置和专注模式。",
+  handedMacos: "macOS 已接收。如果你没有看到，请在“系统设置 → 通知”中检查此应用，以及专注模式。",
+  handedQuiet: "macOS 已接收，它会以静默方式递送此应用的通知：只进入通知中心，没有横幅或声音。",
   held: "未发送：此应用的窗口在最前面。",
   unconfirmed: "已发送，但你的浏览器在 5 秒内没有报告已显示。",
   failed: (message) => `你的浏览器无法显示它：${message}`,
-  failedApp: (message) => `此应用无法把它交给 Windows：${message}`,
+  failedApp: (system, message) => `此应用无法把它交给 ${system}：${message}`,
+  askFailed: (message) => `macOS 没有询问：${message}。`,
   refused: (help) => `未发送。${help}`,
   off: "关闭",
   muted: "已静音",
@@ -143,7 +187,9 @@ const text = strings({
   systemRow: "系统通知",
   notify: "在此设备上通知我",
   asksFirst: "开启时会先向此浏览器请求权限。",
+  asksMacos: "开启时会先询问 macOS。",
   chosenOnly: "只通知你在下方选择的内容。",
+  afterMacos: "会保留，在 macOS 允许此应用的通知后生效。",
   what: "通知哪些内容",
   preview: "显示所写的内容",
   previewHelp: "关闭时只显示是谁以及原因。通知可能显示在锁定的屏幕上。",
@@ -151,7 +197,7 @@ const text = strings({
   muteHelp: "保留你的选择。Agent、它们的邮件和 Workspace 都不受影响。",
   test: "测试通知",
   testHelp: "立即发送一条，即使你正在看也会发送，并显示你的浏览器报告的结果。",
-  testHelpApp: "立即发送一条，即使你正在看也会发送。此应用只能知道 Windows 是否接收了它。",
+  testHelpApp: (system) => `立即发送一条，即使你正在看也会发送。此应用只能知道 ${system} 是否接收了它。`,
   sendTest: "发送测试",
   inside: "Yuzuno 内",
   insideHelp: "无论你在这里如何选择，“需要你处理”和未读动态始终在 Workspace 中显示。Agent 之间的消息是它们自己的邮件，不是给你的通知。",
@@ -161,29 +207,43 @@ const text = strings({
 
 /** What this browser allows, in the user's words, with what to do about it. */
 export function accessText(access: NotificationAccess, language: Language = "en"): Access {
-  return text(language).access[access.state === "unsupported" ? access.reason : access.state];
+  const t = text(language);
+  if (access.state === "unsupported") return access.reason === "unread" ? t.unread(access.detail) : t.access[access.reason];
+  if (access.state !== "through-app" && access.system === "macos")
+    return t.macos[access.state === "allowed" && access.quiet ? "quiet" : access.state];
+  return t.access[access.state];
 }
 
-const testText = (result: TestOutcome, language: Language, throughApp: boolean) => {
+/** The system the desktop app hands them to, when it does (T-188). */
+function appSystem(access: NotificationAccess): "Windows" | "macOS" | null {
+  if (access.state === "through-app") return "Windows";
+  if (access.state === "unsupported") return access.reason === "unread" ? "macOS" : null;
+  return access.system === "macos" ? "macOS" : null;
+}
+
+const testText = (result: TestOutcome, language: Language, access: NotificationAccess) => {
   const t = text(language);
+  const system = appSystem(access);
   switch (result.outcome) {
     case "shown":
       return t.shown;
     case "handed":
-      return t.handed;
+      if (system !== "macOS") return t.handed;
+      return access.state === "allowed" && access.quiet ? t.handedQuiet : t.handedMacos;
     case "held":
       return t.held;
     case "unconfirmed":
       return t.unconfirmed;
     case "failed":
-      return (throughApp ? t.failedApp : t.failed)(result.message);
+      return system ? t.failedApp(system, result.message) : t.failed(result.message);
     case "refused":
       return t.refused(accessText(result.access, language).help);
   }
 };
 
 /** What this browser allows now, read again when this window comes back
- * (the user may have changed it in the browser's settings meanwhile). */
+ * (the user may have changed it in the browser's settings meanwhile; in the
+ * desktop app on macOS, the app's answer is read again then too). */
 function useNotificationAccess() {
   // In the desktop app, whether it can notify on this system (T-188).
   const desktop = useDesktopNotifier();
@@ -199,7 +259,7 @@ function useNotificationAccess() {
       document.removeEventListener("visibilitychange", again);
     };
   }, [read]);
-  return [access, setAccess, desktop] as const;
+  return [access, setAccess] as const;
 }
 
 /**
@@ -213,32 +273,41 @@ export function NotificationSettings() {
   const t = text(language);
   const prefs = useNotificationPrefs();
   const write = useNotificationPrefsWrite();
-  const [access, setAccess, desktop] = useNotificationAccess();
+  const [access, setAccess] = useNotificationAccess();
   const [asking, setAsking] = useState(false);
+  const [askFailed, setAskFailed] = useState<string | null>(null);
   const [test, setTest] = useState<TestOutcome | null>(null);
   const usable = reachesSystem(access) || access.state === "not-requested";
-  const throughApp = access.state === "through-app";
+  const system = appSystem(access);
+  // Turned off in macOS: the choices stay this device's to keep, for when
+  // macOS allows them; nothing is asked or sent (T-188).
+  const offInMacos = access.state === "denied" && access.system === "macos";
   const save = (next: Partial<NotificationPrefs>) => changeNotificationPrefs((now) => ({ ...now, ...next }));
-  /** Asks the browser, from this click, when it has not been asked. */
+  /** Asks the browser, or macOS, from this click, when it has not been asked. */
   const ask = async () => {
     if (access.state !== "not-requested") return access;
     setAsking(true);
+    setAskFailed(null);
     try {
-      const answer = await requestNotificationAccess(browserHost(isNative));
+      const answer = await requestNotificationAccess(browserHost(isNative, knownDesktopNotifier()));
       setAccess(answer);
       return answer;
+    } catch (error) {
+      setAskFailed(error instanceof Error ? error.message : String(error));
+      return access;
     } finally {
       setAsking(false);
     }
   };
   const turn = async (on: boolean) => {
-    if (on && !reachesSystem(await ask())) return;
+    if (on && !offInMacos && !reachesSystem(await ask())) return;
     save({ enabled: on });
   };
   const sendTest = async () => {
     setTest(null);
     const allowed = await ask();
-    const host = browserHost(isNative, desktop);
+    // As the app said last: asking may have changed it.
+    const host = browserHost(isNative, knownDesktopNotifier());
     const result =
       reachesSystem(allowed)
         ? await showSystemNotification("Yuzuno", { body: "A test notification from your Workspace.", tag: "yuzuno:test" }, host)
@@ -264,22 +333,34 @@ export function NotificationSettings() {
         <div className="settings-row">
           <span className="settings-row-main">
             <span className="settings-row-title">
-              {throughApp ? t.systemRow : t.permission} <span className="notification-access" data-state={access.state}>{state.label}</span>
+              {system ? t.systemRow : t.permission} <span className="notification-access" data-state={access.state}>{state.label}</span>
             </span>
             <span className="settings-row-help">{state.help}</span>
           </span>
         </div>
-        {usable && (
+        {(usable || offInMacos) && (
           <label className="settings-row">
             <span className="settings-row-main">
               <span className="settings-row-title">{t.notify}</span>
-              <span className="settings-row-help">{access.state === "not-requested" ? t.asksFirst : t.chosenOnly}</span>
+              <span className="settings-row-help">
+                {offInMacos ? t.afterMacos : access.state !== "not-requested" ? t.chosenOnly : system ? t.asksMacos : t.asksFirst}
+              </span>
+              {askFailed && (
+                <span className="settings-row-help notification-ask-result" role="status">
+                  {t.askFailed(askFailed)}
+                </span>
+              )}
             </span>
-            <input type="checkbox" checked={prefs.enabled && reachesSystem(access)} disabled={asking} onChange={(event) => void turn(event.target.checked)} />
+            <input
+              type="checkbox"
+              checked={prefs.enabled && (reachesSystem(access) || offInMacos)}
+              disabled={asking}
+              onChange={(event) => void turn(event.target.checked)}
+            />
           </label>
         )}
       </div>
-      {usable && (
+      {(usable || offInMacos) && (
         <div className="settings-group" aria-label={t.what}>
           {notificationCategories.map((kind) => (
             <label className="settings-row" key={kind}>
@@ -318,10 +399,10 @@ export function NotificationSettings() {
           <div className="settings-row">
             <span className="settings-row-main">
               <span className="settings-row-title">{t.test}</span>
-              <span className="settings-row-help">{throughApp ? t.testHelpApp : t.testHelp}</span>
+              <span className="settings-row-help">{system ? t.testHelpApp(system) : t.testHelp}</span>
               {test && (
                 <span className="settings-row-help notification-test-result" role="status" data-outcome={test.outcome}>
-                  {testText(test, language, throughApp)}
+                  {testText(test, language, access)}
                 </span>
               )}
             </span>
