@@ -207,9 +207,15 @@ export function AgentSettings({
       });
       onSaved();
       if (contextChanged) {
-        const updated = await api<{ context: ContextSettings }>(`/agents/${encodeURIComponent(agent.id)}/models`);
-        setContext(updated.context);
+        // Saved. What follows only reads the context status again, which
+        // needs Codex; its failure must not read as a failed save (T-187).
         setContextNote("Saved. Apply them when this conversation is idle.");
+        try {
+          const updated = await api<{ context: ContextSettings }>(`/agents/${encodeURIComponent(agent.id)}/models`);
+          setContext(updated.context);
+        } catch (e) {
+          setContextNote(`Saved, but the context status couldn’t be read again (${errorText(e)}). Refresh it before applying.`);
+        }
         return;
       }
       setOpen(false);
