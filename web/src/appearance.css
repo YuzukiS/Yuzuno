@@ -812,3 +812,58 @@
     gap: 7px;
   }
 }
+
+/* Appearance to and from a file (T-194). */
+.appearance-file-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.appearance-file-preview {
+  padding: 0 16px 14px;
+  overflow-wrap: anywhere;
+}
+.appearance-file-preview > p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+.appearance-file-preview ul {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  padding: 0;
+  list-style: none;
+}
+.appearance-file-preview li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 2px 12px;
+  align-items: baseline;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.appearance-file-preview li[data-state="same"],
+.appearance-file-preview li[data-state="invalid"] {
+  color: var(--text-secondary);
+}
+.appearance-file-name {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  color: var(--ink);
+}
+.appearance-file-error,
+.appearance-file-done {
+  margin: 0 16px 14px;
+  overflow-wrap: anywhere;
+}
+.appearance-file-error {
+  color: var(--coral);
+}
+.appearance-file-done {
+  color: var(--text-secondary);
+}
+@media (max-width: 720px) {
+  .appearance-file-preview li {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
