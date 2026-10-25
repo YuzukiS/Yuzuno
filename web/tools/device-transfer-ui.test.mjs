@@ -217,7 +217,7 @@ test("an Appearance export reads as its Appearance group; a newer file, an unusa
 test("Settings → Appearance & interaction offers it, and its editor opens in place", async () => {
   const page = mount({ settings: true });
   (await until(() => page.document.querySelector("#settings-tab-appearance"), "the Settings categories")).click();
-  const open = await until(() => [...page.document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Open Move preferences to another device"), "the card");
+  const open = await until(() => [...page.document.querySelectorAll(".settings-entries button")].find((b) => b.textContent === "Move preferences"), "its entry");
   open.click();
   await until(() => page.document.querySelector("#settings-editor-transfer:not([hidden]) #settings-transfer"), "the editor");
   page.close();

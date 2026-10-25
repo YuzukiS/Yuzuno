@@ -7,15 +7,15 @@ import type { SettingEntry, SettingsCategory } from "./settings-catalog.ts";
  * names and identifiers do. An entry or field missing here is shown in
  * English (localizedEntry).
  */
-export const categoriesZh: Record<SettingsCategory, { label: string; description: string }> = {
-  appearance: { label: "外观与交互", description: "此设备如何显示你的 Workspace。" },
-  notifications: { label: "通知与提醒", description: "Yuzuno 内的提醒，以及通知能力。" },
-  agents: { label: "Agent 与运行环境", description: "先选择一个 Agent，再更改它的运行设置。" },
-  connections: { label: "连接与设备", description: "客户端、Workspace 服务与执行机器各有分工。" },
-  projects: { label: "项目与协作", description: "项目配置与 Workspace 共享偏好。" },
-  jobs: { label: "Job 与资源", description: "预算作用于所选机器上的托管 Job。" },
-  data: { label: "数据、隐私与恢复", description: "存储信息与恢复能力。" },
-  updates: { label: "更新与关于", description: "Workspace 服务与桌面客户端的版本和更新，以及帮助、发布说明与许可证。" },
+export const categoriesZh: Record<SettingsCategory, { label: string; short: string; description: string }> = {
+  appearance: { label: "外观与交互", short: "外观", description: "此设备如何显示你的 Workspace。" },
+  notifications: { label: "通知与提醒", short: "通知", description: "Yuzuno 内的提醒，以及通知能力。" },
+  agents: { label: "Agent 与运行环境", short: "Agent", description: "先选择一个 Agent，再更改它的运行设置。" },
+  connections: { label: "连接与设备", short: "连接", description: "客户端、Workspace 服务与执行机器各有分工。" },
+  projects: { label: "项目与协作", short: "项目", description: "项目配置与 Workspace 共享偏好。" },
+  jobs: { label: "Job 与资源", short: "Job", description: "预算作用于所选机器上的托管 Job。" },
+  data: { label: "数据、隐私与恢复", short: "数据", description: "存储信息与恢复能力。" },
+  updates: { label: "更新与关于", short: "更新", description: "Workspace 服务与桌面客户端的版本和更新，以及帮助、发布说明与许可证。" },
 };
 
 type EntryText = Partial<Pick<SettingEntry, "title" | "scope" | "source" | "effect">> & { reason?: string };
@@ -50,4 +50,14 @@ export const entriesZh: Record<string, EntryText> = {
   updates: { title: "版本与更新", scope: "Workspace 服务 · 桌面客户端", source: "已安装的 Core 与客户端版本，以及可用的已签名发布。", effect: "检查不会安装任何内容。服务更新与桌面更新是分开的操作。" },
   runtime: { title: "运行环境与版本", scope: "Workspace 服务 · 每台执行机器 · 此客户端", source: "Core 的版本、每台机器保存的最近一次检查、Core 当前持有的 Core 主机上 Codex 的连接、Core 主机的 Job 预算、其 Claude bridge 使用的 Claude Agent SDK、每个 Agent 最近一次的 MCP 报告，以及此客户端自己的版本。", effect: "只读。检查在“机器”中进行；这里不会登录、重连或更新。读取 Job 预算可能让 Core 采样 GPU；MCP 的“刷新”会询问一个 Claude Code 会话；“检查模型”会在 Core 主机上进行“新建 Agent”对话框的目录读取。" },
   about: { title: "关于与帮助", scope: "Workspace 服务 · 此页面", source: "Workspace 服务所运行发布中的说明、随此页面提供的许可证文本，以及项目在 GitHub 上的页面。", effect: "只读。链接会在 Yuzuno 之外打开 GitHub；这里不会发送任何内容。" },
+};
+
+/** Each entry's short name, in the row of its category's entries. */
+export const entriesShortZh: Record<string, string> = {
+  appearance: "外观", "send-key": "发送", shortcuts: "快捷键", transfer: "迁移偏好", "appearance-preset": "共享预设",
+  clock: "时钟", language: "语言", notifications: "通知", "agent-model": "模型与权限", "agent-context": "上下文",
+  "auto-continue": "自动继续", "auto-continue-default": "自动继续默认值", "agent-defaults": "新 Agent 默认值",
+  review: "代码审查", credentials: "账户与 MCP", machines: "机器与 SSH", phone: "手机访问", projects: "项目", home: "Home",
+  budget: "Core 主机预算", "remote-budget": "远程预算", storage: "存储", diagnostics: "诊断", history: "历史与内存",
+  backup: "备份", drafts: "草稿", updates: "版本与更新", runtime: "运行环境", about: "关于与帮助",
 };

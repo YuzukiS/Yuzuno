@@ -1,16 +1,16 @@
 /** Navigation metadata only. Values and persistence belong to the existing editors. */
 import type { Language } from "./i18n.ts";
-import { categoriesZh, entriesZh } from "./settings-catalog-zh.ts";
+import { categoriesZh, entriesShortZh, entriesZh } from "./settings-catalog-zh.ts";
 
 export const settingsCategories = [
-  { id: "appearance", label: "Appearance & interaction", description: "How this device displays your Workspace." },
-  { id: "notifications", label: "Notifications & attention", description: "Attention inside Yuzuno and notification capabilities." },
-  { id: "agents", label: "Agents & runtime", description: "Choose an Agent before changing its runtime settings." },
-  { id: "connections", label: "Connections & devices", description: "The client, Workspace service and execution machines have separate roles." },
-  { id: "projects", label: "Projects & collaboration", description: "Project configuration and shared Workspace preferences." },
-  { id: "jobs", label: "Jobs & resources", description: "Budgets apply to managed Jobs on the selected machine." },
-  { id: "data", label: "Data, privacy & recovery", description: "Storage information and recovery capabilities." },
-  { id: "updates", label: "Updates & about", description: "Versions and updates for the Workspace service and desktop client, with help, release notes and licenses." },
+  { id: "appearance", label: "Appearance & interaction", short: "Appearance", description: "How this device displays your Workspace." },
+  { id: "notifications", label: "Notifications & attention", short: "Notifications", description: "Attention inside Yuzuno and notification capabilities." },
+  { id: "agents", label: "Agents & runtime", short: "Agents", description: "Choose an Agent before changing its runtime settings." },
+  { id: "connections", label: "Connections & devices", short: "Connections", description: "The client, Workspace service and execution machines have separate roles." },
+  { id: "projects", label: "Projects & collaboration", short: "Projects", description: "Project configuration and shared Workspace preferences." },
+  { id: "jobs", label: "Jobs & resources", short: "Jobs", description: "Budgets apply to managed Jobs on the selected machine." },
+  { id: "data", label: "Data, privacy & recovery", short: "Data", description: "Storage information and recovery capabilities." },
+  { id: "updates", label: "Updates & about", short: "Updates", description: "Versions and updates for the Workspace service and desktop client, with help, release notes and licenses." },
 ] as const;
 export type SettingsCategory = typeof settingsCategories[number]["id"];
 export type SettingsEditor = "appearance" | "updates" | "auto-continue" | "home" | "review" | "diagnostics" | "history" | "runtime" | "input" | "time" | "language" | "shortcuts" | "notifications" | "backup" | "remote" | "agent-defaults" | "about" | "storage" | "drafts" | "transfer";
@@ -70,6 +70,19 @@ export const settingsCatalog: readonly SettingEntry[] = [
   { id: "about", category: "updates", title: "About & help", keywords: "关于 帮助 文档 说明 反馈 问题 报告 安全 漏洞 许可证 许可 声明 发行说明 版本说明 about help docs documentation readme feedback issue bug report security vulnerability license licenses notices release notes", scope: "Workspace service · this page", source: "The notes inside the release the Workspace service runs, the license texts served with this page, and the project's pages on GitHub.", effect: "Read-only. Links open GitHub outside Yuzuno; nothing is sent from here.", target: { kind: "editor", editor: "about" } },
 ];
 
+/** A shorter name for an entry, in the row of its category's entries; its
+ * title stays its full name. */
+const entryShort: Record<string, string> = {
+  appearance: "Appearance", "send-key": "Sending", shortcuts: "Shortcuts", transfer: "Move preferences",
+  "appearance-preset": "Shared preset", clock: "Clock", language: "Language", notifications: "Notifications",
+  "agent-model": "Model & permissions", "agent-context": "Context", "auto-continue": "Auto-continue",
+  "auto-continue-default": "Auto-continue default", "agent-defaults": "New Agent defaults", review: "Code review",
+  credentials: "Accounts & MCP", machines: "Machines & SSH", phone: "Phone access", projects: "Projects", home: "Home",
+  budget: "Core host budget", "remote-budget": "Remote budgets", storage: "Storage", diagnostics: "Diagnostics",
+  history: "History & memory", backup: "Backup", drafts: "Drafts", updates: "Versions & updates", runtime: "Runtime",
+  about: "About & help",
+};
+
 /** The editors this version shows in the interface language (T-189); the
  * others, and the rest of Yuzuno, stay in English. */
 export const translatedEditors: readonly SettingsEditor[] = ["language", "input", "time", "shortcuts", "appearance", "transfer", "storage", "diagnostics", "notifications", "about", "home", "review", "remote", "runtime", "agent-defaults", "backup", "history", "drafts", "updates", "auto-continue"];
@@ -94,8 +107,12 @@ export function localizedEntry(entry: SettingEntry, language: Language): Setting
   const target = entry.target.kind === "unavailable" && zh.reason ? { ...entry.target, reason: zh.reason } : entry.target;
   return { ...entry, title: zh.title ?? entry.title, scope: zh.scope ?? entry.scope, source: zh.source ?? entry.source, effect: zh.effect ?? entry.effect, target };
 }
-/** A category's label and description in `language`. */
-export function localizedCategory(id: SettingsCategory, language: Language): { label: string; description: string } {
+/** An entry's short name in `language`, else its title. */
+export function entryShortTitle(entry: SettingEntry, language: Language): string {
+  return (language === "zh-Hans" ? entriesShortZh[entry.id] : entryShort[entry.id]) ?? localizedEntry(entry, language).title;
+}
+/** A category's label, short label and description in `language`. */
+export function localizedCategory(id: SettingsCategory, language: Language): { label: string; short: string; description: string } {
   const category = settingsCategories.find((item) => item.id === id)!;
   return language === "zh-Hans" ? categoriesZh[id] : category;
 }

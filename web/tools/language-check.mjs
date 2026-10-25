@@ -103,7 +103,8 @@ async function closeSettings(page) {
 const shell = (page) => dialog(page).evaluate((box) => ({
   title: box.querySelector(".modal-heading h2")?.textContent ?? null,
   close: box.querySelector(".modal-heading .icon-button")?.getAttribute("aria-label") ?? null,
-  tabs: [...box.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent.trim()),
+  // Each category's full name: the tab's name, beside its short one (T-187).
+  tabs: [...box.querySelectorAll('[role="tab"]')].map((tab) => tab.querySelector(".sr-only").textContent),
   lang: box.querySelector(".settings-center")?.getAttribute("lang") ?? null,
   search: box.querySelector(".settings-search input")?.getAttribute("placeholder") ?? null,
 }));
