@@ -272,7 +272,7 @@ test("the help lists Return as the send key makes it, and the desktop app's shor
     w.showHelp();
     const text = w.document.querySelector(".shortcut-help").textContent;
     for (const title of ["Anywhere", "Writing a message", "Reading a conversation", "Home", "Lists and dialogs"]) assert.ok(text.includes(title), title);
-    assert.ok(text.includes("cannot be changed yet"), "rebinding is not offered");
+    assert.ok(text.includes("Three of them can take another letter here."), "three take another letter (T-189 P2)");
     // As this device's preference says: Ctrl or Cmd+Return sends.
     const writing = [...w.document.querySelectorAll(".shortcut-group")].find((group) => group.querySelector("h4")?.textContent === "Writing a message");
     const keys = (dt) => [...dt.querySelectorAll("kbd")].map((kbd) => kbd.textContent).join("+");
@@ -300,8 +300,10 @@ test("Settings finds both sections, Clock & time zone and Language by their word
 
 // Each key the help lists, in the code it names: a shortcut removed or moved
 // must leave the help too.
+// A letter this device may change (shortcut-keys.ts) is found as its handler
+// reads it: shortcutKeys().find, not a literal letter.
 const tokens = {
-  Ctrl: ["ctrlKey", "metaKey"], K: ['"k"'], N: ['"n"'], ",": ['","'], F: ['"f"'], Z: ['"z"'], Esc: ['"Escape"'],
+  Ctrl: ["ctrlKey", "metaKey", "pressed(event"], ",": ['","'], Z: ['"z"'], Esc: ['"Escape"'],
   Return: ['"Enter"'], Shift: ["shiftKey", "Shift-Enter"], Tab: ['"Tab"'], "↑": ['"ArrowUp"'], "↓": ['"ArrowDown"'],
   "←": ['"ArrowLeft"'], "→": ['"ArrowRight"'],
   Home: ['"Home"'], End: ['"End"'], "/": ["export function slashToken"], $: ["export function skillToken"],
@@ -325,12 +327,86 @@ test("every key the help lists is handled in the file it names", async () => {
       // The browser's own (a button pressed, a dialog closed) has no handler to find.
       if (shortcut.native) continue;
       const files = await Promise.all(shortcut.source.split(", ").map(read));
-      for (const key of shortcut.keys) {
-        const wanted = tokens[key];
+      for (const [index, key] of shortcut.keys.entries()) {
+        const wanted = shortcut.rebind && index > 0 ? [`shortcutKeys().${shortcut.rebind}`] : tokens[key];
         assert.ok(wanted, `a token for ${key}`);
         assert.ok(files.some((code) => wanted.some((token) => code.includes(token))), `${key} (${shortcut.action}) in ${shortcut.source}`);
         counted++;
       }
     }
   assert.ok(counted > 30, `${counted} keys checked`);
+});
+
+// T-189 P2: three shortcuts take another letter on this device.
+const pick = (w, name) => w.document.querySelector(`select[aria-label="Key for ${name}"]`);
+async function setKey(w, name, letter) {
+  const select = pick(w, name);
+  Object.getOwnPropertyDescriptor(w.HTMLSelectElement.prototype, "value").set.call(select, letter);
+  select.dispatchEvent(new w.Event("change", { bubbles: true }));
+  await tick();
+}
+// The help's keys for an action, as shown: "Ctrl+J".
+const listed = (w, action) => [...w.document.querySelectorAll(".shortcut-group dt")].find((dt) => dt.nextElementSibling.textContent.startsWith(action))?.textContent;
+const NAMES = ["Find an Agent", "New Agent", "Search this conversation"];
+
+test("three shortcuts take another letter: another's letter is refused and named, reserved letters aren't offered, and Restore defaults removes only them", async () => {
+  const w = page({ saved: '{"sendKey":"modEnter"}' });
+  try {
+    w.showHelp();
+    assert.deepEqual(NAMES.map((name) => pick(w, name).value), ["K", "N", "F"]);
+    const offered = [...pick(w, "Find an Agent").options].map((option) => option.value);
+    for (const letter of ["A", "C", "V", "X", "Y", "Z", "W", "T", "Q", "R", "L"]) assert.ok(!offered.includes(letter), `${letter} is text editing's or the browser's`);
+    assert.equal(offered.length, 15);
+    await setKey(w, "Find an Agent", "J");
+    assert.equal(w.localStorage.getItem("yuzuno.shortcuts"), '{"find":"J","newAgent":"N","search":"F"}');
+    assert.equal(listed(w, "Find an Agent"), "Ctrl+J", "the help lists the letter in effect");
+    assert.equal(status(w), "Saved on this device");
+    // Another's letter: refused, named; nothing changed, nothing swapped.
+    await setKey(w, "New Agent", "J");
+    assert.equal(w.document.querySelector(".shortcut-refused").textContent,
+      "Ctrl+J is already Find an Agent. Nothing was changed: choose another letter, or give Find an Agent another one first.");
+    assert.equal(pick(w, "New Agent").value, "N");
+    assert.equal(listed(w, "New Agent"), "Ctrl+N");
+    assert.equal(w.localStorage.getItem("yuzuno.shortcuts"), '{"find":"J","newAgent":"N","search":"F"}');
+    // Restore defaults: these only; the send key is left as saved.
+    button(w, "Restore defaults").click();
+    await tick();
+    assert.equal(w.localStorage.getItem("yuzuno.shortcuts"), null);
+    assert.equal(w.localStorage.getItem("yuzuno.preferences"), '{"sendKey":"modEnter"}');
+    assert.deepEqual(NAMES.map((name) => pick(w, name).value), ["K", "N", "F"]);
+    assert.equal(w.document.querySelector(".shortcut-refused"), null);
+    assert.equal(status(w), "Defaults restored on this device");
+  } finally {
+    w.close();
+  }
+});
+
+test("a shortcut letter the browser refuses to save is said, never 'Saved', and applies for this visit", async () => {
+  const w = page({ refuse: true });
+  try {
+    w.showHelp();
+    await setKey(w, "Search this conversation", "G");
+    assert.equal(alert(w), "Not saved on this device: this browser’s storage for Yuzuno is full. Your choice applies in this window until you close or reload it.");
+    assert.equal(status(w), null, "no Saved");
+    assert.equal(w.localStorage.getItem("yuzuno.shortcuts"), null);
+    assert.equal(pick(w, "Search this conversation").value, "G");
+    assert.equal(listed(w, "Search this conversation"), "Ctrl+G");
+  } finally {
+    w.close();
+  }
+});
+
+test("a saved letter this version doesn't offer, or two shortcuts on one letter, is not used: the usual letters", () => {
+  for (const saved of ['{"find":"C"}', '{"find":"N"}', '{"find":"j"}', "[]", "not json"]) {
+    const w = page();
+    try {
+      w.real.setItem.call(w.localStorage, "yuzuno.shortcuts", saved);
+      w.showHelp();
+      assert.deepEqual(NAMES.map((name) => pick(w, name).value), ["K", "N", "F"], saved);
+      // Said so: not "Using the choice saved" (review R1).
+      assert.match(w.document.querySelector(".save-status").textContent, /couldn’t be read, so the defaults apply/, saved);
+    } finally {
+      w.close();
+    }
+  }
 });
