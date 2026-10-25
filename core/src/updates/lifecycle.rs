@@ -16,7 +16,7 @@ fn blocked(detail: &AgentDetail) -> Option<String> {
     blocked_activity(&detail.agent, Activity::of(detail))
 }
 
-fn blocked_activity(agent: &Agent, activity: Activity) -> Option<String> {
+pub(crate) fn blocked_activity(agent: &Agent, activity: Activity) -> Option<String> {
     if agent.closed_at.is_some() {
         return None;
     }
@@ -256,62 +256,7 @@ impl Workspace {
         for (id, connection) in codex {
             let gate = self.gate(&id).await;
             let _held = gate.lock().await;
-            if id != "_catalog" {
-                let detail = self.detail(&id).await?;
-                ensure!(
-                    blocked(&detail).is_none(),
-                    "{} still has work",
-                    detail.agent.name
-                );
-                let native = connection
-                    .rpc
-                    .request(
-                        "thread/read",
-                        json!({"threadId":detail.agent.thread_id,"includeTurns":false}),
-                    )
-                    .await?;
-                ensure!(
-                    native["thread"]["status"]["type"] == "idle",
-                    "{} native runtime has not confirmed idle",
-                    detail.agent.name
-                );
-                connection
-                    .events
-                    .as_ref()
-                    .context("Native event barrier is missing")?
-                    .drain()
-                    .await?;
-                ensure!(
-                    blocked(&self.detail(&id).await?).is_none(),
-                    "Native work arrived before detach"
-                );
-            }
-            {
-                let _owned = self.owner(&id).await;
-                if let Some(current) = self
-                    .rpcs
-                    .lock()
-                    .unwrap()
-                    .get_mut(&id)
-                    .filter(|c| c.generation == connection.generation)
-                {
-                    current.closing = true;
-                }
-            }
-            // Remote::stop_runtime is deliberately not called: detach closes
-            // only this Core's transport, preserving the remote native session.
-            connection.rpc.close_and_wait().await?;
-            if let Some(events) = &connection.events {
-                events.drain().await?;
-            }
-            let _owned = self.owner(&id).await;
-            let mut connections = self.rpcs.lock().unwrap();
-            if connections
-                .get(&id)
-                .is_some_and(|c| c.generation == connection.generation)
-            {
-                connections.remove(&id);
-            }
+            self.detach_idle_codex(&id, &connection).await?;
         }
         let claude = self
             .claudes
@@ -323,39 +268,113 @@ impl Workspace {
         for (id, connection) in claude {
             let gate = self.gate(&id).await;
             let _held = gate.lock().await;
-            let status = connection.bridge.request(json!({"op":"status"})).await?;
-            ensure!(
-                status["ready"] == true
-                    && status["turnId"].is_null()
-                    && status["pendingCount"] == 0
-                    && status["configuring"] == false
-                    && status["interrupting"] == false,
-                "Claude native runtime has not confirmed idle"
-            );
-            let events = connection
-                .events
-                .as_ref()
-                .context("Native event barrier is missing")?;
-            events.drain().await?;
-            ensure!(
-                blocked(&self.detail(&id).await?).is_none(),
-                "Claude work arrived before detach"
-            );
-            events.mark_closing();
-            connection.bridge.close_and_wait().await?;
-            events.drain().await?;
-            let _owned = self.owner(&id).await;
-            let mut connections = self.claudes.lock().unwrap();
-            if connections
-                .get(&id)
-                .is_some_and(|c| c.generation == connection.generation)
-            {
-                connections.remove(&id);
-            }
+            self.detach_idle_claude(&id, &connection).await?;
         }
         // All native producers have stopped and each consumer acknowledged its
         // final marker. Only now is a cache flush/checkpoint a durable barrier.
         self.flush_for_update().await
+    }
+
+    /// One idle Codex transport closed for good, under the Agent's gate the
+    /// caller holds: its native thread confirmed idle, its events drained
+    /// and checked again, then closed and removed for this generation only.
+    /// The update detach and Disconnect (T-184) share it.
+    pub(crate) async fn detach_idle_codex(self: &Arc<Self>, id: &str, connection: &crate::workspace::Connection) -> Result<()> {
+        if id != "_catalog" {
+            let detail = self.detail(id).await?;
+            ensure!(
+                blocked(&detail).is_none(),
+                "{} still has work",
+                detail.agent.name
+            );
+            let native = connection
+                .rpc
+                .request(
+                    "thread/read",
+                    json!({"threadId":detail.agent.thread_id,"includeTurns":false}),
+                )
+                .await?;
+            ensure!(
+                native["thread"]["status"]["type"] == "idle",
+                "{} native runtime has not confirmed idle",
+                detail.agent.name
+            );
+            connection
+                .events
+                .as_ref()
+                .context("Native event barrier is missing")?
+                .drain()
+                .await?;
+            ensure!(
+                blocked(&self.detail(id).await?).is_none(),
+                "Native work arrived before detach"
+            );
+        }
+        {
+            let _owned = self.owner(id).await;
+            if let Some(current) = self
+                .rpcs
+                .lock()
+                .unwrap()
+                .get_mut(id)
+                .filter(|c| c.generation == connection.generation)
+            {
+                current.closing = true;
+            }
+        }
+        // Remote::stop_runtime is deliberately not called: detach closes
+        // only this Core's transport, preserving the remote native session.
+        connection.rpc.close_and_wait().await?;
+        if let Some(events) = &connection.events {
+            events.drain().await?;
+        }
+        let _owned = self.owner(id).await;
+        let mut connections = self.rpcs.lock().unwrap();
+        if connections
+            .get(id)
+            .is_some_and(|c| c.generation == connection.generation)
+        {
+            connections.remove(id);
+        }
+        Ok(())
+    }
+
+    /// One idle Claude bridge closed for good, under the Agent's gate the
+    /// caller holds: the bridge confirms no Turn, request or change is under
+    /// way, its events are drained and checked again, then it is closed and
+    /// removed for this generation only. Its exit is then recorded as an
+    /// intended detach (`update_claude_detached`), not as a failure.
+    pub(crate) async fn detach_idle_claude(self: &Arc<Self>, id: &str, connection: &crate::claude::Connection) -> Result<()> {
+        let status = connection.bridge.request(json!({"op":"status"})).await?;
+        ensure!(
+            status["ready"] == true
+                && status["turnId"].is_null()
+                && status["pendingCount"] == 0
+                && status["configuring"] == false
+                && status["interrupting"] == false,
+            "Claude native runtime has not confirmed idle"
+        );
+        let events = connection
+            .events
+            .as_ref()
+            .context("Native event barrier is missing")?;
+        events.drain().await?;
+        ensure!(
+            blocked(&self.detail(id).await?).is_none(),
+            "Claude work arrived before detach"
+        );
+        events.mark_closing();
+        connection.bridge.close_and_wait().await?;
+        events.drain().await?;
+        let _owned = self.owner(id).await;
+        let mut connections = self.claudes.lock().unwrap();
+        if connections
+            .get(id)
+            .is_some_and(|c| c.generation == connection.generation)
+        {
+            connections.remove(id);
+        }
+        Ok(())
     }
 
     /// Consumed in queue order instead of treating the updater's intentional

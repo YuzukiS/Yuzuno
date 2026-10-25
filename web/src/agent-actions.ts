@@ -2,7 +2,7 @@ import { nativeSession } from "./machine-checks";
 import type { Agent } from "./types";
 
 /** What an Agent's action menu can offer (T-184), in its order. */
-export type AgentMenuAction = "reconnect" | "check" | "endMissing" | "interrupt" | "settings" | "manage";
+export type AgentMenuAction = "reconnect" | "check" | "endMissing" | "interrupt" | "disconnect" | "settings" | "manage";
 
 /** One entry of the menu: what it does and whether it can run now. */
 export interface AgentMenuItem {
@@ -21,6 +21,8 @@ export interface AgentActionHandlers {
   /** Opens the confirmation that ends Turns missing from the native history
    * (T-198); offered only where a check found them. */
   endMissing?: (id: string) => void;
+  /** Opens the confirmation that disconnects the Agent (T-184). */
+  disconnect?: (id: string) => void;
 }
 
 /**
@@ -41,6 +43,20 @@ export function reconnectOffer(agent: Agent): "reconnect" | "check" | "connectin
   return null;
 }
 
+/** Whether to offer Disconnect (T-184): a connected local Codex or Claude
+ * Agent that is idle. Core checks the rest (requests, background work,
+ * the native runtime) and refuses, saying why, when it can't confirm it. */
+export function disconnectable(agent: Agent): boolean {
+  return (
+    !agent.closedAt &&
+    !agent.disconnectedAt &&
+    !agent.remote &&
+    (agent.harness === "codex" || agent.harness === "claude") &&
+    agent.connectionState === "connected" &&
+    agent.status === "idle"
+  );
+}
+
 /** Whether the Agent has a turn running to interrupt. */
 export function interruptible(agent: Agent): boolean {
   return !agent.closedAt && (agent.status === "working" || agent.status === "waiting");
@@ -48,7 +64,10 @@ export function interruptible(agent: Agent): boolean {
 
 /** The menu for `agent` as it is now: few entries, only those that apply.
  * Opening the Agent is its row's own click, not an entry. */
-export function agentMenuItems(agent: Agent, { missingTurns = false }: { missingTurns?: boolean } = {}): AgentMenuItem[] {
+export function agentMenuItems(
+  agent: Agent,
+  { missingTurns = false, disconnect = false }: { missingTurns?: boolean; disconnect?: boolean } = {},
+): AgentMenuItem[] {
   const items: AgentMenuItem[] = [];
   const reconnect = reconnectOffer(agent);
   if (reconnect === "check") items.push({ action: "check", label: "Reconnect and check" });
@@ -57,6 +76,7 @@ export function agentMenuItems(agent: Agent, { missingTurns = false }: { missing
   if (missingTurns && !agent.closedAt && agent.connectionState !== "connected")
     items.push({ action: "endMissing", label: "End unconfirmed turn…" });
   if (interruptible(agent)) items.push({ action: "interrupt", label: "Interrupt current turn" });
+  if (disconnect && disconnectable(agent)) items.push({ action: "disconnect", label: "Disconnect…" });
   if (!agent.closedAt && agent.harness !== "opencode") items.push({ action: "settings", label: "Agent settings…" });
   items.push({ action: "manage", label: "Manage…" });
   return items;

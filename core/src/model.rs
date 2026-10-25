@@ -68,6 +68,16 @@ pub fn ensure_agent_open(agent: &Agent) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Refuses to start the native session of an Agent the user disconnected
+/// (T-184): only their Reconnect does. Every connect-on-demand path checks it.
+pub fn ensure_not_disconnected(agent: &Agent) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        agent.disconnected_at.is_none(),
+        "You disconnected this Agent; press Reconnect first. Nothing was sent or started."
+    );
+    Ok(())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextUsage {
@@ -265,6 +275,11 @@ pub struct Agent {
     pub status: String,
     #[serde(default)]
     pub closed_at: Option<String>,
+    /// When the user disconnected this open Agent (T-184): its native session
+    /// was stopped, and nothing starts it again (mail, auto-continue,
+    /// recovery, a send) until their Reconnect, Close or Reopen clears this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disconnected_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub unread_count: u64,

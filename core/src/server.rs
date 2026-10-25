@@ -172,6 +172,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/agents/{id}/codex/review",post(codex_review))
         .route("/api/agents/{id}/tasks/{task_id}/stop",post(stop_task))
         .route("/api/agents/{id}/reconnect",post(reconnect))
+        .route("/api/agents/{id}/disconnect",post(disconnect))
         .route("/api/agents/{id}/codex/missing-turns/end",post(end_missing_turns))
         .route("/api/agents/{id}/review",post(review))
         .route("/api/requests/{id}/respond",post(respond))
@@ -903,6 +904,12 @@ async fn reconnect(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Que
         Some("summary") => Ok(Json(json!({"agent": ws.reconnect_summary(&id).await?}))),
         Some(other) => Err(anyhow::anyhow!("Unknown reconnect view {other:?}: use view=summary, or no view for the whole record").into()),
     }
+}
+
+/// The user's Disconnect (T-184): this Agent's native session stops and stays
+/// stopped until their Reconnect; refused, with why, unless it is provably idle.
+async fn disconnect(State(ws): State<Arc<Workspace>>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    Ok(Json(json!({"agent": ws.disconnect_agent(&id).await?})))
 }
 
 #[derive(Deserialize)]

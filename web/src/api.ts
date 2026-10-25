@@ -96,6 +96,12 @@ function shared(key: string, request: () => Promise<unknown>): Promise<unknown> 
 export function reconnectAgent(id: string): Promise<unknown> {
   return shared(`reconnect:${id}`, () => post<unknown>(`/agents/${encodeURIComponent(id)}/reconnect?view=summary`));
 }
+/** Disconnects an idle Agent as the user asked (T-184): its native session
+ * stops and stays stopped until they reconnect it. Core refuses, saying why,
+ * when it can't confirm the Agent is idle; nothing changes then. */
+export function disconnectAgent(id: string): Promise<unknown> {
+  return shared(`disconnect:${id}`, () => post<unknown>(`/agents/${encodeURIComponent(id)}/disconnect`));
+}
 /** Ends the Turns a check found missing from the native history (T-198):
  * each becomes interrupted with its result unknown. Nothing is sent. */
 export function endMissingTurns(id: string, missing: { turnIds: string[]; generation: number }): Promise<unknown> {
