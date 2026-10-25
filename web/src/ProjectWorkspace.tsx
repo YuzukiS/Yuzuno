@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { api, errorText, patch, post, remove } from "./api";
+import { strings, useStrings } from "./i18n";
 import { Avatar, Modal } from "./components";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import {
@@ -35,6 +36,7 @@ import "./projects.css";
 import { GitHubLinks } from "./GitHubLinks";
 import { ProjectServices } from "./ProjectServices";
 import { AgentDefaults } from "./AgentDefaults";
+import { ReviewSettings } from "./ReviewSettings";
 import { HomeContentEditors } from "./home/HomeContentEditors";
 
 function useOutsideClose(
@@ -56,6 +58,34 @@ function useOutsideClose(
 const MENU_OUT_MS = 120;
 
 /** The bottom-left entry: which part of this Workspace the window shows. */
+// The project menu's own words (T-189); project and workspace names are
+// shown as they were given.
+const switcherText = strings({
+  menu: "Show project",
+  note: "Switching changes only what this window shows.",
+  all: "All projects",
+  none: "No project",
+  project: "Project",
+  waiting: (count: number) => `${count} waiting for you`,
+  open: (count: number) => `${count} open agent${count === 1 ? "" : "s"}`,
+  newProject: "New project…",
+  manage: "Manage projects…",
+  machines: "Machines…",
+  showing: (workspace: string, scope: string) => `${workspace}: showing ${scope}`,
+}, {
+  menu: "显示项目",
+  note: "切换只改变此窗口显示的内容。",
+  all: "所有项目",
+  none: "无项目",
+  project: "项目",
+  waiting: (count) => `${count} 项等待你`,
+  open: (count) => `${count} 个打开的 Agent`,
+  newProject: "新建项目…",
+  manage: "管理项目…",
+  machines: "机器…",
+  showing: (workspace, scope) => `${workspace}：显示“${scope}”`,
+});
+
 export function ProjectSwitcher({
   workspaceName,
   reachable,
@@ -84,6 +114,8 @@ export function ProjectSwitcher({
   /** The design specimen offers scopes only; managing needs a real Core. */
   readOnly?: boolean;
 }) {
+  const t = useStrings(switcherText);
+  const shown = scopeLabel(scope, projects, t);
   const [open, setOpenState] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -138,14 +170,14 @@ export function ProjectSwitcher({
       {pending(value) > 0 && (
         <span
           className="nav-count attention"
-          title={`${pending(value)} waiting for you`}
+          title={t.waiting(pending(value))}
         >
           {pending(value)}
         </span>
       )}
       <span
         className="scope-option-count"
-        title={`${count(value)} open agent${count(value) === 1 ? "" : "s"}`}
+        title={t.open(count(value))}
       >
         {count(value)}
       </span>
@@ -170,7 +202,7 @@ export function ProjectSwitcher({
         <div
           className={`scope-menu${open ? "" : " is-leaving"}`}
           role="menu"
-          aria-label="Show project"
+          aria-label={t.menu}
           aria-hidden={open ? undefined : true}
           inert={!open}
           onAnimationEnd={(event) => {
@@ -179,9 +211,9 @@ export function ProjectSwitcher({
         >
           <div className="scope-menu-heading">
             <span>{workspaceName}</span>
-            <small>Switching changes only what this window shows.</small>
+            <small>{t.note}</small>
           </div>
-          {option(ALL_PROJECTS, "All projects", <Layers size={14} />)}
+          {option(ALL_PROJECTS, t.all, <Layers size={14} />)}
           {activeProjects(projects).map((project) =>
             option(
               projectScope(project.id),
@@ -189,7 +221,7 @@ export function ProjectSwitcher({
               <Folder size={14} />,
             ),
           )}
-          {option(NO_PROJECT, "No project", <span className="scope-blank" />)}
+          {option(NO_PROJECT, t.none, <span className="scope-blank" />)}
           {!readOnly && (
             <div className="scope-menu-actions">
               <button
@@ -201,7 +233,7 @@ export function ProjectSwitcher({
                 }}
               >
                 <FolderPlus size={14} />
-                New project…
+                {t.newProject}
               </button>
               <button
                 type="button"
@@ -212,7 +244,7 @@ export function ProjectSwitcher({
                 }}
               >
                 <Settings2 size={14} />
-                Manage projects…
+                {t.manage}
               </button>
               {onMachines && (
                 <button
@@ -224,7 +256,7 @@ export function ProjectSwitcher({
                   }}
                 >
                   <Server size={14} />
-                  Machines…
+                  {t.machines}
                 </button>
               )}
             </div>
@@ -237,14 +269,14 @@ export function ProjectSwitcher({
         className="workspace-scope"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`${workspaceName}: showing ${scopeLabel(scope, projects)}`}
+        aria-label={t.showing(workspaceName, shown)}
         onClick={() => setOpen(!open)}
       >
         <span className="machine-icon">
           {scope === ALL_PROJECTS ? <Layers size={15} /> : <Folder size={15} />}
         </span>
         <span className="workspace-scope-text">
-          <strong>{scopeLabel(scope, projects)}</strong>
+          <strong>{shown}</strong>
           <span>{workspaceName}</span>
         </span>
         <span
@@ -595,6 +627,7 @@ function ProjectDetail({
       <ProjectServices key={`services:${project.id}`} projectId={project.id} machines={machines} disabled={archived} />
       <HomeContentEditors key={`editors:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
       <AgentDefaults key={`defaults:${project.id}`} active projectId={project.id} disabled={archived} />
+      <ReviewSettings key={`review:${project.id}`} active projectId={project.id} disabled={archived} />
       {archived && (
         <p className="project-note project-archived-note">
           <Archive size={14} /> Archived. Its agents and tasks stay where they

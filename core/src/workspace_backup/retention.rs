@@ -1,7 +1,8 @@
 //! What keeping only the latest backups in one folder would do (T-196,
 //! slice 2): a preview, read only; and (slice 3) removing one old backup the
-//! user confirmed, which Core judges again itself. Nothing is turned on and
-//! nothing removes backups on its own.
+//! user confirmed, which Core judges again itself. Nothing here is turned on
+//! on its own: removal without a confirmation per backup is only the daily
+//! backup's automatic removal, which the user turns on (slice 6, below).
 //!
 //! It looks only at the folder the user names, and only at its first-level
 //! entries, without following links; a folder with more than `MAX_ENTRIES`
@@ -36,9 +37,15 @@
 //! off says what is left, is never finished or repeated on its own, and
 //! can't be undone.
 //!
+//! After a daily backup succeeds, the automatic removal the user turned on
+//! for its folder (slice 6, `schedule`) runs `prune`: one bounded pass of the
+//! same steps as one removal, over what the preview offers then. It reads
+//! one kept backup back whole first, judges each one again right before it
+//! goes, and stops at the first removal that fails.
+//!
 //! Only on Core's own port: it lists folders on the computer that runs Core.
 use super::online::{self, Operation};
-use super::Control;
+use super::{Control, Stopped};
 use crate::{server::ApiError, workspace::Workspace};
 use anyhow::{bail, ensure, Result};
 use axum::{extract::State, response::Response, routing::post, Json, Router};
@@ -411,6 +418,44 @@ pub(crate) fn judge(folder: &Path, rule: impl Into<Rule>, name: &str, manifest_s
     Ok((preview, target))
 }
 
+/// One of the backups `preview` keeps, read back whole: the newest that can be.
+fn read_back_kept(folder: &Path, preview: &Preview, ctl: &Control) -> Result<Entry> {
+    let mut failures = Vec::new();
+    for kept in preview.entries.iter().filter(|e| e.verdict == "keep") {
+        ctl.at("verify")?;
+        match super::verify(&kept.path) {
+            Ok(_) => return Ok(kept.clone()),
+            Err(error) => failures.push(format!("{}: {error:#}", kept.name)),
+        }
+    }
+    bail!("No other backup of this Workspace in {} could be read back whole just now ({}); nothing was removed",
+        folder.display(), if failures.is_empty() { "none is kept".into() } else { failures.join("; ") });
+}
+
+/// The backup was not moved aside, so nothing of it was removed.
+#[derive(Debug)]
+struct NotMoved;
+
+impl std::fmt::Display for NotMoved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("it was not moved aside")
+    }
+}
+
+impl std::error::Error for NotMoved {}
+
+/// Moves `target` aside, then removes it. What a failure leaves is said and left.
+fn move_aside_and_remove(folder: &Path, target: &Entry, ctl: &Control) -> Result<()> {
+    ctl.at("remove")?;
+    let name = &target.name;
+    let aside = folder.join(format!(".{name}.removing-{}", ctl.id));
+    fs::rename(&target.path, &aside).map_err(|error| anyhow::anyhow!("Cannot move {name} aside to remove it: {error}").context(NotMoved))?;
+    if let Err(error) = fs::remove_dir_all(&aside) {
+        bail!("{name} was partly removed; what is left is {}, and it is left as it is: {error}", aside.display());
+    }
+    Ok(())
+}
+
 /// Removes the backup `name` from `folder`, as the user confirmed: judged
 /// again, after another backup of this Workspace there was read back whole.
 /// Stop works until the removal itself begins.
@@ -418,31 +463,15 @@ pub(crate) fn remove(folder: &Path, rule: impl Into<Rule>, name: &str, manifest_
     let rule: Rule = rule.into();
     ctl.at("preview")?;
     let (preview, target) = judge(folder, rule, name, manifest_sha256, workspace, &operations(), limit)?;
-    let mut failures = Vec::new();
-    let mut checked = None;
-    for kept in preview.entries.iter().filter(|e| e.verdict == "keep") {
-        ctl.at("verify")?;
-        match super::verify(&kept.path) {
-            Ok(_) => {
-                checked = Some(kept.clone());
-                break;
-            }
-            Err(error) => failures.push(format!("{}: {error:#}", kept.name)),
-        }
-    }
-    let Some(checked) = checked else {
-        bail!("No other backup of this Workspace in {} could be read back whole just now ({}); nothing was removed",
-            folder.display(), if failures.is_empty() { "none is kept".into() } else { failures.join("; ") });
-    };
+    let checked = read_back_kept(folder, &preview, ctl)?;
     // Again, right before: the folder may have changed while the other backup was read.
     ctl.at("recheck")?;
     judge(folder, rule, name, manifest_sha256, workspace, &operations(), limit)?;
-    ctl.at("remove")?;
-    let aside = folder.join(format!(".{name}.removing-{}", ctl.id));
-    fs::rename(&target.path, &aside).map_err(|error| anyhow::anyhow!("Cannot move {name} aside to remove it; nothing was removed: {error}"))?;
-    if let Err(error) = fs::remove_dir_all(&aside) {
-        bail!("{name} was partly removed; what is left is {}, and it is left as it is: {error}", aside.display());
-    }
+    move_aside_and_remove(folder, &target, ctl).map_err(|error| if error.is::<NotMoved>() {
+        anyhow::anyhow!("{:#}; nothing was removed", error.root_cause())
+    } else {
+        error
+    })?;
     Ok(json!({
         "removed": target.path,
         "name": name,
@@ -451,6 +480,83 @@ pub(crate) fn remove(folder: &Path, rule: impl Into<Rule>, name: &str, manifest_
         "keptChecked": checked.path,
         "keptCheckedName": checked.name,
     }))
+}
+
+/// Removals one automatic pass makes at most; the rest wait for the next.
+pub const PASS_LIMIT: usize = 20;
+
+/// The automatic removal after a daily backup succeeded: what the preview
+/// of `folder` under `rule` offers now, oldest first and at most `at_most`,
+/// each removed as one confirmed removal is. One kept backup is read back
+/// whole first, and must still be kept, unchanged, as each one is judged
+/// again right before it goes. The first removal that fails ends the pass,
+/// saying what it had removed; the rest are left as they are.
+pub(crate) fn prune(folder: &Path, rule: Rule, workspace: &str, operations: impl Fn() -> Vec<Operation>, ctl: &Control, limit: usize, at_most: usize) -> Result<Value> {
+    ctl.at("preview")?;
+    let preview = preview_within(folder, rule, workspace, &operations(), limit)?;
+    ensure!(preview.unreadable_names == 0, "{} has names that can't be read, so it can't be judged whole; nothing was removed", folder.display());
+    let mut offered: Vec<Entry> = preview.entries.iter().filter(|e| e.verdict == "remove" && e.manifest_sha256.is_some()).cloned().collect();
+    // Oldest first.
+    offered.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.name.cmp(&b.name)));
+    let left = offered.len().saturating_sub(at_most);
+    offered.truncate(at_most);
+    let mut answer = json!({
+        "folder": folder,
+        "keep": rule.keep,
+        "removed": [],
+        "skipped": [],
+        "left": left,
+        "sizeBasis": SIZE_BASIS,
+    });
+    if let Some(bytes) = rule.budget_bytes {
+        answer["budgetBytes"] = json!(bytes);
+    }
+    if offered.is_empty() {
+        return Ok(answer);
+    }
+    let checked = read_back_kept(folder, &preview, ctl)?;
+    answer["keptChecked"] = json!(checked.path);
+    answer["keptCheckedName"] = json!(checked.name);
+    let (mut removed, mut skipped) = (Vec::new(), Vec::new());
+    for target in &offered {
+        ctl.at("recheck").map_err(|error| ended(error, &removed))?;
+        let sha256 = target.manifest_sha256.as_deref().unwrap_or_default();
+        let judged = judge(folder, rule, &target.name, sha256, workspace, &operations(), limit);
+        let still_kept = |preview: &Preview| preview.entries.iter().any(|e| e.name == checked.name && e.verdict == "keep" && e.manifest_sha256 == checked.manifest_sha256);
+        match judged {
+            Ok((preview, target)) if still_kept(&preview) => {
+                move_aside_and_remove(folder, &target, ctl).map_err(|error| ended(error, &removed))?;
+                removed.push(json!({"name": target.name, "path": target.path, "backedUpAt": target.created_at, "freedEstimateBytes": target.estimate_bytes}));
+            }
+            Ok(_) => bail!("{} is no longer kept as it was when it was read back; {}; the rest are left as they are",
+                checked.name, if removed.is_empty() { "nothing was removed".to_string() } else { format!("{} before that", names(&removed)) }),
+            Err(error) => skipped.push(json!({"name": target.name, "reason": format!("{error:#}")})),
+        }
+    }
+    let declared = removed.iter().filter_map(|r| r["freedEstimateBytes"].as_u64()).fold(0u64, u64::saturating_add);
+    answer["removed"] = json!(removed);
+    answer["skipped"] = json!(skipped);
+    answer["removedEstimateBytes"] = json!(declared);
+    Ok(answer)
+}
+
+/// How a pass that ends early says so: what it had removed before, and that
+/// the rest are left. A stop stays a stop (the operation is `stopped`); a
+/// failure says what failed.
+fn ended(error: anyhow::Error, removed: &[Value]) -> anyhow::Error {
+    let done = if removed.is_empty() { "nothing was removed before it".to_string() } else { format!("before it, {}", names(removed)) };
+    if error.chain().any(|e| e.is::<Stopped>()) {
+        return if removed.is_empty() { error } else { error.context(format!("Stopped; {done}; the rest are left as they are")) };
+    }
+    let text = if error.is::<NotMoved>() { format!("{:#}", error.root_cause()) } else { format!("{error:#}") };
+    anyhow::anyhow!("{text}; {done}; the rest are left as they are")
+}
+
+/// "1 backup was removed (b-1)", "2 backups were removed (b-1, b-2)".
+fn names(removed: &[Value]) -> String {
+    let all: Vec<&str> = removed.iter().filter_map(|r| r["name"].as_str()).collect();
+    let what = if all.len() == 1 { "1 backup was".to_string() } else { format!("{} backups were", all.len()) };
+    format!("{what} removed ({})", all.join(", "))
 }
 
 /// The preview route: on Core's own port only.

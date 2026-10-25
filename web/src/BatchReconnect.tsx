@@ -49,7 +49,10 @@ function stateText(agent: Agent, outcome: BatchOutcome | undefined): string {
     }
   }
   const offer = reconnectOffer(agent);
-  if (offer === "reconnect" && agent.disconnectedAt) return "Disconnected by you; tick it to reconnect it";
+  if (offer === "reconnect" && agent.disconnectedAt)
+    return agent.disconnectUnconfirmed
+      ? "Disconnected by you, stop not confirmed; nothing starts it automatically. Tick it to reconnect it"
+      : "Disconnected by you; tick it to reconnect it";
   return offer === "connecting" ? "Reconnecting…" : offer === "check" ? "Result unconfirmed" : "Offline";
 }
 

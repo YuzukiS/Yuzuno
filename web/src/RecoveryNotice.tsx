@@ -104,7 +104,10 @@ export function RecoveryNotice({
           <>
             You disconnected this agent
             {detail.agent.disconnectedAt ? ` on ${new Date(detail.agent.disconnectedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}` : ""}.
-            Nothing starts it again, not new mail, a message or automatic continue, and messages for it wait. Reconnect
+            {detail.agent.disconnectUnconfirmed
+              ? ` ${detail.agent.remote?.machine.name || "Its machine"} didn’t confirm that ${detail.agent.harness === "codex" ? "Codex" : "Claude Code"} stopped there, so it may still be running; Yuzuno treats it as disconnected.`
+              : ""}
+            {" "}Nothing starts it again, not new mail, a message or automatic continue, and messages for it wait. Reconnect
             to open the same session; waiting messages are then delivered.
           </>
         ) : reason === "offline" ? (

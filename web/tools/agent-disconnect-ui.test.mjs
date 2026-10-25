@@ -1,5 +1,6 @@
 // Disconnect (T-184): the Agent menu offers it only for a connected, idle
-// local Codex or Claude Agent; its confirmation says what stops and what
+// Codex or Claude Agent, here or on an SSH machine; its confirmation
+// says what stops and what
 // stays, sends one request when confirmed and none when cancelled, and shows
 // Core's refusal as it is. An Agent the user disconnected says so and offers
 // Reconnect, which is one reconnect request; nothing else is sent. Fixture
@@ -84,10 +85,15 @@ function mount(respond = () => ({})) {
 const offered = (page, rest, options = { disconnect: true }) =>
   [...page.window.agentMenuItems(agent("a", rest), options)].some((item) => item.action === "disconnect");
 
-test("Disconnect… is offered only for a connected, idle local Codex or Claude Agent, and only where the menu can run it", () => {
+const ssh = { remote: { machine: { id: "m", name: "Mac mini" } } };
+const claude = { harness: "claude", threadId: undefined, claudeSessionId: "s" };
+
+test("Disconnect… is offered only for a connected, idle Codex or Claude Agent, here or on an SSH machine, and only where the menu can run it", () => {
   const page = mount();
   assert.ok(offered(page, {}), "an idle connected Codex Agent");
-  assert.ok(offered(page, { harness: "claude", threadId: undefined, claudeSessionId: "s" }), "an idle connected Claude Agent");
+  assert.ok(offered(page, claude), "an idle connected Claude Agent");
+  assert.ok(offered(page, { ...claude, ...ssh }), "an idle connected Claude Agent on an SSH machine");
+  assert.ok(offered(page, ssh), "an idle connected Codex Agent on an SSH machine");
   const entry = [...page.window.agentMenuItems(agent("a"), { disconnect: true })].find((item) => item.action === "disconnect");
   assert.equal(entry.label, "Disconnect…");
   for (const [what, rest] of [
@@ -98,7 +104,8 @@ test("Disconnect… is offered only for a connected, idle local Codex or Claude 
     ["connecting", { connectionState: "connecting" }],
     ["closed", { closedAt: "now" }],
     ["already disconnected", { status: "offline", connectionState: "disconnected", disconnectedAt: "now" }],
-    ["on an SSH machine", { remote: { machine: { id: "m", name: "Box" } } }],
+    ["OpenCode on an SSH machine", { ...ssh, harness: "opencode", threadId: undefined, opencodeSessionId: "s" }],
+    ["Claude on an SSH machine, working", { ...claude, ...ssh, status: "working" }],
     ["OpenCode", { harness: "opencode", threadId: undefined, opencodeSessionId: "s" }],
   ]) {
     assert.ok(!offered(page, rest), `not ${what}`);
@@ -131,6 +138,21 @@ test("its confirmation says what stops and what stays; Cancel sends nothing; con
   page.close();
 });
 
+test("for Claude on an SSH machine it names the machine and says what happens if the stop can't be confirmed", async () => {
+  const page = mount(() => ({ status: 400, body: { error: "Not confirmed: Claude on Mac mini didn't confirm it stopped (no answer)." } }));
+  page.window.renderDialog(agent("a", { ...claude, ...ssh }));
+  await tick();
+  const text = page.dialog().textContent;
+  assert.match(text, /stops the agent’s Claude Code session on Mac mini\. The agent stays open/);
+  assert.match(text, /Mac mini is asked to stop Claude Code there and to say once it has\. If it can’t say so, you are told, and the agent stays disconnected until you press Reconnect/);
+  page.button("Disconnect").click();
+  await tick();
+  assert.match(page.alert(), /^Not confirmed: Claude on Mac mini didn't confirm it stopped/);
+  assert.deepEqual(page.calls, ["POST /api/agents/a/disconnect"]);
+  assert.deepEqual([...page.window.done], []);
+  page.close();
+});
+
 test("Core's refusal is shown as it is, nothing else is sent, and the dialog stays to read it", async () => {
   const refusal = "Not disconnected: 1 background terminal(s) are still running. Nothing changed.";
   const page = mount(() => ({ status: 400, body: { error: refusal } }));
@@ -157,9 +179,45 @@ test("an Agent the user disconnected says so and offers Reconnect: one reconnect
   assert.match(notice, /You disconnected this agent on /);
   assert.match(notice, /Nothing starts it again, not new mail, a message or automatic continue, and messages for it wait/);
   assert.match(notice, /Your draft is kept/);
+  assert.doesNotMatch(notice, /didn’t confirm/);
   page.button("Reconnect").click();
   await tick();
   assert.deepEqual(page.calls, ["POST /api/agents/a/reconnect?view=summary"]);
   assert.deepEqual([...page.window.done], ["recovered"]);
+  page.close();
+});
+
+test("a disconnect its SSH machine didn't confirm says so and still offers only Reconnect: one request, nothing sent", async () => {
+  const page = mount((url) => (url.includes("/reconnect") ? { body: { agent: agent("a", { ...claude, ...ssh }) } } : { status: 404 }));
+  page.window.renderNotice({
+    agent: agent("a", { ...claude, ...ssh, status: "offline", connectionState: "disconnected", disconnectedAt: "2026-10-25T04:00:00Z", disconnectUnconfirmed: true }),
+    turns: [{ id: "t", status: "completed", items: [] }],
+    pending: [],
+  });
+  await tick();
+  const notice = page.document.querySelector(".recovery-notice").textContent;
+  assert.match(notice, /You disconnected this agent on .+\. Mac mini didn’t confirm that Claude Code stopped there, so it may still be running; Yuzuno treats it as disconnected\. Nothing starts it again/);
+  assert.deepEqual([...page.document.querySelectorAll(".recovery-notice button")].map((b) => b.textContent.trim()), ["Reconnect"]);
+  page.button("Reconnect").click();
+  await tick();
+  assert.deepEqual(page.calls, ["POST /api/agents/a/reconnect?view=summary"]);
+  page.close();
+});
+
+test("for Codex on an SSH machine the dialog and an unconfirmed notice name Codex, not Claude", async () => {
+  const page = mount();
+  page.window.renderDialog(agent("a", ssh));
+  await tick();
+  assert.match(page.dialog().textContent, /stops the agent’s Codex session on Mac mini\..*Mac mini is asked to stop Codex there and to say once it has/s);
+  page.window.renderNotice({
+    agent: agent("a", { ...ssh, status: "offline", connectionState: "disconnected", disconnectedAt: "2026-10-25T04:00:00Z", disconnectUnconfirmed: true }),
+    turns: [{ id: "t", status: "completed", items: [] }],
+    pending: [],
+  });
+  await tick();
+  const notice = page.document.querySelector(".recovery-notice").textContent;
+  assert.match(notice, /Mac mini didn’t confirm that Codex stopped there, so it may still be running/);
+  assert.doesNotMatch(notice, /Claude/);
+  assert.deepEqual(page.calls, []);
   page.close();
 });

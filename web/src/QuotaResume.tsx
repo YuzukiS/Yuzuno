@@ -259,12 +259,19 @@ export function AutoContinueSetting({
     setBusy(true);
     setError("");
     try {
-      await post("/claude/auto-continue", { enabled });
-      setView(
-        await api<AutoContinueView>(
-          `/agents/${encodeURIComponent(agentId)}/claude/auto-continue`,
-        ),
-      );
+      const saved = await post<{ enabled: boolean }>("/claude/auto-continue", { enabled });
+      // Core confirmed the default; the rest of the view is read again, and
+      // a failed read must not read as a failed save (T-187).
+      setView((current) => current && { ...current, workspace: saved.enabled });
+      try {
+        setView(
+          await api<AutoContinueView>(
+            `/agents/${encodeURIComponent(agentId)}/claude/auto-continue`,
+          ),
+        );
+      } catch (e) {
+        setError(`The default is saved, but this agent’s view couldn’t be read again: ${errorText(e)}`);
+      }
     } catch (e) {
       setError(errorText(e));
     } finally {

@@ -1,5 +1,22 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { Plus, Search } from "lucide-react";
+import { strings, useStrings } from "./i18n";
+
+const text = strings({
+  heading: "YOUR AGENTS",
+  show: "Show agents",
+  active: "Active",
+  closed: "Closed",
+  search: "Search agents",
+  create: "Create agent",
+}, {
+  heading: "你的 Agent",
+  show: "显示 Agent",
+  active: "活跃",
+  closed: "已关闭",
+  search: "搜索 Agent",
+  create: "新建 Agent",
+});
 
 export type AgentScope = "active" | "closed";
 
@@ -53,43 +70,44 @@ export function RailHeading({
     void document.fonts?.ready.then(fit);
     return () => observer?.disconnect();
   }, []);
+  const t = useStrings(text);
   return (
     <div
       ref={heading}
       className="rail-heading"
       data-stacked={stacked || undefined}
     >
-      <span>YOUR AGENTS</span>
-      <div className="agent-scope" role="group" aria-label="Show agents">
+      <span>{t.heading}</span>
+      <div className="agent-scope" role="group" aria-label={t.show}>
         <button
           type="button"
           aria-pressed={scope === "active"}
           onClick={() => onScope("active")}
         >
-          Active <span>{active}</span>
+          {t.active} <span>{active}</span>
         </button>
         <button
           type="button"
           aria-pressed={scope === "closed"}
           onClick={() => onScope("closed")}
         >
-          Closed <span>{closed}</span>
+          {t.closed} <span>{closed}</span>
         </button>
       </div>
       <div className="rail-actions">
         {extra}
         <button
           className="icon-button"
-          aria-label="Search agents"
-          title={`Search agents · ${shortcut} K`}
+          aria-label={t.search}
+          title={`${t.search} · ${shortcut} K`}
           onClick={onSearch}
         >
           <Search size={14} />
         </button>
         <button
           className="icon-button"
-          aria-label="Create agent"
-          title={`Create agent · ${shortcut} N`}
+          aria-label={t.create}
+          title={`${t.create} · ${shortcut} N`}
           onClick={onCreate}
         >
           <Plus size={16} />

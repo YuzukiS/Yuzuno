@@ -619,3 +619,207 @@ test("a space budget is optional: sent only when given, what stays is said again
     p.close();
   }
 });
+
+// T-196 slice 6: automatic removal of old daily backups.
+const DAILY = { enabled: true, timeUtc: "03:00", folder: "/backups/daily", nextRunAt: "2026-10-29T03:00:00Z", lastRun: null, retention: null, retentionNote: null };
+const autoPreview = (keep, budgetBytes) => ({
+  folder: "/backups/daily", keep,
+  entries: [
+    { name: "yuzuno-backup-20261028T0300Z", verdict: "keep", reason: `One of the latest ${keep}` },
+    { name: "yuzuno-backup-20261027T0300Z", verdict: "keep", reason: `One of the latest ${keep}` },
+    { name: "yuzuno-backup-20261020T0300Z", verdict: "remove", reason: `Older than the latest ${keep}` },
+    { name: "other", verdict: "protected", reason: "A backup of another Workspace" },
+  ],
+  unreadableNames: 0, removableEstimateBytes: 3 * 1024 ** 3, removableUnknownSizes: 0,
+  sizeBasis: "Sizes are what each backup's manifest declares for its database and files.",
+  ...(budgetBytes ? { budget: { bytes: budgetBytes, state: "met", reason: "this Workspace's backups that stay declare 4.0 GiB of 10 GiB" } } : {}),
+});
+
+test("automatic removal is off until a preview of the schedule's folder is confirmed for exactly those settings; turning it on removes nothing", async () => {
+  let schedule = { ...DAILY };
+  const previews = [];
+  const sets = [];
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/workspace/backup")) return { body: view({ schedule }) };
+    if (url.endsWith("/api/workspace/backup/retention/preview")) {
+      previews.push(body);
+      return { body: autoPreview(body.keep, body.budgetBytes) };
+    }
+    if (url.endsWith("/api/workspace/backup/schedule/retention")) {
+      sets.push(body);
+      const retention = body.enabled ? { keep: body.keep, ...(body.budgetBytes ? { budgetBytes: body.budgetBytes } : {}), folder: body.folder, confirmedAt: "2026-10-28T10:00:00Z" } : null;
+      schedule = { ...schedule, retention };
+      return { body: { schedule } };
+    }
+    assert.fail(`unexpected ${method} ${url}`);
+  });
+  try {
+    const auto = () => p.doc.querySelector('[aria-label="Automatic removal"]');
+    const inAuto = (text) => [...(auto()?.querySelectorAll("button") ?? [])].find((b) => b.textContent.trim() === text);
+    await waitFor(() => auto(), "automatic removal");
+    assert.match(auto().textContent, /Off: old daily backups are never removed on their own/);
+    assert.match(p.doc.querySelector('[aria-label="Daily backup"]').textContent, /Old backups are never deleted\./);
+    assert.equal(inAuto("Turn on automatic removal"), undefined, "nothing to confirm before a preview");
+    assert.equal(p.posts().length, 0, "opening sends nothing");
+    type(p, "Daily backups to keep", "2");
+    type(p, "Space budget for daily backups in GiB (optional)", "10");
+    await tick();
+    inAuto("Preview").click();
+    await waitFor(() => inAuto("Turn on automatic removal"), "the confirm after the preview");
+    assert.deepEqual(previews.at(-1), { folder: "/backups/daily", keep: 2, budgetBytes: 10 * 1024 ** 3 });
+    assert.match(auto().textContent, /would keep 2 and remove 1 \(about 3\.0 GiB as their manifests declare\); 1 protected or can't be judged/);
+    assert.match(auto().textContent, /yuzuno-backup-20261020T0300Z · Older than the latest 2/);
+    assert.match(auto().textContent, /Turning it on removes nothing now/);
+    // A setting changed after the preview is previewed again before it can be confirmed.
+    type(p, "Daily backups to keep", "3");
+    await waitFor(() => !inAuto("Turn on automatic removal"), "no confirm for settings not previewed");
+    type(p, "Daily backups to keep", "2");
+    await tick();
+    inAuto("Preview").click();
+    await waitFor(() => inAuto("Turn on automatic removal"), "previewed again");
+    assert.equal(sets.length, 0, "nothing turned on by a preview");
+    inAuto("Turn on automatic removal").click();
+    await waitFor(() => /On since 2026-10-28 10:00 UTC/.test(auto().textContent), "on");
+    assert.deepEqual(sets.at(-1), { enabled: true, keep: 2, budgetBytes: 10 * 1024 ** 3, folder: "/backups/daily" });
+    assert.match(auto().textContent, /keeps the latest 2 within 10 GiB \(by the sizes their manifests declare\) in \/backups\/daily/);
+    assert.match(p.doc.querySelector('[aria-label="Daily backup"]').textContent, /Old backups there are removed as Automatic removal below says\./);
+    assert.ok(!p.posts().some((c) => c.url.endsWith("/retention/remove")), "turning it on requests no removal");
+    inAuto("Turn off").click();
+    await waitFor(() => /Off: old daily backups/.test(auto().textContent), "off again");
+    assert.deepEqual(sets.at(-1), { enabled: false });
+  } finally {
+    p.close();
+  }
+});
+
+test("after a run, automatic removal is said apart from its backup, and its operation shows as one", async () => {
+  const run = {
+    slot: "2026-10-28T03:00:00Z", missed: 0, startedAt: "2026-10-28T03:00:05Z", to: "/backups/daily/yuzuno-backup-20261028T0300Z",
+    operationId: "op9", state: "succeeded", error: null, finishedAt: "2026-10-28T03:01:00Z",
+  };
+  const cleanup = (over) => ({ state: "succeeded", keep: 2, folder: "/backups/daily", decidedAt: "2026-10-28T03:01:30Z", operationId: "op10", reason: null, error: null, result: null, finishedAt: null, ...over });
+  const retention = { keep: 2, folder: "/backups/daily", confirmedAt: "2026-10-27T10:00:00Z" };
+  const cases = [
+    [cleanup({ state: "failed", error: "Cannot move yuzuno-backup-20261020T0300Z aside to remove it: Permission denied; nothing was removed before it; the rest are left as they are" }),
+      /Removing old backups after this run failed: Cannot move yuzuno-backup-20261020T0300Z aside .*the rest are left as they are\. The backup itself is as said above; this is not tried again on its own\./, "failed"],
+    [cleanup({ result: { removed: [{ name: "yuzuno-backup-20261020T0300Z", freedEstimateBytes: 3 * 1024 ** 3 }], skipped: [], left: 1, removedEstimateBytes: 3 * 1024 ** 3, keptCheckedName: "yuzuno-backup-20261028T0300Z", sizeBasis: "…" } }),
+      /After this run: Removed 1 old backup: yuzuno-backup-20261020T0300Z, about 3\.0 GiB as their manifests declared \(disk use can differ\)\. First, yuzuno-backup-20261028T0300Z was read back whole\. 1 more wait for the next run that succeeds\./, "succeeded"],
+    [cleanup({ state: "not_run", reason: "Core started again after this backup ended, before removing old backups; nothing was removed" }),
+      /Old backups were not removed after this run: Core started again after this backup ended/, "not_run"],
+  ];
+  for (const [shown, said, state] of cases) {
+    const p = mount((url) => {
+      assert.ok(url.endsWith("/api/workspace/backup"), url);
+      return { body: view({ schedule: { ...DAILY, retention, lastRun: { ...run, cleanup: shown } } }) };
+    });
+    try {
+      const daily = () => p.doc.querySelector('[aria-label="Daily backup"]');
+      await waitFor(() => daily()?.querySelector(`[data-cleanup="${state}"]`), `the ${state} cleanup`);
+      assert.match(daily().textContent, /Last run, for 2026-10-28 03:00 UTC: backed up to \/backups\/daily\/yuzuno-backup-20261028T0300Z and checked\./, "the backup's own outcome");
+      assert.match(daily().querySelector(`[data-cleanup="${state}"]`).textContent, said);
+      assert.equal(daily().querySelector(`[data-cleanup="${state}"]`).className, state === "failed" ? "workspace-backup-error" : "workspace-backup-note");
+      assert.equal(p.posts().length, 0);
+    } finally {
+      p.close();
+    }
+  }
+  // Turned off by Core when the folder changed: said.
+  const moved = mount(() => ({ body: view({ schedule: { ...DAILY, retentionNote: "Automatic removal was turned off on 2026-10-28 10:00 UTC because the daily backup's folder changed; preview and turn it on again for the new folder" } }) }));
+  try {
+    await waitFor(() => moved.doc.querySelector('[aria-label="Automatic removal"]')?.textContent.includes("folder changed"), "the note");
+  } finally {
+    moved.close();
+  }
+  // The removal operation while the page is open: followed, and its list of removals shown.
+  let done = false;
+  const pass = { removed: [{ name: "yuzuno-backup-20261020T0300Z", freedEstimateBytes: 1024 }], skipped: [{ name: "yuzuno-backup-20261019T0300Z", reason: "yuzuno-backup-20261019T0300Z changed since the preview; preview again" }], left: 0, removedEstimateBytes: 1024, keptCheckedName: "yuzuno-backup-20261028T0300Z", sizeBasis: "…" };
+  const auto = op({ id: "op10", kind: "remove", step: "recheck", request: { folder: "/backups/daily", keep: "2", automatic: true } });
+  const q = mount((url) => {
+    if (url.endsWith("/api/workspace/backup")) return { body: view({ schedule: { ...DAILY, retention }, current: done ? null : auto, recent: done ? [{ ...auto, state: "succeeded" }] : [] }) };
+    if (url.endsWith("/api/workspace/backup/operations/op10")) {
+      done = true;
+      return { body: { ...auto, state: "succeeded", step: "remove", finishedAt: "2026-10-28T03:02:00Z", result: pass } };
+    }
+    assert.fail(`unexpected ${url}`);
+  });
+  try {
+    await waitFor(() => q.text().includes("Automatic removal: Checking the folder again…"), "the running automatic removal");
+    await waitFor(() => q.text().includes("Removed 1 old backup: yuzuno-backup-20261020T0300Z"), "its result");
+    assert.match(q.text(), /Not removed: yuzuno-backup-20261019T0300Z \(yuzuno-backup-20261019T0300Z changed since the preview; preview again\)\./);
+    assert.match(q.text(), /Automatic removal finished/);
+  } finally {
+    q.close();
+  }
+  // Stopped part way: said as a stop, with what it had removed, never "nothing … was kept" (review e252fc4d).
+  const stoppedError = "Stopped; before it, 1 backup was removed (yuzuno-backup-20261020T0300Z); the rest are left as they are: Stopped on request";
+  let ended = false;
+  const r = mount((url) => {
+    if (url.endsWith("/api/workspace/backup")) return { body: view({ schedule: { ...DAILY, retention }, current: ended ? null : auto, recent: [] }) };
+    if (url.endsWith("/api/workspace/backup/operations/op10")) {
+      ended = true;
+      return { body: { ...auto, state: "stopped", step: "recheck", finishedAt: "2026-10-28T03:02:00Z", error: stoppedError } };
+    }
+    assert.fail(`unexpected ${url}`);
+  });
+  try {
+    await waitFor(() => r.text().includes("Automatic removal stopped"), "the stopped automatic removal");
+    assert.ok(r.text().includes(stoppedError), "what it had removed is said");
+    assert.doesNotMatch(r.text(), /nothing it was writing was kept/);
+  } finally {
+    r.close();
+  }
+});
+
+test("the Backup page in Chinese (T-189): a run and its cleanup said apart, Core's words as they came; typed folders and a preview kept across a language change, which sends nothing", async () => {
+  const run = {
+    slot: "2026-10-28T03:00:00Z", missed: 1, startedAt: "2026-10-28T03:00:05Z", to: "/backups/daily/yuzuno-backup-20261028T0300Z",
+    operationId: "op9", state: "succeeded", error: null, finishedAt: "2026-10-28T03:01:00Z",
+    cleanup: { state: "failed", keep: 2, folder: "/backups/daily", decidedAt: "2026-10-28T03:01:30Z", operationId: "op10", reason: null,
+      error: "Cannot move yuzuno-backup-20261020T0300Z aside to remove it: Permission denied", result: null, finishedAt: null },
+  };
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/workspace/backup")) return { body: view({ schedule: { ...DAILY, lastRun: run } }) };
+    if (url.endsWith("/api/workspace/backup/retention/preview")) return { body: autoPreview(body.keep, body.budgetBytes) };
+    assert.fail(`unexpected ${method} ${url}`);
+  });
+  // Changed in another window: a storage event, as the browser sends it.
+  const switchTo = (language) => {
+    p.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+    p.window.dispatchEvent(new p.window.StorageEvent("storage", { key: "yuzuno.language" }));
+  };
+  try {
+    const group = (en, zh) => p.doc.querySelector(`[aria-label="${en}"], [aria-label="${zh}"]`);
+    const auto = () => group("Automatic removal", "自动删除");
+    await waitFor(() => auto(), "the page");
+    type(p, "Backup folder", "/backups/by-hand");
+    type(p, "Daily backups to keep", "2");
+    await tick();
+    [...auto().querySelectorAll("button")].find((b) => b.textContent.trim() === "Preview").click();
+    await waitFor(() => /Turn on automatic removal/.test(auto().textContent), "the preview");
+    const sent = p.calls.length;
+
+    switchTo("zh-Hans");
+    await waitFor(() => p.doc.querySelector("#settings-backup h3")?.textContent === "Workspace 备份", "Chinese");
+    const daily = group("Daily backup", "每日备份").textContent;
+    assert.match(daily, /在 \/backups\/daily 中新建一个文件夹。旧备份从不会被删除。/);
+    assert.match(daily, /上次运行（2026-10-28 03:00 UTC）：已备份到 \/backups\/daily\/yuzuno-backup-20261028T0300Z 并已检查。它补做了 1 天错过的备份。/, "the backup's own outcome");
+    assert.match(daily, /本次运行后的旧备份删除失败：Cannot move yuzuno-backup-20261020T0300Z aside to remove it: Permission denied。备份本身如上所述；这一步不会自动重试。/, "its cleanup apart, Core's error as it came");
+    assert.match(auto().textContent, /关闭：旧的每日备份不会被自动删除。受保护或无法判断的备份从不会被删除/);
+    assert.match(auto().textContent, /现在在 \/backups\/daily 中保留最新的 2 个，会保留 2 个、删除 1 个（按其清单声明约 3\.0 GiB）；1 个受保护或无法判断。/, "the preview, kept");
+    assert.match(auto().textContent, /yuzuno-backup-20261020T0300Z · Older than the latest 2/, "Core's reason as it came");
+    assert.ok([...auto().querySelectorAll("button")].some((b) => b.textContent.trim() === "开启自动删除"), "still to confirm");
+    assert.equal(p.doc.querySelector('input[aria-label="备份文件夹"]').value, "/backups/by-hand", "what was typed stays");
+    assert.equal(p.doc.querySelector('input[aria-label="要保留的每日备份数"]').value, "2");
+    assert.equal(p.calls.length, sent, "a language change sends nothing");
+
+    switchTo("en");
+    await waitFor(() => p.doc.querySelector("#settings-backup h3")?.textContent === "Workspace backup", "English again");
+    assert.match(auto().textContent, /would keep 2 and remove 1 \(about 3\.0 GiB as their manifests declare\); 1 protected or can't be judged/);
+    assert.match(group("Daily backup", "每日备份").textContent, /Removing old backups after this run failed: Cannot move/);
+    assert.equal(p.doc.querySelector('input[aria-label="Backup folder"]').value, "/backups/by-hand");
+    assert.equal(p.calls.length, sent, "nor does changing back");
+    assert.equal(p.posts().filter((c) => !c.url.endsWith("/retention/preview")).length, 0, "nothing started or saved");
+  } finally {
+    p.close();
+  }
+});

@@ -9,6 +9,7 @@ import type { Agent, WorkSummary } from "./types";
 import { useAgentJobs } from "./live-jobs";
 import { useAgentCI, waitingSummary } from "./live-ci";
 import { useHandoffDrop } from "./SendToAgent";
+import { strings, useLanguage } from "./i18n";
 import "./reading.css";
 
 export function workingFolder(cwd: string): string {
@@ -24,6 +25,31 @@ export function summaryOrigin(summary: WorkSummary): string {
         ? "Open the request that needs your response"
         : "Runtime record · open source";
 }
+
+// The row's own words (T-189); the Agent's and machine's names and what the
+// Agent reported are shown as they came.
+const text = strings({
+  host: "Core host",
+  open: (name: string) => `Open ${name}`,
+  description: (label: string, detail: string | null, machine: string, unread: number) =>
+    `${label}${detail ? ` (${detail})` : ""}, on ${machine}${unread > 0 ? `, ${unread} unread updates` : ""}`,
+  title: (name: string, label: string, detail: string | null, unread: number) =>
+    `${name} · ${label}${detail ? ` · ${detail}` : ""}${unread > 0 ? ` · ${unread} unread updates` : ""}`,
+  reported: "Reported · ",
+  update: "Update · ",
+  drop: (name: string) => `Drop to add it to ${name}’s draft`,
+  needsYou: (count: number) => `${count} needs you`,
+}, {
+  host: "Core 主机",
+  open: (name) => `打开 ${name}`,
+  description: (label, detail, machine, unread) =>
+    `${label}${detail ? `（${detail}）` : ""}，位于 ${machine}${unread > 0 ? `，${unread} 条未读更新` : ""}`,
+  title: (name, label, detail, unread) => `${name} · ${label}${detail ? ` · ${detail}` : ""}${unread > 0 ? ` · ${unread} 条未读更新` : ""}`,
+  reported: "已报告 · ",
+  update: "更新 · ",
+  drop: (name) => `放下即可添加到 ${name} 的草稿`,
+  needsYou: (count) => `${count} 项需要你`,
+});
 
 /** How long a touch is held before it opens the actions, and how far it may
  * move first: a scroll moves further, and the browser cancels the pointer. */
@@ -95,11 +121,13 @@ export function AgentRailRow({
   /** Its actions (T-184): a "…" button, a right-click or a long-press. */
   actions?: AgentActionHandlers;
 }) {
+  const language = useLanguage();
+  const t = text(language);
   const summary = agent.workSummary;
-  const machine = agent.remote?.machine.name || "Core host";
+  const machine = agent.remote?.machine.name || t.host;
   const jobs = useAgentJobs(agent.id);
   const ci = useAgentCI(agent.id);
-  const waiting = idle ? waitingSummary(jobs, ci) : null;
+  const waiting = idle ? waitingSummary(jobs, ci, language) : null;
   const label = waiting?.label ?? statusLabel;
   // Two waits or checks at once ("Waiting · Job / CI") take their own line
   // under the name; one ("Waiting · CI") fits beside it like any status.
@@ -136,10 +164,10 @@ export function AgentRailRow({
         ref={select}
         className="agent-select agent-row-top"
         onClick={onSelect}
-        aria-label={`Open ${agent.name}`}
-        aria-description={`${label}${waiting ? ` (${waiting.detail})` : ""}, on ${machine}${agent.unreadCount > 0 ? `, ${agent.unreadCount} unread updates` : ""}`}
+        aria-label={t.open(agent.name)}
+        aria-description={t.description(label, waiting?.detail ?? null, machine, agent.unreadCount)}
         aria-current={selected ? "true" : undefined}
-        title={`${agent.name} · ${label}${waiting ? ` · ${waiting.detail}` : ""}${agent.unreadCount > 0 ? ` · ${agent.unreadCount} unread updates` : ""}`}
+        title={t.title(agent.name, label, waiting?.detail ?? null, agent.unreadCount)}
       >
         {/* Unread updates ring the avatar, never a dot: dots beside the
             status say what the Agent is doing. */}
@@ -178,7 +206,7 @@ export function AgentRailRow({
         >
           {summary.source === "agent" && (
             <span className="agent-report-prefix">
-              {summary.kind === "result" ? "Reported · " : "Update · "}
+              {summary.kind === "result" ? t.reported : t.update}
             </span>
           )}
           <RequestSummary agentId={agent.id} summary={summary} />
@@ -186,14 +214,14 @@ export function AgentRailRow({
       )}
       {drop.state && (
         <p className="handoff-hint" role="status">
-          {drop.state === "accept" ? `Drop to add it to ${agent.name}’s draft` : drop.refusal}
+          {drop.state === "accept" ? t.drop(agent.name) : drop.refusal}
         </p>
       )}
       {agent.pendingCount > 0 && (
         <div className="agent-row-bottom">
           <span className="needs-you">
             <Bell size={10} />
-            {agent.pendingCount} needs you
+            {t.needsYou(agent.pendingCount)}
           </span>
         </div>
       )}

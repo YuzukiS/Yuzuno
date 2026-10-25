@@ -3,6 +3,7 @@
 #[cfg(windows)]
 mod chrome;
 mod connection;
+mod entries;
 mod health;
 mod notification_text;
 mod notify;
@@ -96,26 +97,128 @@ fn saved_core_file(app: &AppHandle) -> Option<PathBuf> {
         .map(|dir| dir.join(SAVED_CORE_FILE))
 }
 
-/// The saved Core, and where it is installed in WSL if it said so.
-fn read_saved_core(app: &AppHandle) -> (Option<Url>, Option<StartProfile>) {
-    let Some(bytes) = saved_core_file(app).and_then(|path| std::fs::read(path).ok()) else {
-        return (None, None);
-    };
-    (connection::saved_core(&bytes), connection::saved_start(&bytes))
+/// The Workspaces saved here. A missing file is a first launch; a file this
+/// app cannot read is neither that nor an empty list (`entries::Saved`).
+fn read_entries(app: &AppHandle) -> entries::Saved {
+    match saved_core_file(app).map(std::fs::read) {
+        Some(Ok(bytes)) => entries::read(&bytes),
+        // No file yet: nothing was ever saved.
+        Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => entries::Saved::Never,
+        Some(Err(error)) => entries::Saved::Unusable(format!("it could not be read ({error})")),
+        None => entries::Saved::Unusable("this app has no data folder to keep it in".into()),
+    }
 }
 
-/// Written whole, then renamed over the old record, so a crash leaves one
-/// or the other. Failing to save only means the next launch asks again.
-fn save_core(app: &AppHandle, core: &Url, start: Option<&StartProfile>) {
-    let Some(path) = saved_core_file(app) else {
-        return;
+/// The Core to open at startup, and the start profile of the entry it
+/// belongs to, from the saved list.
+fn read_saved_core(app: &AppHandle) -> (Option<Url>, Option<StartProfile>) {
+    let saved = read_entries(app);
+    let entries::Saved::Entries { entries, selected } = &saved else {
+        return (None, None);
     };
+    // The entry last opened, when it is still saved; otherwise the page asks
+    // which one rather than opening something nobody chose.
+    let entry = selected
+        .as_deref()
+        .and_then(|id| entries.iter().find(|entry| entry.id == id));
+    match entry {
+        Some(entry) => (Some(entry.url.clone()), entry.start.clone().filter(|_| entry.startable())),
+        None => (None, None),
+    }
+}
+
+/// Written whole, then renamed over the old record, so a crash leaves one or
+/// the other. Failing to save only means the next launch asks again.
+fn write_entries(app: &AppHandle, entries: &[entries::Entry], selected: Option<&str>) -> Result<(), String> {
+    let path = saved_core_file(app).ok_or("this app has no data folder to keep it in")?;
+    let text = entries::record(entries, selected)?;
     let staged = path.with_extension("json.new");
     let saved = std::fs::create_dir_all(path.parent().unwrap_or(&path))
-        .and_then(|()| std::fs::write(&staged, connection::saved_record(core, start)))
+        .and_then(|()| std::fs::write(&staged, text))
         .and_then(|()| std::fs::rename(&staged, &path));
     if let Err(error) = saved {
+        let _ = std::fs::remove_file(&staged);
+        return Err(format!("it could not be written ({error})"));
+    }
+    Ok(())
+}
+
+/// Remembers the Workspace just opened at `core`: the entry already saved at
+/// that address, or a new one. Its `workspaceId` is what answered, and its
+/// start profile is `start` when that profile is for this very address.
+///
+/// The list is read again here rather than taken from anything held in
+/// memory: between opening a Core and writing this, the saved list may have
+/// been renamed, added to or removed from.
+fn remember_opened(app: &AppHandle, core: &Url, workspace: Option<&str>, start: Option<&StartProfile>) {
+    let saved = read_entries(app);
+    if let Some(reason) = entries::unusable(&saved) {
+        // Never write a list built from a record that could not be read: it
+        // reports no entries, so writing would replace every Workspace in it.
+        eprintln!("Unable to remember the workspace: the saved list could not be read ({reason}).");
+        return;
+    }
+    let mut list = saved.entries().to_vec();
+    let id = match list.iter().position(|entry| entry.url == *core) {
+        Some(at) => {
+            if let Some(workspace) = workspace {
+                list[at].workspace_id = Some(workspace.to_owned());
+            }
+            list[at].id.clone()
+        }
+        None => {
+            if list.len() >= entries::ENTRY_LIMIT {
+                eprintln!("Unable to remember the workspace: this app keeps up to {} of them.", entries::ENTRY_LIMIT);
+                return;
+            }
+            let id = entries::next_id(&list);
+            list.push(entries::Entry {
+                id: id.clone(),
+                name: entries::name_for(core),
+                url: core.clone(),
+                workspace_id: workspace.map(str::to_owned),
+                start: None,
+            });
+            id
+        }
+    };
+    // A start profile belongs to the entry at its own address and to no
+    // other, and only one entry may have one.
+    if let Some(start) = start.filter(|start| start.core == *core) {
+        for entry in list.iter_mut() {
+            entry.start = (entry.id == id).then(|| start.clone());
+        }
+    } else if let Some(at) = list.iter().position(|entry| entry.id == id) {
+        list[at].start = None;
+    }
+    if let Err(error) = write_entries(app, &list, Some(&id)) {
         eprintln!("Unable to remember the workspace for the next launch: {error}");
+    }
+}
+
+/// Keeps what a start attempt showed, on the entry that start was for. The
+/// list is read again and only that entry's start profile is touched: which
+/// entry is selected, and every other entry, stay as they are on disk. A
+/// start that finished after the person chose another Workspace must not
+/// write the list back as it was when the start began.
+fn remember_start(app: &AppHandle, core: &Url, start: Option<&StartProfile>) {
+    let saved = read_entries(app);
+    if let Some(reason) = entries::unusable(&saved) {
+        eprintln!("Unable to remember the start profile: the saved list could not be read ({reason}).");
+        return;
+    }
+    let entries::Saved::Entries { entries: list, selected } = &saved else {
+        // Nothing saved: a start profile alone is not a Workspace entry.
+        return;
+    };
+    let mut list = list.clone();
+    let Some(at) = list.iter().position(|entry| entry.url == *core) else {
+        // The entry this start was for is no longer saved: it went with it.
+        return;
+    };
+    list[at].start = start.filter(|start| start.core == *core).cloned();
+    if let Err(error) = write_entries(app, &list, selected.as_deref()) {
+        eprintln!("Unable to remember the start profile: {error}");
     }
 }
 
@@ -144,6 +247,39 @@ struct ConnectionInfo {
     start_distro: Option<String>,
     /// This computer's start entry has accepted that installation before.
     start_confirmed: bool,
+    /// The Workspaces saved here, and which one was last opened. Saved is
+    /// not reachable: this says what is written down, never that any of it
+    /// answers. `savedError` says the list could not be read, which is not
+    /// an empty list.
+    saved: Vec<SavedEntry>,
+    selected: Option<String>,
+    saved_error: Option<String>,
+}
+
+/// One saved Workspace, as the connection page reads it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedEntry {
+    id: String,
+    name: String,
+    url: String,
+    /// What the Core there last answered with, when one has.
+    workspace_id: Option<String>,
+    /// Whether this is the one entry that may start a Core. Only a Core on
+    /// this computer can be started, and only the Windows app starts one.
+    startable: bool,
+}
+
+impl SavedEntry {
+    fn of(entry: &entries::Entry) -> Self {
+        Self {
+            id: entry.id.clone(),
+            name: entry.name.clone(),
+            url: entry.url.as_str().to_owned(),
+            workspace_id: entry.workspace_id.clone(),
+            startable: cfg!(windows) && entry.startable(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -217,6 +353,7 @@ fn connection_info(
         .map_err(|_| "Connection state unavailable.")?
         .clone()
         .filter(|start| start.core.as_str() == core_url);
+    let saved = read_entries(window.app_handle());
     Ok(ConnectionInfo {
         core_url,
         start_distro: shown.as_ref().map(|start| start.wsl_distro.clone()),
@@ -227,6 +364,88 @@ fn connection_info(
             .cloned()
             .filter(|_| selected.is_none()),
         auto_connect: state.first_open.swap(false, Ordering::Relaxed),
+        saved: saved.entries().iter().map(SavedEntry::of).collect(),
+        selected: match &saved {
+            entries::Saved::Entries { selected, .. } => selected.clone(),
+            _ => None,
+        },
+        saved_error: entries::unusable(&saved).map(str::to_owned),
+    })
+}
+
+/// Renames a saved Workspace. Its address, the Workspace it points at and
+/// which one may start a Core are untouched: a name is this person's label.
+#[tauri::command]
+fn rename_core(window: WebviewWindow, entry: String, name: String) -> Result<ConnectionInfo, String> {
+    require_connection_page(&window)?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Give this workspace a name.".into());
+    }
+    if name.chars().count() > entries::NAME_LIMIT {
+        return Err(format!("A name can be up to {} characters.", entries::NAME_LIMIT));
+    }
+    change_entries(&window, |list| {
+        let kept = list
+            .iter_mut()
+            .find(|kept| kept.id == entry)
+            .ok_or("That workspace is not saved on this computer.")?;
+        kept.name = name.to_owned();
+        Ok(())
+    })
+}
+
+/// Forgets a saved Workspace here. It changes nothing on the Core and stops
+/// nothing it is doing; its start profile goes with it rather than to
+/// another entry.
+#[tauri::command]
+fn remove_core(window: WebviewWindow, entry: String) -> Result<ConnectionInfo, String> {
+    require_connection_page(&window)?;
+    change_entries(&window, |list| {
+        if !list.iter().any(|kept| kept.id == entry) {
+            return Err("That workspace is not saved on this computer.");
+        }
+        list.retain(|kept| kept.id != entry);
+        Ok(())
+    })
+}
+
+/// Reads the list, changes it, writes it, and answers with what the page
+/// should show now. A record that could not be read is changed by nothing:
+/// it reports no entries, so any list built from it would replace every
+/// Workspace the file still holds.
+fn change_entries(
+    window: &WebviewWindow,
+    change: impl FnOnce(&mut Vec<entries::Entry>) -> Result<(), &'static str>,
+) -> Result<ConnectionInfo, String> {
+    let saved = read_entries(window.app_handle());
+    if let Some(reason) = entries::unusable(&saved) {
+        return Err(format!(
+            "The workspaces saved on this computer could not be read ({reason}). Nothing of what is saved has been changed."
+        ));
+    }
+    let selected = match &saved {
+        entries::Saved::Entries { selected, .. } => selected.clone(),
+        _ => None,
+    };
+    let mut list = saved.entries().to_vec();
+    change(&mut list)?;
+    let selected = selected.filter(|id| list.iter().any(|kept| kept.id == *id));
+    write_entries(window.app_handle(), &list, selected.as_deref())
+        .map_err(|error| format!("This computer could not save the change ({error}). The list is as it was."))?;
+    let saved = read_entries(window.app_handle());
+    Ok(ConnectionInfo {
+        core_url: String::new(),
+        start_distro: None,
+        start_confirmed: false,
+        error: None,
+        auto_connect: false,
+        saved: saved.entries().iter().map(SavedEntry::of).collect(),
+        selected: match &saved {
+            entries::Saved::Entries { selected, .. } => selected.clone(),
+            _ => None,
+        },
+        saved_error: entries::unusable(&saved).map(str::to_owned),
     })
 }
 
@@ -298,6 +517,49 @@ async fn open_core(
     if expected.is_some_and(|expected| expected != workspace) {
         return Err("Core answered, but with another Workspace. Check its address.".into());
     }
+    // The Workspace saved at this address, against the one that just
+    // answered. A desktop Core is usually told apart by its port, but one
+    // port serves one Workspace at a time: the same 127.0.0.1:4317 answers
+    // as another Workspace once it is set up again, and that is the same
+    // origin, so the same stored drafts and reading places. Having a port is
+    // not a reason to skip this.
+    //
+    // A record that could not be read decides nothing, so it refuses rather
+    // than opening a Workspace it cannot check -- and writes nothing over
+    // what is saved.
+    let saved = read_entries(window.app_handle());
+    if let Some(reason) = entries::unusable(&saved) {
+        return Err(format!(
+            "The workspaces saved on this computer could not be read ({reason}). This app will not open a workspace it cannot check against them, and has changed nothing of what is saved."
+        ));
+    }
+    // A Core that sends no Workspace answers an empty string, and one may
+    // send more than this keeps. Neither is absent: at an address already
+    // bound to a Workspace, an empty answer cannot confirm the one saved
+    // there, and an answer too long to keep could not be written back
+    // without making the record unreadable from then on. Only an address
+    // bound to nothing opens on an answer this cannot check, and it then
+    // records nothing -- which is how an older Core still connects.
+    let here = saved.entries().iter().find(|entry| entry.url == core);
+    let named = here.map(|entry| entry.name.clone()).unwrap_or_else(|| entries::name_for(&core));
+    let answered = match entries::opening(here.and_then(|entry| entry.workspace_id.as_deref()), &workspace) {
+        entries::Opening::Open(answered) => answered,
+        entries::Opening::Changed => {
+            return Err(format!(
+                "“{named}” answered as a different workspace than the one saved under that name, so it was not opened. Its conversations, drafts and reading places are that other workspace's. Give this workspace an address of its own: two workspaces at one address share what this app has stored for that address. Removing the saved workspace only forgets the entry and any start profile saved for it; it does not clear what is stored for that address."
+            ))
+        }
+        entries::Opening::Unverified => {
+            return Err(format!(
+                "“{named}” answered without saying which workspace it is, so this app could not check it is the one saved at that address and did not open it. Nothing of what is saved has been changed."
+            ))
+        }
+        entries::Opening::Unkeepable => {
+            return Err(format!(
+                "“{named}” answered with a workspace identifier longer than this app keeps, so it was not opened and nothing was written. What is saved is as it was."
+            ))
+        }
+    };
     // Only a Core on this computer can say where it is installed; the Mac
     // app and other platforms never start one.
     let offered = if cfg!(windows) && is_loopback(&core) {
@@ -385,7 +647,7 @@ async fn open_core(
         None => previous.filter(|saved| saved.core == core && saved.workspace_id == workspace),
     };
     *start = kept;
-    save_core(window.app_handle(), &core, start.as_ref());
+    remember_opened(window.app_handle(), &core, answered.as_deref(), start.as_ref());
     Ok(desktop_url(&core).into())
 }
 
@@ -511,7 +773,7 @@ fn settle_start(window: &WebviewWindow, state: &ConnectionState, profile: &Start
             Settle::Confirm => Some(StartProfile { confirmed: true, ..profile.clone() }),
             _ => None,
         };
-        save_core(window.app_handle(), &profile.core, start.as_ref());
+        remember_start(window.app_handle(), &profile.core, start.as_ref());
     }
     Ok(())
 }
@@ -629,6 +891,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             connection_info,
             connect_core,
+            rename_core,
+            remove_core,
             start_core,
             set_appearance,
             update::desktop_update_status,

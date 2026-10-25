@@ -1011,3 +1011,44 @@ fn evidence_is_bound_to_one_candidate_and_never_changes_a_review() {
     assert_eq!(later["evidence"].as_array().unwrap().iter().filter(|e| e["binding"] == "this_candidate").count(), 1);
     assert_eq!(store.pr_review_report(&task, first["id"].as_str().unwrap()).unwrap()["evidence"].as_array().unwrap().len(), 4, "the old record stays");
 }
+
+/// A new review takes the reviewer of its task's project (T-190), fixed in
+/// it when it is created: a later change, a retried request and the task's
+/// list keep each review as it started.
+#[test]
+fn a_review_takes_its_tasks_projects_reviewer_when_created_and_keeps_it() {
+    let (_dir, s, task) = setup();
+    let internal = crate::collaboration_store::task_key(&s.db.read().unwrap(), &task).unwrap().0;
+    let end = |run: &Value| {
+        let mut run = run.clone();
+        run["status"] = json!("cancelled");
+        s.save_pr_review(&run, None).unwrap();
+    };
+    let reviewer = |run: &Value| (run["requestedHarness"].clone(), run["requestedModel"].clone());
+    s.save_review_settings(&settings::Settings { harness: "claude".into(), model: "workspace-choice".into() }).unwrap();
+    let (outside, _) = s.create_pr_review(None, &input(&task, "outside"), "outside").unwrap();
+    assert_eq!(reviewer(&outside), (json!("claude"), json!("workspace-choice")), "no project: the Workspace's");
+    end(&outside);
+    let project = s.create_project("Reviewed", Default::default()).unwrap().id;
+    crate::projects::set_task_project(&s.db.write().unwrap(), &internal, Some(&project)).unwrap();
+    s.save_project_review_settings(&project, &settings::Settings { harness: "claude".into(), model: "project-choice".into() }).unwrap();
+    assert_eq!(s.list_pr_reviews(&task, None).unwrap()["settings"], json!({"harness":"claude","model":"project-choice","source":"project"}));
+    let (inside, _) = s.create_pr_review(None, &input(&task, "inside"), "inside").unwrap();
+    assert_eq!(reviewer(&inside), (json!("claude"), json!("project-choice")));
+    // The project's reviewer changes: the started review, and a retry of its request, keep theirs.
+    s.save_project_review_settings(&project, &settings::Settings { harness: "codex".into(), model: MODEL.into() }).unwrap();
+    let (retry, created) = s.create_pr_review(None, &input(&task, "inside"), "not-started").unwrap();
+    assert!(!created);
+    assert_eq!((retry["id"].clone(), reviewer(&retry)), (json!("inside"), (json!("claude"), json!("project-choice"))));
+    let listed = s.list_pr_reviews(&task, None).unwrap();
+    let stored = listed["reviews"].as_array().unwrap().iter().find(|r| r["id"] == "inside").unwrap().clone();
+    assert_eq!(reviewer(&stored), (json!("claude"), json!("project-choice")));
+    end(&inside);
+    let (next, _) = s.create_pr_review(None, &input(&task, "next"), "next").unwrap();
+    assert_eq!(reviewer(&next), (json!("codex"), json!(MODEL)), "a new review takes the change");
+    end(&next);
+    // Cleared: the task inherits the Workspace's again.
+    s.clear_project_review_settings(&project).unwrap();
+    let (again, _) = s.create_pr_review(None, &input(&task, "again"), "again").unwrap();
+    assert_eq!(reviewer(&again), (json!("claude"), json!("workspace-choice")));
+}

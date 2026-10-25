@@ -642,3 +642,60 @@ test("a review's scope names every path it couldn't cover and why; older reviews
     assert.match(articles.find((a) => a !== scoped).textContent, /1 of 2 files covered/);
   } finally { p.close(); }
 });
+
+test("a project's reviewer is set and cleared on its page as one pair, and inherits the Workspace's otherwise", async () => {
+  const workspace = { harness: "claude", model: "workspace-choice", source: "workspace" };
+  let own = null;
+  const view = () => ({
+    ...(own ? { ...own, source: "project" } : workspace),
+    builtIn: { harness: "codex", model: "gpt-6.1-sol" },
+    projectId: "p1",
+    saved: own,
+    inherited: workspace,
+  });
+  const sent = [];
+  const p = mount((url, body, init) => {
+    if (url.includes("/models?"))
+      return { models: [{ id: "workspace-choice", model: "workspace-choice", displayName: "Workspace choice" }, { id: "project-choice", model: "project-choice", displayName: "Project choice" }] };
+    assert.ok(url.endsWith("/api/projects/p1/review-settings"), url);
+    if (init.method === "POST") {
+      sent.push(body);
+      own = body;
+    } else if (init.method === "DELETE") {
+      sent.push("DELETE");
+      own = null;
+    }
+    return view();
+  });
+  try {
+    p.window.renderSettings({ active: true, projectId: "p1" });
+    const section = () => p.doc.querySelector('[aria-label="Code review for this project"]');
+    await waitFor(() => section()?.textContent.includes("Inherits Claude Code · workspace-choice (set for this Workspace)."));
+    assert.equal(p.doc.querySelector("#settings-review"), null, "the Workspace's section keeps its own id");
+    assert.equal(button(p, "Inherit"), undefined, "nothing to clear while it inherits");
+    await waitFor(() => p.doc.body.textContent.includes("Project choice"));
+    const model = p.doc.querySelector('[aria-label="Review model"]');
+    model.value = "project-choice";
+    model.dispatchEvent(new p.window.Event("change", { bubbles: true }));
+    await tick();
+    button(p, "Save review settings").click();
+    await waitFor(() => section().textContent.includes("Set for this project"));
+    assert.deepEqual(sent, [{ harness: "claude", model: "project-choice" }], "harness and model together");
+    button(p, "Inherit").click();
+    await waitFor(() => sent.length === 2 && section().textContent.includes("Inherits"));
+    assert.equal(sent[1], "DELETE");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+  // An archived project's reviewer is shown and can't be changed.
+  const q = mount((url) => (url.includes("/models?") ? { models: [] } : view()));
+  try {
+    q.window.renderSettings({ active: true, projectId: "p1", disabled: true });
+    await waitFor(() => q.doc.querySelector('[aria-label="Review Harness"]'));
+    assert.equal(q.doc.querySelector('[aria-label="Review Harness"]').disabled, true);
+    assert.equal(q.doc.querySelector('[aria-label="Review model"]').disabled, true);
+  } finally {
+    q.close();
+  }
+});
