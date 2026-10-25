@@ -1,4 +1,5 @@
 import type { NativeItem } from "./types";
+import type { Language } from "./i18n.ts";
 
 /**
  * Codex sub-agents a parent Turn started, from that Turn's own
@@ -53,36 +54,48 @@ export const stateLabels: Record<SubAgentState, string> = {
   interrupted: "Interrupted",
   unknown: "Status unknown",
 };
+// In Chinese (T-189).
+const stateLabelsZh: Record<SubAgentState, string> = {
+  started: "已启动 · 状态待确认",
+  ended: "已结束",
+  interrupted: "已中断",
+  unknown: "状态未知",
+};
+/** A sub-agent's last known fact in `language`. */
+export const stateLabel = (state: SubAgentState, language: Language = "en") =>
+  (language === "zh-Hans" ? stateLabelsZh : stateLabels)[state];
 
 /** A child Turn's own status, as Codex reports it in the details. */
-export function turnStatusLabel(status: string | undefined): string {
+export function turnStatusLabel(status: string | undefined, language: Language = "en"): string {
+  const zh = language === "zh-Hans";
   switch (status) {
     case "completed":
-      return "Completed";
+      return zh ? "已完成" : "Completed";
     case "failed":
-      return "Failed";
+      return zh ? "失败" : "Failed";
     case "interrupted":
-      return "Interrupted";
+      return zh ? "已中断" : "Interrupted";
     case "inProgress":
-      return "In progress";
+      return zh ? "进行中" : "In progress";
     default:
-      return status || "Unknown";
+      return status || (zh ? "未知" : "Unknown");
   }
 }
 
 /** Codex's thread status as read (not a result): loaded and working, idle, … */
-export function threadStatusLabel(status: string | null | undefined): string {
+export function threadStatusLabel(status: string | null | undefined, language: Language = "en"): string {
+  const zh = language === "zh-Hans";
   switch (status) {
     case "active":
-      return "Working";
+      return zh ? "工作中" : "Working";
     case "idle":
-      return "Idle";
+      return zh ? "空闲" : "Idle";
     case "notLoaded":
-      return "Not loaded";
+      return zh ? "未载入" : "Not loaded";
     case "systemError":
-      return "System error";
+      return zh ? "系统错误" : "System error";
     default:
-      return status || "Unknown";
+      return status || (zh ? "未知" : "Unknown");
   }
 }
 

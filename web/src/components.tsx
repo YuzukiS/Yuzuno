@@ -61,6 +61,8 @@ import { TurnResults } from "./intelligent-ui/TurnResults";
 import { formatBytes, fullTurn, isTruncated, useFullItem, type FullItemView } from "./item-payload";
 import { useStreamReveal } from "./stream-reveal";
 import { useToolMotion } from "./tool-motion";
+import { langTag, useLanguage, useStrings } from "./i18n";
+import { turnWords, type TurnWords } from "./turn-text";
 import "./tool-activity.css";
 import { QuestionAnchor } from "./QuestionAnchor";
 import { ClaudeCheckpointButton } from "./ClaudeCheckpoint";
@@ -209,14 +211,17 @@ async function copyText(text: string | Promise<string>) {
 }
 export function CopyButton({
   text,
-  label = "Copy",
+  label,
 }: {
   /** The text, or a function giving it when clicked (possibly after a fetch). */
   text: string | (() => string | Promise<string>);
   label?: string;
 }) {
   const [state, setState] = useState<"ready" | "copying" | "copied" | "error">("ready");
-  const [problem, setProblem] = useState("");
+  // The fetch's own error, as it came; worded with the language shown.
+  const [problem, setProblem] = useState<string | null>(null);
+  const t = useStrings(turnWords);
+  const name = label ?? t.copy;
   useEffect(() => {
     if (state === "copied" || state === "error") {
       const t = setTimeout(() => setState("ready"), 2200);
@@ -240,25 +245,25 @@ export function CopyButton({
         } catch {
           // A failed fetch is not a clipboard problem; say which it was.
           const failed = await loading?.then(() => null, (e: unknown) => e);
-          setProblem(failed ? `Could not load the full text: ${errorText(failed)}` : "");
+          setProblem(failed ? errorText(failed) : null);
           setState("error");
         }
       }}
       title={
         state === "error"
-          ? problem || "Clipboard unavailable. Select the text to copy."
-          : label
+          ? problem !== null ? t.loadFailed(problem) : t.clipboardUnavailable
+          : name
       }
     >
       {state === "copied" ? <Check size={13} /> : state === "copying" ? <LoaderCircle size={13} className="spin" /> : <Copy size={13} />}
       <span>
         {state === "copied"
-          ? "Copied"
+          ? t.copied
           : state === "copying"
-            ? "Loading…"
+            ? t.copyLoading
             : state === "error"
-              ? problem ? "Copy failed" : "Copy unavailable"
-              : label}
+              ? problem !== null ? t.copyFailed : t.copyUnavailable
+              : name}
       </span>
     </button>
   );
@@ -266,7 +271,8 @@ export function CopyButton({
 /** Copies the link to one message (T-166), where links are offered. */
 function CopyLinkButton({ agent, turnId, itemId }: { agent: Agent; turnId: string; itemId: string }) {
   const href = useMessageLinks()?.href(agent, turnId, itemId);
-  return href ? <CopyButton text={href} label="Copy link" /> : null;
+  const t = useStrings(turnWords);
+  return href ? <CopyButton text={href} label={t.copyLink} /> : null;
 }
 export function Prose({
   text,
@@ -410,42 +416,42 @@ export function isBriefReminder(turn: NativeTurn, item: NativeItem, firstUser?: 
   return item._yuzunoSource === "brief-reminder" || (turn._yuzunoSource === "brief-reminder" && item === firstUser);
 }
 /** What started a Claude turn that is not shown as a reply to your message. */
-export function nativeTurnLabel(turn: NativeTurn) {
-  if (turn._yuzunoUnmatched) return "Claude output not matched to a message";
+export function nativeTurnLabel(turn: NativeTurn, t: TurnWords = turnWords("en")) {
+  if (turn._yuzunoUnmatched) return t.unmatched;
   // A prompt Yuzuno never sent, found in Claude's saved history on reconnect
   // (sent in a terminal resuming the session, for one).
-  if (turn._yuzunoOrigin === "outside") return "Sent outside Yuzuno · from Claude's saved history";
-  return turn._yuzunoOrigin === "task-notification"
-    ? "Claude continued after a background task finished"
-    : "Claude continued on its own";
+  if (turn._yuzunoOrigin === "outside") return t.outside;
+  return turn._yuzunoOrigin === "task-notification" ? t.afterTask : t.onItsOwn;
 }
+// Which noun each trimmed field is, in turnWords' `nouns`.
 const fieldNouns: Record<string, string> = {
   aggregatedOutput: "output", output: "output", result: "result", changes: "diff",
   input: "input", command: "command", arguments: "arguments",
 };
 /** What a trimmed Item's preview leaves out, and the request for the rest. */
 function TruncationNotice({ view }: { view: FullItemView }) {
+  const t = useStrings(turnWords);
   if (!view.truncated || (view.expanded && !view.loading && !view.updating && !view.error)) return null;
   const fields = Object.entries(view.truncated);
-  const nouns = [...new Set(fields.map(([name]) => fieldNouns[name] || "details"))];
-  const what = nouns.length <= 2 ? nouns.join(" and ") : "details";
+  const nouns = [...new Set(fields.map(([name]) => t.nouns[fieldNouns[name] || "details"]))];
+  const what = nouns.length === 2 ? t.and(nouns[0], nouns[1]) : nouns.length === 1 ? nouns[0] : t.nouns.details;
   const size = formatBytes(fields.reduce((total, [, field]) => total + field.bytes, 0));
   const ends = new Set(fields.map(([, field]) => field.keep));
-  const part = ends.size > 1 ? "part" : ends.has("tail") ? "the end" : "the start";
+  const part = ends.size > 1 ? t.part.part : ends.has("tail") ? t.part.tail : t.part.head;
   return (
     <div className="truncation-notice" role={view.error ? "alert" : "status"}>
       <span>
         {view.error
-          ? `Could not load the full ${what}: ${view.error}`
+          ? t.couldNotLoad(what, view.error)
           : view.loading
-            ? `Loading the full ${what}…`
+            ? t.loadingFull(what)
             : view.updating
-              ? `Updating the full ${what}…`
-              : `Truncated · showing ${part} of the ${what}.`}
+              ? t.updatingFull(what)
+              : t.truncated(part, what)}
       </span>
       {(!view.expanded || view.error) && (
         <button type="button" className="inline-link" onClick={view.expand}>
-          {view.error ? "Try again" : `Show full ${what} (${size})`}
+          {view.error ? t.tryAgain : t.showFull(what, size)}
         </button>
       )}
       {(view.loading || view.updating) && <LoaderCircle size={12} className="spin" aria-hidden="true" />}
@@ -458,6 +464,8 @@ function HistoryPreview({ item, agentId, turnId }: { item: NativeItem; agentId: 
   const [open, setOpen] = useState(false);
   const [original, setOriginal] = useState<NativeItem | null>(null);
   const [error, setError] = useState("");
+  const language = useLanguage();
+  const t = turnWords(language);
   useEffect(() => {
     if (!open) { setOriginal(null); return; }
     const controller = new AbortController();
@@ -467,16 +475,17 @@ function HistoryPreview({ item, agentId, turnId }: { item: NativeItem; agentId: 
     return () => controller.abort();
   }, [open, agentId, turnId, item.id]);
   return <div className="history-item-preview" data-item-id={item.id} id={`item-${item.id}`} tabIndex={-1}>
-    <p>Large item · preview</p>
-    <pre>{item.text || "Open the original to read this item."}</pre>
+    <p>{t.largeItem}</p>
+    <pre>{item.text || t.openOriginal}</pre>
     <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Trigger asChild><button className="inline-link">View full original</button></Dialog.Trigger>
+      <Dialog.Trigger asChild><button className="inline-link">{t.viewOriginal}</button></Dialog.Trigger>
       <Dialog.Portal><Dialog.Overlay className="modal-overlay" />
-        <Dialog.Content className="modal history-original-dialog">
-          <div className="modal-heading"><Dialog.Title>Full original</Dialog.Title>
-            <Dialog.Close aria-label="Close original" className="icon-button"><X size={18} /></Dialog.Close></div>
-          <Dialog.Description>Complete saved item as plain text. Select and copy within this view.</Dialog.Description>
-          {error ? <p role="alert">{error}</p> : original ? <pre tabIndex={0}>{itemText(original)}</pre> : <p role="status">Loading original…</p>}
+        <Dialog.Content className="modal history-original-dialog" lang={langTag(language)}>
+          <div className="modal-heading"><Dialog.Title>{t.fullOriginal}</Dialog.Title>
+            <Dialog.Close aria-label={t.closeOriginal} className="icon-button"><X size={18} /></Dialog.Close></div>
+          <Dialog.Description>{t.originalDescription}</Dialog.Description>
+          {/* The item and Core's error are as they came, in no language of the page's. */}
+          {error ? <p role="alert" lang="">{error}</p> : original ? <pre tabIndex={0} lang="">{itemText(original)}</pre> : <p role="status">{t.loadingOriginal}</p>}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -496,6 +505,7 @@ function ToolItem({
   executionUnconfirmed: boolean;
 }) {
   const view = useFullItem(agentId, turnId, preview);
+  const t = useStrings(turnWords);
   // A Codex plan is what Plan mode is for: open unless the reader closes it.
   const [opened, setOpened] = useConversationDisclosure(`tool:${turnId}:${preview.id}`, preview.type === "plan");
   const item = view.item;
@@ -510,11 +520,11 @@ function ToolItem({
   const label = isCommand
     ? item.command
     : isFile
-      ? `${item.changes?.length || 0} file ${(item.changes?.length || 0) === 1 ? "change" : "changes"}`
+      ? t.fileChanges(item.changes?.length || 0)
       : item.type === "reasoning"
-        ? "Reasoning summary"
+        ? t.reasoning
         : item.type === "enteredReviewMode"
-          ? `Codex review: ${item.review || "started"}`
+          ? t.codexReview(item.review)
           : item.type.replace(/([A-Z])/g, " $1");
   return (
     <details className="tool-item" id={`item-${item.id}`} data-running={running || undefined}
@@ -525,8 +535,8 @@ function ToolItem({
         <ChevronRight size={12} />
         {isCommand ? <SquareTerminal size={14} /> : <FileCode2 size={14} />}
         <span>{label}</span>
-        <span className="tool-result" title={unconfirmed ? "Last reported as running; the current tool state has not been confirmed." : undefined}>
-          {item.exitCode != null ? `exit ${item.exitCode}` : unconfirmed ? "Unconfirmed" : item.status || ""}
+        <span className="tool-result" title={unconfirmed ? t.unconfirmedTitle : undefined}>
+          {item.exitCode != null ? t.exit(item.exitCode) : unconfirmed ? t.unconfirmed : item.status || ""}
         </span>
       </summary>
       <div className="tool-content">
@@ -541,23 +551,18 @@ function ToolItem({
                 </button>
                 <pre>
                   {c.diff ||
-                    (item._yuzunoTruncated?.changes?.cutDiffs?.includes(index)
-                      ? "Not in the preview. Show the full diff to see this file’s changes."
-                      : "File changed; no diff supplied.")}
+                    (item._yuzunoTruncated?.changes?.cutDiffs?.includes(index) ? t.notInPreview : t.noDiff)}
                 </pre>
               </div>
             ))}
             {!!item._yuzunoTruncated?.changes?.omitted && (
-              <p className="truncation-notice">
-                {item._yuzunoTruncated.changes.omitted} more{" "}
-                {item._yuzunoTruncated.changes.omitted === 1 ? "file is" : "files are"} not in the preview.
-              </p>
+              <p className="truncation-notice">{t.omitted(item._yuzunoTruncated.changes.omitted)}</p>
             )}
           </>
         ) : (
           <pre>
             {isCommand
-              ? item.aggregatedOutput || "No output yet."
+              ? item.aggregatedOutput || t.noOutput
               : itemText(item)}
           </pre>
         )}
@@ -576,6 +581,7 @@ function CodexPlanItem({ item, notice, opened, onOpenChange }: {
 }) {
   const text = item.text || "";
   const title = planTitle(text);
+  const t = useStrings(turnWords);
   return (
     <details className="tool-item codex-plan" id={`item-${item.id}`} open={opened} onToggle={event => {
       if (event.target === event.currentTarget && event.currentTarget.open !== opened) onOpenChange(event.currentTarget.open);
@@ -583,11 +589,11 @@ function CodexPlanItem({ item, notice, opened, onOpenChange }: {
       <summary>
         <ChevronRight size={12} />
         <ListChecks size={14} />
-        <span><strong>Proposed plan</strong>{title ? ` · ${title}` : ""}</span>
+        <span><strong>{t.proposedPlan}</strong>{title ? ` · ${title}` : ""}</span>
       </summary>
       <div className="tool-content">
         {notice}
-        <PlanText plan={text} id={`plan-${item.id}`} empty="No plan text yet." />
+        <PlanText plan={text} id={`plan-${item.id}`} empty={t.noPlanText} />
       </div>
     </details>
   );
@@ -622,6 +628,8 @@ function ToolActivity({
   executionUnconfirmed: boolean;
 }) {
   const block = useRef<HTMLDetailsElement>(null);
+  const language = useLanguage();
+  const t = turnWords(language);
   const key = `tools:${turnId}:${items[0]?.id}`;
   const [opened, setOpened] = useConversationDisclosure(key, open);
   const firstMount = useFirstConversationMount(key);
@@ -651,9 +659,9 @@ function ToolActivity({
       }}>
       <summary>
         <ChevronRight size={13} />
-        <span className="tool-activity-label">{active ? "Running tools" : "Tool activity"}</span>
+        <span className="tool-activity-label">{active ? t.runningTools : t.toolActivity}</span>
         <span className="execution-count tool-counts">
-          {toolActivityCounts(items).map(({ key, label, count }) => (
+          {toolActivityCounts(items, language).map(({ key, label, count }) => (
             <span className="tool-count" key={key} data-count-key={key}>
               <span>{label}</span><span className="tool-count-number">×{count}</span>
             </span>
@@ -748,17 +756,19 @@ export function Turn({
   );
   const running = /inProgress|running/.test(turn.status);
   const timeOf = (item: NativeItem) => timeMarks?.get(timeMarkKey(turn.id, item.id));
-  const footer = running ? [] : turnFooter(turn, isLatestAgentTurn ? backgroundShells : null, time);
+  const language = useLanguage();
+  const t = turnWords(language);
+  const footer = running ? [] : turnFooter(turn, isLatestAgentTurn ? backgroundShells : null, time, language);
   const footerAt = blocks.reduce(
     (last, block, i) => block.kind === "message" && block.item.phase !== "commentary" ? i : last, -1,
   );
   const activity = agent.status === "waiting"
-    ? { state: "waiting", label: "Waiting for you", detail: "A response is needed to continue." }
+    ? { state: "waiting", label: t.waiting, detail: t.waitingDetail }
     : ["offline", "error", "uncertain"].includes(agent.status)
-      ? { state: "uncertain", label: "Check status", detail: "Execution status needs confirmation." }
+      ? { state: "uncertain", label: t.check, detail: t.checkDetail }
       : agent.status === "working" && isCompacting(turn)
-        ? { state: "compacting", label: "Compacting", detail: "Condensing the conversation context." }
-        : { state: "working", label: "Working", detail: "Still working on this turn." };
+        ? { state: "compacting", label: t.compacting, detail: t.compactingDetail }
+        : { state: "working", label: t.working, detail: t.workingDetail };
   const agentLabel = (
     <div className="message-label">
       <Avatar agent={agent} small />
@@ -785,7 +795,7 @@ export function Turn({
       ) : isBriefReminder(turn, item, firstUser) ? (
         <>
           <div className="message-label brief-reminder-label">
-            <span className="you-avatar"><BellRing size={13} /></span>Yuzuno reminder
+            <span className="you-avatar"><BellRing size={13} /></span>{t.reminder}
             <MessageTime mark={timeOf(item)} />
           </div>
           <div className="user-text brief-reminder-text">{itemText(item)}</div>
@@ -793,16 +803,14 @@ export function Turn({
       ) : (
         <>
           <div className="message-label">
-            <span className="you-avatar">Y</span>You
+            <span className="you-avatar">Y</span>{t.you}
             <MessageTime mark={timeOf(item)} />
             {!item.clientId && item._yuzunoClientMessageId && sendingInTurn?.has(item._yuzunoClientMessageId) && (
-              <small role="status" className="message-delivery">{deliveryNote("sending", agentHarnessName(agent))}</small>
+              <small role="status" className="message-delivery">{deliveryNote("sending", agentHarnessName(agent), null, false, language)}</small>
             )}
             {item._yuzunoDelivery && (
               <small role="status" className="message-delivery">
-                {item._yuzunoDelivery === "queued"
-                  ? `Sent · waiting for ${agentHarnessName(agent)} to confirm`
-                  : `Not confirmed by ${agentHarnessName(agent)} · not sent again`}
+                {deliveryNote(item._yuzunoDelivery === "queued" ? "queued" : "unknown", agentHarnessName(agent), null, false, language)}
               </small>
             )}
             {agent.harness === "claude" && item.nativeUuid && !item._yuzunoDelivery && (
@@ -851,15 +859,15 @@ export function Turn({
       }}
     >
       <div className="turn-divider">
-        <span>{loadedNumbering ? "LOADED TURN" : "TURN"} {String(index + 1).padStart(2, "0")}</span>
+        <span>{t.turn(!!loadedNumbering)} {String(index + 1).padStart(2, "0")}</span>
         <div />
-        <CopyButton text={() => copyTurnText(agent.id, turn)} label="Copy turn" />
+        <CopyButton text={() => copyTurnText(agent.id, turn)} label={t.copyTurn} />
       </div>
       {turn._yuzunoSource === "native" && (
         <div className="user-message native-turn-notice">
           <span className="message-label">
             <span className="you-avatar"><RefreshCw size={13} /></span>
-            {nativeTurnLabel(turn)}
+            {nativeTurnLabel(turn, t)}
           </span>
         </div>
       )}
@@ -878,9 +886,9 @@ export function Turn({
             }}>
             <summary>
               <ChevronRight size={13} />
-              <span>Agent plan</span>
+              <span>{t.agentPlan}</span>
               <span className="execution-count">
-                {plan.filter((step) => step.status === "completed").length}/{plan.length} steps
+                {t.steps(plan.filter((step) => step.status === "completed").length, plan.length)}
               </span>
             </summary>
             {(!windowed || planOpen || revealingPlan) && <div
@@ -889,14 +897,14 @@ export function Turn({
               tabIndex={-1}
               className={`execution-items${sourceItemId === planSourceId ? " source-highlight" : ""}`}
             >
-              <div role="list" aria-label="Plan recorded by the agent">
+              <div role="list" aria-label={t.planList}>
                 <ConversationRows id={`plan:${turn.id}`} items={plan} itemKey={(_, index) => String(index)}
                   estimate={() => 36} targetKey={revealingPlan ? String(Math.max(0, plan.findIndex(step => step.status === "inProgress"))) : undefined}>
                 {(step, stepIndex) => (
                   <div role="listitem" aria-posinset={stepIndex + 1} aria-setsize={plan.length} data-plan-status={step.status}>
                     {step.step}{" "}
                     <small>
-                      · {step.status === "inProgress" ? "In progress" : step.status === "completed" ? "Done" : "To do"}
+                      · {step.status === "inProgress" ? t.stepInProgress : step.status === "completed" ? t.stepDone : t.stepToDo}
                     </small>
                   </div>
                 )}</ConversationRows>
@@ -962,11 +970,11 @@ export function Turn({
                   <AgentReply text={item.text || ""} complete={!running || activity.state === "uncertain" || item.text === item._yuzunoCompletedText} source={{ agentId: agent.id, turnId: turn.id, item }} identity={JSON.stringify([agent.id, turn.id, item.id])} onFile={onFile} onDraft={onAnswer} onInteract={onResultInteract} />
                 )}
                 {item._yuzunoUnsaved && (
-                  <small role="note" className="message-delivery">Shown as it streamed · Claude never saved this reply, so it may be incomplete</small>
+                  <small role="note" className="message-delivery">{t.unsaved}</small>
                 )}
                 {!running && !commentary && (blockIndex === footerAt ? (
                   <div className="reply-actions">
-                    <CopyButton text={item.text || ""} label="Copy reply" />
+                    <CopyButton text={item.text || ""} label={t.copyReply} />
                     <SendToAgentButton source={() => messageHandoff(agent, turn, item)} />
                     <CopyLinkButton agent={agent} turnId={turn.id} itemId={item.id} />
                     <TurnFooter parts={footer} />
@@ -974,7 +982,7 @@ export function Turn({
                   </div>
                 ) : (
                   <>
-                    <CopyButton text={item.text || ""} label="Copy reply" />
+                    <CopyButton text={item.text || ""} label={t.copyReply} />
                     <SendToAgentButton source={() => messageHandoff(agent, turn, item)} />
                     <CopyLinkButton agent={agent} turnId={turn.id} itemId={item.id} />
                   </>
@@ -1018,14 +1026,14 @@ export function Turn({
           <div className="turn-interrupted">
             {turn.missingNative ? (
               <>
-                Ended by you{" "}
+                {t.endedBy}
                 <time dateTime={turn.missingNative.endedAt}>
                   {new Date(turn.missingNative.endedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}
                 </time>
-                : Codex never saved this turn, so its result is unknown. Anything it already did wasn’t undone.
+                {t.endedAfter}
               </>
             ) : (
-              "Turn interrupted · the conversation is still here."
+              t.interrupted
             )}
           </div>
         )}
@@ -1371,6 +1379,7 @@ function ArtifactText({
   const validLine =
     hasLine && Number.isSafeInteger(line) && line >= 1 && line <= lines.length;
   const renderMarkdown = !hasLine && /\.(md|markdown)$/i.test(path);
+  const t = useStrings(turnWords);
 
   useLayoutEffect(() => {
     const container = scroll.current;
@@ -1393,19 +1402,19 @@ function ArtifactText({
           role={validLine ? "status" : "alert"}
         >
           {validLine
-            ? `Line ${line} of ${lines.length}`
+            ? t.lineOf(line, lines.length)
             : lines.length
-              ? `Line ${line} is out of range. This file has ${lines.length} lines (1–${lines.length}).`
-              : `Line ${line} is out of range. This file is empty (0 lines).`}
+              ? t.lineOut(line, lines.length)
+              : t.lineEmpty(line)}
         </p>
       )}
-      <div className="artifact-content" ref={scroll}>
+      <div className="artifact-content" ref={scroll} lang="">
         {renderMarkdown ? (
           <Prose text={text} />
         ) : (
           <pre
             className="artifact-source"
-            aria-label="File source with line numbers"
+            aria-label={t.source}
             style={
               {
                 "--line-number-width": `${String(lines.length).length + 3}ch`,
@@ -1464,6 +1473,8 @@ export function ArtifactModal({
   const text = loaded ? content.text : "";
   const error = loaded ? content.error : "";
   const loading = !!artifact && artifact.kind !== "image" && !loaded;
+  const language = useLanguage();
+  const t = turnWords(language);
   useEffect(() => {
     setContent(null);
     if (!artifact || artifact.kind === "image") return;
@@ -1496,13 +1507,15 @@ export function ArtifactModal({
     <Modal
       open={!!artifact}
       onOpenChange={(v) => !v && onClose()}
-      title={artifact?.name || "File preview"}
+      title={artifact?.name || t.filePreview}
       description={
         artifact?.line === undefined
           ? artifact?.path
           : `${artifact.path}:${artifact.line}`
       }
       onCloseAutoFocus={onCloseAutoFocus}
+      lang={langTag(language)}
+      closeLabel={t.closeDialog}
       wide
     >
       {!loading && !error && artifact && artifact.kind !== "image" ? (
@@ -1512,10 +1525,10 @@ export function ArtifactModal({
           {loading ? (
             <div className="loading-state">
               <LoaderCircle className="spin" />
-              Opening file…
+              {t.opening}
             </div>
           ) : error ? (
-            <p className="inline-error" role="alert">
+            <p className="inline-error" role="alert" lang="">
               {error}
             </p>
           ) : artifact?.kind === "image" ? (
@@ -1528,18 +1541,18 @@ export function ArtifactModal({
       )}
       {artifact?.kind === "image" && onAnnotate && (
         <div className="modal-footer">
-          <span>Read-only preview</span>
+          <span>{t.readOnly}</span>
           <button type="button" className="secondary-button" onClick={onAnnotate}>
             <SquareDashedMousePointer size={14} />
-            Mark up
+            {t.markUp}
           </button>
         </div>
       )}
       {text && (
         <div className="modal-footer">
           <FileText size={14} />
-          <span>Read-only preview</span>
-          <CopyButton text={text} label="Copy contents" />
+          <span>{t.readOnly}</span>
+          <CopyButton text={text} label={t.copyContents} />
         </div>
       )}
     </Modal>

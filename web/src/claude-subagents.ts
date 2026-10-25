@@ -1,4 +1,5 @@
 import type { NativeItem, NativeTurn } from "./types";
+import type { Language } from "./i18n.ts";
 
 /**
  * Claude's native sub-agents, as Core records them (core/src/claude.rs). A
@@ -120,8 +121,27 @@ export function callToward(items: ReadonlyMap<string, NativeItem>, target: strin
 
 const running = new Set(["pending", "running", "paused"]);
 
+// Its status in words: English, or Chinese (T-189). Claude's error as it came.
+const states = {
+  en: {
+    notConfirmed: "Not confirmed · was running when Claude was last connected",
+    starting: "Starting", paused: "Paused", background: "Running in the background", running: "Running",
+    completed: "Completed", failed: (error?: string) => (error ? `Failed · ${error}` : "Failed"),
+    stoppedRestart: "Stopped · Claude restarted", stopped: "Stopped",
+    unknownEnded: "Status unknown · Claude's connection ended first", unknown: "Status unknown",
+  },
+  zh: {
+    notConfirmed: "未确认 · Claude 上次连接时仍在运行",
+    starting: "正在启动", paused: "已暂停", background: "正在后台运行", running: "运行中",
+    completed: "已完成", failed: (error?: string) => (error ? `失败 · ${error}` : "失败"),
+    stoppedRestart: "已停止 · Claude 已重启", stopped: "已停止",
+    unknownEnded: "状态未知 · Claude 的连接先结束了", unknown: "状态未知",
+  },
+};
+
 /** A sub-agent's status. `live`: Claude's runtime is connected now. */
-function statusOf(item: NativeItem, record: ClaudeSubAgentRecord | null, live: boolean) {
+function statusOf(item: NativeItem, record: ClaudeSubAgentRecord | null, live: boolean, language: Language = "en") {
+  const s = language === "zh-Hans" ? states.zh : states.en;
   // Without task events, the Agent call itself: a foreground call returns
   // when its sub-agent ended.
   const status = record?.status ?? (
@@ -129,28 +149,29 @@ function statusOf(item: NativeItem, record: ClaudeSubAgentRecord | null, live: b
       : item.status === "completed" ? "completed"
         : item.status === "failed" ? "failed" : "unknown");
   if (running.has(status) && !live)
-    return { status: "unknown" as const, state: "Not confirmed · was running when Claude was last connected", waiting: true };
+    return { status: "unknown" as const, state: s.notConfirmed, waiting: true };
   if (running.has(status))
     return {
       status: "running" as const,
-      state: status === "pending" ? "Starting" : status === "paused" ? "Paused"
-        : record?.background ? "Running in the background" : "Running",
+      state: status === "pending" ? s.starting : status === "paused" ? s.paused
+        : record?.background ? s.background : s.running,
       waiting: false,
     };
-  if (status === "completed") return { status: "succeeded" as const, state: "Completed", waiting: false };
-  if (status === "failed") return { status: "failed" as const, state: record?.error ? `Failed · ${record.error}` : "Failed", waiting: false };
+  if (status === "completed") return { status: "succeeded" as const, state: s.completed, waiting: false };
+  if (status === "failed") return { status: "failed" as const, state: s.failed(record?.error), waiting: false };
   if (status === "stopped")
-    return { status: "cancelled" as const, state: record?.reason === "worker_restart" ? "Stopped · Claude restarted" : "Stopped", waiting: false };
+    return { status: "cancelled" as const, state: record?.reason === "worker_restart" ? s.stoppedRestart : s.stopped, waiting: false };
   return {
     status: "unknown" as const,
-    state: record?.reason === "runtime_ended" ? "Status unknown · Claude's connection ended first" : "Status unknown",
+    state: record?.reason === "runtime_ended" ? s.unknownEnded : s.unknown,
     waiting: true,
   };
 }
 
 /** The sub-agents a Turn started (nested ones included), in call order;
  *  one whose Agent call came as a window preview too. */
-export function turnSubAgents(turn: NativeTurn, live: boolean): ClaudeSubAgentEntry[] {
+export function turnSubAgents(turn: NativeTurn, live: boolean, language: Language = "en"): ClaudeSubAgentEntry[] {
+  const zh = language === "zh-Hans";
   const calls = subAgentCalls(turn.items, true);
   return turn.items.filter((item) => isSubAgentCall(item) || isSubAgentPreview(item)).map((item) => {
     const record = isRecord(item.subAgent) ? item.subAgent : null;
@@ -164,10 +185,10 @@ export function turnSubAgents(turn: NativeTurn, live: boolean): ClaudeSubAgentEn
       turnId: turn.id,
       itemId: item.id,
       parentKey: typeof item.parentToolUseId === "string" ? item.parentToolUseId : null,
-      label: description || type || "Sub-agent",
-      ...statusOf(item, record, live),
-      sub: [type, record?.remote ? "Remote" : record?.background ? "Background" : "",
-        count ? `${count} tool ${count === 1 ? "call" : "calls"}` : ""].filter(Boolean).join(" · "),
+      label: description || type || (zh ? "子 Agent" : "Sub-agent"),
+      ...statusOf(item, record, live, language),
+      sub: [type, record?.remote ? (zh ? "远程" : "Remote") : record?.background ? (zh ? "后台" : "Background") : "",
+        count ? (zh ? `${count} 次工具调用` : `${count} tool ${count === 1 ? "call" : "calls"}`) : ""].filter(Boolean).join(" · "),
       item,
       record,
       calls: own,
@@ -176,14 +197,16 @@ export function turnSubAgents(turn: NativeTurn, live: boolean): ClaudeSubAgentEn
 }
 
 /** Every loaded Turn's sub-agents. */
-export function claudeSubAgents(turns: readonly NativeTurn[], live: boolean): ClaudeSubAgentEntry[] {
-  return turns.flatMap((turn) => turnSubAgents(turn, live));
+export function claudeSubAgents(turns: readonly NativeTurn[], live: boolean, language: Language = "en"): ClaudeSubAgentEntry[] {
+  return turns.flatMap((turn) => turnSubAgents(turn, live, language));
 }
 
-export function formatUsage(usage: ClaudeSubAgentRecord["usage"]): string {
+export function formatUsage(usage: ClaudeSubAgentRecord["usage"], language: Language = "en"): string {
   if (!usage) return "";
-  const tokens = typeof usage.tokens === "number" ? `${usage.tokens.toLocaleString()} tokens` : "";
-  const calls = typeof usage.toolUses === "number" ? `${usage.toolUses} tool ${usage.toolUses === 1 ? "call" : "calls"}` : "";
+  const zh = language === "zh-Hans";
+  const tokens = typeof usage.tokens === "number" ? `${usage.tokens.toLocaleString()}${zh ? " 个 token" : " tokens"}` : "";
+  const calls = typeof usage.toolUses === "number"
+    ? zh ? `${usage.toolUses} 次工具调用` : `${usage.toolUses} tool ${usage.toolUses === 1 ? "call" : "calls"}` : "";
   const seconds = typeof usage.durationMs === "number" ? `${Math.max(1, Math.round(usage.durationMs / 1000))}s` : "";
   return [tokens, calls, seconds].filter(Boolean).join(" · ");
 }

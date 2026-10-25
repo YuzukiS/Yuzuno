@@ -517,6 +517,7 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
             <textarea
               className="pasted-text-source"
               aria-label={t.full}
+              lang=""
               value={edited}
               spellCheck={false}
               readOnly={props.readOnly}

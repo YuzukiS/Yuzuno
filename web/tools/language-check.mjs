@@ -167,7 +167,7 @@ try {
     assert.match(coverage, /“界面语言”、“发送消息”、“时钟与时区”、“键盘快捷键”、“主题、文字与布局”、“把偏好移到另一台设备”、“数据与存储概览”、“复制诊断信息”、“通知偏好”、“关于与帮助”、“Home 展示”、“代码审查”、“手机与远程访问”、“运行环境与版本”、“新 Agent 默认值”、“Workspace 备份与恢复”、“历史与内存信息”、“草稿存储”、“版本与更新”/);
     assert.match(coverage, /仍为英文/);
     assert.match(coverage, /系统通知（包括测试通知）也仍为英文/);
-    assert.match(coverage, /项目页面中的“新 Agent 默认值”也会随之显示/);
+    assert.match(coverage, /“项目”窗口也会随之显示：项目列表、新建项目、项目页面及其中的“新 Agent 默认值”、“代码审查”/);
     assert.equal(await stored(page, "yuzuno.language"), '{"language":"zh-Hans"}');
     assert.equal(await stored(page, "yuzuno.time"), TIME, "the clock format and time zone are left as they were");
     await page.screenshot({ path: join(output, "language-zh.png") });
