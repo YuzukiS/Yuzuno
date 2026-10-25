@@ -15,9 +15,15 @@ import { useTimeDisplay, type TimeDisplay } from "./time-preferences";
 import { SubAgentDock, type DockGroup, type DockSubAgent } from "./SubAgentPanels";
 import type { Agent, NativeTurn, RunningCall } from "./types";
 import { withRunningCalls } from "./running-calls";
+import { useLanguage, type Language } from "./i18n";
+import { cardWords } from "./subagent-text";
 import "./claude-background-tasks.css";
 
-const GROUP: DockGroup = { label: "Background tasks", one: "Background task", icon: (size) => <Terminal size={size} /> };
+// The group's names, in the language shown.
+const groupOf = (language: Language): DockGroup => {
+  const t = cardWords(language);
+  return { label: t.backgroundTasks, one: t.backgroundTask, icon: (size) => <Terminal size={size} /> };
+};
 const NONE: readonly DockSubAgent[] = [];
 const NO_TURNS: readonly NativeTurn[] = [];
 
@@ -52,9 +58,11 @@ export function StopTaskButton({ agentId, record, live, label }: {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const now = useStopWait(record);
+  const language = useLanguage();
+  const t = cardWords(language);
   const task = record as ClaudeBackgroundTaskRecord;
   if (!taskRunning(task)) return null;
-  const unavailable = stopUnavailable(task, live);
+  const unavailable = stopUnavailable(task, live, language);
   if (unavailable) return <p className="claude-task-stop-note">{unavailable}</p>;
   const pending = stopPending(task, now);
   const unconfirmed = !pending && !!record.stopRequestedAt && !record.stopError;
@@ -73,16 +81,14 @@ export function StopTaskButton({ agentId, record, live, label }: {
   const shown = error ?? record.stopError;
   return (
     <div className="claude-task-stop">
-      <button type="button" className="secondary-button" disabled={sending || pending} aria-label={`Stop ${label}`} onClick={() => void stop()}>
+      <button type="button" className="secondary-button" disabled={sending || pending} aria-label={t.stop(label)} onClick={() => void stop()}>
         {sending || pending ? <LoaderCircle size={13} className="spin" aria-hidden /> : <Square size={11} fill="currentColor" aria-hidden />}
-        {sending || pending ? "Stopping…" : unconfirmed || shown ? "Stop again" : "Stop this task"}
+        {sending || pending ? t.stopping : unconfirmed || shown ? t.stopAgain : t.stopThis}
       </button>
       <p className="claude-task-stop-note">
-        {pending ? "Sent. Waiting for Claude to report that it ended."
-          : unconfirmed ? "Claude hasn't reported it ending since the stop was sent."
-            : "Stops only this task. The conversation and other tasks keep running."}
+        {pending ? t.sentWaiting : unconfirmed ? t.noEnd : t.onlyThis}
       </p>
-      {shown && <p className="claude-subagent-error" role="alert">Couldn’t stop it: {shown}</p>}
+      {shown && <p className="claude-subagent-error" role="alert">{t.couldntStop(shown)}</p>}
     </div>
   );
 }
@@ -104,55 +110,57 @@ export function ClaudeBackgroundTaskDetail({ agentId, entry, live, onNavigate }:
   const { record } = entry;
   const running = entry.status === "running";
   const time = useTimeDisplay();
+  const t = cardWords(useLanguage());
   return <div className="claude-subagent claude-background-task" data-task-status={entry.status}>
     <dl className="claude-subagent-facts">
-      <dt>Status</dt><dd>{entry.state}</dd>
-      <dt>Kind</dt><dd>{entry.kind}{record.ambient ? " · housekeeping" : ""}</dd>
-      {record.startedAt && <><dt>Started</dt><dd>{when(record.startedAt, time)}</dd></>}
-      {record.endedAt && <><dt>Ended</dt><dd>{when(record.endedAt, time)}</dd></>}
-      {record.taskId && <><dt>Task</dt><dd><code>{record.taskId}</code></dd></>}
+      <dt>{t.status}</dt><dd>{entry.state}</dd>
+      <dt>{t.kind}</dt><dd>{entry.kind}{record.ambient ? t.housekeeping : ""}</dd>
+      {record.startedAt && <><dt>{t.started}</dt><dd>{when(record.startedAt, time)}</dd></>}
+      {record.endedAt && <><dt>{t.ended}</dt><dd>{when(record.endedAt, time)}</dd></>}
+      {record.taskId && <><dt>{t.task}</dt><dd><code>{record.taskId}</code></dd></>}
     </dl>
-    <section className="claude-subagent-part" aria-label="Runs">
-      <span className="section-eyebrow">RUNS</span>
+    <section className="claude-subagent-part" aria-label={t.runsLabel}>
+      <span className="section-eyebrow">{t.runs}</span>
       {entry.command && record.description && record.description !== entry.command && <p><strong>{record.description}</strong></p>}
       {entry.command || record.description ? <pre className="claude-task-command">{entry.command || record.description}</pre>
-        : <p className="claude-subagent-muted">Not reported by Claude</p>}
+        : <p className="claude-subagent-muted">{t.notReported}</p>}
     </section>
     {running && (record.activity || record.progress) && (
       <p className="claude-subagent-muted">{[record.activity, record.progress].filter(Boolean).join(" · ")}</p>
     )}
     {record.error && <p className="claude-subagent-error" role="alert">{record.error}</p>}
-    <section className="claude-subagent-part" aria-label="Result">
-      <span className="section-eyebrow">RESULT</span>
-      {record.result ? <p className="claude-subagent-text">{record.result}{record.resultTruncated && <span className="claude-subagent-muted"> … (shortened)</span>}</p>
-        : <p className="claude-subagent-muted">{running ? "No result yet." : entry.status === "unknown" ? "No result was reported before its status became unknown." : "No result reported."}</p>}
-      {record.outputFile && <p className="claude-subagent-muted">Output on the Core host: <code>{record.outputFile}</code></p>}
+    <section className="claude-subagent-part" aria-label={t.resultLabel}>
+      <span className="section-eyebrow">{t.result}</span>
+      {record.result ? <p className="claude-subagent-text">{record.result}{record.resultTruncated && <span className="claude-subagent-muted">{t.shortened}</span>}</p>
+        : <p className="claude-subagent-muted">{running ? t.noResultYet : entry.status === "unknown" ? t.noResultUnknown : t.noResult}</p>}
+      {record.outputFile && <p className="claude-subagent-muted">{t.outputOn}<code>{record.outputFile}</code></p>}
     </section>
     <StopTaskButton agentId={agentId} record={record} live={live} label={entry.label} />
     {onNavigate && (
       <div className="subagent-card-actions">
         <button type="button" className="quiet-button" onClick={() => onNavigate(entry.turnId)}>
-          <ArrowUpRight size={12} aria-hidden /> Go to its Turn
+          <ArrowUpRight size={12} aria-hidden /> {t.goTurn}
         </button>
       </div>
     )}
     <details className="claude-task-evidence">
-      <summary>As Claude reported it</summary>
+      <summary>{t.asReported}</summary>
       <pre>{JSON.stringify(record, null, 2)}</pre>
     </details>
   </div>;
 }
 
 /** Claude's background tasks as the dock shows them, from the loaded Turns. */
-export function claudeBackgroundDockEntries(agentId: string, turns: readonly NativeTurn[], live: boolean, now = Date.now()): DockSubAgent[] {
-  return claudeBackgroundTasks(turns, live, now).map((entry) => ({
+export function claudeBackgroundDockEntries(agentId: string, turns: readonly NativeTurn[], live: boolean, now = Date.now(), language: Language = "en"): DockSubAgent[] {
+  const t = cardWords(language);
+  return claudeBackgroundTasks(turns, live, now, language).map((entry) => ({
     key: entry.key,
     turnId: entry.turnId,
     label: entry.label,
     // Unconfirmed is the dock's neutral node, as for sub-agents.
     status: entry.status === "unknown" ? "unconfirmed" : entry.status,
     state: entry.state,
-    sub: entry.status === "running" ? (stopPending(entry.record, now) ? "Stopping…" : entry.kind) : entry.state,
+    sub: entry.status === "running" ? (stopPending(entry.record, now) ? t.stopping : entry.kind) : entry.state,
     detail: entry.kind,
     waiting: entry.waiting,
     details: (onNavigate) => (
@@ -179,9 +187,10 @@ export function ConversationBackgroundTaskDock({ agent, turns: loaded, running, 
   const claude = agent.harness === "claude";
   const [now, setNow] = useState(() => Date.now());
   const turns = useMemo(() => withRunningCalls(loaded, running), [loaded, running]);
+  const language = useLanguage();
   const entries = useMemo(
-    () => (claude ? claudeBackgroundDockEntries(agent.id, turns, live, now) : NONE),
-    [agent.id, claude, turns, live, now],
+    () => (claude ? claudeBackgroundDockEntries(agent.id, turns, live, now, language) : NONE),
+    [agent.id, claude, turns, live, now, language],
   );
   // A "Stopping…" node becomes what Claude last reported once its wait ends.
   const nextExpiry = useMemo(() => {
@@ -197,5 +206,5 @@ export function ConversationBackgroundTaskDock({ agent, turns: loaded, running, 
     return () => clearTimeout(timer);
   }, [nextExpiry]);
   if (!entries.length) return null;
-  return <SubAgentDock agentId={agent.id} turns={NO_TURNS} entries={entries} onNavigate={onNavigate} group={GROUP} />;
+  return <SubAgentDock agentId={agent.id} turns={NO_TURNS} entries={entries} onNavigate={onNavigate} group={groupOf(language)} />;
 }

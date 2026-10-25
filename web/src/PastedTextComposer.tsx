@@ -47,7 +47,7 @@ import {
 } from "./composer-draft";
 import { slashCommands, withCodexSkills, withModelControl, type CommandList, type SlashCommand } from "./slash-commands";
 import { api } from "./api";
-import { strings, useStrings } from "./i18n";
+import { langTag, strings, useLanguage } from "./i18n";
 import "./pasted-text.css";
 import "./slash-commands.css";
 
@@ -91,6 +91,7 @@ const text = strings({
   lf: "Edits use LF line endings.",
   remove: "Remove block",
   save: "Save changes",
+  closeDialog: "Close dialog",
 }, {
   empty: "空文本",
   lines: (lines) => `${lines} 行`,
@@ -106,6 +107,7 @@ const text = strings({
   lf: "编辑后使用 LF 换行符。",
   remove: "移除此块",
   save: "保存更改",
+  closeDialog: "关闭对话框",
 });
 type PasteWords = ReturnType<typeof text>;
 // The words in the editor's blocks and previews: a language change redraws
@@ -160,7 +162,8 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
     const view = useRef<EditorView | null>(null);
     const callbacks = useRef(props);
     callbacks.current = props;
-    const t = useStrings(text);
+    const language = useLanguage();
+    const t = text(language);
     const words = useRef(t);
     words.current = t;
     const published = useRef(props.draft);
@@ -500,6 +503,8 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
           }}
           title={active ? t.numbered(active.paste.number) : t.pasted}
           description={t.description}
+          lang={langTag(language)}
+          closeLabel={t.closeDialog}
           wide
           onCloseAutoFocus={(event) => {
             event.preventDefault();
@@ -512,6 +517,7 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
             <textarea
               className="pasted-text-source"
               aria-label={t.full}
+              lang=""
               value={edited}
               spellCheck={false}
               readOnly={props.readOnly}

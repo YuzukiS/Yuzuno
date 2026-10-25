@@ -10,7 +10,7 @@ import {
   Unlink,
 } from "lucide-react";
 import { api, errorText } from "./api";
-import { strings, type Language } from "./i18n";
+import { strings, useLanguage, useStrings, type Language } from "./i18n";
 import "./github-links.css";
 import { PrReviews } from "./PrReviews";
 import { PrOperations } from "./PrOperations";
@@ -55,20 +55,7 @@ type Page = {
   repositories: Repository[];
   refreshing: boolean;
 };
-const labels: Record<string, string> = {
-  open: "Open",
-  closed: "Closed",
-  merged: "Merged",
-  draft: "Draft",
-  success: "Checks passed",
-  failure: "Checks failed",
-  pending: "Checks waiting / running",
-  cancelled: "Checks cancelled",
-  none: "No checks",
-  unknown: "Checks unknown",
-  neutral: "Checks skipped / neutral",
-};
-const time = (value?: string | null, never = "Never synced") =>
+const time = (value: string | null | undefined, never: string) =>
   value
     ? new Date(value).toLocaleString([], {
         month: "short",
@@ -79,10 +66,24 @@ const time = (value?: string | null, never = "Never synced") =>
     : never;
 
 // A project's repositories in the language its page passes (T-189): the
-// Projects page passes the interface language; a task's links, not yet
-// translated, keep English. Repository names and what GitHub or Core said
-// are shown as they are.
-const repoText = strings({
+// Projects page and Home's repository details pass the interface language.
+// A task's links and the summary on its card follow the interface language.
+// Repository names, titles, branches, commits, check names and what GitHub
+// or Core said are shown as they are.
+const githubText = strings({
+  states: {
+    open: "Open",
+    closed: "Closed",
+    merged: "Merged",
+    draft: "Draft",
+    success: "Checks passed",
+    failure: "Checks failed",
+    pending: "Checks waiting / running",
+    cancelled: "Checks cancelled",
+    none: "No checks",
+    unknown: "Checks unknown",
+    neutral: "Checks skipped / neutral",
+  } as Record<string, string>,
   aria: "GitHub repositories",
   title: "Repositories",
   refresh: "Refresh GitHub",
@@ -103,7 +104,37 @@ const repoText = strings({
   removed: "Association removed. The GitHub object is unchanged.",
   source: "Read via gh on the Core host · GitHub.com",
   refreshing: " · Refreshing…",
+  // A task's links
+  summary: "Linked GitHub work",
+  lastKnownChecks: "Last known: ",
+  more: (count: number) => `+${count} more`,
+  mergedCount: (count: number) => `${count} merged`,
+  closedCount: (count: number) => `${count} closed`,
+  taskAria: "GitHub delivery",
+  taskTitle: "Pull requests and issues",
+  removeAssociation: "Remove association only",
+  outdated: "Out of date",
+  watchActions: (sha: string) => `Watch Actions at ${sha}…`,
+  checksAt: (count: number, sha: string) => `${count} checks at ${sha}`,
+  checksObserved: (at: string) => ` · Checks observed ${at}`,
+  snapshotKept: " · Last successful snapshot kept.",
+  taskEmpty: "No Issue or PR linked yet. An Issue is optional.",
+  linkFirst: "Link a PR or Issue",
+  taskLabel: "Issue or pull request URL",
 }, {
+  states: {
+    open: "开放",
+    closed: "已关闭",
+    merged: "已合并",
+    draft: "草稿",
+    success: "检查通过",
+    failure: "检查失败",
+    pending: "检查等待中 / 运行中",
+    cancelled: "检查已取消",
+    none: "没有检查",
+    unknown: "检查结果未知",
+    neutral: "检查已跳过 / 中性",
+  },
   aria: "GitHub 仓库",
   title: "仓库",
   refresh: "刷新 GitHub",
@@ -124,6 +155,22 @@ const repoText = strings({
   removed: "已移除关联。GitHub 上的对象不受影响。",
   source: "通过 Core 主机上的 gh 读取 · GitHub.com",
   refreshing: " · 正在刷新…",
+  summary: "已链接的 GitHub 工作",
+  lastKnownChecks: "上次已知：",
+  more: (count) => `另有 ${count} 个`,
+  mergedCount: (count) => `${count} 个已合并`,
+  closedCount: (count) => `${count} 个已关闭`,
+  taskAria: "GitHub 交付",
+  taskTitle: "拉取请求和 Issue",
+  removeAssociation: "只移除关联",
+  outdated: "已过时",
+  watchActions: (sha) => `监视 ${sha} 的 Actions…`,
+  checksAt: (count, sha) => `${sha} 上的 ${count} 项检查`,
+  checksObserved: (at) => ` · 检查观察于 ${at}`,
+  snapshotKept: " · 已保留上次成功的快照。",
+  taskEmpty: "还没有链接 Issue 或 PR。Issue 是可选的。",
+  linkFirst: "链接 PR 或 Issue",
+  taskLabel: "Issue 或拉取请求的 URL",
 });
 const safeUrl = (value: string) =>
   /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/(?:pull|issues)\/[1-9]\d*)?$/.test(
@@ -150,16 +197,17 @@ export function GitHubSummary({
   links?: GitHubLink[];
   openOnly?: boolean;
 }) {
+  const t = useStrings(githubText);
   const shown = openOnly ? links.filter(inFlight) : links;
   const merged = openOnly ? links.filter((l) => l.snapshot.state === "merged").length : 0;
   const closed = openOnly ? links.length - shown.length - merged : 0;
   if (!shown.length && !merged && !closed) return null;
   return (
-    <div className="github-summary" aria-label="Linked GitHub work">
+    <div className="github-summary" aria-label={t.summary}>
       {shown.slice(0, 2).map((link) => (
         <span
           key={link.id}
-          title={`${link.repository}#${link.number} · ${time(link.syncedAt)}`}
+          title={`${link.repository}#${link.number} · ${time(link.syncedAt, t.never)}`}
         >
           {link.kind === "pull" ? (
             <GitPullRequest size={12} />
@@ -167,21 +215,21 @@ export function GitHubSummary({
             <CircleDot size={12} />
           )}
           {openOnly ? link.repository.split("/").pop() : link.repository}#{link.number}
-          <span>{labels[link.snapshot.state] || link.snapshot.state}</span>
+          <span>{t.states[link.snapshot.state] || link.snapshot.state}</span>
           {link.kind === "pull" && (
             <span
               className={`github-ci ${link.stale ? "stale" : ciState(link)}`}
             >
-              {link.stale ? "Last known: " : ""}
-              {labels[ciState(link)]}
+              {link.stale ? t.lastKnownChecks : ""}
+              {t.states[ciState(link)]}
             </span>
           )}
         </span>
       ))}
-      {shown.length > 2 && <span>+{shown.length - 2} more</span>}
+      {shown.length > 2 && <span>{t.more(shown.length - 2)}</span>}
       {(merged > 0 || closed > 0) && (
         <span className="github-finished">
-          {[merged && `${merged} merged`, closed && `${closed} closed`]
+          {[merged && t.mergedCount(merged), closed && t.closedCount(closed)]
             .filter(Boolean)
             .join(" · ")}
         </span>
@@ -209,13 +257,13 @@ export function GitHubLinks({
   manage?: boolean;
   /** Asks the task to show its management controls. */
   onManage?: () => void;
-  /** The language of a project's repositories section; a task's links stay
-   * English for now. */
+  /** The language of a project's repositories section; a task's links
+   * follow the interface language. */
   language?: Language;
 }) {
   const repoMode = !!projectId;
-  // A project's repositories follow `language`; a task's links keep English.
-  const t = repoText(repoMode ? language : "en");
+  const shown = useLanguage();
+  const t = githubText(repoMode ? language : shown);
   // Read when an answer arrives, so a language change doesn't restart the
   // panel's requests or clear what is typed.
   const unavailable = useRef(t.unavailable);
@@ -227,7 +275,8 @@ export function GitHubLinks({
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  // Which notice, so it follows a language change.
+  const [notice, setNotice] = useState<"" | "linked" | "removed">("");
   const generation = useRef(0);
   const controllers = useRef(new Set<AbortController>());
   const mounted = useRef(true);
@@ -298,7 +347,7 @@ export function GitHubLinks({
     const result = await request(operation, extra);
     if (result) {
       if (clear) setInput((current) => (current === submitted ? "" : current));
-      setNotice(clear ? t.linked : t.removed);
+      setNotice(clear ? "linked" : "removed");
     }
     if (mounted.current) setBusy(false);
   };
@@ -307,13 +356,13 @@ export function GitHubLinks({
   return (
     <section
       className="github-panel"
-      aria-label={repoMode ? t.aria : "GitHub delivery"}
+      aria-label={repoMode ? t.aria : t.taskAria}
     >
       {!quiet && (
       <header>
         <h4>
           <Github size={16} />
-          {repoMode ? t.title : "Pull requests and issues"}
+          {repoMode ? t.title : t.taskTitle}
         </h4>
         <button
           type="button"
@@ -396,8 +445,8 @@ export function GitHubLinks({
                       type="button"
                       className="icon-button"
                       disabled={busy}
-                      aria-label={`Unlink ${link.repository}#${link.number}`}
-                      title="Remove association only"
+                      aria-label={t.unlink(`${link.repository}#${link.number}`)}
+                      title={t.removeAssociation}
                       onClick={() =>
                         void mutate({ action: "unlink", linkId: link.id })
                       }
@@ -409,18 +458,18 @@ export function GitHubLinks({
                 <div className="github-title">{link.snapshot.title}</div>
                 <div className="github-facts">
                   <span className={`github-state ${link.snapshot.state}`}>
-                    {labels[link.snapshot.state]}
+                    {t.states[link.snapshot.state]}
                   </span>
                   {link.kind === "pull" && (
                     <span
                       className={`github-ci ${link.stale ? "stale" : ciState(link)}`}
                     >
-                      {link.stale ? "Last known: " : ""}
-                      {labels[ciState(link)]}
+                      {link.stale ? t.lastKnownChecks : ""}
+                      {t.states[ciState(link)]}
                     </span>
                   )}
                   {link.stale && (
-                    <span className="github-stale">Out of date</span>
+                    <span className="github-stale">{t.outdated}</span>
                   )}
                 </div>
                 {link.snapshot.headSha && (
@@ -431,29 +480,29 @@ export function GitHubLinks({
                     <code>{link.snapshot.headSha.slice(0, 8)}</code>
                   </div>
                 )}
-                {taskId && link.kind === "pull" && link.snapshot.headSha && <button className="quiet-button" disabled={disabled} onClick={() => openJobs({ taskId, source: "github_actions", url: link.url, expectedSha: link.snapshot.headSha })}>Watch Actions at {link.snapshot.headSha.slice(0, 8)}…</button>}
+                {taskId && link.kind === "pull" && link.snapshot.headSha && <button className="quiet-button" disabled={disabled} onClick={() => openJobs({ taskId, source: "github_actions", url: link.url, expectedSha: link.snapshot.headSha })}>{t.watchActions(link.snapshot.headSha.slice(0, 8))}</button>}
                 {link.snapshot.ci?.checks?.length ? (
                   <details className="github-checks">
                     <summary>
-                      {link.snapshot.ci.checks.length} checks at{" "}
-                      {link.snapshot.headSha?.slice(0, 8)}
+                      {t.checksAt(link.snapshot.ci.checks.length, link.snapshot.headSha?.slice(0, 8) ?? "")}
                     </summary>
                     {link.snapshot.ci.checks.map((check, index) => (
                       <div key={index}>
                         <span>{check.name}</span>
-                        <span>{labels[check.state] || check.state}</span>
+                        <span>{t.states[check.state] || check.state}</span>
                       </div>
                     ))}
                   </details>
                 ) : null}
                 <small>
-                  Synced {time(link.syncedAt)}
+                  {t.synced(time(link.syncedAt, t.never))}
                   {link.snapshot.ci &&
-                    ` · Checks observed ${time(link.snapshot.ci.observedAt)}`}
+                    t.checksObserved(time(link.snapshot.ci.observedAt, t.never))}
                 </small>
                 {link.error && (
                   <p className="github-error">
-                    {link.error} · Last successful snapshot kept.
+                    {link.error}
+                    {t.snapshotKept}
                   </p>
                 )}
               </article>
@@ -461,13 +510,11 @@ export function GitHubLinks({
       </div>
       {page && !(repoMode ? page.repositories : page.links).length && (
         <p className="github-empty">
-          {repoMode
-            ? t.empty
-            : "No Issue or PR linked yet. An Issue is optional."}
+          {repoMode ? t.empty : t.taskEmpty}
           {!managing && onManage && (
             <button type="button" className="secondary-button" onClick={onManage}>
               <Link2 size={14} />
-              Link a PR or Issue
+              {t.linkFirst}
             </button>
           )}
         </p>
@@ -483,7 +530,7 @@ export function GitHubLinks({
         }}
       >
         <label htmlFor={`github-${scopeKey}`}>
-          {repoMode ? t.label : "Issue or pull request URL"}
+          {repoMode ? t.label : t.taskLabel}
         </label>
         <div>
           <input
@@ -516,7 +563,7 @@ export function GitHubLinks({
       </form>
       {notice && (
         <p className="github-notice" role="status">
-          {notice}
+          {t[notice]}
         </p>
       )}
       <p className="github-source">

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { SquareDashedMousePointer, X } from "lucide-react";
 import { Modal } from "./components";
 import { API_BASE } from "./api";
-import { strings, useStrings } from "./i18n";
+import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import "./image-input.css";
 
 export const inputImageUrl = (agent: string, id: string, thumb = false) =>
@@ -19,6 +19,7 @@ const text = strings({
   original: "Original image attached to this message",
   unavailable: "This saved image is unavailable. The original file may have been removed from this Core.",
   markUpButton: "Mark up",
+  closeDialog: "Close dialog",
 }, {
   open: (n, name) => `打开图片 ${n}：${name}`,
   image: (n) => `图片 ${n}`,
@@ -29,6 +30,7 @@ const text = strings({
   original: "此消息附带的原图",
   unavailable: "这张已保存的图片不可用，原文件可能已从此 Core 中移除。",
   markUpButton: "标注",
+  closeDialog: "关闭对话框",
 });
 export function ImageAttachments({
   images,
@@ -137,7 +139,8 @@ export function ImagePreview({
   onAnnotate?: () => void;
 }) {
   const [failed, setFailed] = useState("");
-  const t = useStrings(text);
+  const language = useLanguage();
+  const t = text(language);
   // Each opening reads the image again: one that failed may be back.
   useEffect(() => {
     if (open) setFailed("");
@@ -157,6 +160,8 @@ export function ImagePreview({
       }}
       title={name}
       description={description}
+      lang={langTag(language)}
+      closeLabel={t.closeDialog}
       wide
       onCloseAutoFocus={(event) => {
         const back = opener.current;

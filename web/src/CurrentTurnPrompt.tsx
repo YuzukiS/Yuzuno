@@ -4,6 +4,28 @@ import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { ChevronDown, Pin } from "lucide-react";
 import { isPeerInput } from "./components";
 import type { NativeTurn } from "./types";
+import { langTag, strings, useLanguage } from "./i18n";
+
+// The prompt's own words (T-189); the requests as the user wrote them.
+const text = strings({
+  requestFor: (loaded: boolean, number: number) => `Your request for ${loaded ? "loaded turn" : "turn"} ${number}`,
+  yourRequest: "Your request",
+  turn: (loaded: boolean): string => (loaded ? "Loaded turn" : "Turn"),
+  messages: "This turn’s user messages",
+  original: "Original request",
+  followUp: (index: number) => `Follow-up ${index}`,
+  preview: "Request preview · ",
+  view: "View in conversation",
+}, {
+  requestFor: (loaded, number) => `你在第 ${number} 个${loaded ? "已载入的 " : ""}Turn 中的请求`,
+  yourRequest: "你的请求",
+  turn: (loaded) => (loaded ? "已载入的 Turn" : "Turn"),
+  messages: "这个 Turn 中的用户消息",
+  original: "原始请求",
+  followUp: (index) => `追加 ${index}`,
+  preview: "请求预览 · ",
+  view: "在会话中查看",
+});
 import "./turn-navigation.css";
 
 export function userRequests(turn: NativeTurn) {
@@ -139,6 +161,8 @@ export function CurrentTurnPrompt({
     };
   }, [scrollRef, turn.id, original, loaded]);
 
+  const language = useLanguage();
+  const t = text(language);
   if (!messages.length) return null;
   return (
     <details
@@ -157,13 +181,13 @@ export function CurrentTurnPrompt({
       }}
     >
       <summary
-        aria-label={`Your request for ${loadedNumbering ? "loaded turn" : "turn"} ${number}`}
+        aria-label={t.requestFor(!!loadedNumbering, number)}
       >
-        <span className="current-turn-label">
+        <span className="current-turn-label" lang={langTag(language)}>
           <Pin size={12} aria-hidden="true" />
-          <strong>Your request</strong>
+          <strong>{t.yourRequest}</strong>
           <span>
-            {loadedNumbering ? "Loaded turn" : "Turn"} {number}
+            {t.turn(!!loadedNumbering)} {number}
           </span>
           {(turn._yuzunoRequestCount ?? messages.length) > 1 && (
             <span className="current-turn-additions">
@@ -180,20 +204,20 @@ export function CurrentTurnPrompt({
       </summary>
       <ol
         className="current-turn-messages"
-        aria-label="This turn’s user messages"
+        aria-label={t.messages}
       >
         {messages.map((message, index) => (
           <li key={message.id}>
             {messages.length > 1 && (
               <small>
-                {index === 0 ? "Original request" : `Follow-up ${index}`}
+                {index === 0 ? t.original : t.followUp(index)}
               </small>
             )}
             <p><MessageContent text={message.text} blocks={message.blocks} /></p>
           </li>
         ))}
       </ol>
-      {turn._yuzunoIndex === true && <p>Request preview · <button className="inline-link" onClick={onLocate}>View in conversation</button></p>}
+      {turn._yuzunoIndex === true && <p>{t.preview}<button className="inline-link" onClick={onLocate}>{t.view}</button></p>}
     </details>
   );
 }

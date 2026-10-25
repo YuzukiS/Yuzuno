@@ -2458,6 +2458,7 @@ export function App() {
               <div
                 className="conversation-actions"
                 role="group"
+                lang={langTag(language)}
                 aria-label={shell.conversationTools}
               >
                 {!isOpenCode && <AgentSettings
@@ -2560,7 +2561,7 @@ export function App() {
             )}
             {/* Over this browser's own place too, not over a link or a source being read. */}
             {readingOffer?.agentId === selected && (!catchupSource || (catchupSource.restore !== undefined && catchupSource.progress === undefined)) && (
-              <div className="source-navigation reading-offer" role="status">
+              <div className="source-navigation reading-offer" role="status" lang={langTag(language)}>
                 <span>
                   {shell.continueReading(readingOffer.handoff.label === "desktop" ? "desktop" : "browser", ageText(readingOffer.handoff.ageSeconds, language === "zh-Hans"))}
                 </span>
@@ -2569,7 +2570,7 @@ export function App() {
               </div>
             )}
             {catchupSource?.agentId === selected && (
-              <div className="source-navigation">
+              <div className="source-navigation" lang={langTag(language)}>
                 <button
                   className="quiet-button"
                   onClick={() =>
@@ -2955,7 +2956,7 @@ export function App() {
                     <QuotaResumeNotice key={selected} detail={currentDetail} disabled={closed || !!workspaceError} />
                   )}
                   {unconfirmedMessage && (
-                    <div className="message-delivery-notice" role="status">
+                    <div className="message-delivery-notice" role="status" lang={langTag(language)}>
                       {shell.unconfirmedDelivery}
                       <button
                         type="button"
@@ -3043,7 +3044,7 @@ export function App() {
                   {imageUploads.error && <p className="inline-error" role="alert">{imageUploads.error}</p>}
                   {draftError && <p className="inline-error" role="alert">{draftError}</p>}
                   {draftBlocked && !previewMode && <DraftRecovery key={selected} onDiscard={() => discardSavedDraft(selected)} />}
-                  <div className="composer-bottom">
+                  <div className="composer-bottom" lang={langTag(language)}>
                     <div className="composer-tools">
                       <input ref={imagePicker} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden aria-label={shell.chooseImages} onChange={event => { const files = Array.from(event.target.files || []); event.target.value = ""; void imageUploads.add(files); }} />
                       {/* Agents that cannot take images keep the button, quieted, so
@@ -3244,14 +3245,14 @@ export function App() {
       </ClarificationHost.Provider>
 
       {inspectorShown && (
-        <aside className="inspector" id="context-panel">
+        <aside className="inspector" id="context-panel" lang={langTag(language)}>
           <PanelResizeHandle side="inspector" size={panelWidths.inspector} />
           <div className="inspector-content">
             <div className="inspector-heading">
-              <span>At a glance</span>
+              <span>{shell.atGlance}</span>
               <button
                 className="icon-button"
-                aria-label="Close context panel"
+                aria-label={shell.closePanel}
                 onClick={() => (phone ? setPhoneInspector(false) : setInspector(false))}
               >
                 <X size={14} />
@@ -3260,7 +3261,7 @@ export function App() {
             <section className="purpose-section">
               <span className="section-eyebrow">
                 <Leaf size={12} />
-                CURRENT WORK
+                {shell.currentWork}
               </span>
               {agent.workSummary ? (
                 <p>
@@ -3269,38 +3270,38 @@ export function App() {
                   ) : <button
                     className="inspector-work-source"
                     onClick={() => openRailSource(agent, agent.workSummary!)}
-                    title={summaryOrigin(agent.workSummary)}
+                    title={summaryOrigin(agent.workSummary, language)}
                   >
-                    {agent.workSummary.source === "agent" ? "Agent report · " : ""}
+                    {agent.workSummary.source === "agent" ? shell.agentReport : ""}
                     {agent.workSummary.text}
                   </button>}
                 </p>
               ) : (
-                <p className="field-hint">No task yet.</p>
+                <p className="field-hint">{shell.noTask}</p>
               )}
               <div className="purpose-rule" />
               <dl>
                 <div>
-                  <dt>Working folder</dt>
+                  <dt>{shell.workingFolder}</dt>
                   <dd title={agent.cwd}>{workingFolder(agent.cwd)}</dd>
                 </div>
                 <div>
-                  <dt>Harness</dt>
+                  <dt>{shell.harness}</dt>
                   <dd>
                     {agentHarnessName(agent)}
                   </dd>
                 </div>
                 <div>
-                  <dt>Location</dt>
+                  <dt>{shell.location}</dt>
                   <dd>
                     <Monitor size={12} />
-                    {agent.remote?.machine.name || "Core host"}
+                    {agent.remote?.machine.name || shell.coreHost}
                   </dd>
                 </div>
                 <div>
-                  <dt>Session</dt>
+                  <dt>{shell.session}</dt>
                   <dd title={nativeSession(agent)}>
-                    {nativeSession(agent)?.slice(0, 8) || "Not started yet"}
+                    {nativeSession(agent)?.slice(0, 8) || shell.notStarted}
                   </dd>
                 </div>
                 {isClaude && (
@@ -3319,25 +3320,25 @@ export function App() {
               cwd={agent.cwd}
               onOpen={openFile}
             />
-            {isClaude && <ClaudeMcpStatus agent={agent} />}
-            {!isClaude && !isOpenCode && !previewMode && <CodexMcpStatus agent={agent} />}
+            {isClaude && <ClaudeMcpStatus agent={agent} language={language} />}
+            {!isClaude && !isOpenCode && !previewMode && <CodexMcpStatus agent={agent} language={language} />}
             <section className="inspector-section">
               <div className="section-title">
                 <h2>
                   <Clock3 size={14} />
-                  This conversation
+                  {shell.thisConversation}
                 </h2>
               </div>
               <div className="context-stat">
-                <span>Turns</span>
+                <span>{shell.turns}</span>
                 <strong>{currentDetail?.turns.length || 0}</strong>
               </div>
               <div className="context-stat">
-                <span>Unread updates</span>
+                <span>{shell.unreadUpdates}</span>
                 <strong>{agent.unreadCount}</strong>
               </div>
               <div className="context-stat">
-                <span>Needs your response</span>
+                <span>{shell.needsResponse}</span>
                 <strong className={agent.pendingCount ? "attention-text" : ""}>
                   {agent.pendingCount}
                 </strong>
@@ -3354,7 +3355,7 @@ export function App() {
                   }}
                 >
                   <Bell size={13} />
-                  Go to pending request
+                  {shell.goPending}
                   <ArrowRight size={13} />
                 </button>
               )}
@@ -3362,9 +3363,9 @@ export function App() {
             <div className="inspector-note">
               <Yuzu size={43} sleepy />
               <p>
-                Every little step
+                {shell.storyA}
                 <br />
-                is part of the story.
+                {shell.storyB}
               </p>
             </div>
           </div>

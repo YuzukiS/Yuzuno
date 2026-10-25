@@ -44,3 +44,22 @@ test("an actual empty source read is labelled as empty, not lines 1 to 0", () =>
     startLine: 1, endLine: 0, totalLines: 0 }),
     { label: "Source empty.rs, empty file", version: "81e4faed", error: null });
 });
+
+test("in Chinese a read's own words follow; paths, queries, tools and errors stay as written (T-189)", () => {
+  assert.deepEqual(describeRead({ tool: "review_changes", totalFiles: 11, comparison: `${merge}..${head}` }, "zh-Hans"),
+    { label: "变更文件（11）", version: "c40b8367..81e4faed", error: null });
+  assert.equal(describeRead({ tool: "source_paths", query: "codex", revision: head }, "zh-Hans").label, "匹配“codex”的路径列表");
+  assert.equal(describeRead({ tool: "source_search", query: "enabled_tools", pathPrefix: "core/src", revision: head }, "zh-Hans").label,
+    "在 core/src 中搜索“enabled_tools”");
+  assert.equal(describeRead({ tool: "source_diff", path: "web/src/App.tsx", offset: 0, endOffset: 4096, totalBytes: 9000, revision: head }, "zh-Hans").label,
+    "web/src/App.tsx 的 diff，字节 0–4096（共 9000）");
+  assert.deepEqual(describeRead({ tool: "source_read", path: "core/src/lib.rs", startLine: 1, endLine: 40, revision: head }, "zh-Hans"),
+    { label: "源文件 core/src/lib.rs，第 1–40 行", version: "81e4faed", error: null });
+  assert.deepEqual(describeRead({ tool: "source_read", error: "Line range is outside the file", requested: { path: "core/src/lib.rs", startLine: 9000, endLine: 9100 } }, "zh-Hans"),
+    { label: "源文件 core/src/lib.rs", version: null, error: "Line range is outside the file" });
+  assert.equal(describeRead({ tool: "source_read", path: "empty.txt", totalLines: 0, revision: head }, "zh-Hans").label, "源文件 empty.txt，空文件");
+  assert.equal(describeRead({ tool: "future_tool" }, "zh-Hans").label, "future_tool");
+  assert.equal(describeRead({}, "zh-Hans").label, "上下文读取");
+  // English stays the default.
+  assert.equal(describeRead({ tool: "review_changes", totalFiles: 2 }).label, "Changed files (2)");
+});

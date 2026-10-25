@@ -6,6 +6,18 @@ import { compacting, deliveryNote, sendingInTurn, steered } from "./delivery-not
 import { memo } from "react";
 import type { AgentDetail } from "./types";
 import type { OutgoingMessage } from "./useConversationSend";
+import { langTag, strings, useLanguage } from "./i18n";
+
+// The previews' own words (T-189); the message and the harness's name as they are.
+const text = strings({
+  you: "You",
+  hideTitle: "Hides this preview only. It is not marked as sent, and nothing is sent again.",
+  hide: "Hide",
+}, {
+  you: "你",
+  hideTitle: "只隐藏这条预览。它不会被标为已发送，也不会重新发送任何内容。",
+  hide: "隐藏",
+});
 import "./outgoing-messages.css";
 
 // Previews the user hid. Hiding is not delivery: the receipt and the kept
@@ -32,6 +44,8 @@ export const OutgoingMessages = memo(function OutgoingMessages({
   detail: AgentDetail | null;
 }) {
   const [hidden, setHidden] = useState(loadHidden);
+  const language = useLanguage();
+  const t = text(language);
   const hide = (id: string) =>
     setHidden((current) => {
       const next = [...current.filter((h) => h !== id), id].slice(-200);
@@ -74,24 +88,24 @@ export const OutgoingMessages = memo(function OutgoingMessages({
       );
       const receipt = saved && saved.status !== "sending" ? saved : local;
       const steer = steered(receipt, shown);
-      const status = deliveryNote(receipt.status, harness, steer, !steer && compacting(receipt, shown));
+      const status = deliveryNote(receipt.status, harness, steer, !steer && compacting(receipt, shown), language);
       return (
         <div
           className="user-message outgoing-message"
           key={receipt.input.clientMessageId}
           data-client-message-id={receipt.input.clientMessageId}
         >
-          <div className="message-label">
-            <span className="you-avatar">Y</span>You{" "}
+          <div className="message-label" lang={langTag(language)}>
+            <span className="you-avatar">Y</span>{t.you}{" "}
             <small role="status">{status}</small>
             {(receipt.status === "uncertain" || receipt.status === "unknown" || receipt.status === "rejected" || steer === "endedUnconfirmed") && (
               <button
                 type="button"
                 className="inline-link outgoing-hide"
-                title="Hides this preview only. It is not marked as sent, and nothing is sent again."
+                title={t.hideTitle}
                 onClick={() => hide(receipt.input.clientMessageId)}
               >
-                Hide
+                {t.hide}
               </button>
             )}
           </div>
