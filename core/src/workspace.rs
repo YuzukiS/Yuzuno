@@ -437,9 +437,20 @@ impl Workspace {
     }
 
     pub async fn create_on(
-        self: &Arc<Self>, name: String, _legacy_goal: String, cwd: String, model: String,
+        self: &Arc<Self>, name: String, legacy_goal: String, cwd: String, model: String,
         machine_id: Option<String>, project_id: Option<String>,
     ) -> Result<Agent> {
+        self.create_on_with(name, legacy_goal, cwd, model, machine_id, project_id, AgentSettings::default()).await
+    }
+
+    /// A new Codex Agent starting with `settings` (the defaults for new
+    /// Agents resolved by the caller, T-190).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_on_with(
+        self: &Arc<Self>, name: String, _legacy_goal: String, cwd: String, model: String,
+        machine_id: Option<String>, project_id: Option<String>, settings: AgentSettings,
+    ) -> Result<Agent> {
+        validate_settings(&settings)?;
         let permit = self.admission.enter_work()?;
         if name.trim().is_empty() || name.len() > 100 {
             bail!("请填写名称（最多 100 字节）");
@@ -469,7 +480,7 @@ impl Workspace {
             project_id,
             cwd,
             model,
-            settings: AgentSettings::default(),
+            settings,
             color: colors[count % colors.len()].into(),
             harness: "codex".into(),
             claude_session_id: None,
