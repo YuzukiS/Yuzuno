@@ -154,13 +154,14 @@ impl Planner {
 
     /// One look at the clock. The last run's outcome is taken from its
     /// operation once that ends; then the slot due, if any, is started with
-    /// `start` unless a backup, check or restore is running.
+    /// `start` unless a backup, check or restore is running. True when the
+    /// last run changed: one started, or its outcome is now known.
     pub fn tick(
         &self,
         backups: &Backups,
         now: DateTime<Utc>,
         start: impl FnOnce(&str, &Path) -> Result<Operation, Refusal>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut schedule = self.schedule.lock().unwrap();
         let mut next = schedule.clone();
         if let Some(run) = next.last_run.as_mut().filter(|run| run.state == "running") {
@@ -194,11 +195,12 @@ impl Planner {
                 }
             }
         }
+        let run_changed = next.last_run != schedule.last_run;
         if next != *schedule {
             self.save(&next)?;
             *schedule = next;
         }
-        Ok(())
+        Ok(run_changed)
     }
 
     /// The schedule as Settings shows it: on or off, when (UTC), where, the
@@ -332,27 +334,28 @@ mod tests {
                 anyhow::bail!("Not enough space for the backup: needs 2 GiB more. Nothing was written")
             })
         };
-        planner.tick(&backups, at("2026-10-25T03:00:05Z"), fail).unwrap();
+        // The returned flag is what pages are told: the last run changed (T-196, slice 4).
+        assert!(!planner.tick(&backups, at("2026-10-25T03:00:05Z"), fail).unwrap());
         assert_eq!(planner.get().last_run, None, "no run beside a running operation");
         release.send(()).unwrap();
         ended(&backups, &manual.id).await;
-        planner.tick(&backups, at("2026-10-25T03:00:35Z"), fail).unwrap();
+        assert!(planner.tick(&backups, at("2026-10-25T03:00:35Z"), fail).unwrap(), "a run started");
         let id = planner.get().last_run.unwrap().operation_id.unwrap();
         ended(&backups, &id).await;
-        planner.tick(&backups, at("2026-10-25T03:01:05Z"), fail).unwrap();
+        assert!(planner.tick(&backups, at("2026-10-25T03:01:05Z"), fail).unwrap(), "its outcome is known");
         let run = planner.get().last_run.unwrap();
         assert_eq!(run.state, "failed");
         assert!(run.error.unwrap().contains("Not enough space"), "the reason, as the backup gave it");
         // The failed slot is not retried every half minute.
-        planner.tick(&backups, at("2026-10-25T03:01:35Z"), |_, _| panic!("not again")).unwrap();
+        assert!(!planner.tick(&backups, at("2026-10-25T03:01:35Z"), |_, _| panic!("not again")).unwrap(), "told once");
         // A folder gone by the next slot: recorded as not started.
         let gone = folder.path().join("gone");
         std::fs::create_dir(&gone).unwrap();
         planner.set(true, "03:00", Some(gone.clone()), at("2026-10-25T04:00:00Z")).unwrap();
         std::fs::remove_dir(&gone).unwrap();
-        planner.tick(&backups, at("2026-10-26T03:00:00Z"), |_, to| {
+        assert!(planner.tick(&backups, at("2026-10-26T03:00:00Z"), |_, to| {
             Err(Refusal::Invalid(anyhow::anyhow!("Cannot back up to {}: its folder does not exist", to.display())))
-        }).unwrap();
+        }).unwrap());
         let run = planner.get().last_run.unwrap();
         assert_eq!(run.state, "not_started");
         assert!(run.error.unwrap().contains("does not exist"));

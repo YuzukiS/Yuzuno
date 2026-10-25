@@ -10,11 +10,15 @@ export type SettingsNavigation = {
   disabled?: boolean;
   onNavigate: (destination: SettingsDestination) => void;
 };
+/** Settings opened at one editor from elsewhere; each nonce opens it once. */
+export type SettingsOpenAt = { editor: SettingsEditor; nonce: number };
 
 /** The catalog never reads or writes a setting. Each editor remains its only owner. */
-export function SettingsCenter({ attention, navigation, renderEditor, onEditorChange }: {
+export function SettingsCenter({ attention, navigation, renderEditor, onEditorChange, openAt }: {
   attention: boolean;
   navigation?: SettingsNavigation;
+  /** Opens this editor, as its card would (a notification's click, T-196). */
+  openAt?: SettingsOpenAt | null;
   /** `open` shows another editor, as its card would. */
   renderEditor: (editor: SettingsEditor, visible: boolean, open: (editor: SettingsEditor) => void) => ReactNode;
   onEditorChange?: (editor: SettingsEditor | null) => void;
@@ -52,6 +56,11 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
     const entry = settingsCatalog.find((item) => item.target.kind === "editor" && item.target.editor === next);
     if (entry) open(entry);
   }
+  useEffect(() => {
+    if (openAt) openEditor(openAt.editor);
+    // Each request once: not again when the catalog re-renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openAt?.nonce]);
   useEffect(() => {
     if (!focusEditor || !editor) return;
     const target = document.getElementById(`settings-editor-${editor}`);

@@ -122,6 +122,11 @@ async fn the_daily_backup_is_off_until_turned_on_from_cores_own_port_and_its_tim
     assert_eq!(status, StatusCode::OK, "{view}");
     assert_eq!(view["schedule"]["enabled"], json!(false), "off by default: {view}");
     assert_eq!((view["schedule"]["nextRunAt"].clone(), view["schedule"]["lastRun"].clone()), (Value::Null, Value::Null));
+    // The last run alone, what a page reads to notify of a failure (T-196): the phone entry may read it too.
+    for (app, remote_entry) in [(&local, false), (&remote, true)] {
+        let (status, last) = call(app, "GET", "/api/workspace/backup/last-run", None, remote_entry).await;
+        assert_eq!((status, last), (StatusCode::OK, json!({"lastRun": null})));
+    }
 
     let daily = tmp.path().join("daily");
     std::fs::create_dir(&daily).unwrap();
