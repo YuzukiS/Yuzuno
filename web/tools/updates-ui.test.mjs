@@ -1187,7 +1187,7 @@ test("draft storage opens from Data, privacy & recovery and shows the Agent's sa
     assert.ok(await f.press("Open Draft storage"), "Data, privacy & recovery offers it");
     const row = () => f.w.document.querySelector('#settings-drafts [data-agent="a"]');
     assert.ok(await until(() => !!row()), "the Agent's saved draft is listed");
-    assert.equal(f.w.document.querySelector("#settings-drafts textarea"), null, "nothing is opened until chosen");
+    assert.equal(f.w.document.querySelector("#settings-drafts textarea") === null, true, "nothing is opened until chosen");
     row().querySelector("button").click();
     assert.ok(await until(() => /中文 draft kept while updating/.test(f.w.document.querySelector("#settings-drafts textarea")?.value || "")), "it is shown whole");
     assert.deepEqual(f.errors, []);

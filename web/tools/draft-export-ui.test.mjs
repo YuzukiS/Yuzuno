@@ -82,8 +82,8 @@ test("the list reads manifests only, shows this Workspace's drafts as they are, 
   assert.match(p.row("a1").textContent, /^Cedar12 characters of text, 1 pasted text, 1 image \(referenced; not saved in the file\) Show$/);
   assert.match(p.row("a2").textContent, /^Pine \(closed\)Saved by an earlier version: 12 characters of text Show$/);
   assert.match(p.row("a3").textContent, /^MapleCan't be read \(.+\); left as it is\.$/, "a damaged draft is said, and offers nothing");
-  assert.equal(p.row("a4"), null, "an empty saved draft is no draft");
-  assert.equal(p.row("zz"), null, "another Workspace's draft is not listed");
+  assert.equal(p.row("a4") === null, true, "an empty saved draft is no draft");
+  assert.equal(p.row("zz") === null, true, "another Workspace's draft is not listed");
   assert.match(p.section().textContent, /1 saved draft is for Agent IDs this Workspace doesn't list, so it is not shown here\./);
   assert.match(p.section().textContent, /which Workspace it was written in is not recorded, so a matching Agent doesn't prove it/);
   assert.ok(!p.section().textContent.includes("another Workspace's words"));
