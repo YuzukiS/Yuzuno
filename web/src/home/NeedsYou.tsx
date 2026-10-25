@@ -1,4 +1,5 @@
 import { Bell, MessageCircleQuestionMark, ShieldCheck } from "lucide-react";
+import { useClockFormat } from "../time-preferences";
 import { absolute, relative } from "./format";
 import type { NeedsYouItem } from "./types";
 import { FoldButton, useCardFold } from "./card-fold";
@@ -22,6 +23,7 @@ export function NeedsYou({
   projectName: (id: string | null) => string;
   onJump: (item: NeedsYouItem) => void;
 }) {
+  const clock = useClockFormat();
   // Collapsed, the count still shows (T-115); nothing is answered by it.
   const [collapsed, toggleFold] = useCardFold("needs-you");
   return (
@@ -41,7 +43,7 @@ export function NeedsYou({
                 type="button"
                 className={`home-needs-item kind-${item.kind}`}
                 data-needs-you={needsYouKey(item)}
-                title={`${item.title} · waiting since ${absolute(item.since)}`}
+                title={`${item.title} · waiting since ${absolute(item.since, clock)}`}
                 onClick={() => onJump(item)}
               >
                 {item.kind === "approval" ? <ShieldCheck size={14} /> : <MessageCircleQuestionMark size={14} />}
