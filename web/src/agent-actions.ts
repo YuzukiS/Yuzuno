@@ -52,8 +52,7 @@ export function disconnectable(agent: Agent): boolean {
   return (
     !agent.closedAt &&
     !agent.disconnectedAt &&
-    !agent.remote &&
-    (agent.harness === "codex" || agent.harness === "claude") &&
+    (agent.harness === "claude" || (agent.harness === "codex" && !agent.remote)) &&
     agent.connectionState === "connected" &&
     agent.status === "idle"
   );

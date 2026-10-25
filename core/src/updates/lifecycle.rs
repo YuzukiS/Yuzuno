@@ -16,6 +16,16 @@ fn blocked(detail: &AgentDetail) -> Option<String> {
     blocked_activity(&detail.agent, Activity::of(detail))
 }
 
+/// The Claude bridge's own status says it is idle: started, with no Turn,
+/// request, configuration or interrupt under way.
+pub(crate) fn claude_idle(status: &Value) -> bool {
+    status["ready"] == true
+        && status["turnId"].is_null()
+        && status["pendingCount"] == 0
+        && status["configuring"] == false
+        && status["interrupting"] == false
+}
+
 pub(crate) fn blocked_activity(agent: &Agent, activity: Activity) -> Option<String> {
     if agent.closed_at.is_some() {
         return None;
@@ -346,14 +356,7 @@ impl Workspace {
     /// intended detach (`update_claude_detached`), not as a failure.
     pub(crate) async fn detach_idle_claude(self: &Arc<Self>, id: &str, connection: &crate::claude::Connection) -> Result<()> {
         let status = connection.bridge.request(json!({"op":"status"})).await?;
-        ensure!(
-            status["ready"] == true
-                && status["turnId"].is_null()
-                && status["pendingCount"] == 0
-                && status["configuring"] == false
-                && status["interrupting"] == false,
-            "Claude native runtime has not confirmed idle"
-        );
+        ensure!(claude_idle(&status), "Claude native runtime has not confirmed idle");
         let events = connection
             .events
             .as_ref()

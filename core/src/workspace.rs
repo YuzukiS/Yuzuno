@@ -490,7 +490,7 @@ impl Workspace {
             opencode_session_id: None,
             thread_id: None,
             status: "offline".into(),
-            closed_at: None, disconnected_at: None,
+            closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
             created_at: now(),
             updated_at: now(),
             unread_count: 0,
@@ -1277,6 +1277,7 @@ impl Workspace {
         let closed = self.update_record(id, "agent/closed", json!({}), |d| {
             d.agent.closed_at = Some(now());
             d.agent.disconnected_at = None;
+            d.agent.disconnect_unconfirmed = false;
             d.agent.status = "offline".into();
             d.agent.connection_state = "disconnected".into();
             d.pending.clear();
@@ -1326,6 +1327,7 @@ impl Workspace {
         self.record_meta(id, "agent/reopened", json!({}), |m| {
             m.agent.closed_at = None;
             m.agent.disconnected_at = None;
+            m.agent.disconnect_unconfirmed = false;
             m.agent.status = "offline".into();
             m.agent.connection_state = "disconnected".into();
         }).await?;
