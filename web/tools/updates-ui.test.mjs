@@ -1189,6 +1189,12 @@ test("a task chosen in data & storage opens on the task board at its Workspace s
   const folder = { id: "w1", path: "/work/build-cache", origin: "registered", state: "present",
     git: { branch: "t-7", head: "0123456789abcdef", origin: "example/demo", repositoryId: 42, sameRepository: true, changes: { modified: 0, untracked: 0, complete: true } },
     users: { agents: [], liveJobs: [], taskJobs: 0 } };
+  const view = {
+    format: 1, readAt: "2026-10-24T22:00:00Z", dataDir: "/fixture/data",
+    entries: [{ name: "jobs", what: "jobs", kind: "folder", backup: "copied", backupReason: null }],
+    unreadable: null, database: { pageSize: 4096, pages: 10, freePages: 0 }, jobs: { total: 0, unfinished: 0 },
+    native: [], notInBackup: [],
+  };
   const answers = {
     task_list: { tasks: [done, twin], hasMore: false },
     github_links: { links: [], repositories: [] },
@@ -1205,6 +1211,7 @@ test("a task chosen in data & storage opens on the task board at its Workspace s
       return { ok: true, status: 200, json: async () => structuredClone(value), text: async () => JSON.stringify(value) };
     };
     const operation = url.match(/\/api\/collaboration\/([a-z_]+)$/)?.[1];
+    if (url.endsWith("/api/storage")) return reply(view);
     if (operation === "task_get") return reply({ task: body.taskId === "T-7" ? done : twin, activities: [], executions: [], hasMore: false });
     if (operation && answers[operation]) return reply(answers[operation]);
     if (url.endsWith("/api/tasks/T-7/workspaces")) return reply({ taskId: "T-7", repositories: [], workspaces: [folder] });
