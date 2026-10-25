@@ -145,6 +145,12 @@ test('a saved address that cannot be used is said so, not taken for a first laun
       assert.equal(document.querySelector('#core-url').value, '', 'nothing is filled in');
       assert.match(status.textContent, /saved on this iPhone could not be used \((it is not a saved Workspace record|the app did not answer)\)/);
       assert.doesNotMatch(status.textContent, /to begin/);
+      // What is saved is untouched, and nothing is opened until it reads:
+      // never "enter it again and it will be saved", which is what this said
+      // before connecting was refused.
+      assert.match(status.textContent, /has not been changed/);
+      assert.match(status.textContent, /will not open a workspace/);
+      assert.doesNotMatch(status.textContent, /saves it anew|saved anew/);
       assert.equal(status.dataset.error, 'true');
       assert.deepEqual(calls.map((call) => call.command), ['saved_cores'], 'nothing is connected by itself');
     } finally { dom.window.close(); }

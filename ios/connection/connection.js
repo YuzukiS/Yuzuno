@@ -248,8 +248,10 @@ async function start() {
   } else if (saved?.state === 'never') {
     show('Enter your workspace address to begin.');
   } else {
+    // Not "enter it again and it will be saved": connecting is refused while
+    // this is so, and nothing is written over what is saved.
     show(
-      `The workspaces saved on this iPhone could not be used (${saved?.reason ?? 'unknown'}). Enter an address again: connecting saves it anew.`,
+      `The workspaces saved on this iPhone could not be used (${saved?.reason ?? 'unknown'}). What is saved has not been changed. Until they can be read, this app will not open a workspace, because it could not tell which one answered.`,
       true,
     );
   }
