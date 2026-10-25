@@ -7,6 +7,7 @@ fn main() {
             "connect_core",
             "rename_core",
             "remove_core",
+            "forget_address",
             "start_core",
             "set_appearance",
             "desktop_update_status",

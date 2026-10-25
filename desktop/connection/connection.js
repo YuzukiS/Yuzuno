@@ -7,6 +7,8 @@ const startButton = document.querySelector('#start-button');
 const startHint = document.querySelector('#start-hint');
 const savedSection = document.querySelector('#saved-cores');
 const savedList = document.querySelector('#saved-list');
+const rememberedSection = document.querySelector('#remembered');
+const rememberedList = document.querySelector('#remembered-list');
 const invoke = window.__TAURI__?.core?.invoke;
 
 // The saved Core this app may start in WSL ({ coreUrl, distro, confirmed }),
@@ -82,6 +84,61 @@ function drawSaved(info) {
     item.append(open, rename, remove);
     savedList.append(item);
   }
+  drawRemembered(info);
+}
+
+// Addresses with no entry whose Workspace this computer still remembers.
+// They are shown because they are the reason a connection there can be
+// refused: a refusal whose cause is invisible looks like a fault. A list
+// that could not be read says nothing about them either.
+function drawRemembered(info) {
+  const addresses = info.savedError ? [] : info.remembered ?? [];
+  rememberedSection.hidden = addresses.length === 0;
+  rememberedList.replaceChildren();
+  for (const known of addresses) {
+    const item = document.createElement('li');
+    item.append(Object.assign(document.createElement('span'), { className: 'saved-url', textContent: known.url }));
+    item.append(
+      Object.assign(document.createElement('span'), {
+        className: 'saved-workspace',
+        textContent: `workspace ${known.workspaceId} was here`,
+      }),
+    );
+    const forget = document.createElement('button');
+    forget.type = 'button';
+    forget.className = 'saved-forget secondary';
+    forget.textContent = 'Forget';
+    forget.setAttribute('aria-label', `Forget which workspace was at ${known.url}`);
+    forget.addEventListener('click', () => void forgetAddress(known));
+    item.append(forget);
+    rememberedList.append(item);
+  }
+}
+
+// Forgetting which Workspace was at an address, and nothing else. This is
+// deliberately a step of its own: it is never done as part of removing a
+// workspace, it connects to nothing, and it clears nothing. What it says
+// has to be exactly what it does -- the stored data stays, and the next
+// workspace to answer there may read it.
+async function forgetAddress(known) {
+  const sure = window.confirm(
+    `Forget which workspace was at ${known.url}?\n\n` +
+      'This computer will stop remembering that workspace ' +
+      known.workspaceId +
+      ' was there, so the next workspace that answers at this address will be opened.\n\n' +
+      'What is stored for this address stays. Drafts, reading places and signed-in state are still there, and a ' +
+      'workspace opened here afterwards may read them. This does not delete them, and does not connect to anything.\n\n' +
+      'To keep a workspace apart from them, give it an address of its own instead.',
+  );
+  if (!sure) return;
+  try {
+    drawSaved(await invoke('forget_address', { url: known.url }));
+    show(
+      `This computer no longer remembers which workspace was at ${known.url}. What is stored for that address is still there.`,
+    );
+  } catch (error) {
+    show(String(error), true);
+  }
 }
 
 async function renameEntry(entry) {
@@ -99,7 +156,8 @@ async function removeEntry(entry) {
   // What removing does, and what it does not, before it is done.
   const sure = window.confirm(
     `Remove \u201C${entry.name}\u201D from this computer?\n\n` +
-      'This forgets its address here, and any start profile saved for it. It changes nothing on the workspace, and nothing it is doing stops.',
+      'This takes it off the list here, along with any start profile saved for it. It changes nothing on the workspace, and nothing it is doing stops.\n\n' +
+      'What is stored for its address is not cleared, and this computer goes on remembering which workspace was there, so a different one is not opened onto it. That is listed separately and can be forgotten on its own.',
   );
   if (!sure) return;
   try {

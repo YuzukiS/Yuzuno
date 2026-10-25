@@ -111,7 +111,7 @@ fn read_entries(app: &AppHandle) -> entries::Saved {
 /// belongs to, from the saved list.
 fn read_saved_core(app: &AppHandle) -> (Option<Url>, Option<StartProfile>) {
     let saved = read_entries(app);
-    let entries::Saved::Entries { entries, selected } = &saved else {
+    let entries::Saved::Entries { entries, selected, .. } = &saved else {
         return (None, None);
     };
     // The entry last opened, when it is still saved; otherwise the page asks
@@ -127,9 +127,14 @@ fn read_saved_core(app: &AppHandle) -> (Option<Url>, Option<StartProfile>) {
 
 /// Written whole, then renamed over the old record, so a crash leaves one or
 /// the other. Failing to save only means the next launch asks again.
-fn write_entries(app: &AppHandle, entries: &[entries::Entry], selected: Option<&str>) -> Result<(), String> {
+fn write_entries(
+    app: &AppHandle,
+    entries: &[entries::Entry],
+    selected: Option<&str>,
+    remembered: &[entries::Remembered],
+) -> Result<(), String> {
     let path = saved_core_file(app).ok_or("this app has no data folder to keep it in")?;
-    let text = entries::record(entries, selected)?;
+    let text = entries::record(entries, selected, remembered)?;
     let staged = path.with_extension("json.new");
     let saved = std::fs::create_dir_all(path.parent().unwrap_or(&path))
         .and_then(|()| std::fs::write(&staged, text))
@@ -189,7 +194,8 @@ fn remember_opened(app: &AppHandle, core: &Url, workspace: Option<&str>, start: 
     } else if let Some(at) = list.iter().position(|entry| entry.id == id) {
         list[at].start = None;
     }
-    if let Err(error) = write_entries(app, &list, Some(&id)) {
+    let remembered = entries::remembering(&saved, &list);
+    if let Err(error) = write_entries(app, &list, Some(&id), &remembered) {
         eprintln!("Unable to remember the workspace for the next launch: {error}");
     }
 }
@@ -205,7 +211,7 @@ fn remember_start(app: &AppHandle, core: &Url, start: Option<&StartProfile>) {
         eprintln!("Unable to remember the start profile: the saved list could not be read ({reason}).");
         return;
     }
-    let entries::Saved::Entries { entries: list, selected } = &saved else {
+    let entries::Saved::Entries { entries: list, selected, .. } = &saved else {
         // Nothing saved: a start profile alone is not a Workspace entry.
         return;
     };
@@ -215,7 +221,8 @@ fn remember_start(app: &AppHandle, core: &Url, start: Option<&StartProfile>) {
         return;
     };
     list[at].start = start.filter(|start| start.core == *core).cloned();
-    if let Err(error) = write_entries(app, &list, selected.as_deref()) {
+    let remembered = entries::remembering(&saved, &list);
+    if let Err(error) = write_entries(app, &list, selected.as_deref(), &remembered) {
         eprintln!("Unable to remember the start profile: {error}");
     }
 }
@@ -252,6 +259,24 @@ struct ConnectionInfo {
     saved: Vec<SavedEntry>,
     selected: Option<String>,
     saved_error: Option<String>,
+    /// Addresses with no entry here whose Workspace this still remembers, so
+    /// a different Workspace is not opened onto what is stored for them.
+    /// Shown so this is something a person can see and undo, rather than a
+    /// refusal with no visible cause.
+    remembered: Vec<RememberedAddress>,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RememberedAddress {
+    url: String,
+    workspace_id: String,
+}
+
+impl RememberedAddress {
+    fn of(known: &entries::Remembered) -> Self {
+        Self { url: known.url.as_str().to_owned(), workspace_id: known.workspace_id.clone() }
+    }
 }
 
 /// One saved Workspace, as the connection page reads it.
@@ -368,6 +393,7 @@ fn connection_info(
             _ => None,
         },
         saved_error: entries::unusable(&saved).map(str::to_owned),
+        remembered: saved.remembered().iter().map(RememberedAddress::of).collect(),
     })
 }
 
@@ -408,6 +434,53 @@ fn remove_core(window: WebviewWindow, entry: String) -> Result<ConnectionInfo, S
     })
 }
 
+/// Forgets which Workspace was at one address this no longer lists, and
+/// nothing else.
+///
+/// What this does *not* do is the point of it being a step of its own. It
+/// does not connect to anything, does not open anything, and clears none of
+/// what is stored for that address -- it cannot, from here. Afterwards the
+/// address is simply unknown again, so the next Workspace to answer there is
+/// opened, and may find the drafts, reading places and signed-in state the
+/// previous one left. Whoever asks for this is choosing that, which is why
+/// it is never done as part of removing an entry.
+#[tauri::command]
+fn forget_address(window: WebviewWindow, url: String) -> Result<ConnectionInfo, String> {
+    require_connection_page(&window)?;
+    let address = connection::parse_core_url(&url).map_err(|_| "That is not an address this app opens.")?;
+    let saved = read_entries(window.app_handle());
+    if let Some(reason) = entries::unusable(&saved) {
+        return Err(format!(
+            "The workspaces saved on this computer could not be read ({reason}). Nothing of what is saved has been changed."
+        ));
+    }
+    let Some(remembered) = entries::forgetting(saved.remembered(), &address) else {
+        return Err("This app does not remember a workspace for that address.".into());
+    };
+    let list = saved.entries().to_vec();
+    let selected = match &saved {
+        entries::Saved::Entries { selected, .. } => selected.clone(),
+        _ => None,
+    };
+    write_entries(window.app_handle(), &list, selected.as_deref(), &remembered)
+        .map_err(|error| format!("This computer could not save the change ({error}). What is remembered is as it was."))?;
+    let saved = read_entries(window.app_handle());
+    Ok(ConnectionInfo {
+        core_url: String::new(),
+        start_distro: None,
+        start_confirmed: false,
+        error: None,
+        auto_connect: false,
+        saved: saved.entries().iter().map(SavedEntry::of).collect(),
+        selected: match &saved {
+            entries::Saved::Entries { selected, .. } => selected.clone(),
+            _ => None,
+        },
+        saved_error: entries::unusable(&saved).map(str::to_owned),
+        remembered: saved.remembered().iter().map(RememberedAddress::of).collect(),
+    })
+}
+
 /// Reads the list, changes it, writes it, and answers with what the page
 /// should show now. A record that could not be read is changed by nothing:
 /// it reports no entries, so any list built from it would replace every
@@ -429,7 +502,8 @@ fn change_entries(
     let mut list = saved.entries().to_vec();
     change(&mut list)?;
     let selected = selected.filter(|id| list.iter().any(|kept| kept.id == *id));
-    write_entries(window.app_handle(), &list, selected.as_deref())
+    let remembered = entries::remembering(&saved, &list);
+    write_entries(window.app_handle(), &list, selected.as_deref(), &remembered)
         .map_err(|error| format!("This computer could not save the change ({error}). The list is as it was."))?;
     let saved = read_entries(window.app_handle());
     Ok(ConnectionInfo {
@@ -444,6 +518,7 @@ fn change_entries(
             _ => None,
         },
         saved_error: entries::unusable(&saved).map(str::to_owned),
+        remembered: saved.remembered().iter().map(RememberedAddress::of).collect(),
     })
 }
 
@@ -540,11 +615,17 @@ async fn open_core(
     // records nothing -- which is how an older Core still connects.
     let here = saved.entries().iter().find(|entry| entry.url == core);
     let named = here.map(|entry| entry.name.clone()).unwrap_or_else(|| entries::name_for(&core));
-    let answered = match entries::opening(here.and_then(|entry| entry.workspace_id.as_deref()), &workspace) {
+    // What this knows about the address, whether or not an entry is listed
+    // for it. An address whose entry was removed is still remembered, so
+    // adding a new entry for it goes through the same check as opening an
+    // existing one -- otherwise removing and connecting again would be a way
+    // around the refusal, onto the stored data of the Workspace that left.
+    let known = saved.workspace_for(&core);
+    let answered = match entries::opening(known, &workspace) {
         entries::Opening::Open(answered) => answered,
         entries::Opening::Changed => {
             return Err(format!(
-                "“{named}” answered as a different workspace than the one saved under that name, so it was not opened. Its conversations, drafts and reading places are that other workspace's. Give this workspace an address of its own: two workspaces at one address share what this app has stored for that address. Removing the saved workspace only forgets the entry and any start profile saved for it; it does not clear what is stored for that address."
+                "“{named}” answered as a different workspace than the one saved under that name, so it was not opened. Its conversations, drafts and reading places are that other workspace's. Give this workspace an address of its own: two workspaces at one address share what this app has stored for that address. Removing the saved workspace does not clear what is stored for that address, and this computer goes on remembering which workspace was there -- so removing it is not a way to open another one here."
             ))
         }
         entries::Opening::Unverified => {
@@ -872,6 +953,7 @@ fn main() {
             connect_core,
             rename_core,
             remove_core,
+            forget_address,
             start_core,
             set_appearance,
             update::desktop_update_status,
