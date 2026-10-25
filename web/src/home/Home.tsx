@@ -70,11 +70,10 @@ export function Home({
 }) {
   const language = useLanguage();
   const t = homeText(language);
-  // Read when a reply arrives, not from the render that asked.
-  const words = useRef(t);
-  words.current = t;
   const [data, setData] = useState<HomeData | null>(readOnly ? previewHome : null);
-  const [error, setError] = useState("");
+  // What went wrong, worded when shown so it follows the language (T-189):
+  // a reply Home can't use, an order not saved, or Core's reason as it came.
+  const [error, setError] = useState<{ kind: "unavailable" | "order" | "read"; reason: string } | null>(null);
   // Whether the last read failed, so pinned sections say they are not current.
   const [readFailed, setReadFailed] = useState(false);
   const [tick, setTick] = useState(0);
@@ -91,17 +90,20 @@ export function Home({
     readHome(controller.signal)
       .then((value) => {
         if (controller.signal.aborted) return;
-        if (!value || !Array.isArray(value.projects) || !Array.isArray(value.needsYou))
-          throw new Error(words.current.unavailable);
+        if (!value || !Array.isArray(value.projects) || !Array.isArray(value.needsYou)) {
+          setError({ kind: "unavailable", reason: "" });
+          setReadFailed(true);
+          return;
+        }
         setData((previous) => keepUnchanged(previous, value));
         onNeedsYou?.(value.needsYou);
-        setError("");
+        setError(null);
         setReadFailed(false);
       })
       .catch((e) => {
         // The last read stays on screen; nothing is blanked while retrying.
         if (controller.signal.aborted) return;
-        setError(errorText(e));
+        setError({ kind: "read", reason: errorText(e) });
         setReadFailed(true);
       });
     return () => controller.abort();
@@ -154,13 +156,13 @@ export function Home({
     const previous = localOrder;
     setLocalOrder(ids);
     setSaving(true);
-    setError("");
+    setError(null);
     try {
       await saveHomeOrder(ids);
       reload();
     } catch (e) {
       setLocalOrder(previous);
-      setError(words.current.orderNotSaved(errorText(e)));
+      setError({ kind: "order", reason: errorText(e) });
     } finally {
       setSaving(false);
     }
@@ -330,7 +332,7 @@ export function Home({
       </header>
       {error && (
         <p className="inline-error home-error-banner" role="alert">
-          {error}
+          {error.kind === "unavailable" ? t.unavailable : error.kind === "order" ? t.orderNotSaved(error.reason) : error.reason}
           {data && t.lastReading}
         </p>
       )}

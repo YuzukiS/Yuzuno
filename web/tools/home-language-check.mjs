@@ -6,7 +6,9 @@
 //  - the language changed in another window: Home's own words are Chinese;
 //    the project, Agent and card names, the Brief's text, the Ask's question
 //    and options and both unsent replies as they were; nothing sent;
-//  - back to English in another window: Home is as it was, the replies kept.
+//  - back to English in another window: Home is as it was, the replies kept;
+//  - an order Core refused to save: its banner follows the language changed
+//    in another window, Core's reason as it came.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/home-language-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -30,7 +32,10 @@ const HOST = "yuzuno-home-language.test";
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 const agent = { id: "a", name: "Mori", status: "idle", harness: "codex", cwd: "/fixture", model: "gpt-6", projectId: "p1", color: "sage",
   createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, goal: "", connectionState: "connected" };
-const projects = [{ id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture" }, createdAt: "", updatedAt: "" }];
+const projects = [
+  { id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture" }, createdAt: "", updatedAt: "" },
+  { id: "p2", name: "Atlas", defaultDirs: { local: "/fixture" }, createdAt: "", updatedAt: "" },
+];
 const markdown = (text) => ({ root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["text"] }, text: { type: "Markdown", props: { text } } } });
 const section = (key, kind, title, text, extra = {}) => ({ key, kind, title, version: 1, owner: { agentId: "a", name: "Mori", state: "active" },
   updatedAt: ago(5), updatedTurnId: "t1", body: markdown(text), attachments: [], refs: {}, seen: null, history: false, ...extra });
@@ -38,7 +43,7 @@ const section = (key, kind, title, text, extra = {}) => ({ key, kind, title, ver
 const BODY = { ship: "The release is ready.", progress: "Cards now fold one by one.", load: "CPU is busy with the nightly build." };
 const home = {
   generatedAt: ago(0),
-  order: ["p1"],
+  order: ["p1", "p2"],
   needsYou: [{ kind: "ask", projectId: "p1", agentId: "a", agentName: "Mori", sectionKey: "ship", title: "Ship today?", since: ago(20) }],
   projects: [{
     project: { id: "p1", name: "Yuzuno" }, agents: { working: 0, idle: 1, waiting: 0, error: 0, offline: 0, total: 1 },
@@ -49,10 +54,17 @@ const home = {
       section("progress", "report", "Progress", BODY.progress),
       section("load", "status", "Build load", BODY.load, { status: { asOf: ago(240), validFor: 3600, stale: true }, time: { nextUpdate: ago(-120) } }),
     ] },
+  }, {
+    // A second, quiet project, so Home can be reordered.
+    project: { id: "p2", name: "Atlas" }, agents: { working: 0, idle: 0, waiting: 0, error: 0, offline: 0, total: 0 },
+    errors: [], pending: [], jobs: [], unseen: 0, missing: [], brief: { version: 1, history: [], sections: [] },
   }],
 };
 const machineLoad = { at: ago(0), cpu: { cores: 8, totalPct: 20, jobsPct: 5, agentsPct: null, otherPct: null },
   memory: { totalMiB: 32768, usedMiB: 9000, availableMiB: 23768, jobsMiB: 0, agentsMiB: null }, gpus: null, jobs: [] };
+// Home's later reads wait while the refused order's banner is checked: a
+// read that succeeds clears the banner, as it should.
+let holdHome = false;
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
@@ -70,6 +82,7 @@ await context.route("**/*", async (route) => {
   if (path.startsWith("/api/")) report.reads.push(`${method} ${path}`);
   // Linked repositories are read with a POST; this project has none.
   if (method === "POST" && path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
+  if (path === "/api/home" && holdHome) return new Promise(() => {});
   if (method !== "GET") {
     report.writes.push({ method, path });
     return route.fulfill({ status: 500, json: { error: "not answered by this fixture" } });
@@ -121,10 +134,11 @@ const shown = () => page.evaluate(() => {
   };
   const ship = document.querySelector('[data-section-key="ship"]');
   const reply = document.querySelector('[data-section-key="progress"] .home-card-reply');
+  const panel = document.querySelector('[data-home-project="p1"]');
   return {
     lang: document.querySelector(".home-view").getAttribute("lang"),
     needs: { heading: one(".home-needs-you h2"), item: all(".home-needs-item > span > span, .home-needs-item > span > strong, .home-needs-since"), title: document.querySelector(".home-needs-item").getAttribute("title") },
-    project: { name: one(".home-panel-head h2"), chips: all(".home-panel-chips > span") },
+    project: { name: text(panel.querySelector(".home-panel-head h2")), chips: all(".home-panel-chips > span", panel) },
     cards: { ship: card("ship"), progress: card("progress"), load: card("load") },
     ask: {
       question: text(ship.querySelector(".home-question")),
@@ -143,10 +157,10 @@ const shown = () => page.evaluate(() => {
       send: text(reply.querySelector(".home-text-reply button")),
       close: reply.querySelector(".home-card-reply-head button").getAttribute("aria-label"),
     },
-    seenAll: one(".home-panel-foot .secondary-button"),
-    team: one(".home-team-details summary"),
-    missing: one(".home-missing li"),
-    counts: all(".home-agent-counts .home-count"),
+    seenAll: text(panel.querySelector(".home-panel-foot .secondary-button")),
+    team: text(panel.querySelector(".home-team-details summary")),
+    missing: text(panel.querySelector(".home-missing li")),
+    counts: all(".home-agent-counts .home-count", panel),
   };
 });
 
@@ -163,7 +177,7 @@ try {
   await page.locator('[data-section-key="ship"] .home-text-reply textarea').fill(ANSWER);
   await page.locator('[data-section-key="ship"] .home-defer > button').click();
   await page.locator('[data-section-key="ship"] .home-defer [role="group"]').waitFor();
-  await page.locator(".home-team-details summary").click();
+  await page.locator('[data-home-project="p1"] .home-team-details summary').click();
 
   // ---- In English.
   const en = await shown();
@@ -231,6 +245,24 @@ try {
   assert.deepEqual(back, en);
   assert.deepEqual(report.writes, []);
   check("English again: Home is as it was, the unsent replies still there");
+
+  // ---- An order Core refused to save: the banner follows the language.
+  const banner = page.locator(".home-error-banner");
+  holdHome = true;
+  await page.locator(".home-header-tools .quiet-button").click();
+  await page.locator('[data-home-project="p1"] .home-reorder button').nth(1).click();
+  await banner.waitFor({ timeout: 10_000 });
+  const refused = await banner.textContent();
+  const reason = refused.match(/^The order was not saved: (.+) · Showing the last reading\.$/)?.[1];
+  assert.ok(reason, refused);
+  assert.deepEqual(report.writes, [{ method: "POST", path: "/api/home/order" }]);
+  await elsewhere("zh-Hans", "需要你处理");
+  assert.equal(await banner.textContent(), `顺序未保存：${reason} · 显示的是上一次读取的内容。`);
+  assert.equal(await page.locator(".home-header-tools .quiet-button").textContent(), "完成");
+  await elsewhere("en", "Needs you");
+  assert.equal(await banner.textContent(), refused);
+  assert.equal(report.writes.length, 1, "changing the language sends nothing");
+  check("A refused order: its banner follows the language, Core's reason as it came", { reason });
   assert.deepEqual(report.errors, []);
 } finally {
   await writeFile(join(output, "report.json"), JSON.stringify(report, null, 1));

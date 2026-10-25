@@ -64,9 +64,13 @@ function saveDraft(slot: string, draft: CardDraft | null) {
   }
 }
 
-type Sent = { status: string; to: string; version: number };
+/** `to` is null when the Agent had no name to show: worded when shown. */
+type Sent = { status: string; to: string | null; version: number };
+/** Why a send failed: Core's reason, or that this Core is too old, worded
+ * when shown so it follows the interface language (T-189). */
+const OLDER_CORE = Symbol("older Core");
 /** One card's reply, shared by every place the card shows. */
-type ReplyState = { draft: CardDraft | null; busy: boolean; error: string; sent: Sent | null };
+type ReplyState = { draft: CardDraft | null; busy: boolean; error: string | typeof OLDER_CORE; sent: Sent | null };
 const replies = new Map<string, ReplyState>();
 const listeners = new Map<string, Set<() => void>>();
 
@@ -129,9 +133,9 @@ export function referableHistory(history: Section[], liveKeys: string[]) {
 const olderCore = (error: unknown) =>
   error instanceof HttpError && /unknown field `(version|title)`/.test(errorText(error));
 
-/** Core's reason without its code, or why an older Core refused the reply. */
-function explain(error: unknown, t: ReturnType<typeof homeText>) {
-  if (olderCore(error)) return t.olderCore;
+/** Core's reason without its code, or that an older Core refused the reply. */
+function explain(error: unknown) {
+  if (olderCore(error)) return OLDER_CORE;
   return errorText(error).replace(/^(section_changed|section_removed):\s*/, "");
 }
 
@@ -177,7 +181,8 @@ export function CardReply({
   const change = (patch: Partial<CardDraft>) =>
     update(slot, { draft: { ...(replyState(slot).draft ?? draft), ...patch, at: new Date().toISOString() } });
   const target = agents.some((a) => a.id === draft.agentId) ? draft.agentId : "";
-  const name = agents.find((a) => a.id === target)?.name || t.theAgent;
+  const named = agents.find((a) => a.id === target)?.name || null;
+  const name = named ?? t.theAgent;
   const changed = section.version !== draft.version;
   // An attempt Core has not answered: only its retry, unchanged, is safe.
   const unconfirmed = !busy && !!pendingReply(slot);
@@ -200,13 +205,13 @@ export function CardReply({
       // box stays where it is.
       update(slot, {
         busy: false,
-        sent: { status: receipt.status, to: name, version: reply.version },
+        sent: { status: receipt.status, to: named, version: reply.version },
         draft: { ...reply, text: "", version: section.version, title: section.title, at: new Date().toISOString() },
       });
     } catch (e) {
       // Refused before it was read, so never submitted: no retry record.
       if (olderCore(e)) dropPendingReply(slot);
-      update(slot, { busy: false, error: explain(e, t) });
+      update(slot, { busy: false, error: explain(e) });
     }
   }
   return (
@@ -287,10 +292,10 @@ export function CardReply({
       {busy && <p className="home-note" role="status">{t.sending}</p>}
       {sent && (
         <p className="home-note" role="status">
-          {sent.status === "queued" ? t.queuedFor(sent.to, sent.version) : t.sentTo(sent.to, sent.version)}
+          {sent.status === "queued" ? t.queuedFor(sent.to ?? t.theAgent, sent.version) : t.sentTo(sent.to ?? t.theAgent, sent.version)}
         </p>
       )}
-      {error && <p className="inline-error" role="alert">{error}</p>}
+      {error && <p className="inline-error" role="alert">{error === OLDER_CORE ? t.olderCore : error}</p>}
     </div>
   );
 }
