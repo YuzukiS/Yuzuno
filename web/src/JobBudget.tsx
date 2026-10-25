@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { post, errorText } from "./api";
 import { readMachineLoad } from "./home/home-api";
 import type { MachineLoad } from "./home/types";
+import { strings, useStrings } from "./i18n";
 type Resources = { cpuMillis: number; memoryMiB: number; swapMiB: number };
 /** Memory in GiB once it reaches one, else MiB. */
 export const memoryText = (miB: number) =>
@@ -55,6 +56,145 @@ export function useMachineLoad(): MachineLoad | null {
   }, [visible]);
   return load;
 }
+
+// The budget's own words (T-189); device and machine names, paths, Core's
+// rules, scopes, reasons and errors are shown as they came.
+const text = strings({
+  machineBudget: "Machine budget",
+  cpuQuota: "CPU quota",
+  ram: "RAM (MiB)",
+  swap: "Swap (MiB)",
+  saving: "Saving rechecks queued jobs automatically. Running jobs keep their original limits. A lower budget pauses new starts until reservations fit.",
+  reference: (cpus: number, memory: number, swap: number | null) =>
+    `For reference, this host has ${cpus} CPU · ${memory} MiB RAM${swap != null ? ` · ${swap} MiB swap` : ""}; the budget may use all of it. `,
+  conservative: (cpu: number, memory: number, swap: number) => `Conservative default: ${cpu} CPU · ${memory} MiB RAM · ${swap} MiB swap.`,
+  startsWhen: (headroom: number | null) =>
+    `A job starts only when the host also has the RAM it needs free at that moment${headroom != null ? `, keeping ${headroom} MiB for Core and the desktop` : ""}. CPU is a shared quota, not reserved cores.`,
+  collector: (cpu: number, memory: number, cpuNeeded: number, memoryNeeded: number) =>
+    `Each job also reserves ${cpu} CPU and ${memory} MiB RAM for collection. Two jobs with 2 CPU and 4096 MiB each need at least ${cpuNeeded} CPU and ${memoryNeeded} MiB RAM in this budget.`,
+  saveBudget: "Save budget",
+  read: (when: string | null) => `Read ${when}`,
+  keepFreeTitle: (read: string) => `Keep free · ${read}`,
+  diskReserve: "Disk reserve",
+  keepFreeGib: "Keep free (GiB)",
+  default: "Default",
+  diskNote: (rule: string, scope: string) =>
+    `No new job starts while Core's data folder or its working directory has less free space than this. Empty uses the default: ${rule}. ${scope}`,
+  saveReserve: "Save reserve",
+  useDefault: "Use default",
+  disk: "Disk",
+  diskN: (n: number) => `Disk ${n}`,
+  notReported: "Not reported",
+  diskNotReported: "Disk: not reported",
+  free: (value: string) => `${value} free`,
+  freeUnknown: "Free space unknown",
+  diskTitle: (label: string, free: string, total: string | null) => `${label}: ${free}${total ? ` of ${total}` : ""}`,
+  of: (total: string) => `of ${total}`,
+  unreadable: (error: string) => `Could not be read (${error}); new jobs wait until it can be checked.`,
+  low: (reserve: string) => `Below the ${reserve} reserve: new jobs wait here. Running jobs go on.`,
+  ceiling: (max: number, set: boolean) => `${max} at once${set ? "" : " (default)"}`,
+  windows: "Windows",
+  windowsInUse: (max: number) => ` of ${max} in use`,
+  windowsTitle: (active: number, ceiling: string) => `Windows: ${active} in use of ${ceiling}`,
+  sharesBudget: "Shares this host's budget",
+  windowsCeiling: (ceiling: string) => `Windows: ${ceiling}`,
+  windowsJobs: "Windows jobs",
+  atMost: "At most at once",
+  defaultN: (n: number) => `Default (${n})`,
+  windowsNote: (n: number) =>
+    `How many Windows jobs may run at the same time, 1–64. Empty uses the default (${n}). It is only a ceiling: Windows jobs still share this host's CPU and RAM budget, and lowering it stops nothing that is running.`,
+  save: "Save",
+  notChanged: (resume: boolean, jobs: string) => `Not ${resume ? "resumed" : "paused"}: ${jobs}`,
+  aJob: "a job",
+  sampled: (when: string | null) => `Sampled ${when}. `,
+  gpuWait: (problem: string) => `GPU jobs wait: ${problem}. CPU jobs are not held.`,
+  unknown: "unknown",
+  inUse: " in use",
+  gpuTitle: (name: string, inUse: string, total: string, held: string | null) =>
+    `${name} memory: ${inUse} in use of ${total}${held ? `, ${held} reserved by jobs` : ""}`,
+  reserved: (value: string) => `${value} reserved`,
+  busy: (pct: number) => `${pct}% busy`,
+  closed: (byAgent: boolean, reason: string | null) =>
+    `Closed to new jobs${byAgent ? " by an Agent" : ""}${reason ? ` (${reason})` : ""}. Jobs already on it keep it.`,
+  resumeGpuTitle: "Resume the jobs paused on this GPU and reopen it to new jobs if the pause closed it",
+  pauseGpuTitle: "Stop new jobs on this GPU and pause the managed jobs using it. Their memory and GPU memory stay reserved; GPU work already sent finishes first.",
+  resumeGpu: "Resume GPU work",
+  pauseGpu: "Pause GPU work",
+  closedState: "Closed",
+  shared: "Shared",
+  exclusive: "Exclusive",
+  open: "Open to new jobs",
+  reason: "Reason (optional)",
+  close: "Close to new jobs",
+  share: "Let managed jobs share it",
+  keepFreeMib: "Keep free (MiB)",
+  sharingNote:
+    "By default one managed GPU job uses a device at a time. Shared, jobs that ask for shared mode start while their declared memory fits in the sampled free memory, less what managed jobs reserve and this amount. Nothing limits what a job really uses.",
+}, {
+  machineBudget: "机器预算",
+  cpuQuota: "CPU 配额",
+  ram: "内存（MiB）",
+  swap: "交换空间（MiB）",
+  saving: "保存后会自动重新检查排队的 Job。运行中的 Job 保持原来的限制。降低预算会暂停新的启动，直到预留能够容纳。",
+  reference: (cpus, memory, swap) => `供参考，此主机有 ${cpus} CPU · ${memory} MiB 内存${swap != null ? ` · ${swap} MiB 交换空间` : ""}；预算可以使用全部。`,
+  conservative: (cpu, memory, swap) => `保守默认值：${cpu} CPU · ${memory} MiB 内存 · ${swap} MiB 交换空间。`,
+  startsWhen: (headroom) => `只有当主机在那一刻也有它所需的空闲内存时，Job 才会启动${headroom != null ? `，并为 Core 和桌面保留 ${headroom} MiB` : ""}。CPU 是共享配额，不是预留的核心。`,
+  collector: (cpu, memory, cpuNeeded, memoryNeeded) =>
+    `每个 Job 还会为结果收集预留 ${cpu} CPU 和 ${memory} MiB 内存。两个各需 2 CPU 和 4096 MiB 的 Job，在此预算中至少需要 ${cpuNeeded} CPU 和 ${memoryNeeded} MiB 内存。`,
+  saveBudget: "保存预算",
+  read: (when) => `读取于 ${when}`,
+  keepFreeTitle: (read) => `保留空闲 · ${read}`,
+  diskReserve: "磁盘保留",
+  keepFreeGib: "保留空闲（GiB）",
+  default: "默认",
+  diskNote: (rule, scope) => `当 Core 的数据文件夹或其工作目录的空闲空间少于此值时，不会启动新的 Job。留空则使用默认值：${rule}。${scope}`,
+  saveReserve: "保存保留值",
+  useDefault: "使用默认值",
+  disk: "磁盘",
+  diskN: (n) => `磁盘 ${n}`,
+  notReported: "未报告",
+  diskNotReported: "磁盘：未报告",
+  free: (value) => `空闲 ${value}`,
+  freeUnknown: "空闲空间未知",
+  diskTitle: (label, free, total) => `${label}：${free}${total ? `，共 ${total}` : ""}`,
+  of: (total) => `共 ${total}`,
+  unreadable: (error) => `无法读取（${error}）；新的 Job 会等待，直到可以检查它。`,
+  low: (reserve) => `低于 ${reserve} 的保留值：新的 Job 会在这里等待。运行中的 Job 继续。`,
+  ceiling: (max, set) => `同时最多 ${max} 个${set ? "" : "（默认）"}`,
+  windowsInUse: (max) => ` / ${max} 使用中`,
+  windowsTitle: (active, ceiling) => `Windows：${active} 个使用中，${ceiling}`,
+  sharesBudget: "共享此主机的预算",
+  windowsCeiling: (ceiling) => `Windows：${ceiling}`,
+  windowsJobs: "Windows Job",
+  atMost: "同时最多",
+  defaultN: (n) => `默认（${n}）`,
+  windowsNote: (n) => `可以同时运行多少个 Windows Job，1–64。留空则使用默认值（${n}）。这只是上限：Windows Job 仍共享此主机的 CPU 和内存预算，降低它不会停止任何正在运行的 Job。`,
+  save: "保存",
+  notChanged: (resume, jobs) => `未能${resume ? "继续" : "暂停"}：${jobs}`,
+  aJob: "某个 Job",
+  sampled: (when) => `采样于 ${when}。`,
+  gpuWait: (problem) => `GPU Job 正在等待：${problem}。CPU Job 不受影响。`,
+  unknown: "未知",
+  inUse: " 使用中",
+  gpuTitle: (name, inUse, total, held) => `${name} 内存：${inUse} 使用中，共 ${total}${held ? `，Job 预留 ${held}` : ""}`,
+  reserved: (value) => `已预留 ${value}`,
+  busy: (pct) => `${pct}% 繁忙`,
+  closed: (byAgent, reason) => `已${byAgent ? "由某个 Agent " : ""}对新 Job 关闭${reason ? `（${reason}）` : ""}。已在其上的 Job 继续使用它。`,
+  resumeGpuTitle: "继续在此 GPU 上暂停的 Job，如果是暂停关闭了它，就重新对新 Job 开放",
+  pauseGpuTitle: "停止在此 GPU 上启动新 Job，并暂停正在使用它的托管 Job。它们的内存和 GPU 内存仍保留；已发送的 GPU 工作会先完成。",
+  resumeGpu: "继续 GPU 工作",
+  pauseGpu: "暂停 GPU 工作",
+  closedState: "已关闭",
+  shared: "共享",
+  exclusive: "独占",
+  open: "对新 Job 开放",
+  reason: "原因（可选）",
+  close: "对新 Job 关闭",
+  share: "允许托管 Job 共享它",
+  keepFreeMib: "保留空闲（MiB）",
+  sharingNote: "默认情况下，一个设备同一时间只由一个托管 GPU Job 使用。设为共享后，请求共享模式的 Job 会在其声明的内存能放入采样的空闲内存（减去托管 Job 的预留和此数值）时启动。实际用量不受任何限制。",
+});
+type Text = ReturnType<typeof text>;
 
 /**
  * One resource as a bar: the lighter band is what is reserved, the solid
@@ -133,6 +273,7 @@ export function BudgetSettings({
   collector?: Resources;
   onSaved: () => void;
 }) {
+  const t = useStrings(text);
   const [editing, setEditing] = useState(false);
   const container = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
@@ -157,7 +298,7 @@ export function BudgetSettings({
           if (!editing) setValue(budget);
         }}
       >
-        Machine budget
+        {t.machineBudget}
       </summary>
       <form
         onSubmit={async (e) => {
@@ -176,7 +317,7 @@ export function BudgetSettings({
         }}
       >
         <label>
-          CPU quota
+          {t.cpuQuota}
           <input
             type="number"
             min={(bounds?.minimum.cpuMillis ?? 200) / 1000}
@@ -193,7 +334,7 @@ export function BudgetSettings({
           />
         </label>
         <label>
-          RAM (MiB)
+          {t.ram}
           <input
             type="number"
             min={bounds?.minimum.memoryMiB ?? 128}
@@ -206,7 +347,7 @@ export function BudgetSettings({
           />
         </label>
         <label>
-          Swap (MiB)
+          {t.swap}
           <input
             type="number"
             min={bounds?.minimum.swapMiB ?? 0}
@@ -218,48 +359,22 @@ export function BudgetSettings({
             }
           />
         </label>
-        <p className="job-footnote">
-          Saving rechecks queued jobs automatically. Running jobs keep their
-          original limits. A lower budget pauses new starts until reservations
-          fit.
-        </p>
+        <p className="job-footnote">{t.saving}</p>
         {(host?.logicalCpus != null || suggested) && (
           <p className="job-footnote">
-            {host?.logicalCpus != null && host.memoryTotalMiB != null && (
-              <>
-                For reference, this host has {host.logicalCpus} CPU ·{" "}
-                {host.memoryTotalMiB} MiB RAM
-                {host.swapTotalMiB != null && <> · {host.swapTotalMiB} MiB swap</>}
-                ; the budget may use all of it.{" "}
-              </>
-            )}
-            {suggested && (
-              <>
-                Conservative default: {suggested.cpuMillis / 1000} CPU ·{" "}
-                {suggested.memoryMiB} MiB RAM · {suggested.swapMiB} MiB swap.
-              </>
-            )}
+            {host?.logicalCpus != null && host.memoryTotalMiB != null &&
+              t.reference(host.logicalCpus, host.memoryTotalMiB, host.swapTotalMiB ?? null)}
+            {suggested && t.conservative(suggested.cpuMillis / 1000, suggested.memoryMiB, suggested.swapMiB)}
           </p>
         )}
-        <p className="job-footnote">
-          A job starts only when the host also has the RAM it needs free at
-          that moment
-          {host?.hostHeadroomMiB != null && (
-            <>, keeping {host.hostHeadroomMiB} MiB for Core and the desktop</>
-          )}
-          . CPU is a shared quota, not reserved cores.
-        </p>
+        <p className="job-footnote">{t.startsWhen(host?.hostHeadroomMiB ?? null)}</p>
         {collector && (
           <p className="job-footnote">
-            Each job also reserves {collector.cpuMillis / 1000} CPU and{" "}
-            {collector.memoryMiB} MiB RAM for collection. Two jobs with 2 CPU
-            and 4096 MiB each need at least{" "}
-            {4 + (2 * collector.cpuMillis) / 1000} CPU and{" "}
-            {8192 + 2 * collector.memoryMiB} MiB RAM in this budget.
+            {t.collector(collector.cpuMillis / 1000, collector.memoryMiB, 4 + (2 * collector.cpuMillis) / 1000, 8192 + 2 * collector.memoryMiB)}
           </p>
         )}
         <button className="secondary-button" disabled={busy}>
-          Save budget
+          {t.saveBudget}
         </button>
         {error && (
           <p className="inline-error" role="alert">
@@ -294,6 +409,7 @@ const gib = (bytes: number) => `${(bytes / 1073741824).toFixed(1)} GiB`;
  * reserve below which no new job starts. Its folders and the time it was read
  * are in its tip. */
 export function DiskSpace({ disk, onSaved }: { disk: DiskView; onSaved: () => void }) {
+  const t = useStrings(text);
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(disk.reserveGiB == null ? "" : String(disk.reserveGiB));
   const [error, setError] = useState("");
@@ -311,7 +427,7 @@ export function DiskSpace({ disk, onSaved }: { disk: DiskView; onSaved: () => vo
       setBusy(false);
     }
   };
-  const read = `Read ${clock(disk.observedAt)}`;
+  const read = t.read(clock(disk.observedAt));
   // One reserve for every disk, under the first.
   const reserve = (
     <details
@@ -320,12 +436,12 @@ export function DiskSpace({ disk, onSaved }: { disk: DiskView; onSaved: () => vo
                 onToggle={(e) => setEditing(e.currentTarget.open)}
               >
                 <summary
-                  title={`Keep free · ${read}`}
+                  title={t.keepFreeTitle(read)}
                   onClick={() => {
                     if (!editing) setValue(disk.reserveGiB == null ? "" : String(disk.reserveGiB));
                   }}
                 >
-                  Disk reserve
+                  {t.diskReserve}
                 </summary>
                 <form
                   onSubmit={(e) => {
@@ -334,27 +450,24 @@ export function DiskSpace({ disk, onSaved }: { disk: DiskView; onSaved: () => vo
                   }}
                 >
                   <label>
-                    Keep free (GiB)
+                    {t.keepFreeGib}
                     <input
                       type="number"
                       min={disk.bounds.minGiB}
                       max={disk.bounds.maxGiB}
                       step="1"
-                      placeholder="Default"
+                      placeholder={t.default}
                       value={value}
                       onChange={(e) => setValue(e.target.value)}
                     />
                   </label>
-                  <p className="job-footnote">
-                    No new job starts while Core's data folder or its working directory has less free space than
-                    this. Empty uses the default: {disk.defaultRule}. {disk.scope}
-                  </p>
+                  <p className="job-footnote">{t.diskNote(disk.defaultRule, disk.scope)}</p>
                   <button className="secondary-button" disabled={busy}>
-                    Save reserve
+                    {t.saveReserve}
                   </button>
                   {disk.reserveGiB != null && (
                     <button type="button" className="quiet-button" disabled={busy} onClick={() => void save(null)}>
-                      Use default
+                      {t.useDefault}
                     </button>
                   )}
                   {error && (
@@ -370,12 +483,12 @@ export function DiskSpace({ disk, onSaved }: { disk: DiskView; onSaved: () => vo
     return (
       <UsageMeter
         className="jobs-disk-volume is-unknown"
-        label={<span className="jobs-disk-paths" title={read}>Disk</span>}
+        label={<span className="jobs-disk-paths" title={read}>{t.disk}</span>}
         used={null}
         reserved={null}
         total={1}
-        value={<span className="jobs-disk-free">Not reported</span>}
-        title="Disk: not reported"
+        value={<span className="jobs-disk-free">{t.notReported}</span>}
+        title={t.diskNotReported}
       >
         <span className="jobs-cell-foot">{reserve}</span>
       </UsageMeter>
@@ -384,7 +497,8 @@ export function DiskSpace({ disk, onSaved }: { disk: DiskView; onSaved: () => vo
     <>
       {disk.volumes.map((v, index) => {
         const known = !v.error && v.totalBytes != null && v.availableBytes != null;
-        const free = known ? `${gib(v.availableBytes!)} free` : "Free space unknown";
+        const free = known ? t.free(gib(v.availableBytes!)) : t.freeUnknown;
+        const label = disk.volumes.length > 1 ? t.diskN(index + 1) : t.disk;
         return (
           <UsageMeter
             key={index}
@@ -394,23 +508,23 @@ export function DiskSpace({ disk, onSaved }: { disk: DiskView; onSaved: () => vo
                 className="jobs-disk-paths"
                 title={[...v.paths.map((p) => `${p.role}: ${p.path}`), read].join("\n")}
               >
-                {disk.volumes.length > 1 ? `Disk ${index + 1}` : "Disk"}
+                {label}
               </span>
             }
             used={known ? v.totalBytes! - v.availableBytes! : null}
             reserved={null}
             total={known ? v.totalBytes! : 1}
             value={<span className="jobs-disk-free">{free}</span>}
-            title={`Disk${disk.volumes.length > 1 ? ` ${index + 1}` : ""}: ${free}${known ? ` of ${gib(v.totalBytes!)}` : ""}`}
+            title={t.diskTitle(label, free, known ? gib(v.totalBytes!) : null)}
           >
             <span className="jobs-cell-foot">
-              {known && <span className="jobs-disk-total">of {gib(v.totalBytes!)}</span>}
+              {known && <span className="jobs-disk-total">{t.of(gib(v.totalBytes!))}</span>}
               {index === 0 && reserve}
             </span>
             {v.error ? (
-              <small role="status">Could not be read ({v.error}); new jobs wait until it can be checked.</small>
+              <small role="status">{t.unreadable(v.error)}</small>
             ) : v.low ? (
-              <small role="status">Below the {gib(v.reserveBytes!)} reserve: new jobs wait here. Running jobs go on.</small>
+              <small role="status">{t.low(gib(v.reserveBytes!))}</small>
             ) : null}
           </UsageMeter>
         );
@@ -434,6 +548,7 @@ export type WindowsJobsView = {
  * ceiling, which the user may set (1–64) or leave at the default. Only a
  * ceiling: Windows jobs keep sharing this host's CPU/RAM budget. */
 export function WindowsJobs({ windows, onSaved }: { windows: WindowsJobsView; onSaved: () => void }) {
+  const t = useStrings(text);
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(windows.set ? String(windows.maxJobs) : "");
   const [error, setError] = useState("");
@@ -452,35 +567,35 @@ export function WindowsJobs({ windows, onSaved }: { windows: WindowsJobsView; on
       setBusy(false);
     }
   };
-  const ceiling = `${windows.maxJobs} at once${windows.set ? "" : " (default)"}`;
+  const ceiling = t.ceiling(windows.maxJobs, windows.set);
   return (
     <UsageMeter
       className="jobs-windows"
-      label="Windows"
+      label={t.windows}
       used={windows.activeCount}
       reserved={null}
       total={Math.max(windows.maxJobs, windows.activeCount, 1)}
       value={
         <>
-          <strong>{windows.activeCount}</strong> of {windows.maxJobs} in use
+          <strong>{windows.activeCount}</strong>{t.windowsInUse(windows.maxJobs)}
         </>
       }
-      title={`Windows: ${windows.activeCount} in use of ${ceiling}`}
+      title={t.windowsTitle(windows.activeCount, ceiling)}
     >
       <span className="jobs-cell-foot">
-        <span className="jobs-reserved-text">Shares this host&apos;s budget</span>
+        <span className="jobs-reserved-text">{t.sharesBudget}</span>
         <details
           className="job-budget-settings jobs-windows-settings"
           open={editing}
           onToggle={(e) => setEditing(e.currentTarget.open)}
         >
           <summary
-            title={`Windows: ${ceiling}`}
+            title={t.windowsCeiling(ceiling)}
             onClick={() => {
               if (!editing) setValue(windows.set ? String(windows.maxJobs) : "");
             }}
           >
-            Windows jobs
+            {t.windowsJobs}
           </summary>
           <form
             onSubmit={(e) => {
@@ -489,28 +604,24 @@ export function WindowsJobs({ windows, onSaved }: { windows: WindowsJobsView; on
             }}
           >
             <label>
-              At most at once
+              {t.atMost}
               <input
                 type="number"
                 min={1}
                 max={64}
                 step="1"
-                placeholder={`Default (${windows.defaultMaxJobs})`}
+                placeholder={t.defaultN(windows.defaultMaxJobs)}
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
               />
             </label>
-            <p className="job-footnote">
-              How many Windows jobs may run at the same time, 1–64. Empty uses the default ({windows.defaultMaxJobs}). It
-              is only a ceiling: Windows jobs still share this host&apos;s CPU and RAM budget, and lowering it stops
-              nothing that is running.
-            </p>
+            <p className="job-footnote">{t.windowsNote(windows.defaultMaxJobs)}</p>
             <button className="secondary-button" disabled={busy}>
-              Save
+              {t.save}
             </button>
             {windows.set && (
               <button type="button" className="quiet-button" disabled={busy} onClick={() => void save(null)}>
-                Use default
+                {t.useDefault}
               </button>
             )}
             {error && (
@@ -562,6 +673,7 @@ export function GpuDevices({
   busyNow?: MachineLoad["gpus"];
   onSaved: () => void;
 }) {
+  const t = useStrings(text);
   const [error, setError] = useState("");
   const [acting, setActing] = useState("");
   // A host without NVIDIA devices shows nothing.
@@ -588,7 +700,7 @@ export function GpuDevices({
       );
       const failed = (answer?.jobs ?? []).filter((j) => j.error);
       if (failed.length)
-        setError(`Not ${resume ? "resumed" : "paused"}: ${failed.map((j) => `${j.name || "a job"} (${j.error})`).join("; ")}`);
+        setError(t.notChanged(resume, failed.map((j) => `${j.name || t.aJob} (${j.error})`).join("; ")));
       onSaved();
     } catch (error) {
       setError(errorText(error));
@@ -596,12 +708,12 @@ export function GpuDevices({
       setActing("");
     }
   };
-  const sampled = gpus.observedAt ? `Sampled ${clock(gpus.observedAt)}. ` : "";
+  const sampled = gpus.observedAt ? t.sampled(clock(gpus.observedAt)) : "";
   return (
     <>
       {gpus.problem && (
         <p className="jobs-gpus-problem" role="status">
-          GPU jobs wait: {gpus.problem}. CPU jobs are not held.
+          {t.gpuWait(gpus.problem)}
         </p>
       )}
       {gpus.devices.map((d, position) => {
@@ -613,7 +725,7 @@ export function GpuDevices({
         // The host reading lists GPUs in the same order; a name that differs is not matched.
         const reading = busyNow?.[position];
         const busyPct = reading && reading.name === d.name ? reading.utilPct : null;
-        const inUse = used == null ? "unknown" : memoryText(used);
+        const inUse = used == null ? t.unknown : memoryText(used);
         return (
           <UsageMeter
             key={d.uuid}
@@ -628,22 +740,22 @@ export function GpuDevices({
             total={d.memoryTotalMiB}
             value={
               <span className="jobs-gpu-free">
-                <strong>{inUse}</strong> in use
+                <strong>{inUse}</strong>{t.inUse}
               </span>
             }
-            title={`${name} memory: ${inUse} in use of ${memoryText(d.memoryTotalMiB)}${held ? `, ${memoryText(held)} reserved by jobs` : ""}`}
+            title={t.gpuTitle(name, inUse, memoryText(d.memoryTotalMiB), held ? memoryText(held) : null)}
           >
             <span className="jobs-cell-foot">
-              <span className="jobs-gpu-total">of {memoryText(d.memoryTotalMiB)}</span>
+              <span className="jobs-gpu-total">{t.of(memoryText(d.memoryTotalMiB))}</span>
               {held > 0 && (
                 <span
                   className="jobs-gpu-held"
                   title={d.reservations.map((r) => `${r.name}: ${memoryText(r.memoryMiB)} ${r.mode}`).join("\n")}
                 >
-                  {memoryText(held)} reserved
+                  {t.reserved(memoryText(held))}
                 </span>
               )}
-              {busyPct != null && <span className="jobs-gpu-busy">{Math.round(busyPct)}% busy</span>}
+              {busyPct != null && <span className="jobs-gpu-busy">{t.busy(Math.round(busyPct))}</span>}
               <GpuSettings device={d} busy={acting === d.uuid} save={(path, body) => save(d.uuid, path, body)} />
               <GpuPause
                 resume={!!paused?.has(d.uuid) || (d.admission === "closed" && d.closedBy === "user" && d.closedReason === PAUSE_REASON)}
@@ -652,10 +764,7 @@ export function GpuDevices({
               />
             </span>
             {d.admission === "closed" && (
-              <small role="status">
-                Closed to new jobs{d.closedBy === "agent" ? " by an Agent" : ""}
-                {d.closedReason ? ` (${d.closedReason})` : ""}. Jobs already on it keep it.
-              </small>
+              <small role="status">{t.closed(d.closedBy === "agent", d.closedReason)}</small>
             )}
           </UsageMeter>
         );
@@ -683,19 +792,16 @@ function GpuPause({
   busy: boolean;
   act: (resume: boolean) => Promise<void>;
 }) {
+  const t = useStrings(text);
   return (
     <button
       type="button"
       className="quiet-button jobs-gpu-pause"
       disabled={busy}
       onClick={() => void act(resume)}
-      title={
-        resume
-          ? "Resume the jobs paused on this GPU and reopen it to new jobs if the pause closed it"
-          : "Stop new jobs on this GPU and pause the managed jobs using it. Their memory and GPU memory stay reserved; GPU work already sent finishes first."
-      }
+      title={resume ? t.resumeGpuTitle : t.pauseGpuTitle}
     >
-      {resume ? "Resume GPU work" : "Pause GPU work"}
+      {resume ? t.resumeGpu : t.pauseGpu}
     </button>
   );
 }
@@ -709,6 +815,7 @@ function GpuSettings({
   busy: boolean;
   save: (path: string, body: object) => Promise<void>;
 }) {
+  const t = useStrings(text);
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [sharing, setSharing] = useState(device.sharing);
@@ -725,10 +832,10 @@ function GpuSettings({
         }
       }}
     >
-      <summary>{device.admission === "closed" ? "Closed" : device.sharing ? "Shared" : "Exclusive"}</summary>
+      <summary>{device.admission === "closed" ? t.closedState : device.sharing ? t.shared : t.exclusive}</summary>
       {device.admission === "closed" ? (
         <button type="button" className="secondary-button" disabled={busy} onClick={() => void save("admission", { open: true })}>
-          Open to new jobs
+          {t.open}
         </button>
       ) : (
         <form
@@ -738,11 +845,11 @@ function GpuSettings({
           }}
         >
           <label>
-            Reason (optional)
+            {t.reason}
             <input maxLength={200} value={reason} onChange={(e) => setReason(e.target.value)} />
           </label>
           <button className="secondary-button" disabled={busy}>
-            Close to new jobs
+            {t.close}
           </button>
         </form>
       )}
@@ -754,19 +861,15 @@ function GpuSettings({
       >
         <label className="job-checkbox">
           <input type="checkbox" checked={sharing} onChange={(e) => setSharing(e.target.checked)} />
-          Let managed jobs share it
+          {t.share}
         </label>
         <label>
-          Keep free (MiB)
+          {t.keepFreeMib}
           <input type="number" min="0" max="65536" step="1" required value={headroom} onChange={(e) => setHeadroom(e.target.value)} />
         </label>
-        <p className="job-footnote">
-          By default one managed GPU job uses a device at a time. Shared, jobs that ask for shared mode start while
-          their declared memory fits in the sampled free memory, less what managed jobs reserve and this amount.
-          Nothing limits what a job really uses.
-        </p>
+        <p className="job-footnote">{t.sharingNote}</p>
         <button className="secondary-button" disabled={busy}>
-          Save
+          {t.save}
         </button>
       </form>
     </details>

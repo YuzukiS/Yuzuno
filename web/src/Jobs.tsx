@@ -46,7 +46,8 @@ import {
 } from "./CiJobs";
 import { WorkDock, WorkDockGroup, WorkDockItem, WorkDockMore } from "./WorkDock";
 import { useAppearance } from "./appearance";
-import { strings, useStrings } from "./i18n";
+import { langTag, strings, useLanguage, useStrings } from "./i18n";
+import { jobsText, type JobsText } from "./jobs-text";
 import {
   JobCard,
   JobDetailHeading,
@@ -182,58 +183,40 @@ const memory = (miB: number) =>
   miB >= 1024
     ? `${(miB / 1024).toFixed(1)} GiB`
     : `${Number(miB.toFixed(1))} MiB`;
-const ramReading = (raw?: string) => {
+// English, for what stays English outside the panel (the conversation's dock).
+const en = jobsText("en");
+const ramReading = (raw: string | undefined, t: JobsText) => {
   const bytes = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
   // systemd uses UINT64_MAX for an unavailable measurement.
   return Number.isSafeInteger(bytes) && bytes >= 0
     ? memory(bytes / 1048576)
-    : "Not available";
-};
-const statusName: Record<string, string> = {
-  waiting: "Waiting for upstream",
-  queued: "Queued",
-  starting: "Starting",
-  running: "Running",
-  cancelling: "Cancelling",
-  succeeded: "Completed",
-  failed: "Failed",
-  cancelled: "Cancelled",
-  rejected: "Inputs rejected",
-  interrupted: "Interrupted",
-  unknown: "Outcome unknown",
+    : t.notAvailable;
 };
 /** What the Machine row adds to the machine's name: that it is the Core host,
  * and that Core chose it as the machine the submitting Agent runs on. */
-export const targetNote = (job: Pick<Job, "target" | "executor">) => {
+export const targetNote = (job: Pick<Job, "target" | "executor">, t: JobsText = en) => {
   const here = job.target ? job.target.kind === "local" : !job.executor || job.executor.kind === "local";
   if (job.target?.requested === "agent") {
-    return here ? "Core host, where the submitting Agent runs" : "the machine the submitting Agent runs on";
+    return here ? t.hostAgent : t.agentMachine;
   }
-  return here ? "Core host" : "";
+  return here ? t.host : "";
 };
 /** Why this job cannot be paused, or null; Core's rule (remote.rs
  * pause_refusal): on another machine only an attempt that runs in a scope of
  * its own there, and never on Windows. */
-const pauseRefusal = (job: Job) =>
+const pauseRefusal = (job: Job, t: JobsText) =>
   !job.executor || job.executor.kind === "local"
     ? null
     : job.executor.kind === "ssh"
       ? job.result?.started?.limits?.held?.unit
         ? null
-        : `Not available: this job runs without a scope of its own on ${job.machine.name} (no limits are held for it there), and pause freezes only an attempt's own scope`
-      : `Not available for jobs on ${job.machine.name}`;
+        : t.noScope(job.machine.name)
+      : t.noPauseOn(job.machine.name);
 /** A running job's pause: it keeps status running and every reservation. */
 const pauseOf = (job: Job) =>
   (job.status === "running" || job.status === "cancelling") && job.pause?.state
     ? job.pause
     : null;
-const pauseName: Record<JobPause["state"], string> = {
-  requested: "Pausing",
-  paused: "Paused",
-  resuming: "Resuming",
-  failed: "Pause failed",
-  unknown: "Pause unknown",
-};
 /** Core's reason as a sentence, so more can follow it. */
 const sentence = (text?: string | null) => (text && !/[.!?]$/.test(text) ? `${text}.` : text || "");
 /** A running job the user asked to stop at a checkpoint. */
@@ -243,13 +226,13 @@ const stoppingAtCheckpoint = (job: Job) =>
 const checkpointed = (job: Job) =>
   !job.reserved && job.checkpointStop?.state === "checkpointed" && job.result?.checkpoint?.ok === true;
 /** Its status in words, and the mark drawn for it. */
-function stateOf(job: Job) {
-  if (stoppingAtCheckpoint(job)) return { name: "Stopping at checkpoint", mark: job.status };
-  if (checkpointed(job)) return { name: "Stopped at checkpoint", mark: job.status };
+function stateOf(job: Job, t: JobsText = en) {
+  if (stoppingAtCheckpoint(job)) return { name: t.stoppingAtCheckpoint, mark: job.status };
+  if (checkpointed(job)) return { name: t.stoppedAtCheckpoint, mark: job.status };
   const pause = job.status === "running" ? pauseOf(job) : null;
-  if (!pause) return { name: statusName[job.status] || job.status, mark: job.status };
+  if (!pause) return { name: t.status[job.status] || job.status, mark: job.status };
   const name =
-    pause.state === "failed" && pause.intent === "resume" ? "Resume failed" : pauseName[pause.state];
+    pause.state === "failed" && pause.intent === "resume" ? t.resumeFailed : t.pause[pause.state];
   return { name, mark: pause.state === "paused" ? "paused" : job.status };
 }
 /** When the timeout stops it: wall-clock time from its start, pauses included. */
@@ -257,8 +240,8 @@ const deadline = (job: Job) =>
   job.startedAt && job.timeoutSeconds
     ? new Date(Date.parse(job.startedAt) + job.timeoutSeconds * 1000)
     : null;
-function elapsed(job: Job, now = Date.now()) {
-  if (!job.startedAt) return "Not started";
+function elapsed(job: Job, now = Date.now(), t: JobsText = en) {
+  if (!job.startedAt) return t.notStarted;
   const seconds = Math.max(
     0,
     Math.floor(
@@ -281,8 +264,8 @@ const live = (job: Job) =>
     job.status === "running" ||
     job.status === "cancelling");
 /** How long it ran, or has run so far; nothing before it starts. */
-const ranFor = (job: Job, now: number) =>
-  job.finishedAt || live(job) ? elapsed(job, now) : null;
+const ranFor = (job: Job, now: number, t: JobsText = en) =>
+  job.finishedAt || live(job) ? elapsed(job, now, t) : null;
 /** The time now, again every second while something runs. */
 function useNow(ticking: boolean) {
   const [now, setNow] = useState(() => Date.now());
@@ -298,10 +281,10 @@ function useNow(ticking: boolean) {
  * however it ended. */
 const placeJob = (job: Job): Placement => (active(job) ? "active" : "done");
 /** When it was queued and, once it has, when it finished. */
-const queuedAndFinished = (job: Job) =>
+const queuedAndFinished = (job: Job, t: JobsText) =>
   moments([
-    ["Queued", job.createdAt],
-    ["Finished", job.finishedAt],
+    [t.queuedAt, job.createdAt],
+    [t.finishedAt, job.finishedAt],
   ]);
 /** Its latest moment, for the dock: finished, else started, else queued. */
 const latestMoment = (job: Job) =>
@@ -310,10 +293,10 @@ const latestMoment = (job: Job) =>
     : job.startedAt
       ? moments([["Started", job.startedAt]])
       : moments([["Queued", job.createdAt]]);
-const when = (job: Job) =>
+const when = (job: Job, t: JobsText) =>
   [
-    job.startedAt && `Started ${new Date(job.startedAt).toLocaleString()}`,
-    job.finishedAt && `Finished ${new Date(job.finishedAt).toLocaleString()}`,
+    job.startedAt && t.started(new Date(job.startedAt).toLocaleString()),
+    job.finishedAt && t.finished(new Date(job.finishedAt).toLocaleString()),
   ]
     .filter(Boolean)
     .join(" · ") || undefined;
@@ -420,8 +403,8 @@ export function ConversationJobs({
   );
 }
 
-// The toolbar's entry to Jobs follows the interface language (T-189); the
-// panel itself is still English.
+// The toolbar's entry to Jobs follows the interface language (T-189), as the
+// panel does (jobs-text.ts).
 const entryText = strings(
   { label: "Jobs", title: "Local jobs, GitHub Actions and PR reviews" },
   { label: "Job", title: "本地 Job、GitHub Actions 与 PR 审查" },
@@ -441,6 +424,8 @@ export function Jobs({
   disabled: boolean;
 }) {
   const entry = useStrings(entryText);
+  const language = useLanguage();
+  const t = jobsText(language);
   const owners = (agents || (agent ? [agent] : [])).filter(
     (a) => !a.closedAt && !a.remote,
   );
@@ -520,7 +505,7 @@ export function Jobs({
         ]);
         if (stamp !== generation.current) return;
         if (!Array.isArray(next.jobs))
-          throw new Error("Local jobs require an updated Core.");
+          throw new Error(en.updatedCore);
         setPage((old) => {
           const retained = old.jobs.filter((j) => !active(j));
           const jobs = uniqueJobs([
@@ -545,7 +530,7 @@ export function Jobs({
           setBudgetRefusal(capacity);
         } else {
           if (!validBudget(capacity))
-            throw new Error("Local jobs require an updated Core.");
+            throw new Error(en.updatedCore);
           setBudget(capacity);
           setBudgetRefusal("");
         }
@@ -640,7 +625,7 @@ export function Jobs({
         typeof env !== "object" ||
         Object.values(env).some((v) => typeof v !== "string")
       )
-        throw new Error("Environment must be a JSON object of string values.");
+        throw new Error(en.envObject);
       const body = {
         agentId: draft.agentId,
         taskId: draft.taskId.trim(),
@@ -678,9 +663,7 @@ export function Jobs({
       };
       const key = JSON.stringify(body);
       if (pending.current && pending.current.key !== key)
-        throw new Error(
-          "A previous submission reply is unconfirmed. Keep its command unchanged and retry to retrieve the same Job ID.",
-        );
+        throw new Error(en.unconfirmed);
       pending.current ||= { key, requestId: crypto.randomUUID() };
       localStorage.setItem(
         pendingKey,
@@ -784,6 +767,10 @@ export function Jobs({
     setCreating(true);
   }
   const now = useNow(open && source === "local" && page.jobs.some(live));
+  // This window's own errors are kept in English and said in the language
+  // shown; Core's are shown as they came.
+  const shownError = (text: string) =>
+    text === en.updatedCore ? t.updatedCore : text === en.envObject ? t.envObject : text === en.unconfirmed ? t.unconfirmed : text;
   const rail = useRef<HTMLDivElement>(null);
   const waiting = budget ? budget.activeCount + budget.queuedCount : 0;
   return (
@@ -813,8 +800,8 @@ export function Jobs({
           {budget && (
             <span
               className="nav-count"
-              aria-label={`${budget.activeCount} active jobs, ${budget.queuedCount} queued jobs`}
-              title={`${budget.activeCount} active · ${budget.queuedCount} queued`}
+              aria-label={t.counts(budget.activeCount, budget.queuedCount)}
+              title={t.countsTitle(budget.activeCount, budget.queuedCount)}
             >
               {budget.activeCount} / {budget.queuedCount}
             </span>
@@ -825,6 +812,7 @@ export function Jobs({
         <Dialog.Overlay className="modal-overlay" />
         <Dialog.Content
           className="modal jobs-dialog"
+          lang={langTag(language)}
           onEscapeKeyDown={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -833,12 +821,10 @@ export function Jobs({
         >
           <div className="modal-heading">
             <div>
-              <Dialog.Title>Jobs</Dialog.Title>
-              <Dialog.Description>
-                Local commands, watched GitHub Actions and PR reviews. Results return to the requesting Agent.
-              </Dialog.Description>
+              <Dialog.Title>{t.title}</Dialog.Title>
+              <Dialog.Description>{t.description}</Dialog.Description>
             </div>
-            <div className="jobs-scope" role="group" aria-label="Job scope">
+            <div className="jobs-scope" role="group" aria-label={t.scope}>
               <button
                 type="button"
                 aria-pressed={!scope.agentId && !scope.taskId}
@@ -847,13 +833,13 @@ export function Jobs({
                   setReviewInitial({});
                 }}
               >
-                Workspace
+                {t.workspace}
               </button>
               {agent && (
                 <button
                   type="button"
                   aria-pressed={scope.agentId === agent.id}
-                  title={`Jobs ${agent.name} asked for`}
+                  title={t.askedFor(agent.name)}
                   onClick={() => {
                     setScope({ agentId: agent.id });
                     setReviewInitial({});
@@ -863,10 +849,10 @@ export function Jobs({
                 </button>
               )}
               {scope.taskId && (
-                <span className="job-task-scope">Task {scope.taskId}</span>
+                <span className="job-task-scope">{t.task(scope.taskId)}</span>
               )}
             </div>
-            <Dialog.Close className="icon-button" aria-label="Close jobs">
+            <Dialog.Close className="icon-button" aria-label={t.close}>
               <X size={18} />
             </Dialog.Close>
           </div>
@@ -875,7 +861,7 @@ export function Jobs({
               ref={rail}
               className="settings-nav jobs-rail"
               role="tablist"
-              aria-label="Job source"
+              aria-label={t.source}
               aria-orientation="vertical"
               onKeyDown={(event) => {
                 const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[event.key];
@@ -887,7 +873,7 @@ export function Jobs({
                 rail.current?.querySelector<HTMLElement>(`#jobs-tab-${next.id}`)?.focus();
               }}
             >
-              {jobSources.map(({ id, label, Icon }) => (
+              {jobSources.map(({ id, Icon }) => (
                 <button
                   key={id}
                   type="button"
@@ -899,11 +885,11 @@ export function Jobs({
                   onClick={() => setSource(id)}
                 >
                   <Icon size={15} aria-hidden="true" />
-                  {label}
+                  {t.sources[id]}
                   {id === "local" && waiting > 0 && (
                     <span
                       className="jobs-rail-count"
-                      title={`${budget!.activeCount} active · ${budget!.queuedCount} queued on this machine`}
+                      title={t.onMachine(budget!.activeCount, budget!.queuedCount)}
                     >
                       {waiting}
                     </span>
@@ -943,7 +929,7 @@ export function Jobs({
                 <section className="jobs-source local-jobs" aria-labelledby="jobs-local-title">
                   <JobsSourceHeading
                     id="jobs-local-title"
-                    title="Local jobs"
+                    title={t.local}
                     actions={
                       <>
                         {!creating && (
@@ -954,8 +940,8 @@ export function Jobs({
                               setError("");
                               void load();
                             }}
-                            aria-label="Refresh jobs"
-                            title="Refresh jobs"
+                            aria-label={t.refresh}
+                            title={t.refresh}
                           >
                             <RefreshCw size={15} />
                           </button>
@@ -971,12 +957,12 @@ export function Jobs({
                           }}
                         >
                           {creating ? <ArrowLeft size={14} aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />}
-                          {creating ? "Back to jobs" : "New job"}
+                          {creating ? t.back : t.newJob}
                         </button>
                       </>
                     }
                   >
-                    Commands run on this machine within its job budget, with the Core user's permissions. Closing this window stops nothing.
+                    {t.localIntro}
                   </JobsSourceHeading>
                   {budget && (
                     <JobsBudget
@@ -1001,7 +987,7 @@ export function Jobs({
                   )}
                   {error && (
                     <p className="inline-error" role="alert">
-                      {error}
+                      {shownError(error)}
                     </p>
                   )}
                   {creating ? (
@@ -1018,26 +1004,26 @@ export function Jobs({
                     <PendingAnalysisRuns key={`${scope.agentId || ""}:${scope.taskId || ""}`} scope={scope} revision={revision} onOpen={setSelected} />
                     <div className="jobs-browser">
                       <StateGroups
-                        label="Job queue"
+                        label={t.queue}
                         items={page.jobs}
                         place={placeJob}
                         selected={selected}
-                        empty={<p className="jobs-empty">No jobs yet.</p>}
+                        empty={<p className="jobs-empty">{t.none}</p>}
                         row={(job) => (
                           <JobRow
-                            status={stateOf(job).mark}
-                            state={stateOf(job).name}
+                            status={stateOf(job, t).mark}
+                            state={stateOf(job, t).name}
                             name={job.name}
                             meta={[
                               job.taskRef,
                               job.agent.name,
-                              job.run && `${job.run.stage} · attempt ${job.run.attempt}`,
-                              job.exclusive && "Exclusive",
+                              job.run && t.attempt(job.run.stage, job.run.attempt),
+                              job.exclusive && t.exclusive,
                             ]}
                             note={pauseOf(job)?.reason || (active(job) ? job.reason : null)}
-                            time={ranFor(job, now)}
-                            timeTitle={when(job)}
-                            moments={queuedAndFinished(job)}
+                            time={ranFor(job, now, t)}
+                            timeTitle={when(job, t)}
+                            moments={queuedAndFinished(job, t)}
                             selected={selected === job.id}
                             onSelect={() => setSelected(job.id)}
                             onDragStart={(event) => {
@@ -1053,7 +1039,7 @@ export function Jobs({
                             className="quiet-button"
                             onClick={() => void load(page.nextBefore!)}
                           >
-                            Earlier jobs
+                            {t.earlier}
                           </button>
                         )}
                       </StateGroups>
@@ -1075,9 +1061,7 @@ export function Jobs({
                             onOpen={setSelected}
                           />
                         ) : (
-                          <p className="jobs-empty">
-                            Select a job to inspect its outcome and output.
-                          </p>
+                          <p className="jobs-empty">{t.selectOne}</p>
                         )}
                       </div>
                     </div>
@@ -1093,10 +1077,10 @@ export function Jobs({
   );
 }
 
-const jobSources: { id: JobSource; label: string; Icon: typeof BriefcaseBusiness }[] = [
-  { id: "local", label: "Local", Icon: BriefcaseBusiness },
-  { id: "github_actions", label: "GitHub Actions", Icon: Github },
-  { id: "reviews", label: "Reviews", Icon: GitPullRequest },
+const jobSources: { id: JobSource; Icon: typeof BriefcaseBusiness }[] = [
+  { id: "local", Icon: BriefcaseBusiness },
+  { id: "github_actions", Icon: Github },
+  { id: "reviews", Icon: GitPullRequest },
 ];
 
 /**
@@ -1117,29 +1101,25 @@ function JobsBudget({
   pausedGpus: Set<string>;
   onSaved: () => void;
 }) {
+  const t = useStrings(jobsText);
   const load = useMachineLoad();
   const cpu = (millis: number) => Number((millis / 1000).toFixed(1));
   // Jobs' share of the whole host, in CPUs, as the budget counts them.
   const cpuUsed = load ? Number(((load.cpu.jobsPct / 100) * load.cpu.cores).toFixed(1)) : null;
   const memoryUsed = load ? load.memory.jobsMiB : null;
-  const unknown = "unknown";
+  const unknown = t.unknown;
   const hostAvailable =
-    budget.machine.memoryAvailableMiB == null ? "unknown" : memory(budget.machine.memoryAvailableMiB);
+    budget.machine.memoryAvailableMiB == null ? t.unknown : memory(budget.machine.memoryAvailableMiB);
   return (
     <div className="jobs-budget">
       <div className="jobs-budget-head">
         <div className="jobs-budget-machine">
           <strong>{budget.machine.name}</strong>
-          <span>
-            {budget.activeCount} active · {budget.queuedCount} queued
-          </span>
+          <span>{t.activeQueued(budget.activeCount, budget.queuedCount)}</span>
         </div>
-        <span
-          className="jobs-budget-key"
-          title="Reservations include the bounded result collector. CPU is a quota; other apps and Windows also use this host."
-        >
-          <span className="jobs-key is-used" aria-hidden="true" /> In use
-          <span className="jobs-key is-reserved" aria-hidden="true" /> Reserved
+        <span className="jobs-budget-key" title={t.keyTitle}>
+          <span className="jobs-key is-used" aria-hidden="true" /> {t.inUse}
+          <span className="jobs-key is-reserved" aria-hidden="true" /> {t.reservedKey}
         </span>
       </div>
       <div className="jobs-budget-meters">
@@ -1150,14 +1130,14 @@ function JobsBudget({
           total={budget.budget.cpuMillis / 1000}
           value={
             <>
-              <strong>{cpuUsed ?? unknown}</strong> in use
+              <strong>{cpuUsed ?? unknown}</strong>{t.inUseValue}
             </>
           }
-          title={`CPU: ${cpuUsed ?? unknown} in use, ${cpu(budget.reserved.cpuMillis)} of ${cpu(budget.budget.cpuMillis)} reserved`}
+          title={t.cpuTitle(String(cpuUsed ?? unknown), cpu(budget.reserved.cpuMillis), cpu(budget.budget.cpuMillis))}
         >
           <span className="jobs-cell-foot">
             <span className="jobs-reserved-text">
-              {cpu(budget.reserved.cpuMillis)} / {cpu(budget.budget.cpuMillis)} reserved
+              {t.reservedOf(String(cpu(budget.reserved.cpuMillis)), String(cpu(budget.budget.cpuMillis)))}
             </span>
             <BudgetSettings
               openRequest={openRequest}
@@ -1172,22 +1152,22 @@ function JobsBudget({
           </span>
         </UsageMeter>
         <UsageMeter
-          label="RAM"
+          label={t.ramMeter}
           used={memoryUsed}
           reserved={budget.reserved.memoryMiB}
           total={budget.budget.memoryMiB}
           value={
             <>
-              <strong>{memoryUsed == null ? unknown : memory(memoryUsed)}</strong> in use
+              <strong>{memoryUsed == null ? unknown : memory(memoryUsed)}</strong>{t.inUseValue}
             </>
           }
-          title={`RAM: ${memoryUsed == null ? unknown : memory(memoryUsed)} in use, ${memory(budget.reserved.memoryMiB)} of ${memory(budget.budget.memoryMiB)} reserved`}
+          title={t.ramTitle(memoryUsed == null ? unknown : memory(memoryUsed), memory(budget.reserved.memoryMiB), memory(budget.budget.memoryMiB))}
         >
           <span className="jobs-cell-foot">
             <span className="jobs-reserved-text">
-              {memory(budget.reserved.memoryMiB)} / {memory(budget.budget.memoryMiB)} reserved
+              {t.reservedOf(memory(budget.reserved.memoryMiB), memory(budget.budget.memoryMiB))}
             </span>
-            <span className="jobs-budget-host">{hostAvailable} free on the host</span>
+            <span className="jobs-budget-host">{t.hostFree(hostAvailable)}</span>
           </span>
         </UsageMeter>
         {budget.disk && <DiskSpace disk={budget.disk} onSaved={onSaved} />}
@@ -1246,19 +1226,20 @@ function JobDetail({
   onRerun: () => void;
   onOpen: (jobId: string) => void;
 }) {
+  const t = useStrings(jobsText);
   const pause = pauseOf(job);
   const ends = deadline(job);
   // Resume whenever a pause was asked for or found, also to abandon one that
   // has not taken hold; pause again after a pause that failed.
   const resume = !!pause && !(pause.state === "failed" && pause.intent === "pause");
-  const refused = resume ? null : pauseRefusal(job);
+  const refused = resume ? null : pauseRefusal(job, t);
   const stop = job.checkpointStop;
   const stopping = stoppingAtCheckpoint(job);
   return (
     <>
       <JobDetailHeading
-        status={stateOf(job).mark}
-        state={[stateOf(job).name, ranFor(job, now) || (!job.startedAt && "Not started")]
+        status={stateOf(job, t).mark}
+        state={[stateOf(job, t).name, ranFor(job, now, t) || (!job.startedAt && t.notStarted)]
           .filter(Boolean)
           .join(" · ")}
         title={job.name}
@@ -1275,13 +1256,11 @@ function JobDetail({
             onClick={() => onPause(resume)}
             title={
               refused ??
-              (resume
-                ? "Continue the same processes"
-                : "Freeze every process of this job. Its memory, GPU memory and reservation stay; GPU work already sent finishes first.")
+              (resume ? t.continueSame : t.freeze)
             }
           >
             {resume ? <Play size={12} aria-hidden="true" /> : <Pause size={12} aria-hidden="true" />}
-            {resume ? "Resume" : "Pause"}
+            {resume ? t.resume : t.pauseButton}
           </button>
         )}
         {job.status === "running" && job.checkpoint && (stop?.state === "failed" || !stopping) && (
@@ -1292,13 +1271,11 @@ function JobDetail({
             disabled={busy || !!pause}
             onClick={() => onCheckpoint(false)}
             title={
-              pause
-                ? "Resume it first: a paused command cannot save a checkpoint"
-                : `Ask the command to save a checkpoint and exit. Unlike Pause, this ends the attempt and frees its memory; you can resume it later as a new attempt. It has ${job.checkpoint.graceSeconds} s: if it is still running then, it is cancelled and cannot be resumed.`
+              pause ? t.resumeFirst : t.checkpointTitle(job.checkpoint.graceSeconds)
             }
           >
             <Save size={12} aria-hidden="true" />
-            Stop at checkpoint
+            {t.stopAtCheckpoint}
           </button>
         )}
         {checkpointed(job) && !stop?.resumedAs && (
@@ -1307,10 +1284,10 @@ function JobDetail({
             className="secondary-button"
             disabled={busy}
             onClick={() => onCheckpoint(true)}
-            title="Queue a new attempt of the same command that continues from this checkpoint, checked again before it starts"
+            title={t.resumeCheckpointTitle}
           >
             <StepForward size={12} aria-hidden="true" />
-            Resume from checkpoint
+            {t.resumeFromCheckpoint}
           </button>
         )}
         {active(job) ? (
@@ -1321,7 +1298,7 @@ function JobDetail({
             onClick={onCancel}
           >
             <Square size={12} aria-hidden="true" />
-            Cancel
+            {t.cancel}
           </button>
         ) : (
           // A stage is retried in its run, with its frozen inputs, not rerun as a free job.
@@ -1333,7 +1310,7 @@ function JobDetail({
               onClick={onRerun}
             >
               <RotateCcw size={13} aria-hidden="true" />
-              Run again…
+              {t.runAgain}
             </button>
           )
         )}
@@ -1342,14 +1319,14 @@ function JobDetail({
       {stop && (job.status === "running" || job.status === "cancelling" || !job.reserved) ? (
         <p className="job-checkpoint-note">
           {sentence(stop.reason)}
-          {stopping && stop.deadline && ` If it has not stopped by ${new Date(stop.deadline).toLocaleString()}, it is cancelled and cannot be resumed.`}
+          {stopping && stop.deadline && t.stopBy(new Date(stop.deadline).toLocaleString())}
           {stop.state === "checkpointed" && !!job.result?.checkpoint?.files?.length &&
-            ` ${job.result.checkpoint.files.length} checkpoint file${job.result.checkpoint.files.length === 1 ? "" : "s"} checked by SHA-256.`}
+            t.checkpointFiles(job.result.checkpoint.files.length)}
           {stop.resumedAs && (
             <>
               {" "}
               <button type="button" className="quiet-button" onClick={() => onOpen(stop.resumedAs!)}>
-                Resumed as a new job
+                {t.resumedAs}
               </button>
             </>
           )}
@@ -1358,34 +1335,30 @@ function JobDetail({
         <p className="job-pause-note">
           {pause.state === "paused"
             ? job.executor && job.executor.kind !== "local"
-              ? `Paused on ${job.machine.name}. Its memory and the machine's reservation stay; only you can resume it.`
-              : "Paused. Memory and GPU memory stay reserved; only you can resume it."
+              ? t.pausedOn(job.machine.name)
+              : t.pausedHere
             : pause.reason}
-          {ends && ` The timeout still counts: it stops at ${ends.toLocaleString()}.`}
-          {job.status === "cancelling" && " Cancelling resumes it briefly while it stops."}
+          {ends && t.timeoutCounts(ends.toLocaleString())}
+          {job.status === "cancelling" && t.cancellingResumes}
         </p>
       ) : (
         job.reason && <p>{job.reason}</p>
       )}
-      <JobCard title="Summary">
+      <JobCard title={t.summary}>
         <dl>
-          <dt>Source</dt>
+          <dt>{t.sourceLabel}</dt>
           <dd>
             {job.taskRef} · {job.agent.name}
           </dd>
-          <dt>Machine</dt>
+          <dt>{t.machine}</dt>
           <dd>
             {job.machine.name}
-            {targetNote(job) && ` · ${targetNote(job)}`}
+            {targetNote(job, t) && ` · ${targetNote(job, t)}`}
           </dd>
-          <dt>Execution</dt>
-          <dd>{job.exclusive ? "Exclusive — this Core's managed local jobs" : "Normal"}</dd>
-          <dt>Resources</dt>
-          <dd>
-            {job.resources.cpuMillis / 1000} CPU ·{" "}
-            {memory(job.resources.memoryMiB)} RAM ·{" "}
-            {memory(job.resources.swapMiB)} swap
-          </dd>
+          <dt>{t.execution}</dt>
+          <dd>{job.exclusive ? t.exclusiveExecution : t.normal}</dd>
+          <dt>{t.resources}</dt>
+          <dd>{t.resourceLine(job.resources.cpuMillis / 1000, memory(job.resources.memoryMiB), memory(job.resources.swapMiB))}</dd>
           {job.gpu && (
             <>
               <dt>GPU</dt>
@@ -1395,46 +1368,44 @@ function JobDetail({
                       .map((d) => `${d.index == null ? "" : `GPU ${d.index} · `}${d.name} (${d.uuid}) · ${d.memoryMiB} MiB ${d.mode}`)
                       .join("; ")
                   : `${job.gpu.count && job.gpu.count > 1 ? `${job.gpu.count} × ` : ""}${job.gpu.memoryMiB} MiB ${job.gpu.mode || "exclusive"}${
-                      job.gpu.devices?.length ? ` on ${job.gpu.devices.join(", ")}` : ""
-                    }; not reserved`}
+                      job.gpu.devices?.length ? t.onDevices(job.gpu.devices.join(", ")) : ""
+                    }${t.notReserved}`}
               </dd>
             </>
           )}
-          <dt>Current RAM</dt>
-          <dd>{ramReading(job.usage?.MemoryCurrent)}</dd>
-          <dt>Process/thread limit</dt>
+          <dt>{t.currentRam}</dt>
+          <dd>{ramReading(job.usage?.MemoryCurrent, t)}</dd>
+          <dt>{t.taskLimit}</dt>
           <dd>
             {job.usage?.TasksMax ||
               job.result?.evidence?.systemd?.TasksMax ||
-              "Not reported"}
+              t.notReported}
           </dd>
-          <dt>Peak RAM</dt>
+          <dt>{t.peakRam}</dt>
           <dd>
             {ramReading(
               job.usage?.MemoryPeak || job.result?.evidence?.systemd?.MemoryPeak,
+              t,
             )}
           </dd>
-          <dt>Directory</dt>
+          <dt>{t.directory}</dt>
           <dd>{job.cwd}</dd>
           {job.checkpoint && (
             <>
-              <dt>Checkpoint</dt>
-              <dd>
-                On stop: {job.checkpoint.signal || "SIGTERM"}, {job.checkpoint.graceSeconds} s to save, exits{" "}
-                {job.checkpoint.stoppedExitCode}
-              </dd>
+              <dt>{t.checkpoint}</dt>
+              <dd>{t.onStop(job.checkpoint.signal || "SIGTERM", job.checkpoint.graceSeconds, job.checkpoint.stoppedExitCode)}</dd>
             </>
           )}
           {(job.resumeOf || job.checkpointFrom?.jobId) && (
             <>
-              <dt>Resumes</dt>
+              <dt>{t.resumes}</dt>
               <dd>
                 <button
                   type="button"
                   className="quiet-button"
                   onClick={() => onOpen((job.resumeOf || job.checkpointFrom?.jobId)!)}
                 >
-                  The job it continues from
+                  {t.continuesFrom}
                 </button>
               </dd>
             </>
@@ -1461,32 +1432,24 @@ function JobDetail({
           on={job.result?.artifactsOn ?? (job.executor && job.executor.kind !== "local" ? job.machine : null)}
         />
       )}
-      <JobCard title="Command">
+      <JobCard title={t.command}>
         <pre className="job-command">
           {job.argv?.map((a) => JSON.stringify(a)).join(" ")}
         </pre>
         {job.snapshot && <p className="job-footnote">{job.snapshot.scope}</p>}
       </JobCard>
       <JobCard
-        title="Output"
+        title={t.output}
         className="job-output"
-        aside={
-          <small>
-            {log ? `${log.totalBytes.toLocaleString()} bytes written` : "Loading…"}
-          </small>
-        }
+        aside={<small>{log ? t.written(log.totalBytes.toLocaleString()) : t.loading}</small>}
       >
-        {log && (log.oldestOffset > 0 || log.truncated) && (
-          <p className="job-footnote">
-            Older output was rotated out; at most 2 MiB is retained.
-          </p>
-        )}
+        {log && (log.oldestOffset > 0 || log.truncated) && <p className="job-footnote">{t.rotated}</p>}
         <pre className="job-log" tabIndex={0}>
-          {log?.text || "No output yet."}
+          {log?.text || t.noOutput}
         </pre>
       </JobCard>
       {!!job.outputs?.length && (
-        <JobCard title="Declared output files" className="job-outputs">
+        <JobCard title={t.declared} className="job-outputs">
           {job.outputs.map((path, index) => (
             <a
               key={path}
@@ -1500,7 +1463,7 @@ function JobDetail({
       )}
       <ProvenanceCard key={job.id} jobId={job.id} runId={job.run?.id} />
       <details className="job-evidence-details">
-        <summary>Execution evidence</summary>
+        <summary>{t.evidence}</summary>
         <pre className="job-evidence">
           {JSON.stringify(
             job.result || { status: "No terminal evidence yet" },
@@ -1552,19 +1515,20 @@ function JobForm({
   busy: boolean;
   onSubmit: (event: React.FormEvent) => void;
 }) {
+  const t = useStrings(jobsText);
   return (
     <form className="job-form" onSubmit={onSubmit}>
       <fieldset className="job-form-group">
-        <legend>What runs</legend>
+        <legend>{t.whatRuns}</legend>
         <label className="job-wide">
-          Requesting Agent
+          {t.requesting}
           <select
             required
             value={draft.agentId}
             disabled={locked}
             onChange={(e) => setDraft({ ...draft, agentId: e.target.value })}
           >
-            <option value="">Choose an Agent</option>
+            <option value="">{t.chooseAgent}</option>
             {owners.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
@@ -1573,7 +1537,7 @@ function JobForm({
           </select>
         </label>
         <label>
-          Name
+          {t.name}
           <input
             required
             value={draft.name}
@@ -1582,7 +1546,7 @@ function JobForm({
           />
         </label>
         <label>
-          Existing task
+          {t.existingTask}
           <input
             required
             placeholder="T-47"
@@ -1591,7 +1555,7 @@ function JobForm({
           />
         </label>
         <label className="job-wide">
-          Working directory
+          {t.cwd}
           <input
             required
             value={draft.cwd}
@@ -1599,7 +1563,7 @@ function JobForm({
           />
         </label>
         <label className="job-wide">
-          Command
+          {t.command}
           <textarea
             className="job-code"
             required
@@ -1611,9 +1575,9 @@ function JobForm({
         </label>
       </fieldset>
       <fieldset className="job-form-group">
-        <legend>Limits</legend>
+        <legend>{t.limits}</legend>
         <label>
-          CPU quota
+          {t.cpuQuota}
           <input
             type="number"
             min="0.1"
@@ -1624,7 +1588,7 @@ function JobForm({
           />
         </label>
         <label>
-          RAM limit (MiB)
+          {t.ramLimit}
           <input
             type="number"
             min="64"
@@ -1634,7 +1598,7 @@ function JobForm({
           />
         </label>
         <label>
-          Swap limit (MiB)
+          {t.swapLimit}
           <input
             type="number"
             min="0"
@@ -1644,7 +1608,7 @@ function JobForm({
           />
         </label>
         <label>
-          Time limit (seconds)
+          {t.timeLimit}
           <input
             type="number"
             min="1"
@@ -1662,21 +1626,16 @@ function JobForm({
               disabled={locked}
               onChange={(e) => setDraft({ ...draft, exclusive: e.target.checked })}
             />
-            Exclusive execution
+            {t.exclusiveRun}
           </label>
-          <p className="job-footnote">
-            Waits for earlier jobs to finish, then runs alone among this
-            Core's managed local jobs. Later jobs stay queued until
-            cleanup finishes. Other applications keep running; resource
-            limits still apply. Unchecked jobs use normal shared capacity.
-          </p>
+          <p className="job-footnote">{t.exclusiveNote}</p>
         </div>
         <label>
-          GPU memory (MiB)
+          {t.gpuMemory}
           <input
             type="number"
             min="64"
-            placeholder="No GPU"
+            placeholder={t.noGpu}
             value={draft.gpuMemory || ""}
             disabled={locked}
             onChange={(e) => setDraft({ ...draft, gpuMemory: e.target.value })}
@@ -1691,22 +1650,18 @@ function JobForm({
                 disabled={locked}
                 onChange={(e) => setDraft({ ...draft, gpuShared: e.target.checked })}
               />
-              Shared GPU
+              {t.sharedGpu}
             </label>
-            <p className="job-footnote">
-              Starts when a GPU{draft.gpuDevices?.length ? ` (${draft.gpuDevices.join(", ")})` : ""} has this much free
-              memory and no other managed GPU job, and only that GPU is visible to the command
-              (CUDA_VISIBLE_DEVICES). Shared runs beside other shared jobs on a GPU you opened for sharing.
-            </p>
+            <p className="job-footnote">{t.sharedNote(draft.gpuDevices?.length ? draft.gpuDevices.join(", ") : null)}</p>
           </div>
         )}
       </fieldset>
       <fieldset className="job-form-group">
-        <legend>Checks and files</legend>
+        <legend>{t.checksFiles}</legend>
         <details className="job-wide">
-          <summary>Environment and input checks</summary>
+          <summary>{t.envChecks}</summary>
           <label>
-            Explicit environment (JSON)
+            {t.env}
             <textarea
               className="job-code"
               rows={3}
@@ -1720,10 +1675,10 @@ function JobForm({
               checked={draft.guardGit}
               onChange={(e) => setDraft({ ...draft, guardGit: e.target.checked })}
             />
-            Check Git HEAD and changed tracked files before launch
+            {t.guardGit}
           </label>
           <label>
-            Additional small input files, one per line
+            {t.inputs}
             <textarea
               className="job-code"
               rows={2}
@@ -1731,13 +1686,10 @@ function JobForm({
               onChange={(e) => setDraft({ ...draft, inputs: e.target.value })}
             />
           </label>
-          <p>
-            Commands and environment are captured. Untracked data and
-            changes after launch are not frozen. No dataset copying.
-          </p>
+          <p>{t.captured}</p>
         </details>
         <label className="job-wide">
-          Output files, relative to the working directory
+          {t.outputs}
           <textarea
             className="job-code"
             rows={2}
@@ -1749,18 +1701,12 @@ function JobForm({
       </fieldset>
       <div className="job-form-footer">
         <small>
-          Runs on the Core host with the Core user's permissions.
-          Agent sandbox rules do not apply.
+          {t.hostNote}
           <br />
-          Job completion does not complete its task. Closing this
-          window does not stop a job.
+          {t.completionNote}
         </small>
         <button className="primary-button" disabled={busy} type="submit">
-          {busy
-            ? "Submitting…"
-            : locked
-              ? "Retry same submission"
-              : "Submit job"}
+          {busy ? t.submitting : locked ? t.retry : t.submit}
         </button>
       </div>
     </form>
