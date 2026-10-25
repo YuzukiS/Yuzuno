@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { House, ListOrdered, LoaderCircle, RefreshCw } from "lucide-react";
 import { errorText } from "../api";
+import { langTag, useLanguage } from "../i18n";
+import { shellText } from "../shell-text";
 import type { Agent, Project } from "../types";
 import { rememberSeenBlocks } from "./brief/block-changes";
 import { keepUnchanged, projectDomId, requestDomId, sectionDomId } from "./brief-layout";
@@ -16,6 +18,7 @@ import type { HomeData, NeedsYouItem, ProjectPanel, Section } from "./types";
 import { PinsContext, pinSource, pinWidgetId, resolvePin, useWidgetLayout, type PinControl } from "./widget-layout";
 import "./home.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
+import { homeText } from "./home-text";
 
 export type { HomeTarget } from "./home-navigation";
 
@@ -65,8 +68,12 @@ export function Home({
   /** Each read's Needs you, for the Home tab's count. */
   onNeedsYou?: (items: NeedsYouItem[]) => void;
 }) {
+  const language = useLanguage();
+  const t = homeText(language);
   const [data, setData] = useState<HomeData | null>(readOnly ? previewHome : null);
-  const [error, setError] = useState("");
+  // What went wrong, worded when shown so it follows the language (T-189):
+  // a reply Home can't use, an order not saved, or Core's reason as it came.
+  const [error, setError] = useState<{ kind: "unavailable" | "order" | "read"; reason: string } | null>(null);
   // Whether the last read failed, so pinned sections say they are not current.
   const [readFailed, setReadFailed] = useState(false);
   const [tick, setTick] = useState(0);
@@ -83,17 +90,20 @@ export function Home({
     readHome(controller.signal)
       .then((value) => {
         if (controller.signal.aborted) return;
-        if (!value || !Array.isArray(value.projects) || !Array.isArray(value.needsYou))
-          throw new Error("Home is unavailable from this Core.");
+        if (!value || !Array.isArray(value.projects) || !Array.isArray(value.needsYou)) {
+          setError({ kind: "unavailable", reason: "" });
+          setReadFailed(true);
+          return;
+        }
         setData((previous) => keepUnchanged(previous, value));
         onNeedsYou?.(value.needsYou);
-        setError("");
+        setError(null);
         setReadFailed(false);
       })
       .catch((e) => {
         // The last read stays on screen; nothing is blanked while retrying.
         if (controller.signal.aborted) return;
-        setError(errorText(e));
+        setError({ kind: "read", reason: errorText(e) });
         setReadFailed(true);
       });
     return () => controller.abort();
@@ -146,13 +156,13 @@ export function Home({
     const previous = localOrder;
     setLocalOrder(ids);
     setSaving(true);
-    setError("");
+    setError(null);
     try {
       await saveHomeOrder(ids);
       reload();
     } catch (e) {
       setLocalOrder(previous);
-      setError(`The order was not saved: ${errorText(e)}`);
+      setError({ kind: "order", reason: errorText(e) });
     } finally {
       setSaving(false);
     }
@@ -161,8 +171,8 @@ export function Home({
     id
       ? data?.projects.find((p) => p.project.id === id)?.project.name ||
         projects.find((p) => p.id === id)?.name ||
-        "Unknown project"
-      : "No project";
+        shellText(language).unknownProject
+      : shellText(language).noProject;
   /** Shows the project's panel whole, then scrolls to and focuses the target in it. */
   function revealIn(projectId: string, target: () => HTMLElement | null) {
     const n = reveal.n + 1;
@@ -257,7 +267,7 @@ export function Home({
   const widgets: HomeWidget[] = [
     {
       id: "machines",
-      name: "Machines",
+      name: t.machines,
       body: <MachineWidget projectName={projectName} readOnly={readOnly} />,
     },
     // The design preview has no pins: its sections are not this workspace's.
@@ -295,11 +305,11 @@ export function Home({
     {/* Which cards are collapsed is kept per Workspace; the preview keeps none (T-115). */}
     <CardFoldWorkspace.Provider value={readOnly ? "" : workspaceId}>
     <PinsContext.Provider value={pins}>
-    <div className="home-view">
+    <div className="home-view" lang={langTag(language)}>
       <header className="home-header">
         <h1>
           <House size={18} />
-          Home
+          {t.home}
         </h1>
         <span className="home-header-tools">
           {data && panels.length > 1 && !readOnly && (
@@ -310,11 +320,11 @@ export function Home({
               onClick={() => setReordering((v) => !v)}
             >
               <ListOrdered size={13} />
-              {reordering ? "Done" : "Reorder"}
+              {reordering ? t.reorderDone : t.reorder}
             </button>
           )}
           {!readOnly && (
-            <button type="button" className="icon-button" aria-label="Refresh Home" title="Refresh Home" onClick={reload}>
+            <button type="button" className="icon-button" aria-label={t.refresh} title={t.refresh} onClick={reload}>
               <RefreshCw size={14} />
             </button>
           )}
@@ -322,15 +332,15 @@ export function Home({
       </header>
       {error && (
         <p className="inline-error home-error-banner" role="alert">
-          {error}
-          {data && " · Showing the last reading."}
+          {error.kind === "unavailable" ? t.unavailable : error.kind === "order" ? t.orderNotSaved(error.reason) : error.reason}
+          {data && t.lastReading}
         </p>
       )}
       {!data ? (
         !error && (
           <div className="loading-state">
             <LoaderCircle className="spin" size={19} />
-            Reading your projects…
+            {t.reading}
           </div>
         )
       ) : (
@@ -348,14 +358,10 @@ export function Home({
           />
           <div className="home-main">
             {reordering && (
-              <p className="home-note home-reorder-note">
-                The order only changes how Home is laid out: higher projects come first and show more of their Brief.
-              </p>
+              <p className="home-note home-reorder-note">{t.reorderNote}</p>
             )}
             {panels.length === 0 ? (
-              <p className="home-note home-empty">
-                No projects yet. Create one from the project menu, then add its Agents.
-              </p>
+              <p className="home-note home-empty">{t.noProjects}</p>
             ) : (
               <div className="home-panels">
                 {panels.map((panel, index) => (

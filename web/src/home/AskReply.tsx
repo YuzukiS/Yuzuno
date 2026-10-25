@@ -1,6 +1,7 @@
 import { useId, useMemo, useState } from "react";
 import { LoaderCircle, MessageSquareReply, Send } from "lucide-react";
 import { errorText, shortcutModifier } from "../api";
+import { useLanguage, useStrings } from "../i18n";
 import type { Agent, MessageReceipt } from "../types";
 import { Clarification } from "../intelligent-ui/ClarificationForm";
 import {
@@ -11,6 +12,7 @@ import {
 } from "../intelligent-ui/clarification";
 import { relative } from "./format";
 import { outboxKey, pendingReply, sendReply } from "./home-api";
+import { homeText } from "./home-text";
 import type { Section } from "./types";
 
 /** Its owner changed the section after the user's reply (an edit keeps it replied). */
@@ -59,7 +61,7 @@ export function TargetPicker({
   value,
   onChange,
   disabled,
-  label = "Send to",
+  label,
 }: {
   agents: Agent[];
   value: string;
@@ -68,11 +70,12 @@ export function TargetPicker({
   label?: string;
 }) {
   const id = useId();
+  const t = useStrings(homeText);
   return (
     <span className="home-reply-target">
-      <label htmlFor={id}>{label}</label>
+      <label htmlFor={id}>{label ?? t.sendTo}</label>
       <select id={id} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
-        {!agents.some((a) => a.id === value) && <option value="">Choose an Agent…</option>}
+        {!agents.some((a) => a.id === value) && <option value="">{t.chooseAgent}</option>}
         {agents.map((agent) => (
           <option key={agent.id} value={agent.id}>
             {agent.name}
@@ -98,6 +101,7 @@ function TextReply({
   onSend: (text: string) => Promise<unknown>;
   label: string;
 }) {
+  const t = useStrings(homeText);
   const [text, setText] = useState(initial);
   const submit = () => {
     const value = text.trim();
@@ -132,10 +136,10 @@ function TextReply({
         type="submit"
         className="primary-button"
         disabled={disabled || busy || !text.trim()}
-        title={`Send (${shortcutModifier} Enter)`}
+        title={t.sendTitle(shortcutModifier)}
       >
         {busy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
-        Send
+        {t.send}
       </button>
     </form>
   );
@@ -163,6 +167,8 @@ function formText(form: ClarificationProps, values: ClarificationValues) {
  * another Agent. Nothing here acts on the Agent's behalf.
  */
 export function AskReply({ section, ...context }: ReplyContext & { section: Section }) {
+  const language = useLanguage();
+  const t = homeText(language);
   const ask = section.ask!;
   const reply = ask.reply;
   const { send, busy, error, receipt, kept } = useReply(context, section.key);
@@ -186,7 +192,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
   const disabled = context.readOnly || !target;
   const targetName = context.agents.find((a) => a.id === target)?.name || section.owner.name;
   const freeText = reply.freeText;
-  const prompt = typeof freeText === "object" && freeText.prompt ? freeText.prompt : "Write a reply…";
+  const prompt = typeof freeText === "object" && freeText.prompt ? freeText.prompt : t.writeReply;
   // `shown` is what this window shows as sent until Core's next read.
   const deliver = async (text: string, choice?: string, shown = text) => {
     const version = section.version;
@@ -203,17 +209,15 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
       <div className="home-ask-replied" role="status">
         <MessageSquareReply size={14} />
         <div>
-          <strong>Replied · waiting for {ask.state === "replied" ? section.owner.name : targetName}</strong>
+          <strong>{t.repliedWaiting(ask.state === "replied" ? section.owner.name : targetName)}</strong>
           {(ask.replyText || sentText) && <p>{ask.replyText || sentText}</p>}
           {ask.state === "replied" && repliedThenUpdated(section) && (
-            <p className="home-ask-updated">
-              {section.owner.name} updated it {relative(section.updatedAt)}, after your reply
-            </p>
+            <p className="home-ask-updated">{t.updatedAfterReply(section.owner.name, relative(section.updatedAt, language))}</p>
           )}
         </div>
         {!context.readOnly && (
           <button type="button" className="quiet-button" onClick={() => setAgain(true)}>
-            Reply again
+            {t.replyAgain}
           </button>
         )}
       </div>
@@ -228,16 +232,12 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
       />
       {!ownerOpen && (
         <p className="home-note">
-          {section.owner.name} is {section.owner.state === "active" ? "not in this project" : section.owner.state}; choose who should get the reply.
+          {t.chooseAskRecipient(section.owner.name, section.owner.state === "active" ? t.askNotInProject : t.askOwnerState(section.owner.state))}
         </p>
       )}
-      {kept && (
-        <p className="home-note">
-          An earlier reply here was not confirmed. Sending the same text again will not deliver it twice.
-        </p>
-      )}
+      {kept && <p className="home-note">{t.notConfirmedHere}</p>}
       {reply.options && reply.options.length > 0 && (
-        <div className="home-ask-options" role="group" aria-label="Reply options">
+        <div className="home-ask-options" role="group" aria-label={t.replyOptions}>
           {reply.options.map((option) => (
             <button
               key={option.id}
@@ -252,7 +252,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
         </div>
       )}
       {reply.choice && (
-        <div className="home-ask-choice" role="group" aria-label="Choose one">
+        <div className="home-ask-choice" role="group" aria-label={t.chooseOne}>
           {(["a", "b"] as const).map((side) => {
             const option = reply.choice![side];
             return (
@@ -265,7 +265,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
                   disabled={disabled || busy}
                   onClick={() => pick(option.id, `I choose: ${option.label}`)}
                 >
-                  Choose {side.toUpperCase()}
+                  {t.choose(side.toUpperCase())}
                 </button>
               </div>
             );
@@ -284,11 +284,11 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
           }}
         />
       ) : form === undefined ? (
-        <p className="home-note">This form can’t be shown here; reply in text instead.</p>
+        <p className="home-note">{t.formUnavailable}</p>
       ) : null}
       {(freeText || form === undefined || (!reply.options?.length && !reply.choice && !form)) && (
         <TextReply
-          label={`Reply to ${section.title}`}
+          label={t.replyField(section.title)}
           placeholder={prompt}
           initial={kept?.text && !kept.choice ? kept.text : ""}
           disabled={disabled}
@@ -296,7 +296,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
           onSend={(text) => deliver(text)}
         />
       )}
-      {busy && <p className="home-note" role="status">Sending…</p>}
+      {busy && <p className="home-note" role="status">{t.sending}</p>}
       {error && <p className="inline-error" role="alert">{error}</p>}
     </div>
   );
@@ -307,6 +307,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
  * user picks which of the project's Agents gets it.
  */
 export function ProjectReply(context: ReplyContext & { projectName: string }) {
+  const t = useStrings(homeText);
   const { send, busy, error, receipt, kept } = useReply(context);
   const [target, setTarget] = useState(kept?.agentId || "");
   const [open, setOpen] = useState(!!kept);
@@ -315,20 +316,16 @@ export function ProjectReply(context: ReplyContext & { projectName: string }) {
     return (
       <button type="button" className="quiet-button home-project-reply-open" onClick={() => setOpen(true)} disabled={context.readOnly}>
         <MessageSquareReply size={13} />
-        Reply to the project…
+        {t.replyToProject}
       </button>
     );
   return (
     <div className="home-project-reply">
       <TargetPicker agents={context.agents} value={target} onChange={setTarget} disabled={context.readOnly || busy} />
-      {kept && (
-        <p className="home-note">
-          An earlier reply was not confirmed. Sending the same text again will not deliver it twice.
-        </p>
-      )}
+      {kept && <p className="home-note">{t.notConfirmed}</p>}
       <TextReply
-        label={`Reply to ${context.projectName}`}
-        placeholder="A message for this project…"
+        label={t.replyField(context.projectName)}
+        placeholder={t.projectMessage}
         initial={kept?.text || ""}
         disabled={context.readOnly || !target}
         busy={busy}
@@ -336,7 +333,7 @@ export function ProjectReply(context: ReplyContext & { projectName: string }) {
       />
       {receipt && !error && (
         <p className="home-note" role="status">
-          Sent to {context.agents.find((a) => a.id === target)?.name || "the Agent"}.
+          {t.sentToAgent(context.agents.find((a) => a.id === target)?.name || t.theAgent)}
         </p>
       )}
       {error && <p className="inline-error" role="alert">{error}</p>}
