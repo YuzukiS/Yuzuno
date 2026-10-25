@@ -102,3 +102,59 @@ test('the materials path is only a suggestion, and creating sends the chosen bra
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
+
+// T-189: the panel follows the interface language, changed in another window.
+async function type(p, input, value) {
+  const w = p.doc.defaultView;
+  Object.getOwnPropertyDescriptor(w.HTMLInputElement.prototype, 'value').set.call(input, value);
+  input.dispatchEvent(new w.Event('input', { bubbles: true }));
+  await wait();
+}
+test('the Workspace panel follows a language change; what is typed, open and selected stays and nothing is asked again (T-189)', async () => {
+  const p = mount({ taskId: 'T-1', materialsWorktree: '/work/other' }, { taskId: 'T-1', repositories: [], workspaces: [workspace] });
+  const w = p.doc.defaultView;
+  const create = () => p.doc.querySelector('.task-workspaces > details');
+  try {
+    await until(() => p.doc.querySelector('.task-workspace-git') && p.doc.querySelector('.task-workspace-suggestion'));
+    await type(p, p.doc.querySelector('[aria-label="Folder to register"]'), '/work/typed 草稿');
+    create().open = true;
+    await until(() => create().open);
+    await type(p, create().querySelectorAll('input')[1], 't-1-zh');
+    button(p, 'Preview cleanup').click();
+    await until(() => p.doc.querySelector('[aria-label="Cleanup candidates"]'));
+    p.doc.querySelectorAll('[aria-label="Cleanup candidates"] input')[0].click();
+    await until(() => !button(p, 'Remove selected').disabled);
+    const before = p.calls.length;
+    w.localStorage.setItem('yuzuno.language', JSON.stringify({ language: 'zh-Hans' }));
+    w.dispatchEvent(new w.StorageEvent('storage', { key: 'yuzuno.language' }));
+    await wait();
+    await wait();
+    const section = p.doc.querySelector('.task-workspaces');
+    assert.equal(section.getAttribute('aria-label'), '工作区');
+    assert.equal(p.doc.querySelector('.task-workspace-path').textContent, '/work/demo-t1 · Core 主机 · 在 t-1 上创建');
+    assert.equal(p.doc.querySelector('.task-workspace-git').textContent, '在 t-1 上 · 01234567 · 1 个已修改，2 个未跟踪 · example/demo');
+    assert.equal(p.doc.querySelector('.task-workspace-users').textContent, '正在使用：Mori（working）、Job build（running） · 此任务的 3 个 Job');
+    for (const label of ['再次检查', '预览清理', '移除登记', '登记它', '登记文件夹', '创建 worktree', '删除所选']) assert.ok(button(p, label), label);
+    const candidates = p.doc.querySelector('[aria-label="清理候选"]');
+    assert.ok(candidates, 'the preview stays');
+    assert.match(candidates.textContent, /target\/debug · 约 3\.0 GiB/);
+    assert.equal(p.doc.querySelector('.task-workspace-kept').textContent, '保留：Cargo is building here now');
+    assert.ok(section.textContent.includes('保留 1 项'));
+    // As written: Core's scope and the reason it keeps a folder.
+    assert.ok(section.textContent.includes('Only Cargo profile output is offered.'));
+    assert.ok(section.textContent.includes('Not recognized as Cargo build output: it may be yours'));
+    assert.ok(candidates.querySelectorAll('input')[0].checked, 'the selection stays');
+    assert.ok(p.doc.querySelector('.task-workspace-suggestion').textContent.startsWith('任务材料中提到了 /work/other（仅供参考）。'));
+    assert.equal(p.doc.querySelector('[aria-label="要登记的文件夹"]').value, '/work/typed 草稿');
+    assert.ok(create().open, 'the create form stays open');
+    assert.equal(create().querySelector('summary').textContent, '创建 worktree…');
+    assert.equal(create().querySelectorAll('input')[1].value, 't-1-zh');
+    // Nothing asked of Core: no listing, preview, cleanup, register, create or forget.
+    assert.deepEqual(p.calls.slice(before).map(c => c.url), []);
+    button(p, '删除所选').click();
+    await until(() => p.doc.querySelector('[aria-label="清理结果"]'));
+    assert.equal(p.doc.querySelector('[aria-label="清理结果"]').textContent, 'target/debug: 已删除');
+    assert.ok(section.textContent.includes('可用空间变化了 3.0 GiB。Freed is the filesystem free space after minus before.'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
