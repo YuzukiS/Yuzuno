@@ -216,6 +216,10 @@ export function GitHubLinks({
   const repoMode = !!projectId;
   // A project's repositories follow `language`; a task's links keep English.
   const t = repoText(repoMode ? language : "en");
+  // Read when an answer arrives, so a language change doesn't restart the
+  // panel's requests or clear what is typed.
+  const unavailable = useRef(t.unavailable);
+  unavailable.current = t.unavailable;
   const managing = repoMode || manage;
   const scopeKey = projectId || taskId || "";
   const operation = repoMode ? "github_repositories" : "github_links";
@@ -242,7 +246,7 @@ export function GitHubLinks({
           signal: controller.signal,
         });
         if (!Array.isArray(value.links) || !Array.isArray(value.repositories))
-          throw new Error(t.unavailable);
+          throw new Error(unavailable.current);
         if (mounted.current && stamp === generation.current) {
           setPage(value);
           setError("");
@@ -260,7 +264,7 @@ export function GitHubLinks({
         controllers.current.delete(controller);
       }
     },
-    [scopeKey, repoMode, t.unavailable],
+    [scopeKey, repoMode],
   );
   useEffect(() => {
     mounted.current = true;

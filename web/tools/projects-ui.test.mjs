@@ -916,3 +916,27 @@ test("a partly failed suggestion and a service read in Chinese, with Core's reas
     page.close();
   }
 });
+
+test("switching the language while a project's repositories are open keeps what is typed and asks GitHub nothing again (T-189 R1)", async () => {
+  const page = await mount({ storage: chinese });
+  try {
+    await fromScopeMenu(page, "管理项目");
+    const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
+    button(page, "App", dialog).click();
+    const panel = await waitFor(() => dialog.querySelector('[aria-label="GitHub 仓库"]'), "the repositories section");
+    await waitFor(() => panel.querySelector('[role="alert"]'), "its first answer (this Core lists no links)");
+    const input = panel.querySelector(".github-link-form input");
+    type(page, input, "owner/repo");
+    const asked = () => page.calls.filter((call) => call.url.includes("/api/collaboration/github_")).length;
+    const before = asked();
+    page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "en" }));
+    page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+    await waitFor(() => dialog.querySelector('[aria-label="GitHub repositories"]'), "the section in English");
+    await pause(100);
+    assert.equal(dialog.querySelector(".github-link-form input").value, "owner/repo", "what was typed stays");
+    assert.equal(asked(), before, "no request is started again");
+  } finally {
+    page.close();
+  }
+});
+
