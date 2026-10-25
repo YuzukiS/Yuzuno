@@ -769,3 +769,57 @@ test("after a run, automatic removal is said apart from its backup, and its oper
     r.close();
   }
 });
+
+test("the Backup page in Chinese (T-189): a run and its cleanup said apart, Core's words as they came; typed folders and a preview kept across a language change, which sends nothing", async () => {
+  const run = {
+    slot: "2026-10-28T03:00:00Z", missed: 1, startedAt: "2026-10-28T03:00:05Z", to: "/backups/daily/yuzuno-backup-20261028T0300Z",
+    operationId: "op9", state: "succeeded", error: null, finishedAt: "2026-10-28T03:01:00Z",
+    cleanup: { state: "failed", keep: 2, folder: "/backups/daily", decidedAt: "2026-10-28T03:01:30Z", operationId: "op10", reason: null,
+      error: "Cannot move yuzuno-backup-20261020T0300Z aside to remove it: Permission denied", result: null, finishedAt: null },
+  };
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/workspace/backup")) return { body: view({ schedule: { ...DAILY, lastRun: run } }) };
+    if (url.endsWith("/api/workspace/backup/retention/preview")) return { body: autoPreview(body.keep, body.budgetBytes) };
+    assert.fail(`unexpected ${method} ${url}`);
+  });
+  // Changed in another window: a storage event, as the browser sends it.
+  const switchTo = (language) => {
+    p.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+    p.window.dispatchEvent(new p.window.StorageEvent("storage", { key: "yuzuno.language" }));
+  };
+  try {
+    const group = (en, zh) => p.doc.querySelector(`[aria-label="${en}"], [aria-label="${zh}"]`);
+    const auto = () => group("Automatic removal", "自动删除");
+    await waitFor(() => auto(), "the page");
+    type(p, "Backup folder", "/backups/by-hand");
+    type(p, "Daily backups to keep", "2");
+    await tick();
+    [...auto().querySelectorAll("button")].find((b) => b.textContent.trim() === "Preview").click();
+    await waitFor(() => /Turn on automatic removal/.test(auto().textContent), "the preview");
+    const sent = p.calls.length;
+
+    switchTo("zh-Hans");
+    await waitFor(() => p.doc.querySelector("#settings-backup h3")?.textContent === "Workspace 备份", "Chinese");
+    const daily = group("Daily backup", "每日备份").textContent;
+    assert.match(daily, /在 \/backups\/daily 中新建一个文件夹。旧备份从不会被删除。/);
+    assert.match(daily, /上次运行（2026-10-28 03:00 UTC）：已备份到 \/backups\/daily\/yuzuno-backup-20261028T0300Z 并已检查。它补做了 1 天错过的备份。/, "the backup's own outcome");
+    assert.match(daily, /本次运行后的旧备份删除失败：Cannot move yuzuno-backup-20261020T0300Z aside to remove it: Permission denied。备份本身如上所述；这一步不会自动重试。/, "its cleanup apart, Core's error as it came");
+    assert.match(auto().textContent, /关闭：旧的每日备份不会被自动删除。受保护或无法判断的备份从不会被删除/);
+    assert.match(auto().textContent, /现在在 \/backups\/daily 中保留最新的 2 个，会保留 2 个、删除 1 个（按其清单声明约 3\.0 GiB）；1 个受保护或无法判断。/, "the preview, kept");
+    assert.match(auto().textContent, /yuzuno-backup-20261020T0300Z · Older than the latest 2/, "Core's reason as it came");
+    assert.ok([...auto().querySelectorAll("button")].some((b) => b.textContent.trim() === "开启自动删除"), "still to confirm");
+    assert.equal(p.doc.querySelector('input[aria-label="备份文件夹"]').value, "/backups/by-hand", "what was typed stays");
+    assert.equal(p.doc.querySelector('input[aria-label="要保留的每日备份数"]').value, "2");
+    assert.equal(p.calls.length, sent, "a language change sends nothing");
+
+    switchTo("en");
+    await waitFor(() => p.doc.querySelector("#settings-backup h3")?.textContent === "Workspace backup", "English again");
+    assert.match(auto().textContent, /would keep 2 and remove 1 \(about 3\.0 GiB as their manifests declare\); 1 protected or can't be judged/);
+    assert.match(group("Daily backup", "每日备份").textContent, /Removing old backups after this run failed: Cannot move/);
+    assert.equal(p.doc.querySelector('input[aria-label="Backup folder"]').value, "/backups/by-hand");
+    assert.equal(p.calls.length, sent, "nor does changing back");
+    assert.equal(p.posts().filter((c) => !c.url.endsWith("/retention/preview")).length, 0, "nothing started or saved");
+  } finally {
+    p.close();
+  }
+});
