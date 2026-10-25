@@ -46,6 +46,6 @@ export const entriesZh: Record<string, EntryText> = {
   backup: { title: "Workspace 备份与恢复", scope: "Workspace 服务 · 其电脑上的一个文件夹", source: "此 Core 制作的备份：数据库、图片副本、Brief 附件、已完成的审查和 Job 文件夹，并附一份未包含内容的清单。更新恢复用的数据库副本不是它。", effect: "在 Core 运行且没有 Job 运行时备份；只恢复到新的或空的文件夹。原生会话与 CLI 账户从不在备份中。" },
   drafts: { title: "草稿存储", scope: "此设备 · 此站点", source: "由此浏览器或 WebView 保存的草稿，每个 Agent ID 一份；不记录草稿是在哪个 Workspace 中写的。粘贴的文本单独保存，只在你选择的草稿中打开。", effect: "显示草稿或把它保存为文本文件不会更改任何内容；图片只计数，不会保存。草稿只在此设备上，不跨设备同步。" },
   updates: { title: "版本与更新", scope: "Workspace 服务 · 桌面客户端", source: "已安装的 Core 与客户端版本，以及可用的已签名发布。", effect: "检查不会安装任何内容。服务更新与桌面更新是分开的操作。" },
-  runtime: { title: "运行环境与版本", scope: "Workspace 服务 · 每台执行机器 · 此客户端", source: "Core 的版本、每台机器保存的最近一次检查、Core 当前持有的 Core 主机上 Codex 的连接、Core 主机的 Job 预算、每个 Agent 最近一次的 MCP 报告，以及此客户端自己的版本。", effect: "只读。检查在“机器”中进行；这里不会登录、重连或更新。读取 Job 预算可能让 Core 采样 GPU；MCP 的“刷新”会询问一个 Claude Code 会话；“检查模型”会在 Core 主机上进行“新建 Agent”对话框的目录读取。" },
+  runtime: { title: "运行环境与版本", scope: "Workspace 服务 · 每台执行机器 · 此客户端", source: "Core 的版本、每台机器保存的最近一次检查、Core 当前持有的 Core 主机上 Codex 的连接、Core 主机的 Job 预算、其 Claude bridge 使用的 Claude Agent SDK、每个 Agent 最近一次的 MCP 报告，以及此客户端自己的版本。", effect: "只读。检查在“机器”中进行；这里不会登录、重连或更新。读取 Job 预算可能让 Core 采样 GPU；MCP 的“刷新”会询问一个 Claude Code 会话；“检查模型”会在 Core 主机上进行“新建 Agent”对话框的目录读取。" },
   about: { title: "关于与帮助", scope: "Workspace 服务 · 此页面", source: "Workspace 服务所运行发布中的说明、随此页面提供的许可证文本，以及项目在 GitHub 上的页面。", effect: "只读。链接会在 Yuzuno 之外打开 GitHub；这里不会发送任何内容。" },
 };
