@@ -475,7 +475,7 @@ export function CollaborationBoard({
   /** The window's project; the board starts there each time it opens. */
   scope?: ProjectScope;
   /** A link to one task, optionally to one of its reviews. */
-  focus?: { taskId: string; reviewId?: string; at: number } | null;
+  focus?: { taskId: string; reviewId?: string; section?: "workspaces"; at: number } | null;
 }) {
   const [tab, setTab] = useState<"tasks" | "messages">("tasks");
   const [page, setPage] = useState<TaskPage | null>(null);
@@ -554,6 +554,7 @@ export function CollaborationBoard({
   const [reviewFocus, setReviewFocus] = useState<{
     taskId: string;
     reviewId?: string;
+    section?: "workspaces";
   } | null>(null);
   useEffect(() => {
     if (!focus) return;
@@ -1038,6 +1039,7 @@ export function CollaborationBoard({
                       ? reviewFocus.reviewId
                       : undefined
                   }
+                  focusWorkspaces={reviewFocus?.taskId === selected && reviewFocus.section === "workspaces"}
                 />
               )
             )}
@@ -1186,6 +1188,7 @@ function TaskPane({
   onSaved,
   onOpenAgent,
   reviewId,
+  focusWorkspaces = false,
 }: {
   id: string;
   agents: Agent[];
@@ -1196,6 +1199,8 @@ function TaskPane({
   onOpenAgent: (id: string, turnId?: string) => void;
   /** Open this review's report among the task's PR reviews. */
   reviewId?: string;
+  /** Opened at its Workspace section (from Data & storage, T-193). */
+  focusWorkspaces?: boolean;
 }) {
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [draft, setDraft] = useState<TaskDraft | null>(null);
@@ -1920,7 +1925,7 @@ function TaskPane({
               manage={managing}
             />
           </section>
-          <TaskWorkspaces key={`workspaces-${task.id}`} taskId={task.id} materialsWorktree={task.materials?.worktree} />
+          <TaskWorkspaces key={`workspaces-${task.id}`} taskId={task.id} materialsWorktree={task.materials?.worktree} focused={focusWorkspaces} />
           {!!detail.executions?.length && (
             <section className="collab-section">
               <h4>Related conversations</h4>
