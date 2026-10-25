@@ -51,7 +51,7 @@ async function until(read, what) {
 
 /** The editor in a page whose browser has `permission` (or no API), answering
  * a request with `answer` and showing notifications as `shows`. */
-async function mount({ permission = "default", answer = "granted", shows = "show", api = true, query = "", storage = "works" } = {}) {
+async function mount({ permission = "default", answer = "granted", shows = "show", api = true, query = "", storage = "works", shell } = {}) {
   const errors = [];
   const vc = new VirtualConsole();
   vc.on("jsdomError", (e) => errors.push(e.message));
@@ -62,7 +62,7 @@ async function mount({ permission = "default", answer = "granted", shows = "show
     virtualConsole: vc,
   });
   const { window } = dom;
-  const page = { dom, window, doc: window.document, errors, requests: [], asked: 0, shown: [], scrolls: 0 };
+  const page = { dom, window, doc: window.document, errors, requests: [], asked: 0, shown: [], scrolls: 0, invoked: [] };
   window.fetch = (url) => {
     page.requests.push(String(url));
     return Promise.reject(new Error("no request expected"));
@@ -88,6 +88,25 @@ async function mount({ permission = "default", answer = "granted", shows = "show
     }
   }
   if (api) window.Notification = Recorder;
+  // The desktop app's command bridge (T-188): what it says it can do here,
+  // and what it does with a notification handed to it.
+  if (shell) {
+    window.__TAURI_INTERNALS__ = {};
+    window.__TAURI__ = {
+      core: {
+        invoke: async (command, args) => {
+          page.invoked.push(args === undefined ? [command] : [command, args]);
+          if (command === "desktop_notifications") {
+            if (shell.answer === "missing") throw "Command desktop_notifications not found";
+            return shell.answer;
+          }
+          if (command === "desktop_notify" && shell.notify === "refused") throw "The system didn't take the notification: fixture";
+          if (command === "desktop_notify") return null;
+          throw `unexpected ${command}`;
+        },
+      },
+    };
+  }
   if (storage === "blocked") {
     const set = window.Storage.prototype.setItem;
     window.Storage.prototype.setItem = function (key, value) {
@@ -145,7 +164,7 @@ test("blocked or not available: said why, with nothing to switch on", async () =
   for (const [options, label] of [
     [{ permission: "denied" }, /Blocked.*site’s notification permission/],
     [{ api: false }, /Not available in this browser.*no notifications for web pages/],
-    [{ permission: "granted", query: "?shell=desktop" }, /Not available in this app.*desktop and iPhone apps/],
+    [{ permission: "granted", query: "?shell=desktop" }, /Not available in this app.*the iPhone app, the desktop app on macOS or Linux, and older desktop apps/],
   ]) {
     const page = await mount(options);
     assert.match(page.text(), label, JSON.stringify(options));
@@ -230,4 +249,45 @@ test("storage that refuses the save says so, each time; the choice applies in th
   page.box("Mute on this device").click();
   await until(() => page.scrolls > first, "the second refusal brought into view");
   page.close();
+});
+
+// T-188: in the desktop app on Windows, notifications go through the app, which
+// hands them to Windows and can't read whether Windows shows them.
+test("in the desktop app that can notify, it says so: nothing is asked, a test is handed to Windows and said to be only that", async () => {
+  const page = await mount({ permission: "granted", shell: { answer: { supported: true, system: "windows" } } });
+  await until(() => /Through this app/.test(page.text()), "the app's answer");
+  assert.match(page.text(), /System notifications\s*Through this app/);
+  assert.match(page.text(), /hands notifications to Windows\. Whether Windows shows them is up to its notification settings and Focus, which this app can’t read\./);
+  assert.doesNotMatch(page.text(), /Allowed/, "never said to be allowed by the system");
+  assert.equal(page.box("Notify me on this device").checked, false, "off until turned on");
+  assert.deepEqual(page.invoked, [["desktop_notifications"]], "opening Settings only asks the app what it can do");
+  page.box("Notify me on this device").click();
+  await until(() => page.saved()?.enabled === true, "the choice saved");
+  assert.equal(page.asked, 0, "the browser is never asked");
+  assert.deepEqual(page.invoked, [["desktop_notifications"]], "turning it on sends nothing");
+  page.button("Send a test").click();
+  await until(() => page.doc.querySelector(".notification-test-result"), "a result");
+  assert.match(page.doc.querySelector(".notification-test-result").textContent, /^Handed to Windows\. Windows doesn’t tell this app whether it showed it/);
+  assert.deepEqual(page.invoked.slice(1), [["desktop_notify", { title: "Yuzuno", body: "A test notification from your Workspace." }]], "one, to the app");
+  assert.deepEqual(page.shown, [], "not through the webview's own Notification");
+  page.close();
+});
+
+test("in the desktop app a refused hand-off says so; an app that can't notify here, or an older one, is not available", async () => {
+  const refused = await mount({ shell: { answer: { supported: true, system: "windows" }, notify: "refused" } });
+  await until(() => !!refused.button("Send a test"), "the test");
+  refused.button("Send a test").click();
+  await until(() => refused.doc.querySelector(".notification-test-result"), "a result");
+  assert.match(refused.doc.querySelector(".notification-test-result").textContent, /^This app couldn’t hand it to Windows: The system didn't take the notification: fixture$/);
+  refused.close();
+  for (const answer of [{ supported: false, system: null }, "missing"]) {
+    const page = await mount({ permission: "granted", shell: { answer } });
+    await until(() => page.invoked.length > 0, "the app asked");
+    await tick();
+    assert.match(page.text(), /Not available in this app/, JSON.stringify(answer));
+    assert.equal(page.hasBox("Notify me on this device"), false);
+    assert.equal(page.hasButton("Send a test"), false);
+    assert.deepEqual(page.invoked, [["desktop_notifications"]]);
+    page.close();
+  }
 });

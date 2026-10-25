@@ -32,6 +32,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["macros", "sync", "time"] }
 url = "2.5"
 tauri-plugin-opener = "2"
+# System notifications (T-188): its Rust API only, through notify.rs.
+tauri-plugin-notification = "=2.7.0"
 
 [target.'cfg(windows)'.dependencies]
 # Microsoft's maintained Win32 bindings; keep native caption behavior intact.

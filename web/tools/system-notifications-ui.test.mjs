@@ -47,7 +47,7 @@ window.read = (workspaceId, agents, asks = null) => root.render(<Probe workspace
 const tick = () => new Promise((resolve) => setTimeout(resolve, 25));
 
 /** A page whose system allows `permission`, with this device's saved choices. */
-function mount({ permission = "granted", saved = { enabled: true }, looking = false } = {}) {
+function mount({ permission = "granted", saved = { enabled: true }, looking = false, shell } = {}) {
   const errors = [];
   const vc = new VirtualConsole();
   vc.on("jsdomError", (e) => errors.push(e.message));
@@ -57,7 +57,7 @@ function mount({ permission = "granted", saved = { enabled: true }, looking = fa
     pretendToBeVisual: true,
     virtualConsole: vc,
   });
-  const page = { dom, errors, requests: [], asked: 0, shown: [], looking };
+  const page = { dom, errors, requests: [], asked: 0, shown: [], looking, invoked: [] };
   const { window } = dom;
   window.fetch = (url) => {
     page.requests.push(String(url));
@@ -81,6 +81,20 @@ function mount({ permission = "granted", saved = { enabled: true }, looking = fa
   }
   window.Notification = Recorder;
   window.focus = () => {};
+  // The desktop app's command bridge (T-188), as in notification-settings-ui.
+  if (shell) {
+    window.__TAURI_INTERNALS__ = {};
+    window.__TAURI__ = {
+      core: {
+        invoke: async (command, args) => {
+          page.invoked.push(args === undefined ? [command] : [command, args]);
+          if (command === "desktop_notifications") return shell.answer;
+          if (command === "desktop_notify") return null;
+          throw `unexpected ${command}`;
+        },
+      },
+    };
+  }
   if (saved) window.localStorage.setItem("yuzuno.notifications", JSON.stringify(saved));
   window.eval(bundle);
   page.read = async (agents, asks = null, workspaceId = "ws-1") => {
@@ -174,4 +188,25 @@ test("another Workspace starts afresh: its first read is no change", async () =>
   await page.read([result("a")], null, "ws-2");
   assert.deepEqual(page.shown, []);
   page.close();
+});
+
+// T-188: the desktop app that can notify here takes them instead of the webview.
+test("in the desktop app that can notify, a change read while away is handed to the app, not the webview; off, muted or an app that can't stays silent", async () => {
+  const windows = { supported: true, system: "windows" };
+  const page = mount({ shell: { answer: windows } });
+  await page.read([agent("a", { status: "working" })]);
+  await page.read([result("a")]);
+  assert.deepEqual(page.invoked, [["desktop_notifications"], ["desktop_notify", { title: "Mori finished", body: "The Turn finished." }]]);
+  assert.deepEqual(page.shown, [], "not through the webview's own Notification");
+  await page.read([result("a")]);
+  assert.equal(page.invoked.length, 2, "the same state read again: nothing more");
+  page.close();
+  for (const options of [{ saved: null, shell: { answer: windows } }, { saved: { enabled: true, muted: true }, shell: { answer: windows } }, { shell: { answer: { supported: false, system: null } } }]) {
+    const other = mount(options);
+    await other.read([agent("a", { status: "working" })]);
+    await other.read([result("a")]);
+    assert.deepEqual(other.invoked, [["desktop_notifications"]], JSON.stringify(options));
+    assert.deepEqual(other.shown, []);
+    other.close();
+  }
 });

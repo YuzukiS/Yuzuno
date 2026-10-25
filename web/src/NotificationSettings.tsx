@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { isNative } from "./api";
+import { useDesktopNotifier } from "./desktop-notifier";
 import {
   browserHost,
   notificationAccess,
+  reachesSystem,
   requestNotificationAccess,
   showSystemNotification,
   type NotificationAccess,
@@ -45,17 +47,26 @@ const text = strings({
       label: "Blocked",
       help: "This browser blocks notifications from this site. To allow them, change this site’s notification permission in the browser’s site settings, then come back here.",
     },
-    app: { label: "Not available in this app", help: "The desktop and iPhone apps can’t show system notifications yet. Yuzuno in a browser can." },
+    "through-app": {
+      label: "Through this app",
+      help: "This app hands notifications to Windows. Whether Windows shows them is up to its notification settings and Focus, which this app can’t read.",
+    },
+    app: {
+      label: "Not available in this app",
+      help: "This app can’t show system notifications here yet: the iPhone app, the desktop app on macOS or Linux, and older desktop apps. Yuzuno in a browser can.",
+    },
     insecure: {
       label: "Not available on this page",
       help: "Browsers notify only from a secure page: an https:// address, or localhost. This page’s address isn’t one.",
     },
     "page-only": { label: "Not available in this browser", help: "This browser shows notifications only through a service worker, which Yuzuno doesn’t use." },
     "no-api": { label: "Not available in this browser", help: "This browser has no notifications for web pages." },
-  } as Record<"allowed" | "not-requested" | "denied" | "app" | "insecure" | "page-only" | "no-api", Access>,
+  } as Record<"allowed" | "not-requested" | "denied" | "through-app" | "app" | "insecure" | "page-only" | "no-api", Access>,
   shown: "Your browser reports it was shown. If you didn’t see it, your system may be holding notifications back (Focus or Do Not Disturb).",
+  handed: "Handed to Windows. Windows doesn’t tell this app whether it showed it: if you didn’t see it, check Windows notification settings and Focus.",
   unconfirmed: "Sent, but your browser didn’t report it as shown within 5 seconds.",
   failed: (message: string) => `Your browser couldn’t show it: ${message}`,
+  failedApp: (message: string) => `This app couldn’t hand it to Windows: ${message}`,
   refused: (help: string) => `Not sent. ${help}`,
   off: "Off",
   muted: "Muted",
@@ -66,6 +77,7 @@ const text = strings({
     "System notifications on this device, while Yuzuno is open in a tab or window you aren’t looking at. Each device and browser has its own choices and its own permission.",
   current: "In effect now",
   permission: "This browser’s permission",
+  systemRow: "System notifications",
   notify: "Notify me on this device",
   asksFirst: "Turning this on asks this browser for permission first.",
   chosenOnly: "Only for what you choose below.",
@@ -76,6 +88,7 @@ const text = strings({
   muteHelp: "Keeps your choices. Agents, their mail and the Workspace are unchanged.",
   test: "Test notification",
   testHelp: "Sends one now, even while you’re looking, and shows what your browser reported.",
+  testHelpApp: "Sends one now, even while you’re looking. This app can tell only whether Windows took it.",
   sendTest: "Send a test",
   inside: "Inside Yuzuno",
   insideHelp:
@@ -99,14 +112,23 @@ const text = strings({
       label: "已阻止",
       help: "此浏览器阻止了此网站的通知。如需允许，请在浏览器的网站设置中更改此网站的通知权限，然后回到这里。",
     },
-    app: { label: "此应用中不可用", help: "桌面和 iPhone 应用暂时还不能显示系统通知。在浏览器中使用 Yuzuno 可以。" },
+    "through-app": {
+      label: "通过此应用",
+      help: "此应用会把通知交给 Windows。Windows 是否显示，取决于它的通知设置和专注模式，此应用无法读取。",
+    },
+    app: {
+      label: "此应用中不可用",
+      help: "此应用在这里暂时还不能显示系统通知：iPhone 应用、macOS 或 Linux 上的桌面应用，以及较旧的桌面应用。在浏览器中使用 Yuzuno 可以。",
+    },
     insecure: { label: "此页面不可用", help: "浏览器只会从安全页面发出通知：https:// 地址或 localhost。此页面的地址都不是。" },
     "page-only": { label: "此浏览器不可用", help: "此浏览器只通过 service worker 显示通知，而 Yuzuno 不使用 service worker。" },
     "no-api": { label: "此浏览器不可用", help: "此浏览器没有面向网页的通知。" },
   },
   shown: "你的浏览器报告已显示。如果你没有看到，可能是系统暂时拦下了通知（专注模式或勿扰模式）。",
+  handed: "已交给 Windows。Windows 不会告诉此应用是否显示了它：如果你没有看到，请检查 Windows 的通知设置和专注模式。",
   unconfirmed: "已发送，但你的浏览器在 5 秒内没有报告已显示。",
   failed: (message) => `你的浏览器无法显示它：${message}`,
+  failedApp: (message) => `此应用无法把它交给 Windows：${message}`,
   refused: (help) => `未发送。${help}`,
   off: "关闭",
   muted: "已静音",
@@ -116,6 +138,7 @@ const text = strings({
   intro: "当 Yuzuno 在某个标签页或窗口中打开、而你没有在看它时，此设备上的系统通知。每台设备和每个浏览器都有自己的选择和自己的权限。",
   current: "当前生效",
   permission: "此浏览器的权限",
+  systemRow: "系统通知",
   notify: "在此设备上通知我",
   asksFirst: "开启时会先向此浏览器请求权限。",
   chosenOnly: "只通知你在下方选择的内容。",
@@ -126,6 +149,7 @@ const text = strings({
   muteHelp: "保留你的选择。Agent、它们的邮件和 Workspace 都不受影响。",
   test: "测试通知",
   testHelp: "立即发送一条，即使你正在看也会发送，并显示你的浏览器报告的结果。",
+  testHelpApp: "立即发送一条，即使你正在看也会发送。此应用只能知道 Windows 是否接收了它。",
   sendTest: "发送测试",
   inside: "Yuzuno 内",
   insideHelp: "无论你在这里如何选择，“需要你处理”和未读动态始终在 Workspace 中显示。Agent 之间的消息是它们自己的邮件，不是给你的通知。",
@@ -138,15 +162,17 @@ export function accessText(access: NotificationAccess, language: Language = "en"
   return text(language).access[access.state === "unsupported" ? access.reason : access.state];
 }
 
-const testText = (result: TestOutcome, language: Language) => {
+const testText = (result: TestOutcome, language: Language, throughApp: boolean) => {
   const t = text(language);
   switch (result.outcome) {
     case "shown":
       return t.shown;
+    case "handed":
+      return t.handed;
     case "unconfirmed":
       return t.unconfirmed;
     case "failed":
-      return t.failed(result.message);
+      return (throughApp ? t.failedApp : t.failed)(result.message);
     case "refused":
       return t.refused(accessText(result.access, language).help);
   }
@@ -155,9 +181,12 @@ const testText = (result: TestOutcome, language: Language) => {
 /** What this browser allows now, read again when this window comes back
  * (the user may have changed it in the browser's settings meanwhile). */
 function useNotificationAccess() {
-  const read = useCallback(() => notificationAccess(browserHost(isNative)), []);
+  // In the desktop app, whether it can notify on this system (T-188).
+  const desktop = useDesktopNotifier();
+  const read = useCallback(() => notificationAccess(browserHost(isNative, desktop)), [desktop]);
   const [access, setAccess] = useState(read);
   useEffect(() => {
+    setAccess(read());
     const again = () => setAccess(read());
     window.addEventListener("focus", again);
     document.addEventListener("visibilitychange", again);
@@ -166,7 +195,7 @@ function useNotificationAccess() {
       document.removeEventListener("visibilitychange", again);
     };
   }, [read]);
-  return [access, setAccess] as const;
+  return [access, setAccess, desktop] as const;
 }
 
 /**
@@ -180,10 +209,11 @@ export function NotificationSettings() {
   const t = text(language);
   const prefs = useNotificationPrefs();
   const write = useNotificationPrefsWrite();
-  const [access, setAccess] = useNotificationAccess();
+  const [access, setAccess, desktop] = useNotificationAccess();
   const [asking, setAsking] = useState(false);
   const [test, setTest] = useState<TestOutcome | null>(null);
-  const usable = access.state === "allowed" || access.state === "not-requested";
+  const usable = reachesSystem(access) || access.state === "not-requested";
+  const throughApp = access.state === "through-app";
   const save = (next: Partial<NotificationPrefs>) => changeNotificationPrefs((now) => ({ ...now, ...next }));
   /** Asks the browser, from this click, when it has not been asked. */
   const ask = async () => {
@@ -198,15 +228,15 @@ export function NotificationSettings() {
     }
   };
   const turn = async (on: boolean) => {
-    if (on && (await ask()).state !== "allowed") return;
+    if (on && !reachesSystem(await ask())) return;
     save({ enabled: on });
   };
   const sendTest = async () => {
     setTest(null);
     const allowed = await ask();
-    const host = browserHost(isNative);
+    const host = browserHost(isNative, desktop);
     const result =
-      allowed.state === "allowed"
+      reachesSystem(allowed)
         ? await showSystemNotification("Yuzuno", { body: "A test notification from your Workspace.", tag: "yuzuno:test" }, host)
         : ({ outcome: "refused", access: allowed } as const);
     // A browser can turn out to refuse a page's notifications only now.
@@ -230,7 +260,7 @@ export function NotificationSettings() {
         <div className="settings-row">
           <span className="settings-row-main">
             <span className="settings-row-title">
-              {t.permission} <span className="notification-access" data-state={access.state}>{state.label}</span>
+              {throughApp ? t.systemRow : t.permission} <span className="notification-access" data-state={access.state}>{state.label}</span>
             </span>
             <span className="settings-row-help">{state.help}</span>
           </span>
@@ -241,7 +271,7 @@ export function NotificationSettings() {
               <span className="settings-row-title">{t.notify}</span>
               <span className="settings-row-help">{access.state === "not-requested" ? t.asksFirst : t.chosenOnly}</span>
             </span>
-            <input type="checkbox" checked={prefs.enabled && access.state === "allowed"} disabled={asking} onChange={(event) => void turn(event.target.checked)} />
+            <input type="checkbox" checked={prefs.enabled && reachesSystem(access)} disabled={asking} onChange={(event) => void turn(event.target.checked)} />
           </label>
         )}
       </div>
@@ -284,10 +314,10 @@ export function NotificationSettings() {
           <div className="settings-row">
             <span className="settings-row-main">
               <span className="settings-row-title">{t.test}</span>
-              <span className="settings-row-help">{t.testHelp}</span>
+              <span className="settings-row-help">{throughApp ? t.testHelpApp : t.testHelp}</span>
               {test && (
                 <span className="settings-row-help notification-test-result" role="status" data-outcome={test.outcome}>
-                  {testText(test, language)}
+                  {testText(test, language, throughApp)}
                 </span>
               )}
             </span>

@@ -4,6 +4,8 @@
 mod chrome;
 mod connection;
 mod health;
+mod notification_text;
+mod notify;
 mod update;
 
 use connection::{
@@ -350,6 +352,21 @@ async fn open_core(
                 .permission("allow-desktop-update-install"),
             )
             .map_err(|e| format!("Could not enable desktop updates: {e}"))?;
+        // System notifications, likewise from the selected workspace only
+        // (T-188): this app's two commands, never the plugin's own.
+        window
+            .add_capability(
+                CapabilityBuilder::new(format!(
+                    "desktop-notifications-{}",
+                    core.origin().ascii_serialization()
+                ))
+                .local(false)
+                .webview("main")
+                .remote(format!("{}/*", core.origin().ascii_serialization()))
+                .permission("allow-desktop-notifications")
+                .permission("allow-desktop-notify"),
+            )
+            .map_err(|e| format!("Could not enable system notifications: {e}"))?;
         updates.forget();
     }
     *selected = Some(core.clone());
@@ -585,7 +602,10 @@ fn main() {
         .expect("Unable to create the Core connection client");
 
     let context = tauri::generate_context!();
-    let builder = tauri::Builder::default().plugin(opener_plugin());
+    let builder = tauri::Builder::default()
+        .plugin(opener_plugin())
+        // System notifications through the app's own commands only (T-188).
+        .plugin(notify::plugin());
     // Updates are verified against plugins > updater > pubkey. No updater
     // command is granted to any page; the app's own commands use it. A build
     // without that key (such as the Mac app's) cannot start the updater, so it
@@ -612,7 +632,9 @@ fn main() {
             set_appearance,
             update::desktop_update_status,
             update::desktop_update_check,
-            update::desktop_update_install
+            update::desktop_update_install,
+            notify::desktop_notifications,
+            notify::desktop_notify
         ])
         .setup(move |app| {
             // An update's installer restarts this app with its launch

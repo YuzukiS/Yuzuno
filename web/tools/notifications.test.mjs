@@ -175,6 +175,37 @@ test("a kind is shown only when chosen, not muted and allowed: the choice alone 
   assert.equal(prefs.notifies(prefs.defaultNotificationPrefs, { state: "allowed" }, "failed"), false);
 });
 
+// T-188: the desktop app that can notify here hands them to the system itself.
+test("in the desktop app that can notify, they go through it: not 'allowed', nothing to ask, a notification only handed on", async () => {
+  const handed = [];
+  const desktop = { notify: async (title, body) => void handed.push({ title, body }) };
+  const { api } = fakeNotifications({ permission: "granted" });
+  const app = host(api, { native: true, desktop });
+  assert.deepEqual(access.notificationAccess(app), { state: "through-app" });
+  assert.deepEqual(await access.requestNotificationAccess(app), { state: "through-app" }, "nothing is asked");
+  const on = { ...prefs.defaultNotificationPrefs, enabled: true };
+  assert.equal(prefs.notifies(on, { state: "through-app" }, "failed"), true);
+  assert.equal(prefs.notifies({ ...on, muted: true }, { state: "through-app" }, "failed"), false);
+  assert.equal(prefs.notifies(prefs.defaultNotificationPrefs, { state: "through-app" }, "failed"), false, "the choice is still needed");
+  assert.deepEqual(await access.showSystemNotification("Hana finished", { body: "The Turn finished.", tag: "yuzuno:finished:b" }, app), { outcome: "handed" });
+  assert.deepEqual(handed, [{ title: "Hana finished", body: "The Turn finished." }]);
+  const refusing = host(api, { native: true, desktop: { notify: async () => { throw "The system didn't take the notification: fixture"; } } });
+  assert.deepEqual(await access.showSystemNotification("Yuzuno", {}, refusing), { outcome: "failed", message: "The system didn't take the notification: fixture" });
+  // Without the app's word, as in an older app: not available.
+  assert.deepEqual(access.notificationAccess(host(api, { native: true, desktop: null })), { state: "unsupported", reason: "app" });
+});
+
+test("text for the desktop app fits its bounds by characters, with no control characters but a body's line breaks", () => {
+  assert.equal(access.desktopText("Hana finished", access.DESKTOP_TITLE_MAX), "Hana finished");
+  const long = "界".repeat(130);
+  const title = access.desktopText(long, access.DESKTOP_TITLE_MAX);
+  assert.equal(Array.from(title).length, access.DESKTOP_TITLE_MAX);
+  assert.equal(title.endsWith("…"), true);
+  assert.equal(access.desktopText("two\nlines\u001b[31m", 120), "two lines [31m");
+  assert.equal(access.desktopText("Asked:\nwhich branch?\r", 400, true), "Asked:\nwhich branch? ");
+  assert.equal(Array.from(access.desktopText("😀".repeat(500), access.DESKTOP_BODY_MAX, true)).length, access.DESKTOP_BODY_MAX);
+});
+
 const agent = (id, extra = {}) => ({ id, name: { a: "Mori", b: "Hana", c: "Sora", d: "Yuki" }[id], status: "idle", pendingCount: 0, closedAt: null, workSummary: null, ...extra });
 const said = (kind, text) => ({ kind, text, source: "agent" });
 
