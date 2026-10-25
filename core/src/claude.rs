@@ -684,7 +684,7 @@ impl Workspace {
             error: None,
             remote: machine.map(RemoteAgent::new),
             connection_state: "disconnected".into(),
-            closed_at: None, disconnected_at: None,
+            closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
         };
         let detail = AgentDetail {
             agent: agent.clone(),
@@ -897,6 +897,12 @@ impl Workspace {
     /// host found or started (refused while an earlier turn still runs there
     /// without Yuzuno), and SSH joined to that host.
     async fn claude_remote_bridge(&self, machine: &RemoteMachine, id: &str, events: crate::backlog::EventSender) -> Result<(Arc<Bridge>, Option<String>)> {
+        #[cfg(test)]
+        if let Some((_, argv)) = REMOTE_ATTACH.lock().unwrap().iter().find(|(machine_id, _)| *machine_id == machine.id).cloned() {
+            let mut command = Command::new(&argv[0]);
+            command.args(&argv[1..]);
+            return Ok((Bridge::spawn_command(events, command)?, Some("test-host".into())));
+        }
         let (digest, _tools) = claude_remote_install(machine).await?;
         let workspace = self.stored(|store| store.workspace_id()).await?;
         let host = crate::remote::claude_ensure(machine, &workspace, id, &digest).await?;
@@ -3284,6 +3290,12 @@ fn end_native_turns(d: &mut AgentDetail, ended: &str) {
 /// holds this until it ends (restoring them first).
 #[cfg(test)]
 pub(crate) static BRIDGE_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Library tests stand in for SSH and a machine's Claude host: a machine ID
+/// listed here runs its command in place of installing, starting and
+/// attaching to the host there (claude_remote_bridge).
+#[cfg(test)]
+pub(crate) static REMOTE_ATTACH: std::sync::Mutex<Vec<(String, Vec<String>)>> = std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]
 mod tests {

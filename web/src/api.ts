@@ -97,8 +97,10 @@ export function reconnectAgent(id: string): Promise<unknown> {
   return shared(`reconnect:${id}`, () => post<unknown>(`/agents/${encodeURIComponent(id)}/reconnect?view=summary`));
 }
 /** Disconnects an idle Agent as the user asked (T-184): its native session
- * stops and stays stopped until they reconnect it. Core refuses, saying why,
- * when it can't confirm the Agent is idle; nothing changes then. */
+ * stops, and nothing starts it until they reconnect it. Core refuses, saying
+ * why, when it can't confirm the Agent is idle; nothing changes then. When an
+ * SSH machine can't confirm the stop, this fails, and the Agent is held as
+ * disconnected all the same (disconnectUnconfirmed). */
 export function disconnectAgent(id: string): Promise<unknown> {
   return shared(`disconnect:${id}`, () => post<unknown>(`/agents/${encodeURIComponent(id)}/disconnect`));
 }
