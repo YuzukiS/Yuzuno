@@ -438,6 +438,243 @@ test('renaming and removing change this iPhone only, and removing asks first', a
   } finally { dom.window.close(); }
 });
 
+const withRemembered = {
+  ...two,
+  remembered: [{ url: 'https://gone.example.ts.net/', workspaceId: 'w-three' }],
+};
+
+test('an address with no workspace saved is shown as remembered, and forgetting it says what stays', async () => {
+  const calls = [];
+  let asked = '';
+  let record = withRemembered;
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'saved_cores') return record;
+    if (command === 'forget_address') {
+      record = { ...withRemembered, remembered: [] };
+      return record;
+    }
+  });
+  try {
+    const document = dom.window.document;
+    const section = document.querySelector('#remembered');
+    assert.equal(section.hidden, false, 'the reason a connection there is refused is visible');
+    const item = document.querySelector('#remembered-list li');
+    assert.match(item.textContent, /gone\.example\.ts\.net/);
+    assert.match(item.textContent, /w-three was here/);
+    // It is not one of the saved Workspaces: nothing offers to open it.
+    assert.equal(document.querySelectorAll('#saved-list li').length, 2);
+    assert.equal(item.querySelector('.saved-open'), null, 'no way to open an address nothing is saved at');
+
+    dom.window.confirm = (text) => {
+      asked = text;
+      return true;
+    };
+    item.querySelector('.saved-forget').click();
+    await settle();
+
+    // What it asks has to be what it does: the stored data stays, another
+    // workspace here may read it, and a separate address is the real remedy.
+    assert.match(asked, /stored for this address stays/i);
+    assert.match(asked, /drafts, reading places and signed-in state are still there/i);
+    assert.match(asked, /may read them/i);
+    assert.match(asked, /does not delete them/i);
+    assert.match(asked, /does not connect to anything/i);
+    assert.match(asked, /address of its own/i);
+    // It must never be dressed up as clearing or resetting the data.
+    assert.doesNotMatch(asked, /clears? (your|the) data|delete the drafts|reset|wipe/i);
+
+    assert.equal(calls.at(-1).command, 'forget_address');
+    assert.equal(calls.at(-1).args.url, 'https://gone.example.ts.net/');
+    assert.equal(document.querySelector('#remembered').hidden, true, 'it is no longer remembered');
+    assert.match(
+      document.querySelector('[role="status"]').textContent,
+      /no longer remembers which workspace was at .*gone.*still there/,
+    );
+  } finally { dom.window.close(); }
+});
+
+test('with nothing saved but an address remembered, the page asks for an address', async () => {
+  // The record holds something, so this is not a first launch -- but there
+  // is nothing to open either. It must not say "Your last workspace. Open
+  // it", which is what every state 'saved' used to say.
+  const dom = await mount(async (command) => {
+    if (command === 'saved_cores')
+      return { state: 'saved', selected: null, profiles: [], remembered: [{ url: 'https://gone.example.ts.net/', workspaceId: 'w-three' }] };
+  });
+  try {
+    const document = dom.window.document;
+    const status = document.querySelector('[role="status"]');
+    assert.match(status.textContent, /Enter your workspace address/);
+    assert.doesNotMatch(status.textContent, /Your last workspace|Choose a workspace to open/);
+    // Nothing is listed to open, and the remembered address is shown, so a
+    // refusal there has a visible cause.
+    assert.equal(document.querySelectorAll('#saved-list li').length, 0);
+    assert.equal(document.querySelector('#remembered').hidden, false);
+    assert.match(document.querySelector('#remembered-list li').textContent, /w-three was here/);
+  } finally { dom.window.close(); }
+});
+
+// Two labels at one address recording different workspaces, plus an
+// independent one. This is a record the build before the fix could write.
+const disputedSaved = {
+  state: 'saved',
+  selected: 'core-1',
+  profiles: [
+    { id: 'core-1', name: 'Home', url: 'https://one.example.ts.net/', workspaceId: 'w-a' },
+    { id: 'core-2', name: 'Home again', url: 'https://one.example.ts.net/', workspaceId: 'w-b' },
+    { id: 'core-3', name: 'Studio', url: 'https://two.example.ts.net/', workspaceId: 'w-c' },
+  ],
+  remembered: [],
+};
+
+test('a disputed address offers Forget, and forgetting it keeps both workspaces', async () => {
+  const calls = [];
+  let asked = '';
+  let record = disputedSaved;
+  const dom = await mount(async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'saved_cores') return record;
+    if (command === 'forget_address') {
+      // What the app does: the labels stay, their identities go.
+      record = {
+        ...disputedSaved,
+        profiles: disputedSaved.profiles.map((p) =>
+          p.url === args.url ? { id: p.id, name: p.name, url: p.url } : p,
+        ),
+      };
+      return record;
+    }
+  });
+  try {
+    const document = dom.window.document;
+    // The whole list is there: nothing of theirs was lost to the dispute.
+    assert.equal(document.querySelectorAll('#saved-list li').length, 3);
+
+    // The button the refusal tells them to press has to exist. It is derived
+    // from the list, since a disputed address is never in `remembered`.
+    const item = document.querySelector('#remembered-list li[data-disputed]');
+    assert.ok(item, 'a disputed address is offered a Forget');
+    assert.match(item.textContent, /one\.example\.ts\.net/);
+    assert.match(item.textContent, /record different workspaces/);
+    // The independent address is not listed as disputed.
+    assert.doesNotMatch(document.querySelector('#remembered').textContent, /two\.example\.ts\.net/);
+
+    dom.window.confirm = (text) => {
+      asked = text;
+      return true;
+    };
+    item.querySelector('.saved-forget').click();
+    await settle();
+
+    // Same promise as any forget: the data stays and nothing is cleared.
+    assert.match(asked, /stored for this address stays/i);
+    assert.match(asked, /does not delete them/i);
+    assert.match(asked, /does not connect to anything/i);
+    assert.doesNotMatch(asked, /clears? (your|the) data|reset|wipe/i);
+
+    assert.equal(calls.at(-1).command, 'forget_address');
+    assert.equal(calls.at(-1).args.url, 'https://one.example.ts.net/');
+    // Nothing was opened by forgetting.
+    assert.equal(calls.filter((call) => call.command === 'connect_core').length, 0);
+
+    // After it: both labels still saved, their identity gone, C untouched.
+    assert.equal(document.querySelectorAll('#saved-list li').length, 3, 'no workspace was removed');
+    assert.equal(document.querySelector('#remembered-list li[data-disputed]'), null, 'no longer disputed');
+    const names = [...document.querySelectorAll('#saved-list .saved-name')].map((span) => span.textContent);
+    assert.deepEqual(names, ['Home', 'Home again', 'Studio'], 'every label kept its name');
+    assert.match(
+      document.querySelector('[role="status"]').textContent,
+      /no longer remembers which workspace was at .*one\.example/,
+    );
+  } finally { dom.window.close(); }
+});
+
+test('a disputed address is not forgotten unless it is confirmed', async () => {
+  const calls = [];
+  const dom = await mount(async (command) => {
+    calls.push(command);
+    if (command === 'saved_cores') return disputedSaved;
+  });
+  try {
+    const document = dom.window.document;
+    dom.window.confirm = () => false;
+    document.querySelector('#remembered-list li[data-disputed] .saved-forget').click();
+    await settle();
+    assert.equal(calls.filter((command) => command === 'forget_address').length, 0);
+    assert.equal(calls.filter((command) => command === 'connect_core').length, 0);
+    assert.ok(document.querySelector('#remembered-list li[data-disputed]'), 'it is still disputed');
+  } finally { dom.window.close(); }
+});
+
+test('a refusal about another address names that address, not the one typed', async () => {
+  // Pointing a saved workspace at a *different* address is refused because of
+  // the disputed one it would leave. The two addresses must differ, or this
+  // proves nothing: falling back to `result.url` would read the same.
+  const typed = 'https://three.example.ts.net/';
+  const atFault = 'https://one.example.ts.net/';
+  let sent = '';
+  const dom = await mount(async (command, args) => {
+    if (command === 'saved_cores') return disputedSaved;
+    if (command === 'connect_core') {
+      sent = args.url;
+      return {
+        url: typed,
+        opened: false,
+        identity: 'conflict',
+        address: atFault,
+        profileName: 'Home',
+        savedWorkspaceId: null,
+        workspaceId: null,
+      };
+    }
+  });
+  try {
+    const document = dom.window.document;
+    const status = document.querySelector('[role="status"]');
+    const address = document.querySelector('#core-url');
+    address.value = typed;
+    submit(dom);
+    await settle();
+    assert.equal(sent, typed, 'the address typed is the one asked about');
+    // It names the address at fault, which is not the one typed.
+    assert.match(status.textContent, /one\.example\.ts\.net/, 'it names the disputed address');
+    assert.doesNotMatch(status.textContent, /three\.example\.ts\.net/, 'not the address typed');
+    assert.match(status.textContent, /nothing was opened or changed/);
+    assert.equal(status.dataset.error, 'true');
+    // Not a save that failed: there is no offer to open it without saving.
+    assert.doesNotMatch(status.textContent, /could not save its address|without saving/);
+    assert.equal(document.querySelector('#open-unsaved')?.hidden, true);
+  } finally { dom.window.close(); }
+});
+
+test('forgetting an address is not done unconfirmed, and removing a Workspace never forgets one', async () => {
+  const calls = [];
+  const dom = await mount(async (command, args) => {
+    calls.push(command);
+    if (command === 'saved_cores') return withRemembered;
+    if (command === 'remove_core')
+      return { ...withRemembered, selected: null, profiles: withRemembered.profiles.filter((p) => p.id !== args.profile) };
+  });
+  try {
+    const document = dom.window.document;
+    dom.window.confirm = () => false;
+    document.querySelector('#remembered-list li .saved-forget').click();
+    await settle();
+    assert.equal(calls.filter((command) => command === 'forget_address').length, 0);
+    assert.equal(document.querySelectorAll('#remembered-list li').length, 1);
+
+    // Removing a saved Workspace must not forget an address as well: it is a
+    // deliberate second step, never chained onto the first.
+    dom.window.confirm = () => true;
+    document.querySelector('#saved-list li .saved-remove').click();
+    await settle();
+    assert.equal(calls.at(-1), 'remove_core', 'the removal itself went through');
+    assert.equal(calls.filter((command) => command === 'forget_address').length, 0, 'removal forgets no address');
+    assert.equal(document.querySelectorAll('#remembered-list li').length, 1, 'and the address is still remembered');
+  } finally { dom.window.close(); }
+});
+
 test('removing is not done when it is not confirmed', async () => {
   const calls = [];
   const dom = await mount(

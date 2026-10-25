@@ -20,9 +20,10 @@ try {
     entry,
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
-import {MachinesPage} from ${JSON.stringify(path.join(root, "src/MachinesPage.tsx"))};
+import {MachinesPage, LastCheck} from ${JSON.stringify(path.join(root, "src/MachinesPage.tsx"))};
 const root=createRoot(document.getElementById('root'));
-window.renderMachines=(props)=>root.render(<MachinesPage {...props}/>);`,
+window.renderMachines=(props)=>root.render(<MachinesPage {...props}/>);
+window.renderCheck=(props)=>root.render(<LastCheck {...props}/>);`,
   );
   const result = await build({
     root,
@@ -364,3 +365,140 @@ test("a removal Core refuses says why and keeps the machine", async () => {
     page.close();
   }
 });
+
+// T-189: the page and its editor in Chinese. Names, SSH destinations, paths,
+// versions and what Core or SSH said stay as written.
+const chinese = (page) => page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+
+test("the Machines page reads in Chinese; names, destinations, paths and Core's reasons stay as written (T-189)", async () => {
+  const page = mount();
+  try {
+    chinese(page);
+    render(page);
+    await loaded(page);
+    const body = page.document.body.textContent;
+    assert.match(body, /机器/);
+    assert.match(body, /后台不会自动检查/);
+    assert.ok(button(page.document, "添加 SSH 机器"));
+    const host = card(page, "local");
+    assert.match(host.textContent, /本机 · 运行你的 Workspace Core/);
+    assert.match(host.querySelector(".last-check").textContent, /尚未检查/);
+    assert.match(host.querySelector(".last-check").textContent, /测试连接，看看 Core 能访问到什么。/);
+    const remote = card(page, "mini");
+    const check = remote.querySelector(".last-check").textContent;
+    assert.match(check, /无法连通/);
+    assert.match(check, /上次检查：3 小时前/);
+    assert.match(check, /可能已过时/);
+    assert.match(check, /ssh: connect to host mac-mini port 22: Operation timed out/, "SSH's reason as written");
+    assert.match(check, /Claude Code · 仅限 Core 主机/);
+    assert.match(remote.textContent, /SSH · mac-mini/);
+    assert.ok(button(remote, "测试连接"));
+    assert.ok(page.document.querySelector('[aria-label="编辑 Mac mini"]'), "the machine's name as written");
+    assert.ok(page.document.querySelector('[aria-label="移除 Mac mini"]'));
+    const facts = remote.querySelector(".machine-facts").textContent;
+    assert.match(facts, /默认文件夹\/Users\/me\/projects/);
+    assert.match(facts, /Codex 可执行文件\/opt\/homebrew\/bin\/codex/);
+    assert.match(host.querySelector(".machine-agents").textContent, /当前在此的 Agent/);
+    assert.match(host.querySelector(".machine-agents").textContent, /Mori.*App.*工作中/);
+    assert.match(host.querySelector(".machine-agents").textContent, /Hana.*已关闭/);
+    assert.match(remote.querySelector(".machine-agents").textContent, /Kaze.*就绪 · 未连接/);
+    const kaze = [...remote.querySelectorAll(".machine-agent")].find((b) => b.textContent.includes("Kaze"));
+    assert.equal(kaze.title, "打开 Kaze\n/Users/me/projects/x");
+    assert.match(body, /Agent 的状态来自它们自己的会话/);
+    assert.doesNotMatch(page.document.body.textContent, /Test connection|Not checked yet|Agents here now|Couldn’t reach/);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("adding, editing and removing read in Chinese; a saved edit stays shown when the list can't be read, and Core's words stay as written (T-189)", async () => {
+  let saved = false;
+  const page = mount((url, init) => {
+    const method = init.method || "GET";
+    if (url.endsWith("/machines/mini") && method === "PUT") {
+      saved = true;
+      return { ...mini, ...JSON.parse(init.body), lastCheck: null };
+    }
+    if (url.endsWith("/machines") && saved)
+      return { ok: false, status: 503, text: async () => "Core is restarting", json: async () => ({}) };
+    return undefined;
+  });
+  try {
+    chinese(page);
+    render(page);
+    await loaded(page);
+    button(page.document, "添加 SSH 机器").click();
+    await until(() => page.document.querySelector("#machines-new-ssh"), "the new machine form");
+    const form = page.document.querySelector("#machines-new-ssh");
+    for (const label of ["机器名称", "SSH 目标", "默认工作文件夹", "Codex 可执行文件", "同时运行的 Job 数", "Job CPU 预算（CPU 数）", "Job 内存预算（MiB）", "此机器无法强制执行的限制"])
+      assert.ok([...form.querySelectorAll("label")].some((l) => l.textContent.trim().startsWith(label)), label);
+    assert.match(form.textContent, /远程工作的地方/);
+    assert.match(form.textContent, /拒绝该 Job（严格）/);
+    button(form, "保存机器").click();
+    await until(() => form.querySelector('[role="alert"]'), "the check before saving");
+    assert.equal(form.querySelector('[role="alert"]').textContent, "请填写名称、SSH 目标和工作文件夹。");
+    assert.equal(page.calls.filter((c) => c.method === "POST").length, 0, "nothing sent");
+    button(form, "取消").click();
+    await until(() => !page.document.querySelector("#machines-new-ssh"), "the form to close");
+
+    page.document.querySelector('[aria-label="编辑 Mac mini"]').click();
+    await until(() => field(page, "SSH 目标") === "mac-mini", "the edit form, filled in");
+    assert.match(card(page, "mini").textContent, /编辑 Mac mini/);
+    assert.match(card(page, "mini").textContent, /已在此机器上的 Agent 保留它们启动时的连接/);
+    type(page, "SSH 目标", "mini.local");
+    await tick();
+    button(card(page, "mini"), "保存更改").click();
+    await until(() => /无法加载机器：Core is restarting/.test(page.document.body.textContent), "the failed read, Core's words as written");
+    assert.match(card(page, "mini").textContent, /SSH · mini\.local/, "the saved destination, not the old one");
+    assert.match(card(page, "mini").querySelector(".last-check").textContent, /尚未检查/);
+
+    page.document.querySelector('[aria-label="移除 Mac mini"]').click();
+    await until(() => card(page, "mini").querySelector(".machine-remove"), "the remove step");
+    assert.match(card(page, "mini").querySelector(".machine-remove").textContent, /Kaze 仍在此机器上工作。请先关闭该 Agent，再移除此机器。/);
+    assert.ok(!button(card(page, "mini"), "移除机器"), "no removal while an Agent works there");
+    assert.ok(button(card(page, "mini"), "好"));
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a removal Core refuses says why in Core's words, inside the Chinese confirmation (T-189)", async () => {
+  const page = mount((url, init) =>
+    init.method === "DELETE"
+      ? { ok: false, status: 400, json: async () => ({}), text: async () => JSON.stringify({ error: "Yuki still works on this machine. Close that agent first, then remove it." }) }
+      : undefined);
+  try {
+    chinese(page);
+    render(page, { agents: agents.filter((a) => a.id !== "c") });
+    await loaded(page);
+    page.document.querySelector('[aria-label="移除 Mac mini"]').click();
+    await until(() => button(card(page, "mini"), "移除机器"), "the confirmation");
+    assert.match(card(page, "mini").querySelector(".machine-remove").textContent, /要从此 Workspace 移除 Mac mini 吗？/);
+    assert.ok(button(card(page, "mini"), "取消"));
+    button(card(page, "mini"), "移除机器").click();
+    await until(() => card(page, "mini").querySelector('.machine-remove [role="alert"]'), "the refusal");
+    assert.match(card(page, "mini").querySelector('.machine-remove [role="alert"]').textContent, /Yuki still works on this machine/);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a stored check shown where no language is passed (New agent) keeps English (T-189)", async () => {
+  const page = mount();
+  try {
+    chinese(page);
+    page.window.renderCheck({ check: mini.lastCheck, compact: true });
+    await tick();
+    const shown = page.document.querySelector(".last-check").textContent;
+    assert.match(shown, /Couldn’t reach/);
+    assert.match(shown, /Last check 3 h ago/);
+    assert.match(shown, /Claude Code · Core host only/);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+

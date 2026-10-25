@@ -18,8 +18,10 @@ export type BatchOutcome =
   /** Core's reply: the Agent as it reports it after the reconnect. */
   | { state: "done"; agent: Agent | null }
   | { state: "failed"; error: string }
-  /** Not sent: by its turn the Agent no longer needed it, as said. */
-  | { state: "skipped"; reason: string };
+  /** Not sent: by its turn the Agent no longer needed it, and why (worded
+   * where it is shown). */
+  | { state: "skipped"; why: SkipWhy };
+export type SkipWhy = "gone" | "closed" | "session" | "connecting" | "connected";
 
 export interface BatchState {
   /** Chosen by the user; nothing is chosen for them. */
@@ -167,22 +169,22 @@ function pump() {
 }
 
 /** Why this Agent is no longer reconnected by its turn, if it isn't. */
-function stale(job: Job): string | null {
+function stale(job: Job): SkipWhy | null {
   const agent = known.get(job.workspace)?.find((a) => a.id === job.id);
-  if (!agent) return "no longer in this workspace";
-  if (agent.closedAt) return "closed since, and not reopened here";
-  if (sessionOf(agent) !== job.session) return "its session changed; choose it again";
+  if (!agent) return "gone";
+  if (agent.closedAt) return "closed";
+  if (sessionOf(agent) !== job.session) return "session";
   const offer = reconnectOffer(agent);
-  if (offer === "connecting") return "Core is already connecting it";
-  if (offer === null) return "already connected";
+  if (offer === "connecting") return "connecting";
+  if (offer === null) return "connected";
   return null;
 }
 
 async function run(job: Job) {
   const { workspace, id, settled } = job;
-  const reason = stale(job);
-  if (reason) {
-    setOutcome(workspace, id, { state: "skipped", reason }, false);
+  const why = stale(job);
+  if (why) {
+    setOutcome(workspace, id, { state: "skipped", why }, false);
     return;
   }
   setOutcome(workspace, id, { state: "running" });

@@ -212,10 +212,9 @@ impl Store {
             .brief_in(&tx, agent_id)?
             .context("Agent not found")?
             .agent;
-        ensure!(
-            agent.closed_at.is_none() && agent.remote.is_none(),
-            "Choose an open local Agent"
-        );
+        // Core alone reads GitHub and writes the mailbox, so an SSH Agent is watched
+        // like a local one; only a closed Agent cannot receive results.
+        ensure!(agent.closed_at.is_none(), "Choose an open Agent");
         let recipient = collaboration::agent_actor(self, &tx, agent_id)?;
         let (task, seq) = collaboration::task_key(&tx, &input.task_id)?;
         let archived: Option<String> = tx.query_row(

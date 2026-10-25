@@ -820,3 +820,87 @@ async fn real_github_commit_watch_read_only() {
         .count();
     assert_eq!(mails.len(), finished, "one mail per finished attempt");
 }
+
+/// An SSH Agent's CI is watched by Core alone, like a local Agent's. The
+/// other rules stay: a closed Agent is refused, and an Agent subscribes and
+/// stops only its own interest.
+#[tokio::test]
+async fn an_open_ssh_agent_subscribes_for_itself_and_gets_its_own_result_mail() {
+    let (dir, s) = setup();
+    for (id, remote, closed) in [
+        ("r", true, None),
+        ("gone", true, Some("now")),
+        ("shut", false, Some("now")),
+    ] {
+        let remote = remote.then(|| json!({"machine":{"id":"m1","name":"lab box","target":"-must-not-run-ssh","codex":"codex","defaultCwd":"/home/someone/work"},"runtime":null}));
+        s.insert(&serde_json::from_value::<AgentDetail>(json!({"agent":{"id":id,"name":id,"cwd":"/home/someone/work","model":"test","color":"sage","status":"idle","createdAt":"now","updatedAt":"now","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0,"closedAt":closed,"remote":remote},"turns":[],"pending":[],"artifacts":[]})).unwrap()).unwrap();
+    }
+    drop(s);
+    let ws = commit_lab(dir.path());
+    let to = |agent: &str, request: &str| {
+        let mut q = commit_input(request);
+        q["agentId"] = json!(agent);
+        q
+    };
+    let by = |actor: &str, operation: &str, q: Value| {
+        call(ws.clone(), Some(actor.into()), operation.into(), q)
+    };
+    // The SSH Agent's own call, before any run exists.
+    let sub = by("r", "ci_subscribe", to("r", "main-push")).await.unwrap();
+    assert_eq!(sub["active"], true, "{sub}");
+    assert_eq!(sub["agentId"], "r");
+    assert_eq!(sub["watch"]["state"], "waiting_for_run");
+    let again = by("r", "ci_subscribe", to("r", "main-push")).await.unwrap();
+    assert_eq!(again["id"], sub["id"]);
+    assert_eq!(again["interests"].as_array().unwrap().len(), 1);
+    let e = by("r", "ci_subscribe", to("a", "for-a"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("only for itself"), "{e}");
+    for closed in ["gone", "shut"] {
+        let e = ask(&ws, "ci_subscribe", to(closed, closed))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("Choose an open Agent"), "{closed}: {e}");
+    }
+    // A local Agent shares the watch with its own subscription; neither can
+    // stop the other's.
+    let local = ask(&ws, "ci_subscribe", commit_input("main-push"))
+        .await
+        .unwrap();
+    assert_eq!(local["watchId"], sub["watchId"]);
+    assert_ne!(local["id"], sub["id"]);
+    assert!(
+        by("a", "ci_unsubscribe", json!({"subscriptionId":sub["id"]}))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        ask(&ws, "ci_list", json!({"agentId":"r"})).await.unwrap()["activeSubscriptionCount"],
+        1
+    );
+    // A finished run mails each subscriber once, in its own mailbox.
+    let ci = |agent: &str| -> Vec<Value> {
+        mail(&ws.store, agent)
+            .into_iter()
+            .filter(|m| m["metadata"]["kind"] == "ci")
+            .collect()
+    };
+    for (p, mails) in [("appear", 0), ("done1", 1), ("done1", 1)] {
+        phase(dir.path(), p);
+        age(&ws, 60);
+        due_now(&ws);
+        assert!(tick(&ws).await.unwrap());
+        assert_eq!((ci("r").len(), ci("a").len()), (mails, mails), "after {p}");
+    }
+    let m = ci("r").remove(0);
+    assert_eq!(m["sender"]["kind"], "system");
+    assert_eq!(m["notice"]["status"], "passed");
+    assert_eq!(m["metadata"]["expectedSha"], A);
+    for closed in ["gone", "shut"] {
+        let none = ask(&ws, "ci_list", json!({"agentId":closed})).await.unwrap();
+        assert_eq!(none["activeSubscriptionCount"], 0, "{closed}");
+    }
+}

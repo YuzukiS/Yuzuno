@@ -1,6 +1,6 @@
 {
   "identifier": "connection",
-  "description": "Only the embedded connection page may read the Workspaces saved on this iPhone, name and forget them, and choose and check one. A Core's own pages are granted nothing.",
+  "description": "Only the embedded connection page may read the Workspaces saved on this iPhone, name and remove them, forget which workspace was at an address it no longer lists, and choose and check one. A Core's own pages are granted nothing. Nothing here clears what a web view stored for an address.",
   "local": true,
   "windows": [
     "main"
@@ -9,6 +9,7 @@
     "allow-saved-cores",
     "allow-connect-core",
     "allow-rename-core",
-    "allow-remove-core"
+    "allow-remove-core",
+    "allow-forget-address"
   ]
 }
