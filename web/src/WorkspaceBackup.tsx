@@ -84,7 +84,7 @@ type Precheck = {
   notes: string[];
 };
 /** A request sent and not yet answered: a retry sends it again as is. */
-type Pending = { path: string; body: Record<string, string | number> & { requestId: string } };
+type Pending = { path: string; body: Record<string, string | number | undefined> & { requestId: string } };
 
 const steps: Record<string, string> = {
   start: "Starting",
