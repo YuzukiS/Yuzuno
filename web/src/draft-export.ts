@@ -10,9 +10,15 @@ import {
 } from "./composer-draft";
 
 export type DraftRow = { agentId: string; name: string; closed: boolean; summary: Exclude<SavedDraftSummary, { state: "none" }> };
+/** Why drafts, or one of them, can't be read, worded where it is shown: this
+ * browser gives Yuzuno no storage here, it refused a read, the draft is no
+ * longer saved, or what stopped it (the browser's or the draft's own check's
+ * words, composer-draft.ts). */
+export type DraftProblem = { kind: "noStorage" } | { kind: "refused"; error: string } | { kind: "gone" } | { kind: "error"; error: string };
 export type DraftListing =
-  | { available: false; reason: string }
+  | { available: false; why: DraftProblem }
   | { available: true; rows: DraftRow[]; otherAgents: number };
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /** Storage that can only be read: a slip that writes fails instead of changing a draft. */
 export function readOnly(storage: Pick<Storage, "getItem">): Pick<Storage, "getItem" | "setItem" | "removeItem"> {
@@ -35,7 +41,7 @@ export function listDrafts(
   storage: Pick<Storage, "getItem" | "key" | "length"> | null,
   agents: readonly { id: string; name: string; closedAt?: string | null }[],
 ): DraftListing {
-  if (!storage) return { available: false, reason: "this browser gives Yuzuno no storage here" };
+  if (!storage) return { available: false, why: { kind: "noStorage" } };
   try {
     const rows: DraftRow[] = [];
     for (const agent of agents) {
@@ -46,7 +52,7 @@ export function listDrafts(
     const otherAgents = savedDraftAgents(storage).filter((id) => !known.has(id) && savedDraftSummary(storage, id).state !== "none").length;
     return { available: true, rows, otherAgents };
   } catch (error) {
-    return { available: false, reason: `this browser refused to read its storage (${error instanceof Error ? error.message : String(error)})` };
+    return { available: false, why: { kind: "refused", error: message(error) } };
   }
 }
 
@@ -72,11 +78,11 @@ export function draftExportText(draft: ComposerDraft, agentName: string, at = ne
 }
 
 /** One Agent's saved draft, opened only when the user chooses it. */
-export function exportDraft(storage: Pick<Storage, "getItem">, agentId: string, agentName: string): { text: string } | { error: string } {
+export function exportDraft(storage: Pick<Storage, "getItem">, agentId: string, agentName: string): { text: string } | { why: DraftProblem } {
   try {
     return { text: draftExportText(new DraftStorage(readOnly(storage)).load(agentId), agentName) };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) };
+    return { why: { kind: "error", error: message(error) } };
   }
 }
 
@@ -93,7 +99,7 @@ export type ExportedDraft = {
   skills: string[];
 };
 export const DRAFTS_FORMAT = "yuzuno-drafts";
-export type DraftsFailure = { agentId: string; name: string; reason: string };
+export type DraftsFailure = { agentId: string; name: string; why: DraftProblem };
 
 /** The chosen drafts, each read now and only these, through storage that
  * cannot be written: as they are now, which another window may have changed
@@ -113,7 +119,7 @@ export function exportDrafts(
     try {
       const now = savedDraftSummary(storage, row.agentId);
       if (now.state === "none" || now.state === "damaged") {
-        failed.push({ agentId: row.agentId, name: row.name, reason: now.state === "none" ? "it is no longer saved here" : now.reason });
+        failed.push({ agentId: row.agentId, name: row.name, why: now.state === "none" ? { kind: "gone" } : { kind: "error", error: now.reason } });
         continue;
       }
       const draft = read.load(row.agentId);
@@ -129,7 +135,7 @@ export function exportDrafts(
         skills: (draft.skills ?? []).map((skill) => skill.name),
       });
     } catch (error) {
-      failed.push({ agentId: row.agentId, name: row.name, reason: error instanceof Error ? error.message : String(error) });
+      failed.push({ agentId: row.agentId, name: row.name, why: { kind: "error", error: message(error) } });
     }
   }
   if (failed.length) return { failed };
