@@ -385,7 +385,15 @@ async fn brief_get_lists_your_own_replied_asks_until_you_resolve_them() {
 async fn a_deferred_ask_leaves_needs_you_until_its_time() {
     let (_dir, ws, project) = lab();
     accept(&ws, "a", input("a1", 0, vec![put("decide", "ask"), put("plan", "report")])).await;
-    let asks = |ws: &Workspace| home::build(&ws.store).unwrap()["needsYou"].as_array().unwrap().iter().filter(|n| n["kind"] == "ask").count();
+    // Home's Needs you, and the Asks push notifications compare (T-200): the same.
+    let asks = |ws: &Workspace| {
+        let shown = home::build(&ws.store).unwrap()["needsYou"].as_array().unwrap().iter().filter(|n| n["kind"] == "ask").count();
+        let pushed = open_asks(&ws.store).unwrap();
+        assert_eq!(pushed.len(), shown);
+        assert!(pushed.iter().all(|ask| ask.project == project && ask.key == "decide" && ask.owner_id == "a" && ask.owner_name == "Agent a"));
+        shown
+    };
+    assert_eq!(asks(&ws), 1);
     let later = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
     sections::defer(&ws.store, &project, "decide", Some(&later)).unwrap();
     assert_eq!(asks(&ws), 0);

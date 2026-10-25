@@ -71,6 +71,7 @@ pub mod task_workspaces;
 pub mod updates;
 pub mod workspace;
 pub mod workspace_backup;
+mod web_push;
 
 pub mod delivery;
 pub mod disconnect;

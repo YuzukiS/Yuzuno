@@ -424,6 +424,37 @@ pub(crate) fn announce(ws: &Workspace, project: Option<&str>) {
     let _ = ws.changes.send(json!({"type":"workspace.changed","scope":"brief","projectId":project}));
 }
 
+/// An Ask in Home's Needs you, as push notifications name it (T-200): never its text.
+pub(crate) struct OpenAsk {
+    pub project: String,
+    pub key: String,
+    pub owner_id: String,
+    pub owner_name: String,
+    pub since: String,
+}
+
+/// The Asks Home lists in Needs you: open, of a Project that exists, and not
+/// deferred until later.
+pub(crate) fn open_asks(store: &Store) -> Result<Vec<OpenAsk>> {
+    let now = chrono::Utc::now();
+    let db = store.db.read()?;
+    let mut query = db.prepare(
+        "SELECT project_id,key,owner_id,owner_name,COALESCE(ask_since,updated_at),deferred_until FROM project_brief_sections
+         WHERE live=1 AND kind='ask' AND ask_state='open' AND project_id IN (SELECT id FROM projects) ORDER BY seq")?;
+    let rows = query.query_map([], |r| Ok((OpenAsk {
+        project: r.get(0)?, key: r.get(1)?, owner_id: r.get(2)?, owner_name: r.get(3)?, since: r.get(4)?,
+    }, r.get::<_, Option<String>>(5)?)))?;
+    let mut asks = Vec::new();
+    for row in rows {
+        let (ask, deferred) = row?;
+        let later = deferred.as_deref().and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok()).is_some_and(|until| until > now);
+        if !later {
+            asks.push(ask);
+        }
+    }
+    Ok(asks)
+}
+
 /// brief_* operations from Workspace::collaboration_call. brief_update
 /// arrives here only from callers without structured errors; MCP calls
 /// `update_tool` directly (see collaboration_mcp).
