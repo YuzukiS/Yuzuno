@@ -29,6 +29,53 @@ export function useComposerDraft(workspaceId: string, agentId: string) {
   /** The key storage holds it under, or `null` while there is no Workspace to
    * attribute it to or no Agent open. */
   const disk = (agent: string) => (workspaceId && agent ? draftIdentity(workspaceId, agent) : null);
+  /**
+   * The Workspace can arrive after this window has already been typed in
+   * (T-195, found by review of #347). Not on an ordinary failed cold read --
+   * there is no composer then -- but on an older Core that answers with
+   * agents and no `workspace.id`, and when `onCreated` puts an Agent on
+   * screen before the metadata read returns.
+   *
+   * What was typed here while this window had no identity is its own work,
+   * and it belongs to the first Workspace this turns out to be. It is taken
+   * over once, only for the Agents actually edited -- their whole draft,
+   * pasted bodies and unsaved state -- and the first identity consumes that
+   * step. An Agent that was only read keeps reading this Workspace's own
+   * saved draft. Afterwards nothing is claimed: going to another Workspace,
+   * or losing the identity and getting a different one, leaves what was
+   * typed under the one before it where it is.
+   */
+  const named = useRef(false);
+  if (workspaceId && !named.current) {
+    named.current = true;
+    for (const was of [...unsaved.current]) {
+      const parts = JSON.parse(was) as [string, string];
+      if (parts[0] !== "") continue;
+      const draft = drafts.current.get(was);
+      unsaved.current.delete(was);
+      drafts.current.delete(was);
+      const problem = errors.current.get(was);
+      errors.current.delete(was);
+      if (!draft) continue;
+      const to = cache(parts[1]);
+      drafts.current.set(to, draft);
+      unsaved.current.add(to);
+      if (problem) errors.current.set(to, problem);
+      // It has somewhere to be saved now. A refusal still says it is not
+      // saved, as a refusal while typing does.
+      try {
+        storage.current ||= new DraftStorage(localStorage);
+        storage.current.save(draftIdentity(workspaceId, parts[1]), draft);
+        unsaved.current.delete(to);
+        errors.current.delete(to);
+      } catch {
+        errors.current.set(
+          to,
+          "This draft is kept in this window, but could not be saved. Copy it before reloading.",
+        );
+      }
+    }
+  }
   const here = cache(agentId);
   if (!drafts.current.has(here)) {
     try {
