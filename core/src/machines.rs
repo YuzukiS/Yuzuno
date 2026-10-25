@@ -325,7 +325,10 @@ fn ssh_harnesses(info: &remote::RemoteInfo) -> Vec<HarnessCheck> {
     let claude_error = info.claude_error.clone().or_else(|| {
         info.node_error.as_ref().map(|_| "Claude Code was found, but node (needed by Yuzuno's Claude bridge) was not".to_owned())
     }).or_else(|| (info.claude_logged_in == Some(false)).then(|| claude_login_hint(info.claude_auth_method.as_deref())));
-    let ssh_sign_in = info.claude_logged_in.map(|signed_in| SignIn {
+    // As on the Core host, sign-in is said only of a CLI that can run there:
+    // with another error (no Node, say), that error is the one that counts.
+    let runnable = info.claude_error.is_none() && info.node_error.is_none();
+    let ssh_sign_in = info.claude_logged_in.filter(|_| runnable).map(|signed_in| SignIn {
         state: if signed_in { "signedIn" } else { "signedOut" }.into(),
         method: info.claude_auth_method.clone().filter(|method| method.len() <= 40),
         folder: None,
@@ -472,6 +475,13 @@ mod tests {
         // A method name past the bound is not kept; the state still is.
         let long = claude(&probed(serde_json::json!({"claudeLoggedIn": true, "claudeAuthMethod": "x".repeat(41)})));
         assert_eq!(long.sign_in.as_ref().map(|s| (s.state.as_str(), s.method.is_none())), Some(("signedIn", true)));
+        // Without Node there, the bridge can't run: that is the error, and no
+        // sign-in is said, whatever `claude auth status` answered.
+        for signed_in in [true, false] {
+            let no_node = claude(&probed(serde_json::json!({"nodeError": "找不到 node", "claudeLoggedIn": signed_in, "claudeAuthMethod": "none"})));
+            assert!(!no_node.found && no_node.sign_in.is_none(), "{no_node:?}");
+            assert!(no_node.error.as_deref().unwrap().contains("node (needed by Yuzuno's Claude bridge) was not"), "{no_node:?}");
+        }
         // Codex there has no sign-in of its own in a machine check.
         assert!(ssh_harnesses(&probed(serde_json::json!({"claudeLoggedIn": true}))).iter().all(|h| h.harness != "codex" || h.sign_in.is_none()));
     }
