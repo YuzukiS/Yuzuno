@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, ExternalLink, Eye, Github, RefreshCw } from "lucide-react";
 import { api, errorText, post } from "./api";
 import type { Agent } from "./types";
+import { langTag, strings, useLanguage } from "./i18n";
 import {
   StatusMark,
   WorkDockGroup,
@@ -120,6 +121,211 @@ type Check = {
   details?: NonNullable<Report["details"]>[] | null;
 };
 const clock = (v: string) => new Date(v).toLocaleTimeString();
+// The GitHub Actions source in the interface language (T-189). Repository,
+// workflow, job and step names, SHAs, URLs, GitHub's own status words and
+// errors are shown as they came. The conversation's dock stays English with
+// the conversation.
+const ciText = strings({
+  labels: {
+    passed: "Passed",
+    failed: "Failed",
+    cancelled: "Cancelled",
+    skipped: "Skipped / neutral",
+    running: "Running",
+    pending: "Waiting",
+    unknown: "Outcome unknown",
+  } as Record<string, string>,
+  closure: {
+    task_completed: "Task completed",
+    completed: "Task completed",
+    task_cancelled: "Task cancelled",
+    cancelled: "Task cancelled",
+    task_archived: "Task archived",
+    archived: "Task archived",
+    pr_merged: "PR merged",
+    merged: "PR merged",
+    verification_completed: "Run verification completed",
+    explicit_stop: "Stopped explicitly",
+    stopped: "Delivery stopped",
+    expired: "Subscription expired",
+  } as Record<string, string>,
+  commitVerified: "Commit verification completed",
+  stopped: "Stopped",
+  stoppedExpired: "Stopped / expired",
+  notObserved: "Not observed yet",
+  pr: (number: number) => `PR #${number}`,
+  commit: (sha: string, branch: string, event: string) => `Commit ${sha} · ${branch} · ${event}`,
+  run: (number: number) => `Run #${number}`,
+  lastSeen: (running: boolean) => `Last seen ${running ? "running" : "waiting"}`,
+  queuedAt: "Queued",
+  finishedAt: "Finished",
+  checking: "Checking with GitHub…",
+  checked: (at: string) => `Checked with GitHub at ${at}.`,
+  recent: (at: string) => `Checked with GitHub moments ago, at ${at}; not asked again.`,
+  interval: (at: string, next: string | null) => `GitHub asks to be checked less often; showing its answer from ${at}${next ? `. Next check after ${next}` : ""}.`,
+  cooldown: (until: string | null) => `GitHub is limiting reads${until ? ` until ${until}` : ""}. Showing the last successful observation.`,
+  checkError: (error: string) => `Couldn't check GitHub: ${error || "unknown error"}. Showing the last successful observation.`,
+  nothing: "Nothing here is being watched, so there was nothing to check.",
+  notWatched: "This run is not being watched. This check does not restart monitoring.",
+  stillPaused: "Its monitor remains paused after repeated failures.",
+  paused: (count: number) => `${count} watch${count > 1 ? "es" : ""} paused after repeated failures ${count > 1 ? "were" : "was"} not checked; subscribe again to resume.`,
+  more: (count: number) => `${count} more watched target${count > 1 ? "s" : ""} follow${count > 1 ? "" : "s"} on schedule.`,
+  join: " ",
+  updatedCore: "CI monitoring requires an updated Core.",
+  region: "GitHub Actions jobs",
+  checkNow: "Check CI with GitHub now",
+  back: "Back to runs",
+  watch: "Watch CI",
+  intro: "Runs Core watches on GitHub for a PR or run commit. Remote runs do not use this machine's job budget.",
+  whatToWatch: "What to watch",
+  notify: "Notify Agent",
+  existingTask: "Existing task",
+  url: "GitHub PR, Actions run or commit URL",
+  branch: "Branch of its runs",
+  event: "Event of its runs",
+  commitToWatch: "Commit to watch",
+  fullSha: "Full 40-character SHA",
+  watchNote:
+    "Core watches this commit for seven days, including new attempts, and sends normal mailbox results. You can close this window or end the Agent's Turn. A newer PR commit needs a new subscription. A commit URL can be watched before any run exists: only that commit's runs on that branch for that event count.",
+  saving: "Saving…",
+  subscribe: "Subscribe to CI",
+  activeSubscriptions: (count: number) => `${count} active subscription(s)`,
+  waitingFor: "Waiting for a run of",
+  watching: "Watching",
+  watched: "Watched",
+  until: (when: string) => `until ${when}`,
+  lastObserved: (when: string) => `Last observed ${when}`,
+  olderCommit: (head: string, sha: string) => `Older commit: current PR head is ${head}. These results apply only to ${sha}.`,
+  lastAttempt: (when: string) => ` · Last attempt ${when}`,
+  needsAttention: " · Paused after repeated failures; subscribe again to resume.",
+  truncated: "More than 1,000 runs match this commit; use GitHub for the complete history.",
+  stopWatching: "Stop watching",
+  latest200: "Showing the latest 200 subscriptions. Narrow to an Agent or task.",
+  runs: "Actions runs",
+  history: "History",
+  noRuns: "No Actions runs observed yet. Subscribe to a PR or run to begin.",
+  attempt: (attempt: string) => `attempt ${attempt}`,
+  earlier: "Earlier CI runs",
+  openTitle: "Open run, logs and artifacts on GitHub",
+  openOnGitHub: "Open on GitHub",
+  notBeingWatched: "Not being watched — showing the last observation. Use refresh to check this attempt once without restarting monitoring.",
+  olderPrCommit: "Older PR commit. This result does not describe the current PR head.",
+  summary: "Summary",
+  source: "Source",
+  runAttempt: "Run / attempt",
+  actualCommit: "Actual commit",
+  started: "Started",
+  lastObservedLabel: "Last observed",
+  jobsSteps: "Jobs and steps",
+  stepsObserved: (when: string) => `Jobs/steps last observed: ${when}.`,
+  predates: " This snapshot predates the latest run observation.",
+  jobLogs: "Job logs",
+  remainingSteps: "Remaining steps are available on GitHub.",
+  furtherJobs: "Further jobs are available on GitHub.",
+  moreJobs: "More jobs",
+  ciNote: "CI completion does not merge a PR, approve review, or complete its task.",
+  selectRun: "Select a run to inspect jobs and steps.",
+}, {
+  labels: {
+    passed: "已通过",
+    failed: "失败",
+    cancelled: "已取消",
+    skipped: "已跳过 / 中性",
+    running: "运行中",
+    pending: "等待中",
+    unknown: "结果未知",
+  },
+  closure: {
+    task_completed: "任务已完成",
+    completed: "任务已完成",
+    task_cancelled: "任务已取消",
+    cancelled: "任务已取消",
+    task_archived: "任务已归档",
+    archived: "任务已归档",
+    pr_merged: "PR 已合并",
+    merged: "PR 已合并",
+    verification_completed: "运行验证已完成",
+    explicit_stop: "已明确停止",
+    stopped: "投递已停止",
+    expired: "订阅已过期",
+  },
+  commitVerified: "提交验证已完成",
+  stopped: "已停止",
+  stoppedExpired: "已停止 / 已过期",
+  notObserved: "尚未观察到",
+  commit: (sha, branch, event) => `提交 ${sha} · ${branch} · ${event}`,
+  run: (number) => `运行 #${number}`,
+  lastSeen: (running) => `最后一次看到时${running ? "正在运行" : "正在等待"}`,
+  queuedAt: "排队",
+  finishedAt: "完成",
+  checking: "正在向 GitHub 检查…",
+  checked: (at) => `已于 ${at} 向 GitHub 检查。`,
+  recent: (at) => `刚刚已向 GitHub 检查（${at}），未再次询问。`,
+  interval: (at, next) => `GitHub 要求降低检查频率；正在显示它在 ${at} 的回答${next ? `。下次检查在 ${next} 之后` : ""}。`,
+  cooldown: (until) => `GitHub 正在限制读取${until ? `，直到 ${until}` : ""}。正在显示上次成功的观察结果。`,
+  checkError: (error) => `无法向 GitHub 检查：${error || "未知错误"}。正在显示上次成功的观察结果。`,
+  nothing: "这里没有被监视的内容，因此没有可检查的。",
+  notWatched: "此运行未被监视。这次检查不会重新开始监视。",
+  stillPaused: "它的监视在多次失败后仍处于暂停状态。",
+  paused: (count) => `${count} 个在多次失败后暂停的监视未被检查；重新订阅即可恢复。`,
+  more: (count) => `另有 ${count} 个被监视的目标按计划跟进。`,
+  join: "",
+  updatedCore: "CI 监视需要更新的 Core。",
+  region: "GitHub Actions Job",
+  checkNow: "立即向 GitHub 检查 CI",
+  back: "返回运行列表",
+  watch: "监视 CI",
+  intro: "Core 在 GitHub 上为某个 PR 或运行的提交所监视的运行。远程运行不使用此机器的 Job 预算。",
+  whatToWatch: "监视什么",
+  notify: "通知的 Agent",
+  existingTask: "已有任务",
+  url: "GitHub PR、Actions 运行或提交的 URL",
+  branch: "其运行所在的分支",
+  event: "其运行的事件",
+  commitToWatch: "要监视的提交",
+  fullSha: "完整的 40 位 SHA",
+  watchNote: "Core 会监视此提交七天，包括新的尝试，并以普通邮件发送结果。你可以关闭此窗口或结束 Agent 的 Turn。较新的 PR 提交需要新的订阅。可以在任何运行出现之前就监视一个提交 URL：只计算该提交在该分支上、该事件的运行。",
+  saving: "正在保存…",
+  subscribe: "订阅 CI",
+  activeSubscriptions: (count) => `${count} 个活跃订阅`,
+  waitingFor: "等待运行的提交",
+  watching: "正在监视",
+  watched: "曾监视",
+  until: (when) => `直到 ${when}`,
+  lastObserved: (when) => `上次观察于 ${when}`,
+  olderCommit: (head, sha) => `较旧的提交：当前 PR head 是 ${head}。这些结果只适用于 ${sha}。`,
+  lastAttempt: (when) => ` · 上次尝试于 ${when}`,
+  needsAttention: " · 多次失败后已暂停；重新订阅即可恢复。",
+  truncated: "与此提交匹配的运行超过 1,000 个；完整历史请在 GitHub 上查看。",
+  stopWatching: "停止监视",
+  latest200: "正在显示最新的 200 个订阅。请缩小到某个 Agent 或任务。",
+  runs: "Actions 运行",
+  history: "历史",
+  noRuns: "尚未观察到 Actions 运行。订阅一个 PR 或运行即可开始。",
+  attempt: (attempt) => `第 ${attempt} 次尝试`,
+  earlier: "更早的 CI 运行",
+  openTitle: "在 GitHub 上打开运行、日志和产物",
+  openOnGitHub: "在 GitHub 上打开",
+  notBeingWatched: "未被监视 — 正在显示上次的观察结果。使用刷新可检查此尝试一次，而不会重新开始监视。",
+  olderPrCommit: "较旧的 PR 提交。此结果不描述当前的 PR head。",
+  summary: "摘要",
+  source: "来源",
+  runAttempt: "运行 / 尝试",
+  actualCommit: "实际提交",
+  started: "开始于",
+  lastObservedLabel: "上次观察",
+  jobsSteps: "Job 与步骤",
+  stepsObserved: (when) => `Job/步骤上次观察于：${when}。`,
+  predates: "此快照早于最新的运行观察。",
+  jobLogs: "Job 日志",
+  remainingSteps: "其余步骤可在 GitHub 上查看。",
+  furtherJobs: "更多 Job 可在 GitHub 上查看。",
+  moreJobs: "更多 Job",
+  ciNote: "CI 完成并不会合并 PR、批准审查或完成其任务。",
+  selectRun: "选择一个运行，查看它的 Job 和步骤。",
+});
+type CiText = ReturnType<typeof ciText>;
+const ciEn = ciText("en");
 /** What a change worth new steps looks like: a running run's every new
  * observation, a finished one's transition only. */
 const stateOf = (r: Run) =>
@@ -129,33 +335,28 @@ const stateOf = (r: Run) =>
     r.rawStatus === "completed" ? null : r.observedAt,
   ]);
 /** What a check found, in words; the last observation is always kept. */
-function checkText(c: Check) {
+function checkText(c: Check, t: CiText) {
   const at = c.checkedAt ? clock(c.checkedAt) : "";
   const text =
     c.status === "busy"
-      ? "Checking with GitHub…"
+      ? t.checking
       : c.status === "checked"
-        ? `Checked with GitHub at ${at}.`
+        ? t.checked(at)
         : c.status === "recent"
-          ? `Checked with GitHub moments ago, at ${at}; not asked again.`
+          ? t.recent(at)
           : c.status === "github_interval"
-            ? `GitHub asks to be checked less often; showing its answer from ${at}${c.retryAt ? `. Next check after ${clock(c.retryAt)}` : ""}.`
+            ? t.interval(at, c.retryAt ? clock(c.retryAt) : null)
             : c.status === "cooldown"
-              ? `GitHub is limiting reads${c.retryAt ? ` until ${clock(c.retryAt)}` : ""}. Showing the last successful observation.`
+              ? t.cooldown(c.retryAt ? clock(c.retryAt) : null)
               : c.status === "error"
-                ? `Couldn't check GitHub: ${c.error || "unknown error"}. Showing the last successful observation.`
-                : "Nothing here is being watched, so there was nothing to check.";
+                ? t.checkError(c.error || "")
+                : t.nothing;
   const notes = [
-    c.runWatched === false &&
-      "This run is not being watched. This check does not restart monitoring.",
-    !!c.paused &&
-      (c.runWatched === false
-        ? "Its monitor remains paused after repeated failures."
-        : `${c.paused} watch${c.paused > 1 ? "es" : ""} paused after repeated failures ${c.paused > 1 ? "were" : "was"} not checked; subscribe again to resume.`),
-    !!c.more &&
-      `${c.more} more watched target${c.more > 1 ? "s" : ""} follow${c.more > 1 ? "" : "s"} on schedule.`,
+    c.runWatched === false && t.notWatched,
+    !!c.paused && (c.runWatched === false ? t.stillPaused : t.paused(c.paused)),
+    !!c.more && t.more(c.more),
   ].filter(Boolean);
-  return [text, ...notes].join(" ");
+  return [text, ...notes].join(t.join);
 }
 function mergeDetails(
   old: Report["details"] | undefined,
@@ -187,37 +388,14 @@ const empty: Page = {
   hasMore: false,
   nextBefore: null,
 };
-const labels: Record<string, string> = {
-  passed: "Passed",
-  failed: "Failed",
-  cancelled: "Cancelled",
-  skipped: "Skipped / neutral",
-  running: "Running",
-  pending: "Waiting",
-  unknown: "Outcome unknown",
-};
-const stamp = (v?: string | null) =>
-  v ? new Date(v).toLocaleString() : "Not observed yet";
-const closureLabels: Record<string, string> = {
-  task_completed: "Task completed",
-  completed: "Task completed",
-  task_cancelled: "Task cancelled",
-  cancelled: "Task cancelled",
-  task_archived: "Task archived",
-  archived: "Task archived",
-  pr_merged: "PR merged",
-  merged: "PR merged",
-  verification_completed: "Run verification completed",
-  explicit_stop: "Stopped explicitly",
-  stopped: "Delivery stopped",
-  expired: "Subscription expired",
-};
-const closedLabel = (s: Subscription) =>
+const stamp = (v: string | null | undefined, t: CiText = ciEn) =>
+  v ? new Date(v).toLocaleString() : t.notObserved;
+const closedLabel = (s: Subscription, t: CiText) =>
   s.closure
     ? s.closure.reason === "verification_completed" && s.watch.kind === "commit"
-      ? "Commit verification completed"
-      : closureLabels[s.closure.reason] || "Stopped"
-    : "Stopped / expired";
+      ? t.commitVerified
+      : t.closure[s.closure.reason] || t.stopped
+    : t.stoppedExpired;
 const safeLink = (url: string) =>
   /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:(?:actions\/runs\/|pull\/)[0-9]+(?:\/(?:attempts|job)\/[0-9]+)?|commit\/[0-9a-fA-F]{40})$/.test(
     url,
@@ -229,12 +407,12 @@ const commitUrl = (url: string) =>
   /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/commit\/[0-9a-fA-F]{40}$/.test(
     url.trim(),
   );
-const watchLabel = (w: Watch) =>
+const watchLabel = (w: Watch, t: CiText) =>
   w.kind === "pull"
-    ? `PR #${w.number}`
+    ? t.pr(w.number)
     : w.kind === "commit"
-      ? `Commit ${w.expectedSha.slice(0, 8)} · ${w.branch} · ${w.event}`
-      : `Run #${w.number}`;
+      ? t.commit(w.expectedSha.slice(0, 8), w.branch, w.event)
+      : t.run(w.number);
 const open = (detail: CiOpen) =>
   window.dispatchEvent(
     new CustomEvent("yuzuno:open-job", {
@@ -272,19 +450,19 @@ const runUnfinished = (run: Run) =>
   run.status === "running" || run.status === "pending";
 export const runActive = (run: Run) =>
   run.runWatched !== false && runUnfinished(run);
-const runLabel = (run: Run) =>
+const runLabel = (run: Run, t: CiText = ciEn) =>
   run.runWatched === false && runUnfinished(run)
-    ? `Last seen ${run.status === "running" ? "running" : "waiting"}`
-    : labels[run.status] || run.status;
+    ? t.lastSeen(run.status === "running")
+    : t.labels[run.status] || run.status;
 const runMark = (run: Run) =>
   run.runWatched === false && runUnfinished(run) ? "unconfirmed" : run.status;
 /** Still going, or ended however it ended. */
 const placeRun = (run: Run): Placement => (runActive(run) ? "active" : "done");
 /** When it was queued and, once it has, when it finished. */
-const runMoments = (run: Run) =>
+const runMoments = (run: Run, t: CiText) =>
   moments([
-    ["Queued", run.createdAt],
-    ["Finished", runUnfinished(run) ? null : run.updatedAt],
+    [t.queuedAt, run.createdAt],
+    [t.finishedAt, runUnfinished(run) ? null : run.updatedAt],
   ]);
 /** Its latest moment, for the dock: finished, else started, else queued. */
 const runLatest = (run: Run) =>
@@ -395,6 +573,8 @@ export function CiJobs({
   revision: string;
   initial: CiOpen;
 }) {
+  const language = useLanguage();
+  const t = ciText(language);
   const [page, setPage] = useState<Page>(empty);
   const [selected, setSelected] = useState(initial.runKey || "");
   const [report, setReport] = useState<Report | null>(null);
@@ -439,7 +619,7 @@ export function CiJobs({
           `/ci?${query}${before ? `&before=${before}` : ""}`,
         );
         if (!Array.isArray(p.runs) || !Array.isArray(p.subscriptions))
-          throw new Error("CI monitoring requires an updated Core.");
+          throw new Error(ciEn.updatedCore);
         if (generation.current !== g) return;
         setPage((old) =>
           before
@@ -651,7 +831,7 @@ export function CiJobs({
   const chosen =
     observedRun || (report?.run.id === selected ? report.run : undefined);
   return (
-    <section className="jobs-source ci-jobs" aria-label="GitHub Actions jobs">
+    <section className="jobs-source ci-jobs" aria-label={t.region} lang={langTag(language)}>
       <JobsSourceHeading
         id="jobs-ci-title"
         title="GitHub Actions"
@@ -661,8 +841,8 @@ export function CiJobs({
               <button
                 type="button"
                 className="icon-button"
-                aria-label="Check CI with GitHub now"
-                title="Check CI with GitHub now"
+                aria-label={t.checkNow}
+                title={t.checkNow}
                 aria-busy={check?.status === "busy"}
                 disabled={check?.status === "busy"}
                 onClick={() => void refresh()}
@@ -684,40 +864,38 @@ export function CiJobs({
               ) : (
                 <Eye size={14} aria-hidden="true" />
               )}
-              {creating ? "Back to runs" : "Watch CI"}
+              {creating ? t.back : t.watch}
             </button>
           </>
         }
       >
-        Runs Core watches on GitHub for a PR or run commit. Remote runs do not
-        use this machine's job budget.
+        {t.intro}
       </JobsSourceHeading>
       {check ? (
         <p
           className={`ci-check${check.status === "error" || check.status === "cooldown" ? " inline-error" : ""}`}
           role="status"
         >
-          {checkText(check)}
+          {checkText(check, t)}
         </p>
       ) : (
         page.cooldownUntil && (
           <p className="ci-check" role="status">
-            GitHub is limiting reads until {clock(page.cooldownUntil)}. Showing
-            the last successful observation.
+            {t.cooldown(clock(page.cooldownUntil))}
           </p>
         )
       )}
       {error && (
         <p className="inline-error" role="alert">
-          {error}
+          {error === ciEn.updatedCore ? t.updatedCore : error}
         </p>
       )}
       {creating ? (
         <form className="job-form" onSubmit={subscribe}>
           <fieldset className="job-form-group">
-            <legend>What to watch</legend>
+            <legend>{t.whatToWatch}</legend>
             <label>
-              Notify Agent
+              {t.notify}
               <select
                 required
                 value={draft.agentId}
@@ -733,7 +911,7 @@ export function CiJobs({
               </select>
             </label>
             <label>
-              Existing task
+              {t.existingTask}
               <input
                 required
                 value={draft.taskId}
@@ -742,7 +920,7 @@ export function CiJobs({
               />
             </label>
             <label className="job-wide">
-              GitHub PR, Actions run or commit URL
+              {t.url}
               <input
                 required
                 type="url"
@@ -754,7 +932,7 @@ export function CiJobs({
             {commitUrl(draft.url) && (
               <>
                 <label>
-                  Branch of its runs
+                  {t.branch}
                   <input
                     required
                     value={draft.branch}
@@ -765,7 +943,7 @@ export function CiJobs({
                   />
                 </label>
                 <label>
-                  Event of its runs
+                  {t.event}
                   <input
                     required
                     value={draft.event}
@@ -778,7 +956,7 @@ export function CiJobs({
               </>
             )}
             <label className="job-wide">
-              Commit to watch
+              {t.commitToWatch}
               <input
                 required
                 pattern="[a-fA-F0-9]{40}"
@@ -786,20 +964,14 @@ export function CiJobs({
                 onChange={(e) =>
                   setDraft({ ...draft, expectedSha: e.target.value })
                 }
-                placeholder="Full 40-character SHA"
+                placeholder={t.fullSha}
               />
             </label>
           </fieldset>
           <div className="job-form-footer">
-            <small>
-              Core watches this commit for seven days, including new attempts,
-              and sends normal mailbox results. You can close this window or end
-              the Agent's Turn. A newer PR commit needs a new subscription. A
-              commit URL can be watched before any run exists: only that
-              commit's runs on that branch for that event count.
-            </small>
+            <small>{t.watchNote}</small>
             <button className="primary-button" disabled={busy}>
-              {busy ? "Saving…" : "Subscribe to CI"}
+              {busy ? t.saving : t.subscribe}
             </button>
           </div>
         </form>
@@ -807,10 +979,7 @@ export function CiJobs({
         <>
           {!!page.subscriptions.length && (
             <details className="ci-subscriptions" open={!page.runs.length}>
-              <summary>
-                {page.subscriptions.filter((s) => s.active).length} active
-                subscription(s)
-              </summary>
+              <summary>{t.activeSubscriptions(page.subscriptions.filter((s) => s.active).length)}</summary>
               {page.subscriptions.map((s) => (
                 <div className="ci-subscription" key={s.id}>
                   <div>
@@ -822,41 +991,31 @@ export function CiJobs({
                       target="_blank"
                       rel="noreferrer"
                     >
-                      {watchLabel(s.watch)}
+                      {watchLabel(s.watch, t)}
                     </a>
                     <span>
                       {s.active
                         ? s.watch.state === "waiting_for_run"
-                          ? "Waiting for a run of"
-                          : "Watching"
-                        : "Watched"}{" "}
+                          ? t.waitingFor
+                          : t.watching
+                        : t.watched}{" "}
                       {s.watch.expectedSha.slice(0, 8)} ·{" "}
                       {s.active
-                        ? `until ${stamp(s.expiresAt)}`
-                        : `${closedLabel(s)}${s.closure?.at ? ` · ${stamp(s.closure.at)}` : ""}`}
+                        ? t.until(stamp(s.expiresAt, t))
+                        : `${closedLabel(s, t)}${s.closure?.at ? ` · ${stamp(s.closure.at, t)}` : ""}`}
                     </span>
-                    <small>Last observed {stamp(s.watch.observedAt)}</small>
+                    <small>{t.lastObserved(stamp(s.watch.observedAt, t))}</small>
                     {s.watch.currentHeadSha !== s.watch.expectedSha && (
-                      <p>
-                        Older commit: current PR head is{" "}
-                        {s.watch.currentHeadSha.slice(0, 8)}. These results
-                        apply only to {s.watch.expectedSha.slice(0, 8)}.
-                      </p>
+                      <p>{t.olderCommit(s.watch.currentHeadSha.slice(0, 8), s.watch.expectedSha.slice(0, 8))}</p>
                     )}
                     {s.watch.error && (
                       <p className="inline-error">
-                        {s.watch.error} · Last attempt{" "}
-                        {stamp(s.watch.lastAttemptAt)}
-                        {s.watch.state === "needs_attention" &&
-                          " · Paused after repeated failures; subscribe again to resume."}
+                        {s.watch.error}
+                        {t.lastAttempt(stamp(s.watch.lastAttemptAt, t))}
+                        {s.watch.state === "needs_attention" && t.needsAttention}
                       </p>
                     )}
-                    {s.watch.truncated && (
-                      <p>
-                        More than 1,000 runs match this commit; use GitHub for
-                        the complete history.
-                      </p>
-                    )}
+                    {s.watch.truncated && <p>{t.truncated}</p>}
                   </div>
                   {s.active && (
                     <button
@@ -864,45 +1023,39 @@ export function CiJobs({
                       disabled={busy}
                       onClick={() => void stop(s)}
                     >
-                      Stop watching
+                      {t.stopWatching}
                     </button>
                   )}
                 </div>
               ))}
               {page.subscriptionsTruncated && (
-                <p>
-                  Showing the latest 200 subscriptions. Narrow to an Agent or
-                  task.
-                </p>
+                <p>{t.latest200}</p>
               )}
             </details>
           )}
           <div className="jobs-browser">
             <StateGroups
-              label="Actions runs"
-              historyLabel="History"
+              label={t.runs}
+              historyLabel={t.history}
               items={page.runs}
               place={placeRun}
               selected={selected}
               empty={
-                <p className="jobs-empty">
-                  No Actions runs observed yet. Subscribe to a PR or run to
-                  begin.
-                </p>
+                <p className="jobs-empty">{t.noRuns}</p>
               }
               row={(r) => (
                 <JobRow
                   status={runMark(r)}
-                  state={runLabel(r)}
+                  state={runLabel(r, t)}
                   name={r.name}
                   meta={[
                     `#${r.runId}`,
-                    r.attempt !== "1" && `attempt ${r.attempt}`,
+                    r.attempt !== "1" && t.attempt(r.attempt),
                   ]}
                   note={`${r.repository} · ${r.headSha.slice(0, 8)}`}
                   time={ranFor(r)}
-                  timeTitle={`Last observed ${stamp(r.observedAt)}`}
-                  moments={runMoments(r)}
+                  timeTitle={t.lastObserved(stamp(r.observedAt, t))}
+                  moments={runMoments(r, t)}
                   selected={selected === r.id}
                   onSelect={() => setSelected(r.id)}
                 />
@@ -914,7 +1067,7 @@ export function CiJobs({
                   className="quiet-button"
                   onClick={() => void load(page.nextBefore!)}
                 >
-                  Earlier CI runs
+                  {t.earlier}
                 </button>
               )}
             </StateGroups>
@@ -923,7 +1076,7 @@ export function CiJobs({
                 <>
                   <JobDetailHeading
                     status={runMark(chosen)}
-                    state={`${runLabel(chosen)} · ${chosen.conclusion || chosen.rawStatus}`}
+                    state={`${runLabel(chosen, t)} · ${chosen.conclusion || chosen.rawStatus}`}
                     title={chosen.name}
                     role={runActive(chosen) ? "status" : undefined}
                   >
@@ -933,56 +1086,48 @@ export function CiJobs({
                         href={safeLink(chosen.url)}
                         target="_blank"
                         rel="noreferrer"
-                        title="Open run, logs and artifacts on GitHub"
+                        title={t.openTitle}
                       >
                         <ExternalLink size={13} aria-hidden="true" />
-                        Open on GitHub
+                        {t.openOnGitHub}
                       </a>
                     )}
                   </JobDetailHeading>
                   {chosen.runWatched === false && (
-                    <p className="ci-jobs-observed">
-                      Not being watched — showing the last observation. Use
-                      refresh to check this attempt once without restarting
-                      monitoring.
-                    </p>
+                    <p className="ci-jobs-observed">{t.notBeingWatched}</p>
                   )}
                   {page.subscriptions
                     .filter((s) => s.watch.expectedSha === chosen.headSha)
                     .some((s) => s.watch.currentHeadSha !== chosen.headSha) && (
-                    <p>
-                      Older PR commit. This result does not describe the current
-                      PR head.
-                    </p>
+                    <p>{t.olderPrCommit}</p>
                   )}
-                  <JobCard title="Summary">
+                  <JobCard title={t.summary}>
                     <dl>
-                      <dt>Source</dt>
+                      <dt>{t.source}</dt>
                       <dd>GitHub Actions · {chosen.repository}</dd>
-                      <dt>Run / attempt</dt>
+                      <dt>{t.runAttempt}</dt>
                       <dd>
                         {chosen.runId} / {chosen.attempt}
                       </dd>
-                      <dt>Actual commit</dt>
+                      <dt>{t.actualCommit}</dt>
                       <dd>{chosen.headSha}</dd>
-                      <dt>Started</dt>
-                      <dd>{stamp(chosen.startedAt)}</dd>
-                      <dt>Last observed</dt>
-                      <dd>{stamp(chosen.observedAt)}</dd>
+                      <dt>{t.started}</dt>
+                      <dd>{stamp(chosen.startedAt, t)}</dd>
+                      <dt>{t.lastObservedLabel}</dt>
+                      <dd>{stamp(chosen.observedAt, t)}</dd>
                     </dl>
                   </JobCard>
                   {report?.run.id === selected && report.details && (
                     <JobCard
-                      title="Jobs and steps"
+                      title={t.jobsSteps}
                       aside={
                         <small className="ci-jobs-observed">
-                          Jobs/steps last observed:{" "}
-                          {stamp(report.details.observedAt)}.
+                          {t.stepsObserved(stamp(report.details.observedAt, t))}
                           {Math.floor(
                             Date.parse(report.details.observedAt) / 1000,
                           ) <
                             Math.floor(Date.parse(chosen.observedAt) / 1000) &&
-                            " This snapshot predates the latest run observation."}
+                            t.predates}
                         </small>
                       }
                     >
@@ -996,7 +1141,7 @@ export function CiJobs({
                             <StatusMark status={j.status} />
                             {j.name}
                             <span className={`job-state state-${j.status}`}>
-                              {labels[j.status]}
+                              {t.labels[j.status]}
                             </span>
                           </summary>
                           <a
@@ -1005,7 +1150,7 @@ export function CiJobs({
                             target="_blank"
                             rel="noreferrer"
                           >
-                            Job logs
+                            {t.jobLogs}
                           </a>
                           <ol>
                             {j.steps.map((s) => (
@@ -1019,13 +1164,13 @@ export function CiJobs({
                             ))}
                           </ol>
                           {j.stepsTruncated && (
-                            <p>Remaining steps are available on GitHub.</p>
+                            <p>{t.remainingSteps}</p>
                           )}
                         </details>
                       ))}
                       {report.details.hasMore &&
                         (report.details.pageLimitReached ? (
-                          <p>Further jobs are available on GitHub.</p>
+                          <p>{t.furtherJobs}</p>
                         ) : (
                           <button
                             type="button"
@@ -1037,20 +1182,15 @@ export function CiJobs({
                               )
                             }
                           >
-                            More jobs
+                            {t.moreJobs}
                           </button>
                         ))}
                     </JobCard>
                   )}
-                  <p className="job-footnote">
-                    CI completion does not merge a PR, approve review, or
-                    complete its task.
-                  </p>
+                  <p className="job-footnote">{t.ciNote}</p>
                 </>
               ) : (
-                <p className="jobs-empty">
-                  Select a run to inspect jobs and steps.
-                </p>
+                <p className="jobs-empty">{t.selectRun}</p>
               )}
             </div>
           </div>
