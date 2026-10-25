@@ -97,7 +97,7 @@ function mount({ permission = "granted", saved = { enabled: true }, looking = fa
           // Copied out of the page's realm, to compare with this one's values.
           page.invoked.push(args === undefined ? [command] : [command, JSON.parse(JSON.stringify(args))]);
           if (command === "desktop_notifications") return shell.answer;
-          if (command === "desktop_notify") return null;
+          if (command === "desktop_notify") return { handed: true };
           throw `unexpected ${command}`;
         },
       },
@@ -204,11 +204,18 @@ test("in the desktop app that can notify, a change read while away is handed to 
   const page = mount({ shell: { answer: windows } });
   await page.read([agent("a", { status: "working" })]);
   await page.read([result("a")]);
-  assert.deepEqual(page.invoked, [["desktop_notifications"], ["desktop_notify", { title: "Mori finished", body: "The Turn finished." }]]);
+  assert.deepEqual(page.invoked, [["desktop_notifications"], ["desktop_notify", { title: "Mori finished", body: "The Turn finished.", whenAway: true }]], "for while away: the app decides from its window");
   assert.deepEqual(page.shown, [], "not through the webview's own Notification");
   await page.read([result("a")]);
   assert.equal(page.invoked.length, 2, "the same state read again: nothing more");
   page.close();
+  // The page says it is looked at, as a minimized window's page does in the Windows app: still
+  // handed to the app, which holds it back only while its window really is in front.
+  const front = mount({ shell: { answer: windows }, looking: true });
+  await front.read([agent("a", { status: "working" })]);
+  await front.read([result("a")]);
+  assert.deepEqual(front.invoked, [["desktop_notifications"], ["desktop_notify", { title: "Mori finished", body: "The Turn finished.", whenAway: true }]]);
+  front.close();
   for (const options of [{ saved: null, shell: { answer: windows } }, { saved: { enabled: true, muted: true }, shell: { answer: windows } }, { shell: { answer: { supported: false, system: null } } }]) {
     const other = mount(options);
     await other.read([agent("a", { status: "working" })]);

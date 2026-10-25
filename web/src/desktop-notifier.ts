@@ -24,7 +24,11 @@ export function readDesktopNotifier(): Promise<DesktopNotifier | null> {
   reading ??= invoke("desktop_notifications").then(
     (answer) => {
       if ((answer as Answer | null)?.supported !== true) return null;
-      known = { notify: (title, body) => invoke("desktop_notify", { title, body }).then(() => undefined) };
+      // Whether it handed it on: `handed: false` is one held back while the window is in front.
+      known = {
+        notify: (title, body, whenAway) =>
+          invoke("desktop_notify", { title, body, whenAway }).then((answer) => (answer as { handed?: unknown } | null)?.handed !== false),
+      };
       return known;
     },
     () => null,

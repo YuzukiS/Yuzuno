@@ -80,9 +80,13 @@ export function useSystemNotifications(
     const host = browserHost(isNative, knownDesktopNotifier());
     const access = notificationAccess(host);
     const wanted = notices.filter((notice) => notifies(now, access, notice.kind));
-    if (!wanted.length || (!inView && !away())) return;
+    // In the desktop app the page cannot tell whether it is looked at (a
+    // minimized window's page still says it is visible and focused): the
+    // app decides from its window, given `whenAway` (T-188).
+    const throughApp = access.state === "through-app";
+    if (!wanted.length || (!inView && !throughApp && !away())) return;
     for (const notice of merged(wanted))
-      void showSystemNotification(notice.title, { body: notice.body, tag: notice.tag }, host, { opened: () => opener.current(notice) });
+      void showSystemNotification(notice.title, { body: notice.body, tag: notice.tag }, host, { opened: () => opener.current(notice), whenAway: !inView });
   };
   useEffect(() => {
     if (!agents) return;

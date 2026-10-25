@@ -102,7 +102,7 @@ async function mount({ permission = "default", answer = "granted", shows = "show
             return shell.answer;
           }
           if (command === "desktop_notify" && shell.notify === "refused") throw "The system didn't take the notification: fixture";
-          if (command === "desktop_notify") return null;
+          if (command === "desktop_notify") return { handed: true };
           throw `unexpected ${command}`;
         },
       },
@@ -269,7 +269,7 @@ test("in the desktop app that can notify, it says so: nothing is asked, a test i
   page.button("Send a test").click();
   await until(() => page.doc.querySelector(".notification-test-result"), "a result");
   assert.match(page.doc.querySelector(".notification-test-result").textContent, /^Handed to Windows\. Windows doesn’t tell this app whether it showed it/);
-  assert.deepEqual(page.invoked.slice(1), [["desktop_notify", { title: "Yuzuno", body: "A test notification from your Workspace." }]], "one, to the app");
+  assert.deepEqual(page.invoked.slice(1), [["desktop_notify", { title: "Yuzuno", body: "A test notification from your Workspace.", whenAway: false }]], "one, to the app, also while looking");
   assert.deepEqual(page.shown, [], "not through the webview's own Notification");
   page.close();
 });

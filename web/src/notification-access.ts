@@ -36,8 +36,10 @@ type ShownNotification = {
   close(): void;
 };
 /** The desktop app's way to the system's notifications, where it has one
- * (desktop-notifier.ts). It hands one on and says only whether it took it. */
-export type DesktopNotifier = { notify(title: string, body: string): Promise<void> };
+ * (desktop-notifier.ts). It hands one on, or, for one meant for while the
+ * user looks elsewhere (`whenAway`), holds it back while its window is in
+ * front: it answers whether it handed it on, nothing more. */
+export type DesktopNotifier = { notify(title: string, body: string, whenAway: boolean): Promise<boolean> };
 
 /** The parts of the browser this reads: the app passes the window's, a test its own. */
 export type NotificationHost = {
@@ -116,6 +118,8 @@ export async function requestNotificationAccess(host: NotificationHost): Promise
  *   Focus or do-not-disturb mode), which a page cannot see.
  * - `handed`: the desktop app handed it to the system, which reports
  *   nothing back: whether it was shown is not known.
+ * - `held`: the desktop app held it back, its window being in front (only
+ *   for one meant for while the user looks elsewhere).
  * - `unconfirmed`: no report within the wait.
  * - `failed`: it reported an error.
  * - `refused`: nothing was sent: this device does not allow it (see `access`).
@@ -123,6 +127,7 @@ export async function requestNotificationAccess(host: NotificationHost): Promise
 export type TestOutcome =
   | { outcome: "shown" }
   | { outcome: "handed" }
+  | { outcome: "held" }
   | { outcome: "unconfirmed" }
   | { outcome: "failed"; message: string }
   | { outcome: "refused"; access: NotificationAccess };
@@ -131,15 +136,15 @@ export function showSystemNotification(
   title: string,
   options: NotificationOptions,
   host: NotificationHost,
-  { waitMs = 5_000, opened }: { waitMs?: number; opened?: () => void } = {},
+  { waitMs = 5_000, opened, whenAway = false }: { waitMs?: number; opened?: () => void; whenAway?: boolean } = {},
 ): Promise<TestOutcome> {
   const access = notificationAccess(host);
   if (access.state === "through-app" && host.desktop) {
     // No click reaches the page from there: `opened` is not used (T-188).
     return host.desktop
-      .notify(desktopText(title, DESKTOP_TITLE_MAX), desktopText(options.body ?? "", DESKTOP_BODY_MAX, true))
+      .notify(desktopText(title, DESKTOP_TITLE_MAX), desktopText(options.body ?? "", DESKTOP_BODY_MAX, true), whenAway)
       .then(
-        (): TestOutcome => ({ outcome: "handed" }),
+        (handed): TestOutcome => (handed ? { outcome: "handed" } : { outcome: "held" }),
         (error): TestOutcome => ({ outcome: "failed", message: error instanceof Error ? error.message : String(error) }),
       );
   }

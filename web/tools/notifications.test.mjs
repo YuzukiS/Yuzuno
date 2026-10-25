@@ -178,7 +178,7 @@ test("a kind is shown only when chosen, not muted and allowed: the choice alone 
 // T-188: the desktop app that can notify here hands them to the system itself.
 test("in the desktop app that can notify, they go through it: not 'allowed', nothing to ask, a notification only handed on", async () => {
   const handed = [];
-  const desktop = { notify: async (title, body) => void handed.push({ title, body }) };
+  const desktop = { notify: async (title, body, whenAway) => (handed.push({ title, body, whenAway }), true) };
   const { api } = fakeNotifications({ permission: "granted" });
   const app = host(api, { native: true, desktop });
   assert.deepEqual(access.notificationAccess(app), { state: "through-app" });
@@ -187,8 +187,12 @@ test("in the desktop app that can notify, they go through it: not 'allowed', not
   assert.equal(prefs.notifies(on, { state: "through-app" }, "failed"), true);
   assert.equal(prefs.notifies({ ...on, muted: true }, { state: "through-app" }, "failed"), false);
   assert.equal(prefs.notifies(prefs.defaultNotificationPrefs, { state: "through-app" }, "failed"), false, "the choice is still needed");
-  assert.deepEqual(await access.showSystemNotification("Hana finished", { body: "The Turn finished.", tag: "yuzuno:finished:b" }, app), { outcome: "handed" });
-  assert.deepEqual(handed, [{ title: "Hana finished", body: "The Turn finished." }]);
+  assert.deepEqual(await access.showSystemNotification("Hana finished", { body: "The Turn finished.", tag: "yuzuno:finished:b" }, app, { whenAway: true }), { outcome: "handed" });
+  assert.deepEqual(await access.showSystemNotification("Yuzuno", { body: "A test" }, app), { outcome: "handed" });
+  assert.deepEqual(handed, [{ title: "Hana finished", body: "The Turn finished.", whenAway: true }, { title: "Yuzuno", body: "A test", whenAway: false }], "for while away, or also while looking (a test)");
+  // The app held one back, its window in front.
+  const front = host(api, { native: true, desktop: { notify: async () => false } });
+  assert.deepEqual(await access.showSystemNotification("Hana finished", {}, front, { whenAway: true }), { outcome: "held" });
   const refusing = host(api, { native: true, desktop: { notify: async () => { throw "The system didn't take the notification: fixture"; } } });
   assert.deepEqual(await access.showSystemNotification("Yuzuno", {}, refusing), { outcome: "failed", message: "The system didn't take the notification: fixture" });
   // Without the app's word, as in an older app: not available.

@@ -90,8 +90,18 @@ pub fn desktop_notifications(window: WebviewWindow, connection: tauri::State<'_,
     Ok(here())
 }
 
-/// Hands one notification to the system. `Ok` means only that: whether the
-/// system shows it is not reported back.
+/// What became of a notification handed to this app.
+#[derive(Serialize)]
+pub struct Handed {
+    /// Given to the system. False: held back, the window being in front.
+    handed: bool,
+}
+
+/// Hands one notification to the system. `handed` means only that: whether
+/// the system shows it is not reported back. With `when_away`, one meant for
+/// while the user looks elsewhere, it is held back while this window is in
+/// front (`notification_text::shown_now`); a page that sends none (an older
+/// one) is handed on as before.
 #[tauri::command]
 pub fn desktop_notify(
     app: AppHandle,
@@ -99,18 +109,25 @@ pub fn desktop_notify(
     connection: tauri::State<'_, ConnectionState>,
     title: String,
     body: String,
-) -> Result<(), String> {
+    when_away: Option<bool>,
+) -> Result<Handed, String> {
     workspace(&window, &connection)?;
     if !CHECKED {
         return Err("This app can't show system notifications on this system yet.".into());
     }
     let (title, body) = notification_text::checked(&title, &body)?;
+    let focused = window.is_focused().unwrap_or(false);
+    let minimized = window.is_minimized().unwrap_or(false);
+    if !notification_text::shown_now(when_away.unwrap_or(false), focused, minimized) {
+        return Ok(Handed { handed: false });
+    }
     app.notification()
         .builder()
         .title(title)
         .body(body)
         .show()
-        .map_err(|error| format!("The system didn't take the notification: {error}"))
+        .map_err(|error| format!("The system didn't take the notification: {error}"))?;
+    Ok(Handed { handed: true })
 }
 
 #[cfg(test)]

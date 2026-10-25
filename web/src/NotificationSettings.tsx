@@ -64,6 +64,7 @@ const text = strings({
   } as Record<"allowed" | "not-requested" | "denied" | "through-app" | "app" | "insecure" | "page-only" | "no-api", Access>,
   shown: "Your browser reports it was shown. If you didn’t see it, your system may be holding notifications back (Focus or Do Not Disturb).",
   handed: "Handed to Windows. Windows doesn’t tell this app whether it showed it: if you didn’t see it, check Windows notification settings and Focus.",
+  held: "Not sent: this app’s window was in front.",
   unconfirmed: "Sent, but your browser didn’t report it as shown within 5 seconds.",
   failed: (message: string) => `Your browser couldn’t show it: ${message}`,
   failedApp: (message: string) => `This app couldn’t hand it to Windows: ${message}`,
@@ -126,6 +127,7 @@ const text = strings({
   },
   shown: "你的浏览器报告已显示。如果你没有看到，可能是系统暂时拦下了通知（专注模式或勿扰模式）。",
   handed: "已交给 Windows。Windows 不会告诉此应用是否显示了它：如果你没有看到，请检查 Windows 的通知设置和专注模式。",
+  held: "未发送：此应用的窗口在最前面。",
   unconfirmed: "已发送，但你的浏览器在 5 秒内没有报告已显示。",
   failed: (message) => `你的浏览器无法显示它：${message}`,
   failedApp: (message) => `此应用无法把它交给 Windows：${message}`,
@@ -169,6 +171,8 @@ const testText = (result: TestOutcome, language: Language, throughApp: boolean) 
       return t.shown;
     case "handed":
       return t.handed;
+    case "held":
+      return t.held;
     case "unconfirmed":
       return t.unconfirmed;
     case "failed":
