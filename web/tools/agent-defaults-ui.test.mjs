@@ -290,3 +290,59 @@ test("a default model the Core host no longer offers, or a catalog that can't be
   broken.window.renderDefaults();
   await until(() => /Couldn’t read this Core host’s Codex models: .*Codex is not signed in/.test(broken.document.body.textContent), "the catalog failure said");
 });
+
+const claudeCatalog = [
+  { id: "sonnet", model: "sonnet", displayName: "Sonnet", supportsAutoMode: true },
+  { id: "haiku", model: "haiku", displayName: "Haiku", supportsAutoMode: false },
+];
+const claudeView = (saved) => {
+  const base = modelView(saved);
+  return {
+    ...base,
+    builtIn: { ...base.builtIn, claudeModel: null },
+    effective: { ...base.effective, claudeModel: { value: saved.claudeModel ?? null, source: saved.claudeModel ? "workspace" : "builtin" } },
+  };
+};
+const claudeReads = (page) => page.calls.filter((c) => c.url.endsWith("/models?harness=claude")).length;
+
+test("a default Claude Code model comes from the Core host's Claude catalog, read once its choice is opened, and only to a Core that has it", async () => {
+  let saved = {};
+  const page = mount((url, method, body) => {
+    if (url.endsWith("/models?harness=claude")) return [200, { models: claudeCatalog }];
+    if (url.endsWith("/models")) return [200, { models: catalog }];
+    if (method === "POST") saved = Object.fromEntries(Object.entries({ ...saved, ...body }).filter(([, v]) => v !== null));
+    return [200, claudeView(saved)];
+  });
+  page.window.renderDefaults();
+  await until(() => select(page, "Codex model for new Agents")?.options.length === 3, "the editor with its Codex models");
+  const text = () => page.document.querySelector("#settings-agent-defaults")?.textContent ?? "";
+  assert.match(text(), /Built in: Claude Code’s own default/);
+  assert.equal(claudeReads(page), 0, "Claude Code's catalog is not read until its choice is opened");
+  select(page, "Claude Code model for new Agents").dispatchEvent(new page.window.FocusEvent("focusin", { bubbles: true }));
+  await until(() => select(page, "Claude Code model for new Agents").options.length === 3, "Claude Code's models");
+  const options = [...select(page, "Claude Code model for new Agents").options].map((o) => o.textContent.trim());
+  assert.deepEqual(options, ["Built in · Claude Code’s own default", "Sonnet", "Haiku"]);
+  await choose(page, "Claude Code model for new Agents", "haiku");
+  assert.match(text(), /haiku can’t run in Auto mode/);
+  await choose(page, "Claude Code model for new Agents", "sonnet");
+  assert.doesNotMatch(text(), /can’t run in Auto mode/);
+  button(page, "Save").click();
+  await until(() => posts(page).length === 1 && /Set for this Workspace: sonnet\./.test(text()), "the saved model");
+  assert.deepEqual(posts(page)[0].body, { claudeModel: "sonnet" }, "its own field; Codex's untouched");
+  button(page, "Use built-in for all").click();
+  await until(() => posts(page).length === 2, "everything built in");
+  assert.deepEqual(posts(page)[1].body, { harness: null, codexPermissionPreset: null, claudePermissionMode: null, codexModel: null, codexReasoningEffort: null, claudeModel: null });
+  assert.equal(claudeReads(page), 1);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a saved Claude Code model is checked at once: one no longer offered, or a catalog that can't be read, is said", async () => {
+  const stale = mount((url) => (url.endsWith("/models?harness=claude") ? [200, { models: claudeCatalog }] : url.endsWith("/models") ? [200, { models: catalog }] : [200, claudeView({ claudeModel: "gone" })]));
+  stale.window.renderDefaults();
+  await until(() => /gone is no longer offered by this Core host’s Claude Code/.test(stale.document.body.textContent), "the stale default said");
+  assert.ok([...select(stale, "Claude Code model for new Agents").options].some((o) => o.textContent.trim() === "gone (no longer offered)"));
+  const broken = mount((url) => (url.endsWith("/models?harness=claude") ? [500, { error: "Claude Code is not signed in" }] : url.endsWith("/models") ? [200, { models: catalog }] : [200, claudeView({ claudeModel: "sonnet" })]));
+  broken.window.renderDefaults();
+  await until(() => /Couldn’t read this Core host’s Claude Code models: .*Claude Code is not signed in/.test(broken.document.body.textContent), "the catalog failure said");
+  assert.equal(select(broken, "Claude Code model for new Agents").value, "sonnet", "the saved choice still shown");
+});

@@ -10,6 +10,7 @@ import {
   changeAgentDefaults,
   changeProjectAgentDefaults,
   claudeModeText,
+  claudeModelText,
   codexModelText,
   codexPermissionText,
   harnessName,
@@ -19,15 +20,16 @@ import {
 
 /** One choice in the editor: "" is no choice here (built in for the
  * Workspace; inherited for a project). */
-type Draft = { harness: string; codexPermissionPreset: string; claudePermissionMode: string; codexModel: string; codexReasoningEffort: string };
+type Draft = { harness: string; codexPermissionPreset: string; claudePermissionMode: string; codexModel: string; codexReasoningEffort: string; claudeModel: string };
 const draftFrom = (saved: SavedDefaults): Draft => ({
   harness: saved.harness ?? "",
   codexPermissionPreset: saved.codexPermissionPreset ?? "",
   claudePermissionMode: saved.claudePermissionMode ?? "",
   codexModel: saved.codexModel ?? "",
   codexReasoningEffort: saved.codexReasoningEffort ?? "",
+  claudeModel: saved.claudeModel ?? "",
 });
-const FIELDS = ["harness", "codexPermissionPreset", "claudePermissionMode", "codexModel", "codexReasoningEffort"] as const;
+const FIELDS = ["harness", "codexPermissionPreset", "claudePermissionMode", "codexModel", "codexReasoningEffort", "claudeModel"] as const;
 const modelName = (m: Model) => m.model || m.id;
 
 /**
@@ -50,6 +52,12 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
   // The Core host's Codex catalog, for a default model and effort (T-190).
   const [models, setModels] = useState<Model[] | null>(null);
   const [catalogError, setCatalogError] = useState("");
+  // Claude Code's catalog starts a catalog-only Claude Code on the Core host,
+  // so it is read when its choice is opened, or at once when this level has a
+  // Claude model to check.
+  const [claudeModels, setClaudeModels] = useState<Model[] | null>(null);
+  const [claudeCatalogError, setClaudeCatalogError] = useState("");
+  const [claudeWanted, setClaudeWanted] = useState(false);
   const own = (from: AgentDefaultsView) => (projectId ? from.project?.saved ?? {} : from.saved);
   const draftOf = (from: AgentDefaultsView) => draftFrom(own(from));
   const adopt = (next: AgentDefaultsView) => {
@@ -85,6 +93,22 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
       });
     return () => controller.abort();
   }, [active, modelDefaults]);
+  const claudeModelDefaults = !!view?.effective?.claudeModel;
+  const claudeSaved = !!(view && own(view).claudeModel);
+  const claudeRead = active && claudeModelDefaults && (claudeWanted || claudeSaved);
+  useEffect(() => {
+    if (!claudeRead) return;
+    const controller = new AbortController();
+    setClaudeCatalogError("");
+    void api<{ models: Model[] }>("/models?harness=claude", { signal: controller.signal })
+      .then((result) => {
+        if (!controller.signal.aborted) setClaudeModels(result.models || []);
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted) setClaudeCatalogError(errorText(e));
+      });
+    return () => controller.abort();
+  }, [claudeRead]);
   const savedDraft = view ? draftOf(view) : null;
   const changes: AgentDefaultsChange = {};
   if (draft && savedDraft) {
@@ -96,6 +120,8 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
   const chosenModel = draft?.codexModel ? models?.find((m) => modelName(m) === draft.codexModel) : undefined;
   // A saved model the Core host no longer offers: shown, and said.
   const stale = !!draft?.codexModel && models !== null && !chosenModel;
+  const chosenClaude = draft?.claudeModel ? claudeModels?.find((m) => modelName(m) === draft.claudeModel) : undefined;
+  const claudeStale = !!draft?.claudeModel && claudeModels !== null && !chosenClaude;
   const anySaved = !!savedDraft && FIELDS.some((field) => savedDraft[field]);
   async function save(change: AgentDefaultsChange) {
     if (saving) return;
@@ -321,6 +347,59 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
               </span>
             </div>
           )}
+          {effective.claudeModel && (
+            <label className="settings-row">
+              <span className="settings-row-main">
+                <span className="settings-row-title">Claude Code model on the Core host</span>
+                <span className="settings-row-help agent-default-source" data-source={effective.claudeModel.source}>
+                  {sourceText(effective.claudeModel.source)}: {claudeModelText(effective.claudeModel.value)}.
+                </span>
+                <span className="settings-row-help">
+                  Claude Code Agents created on the Core host; their reasoning effort stays each Agent’s own.
+                </span>
+                {claudeRead && !claudeModels && !claudeCatalogError && (
+                  <span className="settings-row-help">Reading this Core host’s Claude Code models…</span>
+                )}
+                {claudeCatalogError && (
+                  <span className="settings-row-help updates-error" role="alert">
+                    Couldn’t read this Core host’s Claude Code models: {claudeCatalogError}. A model can’t be chosen now.
+                  </span>
+                )}
+                {claudeStale && (
+                  <span className="settings-row-help updates-error" role="alert">
+                    {draft.claudeModel} is no longer offered by this Core host’s Claude Code, so new Agents can’t use it.
+                    Choose another, or {projectId ? "inherit" : "Built in"}.
+                  </span>
+                )}
+                {chosenClaude?.supportsAutoMode === false && (
+                  <span className="settings-row-help">
+                    {draft.claudeModel} can’t run in Auto mode: an Agent that would get Auto mode chooses its own model
+                    or permission mode.
+                  </span>
+                )}
+              </span>
+              <select
+                className="settings-select"
+                aria-label="Claude Code model for new Agents"
+                value={draft.claudeModel}
+                disabled={locked}
+                onFocus={() => setClaudeWanted(true)}
+                onPointerDown={() => setClaudeWanted(true)}
+                onChange={set("claudeModel")}
+              >
+                <option value="">
+                  {none(claudeModelText(inherited ? inherited.claudeModel?.value : null), inherited?.claudeModel?.source)}
+                </option>
+                {claudeStale && <option value={draft.claudeModel}>{draft.claudeModel} (no longer offered)</option>}
+                {draft.claudeModel && !claudeModels && <option value={draft.claudeModel}>{draft.claudeModel}</option>}
+                {(claudeModels ?? []).map((m) => (
+                  <option key={modelName(m)} value={modelName(m)}>
+                    {m.displayName || modelName(m)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {(changed || saving || anySaved) && (
             <div className="settings-row settings-row-end">
               <div className="settings-row-action">
@@ -336,6 +415,7 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
                         claudePermissionMode: null,
                         // Only to a Core that has them: an older one refuses fields it doesn't know.
                         ...(modelDefaults ? { codexModel: null, codexReasoningEffort: null } : {}),
+                        ...(claudeModelDefaults ? { claudeModel: null } : {}),
                       })
                     }
                   >

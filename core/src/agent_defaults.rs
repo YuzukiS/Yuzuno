@@ -19,6 +19,12 @@
 //! create request that leaves the model out inherits it; `null` asks for
 //! Codex's own default and so overrides what would be inherited; an empty
 //! string, as older clients send, is not taken as a choice.
+//!
+//! Claude Code on the Core host takes a default model the same way, from
+//! that host's Claude catalog, kept apart from Codex's. No effort: a Claude
+//! Agent's effort stays its own setting. An inherited model that the catalog
+//! says can't run auto mode is not used with auto mode, as the create dialog
+//! already holds for a model chosen there.
 use crate::{model::AgentSettings, server::ApiError, store::Store, workspace::Workspace};
 use anyhow::{bail, ensure, Context, Result};
 use axum::{extract::{Path, Query, State}, routing::{get, post}, Json, Router};
@@ -59,6 +65,10 @@ pub struct AgentDefaults {
     /// One of that model's reasoning efforts; unset is the model's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_reasoning_effort: Option<String>,
+    /// Claude Code on the Core host only: a model of its catalog; unset is
+    /// Claude Code's own default there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_model: Option<String>,
 }
 
 impl AgentDefaults {
@@ -68,6 +78,10 @@ impl AgentDefaults {
                 "A model or reasoning effort is a name from the Codex catalog");
         }
         ensure!(self.codex_reasoning_effort.is_none() || self.codex_model.is_some(), "Choose the Codex model the reasoning effort is for");
+        if let Some(name) = &self.claude_model {
+            ensure!(!name.trim().is_empty() && name.len() <= 200 && !name.chars().any(char::is_control),
+                "A Claude Code model is a name from its catalog");
+        }
         if let Some(harness) = self.harness.as_deref().filter(|h| !HARNESSES.contains(h)) {
             bail!("A new Agent's harness can be Codex or Claude Code, not {harness}");
         }
@@ -95,6 +109,8 @@ struct Change {
     codex_model: Option<Option<String>>,
     #[serde(default, deserialize_with = "present")]
     codex_reasoning_effort: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    claude_model: Option<Option<String>>,
 }
 
 /// Left out (`None`), `null` (`Some(None)`) or a value.
@@ -102,13 +118,13 @@ pub(crate) fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<S
     Option::<String>::deserialize(d).map(Some)
 }
 
-/// A create request's model (Codex on the Core host reads all three).
+/// A create request's model (Codex and Claude Code on the Core host read all three).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum ModelAsk {
     /// Left out, or an empty string as older clients send: not a choice.
     #[default]
     Inherit,
-    /// `null`: Codex's own default, whatever a default for new Agents says.
+    /// `null`: the harness's own default, whatever a default for new Agents says.
     Native,
     Named(String),
 }
@@ -131,17 +147,28 @@ pub fn model_ask<'de, D: Deserializer<'de>>(d: D) -> Result<ModelAsk, D::Error> 
     })
 }
 
-/// A model and effort as this Core host's Codex catalog (`{"models":[…]}`)
-/// offers them: the model's name there, or why not.
+/// A model's entry in one of this Core host's catalogs (`{"models":[…]}`,
+/// Codex's or Claude Code's, named by `harness`), or why there is none.
+pub fn catalog_entry<'a>(catalog: &'a Value, harness: &str, model: &str) -> Result<&'a Value> {
+    let models = catalog["models"].as_array().with_context(|| format!("The {harness} model list is not one this Core reads"))?;
+    models.iter().find(|m| m["model"].as_str() == Some(model) || m["id"].as_str() == Some(model))
+        .with_context(|| format!("{model} is not among this Core host's {harness} models"))
+}
+
+/// The model's name as its catalog entry gives it.
+pub fn catalog_name(entry: &Value, model: &str) -> String {
+    entry["model"].as_str().or_else(|| entry["id"].as_str()).unwrap_or(model).to_owned()
+}
+
+/// A model and effort as this Core host's Codex catalog offers them: the
+/// model's name there, or why not.
 pub fn check_in_catalog(catalog: &Value, model: &str, effort: Option<&str>) -> Result<String> {
-    let models = catalog["models"].as_array().context("The Codex model list is not one this Core reads")?;
-    let entry = models.iter().find(|m| m["model"].as_str() == Some(model) || m["id"].as_str() == Some(model))
-        .with_context(|| format!("{model} is not among this Core host's Codex models"))?;
+    let entry = catalog_entry(catalog, "Codex", model)?;
     if let Some(effort) = effort {
         let offered = entry["supportedReasoningEfforts"].as_array().is_some_and(|all| all.iter().any(|e| e["reasoningEffort"] == effort));
         ensure!(offered, "{model} doesn't offer the reasoning effort {effort}");
     }
-    Ok(entry["model"].as_str().or_else(|| entry["id"].as_str()).unwrap_or(model).to_owned())
+    Ok(catalog_name(entry, model))
 }
 
 /// The model and effort a Codex Agent on the Core host gets, with where each
@@ -208,6 +235,33 @@ pub fn resolve_model(
     }))
 }
 
+/// A Claude Code Agent on the Core host: the request's own model first
+/// (`null` included), then the project's, then the Workspace's, then Claude
+/// Code's own default. A default is checked against the catalog first; the
+/// request's own model is used as before. No effort (`sources.1` unused):
+/// `resolve_model` refuses one for Claude before this.
+pub fn resolve_claude_model(defaults: &AgentDefaults, project: Option<&AgentDefaults>, asked: &ModelAsk) -> ModelPlan {
+    let plan = |model: String, check: Option<&'static str>, source: &'static str| ModelPlan {
+        check: check.map(|source| (model.clone(), None, source)),
+        model,
+        effort: None,
+        sources: (source, "builtin"),
+    };
+    match asked {
+        ModelAsk::Named(model) => plan(model.clone(), None, "request"),
+        ModelAsk::Native => plan(String::new(), None, "request"),
+        ModelAsk::Inherit => {
+            let none = AgentDefaults::default();
+            let project = project.unwrap_or(&none);
+            let found = [(project, "project"), (defaults, "workspace")].into_iter().find_map(|(layer, source)| layer.claude_model.clone().map(|model| (model, source)));
+            match found {
+                Some((model, source)) => plan(model, Some(source), source),
+                None => plan(String::new(), None, "builtin"),
+            }
+        }
+    }
+}
+
 impl Change {
     fn apply(self, mut defaults: AgentDefaults) -> AgentDefaults {
         if let Some(value) = self.harness { defaults.harness = value; }
@@ -219,12 +273,18 @@ impl Change {
             defaults.codex_model = value;
         }
         if let Some(value) = self.codex_reasoning_effort { defaults.codex_reasoning_effort = value; }
+        if let Some(value) = self.claude_model { defaults.claude_model = value; }
         defaults
     }
 
-    /// A change that names a model or effort, which the catalog must confirm.
+    /// A change that names a Codex model or effort, which Codex's catalog must confirm.
     fn names_a_model(&self) -> bool {
         matches!(self.codex_model, Some(Some(_))) || matches!(self.codex_reasoning_effort, Some(Some(_)))
+    }
+
+    /// A change that names a Claude Code model, which Claude Code's catalog must confirm.
+    fn names_a_claude_model(&self) -> bool {
+        matches!(self.claude_model, Some(Some(_)))
     }
 }
 
@@ -360,6 +420,7 @@ fn effective(saved: &AgentDefaults, project: &AgentDefaults) -> Value {
         "claudePermissionMode": field(&project.claude_permission_mode, &saved.claude_permission_mode, Some(BUILT_IN_CLAUDE_MODE)),
         "codexModel": model,
         "codexReasoningEffort": effort,
+        "claudeModel": field(&project.claude_model, &saved.claude_model, None),
     })
 }
 
@@ -371,10 +432,10 @@ fn view(saved: &AgentDefaults, project: Option<(&str, &AgentDefaults)>) -> Value
     let none = AgentDefaults::default();
     let mut view = json!({
         "saved": saved,
-        "builtIn": {"harness":BUILT_IN_HARNESS,"codexPermissionPreset":null,"claudePermissionMode":BUILT_IN_CLAUDE_MODE,"codexModel":null,"codexReasoningEffort":null},
+        "builtIn": {"harness":BUILT_IN_HARNESS,"codexPermissionPreset":null,"claudePermissionMode":BUILT_IN_CLAUDE_MODE,"codexModel":null,"codexReasoningEffort":null,"claudeModel":null},
         "effective": effective(saved, project.map_or(&none, |(_, own)| own)),
         "appliesTo": "Agents created from now on; existing Agents keep their own settings.",
-        "modelAppliesTo": "Codex Agents created on the Core host. SSH machines, Claude Code and OpenCode keep their own model and effort.",
+        "modelAppliesTo": "Codex and Claude Code Agents created on the Core host; a reasoning effort, Codex Agents only. SSH machines and OpenCode keep their own model and effort.",
     });
     if let Some((id, own)) = project {
         view["project"] = json!({"id": id, "saved": own, "inherited": effective(saved, &none)});
@@ -404,28 +465,44 @@ async fn get_defaults(State(ws): State<Arc<Workspace>>, Query(query): Query<ForP
     Ok(Json(answer))
 }
 
-/// This Core host's Codex catalog, read before a save whose change names a
-/// model or effort, so the save itself stays one store transaction: the
-/// catalog can take long, and a change saved meanwhile must not be undone
-/// (review ac471f13).
-async fn catalog_for(ws: &Arc<Workspace>, change: &Change) -> Option<Result<Value>> {
-    if change.names_a_model() { Some(ws.catalog().await) } else { None }
+/// This Core host's catalogs a change needs, read before the save so the
+/// save itself stays one store transaction: a catalog can take long, and a
+/// change saved meanwhile must not be undone (review ac471f13). Each only
+/// for a change that names one of its models.
+struct Catalogs {
+    codex: Option<Result<Value>>,
+    claude: Option<Result<Value>>,
+}
+
+async fn catalogs_for(ws: &Arc<Workspace>, change: &Change) -> Catalogs {
+    Catalogs {
+        codex: if change.names_a_model() { Some(ws.catalog().await) } else { None },
+        claude: if change.names_a_claude_model() { Some(ws.claude_catalog().await) } else { None },
+    }
+}
+
+/// The catalog read for a check, or why it can't be used.
+fn read<'a>(catalog: &'a Option<Result<Value>>, harness: &str) -> Result<&'a Value> {
+    match catalog {
+        Some(Ok(catalog)) => Ok(catalog),
+        Some(Err(e)) => bail!("Can't read this Core host's {harness} models: {e:#}; nothing was saved"),
+        None => bail!("Can't read this Core host's {harness} models; nothing was saved"),
+    }
 }
 
 /// A change applied to `current` and validated; a model or effort it names
 /// confirmed by the catalog read for it, as the catalog names it.
-fn checked(current: AgentDefaults, change: Change, catalog: Option<&Result<Value>>) -> Result<AgentDefaults> {
-    let names_a_model = change.names_a_model();
+fn checked(current: AgentDefaults, change: Change, catalogs: &Catalogs) -> Result<AgentDefaults> {
+    let (codex, claude) = (change.names_a_model(), change.names_a_claude_model());
     let mut next = change.apply(current);
     next.validate()?;
-    if let (true, Some(model)) = (names_a_model, next.codex_model.clone()) {
-        let catalog = match catalog {
-            Some(Ok(catalog)) => catalog,
-            Some(Err(e)) => bail!("Can't read this Core host's Codex models: {e:#}; nothing was saved"),
-            None => bail!("Can't read this Core host's Codex models; nothing was saved"),
-        };
-        let named = check_in_catalog(catalog, &model, next.codex_reasoning_effort.as_deref()).map_err(|e| anyhow::anyhow!("{e:#}; nothing was saved"))?;
+    if let (true, Some(model)) = (codex, next.codex_model.clone()) {
+        let named = check_in_catalog(read(&catalogs.codex, "Codex")?, &model, next.codex_reasoning_effort.as_deref()).map_err(|e| anyhow::anyhow!("{e:#}; nothing was saved"))?;
         next.codex_model = Some(named);
+    }
+    if let (true, Some(model)) = (claude, next.claude_model.clone()) {
+        let entry = catalog_entry(read(&catalogs.claude, "Claude Code")?, "Claude Code", &model).map_err(|e| anyhow::anyhow!("{e:#}; nothing was saved"))?;
+        next.claude_model = Some(catalog_name(entry, &model));
     }
     Ok(next)
 }
@@ -433,9 +510,9 @@ fn checked(current: AgentDefaults, change: Change, catalog: Option<&Result<Value
 async fn set_defaults(State(ws): State<Arc<Workspace>>, Json(change): Json<Value>) -> Result<Json<Value>, ApiError> {
     let _permit = ws.admission.enter_work()?;
     let change: Change = serde_json::from_value(change).map_err(|e| anyhow::anyhow!("Invalid defaults: {e}"))?;
-    let catalog = catalog_for(&ws, &change).await;
+    let catalogs = catalogs_for(&ws, &change).await;
     let saved = ws.stored(move |s| {
-        let next = checked(s.agent_defaults()?, change, catalog.as_ref())?;
+        let next = checked(s.agent_defaults()?, change, &catalogs)?;
         s.save_agent_defaults(&next)?;
         Ok(next)
     }).await?;
@@ -448,11 +525,11 @@ async fn set_defaults(State(ws): State<Arc<Workspace>>, Json(change): Json<Value
 async fn set_project_defaults(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(change): Json<Value>) -> Result<Json<Value>, ApiError> {
     let _permit = ws.admission.enter_work()?;
     let change: Change = serde_json::from_value(change).map_err(|e| anyhow::anyhow!("Invalid defaults: {e}"))?;
-    let catalog = catalog_for(&ws, &change).await;
+    let catalogs = catalogs_for(&ws, &change).await;
     let answer = ws.stored(move |s| {
         // As other changes to a project: an archived one is not changed (review 404bdbd3).
         s.ensure_project_assignable(&id)?;
-        let next = checked(s.project_agent_defaults(&id)?, change, catalog.as_ref())?;
+        let next = checked(s.project_agent_defaults(&id)?, change, &catalogs)?;
         s.save_project_agent_defaults(&id, &next)?;
         Ok(view(&s.agent_defaults()?, Some((&id, &next))))
     }).await?;
@@ -661,6 +738,41 @@ mod tests {
         let shown = view(&workspace, None);
         assert_eq!(shown["effective"]["codexModel"], json!({"value":"m-big","source":"workspace"}));
         assert_eq!(shown["effective"]["codexReasoningEffort"], json!({"value":null,"source":"builtin"}));
-        assert!(shown["modelAppliesTo"].as_str().unwrap().contains("SSH machines, Claude Code and OpenCode keep their own"));
+        assert!(shown["modelAppliesTo"].as_str().unwrap().contains("SSH machines and OpenCode keep their own"));
+    }
+
+    #[test]
+    fn claude_code_on_the_core_host_takes_its_own_model_from_the_request_then_project_then_workspace() {
+        let workspace = AgentDefaults { claude_model: Some("sonnet".into()), codex_model: Some("m-big".into()), ..Default::default() };
+        let project = AgentDefaults { claude_model: Some("haiku".into()), ..Default::default() };
+        let plan = |project: Option<&AgentDefaults>, asked: ModelAsk| resolve_claude_model(&workspace, project, &asked);
+        // Nothing asked: the Workspace's Claude model (never Codex's), checked first.
+        let inherited = plan(None, ModelAsk::Inherit);
+        assert_eq!((inherited.model.as_str(), inherited.effort, inherited.check, inherited.sources.0), ("sonnet", None, Some(("sonnet".into(), None, "workspace")), "workspace"));
+        let in_project = plan(Some(&project), ModelAsk::Inherit);
+        assert_eq!((in_project.model.as_str(), in_project.check, in_project.sources.0), ("haiku", Some(("haiku".into(), None, "project")), "project"));
+        // null: Claude Code's own default over what would be inherited; a name: as before, unchecked.
+        let native = plan(Some(&project), ModelAsk::Native);
+        assert_eq!((native.model.as_str(), native.check, native.sources.0), ("", None, "request"));
+        let named = plan(Some(&project), ModelAsk::Named("opus".into()));
+        assert_eq!((named.model.as_str(), named.check, named.sources.0), ("opus", None, "request"));
+        // No Claude default: Claude Code's own, exactly as before, though Codex has one.
+        let codex_only = AgentDefaults { codex_model: Some("m-big".into()), ..Default::default() };
+        let none = resolve_claude_model(&codex_only, None, &ModelAsk::Inherit);
+        assert_eq!((none.model.as_str(), none.check, none.sources.0), ("", None, "builtin"));
+        // Still no effort for Claude: refused before its model is resolved.
+        assert!(resolve_model(&workspace, None, false, &ModelAsk::Inherit, Some(Some("high"))).is_err());
+        // Its own field, shown with its source; a change naming it is checked against Claude's catalog only.
+        let shown = view(&workspace, Some(("p", &project)));
+        assert_eq!(shown["effective"]["claudeModel"], json!({"value":"haiku","source":"project"}));
+        assert_eq!(shown["project"]["inherited"]["claudeModel"], json!({"value":"sonnet","source":"workspace"}));
+        assert_eq!(shown["builtIn"]["claudeModel"], Value::Null);
+        let claude = change(json!({"claudeModel":"opus"}));
+        assert!(claude.names_a_claude_model() && !claude.names_a_model());
+        assert!(!change(json!({"claudeModel":null})).names_a_claude_model(), "clearing needs no catalog");
+        assert!(change(json!({"claudeModel":" "})).apply(AgentDefaults::default()).validate().is_err());
+        let catalog = json!({"models":[{"id":"sonnet","model":"sonnet","supportsAutoMode":true},{"id":"haiku","model":"haiku","supportsAutoMode":false}]});
+        assert_eq!(catalog_name(catalog_entry(&catalog, "Claude Code", "haiku").unwrap(), "haiku"), "haiku");
+        assert!(catalog_entry(&catalog, "Claude Code", "gone").unwrap_err().to_string().contains("not among this Core host's Claude Code models"));
     }
 }

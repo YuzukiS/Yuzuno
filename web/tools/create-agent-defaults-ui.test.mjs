@@ -286,7 +286,7 @@ test("Codex on the Core host: the default model shows with its source; Codex's o
   const own = mount(defaults, { codexModels });
   await own.open();
   await until(() => group(own, "Model")?.querySelectorAll("input").length === 4, "the model choices");
-  await pick(own, "Model", "(Codex’s own default)");
+  await pick(own, "Model", "(the harness’s own default)");
   await type(own, "Name", "Own");
   const ownBody = await submit(own);
   assert.equal(ownBody.model, null);
@@ -308,4 +308,52 @@ test("Codex on the Core host: the default model shows with its source; Codex's o
   await until(() => labels(named, "Model")[0] === "Harness default", "Claude's models");
   assert.equal(group(named, "Reasoning effort"), null);
   for (const page of [inherit, own, named]) assert.deepEqual(page.errors, []);
+});
+
+test("Claude Code on the Core host: the default model shows with its source, its own default is this Agent's choice, and an inherited model that can't run Auto mode waits for one", async () => {
+  const withDefault = (model, saved = { harness: "claude" }) => {
+    const base = view(saved);
+    return {
+      ...base,
+      effective: {
+        ...base.effective,
+        codexModel: { value: null, source: "builtin" },
+        codexReasoningEffort: { value: null, source: "builtin" },
+        claudeModel: { value: model, source: "workspace" },
+      },
+    };
+  };
+  const labels = (page, label) => [...group(page, label).querySelectorAll("label")].map((l) => l.textContent.replace(/\s+/g, " ").trim());
+  // Nothing chosen: the default is Core's to apply; nothing about the model is sent.
+  const inherit = mount(withDefault("sonnet"));
+  await inherit.open();
+  await until(() => group(inherit, "Model")?.querySelectorAll("input").length === 4, "the Claude model choices");
+  assert.match(labels(inherit, "Model")[0], /^Default · sonnet.*Set for this Workspace/);
+  assert.equal(labels(inherit, "Model")[1], "Claude Code’s own default");
+  assert.equal(group(inherit, "Reasoning effort"), null, "no effort default for Claude");
+  await type(inherit, "Name", "Inherit");
+  const inherited = await submit(inherit);
+  assert.equal(inherited.harness, "claude");
+  assert.equal("model" in inherited || "reasoningEffort" in inherited, false);
+  // Claude Code's own default, chosen: sent as null, so it overrides the default.
+  const own = mount(withDefault("sonnet"));
+  await own.open();
+  await until(() => group(own, "Model")?.querySelectorAll("input").length === 4, "the Claude model choices");
+  await pick(own, "Model", "(the harness’s own default)");
+  await type(own, "Name", "Own");
+  const ownBody = await submit(own);
+  assert.equal(ownBody.model, null);
+  // An inherited model that can't run the Auto mode it would get: Create waits for this Agent's choice.
+  const auto = mount(withDefault("haiku", { harness: "claude", claudePermissionMode: "auto" }));
+  await auto.open();
+  await until(() => group(auto, "Model")?.querySelectorAll("input").length === 4, "the Claude model choices");
+  await type(auto, "Name", "Auto");
+  assert.match(auto.document.body.textContent, /Auto mode isn’t available for this model/);
+  assert.equal(createButton(auto).disabled, true);
+  await pick(auto, "Permissions", "default");
+  assert.equal(createButton(auto).disabled, false);
+  const autoBody = await submit(auto);
+  assert.equal(autoBody.permissionMode, "default");
+  assert.equal("model" in autoBody, false);
+  for (const page of [inherit, own, auto]) assert.deepEqual(page.errors, []);
 });
