@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { api } from "./api";
+import { strings, type Language } from "./i18n";
 
 /** One Agent's unfinished local jobs: queued or still holding a reservation.
  * `unknown` of them have an outcome Core could not confirm. */
@@ -66,18 +67,29 @@ export function useAgentJobs(agentId: string): AgentJobs | undefined {
   return useSyncExternalStore(subscribe, () => snapshot[agentId]);
 }
 
-const jobs = (n: number) => `${n} job${n === 1 ? "" : "s"}`;
-/** What the Agent list shows for an idle Agent with unfinished jobs. */
-export function waitingLabel(counts: AgentJobs | undefined) {
+// The Agent list's words for an Agent's jobs (T-189). Each label keeps its
+// " · " and "/" parts, which the row's layout reads.
+const words = strings({
+  waiting: "Waiting · Job",
+  check: "Check job",
+  unknown: (count: number) => `${count} job${count === 1 ? "" : "s"} with an unknown outcome still ${count === 1 ? "holds its" : "hold their"} reservation. `,
+  running: (count: number, unknown: string) => `${count} job${count === 1 ? "" : "s"} queued or running. ${unknown}See Jobs.`,
+  checkIn: (unknown: string) => `${unknown}Check in Jobs.`,
+}, {
+  waiting: "等待中 · Job",
+  check: "核对 Job",
+  unknown: (count) => `${count} 个结果未知的 Job 仍占用其预留资源。`,
+  running: (count, unknown) => `${count} 个 Job 正在排队或运行。${unknown}请在 Job 中查看。`,
+  checkIn: (unknown) => `${unknown}请在 Job 中核对。`,
+});
+/** What the Agent list shows for an idle Agent with unfinished jobs, in
+ * `language`: waiting on them, or only ones to check. */
+export function waitingLabel(counts: AgentJobs | undefined, language: Language = "en") {
   if (!counts?.active) return null;
+  const w = words(language);
   const running = counts.active - counts.unknown;
-  const unknown = counts.unknown
-    ? `${jobs(counts.unknown)} with an unknown outcome still ${counts.unknown === 1 ? "holds its" : "hold their"} reservation. `
-    : "";
+  const unknown = counts.unknown ? w.unknown(counts.unknown) : "";
   return running > 0
-    ? {
-        label: "Waiting · Job",
-        detail: `${jobs(running)} queued or running. ${unknown}See Jobs.`,
-      }
-    : { label: "Check job", detail: `${unknown}Check in Jobs.` };
+    ? { kind: "waiting" as const, label: w.waiting, detail: w.running(running, unknown) }
+    : { kind: "check" as const, label: w.check, detail: w.checkIn(unknown) };
 }

@@ -162,6 +162,8 @@ import type { WorkspaceEvent } from "./workspace-events.ts";
 import { useAgentDetail } from "./useAgentDetail";
 import { useRefreshTrigger } from "./refresh-trigger";
 import { coreConnection } from "./connection-status";
+import { langTag, useLanguage } from "./i18n";
+import { shellText } from "./shell-text";
 import "./connection-status.css";
 import { OutgoingMessages } from "./OutgoingMessages";
 import { sendingInTurn } from "./delivery-note";
@@ -199,14 +201,6 @@ import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
 // Core fits a large image to Yuzuno's Claude budget (core/src/input_images.rs).
 const CLAUDE_IMAGE_NOTE = "Large images are scaled or compressed when sent to Claude · originals are kept";
 
-const statusLabels: Record<Agent["status"], string> = {
-  idle: "Ready",
-  working: "Working",
-  waiting: "Waiting",
-  offline: "Offline",
-  error: "Needs a look",
-  uncertain: "Check result",
-};
 type TurnProps = ComponentProps<typeof Turn>;
 /** Streamed changes replace only the Turn they touch; the others keep their
  * identity and are not rendered again. Callbacks are compared by presence
@@ -627,7 +621,9 @@ export function App() {
     });
   }, [workspaceRefresh]);
   const browserOffline = useBrowserOffline();
-  const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode, browserOffline);
+  const language = useLanguage();
+  const shell = shellText(language);
+  const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode, browserOffline, language);
   const agent = workspace?.agents.find((a) => a.id === selected);
   const inspectorShown = (phone ? phoneInspector : inspector) && !!agent && !homeOpen;
   // An open dock panel closes when something covers the conversation (the
@@ -2124,6 +2120,7 @@ export function App() {
       )}
       <header
         className={`toolbar${frame ? " window-frame" : ""}`}
+        lang={langTag(language)}
         onMouseDown={(event) => moveWindow(frame, event)}
       >
         <div className="toolbar-brand">
@@ -2131,11 +2128,11 @@ export function App() {
             <button
               ref={phoneBack}
               className="phone-back"
-              title="Back to the Agent list"
+              title={shell.backTitle}
               onClick={showAgentList}
             >
               <ChevronLeft size={18} />
-              Agents
+              {shell.back}
             </button>
           ) : (
             <>
@@ -2151,41 +2148,41 @@ export function App() {
           <span className="toolbar-separator" />
           <button
             className="icon-button"
-            aria-label={railOpen ? "Hide agent sidebar" : "Show agent sidebar"}
-            title="Toggle sidebar"
+            aria-label={railOpen ? shell.hideRail : shell.showRail}
+            title={shell.toggleRail}
             onClick={() => setRailOpen((v) => !v)}
           >
             <PanelLeft size={17} />
           </button>
-          <span className="workspace-name">Personal workspace</span>
+          <span className="workspace-name">{shell.workspace}</span>
           <span className="toolbar-context">
-            {isNative ? "Desktop" : "Workspace"}
+            {isNative ? shell.desktop : shell.web}
           </span>
           {/* Workspace-wide views live here; the sidebar is all agents. */}
-          <nav className="toolbar-nav" aria-label="Workspace views">
+          <nav className="toolbar-nav" aria-label={shell.views}>
             <button
               className={`catchup-nav ${homeOpen ? "selected" : ""}`}
               aria-current={homeOpen ? "page" : undefined}
-              title={needsYou > 0 ? `Home · ${needsYou} waiting for your response` : "Home"}
+              title={needsYou > 0 ? shell.homeWaiting(needsYou) : shell.home}
               onClick={() => {
                 setHomeOpen(true);
                 setPhoneList(false);
               }}
             >
               <House size={15} />
-              <span className="toolbar-nav-label">Home</span>
+              <span className="toolbar-nav-label">{shell.home}</span>
               {needsYou > 0 && (
                 <span className="nav-count attention">{needsYou}</span>
               )}
             </button>
             <button
               className="catchup-nav collab-nav"
-              title="Tasks & messages"
+              title={shell.tasks}
               onClick={() => setCollaborationOpen(true)}
               disabled={loading}
             >
               <MessageSquare size={15} />
-              <span className="toolbar-nav-label">Tasks & messages</span>
+              <span className="toolbar-nav-label">{shell.tasks}</span>
             </button>
             <Jobs key={`jobs-${workspaceId}`} workspaceId={workspaceId} agent={agent} agents={workspace?.agents || []} revision={String(jobsRevision)} disabled={previewMode || loading} />
           </nav>
@@ -2194,7 +2191,7 @@ export function App() {
           <span
             className={`connection ${core.healthy ? "connected" : ""}`}
             title={core.description}
-            data-core-status={core.label}
+            data-core-status={core.status}
           >
             <span />
             {core.label}
@@ -2202,16 +2199,16 @@ export function App() {
           {updatesNeedReload && <UpdateBanner onOpen={() => setUpdatesOpen(true)} />}
             <button
               className="icon-button workspace-settings"
-              title="Settings · updates, appearance, desktop app and code review"
-              aria-label="Settings and updates"
+              title={shell.settingsTitle}
+              aria-label={shell.settings}
               onClick={() => setUpdatesOpen(true)}
             >
               <Settings2 size={16} />
             </button>
           <button
             className={`icon-button ${(phone ? phoneInspector : inspector) ? "active" : ""}`}
-            title="Toggle context panel"
-            aria-label="Toggle context panel"
+            title={shell.inspector}
+            aria-label={shell.inspector}
             onClick={() => {
               if (!phone) return setInspector((v) => !v);
               // On a phone the panel is a screen of its own, over what is open.
@@ -2224,7 +2221,7 @@ export function App() {
         </div>
         {frame && <WindowControls frame={frame} />}
       </header>
-      <aside className="rail" id="agent-sidebar" inert={phone && !phoneList ? true : undefined}>
+      <aside className="rail" id="agent-sidebar" lang={langTag(language)} inert={phone && !phoneList ? true : undefined}>
         <PanelResizeHandle side="rail" size={panelWidths.rail} />
         <div className="rail-top">
           <RailHeading
@@ -2246,7 +2243,7 @@ export function App() {
               <Search size={13} />
               <input
                 autoFocus
-                placeholder="Find an agent or paste a link…"
+                placeholder={shell.findAgent}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={(e) => {
@@ -2255,11 +2252,11 @@ export function App() {
                     openSearchLink();
                   }
                 }}
-                aria-label="Search agents"
+                aria-label={shell.searchAgents}
               />
               <button
                 className="icon-button"
-                aria-label="Close search"
+                aria-label={shell.closeSearch}
                 onClick={() => {
                   setSearchOpen(false);
                   setSearch("");
@@ -2272,11 +2269,11 @@ export function App() {
           {searchLink && (
             <button className="quiet-button open-message-link" onClick={openSearchLink}>
               <Link2 size={13} />
-              {searchLink.kind === "agent" ? "Open linked agent" : "Open linked message"}
+              {searchLink.kind === "agent" ? shell.openLinkedAgent : shell.openLinkedMessage}
             </button>
           )}
         </div>
-        <nav className="agent-list" aria-label="Agents">
+        <nav className="agent-list" aria-label={shell.agents}>
           {(() => {
             const row = (a: Agent) => (
             <AgentRailRow
@@ -2285,10 +2282,10 @@ export function App() {
               selected={selected === a.id && !homeOpen}
               statusLabel={
                 a.closedAt
-                  ? "Closed"
+                  ? shell.closed
                   : a.id === selected && compacting
-                    ? "Compacting"
-                    : statusLabels[a.status]
+                    ? shell.compacting
+                    : shell.status[a.status]
               }
               idle={
                 !a.closedAt &&
@@ -2303,7 +2300,7 @@ export function App() {
             // list, or No grouping, stays one list.
             const groups =
               scope === ALL_PROJECTS && appearance.projectGroups !== "none"
-                ? groupAgents(filteredAgents, projects)
+                ? groupAgents(filteredAgents, projects, { unknown: shell.unknownProject, none: shell.noProject })
                 : null;
             return groups ? (
               <GroupedAgents
@@ -2325,16 +2322,16 @@ export function App() {
           {!loading && filteredAgents.length === 0 && !searchLink && (
             <div className="rail-empty">
               {search
-                ? "No agents match your search."
+                ? shell.noMatch
                 : agentScope === "closed"
-                  ? "Closed agents wait here, ready to reopen."
-                  : "Create an agent, then send a task."}
+                  ? shell.closedEmpty
+                  : shell.empty}
             </div>
           )}
           {/* Last in the list, so it scrolls with the agents. */}
           <button className="add-agent" onClick={() => setCreateOpen(true)}>
             <Plus size={15} />
-            New agent<span>{shortcutModifier} N</span>
+            {shell.newAgent}<span>{shortcutModifier} N</span>
           </button>
         </nav>
         {outsidePending > 0 && (
@@ -2344,15 +2341,15 @@ export function App() {
               setHomeOpen(true);
               setPhoneList(false);
             }}
-            title="Open Home to see them"
+            title={shell.elsewhereTitle}
           >
             <Bell size={14} />
-            <span>{outsidePending} waiting in other projects</span>
+            <span>{shell.elsewhere(outsidePending)}</span>
             <ChevronRight size={13} />
           </button>
         )}
         <ProjectSwitcher
-          workspaceName="Personal workspace"
+          workspaceName={shell.workspace}
           reachable={core.healthy}
           reachability={core.description}
           scope={scope}
@@ -2371,7 +2368,7 @@ export function App() {
       {/* On a phone the list or the context panel covers it, still mounted. */}
       <main className="main-panel" inert={listShown || (phone && inspectorShown) ? true : undefined}>
         {(workspaceError || core.browser) && (
-          <div className="connection-banner core-connection-banner" role={workspaceError ? "alert" : "status"}>
+          <div className="connection-banner core-connection-banner" role={workspaceError ? "alert" : "status"} lang={langTag(language)}>
             <WifiOff size={15} />
             <div>
               <strong>{workspaceError ? core.label : core.browser}</strong>
@@ -2379,24 +2376,24 @@ export function App() {
                 {workspaceError
                   ? core.detail
                   : workspace
-                    ? "The last read from Core worked. Nothing is turned off: Yuzuno keeps checking, and drafts are kept."
-                    : "No workspace has loaded yet. Nothing is turned off: Yuzuno keeps trying, and drafts are kept."}
+                    ? shell.lastReadWorked
+                    : shell.noneLoaded}
               </span>
-              {workspaceError && core.browser && <span>{core.browser}.</span>}
+              {workspaceError && core.browser && <span>{shell.sentence(core.browser)}</span>}
               <span>{core.stream}</span>
             </div>
             <button className="quiet-button" onClick={refresh}>
               <RefreshCw size={13} />
-              Retry
+              {shell.retry}
             </button>
           </div>
         )}
         {!previewMode && !workspaceError && !core.browser && eventConnection === "reconnecting" && (
-          <div className="connection-banner core-connection-banner event-connection-banner" role="status">
+          <div className="connection-banner core-connection-banner event-connection-banner" role="status" lang={langTag(language)}>
             <RefreshCw size={15} />
             <div>
-              <strong>Live updates reconnecting</strong>
-              <span>The event stream is reconnecting automatically. Workspace snapshots still refresh every 5 seconds while this window is visible.</span>
+              <strong>{shell.liveReconnecting}</strong>
+              <span>{shell.liveReconnectingLine}</span>
             </div>
           </div>
         )}
@@ -2404,7 +2401,7 @@ export function App() {
           <div className="connection-banner" role="alert">
             <CircleAlert size={15} />
             <div>
-              <strong>Codex model list is unavailable.</strong>
+              <strong>{shell.modelsUnavailable}</strong>
               <span>{workspace.runtime.error}</span>
             </div>
           </div>
@@ -2431,10 +2428,10 @@ export function App() {
                   <span className={`status-label runtime-${agent.status}`}>
                     <span className={`status-dot ${agent.status}`} />
                     {closed
-                      ? "Closed"
+                      ? shell.closed
                       : compacting
-                        ? "Compacting"
-                        : statusLabels[agent.status]}
+                        ? shell.compacting
+                        : shell.status[agent.status]}
                   </span>
                 </div>
               </div>

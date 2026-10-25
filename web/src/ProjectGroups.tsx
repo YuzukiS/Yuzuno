@@ -1,9 +1,31 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Bell, ChevronDown, Folder, Minus, Plus } from "lucide-react";
 import type { ProjectGroupStyle } from "./appearance";
+import { strings, useStrings } from "./i18n";
 import { groupSummary, type ProjectGroup } from "./project-groups";
 import type { Agent } from "./types";
 import "./project-groups.css";
+
+// A group's own controls and marks; its name is the project's (T-189).
+const text = strings({
+  toggle: (folded: boolean, name: string) => `${folded ? "Open" : "Fold"} ${name}`,
+  count: (count: number) => `${count} ${count === 1 ? "agent" : "agents"}`,
+  newIn: (name: string) => `New agent in ${name}`,
+  newWithout: "New agent without a project",
+  needs: (count: number) => `${count} ${count === 1 ? "needs" : "need"} you`,
+  working: (count: number) => `${count} working`,
+  unread: (count: number) => `${count} unread`,
+  listJoin: ", ",
+}, {
+  toggle: (folded, name) => `${folded ? "展开" : "折叠"} ${name}`,
+  count: (count) => `${count} 个 Agent`,
+  newIn: (name) => `在 ${name} 中新建 Agent`,
+  newWithout: "新建不属于任何项目的 Agent",
+  needs: (count) => `${count} 项需要你`,
+  working: (count) => `${count} 个工作中`,
+  unread: (count) => `${count} 条未读`,
+  listJoin: "，",
+});
 
 const foldedKey = (workspaceId: string) => `yuzuno.projectGroupsFolded.${workspaceId}`;
 function readFolded(workspaceId: string) {
@@ -155,6 +177,7 @@ function GroupSection({
   onCreate: () => void;
   children: ReactNode;
 }) {
+  const t = useStrings(text);
   const body = useId();
   const count = group.agents.length;
   const summary = groupSummary(group.agents);
@@ -174,7 +197,7 @@ function GroupSection({
           className="project-group-toggle"
           aria-expanded={!folded}
           aria-controls={body}
-          title={`${folded ? "Open" : "Fold"} ${group.name}`}
+          title={t.toggle(folded, group.name)}
           onClick={onToggle}
         >
           <ChevronDown size={12} className="project-group-chevron" aria-hidden="true" />
@@ -187,7 +210,7 @@ function GroupSection({
           )}
           <span className="project-group-name">{group.name}</span>
           {marked && <Summary {...summary} />}
-          <span className="project-group-count" aria-label={`${count} ${count === 1 ? "agent" : "agents"}`}>
+          <span className="project-group-count" aria-label={t.count(count)}>
             {count}
           </span>
         </button>
@@ -195,8 +218,8 @@ function GroupSection({
           <button
             type="button"
             className="project-group-add"
-            aria-label={`New agent in ${group.name}`}
-            title={group.projectId ? `New agent in ${group.name}` : "New agent without a project"}
+            aria-label={t.newIn(group.name)}
+            title={group.projectId ? t.newIn(group.name) : t.newWithout}
             onClick={onCreate}
           >
             <Plus size={13} aria-hidden="true" />
@@ -212,14 +235,15 @@ function GroupSection({
 
 /** A folded group's marks: requests waiting, work running, unread. */
 function Summary({ needs, working, unread }: ReturnType<typeof groupSummary>) {
+  const t = useStrings(text);
   const said = [
-    needs && `${needs} ${needs === 1 ? "needs" : "need"} you`,
-    working && `${working} working`,
-    unread && `${unread} unread`,
+    needs && t.needs(needs),
+    working && t.working(working),
+    unread && t.unread(unread),
   ].filter(Boolean);
   if (!said.length) return null;
   return (
-    <span className="project-group-summary" aria-label={said.join(", ")} title={said.join(" · ")}>
+    <span className="project-group-summary" aria-label={said.join(t.listJoin)} title={said.join(" · ")}>
       {needs > 0 && (
         <span className="project-group-mark is-attention" aria-hidden="true">
           <Bell size={9} />
