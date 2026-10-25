@@ -1,6 +1,8 @@
+import { useEffect, useRef, useState } from "react";
 import { Check, Monitor, Moon, Rows2, Rows4, Sun, Type } from "lucide-react";
 import {
   appearanceStored,
+  importAppearance,
   restoreDefaultAppearance,
   retryAppearanceWrite,
   saveAppearance,
@@ -19,6 +21,16 @@ import {
   palettes,
   type Palette,
 } from "./appearance";
+import {
+  appearanceFields,
+  exportAppearance,
+  fieldValue,
+  importedAppearance,
+  MAX_APPEARANCE_FILE_BYTES,
+  readAppearanceFile,
+  type AppearanceField,
+  type AppearanceFileContents,
+} from "./appearance-file";
 import { SaveStatus } from "./SaveStatus";
 
 const themes: {
@@ -395,6 +407,224 @@ export function AppearanceSection() {
         onRetry={retryAppearanceWrite}
         onRestoreDefaults={restoreDefaultAppearance}
       />
+      <AppearanceFile appearance={appearance} />
     </section>
+  );
+}
+
+const fieldLabels: Record<AppearanceField, string> = {
+  palette: "Palette",
+  theme: "Theme",
+  fontSize: "Text size",
+  agentList: "Agent list",
+  projectGroups: "Project groups",
+  "dock.jobs": "Conversation dock: Local jobs",
+  "dock.actions": "Conversation dock: GitHub Actions",
+  "dock.subAgents": "Conversation dock: Sub-agents",
+  "turnDock.numbers": "Turn dock: Numbered turns",
+  "turnDock.bars": "Turn dock: Bars on each side",
+};
+
+/** A setting's value as the controls above name it. */
+function fieldText(field: AppearanceField, value: string | number): string {
+  switch (field) {
+    case "palette":
+      return paletteLabels[value as Palette];
+    case "theme":
+      return themes.find((t) => t.value === value)?.label ?? String(value);
+    case "fontSize":
+      return `${value} px`;
+    case "agentList":
+      return agentLists.find((a) => a.value === value)?.label ?? String(value);
+    case "projectGroups":
+      return projectGroupChoices.find((p) => p.value === value)?.label ?? String(value);
+    case "turnDock.bars":
+      return value === 0 ? "None" : String(value);
+    default:
+      return value === 0 ? "Hidden" : String(value);
+  }
+}
+
+function readText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file);
+  });
+}
+
+/** Appearance to and from a file (T-194). Export writes the settings in
+ * effect. Import shows each setting the file holds beside the one in effect,
+ * ticked where they differ, and applies only the ticked ones, once saved on
+ * this device; a file it can't use, Cancel or a refused save change nothing. */
+function AppearanceFile({ appearance }: { appearance: Appearance }) {
+  const [file, setFile] = useState<{ name: string; contents: AppearanceFileContents } | null>(null);
+  const [chosen, setChosen] = useState<AppearanceField[]>([]);
+  const [said, setSaid] = useState<{ error: boolean; text: string; n: number } | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const line = useRef<HTMLParagraphElement>(null);
+  // In a short pane the line can lie below the button pressed.
+  useEffect(() => {
+    if (said?.error) line.current?.scrollIntoView?.({ block: "nearest" });
+  }, [said]);
+  const say = (error: boolean, text: string) => setSaid((old) => ({ error, text, n: (old?.n ?? 0) + 1 }));
+  const differs = (field: AppearanceField, contents: AppearanceFileContents) => {
+    const value = contents.values[field];
+    return value !== undefined && value !== fieldValue(appearance, field);
+  };
+  const selected = file ? chosen.filter((field) => differs(field, file.contents)) : [];
+
+  function exportFile() {
+    const url = URL.createObjectURL(new Blob([exportAppearance(appearance)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "yuzuno-appearance.json";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+  async function choose(picked: File | undefined) {
+    setSaid(null);
+    setFile(null);
+    if (!picked) return;
+    if (picked.size > MAX_APPEARANCE_FILE_BYTES) {
+      say(true, `${picked.name} is larger than 16 KiB, too large for an Appearance export, so it was not read. Nothing was changed.`);
+      return;
+    }
+    let text: string;
+    try {
+      text = await readText(picked);
+    } catch {
+      say(true, `${picked.name} could not be read. Nothing was changed.`);
+      return;
+    }
+    const read = readAppearanceFile(text);
+    if ("error" in read) {
+      say(true, `${read.error}. Nothing was changed.`);
+      return;
+    }
+    setFile({ name: picked.name, contents: read.contents });
+    setChosen(appearanceFields.filter((field) => differs(field, read.contents)));
+  }
+  function apply() {
+    if (!file || !selected.length) return;
+    const outcome = importAppearance(importedAppearance(appearance, file.contents, selected));
+    if (!outcome.saved) {
+      say(true, `Not imported: ${outcome.detail}. Nothing was changed; your Appearance stays as it is.`);
+      return;
+    }
+    setFile(null);
+    say(false, `Imported ${selected.length} ${selected.length === 1 ? "setting" : "settings"} from ${file.name}; saved on this device.`);
+  }
+  const exportedAt = file?.contents.exportedAt && !Number.isNaN(Date.parse(file.contents.exportedAt))
+    ? new Date(file.contents.exportedAt).toLocaleString()
+    : null;
+
+  return (
+    <div className="settings-group appearance-file" aria-label="Appearance file">
+      <div className="settings-row">
+        <span className="settings-row-main">
+          <span className="settings-row-title">Move Appearance to another device</span>
+          <span className="settings-row-help">
+            A file of the settings above as they are in effect: palette, theme, text size, Agent list, project groups
+            and docks. Accounts, permissions, folders and conversations are never in it. Importing shows each setting
+            beside yours before anything changes.
+          </span>
+        </span>
+        <span className="settings-row-action appearance-file-buttons">
+          <button type="button" onClick={exportFile}>
+            Export to a file
+          </button>
+          <button type="button" onClick={() => picker.current?.click()}>
+            Import from a file…
+          </button>
+          <input
+            ref={picker}
+            type="file"
+            accept="application/json,.json"
+            hidden
+            aria-label="Choose an Appearance file"
+            onChange={(event) => {
+              const picked = event.target.files?.[0];
+              event.target.value = "";
+              void choose(picked);
+            }}
+          />
+        </span>
+      </div>
+      {file && (
+        <div className="appearance-file-preview" role="group" aria-label="Import preview">
+          <p>
+            From {file.name}
+            {exportedAt ? `, exported ${exportedAt}` : ""}. Ticked settings are taken from the file; the others stay as
+            they are.
+          </p>
+          <ul>
+            {appearanceFields.map((field) => {
+              const value = file.contents.values[field];
+              const bad = file.contents.invalid.find((item) => item.field === field);
+              if (value === undefined && !bad) return null;
+              const now = fieldText(field, fieldValue(appearance, field));
+              if (value === undefined)
+                return (
+                  <li key={field} data-state="invalid">
+                    <span className="appearance-file-name">{fieldLabels[field]}</span>
+                    <span>Now: {now}</span>
+                    <span>File: {bad!.value}, not a value Yuzuno accepts; kept as now</span>
+                  </li>
+                );
+              const same = !differs(field, file.contents);
+              return (
+                <li key={field} data-state={same ? "same" : "differs"}>
+                  <label className="appearance-file-name">
+                    <input
+                      type="checkbox"
+                      disabled={same}
+                      checked={!same && chosen.includes(field)}
+                      onChange={(event) =>
+                        setChosen((old) => (event.target.checked ? [...old, field] : old.filter((f) => f !== field)))
+                      }
+                    />
+                    {fieldLabels[field]}
+                  </label>
+                  <span>Now: {now}</span>
+                  <span>{same ? "File: the same" : `File: ${fieldText(field, value)}`}</span>
+                </li>
+              );
+            })}
+          </ul>
+          {file.contents.unknown.length > 0 && (
+            <p className="settings-row-help">
+              Not Appearance settings this version knows, so left out: {file.contents.unknown.join(", ")}
+            </p>
+          )}
+          <div className="appearance-file-buttons">
+            <button type="button" disabled={!selected.length} onClick={apply}>
+              {selected.length ? `Apply ${selected.length} selected` : "Nothing to apply"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setFile(null);
+                setSaid(null);
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {said && (
+        <p
+          ref={line}
+          className={said.error ? "appearance-file-error" : "appearance-file-done"}
+          role={said.error ? "alert" : "status"}
+        >
+          {said.text}
+        </p>
+      )}
+    </div>
   );
 }
