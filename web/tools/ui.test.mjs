@@ -2458,7 +2458,7 @@ test("an Agent link is copied from its menu and opens that Agent only, changing 
   const page = await mount({
     workspaceIdentity: "ws-1",
     otherAgentFields: { threadId: "thread-b" },
-    stored: { "yuzuno.selected": JSON.stringify("a"), [`yuzuno.composer.v1:${JSON.stringify(["ws-1", "a"])}`]: linkDraft("draft for Mori"), [`yuzuno.composer.v1:${JSON.stringify(["ws-1", "b"])}`]: linkDraft("draft for Hana") },
+    stored: { "yuzuno.selected.ws-1": JSON.stringify("a"), [`yuzuno.composer.v1:${JSON.stringify(["ws-1", "a"])}`]: linkDraft("draft for Mori"), [`yuzuno.composer.v1:${JSON.stringify(["ws-1", "b"])}`]: linkDraft("draft for Hana") },
   });
   try {
     const shown = () => page.document.querySelector(".agent-row.selected")?.dataset.agentId;
@@ -2672,12 +2672,68 @@ test("against a Core that names no Workspace, a draft is kept in this window and
   } finally { page.close(); }
 });
 
+// T-195: two saved Workspaces can sit at one address. The Agent each one
+// last had open is its own: one memory between them meant every visit
+// overwrote the other's, and where an Agent id existed in both, one
+// Workspace opened the other's choice.
+test("each Workspace opens the Agent it last had open, not the other's", async () => {
+  const opened = (page) => page.document.querySelector(".agent-row.selected")?.dataset.agentId;
+  const here = await mount({
+    workspaceIdentity: "ws-here",
+    stored: { "yuzuno.selected.ws-here": JSON.stringify("b"), "yuzuno.selected.ws-there": JSON.stringify("a") },
+  });
+  try {
+    await until(() => opened(here) === "b", "this Workspace's own Agent");
+    assert.equal(
+      here.window.localStorage.getItem("yuzuno.selected.ws-there"),
+      JSON.stringify("a"),
+      "and the other Workspace's memory is untouched",
+    );
+    assert.deepEqual(here.errors, []);
+  } finally { here.close(); }
+  // The other Workspace at the same address, with the same Agent ids.
+  const there = await mount({
+    workspaceIdentity: "ws-there",
+    stored: { "yuzuno.selected.ws-here": JSON.stringify("b"), "yuzuno.selected.ws-there": JSON.stringify("a") },
+  });
+  try {
+    await until(() => opened(there) === "a", "its own Agent, not the one next door");
+    assert.deepEqual(there.errors, []);
+  } finally { there.close(); }
+});
+
+test("an Agent remembered before Workspaces were recorded is not opened as any Workspace's", async () => {
+  // The older unscoped key says which Agent but not which Workspace. It is
+  // left where it is, and this Workspace opens its own first Agent instead.
+  const page = await mount({
+    workspaceIdentity: "ws-here",
+    stored: { "yuzuno.selected": JSON.stringify("b") },
+  });
+  try {
+    await until(
+      () => page.document.querySelector(".agent-row.selected")?.dataset.agentId === "a",
+      "this Workspace's own first Agent",
+    );
+    assert.equal(
+      page.window.localStorage.getItem("yuzuno.selected"),
+      JSON.stringify("b"),
+      "the older key is left exactly as it was",
+    );
+    assert.equal(
+      page.window.localStorage.getItem("yuzuno.selected.ws-here"),
+      JSON.stringify("a"),
+      "and this Workspace remembers its own",
+    );
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("an Agent link in the address opens a closed Agent's conversation and says nothing was reopened (T-184)", async () => {
   const page = await mount({
     url: "http://127.0.0.1:4317/#/agent?w=ws-1&a=b",
     workspaceIdentity: "ws-1",
     otherAgentFields: { threadId: "thread-b", status: "offline", connectionState: "disconnected", closedAt: "2026-10-25T00:00:00Z" },
-    stored: { "yuzuno.selected": JSON.stringify("a"), [`yuzuno.composer.v1:${JSON.stringify(["ws-1", "a"])}`]: linkDraft("draft for Mori") },
+    stored: { "yuzuno.selected.ws-1": JSON.stringify("a"), [`yuzuno.composer.v1:${JSON.stringify(["ws-1", "a"])}`]: linkDraft("draft for Mori") },
   });
   try {
     const toast = () => page.document.querySelector(".toast")?.textContent || "";
@@ -2695,7 +2751,7 @@ test("a conversation reopens where it was left, and one left at the latest stays
   const saved = (position) => JSON.stringify({ a: { savedAt: 1, ...position } });
   const page = await mount({
     workspaceIdentity: "ws-1", agentFields: { threadId: "thread-1" }, beforeLoad: windowedMori(requests),
-    stored: { "yuzuno.selected": JSON.stringify("a"), "yuzuno.reading.ws-1": saved({ mode: "anchor", turnId: "t2", itemId: "t2-u", offset: -10 }) },
+    stored: { "yuzuno.selected.ws-1": JSON.stringify("a"), "yuzuno.reading.ws-1": saved({ mode: "anchor", turnId: "t2", itemId: "t2-u", offset: -10 }) },
   });
   try {
     const text = () => page.document.querySelector(".conversation-scroll").textContent;
@@ -2766,7 +2822,7 @@ test("another browser's place is offered in the open conversation, opened only b
   const page = await mount({
     workspaceIdentity: "ws-1", agentFields: { threadId: "thread-1" },
     beforeLoad: (window) => { windowedMori(requests)(window); readingCore(state)(window); },
-    stored: { "yuzuno.selected": JSON.stringify("a") },
+    stored: { "yuzuno.selected.ws-1": JSON.stringify("a") },
   });
   try {
     const offer = () => page.document.querySelector(".reading-offer");
@@ -2850,7 +2906,7 @@ test("leaving a conversation shares the message and how far into it, once, never
   const page = await mount({
     workspaceIdentity: "ws-1", agentFields: { threadId: "thread-1" },
     beforeLoad: (window) => { windowedMori(requests)(window); readingCore(state)(window); },
-    stored: { "yuzuno.selected": JSON.stringify("a"), 'yuzuno.reading-seq.v1:["ws-1"]': String(Date.now() + 3_600_000) },
+    stored: { "yuzuno.selected.ws-1": JSON.stringify("a"), 'yuzuno.reading-seq.v1:["ws-1"]': String(Date.now() + 3_600_000) },
   });
   try {
     const pane = () => page.document.querySelector(".conversation-scroll");
@@ -4767,7 +4823,7 @@ function readable(page) {
 }
 
 test("on a phone the Agent list and what is open are one screen each, and the way back keeps the conversation (T-170)", async () => {
-  const page = await mount({ beforeLoad: asPhone, stored: { "yuzuno.selected": JSON.stringify("a") } });
+  const page = await mount({ beforeLoad: asPhone, stored: { "yuzuno.selected.ci-fixture": JSON.stringify("a") } });
   try {
     // It starts on the list; the conversation is there underneath, out of reach.
     assert.match(appClass(page), /\bphone\b.*\bphone-list\b/);

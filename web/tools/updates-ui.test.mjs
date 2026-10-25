@@ -123,7 +123,7 @@ async function mount(overrides = {}, shell, seed) {
     },
   );
   const { window: w } = dom;
-  w.localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
+  w.localStorage.setItem("yuzuno.selected.fixture-workspace", JSON.stringify("a"));
   // Saved under the Workspace and Agent it was written in (T-195).
   w.localStorage.setItem(
     `yuzuno.composer.v1:${JSON.stringify(["fixture-workspace", "a"])}`,
