@@ -132,6 +132,10 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
         defaultCwd: "/w",
       });
     if (url.endsWith("/api/updates")) return respond(updates);
+    // Data, privacy & recovery opens at its storage overview (T-187).
+    if (url.endsWith("/api/storage"))
+      return respond({ format: 1, readAt: "2026-10-24T22:00:00Z", dataDir: "/w/data", entries: [], unreadable: null,
+        database: { pageSize: 4096, pages: 10, freePages: 0 }, jobs: { total: 0, unfinished: 0 }, native: [], notInBackup: [] });
     return respond({});
   };
   const doc = w.document;
@@ -142,18 +146,19 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
 const recovery = (p) => p.doc.querySelector(".app-recovery");
 const railShows = (p, name) => new RegExp(name).test(p.doc.querySelector(".agent-list")?.textContent || "");
 // Settings opens on its categories (T-187): Diagnostics and the stored
-// history are editors under Data, privacy & recovery, opened from their cards;
-// one opened before stays mounted when the other is opened.
+// history are editors under Data, privacy & recovery, opened from its row of
+// entries; one opened before stays mounted when the other is opened.
 async function openSettingsEditor(p, title, selector) {
   if (!p.doc.querySelector("#settings-tab-data")) p.doc.querySelector('[aria-label="Settings and updates"]').click();
   await waitFor(() => p.doc.querySelector("#settings-tab-data"), "Settings shows its categories");
   p.doc.querySelector("#settings-tab-data").click();
-  await waitFor(() => p.button(`Open ${title}`), `Data, privacy & recovery offers ${title}`);
-  p.button(`Open ${title}`).click();
+  const entry = () => [...p.doc.querySelectorAll(".settings-entries button")].find((b) => b.textContent === title);
+  await waitFor(entry, `Data, privacy & recovery offers ${title}`);
+  entry().click();
   await waitFor(() => p.doc.querySelector(selector), `Settings shows ${title}`);
   return p.doc.querySelector(selector);
 }
-const openDiagnostics = (p) => openSettingsEditor(p, "Copy diagnostics", "#settings-diagnostics");
+const openDiagnostics = (p) => openSettingsEditor(p, "Diagnostics", "#settings-diagnostics");
 const shownText = (p) => p.doc.querySelector('textarea[aria-label="Diagnostics"]')?.value;
 // Settings shows the text first (T-193): Preview copies nothing; Copy then takes that text.
 async function previewAndCopy(p) {
@@ -456,7 +461,7 @@ test("when Core's memory can't be read, the text says why and everything else is
 const historyCalls = (p) => p.calls.filter((c) => c.url.endsWith("/api/diagnostics/memory/history")).length;
 async function openHistory(p) {
   await waitFor(() => railShows(p, "Mori"), "the app is drawn");
-  return openSettingsEditor(p, "History & memory information", "#settings-history");
+  return openSettingsEditor(p, "History & memory", "#settings-history");
 }
 
 test("the held Agents' stored history is read only when Measure is pressed: a chart and a table of Core's numbers, nothing else from the report", async () => {

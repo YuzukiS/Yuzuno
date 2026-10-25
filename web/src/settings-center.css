@@ -1,21 +1,35 @@
 .settings-center { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .settings-search { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
 .settings-search input { width: 100%; min-width: 0; font: inherit; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; }
-.settings-center .settings-layout { grid-template-columns: 12rem minmax(0, 1fr); gap: 20px; margin-top: 14px; }
+/* The sidebar is the daily one (updates.css): 9.5rem, an icon and a short
+   name per category, so an editor keeps the width. */
+.settings-center .settings-layout { margin-top: 14px; }
 .settings-center .settings-nav { max-height: 100%; overflow-y: auto; }
-.settings-center .settings-nav [role="tab"] { white-space: normal; min-height: 40px; }
+.settings-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A category's entries, one row above the entry shown. */
+.settings-entries { display: flex; flex-wrap: wrap; gap: 2px 4px; margin: 0 0 8px; }
+.settings-entries button { padding: 5px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); font: inherit; font-size: calc(10.5px + var(--font-adjust, 3px)); cursor: pointer; }
+.settings-entries button:hover { color: var(--ink); background: color-mix(in srgb, currentColor 6%, transparent); }
+.settings-entries [aria-current="true"] { color: var(--accent-ink); background: var(--accent-wash); font-weight: 550; }
+.settings-entries button:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 1px; }
+/* Its scope in one line; where its value comes from and when it applies on request. */
+.settings-entry-about { color: var(--text-secondary); font-size: .85em; line-height: 1.5; }
+.settings-entry-about summary { width: fit-content; max-width: 100%; cursor: pointer; }
+.settings-entry-about p { margin: 4px 0 0; }
 .settings-catalog-heading h3 { margin: 0 0 8px; }
 .settings-catalog-heading p { color: var(--text-secondary); margin: 0 0 14px; }
-.settings-catalog { display: grid; gap: 12px; }
-.settings-catalog-card { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; overflow-wrap: anywhere; }
-.settings-catalog-card h4 { margin: 0 0 8px; font-size: 1em; }
-.settings-catalog-card p { margin: 6px 0; color: var(--text-secondary); font-size: .9em; line-height: 1.5; }
+.settings-catalog { display: grid; gap: 8px; }
+.settings-catalog-card { min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
+.settings-catalog-card h4 { margin: 0 0 4px; font-size: 1em; }
+.settings-catalog-card p { margin: 4px 0; color: var(--text-secondary); font-size: .9em; line-height: 1.5; }
+/* Where a setting is edited, under its category's row: no frame. */
+.settings-catalog-card.is-brief { padding: 14px 0 0; border: 0; border-radius: 0; }
 .settings-catalog-card .settings-scope { color: var(--ink); }
 .settings-catalog-card .secondary-button { margin-top: 8px; max-width: 100%; white-space: normal; text-align: left; }
 .settings-catalog-card .secondary-button svg { flex-shrink: 0; }
 .settings-object-choice { display: grid; gap: 6px; margin-top: 10px; }
 .settings-object-choice select { min-width: 0; width: 100%; padding: 8px; font: inherit; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; }
-.settings-editor { padding-top: 20px; min-width: 0; scroll-margin-top: 8px; }
+.settings-editor { padding-top: 14px; min-width: 0; scroll-margin-top: 8px; }
 .settings-editor[hidden] { display: none; }
 .settings-editor:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
 @media (max-width: 720px) {

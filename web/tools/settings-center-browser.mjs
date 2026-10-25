@@ -50,6 +50,7 @@ await context.route('**/*', async (route) => {
   if (/\/projects\/[^/]+\/home-editors$/.test(url.pathname)) return respond({ version: 0, editorAgentIds: null });
   if (url.pathname === '/api/collaboration/github_repositories') return respond({ links: [], repositories: [], refreshing: false });
   if (/\/claude\/auto-continue$/.test(url.pathname)) return respond({ workspace: true, agent: null, enabled: true, intent: null, stopped: null });
+  if (url.pathname === '/api/storage') return respond({ format: 1, readAt: '2026-10-24T22:00:00Z', dataDir: '/fixture/data', entries: [], unreadable: null, database: { pageSize: 4096, pages: 10, freePages: 0 }, jobs: { total: 0, unfinished: 0 }, native: [], notInBackup: [] });
   switch (url.pathname) {
     case '/api/health': return respond({ product: 'yuzuno', application: 'yuzuno-next', workspaceId: 'settings-fixture', releaseId: 'fixture' });
     case '/api/workspace': return respond({ agents, projects, projectUsage: {}, runtime: { connected: true }, defaultCwd: '/fixture', workspace: { id: 'settings-fixture' } });
@@ -145,7 +146,9 @@ try {
       await picker.focus();
       await page.keyboard.press('ArrowUp');
       assert.equal(await picker.inputValue(), 'data');
-      assert.equal(await page.locator('.settings-catalog-heading h3').innerText(), 'Data, privacy & recovery');
+      // Data opens at its first entry's editor (T-187).
+      assert.equal(await page.locator('.settings-entries [aria-current="true"]').innerText(), 'Storage');
+      await page.locator('#settings-editor-storage:not([hidden])').waitFor();
       await page.keyboard.press('ArrowUp');
       assert.equal(await picker.inputValue(), 'jobs');
     }

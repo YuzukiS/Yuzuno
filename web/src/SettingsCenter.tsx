@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Search } from "lucide-react";
+import { ArrowRight, Bell, Bot, Cpu, Database, FolderKanban, Palette, RefreshCw, Search, Server, type LucideIcon } from "lucide-react";
 import type { Agent, Project } from "./types";
 import { langTag, strings, TranslatedPart, useLanguage, useStrings } from "./i18n";
-import { findSettings, localizedCategory, localizedEntry, settingsCatalog, settingsCategories, translatedEditors, type SettingEntry, type SettingsCategory, type SettingsDestination, type SettingsEditor } from "./settings-catalog";
+import { entryShortTitle, findSettings, localizedCategory, localizedEntry, settingsCatalog, settingsCategories, translatedEditors, type SettingEntry, type SettingsCategory, type SettingsDestination, type SettingsEditor } from "./settings-catalog";
 import "./settings-center.css";
 
 export type SettingsNavigation = {
@@ -13,6 +13,10 @@ export type SettingsNavigation = {
 };
 /** Settings opened at one editor from elsewhere; each nonce opens it once. */
 export type SettingsOpenAt = { editor: SettingsEditor; nonce: number };
+const categoryIcons: Record<SettingsCategory, LucideIcon> = {
+  appearance: Palette, notifications: Bell, agents: Bot, connections: Server,
+  projects: FolderKanban, jobs: Cpu, data: Database, updates: RefreshCw,
+};
 
 // Settings' own words (T-189); its directory's are in settings-catalog-zh.ts.
 const text = strings({
@@ -42,7 +46,7 @@ const text = strings({
   noAgents: "No eligible Agents are available.",
   noProjects: "No eligible projects are available.",
   connect: "Connect to your Workspace to open this editor.",
-  editorBelow: "Editor below",
+  entries: (category: string) => `${category} settings`,
   open: (title: string) => `Open ${title}`,
 }, {
   search: "搜索设置",
@@ -69,7 +73,7 @@ const text = strings({
   noAgents: "没有符合条件的 Agent。",
   noProjects: "没有符合条件的项目。",
   connect: "连接到你的 Workspace 后才能打开此编辑页。",
-  editorBelow: "编辑页在下方",
+  entries: (category: string) => `${category}设置`,
   open: (title: string) => `打开${title}`,
 });
 
@@ -84,6 +88,7 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
   onEditorChange?: (editor: SettingsEditor | null) => void;
 }) {
   const [category, setCategory] = useState<SettingsCategory>("updates");
+  const [entryId, setEntryId] = useState("updates");
   const [query, setQuery] = useState("");
   const [editor, setEditor] = useState<SettingsEditor | null>("updates");
   const [visited, setVisited] = useState<SettingsEditor[]>(["updates"]);
@@ -94,24 +99,30 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
   const searching = !!query.trim();
   useEffect(() => { onEditorChange?.(searching ? null : editor); }, [searching, editor, onEditorChange]);
   const selectedCategory = localizedCategory(category, language);
-  const entries = searching ? findSettings(query) : settingsCatalog.filter((entry) => entry.category === category);
+  const entries = searching ? findSettings(query) : [];
+  const categoryEntries = settingsCatalog.filter((entry) => entry.category === category);
+  const shown = categoryEntries.find((entry) => entry.id === entryId) ?? categoryEntries[0];
   function showEditor(next: SettingsEditor) {
     setEditor(next);
     setVisited((old) => old.includes(next) ? old : [...old, next]);
   }
-  function chooseCategory(next: SettingsCategory) {
-    setCategory(next);
-    setQuery("");
-    // A category with one editor of its own opens it (T-188: Notifications).
-    if (next === "updates" || next === "appearance" || next === "notifications") showEditor(next);
+  /** Shows an entry in its category: its editor, or where it is edited. */
+  function select(entry: SettingEntry) {
+    setCategory(entry.category);
+    setEntryId(entry.id);
+    if (entry.target.kind === "editor") showEditor(entry.target.editor);
     else setEditor(null);
+  }
+  // A category opens at its first entry, an editor where it has one.
+  function chooseCategory(next: SettingsCategory) {
+    setQuery("");
+    select(settingsCatalog.find((entry) => entry.category === next)!);
     content.current?.scrollTo?.({ top: 0 });
   }
   function open(entry: SettingEntry) {
     if (entry.target.kind !== "editor") return;
-    setCategory(entry.category);
     setQuery("");
-    showEditor(entry.target.editor);
+    select(entry);
     setFocusEditor((old) => old + 1);
   }
   function openEditor(next: SettingsEditor) {
@@ -155,26 +166,43 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
         chooseCategory(id);
         document.getElementById(`settings-tab-${id}`)?.focus();
       }}>
-        {settingsCategories.map((item) => <button type="button" role="tab" key={item.id}
-          id={`settings-tab-${item.id}`} aria-controls={`settings-panel-${item.id}`} aria-selected={category === item.id && !searching}
-          tabIndex={category === item.id ? 0 : -1} onClick={() => chooseCategory(item.id)}>
-          {localizedCategory(item.id, language).label}{item.id === "updates" && attention && <span className="settings-nav-dot" aria-label={t.updateAvailable} />}
-        </button>)}
+        {settingsCategories.map((item) => {
+          const Icon = categoryIcons[item.id];
+          const label = localizedCategory(item.id, language);
+          // The short name is shown; the full one stays the tab's name.
+          return <button type="button" role="tab" key={item.id}
+            id={`settings-tab-${item.id}`} aria-controls={`settings-panel-${item.id}`} aria-selected={category === item.id && !searching}
+            tabIndex={category === item.id ? 0 : -1} onClick={() => chooseCategory(item.id)}>
+            <Icon size={15} aria-hidden="true" />
+            <span className="settings-nav-label" aria-hidden="true">{label.short}</span>
+            <span className="sr-only">{label.label}</span>
+            {item.id === "updates" && attention && <span className="settings-nav-dot" aria-label={t.updateAvailable} />}
+          </button>;
+        })}
       </div>
       <div ref={content} className="settings-pane" role={searching ? "region" : "tabpanel"}
         id={searching ? "settings-search-results" : `settings-panel-${category}`}
         aria-label={searching ? t.resultsRegion : undefined}
         aria-labelledby={searching ? undefined : `settings-tab-${category}`}>
-        <header className="settings-catalog-heading">
-          <h3>{searching ? t.results : selectedCategory.label}</h3>
-          <p>{searching ? t.resultsHelp : selectedCategory.description}</p>
-          {searching && <p role="status">{entries.length ? t.found(entries.length) : t.none}</p>}
-        </header>
-        <div className="settings-catalog">
-          {entries.map((entry) => <SettingCard key={entry.id} entry={localizedEntry(entry, language)} navigation={navigation}
-            active={!searching && entry.target.kind === "editor" && entry.target.editor === editor}
-            onOpen={() => open(entry)} />)}
-        </div>
+        {searching ? <>
+          <header className="settings-catalog-heading">
+            <h3>{t.results}</h3>
+            <p>{t.resultsHelp}</p>
+            <p role="status">{entries.length ? t.found(entries.length) : t.none}</p>
+          </header>
+          <div className="settings-catalog">
+            {entries.map((entry) => <SettingCard key={entry.id} entry={localizedEntry(entry, language)} navigation={navigation}
+              onOpen={() => open(entry)} />)}
+          </div>
+        </> : <>
+          {categoryEntries.length > 1 && <nav className="settings-entries" aria-label={t.entries(selectedCategory.label)}>
+            {categoryEntries.map((entry) => <button type="button" key={entry.id} aria-current={entry.id === shown.id ? "true" : undefined}
+              onClick={() => select(entry)}>{entryShortTitle(entry, language)}</button>)}
+          </nav>}
+          <EntryAbout key={shown.id} entry={localizedEntry(shown, language)} />
+          {shown.target.kind !== "editor" && <SettingCard key={shown.id} entry={localizedEntry(shown, language)} navigation={navigation}
+            brief onOpen={() => open(shown)} />}
+        </>}
         {/* Keep visited editors mounted while searching or changing category:
             failed saves and unfinished compound inputs must not disappear. */}
         {visited.map((id) => <div key={id} hidden={searching || id !== editor} className="settings-editor"
@@ -188,10 +216,22 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
   </div>;
 }
 
-function SettingCard({ entry, navigation, active, onOpen }: {
+/** An entry's scope, with where its value comes from and when it takes
+ * effect on request. */
+function EntryAbout({ entry }: { entry: SettingEntry }) {
+  const t = useStrings(text);
+  return <details className="settings-entry-about">
+    <summary><strong>{t.scope}</strong>{t.gap}{entry.scope}</summary>
+    <p><strong>{t.source}</strong>{t.gap}{entry.source}</p>
+    <p><strong>{t.effect}</strong>{t.gap}{entry.effect}</p>
+  </details>;
+}
+
+/** A setting in search results, whole; `brief` under its category's row, where EntryAbout above it has the scope. */
+function SettingCard({ entry, navigation, brief, onOpen }: {
   entry: SettingEntry;
   navigation?: SettingsNavigation;
-  active: boolean;
+  brief?: boolean;
   onOpen: () => void;
 }) {
   const t = useStrings(text);
@@ -212,11 +252,13 @@ function SettingCard({ entry, navigation, active, onOpen }: {
     else if (target.kind === "project" && selected) navigation.onNavigate({ kind: "project", projectId: selected.id });
     else if (target.kind === "jobs" || target.kind === "machines") navigation.onNavigate(target);
   }
-  return <section className="settings-catalog-card" aria-labelledby={`setting-${entry.id}`}>
+  return <section className={`settings-catalog-card${brief ? " is-brief" : ""}`} aria-labelledby={`setting-${entry.id}`}>
     <h4 id={`setting-${entry.id}`}>{entry.title}</h4>
-    <p className="settings-scope"><strong>{t.scope}</strong>{t.gap}{entry.scope}{selected ? ` · ${selected.name}` : ""}</p>
-    <p><strong>{t.source}</strong>{t.gap}{entry.source}</p>
-    <p><strong>{t.effect}</strong>{t.gap}{entry.effect}</p>
+    {!brief && <>
+      <p className="settings-scope"><strong>{t.scope}</strong>{t.gap}{entry.scope}{selected ? ` · ${selected.name}` : ""}</p>
+      <p><strong>{t.source}</strong>{t.gap}{entry.source}</p>
+      <p><strong>{t.effect}</strong>{t.gap}{entry.effect}</p>
+    </>}
     {unavailable ? <p className="settings-unavailable"><strong>{t.unavailable}</strong>{t.gap}{target.reason}</p> : <>
       {requiresObject && <label className="settings-object-choice">
         {target.kind === "agent" ? t.agent : t.project}
@@ -228,9 +270,9 @@ function SettingCard({ entry, navigation, active, onOpen }: {
       </label>}
       {requiresObject && !choices.length && <p>{target.kind === "agent" ? t.noAgents : t.noProjects}</p>}
       {target.kind !== "editor" && (!navigation || navigation.disabled) && <p>{t.connect}</p>}
-      {active ? <p className="settings-editor-location">{t.editorBelow}</p> : <button type="button" className="secondary-button" disabled={!routable} onClick={navigate}>
+      <button type="button" className="secondary-button" disabled={!routable} onClick={navigate}>
         {t.open(entry.title)}<ArrowRight size={14} aria-hidden="true" />
-      </button>}
+      </button>
     </>}
   </section>;
 }

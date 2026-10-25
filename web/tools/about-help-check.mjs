@@ -91,7 +91,7 @@ try {
     await page.goto(origin);
     await page.getByRole("button", { name: "Settings and updates" }).click();
     await page.getByRole("dialog", { name: "Settings" }).waitFor();
-    await page.getByRole("button", { name: "Open About & help" }).click();
+    await page.locator(".settings-entries").getByRole("button", { name: "About & help", exact: true }).click();
     const section = page.locator("#settings-about");
     await section.getByRole("group", { name: "This version" }).waitFor();
     for (const [title, text] of licenses) {

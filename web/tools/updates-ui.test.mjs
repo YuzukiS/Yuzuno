@@ -31,6 +31,12 @@ const wait = (ms = 60) => new Promise((done) => setTimeout(done, ms));
 // leaves every other delay, and Date, as they are.
 const PRODUCT_POLL_MS = 1500;
 const POLL_MS = 100;
+// Opens an entry from its Settings category's row (T-187), once it is there.
+const entry = (f, text) => until(() => {
+  const el = [...f.w.document.querySelectorAll(".settings-entries button")].find((b) => b.textContent === text);
+  el?.click();
+  return !!el;
+});
 const until = async (check, ms = 4000) => {
   for (let waited = 0; waited < ms; waited += 10) {
     if (check()) return true;
@@ -230,6 +236,10 @@ async function mount(overrides = {}, shell, seed) {
       return respond({ product: "yuzuno", application: "yuzuno-next" });
     if (url.endsWith("/api/models")) return respond({ models: [] });
     if (url.endsWith("/api/machines")) return respond({ machines: [] });
+    // Data, privacy & recovery opens at its storage overview (T-187).
+    if (url.endsWith("/api/storage"))
+      return respond({ format: 1, readAt: "2026-10-24T22:00:00Z", dataDir: "/fixture/data", entries: [], unreadable: null,
+        database: { pageSize: 4096, pages: 10, freePages: 0 }, jobs: { total: 0, unfinished: 0 }, native: [], notInBackup: [] });
     if (url.includes("/api/catchup")) return respond({ items: [], agents: [] });
     if (url.includes("/api/collaboration/"))
       return respond({ tasks: [], messages: [], agents: [] });
@@ -1089,7 +1099,7 @@ test("a step Core refuses or fails ends the chain once, with its reason, and is 
 });
 
 // Phone access is one of Settings' editors (T-185 in T-187's Settings): its
-// card under Connections & devices opens it in place. It reads Core's view
+// entry under Connections & devices opens it in place. It reads Core's view
 // only while it is shown, and again each time it is shown.
 test("phone access opens from Connections & devices and reads Core's view each time it is shown", async () => {
   const f = await mount();
@@ -1106,14 +1116,14 @@ test("phone access opens from Connections & devices and reads Core's view each t
   const editor = () => f.w.document.querySelector("#settings-editor-remote");
   const openPhone = async () => {
     f.w.document.querySelector("#settings-tab-connections").click();
-    assert.ok(await f.press("Open Phone & remote access"), "Connections & devices offers phone access");
+    assert.ok(await entry(f, "Phone access"), "Connections & devices offers phone access");
     assert.ok(await until(() => editor() && !editor().hidden && /pc\.tail0\.ts\.net/.test(editor().textContent)), "the phone editor shows Core's view");
   };
   try {
     await f.open();
     f.w.document.querySelector("#settings-tab-connections").click();
-    assert.ok(await until(() => !!f.button("Open Phone & remote access")));
-    assert.equal(reads(), 0, "finding the setting reads nothing");
+    assert.ok(await until(() => !!f.w.document.querySelector(".settings-entries")));
+    assert.equal(reads(), 0, "Connections opens at Machines: phone access reads nothing until it is shown");
     await openPhone();
     assert.equal(reads(), 1);
     f.w.document.querySelector("#settings-tab-updates").click();
@@ -1130,9 +1140,9 @@ test("phone access opens from Connections & devices and reads Core's view each t
   } finally { f.w.close(); }
 });
 
-// Data & storage is one of Settings' editors (T-193): its card under Data,
-// privacy & recovery opens it in place. It reads Core's overview only while
-// it is shown, and again each time it is shown.
+// Data & storage is one of Settings' editors (T-193), the first under Data,
+// privacy & recovery, which opens at it (T-187). It reads Core's overview
+// only while it is shown, and again each time it is shown.
 test("data & storage opens from Data, privacy & recovery and reads Core's overview each time it is shown", async () => {
   const f = await mount();
   const view = {
@@ -1151,14 +1161,11 @@ test("data & storage opens from Data, privacy & recovery and reads Core's overvi
   const editor = () => f.w.document.querySelector("#settings-editor-storage");
   const openStorage = async () => {
     f.w.document.querySelector("#settings-tab-data").click();
-    assert.ok(await f.press("Open Data & storage overview"), "Data, privacy & recovery offers it");
-    assert.ok(await until(() => editor() && !editor().hidden && /Job records and output logs/.test(editor().textContent)), "it shows Core's overview");
+    assert.ok(await until(() => editor() && !editor().hidden && /Job records and output logs/.test(editor().textContent)), "Data opens at Core's overview");
   };
   try {
     await f.open();
-    f.w.document.querySelector("#settings-tab-data").click();
-    assert.ok(await until(() => !!f.button("Open Data & storage overview")));
-    assert.equal(reads(), 0, "finding the setting reads nothing");
+    assert.equal(reads(), 0, "nothing is read before Data is chosen");
     await openStorage();
     assert.equal(reads(), 1);
     // The update status Settings already holds is passed in, not read again.
@@ -1224,7 +1231,6 @@ test("a task chosen in data & storage opens on the task board at its Workspace s
   try {
     await f.open();
     f.w.document.querySelector("#settings-tab-data").click();
-    assert.ok(await f.press("Open Data & storage overview"), "Data, privacy & recovery offers it");
     let select;
     assert.ok(await until(() => (select = f.w.document.querySelector("#settings-editor-storage .storage-task-open select")) && select.options.length === 3), "the tasks to choose from");
     Object.getOwnPropertyDescriptor(f.w.HTMLSelectElement.prototype, "value").set.call(select, "T-7");
@@ -1241,7 +1247,7 @@ test("a task chosen in data & storage opens on the task board at its Workspace s
   } finally { f.w.close(); }
 });
 
-// Draft storage is one of Settings' editors (T-193 slice 3): its card under
+// Draft storage is one of Settings' editors (T-193 slice 3): its entry under
 // Data, privacy & recovery opens it in place and lists this device's saved
 // drafts for the Workspace's Agents; one is shown whole only when chosen.
 test("draft storage opens from Data, privacy & recovery and shows the Agent's saved draft whole", async () => {
@@ -1249,7 +1255,7 @@ test("draft storage opens from Data, privacy & recovery and shows the Agent's sa
   try {
     await f.open();
     f.w.document.querySelector("#settings-tab-data").click();
-    assert.ok(await f.press("Open Draft storage"), "Data, privacy & recovery offers it");
+    assert.ok(await entry(f, "Drafts"), "Data, privacy & recovery offers it");
     const row = () => f.w.document.querySelector('#settings-drafts [data-agent="a"]');
     assert.ok(await until(() => !!row()), "the Agent's saved draft is listed");
     assert.equal(f.w.document.querySelector("#settings-drafts textarea") === null, true, "nothing is opened until chosen");

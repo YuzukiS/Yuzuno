@@ -154,8 +154,9 @@ test("object routes never default to the first Agent or project and reject a rem
 
 test("keyboard navigation and search preserve a failed Home edit and move focus to its editor", async (t) => {
   const p = mount(); t.after(p.close); p.w.renderSettings(p.props);
-  await until(() => p.button("Updates & about"));
-  p.button("Updates & about").focus();
+  const tab = (id) => p.doc.getElementById(`settings-tab-${id}`);
+  await until(() => tab("updates"));
+  tab("updates").focus();
   p.doc.activeElement.dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "Home", bubbles: true }));
   await until(() => p.doc.activeElement.id === "settings-tab-appearance");
   p.doc.activeElement.dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
@@ -168,11 +169,48 @@ test("keyboard navigation and search preserve a failed Home edit and move focus 
   await until(() => p.button("Save Home preference")); p.button("Save Home preference").click();
   await until(() => p.doc.querySelector('[role="alert"]'));
   p.type(query, "预算"); await until(() => p.doc.querySelector('#setting-budget'));
-  p.button("Projects & collaboration").click(); await until(() => p.button("Open Home presentation")); p.button("Open Home presentation").click();
+  tab("projects").click(); await until(() => p.button("Home")); p.button("Home").click();
   await until(() => !p.doc.getElementById('settings-editor-home').hidden);
   assert.equal(p.doc.querySelector('[aria-label="Your note for Agents"]').value, "Keep this unsaved preference");
   assert.match(p.doc.querySelector('[role="alert"]').textContent, /storage unavailable/);
   assert.equal(p.calls.filter((call) => call.url.endsWith('/home/presentation') && call.method === 'GET').length, 1);
+});
+
+// A category is the daily Settings' layout again (T-187): a row of its
+// entries, then the entry itself, an editor directly; no cards before it.
+test("a category opens its first entry's editor directly, with its entries in one row and its scope on request", async (t) => {
+  const p = mount(); t.after(p.close); p.w.renderSettings(p.props);
+  const tab = (id) => p.doc.getElementById(`settings-tab-${id}`);
+  const row = () => [...p.doc.querySelectorAll(".settings-entries button")].map((b) => [b.textContent, b.getAttribute("aria-current")]);
+  const shown = () => [...p.doc.querySelectorAll(".settings-editor")].filter((el) => !el.hidden).map((el) => el.id);
+  await until(() => tab("appearance"));
+  // A tab shows a short name; its full name is still the tab's name.
+  assert.equal(tab("appearance").querySelector(".settings-nav-label").textContent, "Appearance");
+  assert.equal(tab("appearance").querySelector(".sr-only").textContent, "Appearance & interaction");
+  tab("appearance").click();
+  await until(() => shown().includes("settings-editor-appearance"));
+  assert.deepEqual(row(), [["Theme & layout", "true"], ["Sending", null], ["Shortcuts", null], ["Move preferences", null], ["Shared preset", null], ["Clock", null], ["Language", null]]);
+  assert.equal(p.doc.querySelectorAll(".settings-catalog-card").length, 0, "no cards before the editor");
+  const about = p.doc.querySelector(".settings-entry-about");
+  assert.equal(about.open, false);
+  assert.equal(about.querySelector("summary").textContent, "Scope: This device · this site");
+  p.button("Clock").click();
+  await until(() => shown().join() === "settings-editor-time");
+  assert.equal(row()[5][1], "true");
+  // Where an entry is edited elsewhere: its object chosen first, nothing read.
+  tab("agents").click();
+  await until(() => p.doc.querySelector(".settings-catalog-card.is-brief"));
+  assert.deepEqual(shown(), [], "no editor of Settings' own for it");
+  const card = p.doc.querySelector(".settings-catalog-card.is-brief");
+  assert.equal(card.querySelector("h4").textContent, "Model, reasoning & permissions");
+  assert.doesNotMatch(card.textContent, /Scope:/, "its scope is in the line above, once");
+  assert.equal(p.button("Open Model, reasoning & permissions").disabled, true);
+  // Notifications has one entry: no row, its editor.
+  tab("notifications").click();
+  await until(() => shown().join() === "settings-editor-notifications");
+  assert.equal(p.doc.querySelector(".settings-entries"), null);
+  assert.equal(p.calls.length, 0);
+  assert.deepEqual(p.errors, []);
 });
 
 test("a targeted context request survives the selected Agent mounting, without a save or Apply", async (t) => {
