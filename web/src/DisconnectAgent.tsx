@@ -80,8 +80,8 @@ export function DisconnectAgentDialog({
         </p>
         {machine && (
           <p>
-            {machine} is asked to stop Claude and to say once it has. If it can’t say so, you are told, and the agent
-            stays disconnected until you press Reconnect.
+            {machine} is asked to stop {harness} there and to say once it has. If it can’t say so, you are told, and the
+            agent stays disconnected until you press Reconnect.
           </p>
         )}
         {error && (

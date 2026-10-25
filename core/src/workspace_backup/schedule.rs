@@ -730,7 +730,7 @@ mod tests {
         let backup_ok = |request: &str, _: &Path| quick(&backups, "backup", request, Ok(json!({})));
         planner.tick(&backups, at("2026-10-28T03:00:10Z"), backup_ok, never).unwrap();
         idle(&backups).await;
-        let (_cut, gate) = std::sync::mpsc::channel::<()>();
+        let (end_removal, gate) = std::sync::mpsc::channel::<()>();
         let gate = Mutex::new(Some(gate));
         planner.tick(&backups, at("2026-10-28T03:00:40Z"), never_backup, |request: &str, _: &Path, _: Rule| {
             let gate = gate.lock().unwrap().take().unwrap();
@@ -740,8 +740,16 @@ mod tests {
             })
         }).unwrap();
         assert_eq!(planner.get().last_run.unwrap().cleanup.unwrap().state, "running");
-        let backups = Arc::new(Backups::open(data.path()));
-        let planner = Planner::open(data.path());
+        // Core stops here. The next one reads the files as they are now, in a
+        // folder of their own: nothing this one still does writes to them.
+        let stopped = tempfile::tempdir().unwrap();
+        for name in [super::super::online::JOURNAL, FILE] {
+            std::fs::copy(data.path().join(name), stopped.path().join(name)).unwrap();
+        }
+        end_removal.send(()).unwrap();
+        idle(&backups).await;
+        let backups = Arc::new(Backups::open(stopped.path()));
+        let planner = Planner::open(stopped.path());
         planner.tick(&backups, at("2026-10-28T03:01:10Z"), never_backup, never).unwrap();
         let cut = planner.get().last_run.unwrap().cleanup.unwrap();
         assert_eq!(cut.state, "interrupted");
