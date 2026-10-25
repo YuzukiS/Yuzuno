@@ -150,3 +150,10 @@ dl.runtime-group {
   font-size: calc(11px + var(--font-adjust, 3px));
   font-weight: 550;
 }
+/* The Core host's explicit model check (T-191). */
+.runtime-models-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
