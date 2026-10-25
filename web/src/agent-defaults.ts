@@ -4,17 +4,31 @@ import { permissionLabel } from "./CodexPermissions";
 /** Where a new Agent's value comes from (T-190). */
 export type DefaultSource = "builtin" | "workspace" | "project" | "request";
 export type NewAgentHarness = "codex" | "claude";
-export type SavedDefaults = { harness?: NewAgentHarness; codexPermissionPreset?: string; claudePermissionMode?: string };
+export type SavedDefaults = {
+  harness?: NewAgentHarness;
+  codexPermissionPreset?: string;
+  claudePermissionMode?: string;
+  /** Codex on the Core host only: a model of its catalog, and one of its efforts. */
+  codexModel?: string;
+  codexReasoningEffort?: string;
+};
+type Valued = { value: string | null; source: DefaultSource };
 export type EffectiveDefaults = {
   harness: { value: NewAgentHarness; source: DefaultSource };
   /** null: Yuzuno's built-in "Ask for approval" (on-request, workspace-write). */
   codexPermissionPreset: { value: string | null; source: DefaultSource };
   claudePermissionMode: { value: string; source: DefaultSource };
+  /** null: Codex's own default on the Core host. Left out by a Core without model defaults. */
+  codexModel?: Valued;
+  /** null: the model's own effort. */
+  codexReasoningEffort?: Valued;
 };
 export type AgentDefaultsView = {
   /** The Workspace's own choices. */
   saved: SavedDefaults;
-  builtIn: { harness: NewAgentHarness; codexPermissionPreset: null; claudePermissionMode: string };
+  builtIn: { harness: NewAgentHarness; codexPermissionPreset: null; claudePermissionMode: string; codexModel?: null; codexReasoningEffort?: null };
+  /** Where a default model and effort apply (Codex on the Core host only). */
+  modelAppliesTo?: string;
   /** What a new Agent gets now: in a project, with its overrides. */
   effective: EffectiveDefaults;
   /** Read for a project: its own overrides, and what it inherits without them. */
@@ -25,6 +39,8 @@ export type AgentDefaultsChange = Partial<{
   harness: NewAgentHarness | null;
   codexPermissionPreset: string | null;
   claudePermissionMode: string | null;
+  codexModel: string | null;
+  codexReasoningEffort: string | null;
 }>;
 
 /** The Workspace's defaults; with a project, as an Agent created in it gets them. */
@@ -55,3 +71,5 @@ export const sourceText = (source: DefaultSource | undefined) =>
         : source === "builtin"
           ? "Built in"
           : "Not reported by this Core";
+/** A Codex model on the Core host, said: null is Codex's own default there. */
+export const codexModelText = (model: string | null | undefined) => model || "Codex’s own default";

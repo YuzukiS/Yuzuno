@@ -558,8 +558,14 @@ struct Create {
     #[serde(default)]
     harness: Option<String>,
     cwd: String,
-    #[serde(default)]
-    model: String,
+    /// Left out (or "", as older clients send) inherits; `null` is Codex's
+    /// own default; a name is that model (T-190).
+    #[serde(default, deserialize_with = "crate::agent_defaults::model_ask")]
+    model: crate::agent_defaults::ModelAsk,
+    /// This Agent's own reasoning effort, for Codex on the Core host with a
+    /// model named in the request; `null` is the model's own (T-190).
+    #[serde(default, deserialize_with = "crate::agent_defaults::present")]
+    reasoning_effort: Option<Option<String>>,
     #[serde(default)]
     machine_id: Option<String>,
     #[serde(default)]
@@ -623,15 +629,46 @@ async fn create(State(ws): State<Arc<Workspace>>, Json(p): Json<Create>) -> ApiR
         Ok((store.agent_defaults()?, own))
     }).await?;
     let new = crate::agent_defaults::resolve(&defaults, project_defaults.as_ref(), p.harness.as_deref(), p.permission_preset.as_deref(), p.permission_mode.as_deref())?;
+    // A model and effort default: Codex on the Core host only. Checked against
+    // its catalog before anything exists; elsewhere the model is as before.
+    let local = p.machine_id.as_deref().is_none_or(|machine| machine == "local");
+    let plan = crate::agent_defaults::resolve_model(&defaults, project_defaults.as_ref(), new.harness == "codex" && local,
+        &p.model, p.reasoning_effort.as_ref().map(|effort| effort.as_deref()))?;
+    let mut settings = new.settings;
+    let mut sources = new.sources;
+    let model = match plan {
+        Some(plan) => {
+            let mut model = plan.model.clone();
+            if let Some((checked, effort, source)) = &plan.check {
+                let set_for = if *source == "project" { "this project" } else { "this Workspace" };
+                let catalog = ws.catalog().await.map_err(|e| if *source == "request" {
+                    anyhow::anyhow!("Can't read this Core host's Codex models to check the reasoning effort: {e:#}")
+                } else {
+                    anyhow::anyhow!("Can't read this Core host's Codex models to check {checked}, the default model set for {set_for}: {e:#}. Choose a model for this Agent, or try again")
+                })?;
+                let named = crate::agent_defaults::check_in_catalog(&catalog, checked, effort.as_deref()).map_err(|e| if *source == "request" {
+                    e
+                } else {
+                    anyhow::anyhow!("The default Codex model set for {set_for} can't be used now: {e:#}. Choose a model for this Agent")
+                })?;
+                if *source != "request" { model = named; }
+            }
+            settings.reasoning_effort = plan.effort.clone();
+            sources["model"] = plan.sources.0.into();
+            sources["effort"] = plan.sources.1.into();
+            model
+        }
+        None => p.model.as_before(),
+    };
     let agent = match new.harness.as_str() {
-        "codex" => ws.create_on_with(p.name, p.goal, p.cwd, p.model, p.machine_id, p.project_id, new.settings).await?,
-        "claude" => ws.claude_create_on_with(p.name, p.goal, p.cwd, p.model, p.machine_id, p.project_id, new.settings).await?,
-        "opencode" if crate::opencode_agent::enabled() => ws.opencode_create_on(p.name, p.cwd, p.model, p.machine_id, p.project_id).await?,
+        "codex" => ws.create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings).await?,
+        "claude" => ws.claude_create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings).await?,
+        "opencode" if crate::opencode_agent::enabled() => ws.opencode_create_on(p.name, p.cwd, model, p.machine_id, p.project_id).await?,
         _ => return Err(anyhow::anyhow!("未知 Harness").into()),
     };
     // The Agent already exists; a failed default update must not hide it.
     let mut response = serde_json::to_value(&agent)?;
-    response["defaultSources"] = new.sources;
+    response["defaultSources"] = sources;
     if let (true, Some(project)) = (p.save_project_default, project) {
         let machine = agent.remote.as_ref().map_or("local", |r| r.machine.id.as_str()).to_owned();
         let cwd = agent.cwd.clone();
