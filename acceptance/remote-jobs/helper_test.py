@@ -171,7 +171,8 @@ class HelperTests(unittest.TestCase):
         blind_env = {"YUZUNO_JOBS_PIDS_UNREADABLE_FILE": str(unreadable)}
         attempt = self.attempt("sleep 2")
         started = self.call(dict(attempt, action="start"), env_extra=blind_env)
-        self.assertEqual(started["status"], "started", started)
+        # A start answers running while its command is still going.
+        self.assertIn(started["status"], ("started", "running"), started)
         folder = self.folder(attempt)
         result = folder / "result.json"
         # From here this machine cannot be asked, the supervisor included.
