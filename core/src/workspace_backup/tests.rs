@@ -1070,30 +1070,51 @@ fn a_stopped_automatic_pass_stays_stopped_and_says_what_it_had_removed() {
     assert_eq!(backups_in(&folder), vec!["b-2", "b-3"]);
 }
 
-/// An operation that starts just as another ends stays in the journal: the
-/// ending one's write never lands over it (main CI 40175308220). Many rounds,
-/// each starting the second the moment the first lets go of its place.
+/// An operation that starts while the one before it is still writing its
+/// end stays in the journal: that write, with its copy from before the start,
+/// holds the journal until it has landed, so it can't land over the newer one
+/// (main CI 40175308220, where a backup's write landed over the removal
+/// started right after it, so a restart didn't know the removal).
 #[tokio::test(flavor = "multi_thread")]
-async fn an_operation_started_as_another_ends_stays_in_the_journal() {
+async fn an_operation_started_while_the_last_one_writes_its_end_stays_in_the_journal() {
     use online::Backups;
+    use std::sync::mpsc::channel;
     let root = tempfile::tempdir().unwrap();
-    for round in 0..200 {
-        let data = root.path().join(format!("w{round}"));
-        fs::create_dir(&data).unwrap();
-        let backups = Arc::new(Backups::open(&data));
-        backups.start("check", "first", json!({"path": "/a"}), |_| None, |_| Ok(json!({}))).unwrap();
-        while backups.current().is_some() {
-            std::hint::spin_loop();
-        }
-        let (_hold, gate) = std::sync::mpsc::channel::<()>();
-        let second = backups.start("check", "second", json!({"path": "/b"}), |_| None, move |_| {
-            let _ = gate.recv();
-            Ok(json!({}))
-        }).unwrap();
-        // The first one's write, if it is still to come, comes now.
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        let reopened = Backups::open(&data);
-        assert_eq!(reopened.get(&second.id).map(|op| op.state), Some("interrupted".to_string()),
-            "round {round}: the operation started as the first ended is missing from the journal");
+    let backups = Arc::new(Backups::open(root.path()));
+    let (end_first, first_gate) = channel::<()>();
+    backups.start("check", "first", json!({"path": "/a"}), |_| None, move |_| {
+        let _ = first_gate.recv();
+        Ok(json!({}))
+    }).unwrap();
+    // Its end's write is held between its copy and writing it.
+    let (copied, held) = channel::<()>();
+    let (release, released) = channel::<()>();
+    *backups.between_copy_and_write.lock().unwrap() = Some(Box::new(move || {
+        copied.send(()).unwrap();
+        let _ = released.recv();
+    }));
+    end_first.send(()).unwrap();
+    held.recv().unwrap();
+    assert!(backups.current().is_none(), "the first has let go of its place while its write is pending");
+    assert!(backups.writing.try_lock().is_err(), "a write holds the journal from its copy until it has written");
+    // The second starts now, from another thread: its write waits for the first's.
+    let (_end_second, second_gate) = channel::<()>();
+    let starter = {
+        let (backups, runtime) = (backups.clone(), tokio::runtime::Handle::current());
+        std::thread::spawn(move || {
+            let _runtime = runtime.enter();
+            backups.start("check", "second", json!({"path": "/b"}), |_| None, move |_| {
+                let _ = second_gate.recv();
+                Ok(json!({}))
+            }).unwrap()
+        })
+    };
+    while backups.current().is_none() {
+        std::thread::yield_now();
     }
+    release.send(()).unwrap();
+    let second = starter.join().unwrap();
+    // As after a restart: the second, still running, is known and interrupted.
+    let reopened = Backups::open(root.path());
+    assert_eq!(reopened.get(&second.id).map(|op| op.state), Some("interrupted".to_string()));
 }

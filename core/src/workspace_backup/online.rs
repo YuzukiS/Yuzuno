@@ -58,7 +58,11 @@ pub struct Backups {
     state: Mutex<Vec<Operation>>,
     running: Mutex<Option<(String, Arc<Control>)>>,
     /// Held while the journal is written, so writes happen one at a time.
-    writing: Mutex<()>,
+    pub(super) writing: Mutex<()>,
+    /// Runs once, in the next write, between its copy of the operations and
+    /// writing them: a test holds a write there.
+    #[cfg(test)]
+    pub(super) between_copy_and_write: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// Why an operation was not started.
@@ -95,7 +99,14 @@ impl Backups {
             op.finished_at = Some(now());
             changed = true;
         }
-        let backups = Self { file, state: Mutex::new(operations), running: Mutex::new(None), writing: Mutex::new(()) };
+        let backups = Self {
+            file,
+            state: Mutex::new(operations),
+            running: Mutex::new(None),
+            writing: Mutex::new(()),
+            #[cfg(test)]
+            between_copy_and_write: Mutex::new(None),
+        };
         if changed {
             let _ = backups.save();
         }
@@ -110,6 +121,13 @@ impl Backups {
     fn save(&self) -> Result<()> {
         let _writing = self.writing.lock().unwrap();
         let operations = self.state.lock().unwrap().clone();
+        #[cfg(test)]
+        {
+            let hold = self.between_copy_and_write.lock().unwrap().take();
+            if let Some(hold) = hold {
+                hold();
+            }
+        }
         crate::updates::package::atomic_json(&self.file, &operations)
     }
 
