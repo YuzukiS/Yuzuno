@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import type { SettingsEditor } from "./settings-catalog";
-import { SettingsCenter, type SettingsNavigation } from "./SettingsCenter";
+import { SettingsCenter, type SettingsNavigation, type SettingsOpenAt } from "./SettingsCenter";
 import { RuntimeSection } from "./RuntimeSection";
 import { AboutSection } from "./AboutSection";
 import { AppearanceSection } from "./AppearanceSettings";
@@ -339,6 +339,7 @@ export function WorkspaceUpdatesHost({
   onNeedsReloadChange,
   preserveDrafts,
   navigation,
+  openAt,
 }: {
   enabled: boolean;
   open: boolean;
@@ -346,6 +347,8 @@ export function WorkspaceUpdatesHost({
   onNeedsReloadChange: (needsReload: boolean) => void;
   navigation?: SettingsNavigation;
   preserveDrafts: () => void;
+  /** Opens Settings at this editor (a notification's click, T-196). */
+  openAt?: SettingsOpenAt | null;
 }) {
   const intent = useUpdateIntent();
   // A chosen update is followed closely even while Settings is closed.
@@ -361,6 +364,7 @@ export function WorkspaceUpdatesHost({
       preserveDrafts={preserveDrafts}
       chain={chain}
       navigation={navigation}
+      openAt={openAt}
       {...updates}
     />
   );
@@ -382,6 +386,7 @@ export function WorkspaceUpdates({
   needsReload,
   chain,
   navigation,
+  openAt,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -392,6 +397,7 @@ export function WorkspaceUpdates({
   needsReload: boolean;
   chain: UpdateChainControl;
   navigation?: SettingsNavigation;
+  openAt?: SettingsOpenAt | null;
 }) {
   const language = useLanguage();
   const dialog = settingsDialogText(language);
@@ -781,6 +787,7 @@ export function WorkspaceUpdates({
     >
       <SettingsCenter
         navigation={navigation}
+        openAt={openAt}
         onEditorChange={setActiveEditor}
         attention={stage === "running" || stage === "reload" || stage === "prepared" || stage === "local" || stage === "published"}
         renderEditor={(tab, visible, openEditor) => <>

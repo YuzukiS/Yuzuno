@@ -24,6 +24,10 @@ const kinds: Record<NotificationCategory, { title: string; help: string }> = {
   needsYou: { title: "An Agent needs you", help: "A request to approve or answer, or a new Ask on Home." },
   failed: { title: "A Turn failed", help: "An Agent stopped with an error." },
   finished: { title: "A Turn finished", help: "An Agent finished what it was doing." },
+  backupFailed: {
+    title: "A daily backup failed",
+    help: "It failed, was cut off when Core stopped, or couldn’t start. Also while you’re looking at Yuzuno, but only while it’s open in this browser: never while the page is closed, and possibly late after the computer sleeps. It names no folder or error; Settings → Backup shows the last run and why.",
+  },
 };
 
 /** What this browser allows, in the user's words, with what to do about it. */

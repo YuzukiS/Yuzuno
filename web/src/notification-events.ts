@@ -17,15 +17,17 @@ export type Notice = {
   tag: string;
   title: string;
   body: string;
-  /** Opened on a click: the Agent's conversation, or Home for an Ask. */
+  /** Opened on a click: the Agent's conversation, Home for an Ask, or
+   * Settings → Backup of this Workspace for a backup. */
   agentId?: string;
   home?: boolean;
+  backup?: { workspaceId: string };
 };
 
 export type AgentState = Pick<Agent, "id" | "name" | "status" | "pendingCount" | "closedAt" | "workSummary" | "error">;
 
 /** A failure or a request before a finished Turn (T-188: failures and approvals first). */
-const priority: Record<NotificationCategory, number> = { needsYou: 0, failed: 1, finished: 2 };
+const priority: Record<NotificationCategory, number> = { needsYou: 0, failed: 1, backupFailed: 1, finished: 2 };
 const PREVIEW_CHARS = 140;
 /** More at once than this become one notification. */
 export const BURST = 3;
@@ -85,6 +87,46 @@ export function askNotices(before: NeedsYouItem[] | null, after: NeedsYouItem[],
       body: preview && item.title ? clip(item.title) : "An Ask is waiting for your answer on Home.",
       home: true,
     }));
+}
+
+/** The daily backup's last run, as Core's Backup status reads it
+ * (core/src/workspace_backup/schedule.rs). */
+export type BackupRun = {
+  slot: string;
+  operationId?: string | null;
+  /** running, succeeded, failed, stopped, interrupted, or not_started. */
+  state: string;
+};
+
+/** Ended without a backup, and not because someone stopped it: a backup that
+ * failed, was cut off by Core stopping, or could not begin. */
+const backupFailures = {
+  failed: { title: "The daily backup failed", ended: "did not finish" },
+  interrupted: { title: "The daily backup was interrupted", ended: "did not finish" },
+  not_started: { title: "The daily backup didn’t start", ended: "could not begin" },
+};
+const backupFailure = (state: string) =>
+  state === "failed" || state === "interrupted" || state === "not_started" ? backupFailures[state] : null;
+
+/**
+ * A notice when the daily backup's last run is newly known to have failed
+ * (T-196): compared with the read before, as for Agents, so the first read
+ * gives none, and a run already failed then gives none again. It names no
+ * folder and no error: Settings → Backup shows them.
+ */
+export function backupNotice(workspaceId: string, before: BackupRun | null | undefined, after: BackupRun | null): Notice | null {
+  const failure = after && backupFailure(after.state);
+  if (before === undefined || !after || !failure) return null;
+  if (before && before.slot === after.slot && backupFailure(before.state)) return null;
+  const at = `${after.slot.slice(0, 10)} ${after.slot.slice(11, 16)} UTC`;
+  const { title, ended } = failure;
+  return {
+    kind: "backupFailed",
+    tag: tag("backupFailed", `${workspaceId}:${after.operationId || after.slot}`),
+    title,
+    body: `The backup due at ${at} ${ended}. Open Settings → Backup to see why.`,
+    backup: { workspaceId },
+  };
 }
 
 /**

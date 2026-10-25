@@ -87,7 +87,7 @@ import type {
   Workspace,
   WorkSummary,
 } from "./types";
-import type { SettingsDestination } from "./settings-catalog";
+import type { SettingsDestination, SettingsEditor } from "./settings-catalog";
 import { UpdateBanner, WorkspaceUpdatesHost } from "./WorkspaceUpdates";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
@@ -192,7 +192,7 @@ import { followVisualViewport } from "./keyboard-viewport";
 import type { QuestionSource } from "./types";
 import { Home, type HomeTarget } from "./home/Home";
 import { useOpenAsks } from "./home/open-asks";
-import { useSystemNotifications } from "./useSystemNotifications";
+import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
 
 // Core fits a large image to Yuzuno's Claude budget (core/src/input_images.rs).
 const CLAUDE_IMAGE_NOTE = "Large images are scaled or compressed when sent to Claude · originals are kept";
@@ -286,6 +286,10 @@ export function App() {
   // Which key sends, on this device (T-189); unset, as before.
   const { sendKey } = useDevicePreferences();
   const [updatesOpen, setUpdatesOpen] = useState(false);
+  // Settings opened at one editor, as a backup notification's click does (T-196).
+  const [settingsAt, setSettingsAt] = useState<{ editor: SettingsEditor; nonce: number } | null>(null);
+  // Core said the daily backup's last run changed: read again for notifications.
+  const [backupRevision, setBackupRevision] = useState(0);
   const [updatesNeedReload, setUpdatesNeedReload] = useState(false);
   const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
   const [settingsInspectorAgent, setSettingsInspectorAgent] = useState<string | null>(null);
@@ -547,11 +551,14 @@ export function App() {
           }
           else if (event.scope === "projects" || event.scope === "runtime")
             workspaceRefresh.soon(250);
+          else if (event.scope === "backup") setBackupRevision((n) => n + 1);
           else refresh();
           return;
         case "reset":
           jobsRefresh.now();
           refresh();
+          // Not each poll while the stream is down: a reconnect resets anew.
+          if (event.reason !== "poll") setBackupRevision((n) => n + 1);
           return;
       }
     },
@@ -836,12 +843,23 @@ export function App() {
   const [openAsks, reportNeedsYou, needsYouItems] = useOpenAsks(workspaceId, !homeOpen && !previewMode, asksRevision);
   // This device's system notifications, where it chose them and its system
   // allows them (T-188). A preview's sample Workspace has none.
+  const backupRun = useBackupRun(backupRevision, !previewMode);
   useSystemNotifications(workspaceId, previewMode ? undefined : workspace?.agents, previewMode ? null : needsYouItems, (notice) => {
-    if (notice.home) {
+    if (notice.backup) {
+      // Only this Workspace's Backup status: retrying or anything else is the user's to choose there.
+      if (notice.backup.workspaceId !== workspaceId) return;
+      setSettingsAt({ editor: "backup", nonce: Date.now() });
+      setUpdatesOpen(true);
+    } else if (notice.home) {
       setHomeOpen(true);
       setPhoneList(false);
     } else if (notice.agentId) selectAgent(notice.agentId);
-  });
+  }, backupRun);
+  // Settings closed, however (its own close, or a card that opens another
+  // dialog): a notification's request is used up, not repeated next time.
+  useEffect(() => {
+    if (!updatesOpen) setSettingsAt(null);
+  }, [updatesOpen]);
   const needsYou = totalPending + openAsks;
   const reviewDisplayed = useCallback(
     async (id: string, throughSeq: number) => {
@@ -3302,6 +3320,7 @@ export function App() {
         enabled={!previewMode}
         open={updatesOpen}
         onOpenChange={setUpdatesOpen}
+        openAt={settingsAt}
         onNeedsReloadChange={setUpdatesNeedReload}
         navigation={{ agents: workspace?.agents || [], projects, disabled: previewMode, onNavigate: openSettingsDestination }}
         preserveDrafts={() => { if (imageUploads.hasPending()) throw new Error("Wait for images to finish saving before updating."); preserveDrafts(); }}

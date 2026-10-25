@@ -9,12 +9,13 @@ import type { NotificationAccess } from "./notification-access";
  * changes nothing the Workspace delivers: Agents' mail, Needs you and the
  * conversations are the same.
  */
-export type NotificationCategory = "needsYou" | "failed" | "finished";
+export type NotificationCategory = "needsYou" | "failed" | "finished" | "backupFailed";
 export type NotificationPrefs = {
   /** Notify through the system on this device. Off until the user turns it on. */
   enabled: boolean;
   /** Which kinds: an Agent needs you (a request or an Ask), a Turn failed,
-   * a Turn finished. */
+   * a Turn finished, the daily backup failed (T-196; off until chosen, also
+   * where the others are on). */
   categories: Record<NotificationCategory, boolean>;
   /** Show what was written, or only who and why. Off: the system can show a
    * notification on a locked screen. */
@@ -24,10 +25,10 @@ export type NotificationPrefs = {
 };
 
 export const NOTIFICATION_PREFS_KEY = "yuzuno.notifications";
-export const notificationCategories: NotificationCategory[] = ["needsYou", "failed", "finished"];
+export const notificationCategories: NotificationCategory[] = ["needsYou", "failed", "finished", "backupFailed"];
 export const defaultNotificationPrefs: NotificationPrefs = {
   enabled: false,
-  categories: { needsYou: true, failed: true, finished: true },
+  categories: { needsYou: true, failed: true, finished: true, backupFailed: false },
   preview: false,
   muted: false,
 };
