@@ -202,17 +202,23 @@ def darwin_proc(pid):
 
 
 def all_pids():
-    """Every PID on the machine: /proc on Linux, proc_listpids on macOS."""
+    """Every PID on the machine: /proc on Linux, proc_listpids on macOS.
+
+    Raises Unclear when the machine cannot be asked. A machine never has no
+    processes at all, so proc_listpids answering 0 or less means the question
+    failed, not that nothing is running. Returning [] for that would report a
+    live process group as gone: its reservation would be let go and its
+    outcome written while its processes still ran."""
     if not DARWIN:
         return [int(name) for name in os.listdir("/proc") if name.isdigit()]
     size = LIBPROC.proc_listpids(DARWIN_PROC_ALL_PIDS, 0, None, 0)
     if size <= 0:
-        return []
+        raise Unclear("this machine's processes could not be listed")
     # Room for processes that start between the two calls.
     buf = (ctypes.c_int32 * (size // ctypes.sizeof(ctypes.c_int32) + 64))()
     got = LIBPROC.proc_listpids(DARWIN_PROC_ALL_PIDS, 0, ctypes.byref(buf), ctypes.sizeof(buf))
     if got <= 0:
-        return []
+        raise Unclear("this machine's processes could not be listed")
     return [int(each) for each in buf[:got // ctypes.sizeof(ctypes.c_int32)] if each > 0]
 
 
@@ -293,25 +299,49 @@ def send(pid, signum, group):
             os.close(handle)
 
 
+def live(group):
+    """The group's live processes, or None when this machine could not be
+    asked. None is not an empty group: a caller that cannot tell must not
+    report the group as stopped."""
+    try:
+        return members(group)
+    except Unclear:
+        return None
+
+
+# How long enumeration may keep failing before stop() gives its answer as
+# "not empty" rather than wait on a machine that cannot be asked at all.
+BLIND_LIMIT = 5
+
+
 def stop(group, limit=None, since=None):
     """TERM the group's checked members, KILL whatever is left from 5 s after
     the first TERM (`since`, this boot's monotonic time an earlier call sent
     it, or now), and go on until none is left (or for `limit` seconds of this
-    call). True once empty."""
+    call). True only once the group is known to be empty: while the machine
+    cannot be asked, nothing is signalled and nothing is called stopped, and
+    after BLIND_LIMIT of that this answers False rather than waiting on it."""
     begin = time.monotonic()
     first = begin if since is None else since
-    for pid in members(group):
+    for pid in live(group) or []:
         send(pid, signal.SIGTERM, group)
+    blind = None
     while True:
-        left = members(group)
-        if not left:
+        left = live(group)
+        if left == []:
             return True
         now = time.monotonic()
         if limit is not None and now - begin >= limit:
             return False
-        if now - first >= 5:
-            for pid in left:
-                send(pid, signal.SIGKILL, group)
+        if left is None:
+            blind = now if blind is None else blind
+            if now - blind >= BLIND_LIMIT:
+                return False
+        else:
+            blind = None
+            if now - first >= 5:
+                for pid in left:
+                    send(pid, signal.SIGKILL, group)
         time.sleep(0.1)
 
 
@@ -890,8 +920,10 @@ while True:
     time.sleep(0.2)
 # The command has exited; nothing of its group may outlive it, and the
 # outcome is written only once nothing is left.
-leftovers = len(members(group))
-if held and leftovers:
+# None when this machine could not be asked: not reported as none left.
+remaining = live(group)
+leftovers = None if remaining is None else len(remaining)
+if held and leftovers != 0:
     thawed = thaw_for_stop(root, intent) or thawed
 stop(group)
 reader.join(5)
@@ -909,7 +941,16 @@ if kept:
         pass
 code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
 signum = -code if code < 0 else None
-note = "; %d process(es) left in its process group were stopped" % leftovers if leftovers and why is None else ""
+if why is not None:
+    note = ""
+elif leftovers is None:
+    # Said rather than counted as none: the outcome never claims a group was
+    # empty on a machine that could not be asked.
+    note = "; whether any process was left in its process group could not be checked on this machine"
+elif leftovers:
+    note = "; %d process(es) left in its process group were stopped" % leftovers
+else:
+    note = ""
 extra = None
 if plan:
     used = dict(plan, held=held)

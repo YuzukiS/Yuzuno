@@ -1444,5 +1444,70 @@ class PauseTests(unittest.TestCase):
         self.assertEqual((self.work / "term.txt").read_text(), "term\n")
 
 
+class EnumerationFailureTests(unittest.TestCase):
+    """A machine that cannot be asked for its processes is unknown, never
+    empty (T-186). The failure is injected at all_pids, the single place the
+    helper asks the machine, so this runs on any host; on macOS it is
+    proc_listpids answering 0 or less that raises it. Nothing is signalled and
+    no real attempt, reservation or machine is involved.
+
+    What this does not show: no reservation is actually taken or released
+    here, and the supervisor's own outcome note is not executed -- these are
+    the primitives every one of those paths goes through. overdue() is not
+    checked either: reaching its enumeration needs the recorded process to be
+    its own session's leader, and an enumeration it cannot do leaves it
+    False, which stops nothing -- the safe direction it already documents.
+    """
+
+    def setUp(self):
+        self.real_pids = remote_job.all_pids
+        self.real_send = remote_job.send
+        self.signalled = []
+        remote_job.send = lambda pid, signum, group: self.signalled.append((pid, signum))
+        # A record of this process's own session, so members() gets past its
+        # boot and leader checks and really does ask for the PID list.
+        sid = os.getsid(0)
+        leader = remote_job.proc(sid)
+        self.assertIsNotNone(leader, "this session's leader is readable")
+        self.group = {"bootId": remote_job.boot_id(), "pid": os.getpid(), "pgid": os.getpgid(0),
+                      "sid": sid, "starttime": leader["starttime"]}
+
+    def tearDown(self):
+        remote_job.all_pids = self.real_pids
+        remote_job.send = self.real_send
+
+    def blind(self):
+        def refuse():
+            raise remote_job.Unclear("this machine's processes could not be listed")
+        remote_job.all_pids = refuse
+
+    def test_members_says_unknown_rather_than_no_processes(self):
+        # It really asks before the failure is injected: the check would pass
+        # vacuously if members() returned early on the boot or leader check.
+        self.assertIsInstance(remote_job.members(self.group), list)
+        self.blind()
+        with self.assertRaises(remote_job.Unclear):
+            remote_job.members(self.group)
+        self.assertIsNone(remote_job.live(self.group), "live() reports unknown as None")
+
+    def test_stop_never_calls_an_unasked_machine_empty_and_signals_nothing(self):
+        self.blind()
+        # Bounded: this call's own limit, not BLIND_LIMIT, ends it.
+        self.assertIs(remote_job.stop(self.group, limit=0.3), False,
+                      "an enumeration failure is not a stopped group")
+        self.assertEqual(self.signalled, [], "nothing is signalled on a machine that cannot be asked")
+
+    def test_a_lost_attempt_is_not_stopped_or_recorded_on_an_unasked_machine(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            intent = {"attempt": str(uuid.uuid4())}
+            self.blind()
+            with self.assertRaises(remote_job.Unclear):
+                remote_job.stop_lost(root, intent, self.group)
+            self.assertFalse((root / "stopping.json").exists(),
+                             "no first TERM is recorded for a group that was never asked about")
+            self.assertEqual(self.signalled, [])
+
+
 if __name__ == "__main__":
     unittest.main()
