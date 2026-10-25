@@ -1,5 +1,6 @@
 import { api } from "./api";
 import { permissionLabel } from "./CodexPermissions";
+import { strings, type Language } from "./i18n";
 
 /** Where a new Agent's value comes from (T-190). */
 export type DefaultSource = "builtin" | "workspace" | "project" | "request";
@@ -57,26 +58,48 @@ export const changeAgentDefaults = (change: AgentDefaultsChange) =>
 export const changeProjectAgentDefaults = (projectId: string, change: AgentDefaultsChange) =>
   api<AgentDefaultsView>(`/projects/${encodeURIComponent(projectId)}/agent-defaults`, { method: "POST", body: JSON.stringify(change) });
 
+// How these values are said, in English unless a page passes its language
+// (T-189: Settings → New Agent defaults). Model names are said as they come.
+const words = strings({
+  presets: {} as Record<string, string>,
+  ask: "Ask for approval",
+  auto: "Auto mode",
+  askFirst: "Ask before actions",
+  sources: {
+    workspace: "Set for this Workspace",
+    project: "Set for this project",
+    request: "Chosen for this Agent",
+    builtin: "Built in",
+  } as Record<DefaultSource, string>,
+  unreported: "Not reported by this Core",
+  codexDefault: "Codex’s own default",
+  claudeDefault: "Claude Code’s own default",
+}, {
+  presets: { config: "跟随 Codex 配置", ask: "请求批准", auto: "替我批准", full: "完全访问" },
+  ask: "请求批准",
+  auto: "自动模式",
+  askFirst: "操作前询问",
+  sources: { workspace: "已为此 Workspace 设置", project: "已为此项目设置", request: "为此 Agent 选择", builtin: "内置" },
+  unreported: "此 Core 未报告",
+  codexDefault: "Codex 自己的默认值",
+  claudeDefault: "Claude Code 自己的默认值",
+});
+
 export const harnessName = (harness: string) => (harness === "claude" ? "Claude Code" : harness === "opencode" ? "OpenCode" : "Codex");
 export const CODEX_PRESETS = ["config", "ask", "auto", "full"] as const;
 /** Yuzuno's built-in Codex permissions are its "Ask for approval". */
-export const codexPermissionText = (preset: string | null | undefined) =>
-  preset ? permissionLabel(preset) || preset : "Ask for approval";
+export const codexPermissionText = (preset: string | null | undefined, language: Language = "en") => {
+  const w = words(language);
+  return preset ? w.presets[preset] || permissionLabel(preset) || preset : w.ask;
+};
 export const CLAUDE_MODES = ["default", "auto"] as const;
-export const claudeModeText = (mode: string | null | undefined) => (mode === "auto" ? "Auto mode" : "Ask before actions");
+export const claudeModeText = (mode: string | null | undefined, language: Language = "en") =>
+  mode === "auto" ? words(language).auto : words(language).askFirst;
 /** "Follow Codex config" follows the machine; every other value is Yuzuno's own choice. */
 export const followsNative = (preset: string | null | undefined) => preset === "config";
-export const sourceText = (source: DefaultSource | undefined) =>
-  source === "workspace"
-    ? "Set for this Workspace"
-    : source === "project"
-      ? "Set for this project"
-      : source === "request"
-        ? "Chosen for this Agent"
-        : source === "builtin"
-          ? "Built in"
-          : "Not reported by this Core";
+export const sourceText = (source: DefaultSource | undefined, language: Language = "en") =>
+  (source && words(language).sources[source]) || words(language).unreported;
 /** A Codex model on the Core host, said: null is Codex's own default there. */
-export const codexModelText = (model: string | null | undefined) => model || "Codex’s own default";
+export const codexModelText = (model: string | null | undefined, language: Language = "en") => model || words(language).codexDefault;
 /** A Claude Code model on the Core host, said: null is Claude Code's own default there. */
-export const claudeModelText = (model: string | null | undefined) => model || "Claude Code’s own default";
+export const claudeModelText = (model: string | null | undefined, language: Language = "en") => model || words(language).claudeDefault;
