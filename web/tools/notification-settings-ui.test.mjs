@@ -464,7 +464,8 @@ test("on macOS, quiet delivery is said; a state the app couldn't read is not a d
 
 // Push on the iPhone or iPad Home Screen app (T-200): one switch per device.
 const PUSH = "Push notifications on this device";
-const step = ([what, route, body]) => (route === undefined ? [what] : body === undefined ? [what, route] : [what, route, body]);
+// A recorded step without its empty parts (a GET has no body).
+const step = (entry) => entry.filter((part) => part !== undefined);
 
 test("push: asked from the click first, then registered, keyed and subscribed for the chosen kinds; kinds follow the switches; off removes only this device", async () => {
   const page = await mount({ push: {} });
