@@ -20,7 +20,6 @@ import { RuntimeSection } from "./RuntimeSection";
 import { AboutSection } from "./AboutSection";
 import { AppearanceSection } from "./AppearanceSettings";
 import { SharedAppearanceSection } from "./SharedAppearance";
-import { EnglishPart } from "./EnglishPart";
 import { InputPreferencesSection } from "./InputPreferences";
 import { LanguagePreferencesSection } from "./LanguagePreferences";
 import { langTag, strings, useLanguage } from "./i18n";
@@ -1026,9 +1025,7 @@ export function WorkspaceUpdates({
           {tab === "appearance" && (
             <>
               <AppearanceSection />
-              <EnglishPart>
-                <SharedAppearanceSection active={open && visible} />
-              </EnglishPart>
+              <SharedAppearanceSection active={open && visible} />
             </>
           )}
           {tab === "input" && <InputPreferencesSection />}

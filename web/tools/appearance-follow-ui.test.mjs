@@ -319,3 +319,32 @@ test("another Workspace, a preset this version can't read, or a save this device
   assert.equal(server.puts.length, 0);
   b.close();
 });
+
+test("following paused, in Chinese (T-189): a pause said before a language change is worded again after it, the browser's reason too; the change reads and applies nothing", async () => {
+  const server = core();
+  server.preset = { version: 1, revision: 1, savedAt: "2026-10-25T03:00:00.000Z", savedVia: "remote", appearance: { palette: "pine" } };
+  const b = client(server, "B");
+  await read(b);
+  await follow(b);
+  b.refuse();
+  server.saved({ palette: "sunroom" });
+  await until(() => /Following is paused: revision 2 wasn’t applied: this browser’s storage for Yuzuno is full, so nothing changed here/.test(b.device()), "paused for storage");
+  const switchTo = (language) => {
+    b.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+    b.window.dispatchEvent(new b.window.StorageEvent("storage", { key: "yuzuno.language" }));
+  };
+  const gets = server.gets;
+  switchTo("zh-Hans");
+  await until(() => b.device().startsWith("跟随已暂停"), "the pause, worded again");
+  assert.equal(b.device(), "跟随已暂停：修订 2 未应用：此浏览器为 Yuzuno 保留的存储空间已满，因此这里没有任何变化。当前外观保持不变。");
+  assert.ok(b.button("重试") && b.button("停止跟随"), "a way on, or out");
+  assert.match(b.status(), /^Workspace 1111aaaa：共享预设修订 1，保存于 .+，经由远程入口。$/);
+  switchTo("en");
+  await until(() => b.device().startsWith("Following is paused"), "English again");
+  await tick(50);
+  assert.equal(server.gets, gets, "a language change reads nothing");
+  assert.equal(b.palette(), "pine", "and applies nothing");
+  assert.equal(b.follow().workspaces[W1].revision, 1);
+  assert.equal(server.puts.length, 0);
+  b.close();
+});

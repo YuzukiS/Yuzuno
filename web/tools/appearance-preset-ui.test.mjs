@@ -334,3 +334,42 @@ test("Settings finds the shared preset by its words, in the Appearance editor", 
     page.close();
   }
 });
+
+test("the shared preset in Chinese (T-189): a refusal said before a language change is worded again after it, a preview's choices stay, and nothing is asked of Core again", async () => {
+  const server = core();
+  const a = client(server, { palette: "pine" });
+  const b = client(server, { palette: "yuzu" });
+  await read(a);
+  await read(b);
+  b.press("Save this device’s Appearance here");
+  await until(() => b.said()?.startsWith("Saved"), "B's save");
+  a.press("Save this device’s Appearance here");
+  await until(a.alert, "A's refusal");
+  // Changed in another window: a storage event, as the browser sends it.
+  const switchTo = (language) => {
+    a.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+    a.window.dispatchEvent(new a.window.StorageEvent("storage", { key: "yuzuno.language" }));
+  };
+  const sent = () => [server.gets, server.puts.length];
+  let before = sent();
+  switchTo("zh-Hans");
+  await until(() => a.alert()?.startsWith("未保存"), "the refusal, worded again");
+  assert.equal(a.alert(), "未保存：此设备读取之后，另一台设备更改了共享预设。没有任何更改。请重新读取，先查看那个预设再覆盖保存。");
+  assert.equal(a.status(), "未读取。请重新读取以查看此 Workspace 的共享预设。");
+  assert.equal(a.document.querySelector("#settings-appearance-preset").getAttribute("lang"), "zh-Hans");
+  assert.deepEqual(sent(), before, "a language change asks Core nothing");
+  a.press("重新读取");
+  await until(() => /修订 1/.test(a.status()), "A reads revision 1");
+  assert.match(a.status(), /^Workspace 1111aaaa：共享预设修订 1，保存于 .+，经由 Core 自己的地址。$/);
+  a.press("预览…");
+  await until(() => a.button("应用所选的 1 项"), "A's preview, the one difference ticked");
+  before = sent();
+  switchTo("en");
+  await until(() => a.button("Apply 1 selected"), "English again, the same selection");
+  assert.ok(a.preview(), "the preview stays open");
+  assert.match(a.status(), /^Workspace 1111aaaa: shared preset revision 1, saved .* through Core’s own address\.$/);
+  assert.deepEqual(sent(), before, "nor does changing back");
+  assert.equal(JSON.parse(a.stored()).palette, "pine", "nothing applied");
+  a.close();
+  b.close();
+});
