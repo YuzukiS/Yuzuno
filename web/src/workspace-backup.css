@@ -57,3 +57,12 @@
 .workspace-backup-limit {
   margin-top: 8px;
 }
+.workspace-backup-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.workspace-backup .workspace-backup-time {
+  flex: 0 0 auto;
+  width: auto;
+}
