@@ -153,7 +153,16 @@ export function deviceInventory(storage: Storage | null, now = new Date()): Devi
       }
       if (key === "yuzuno.outbox") {
         try {
-          unsentMessages += Object.keys(JSON.parse(value) ?? {}).length;
+          // A Workspace's id to its records (useConversationSend.ts), plus any
+          // record saved before the outbox was kept per Workspace, which sits
+          // at the top of the file. Every unsent message at this address is
+          // counted, whichever Workspace it belongs to: this view is the
+          // device's, and saying a smaller number would hide what is here.
+          for (const entry of Object.values(JSON.parse(value) ?? {}))
+            unsentMessages +=
+              entry && typeof entry === "object" && typeof (entry as { clientMessageId?: unknown }).clientMessageId !== "string"
+                ? Object.keys(entry).length
+                : 1;
         } catch {
           /* counted by size only */
         }

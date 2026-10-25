@@ -5,6 +5,8 @@ import { useFullItem } from "../item-payload";
 import type { NativeItem } from "../types";
 import { parseReply, type ReplySegment, type ResultProblem } from "./message";
 import type { ResultSpec } from "./spec";
+import { resultText } from "./result-text";
+import { useStrings } from "../i18n";
 import "./result-states.css";
 
 type ResultProps = {
@@ -100,19 +102,20 @@ class ResultBoundary extends Component<
 }
 
 function RawResult({ raw, problem }: { raw?: string; problem?: ResultProblem }) {
+  const t = useStrings(resultText);
   return (
     <details className="result-state-details">
-      <summary>{raw === undefined ? "Details" : problem ? "Details and result JSON" : "Result JSON"}</summary>
+      <summary>{raw === undefined ? t.details : problem ? t.detailsJson : t.json}</summary>
       {problem && (
         <dl className="result-problem">
-          <div><dt>Code</dt><dd><code>{problem.code}</code></dd></div>
-          {problem.path && <div><dt>Where</dt><dd><code>{problem.path}</code></dd></div>}
-          <div><dt>Reason</dt><dd>{problem.reason}</dd></div>
+          <div><dt>{t.code}</dt><dd><code>{problem.code}</code></dd></div>
+          {problem.path && <div><dt>{t.where}</dt><dd><code>{problem.path}</code></dd></div>}
+          <div><dt>{t.reason}</dt><dd>{problem.reason}</dd></div>
         </dl>
       )}
       {raw !== undefined && (
         <>
-          <CopyButton text={raw} label="Copy result JSON" />
+          <CopyButton text={raw} label={t.copy} />
           <pre>{raw}</pre>
         </>
       )}
@@ -121,24 +124,17 @@ function RawResult({ raw, problem }: { raw?: string; problem?: ResultProblem }) 
 }
 
 /** Where a result goes while it is still being written or loaded. */
-export function ResultPlaceholder({ label }: { label: string }) {
+export function ResultPlaceholder({ what }: { what: keyof ReturnType<typeof resultText>["placeholder"] }) {
+  const t = useStrings(resultText);
   return (
     <div className="result-state result-placeholder" role="status" aria-live="polite">
       <LoaderCircle size={15} className="spin" aria-hidden="true" />
-      <span>{label}</span>
+      <span>{t.placeholder[what]}</span>
     </div>
   );
 }
 
-const unavailable: Record<"format" | "unfinished" | "multiple" | "load" | "render" | "fetch" | "missing", string> = {
-  format: "This interactive result couldn’t be shown: its format isn’t valid.",
-  unfinished: "This interactive result couldn’t be shown: the reply stopped before it was complete.",
-  multiple: "Only one interactive result is shown per reply. This one is kept below as JSON.",
-  load: "The interactive result viewer couldn’t be loaded.",
-  render: "This interactive result couldn’t be displayed.",
-  fetch: "This interactive result couldn’t be loaded.",
-  missing: "This interactive result is no longer available.",
-};
+type Unavailable = keyof ReturnType<typeof resultText>["unavailable"];
 
 export function ResultUnavailable({
   kind,
@@ -147,28 +143,29 @@ export function ResultUnavailable({
   onRetry,
   onReload,
 }: {
-  kind: keyof typeof unavailable;
+  kind: Unavailable;
   /** The result's JSON, when there is one to show. */
   raw?: string;
   problem?: ResultProblem;
   onRetry?: () => void;
   onReload?: () => void;
 }) {
+  const t = useStrings(resultText);
   return (
     <div className="result-state result-unavailable" data-result-state={kind}>
       <p role="status">
         <TriangleAlert size={15} aria-hidden="true" />
-        <span>{unavailable[kind]}</span>
+        <span>{t.unavailable[kind]}</span>
         {onRetry && (
           <button type="button" className="quiet-button result-retry" onClick={onRetry}>
             <RotateCcw size={13} aria-hidden="true" />
-            Try again
+            {t.tryAgain}
           </button>
         )}
         {onReload && (
           <button type="button" className="quiet-button result-retry" onClick={onReload}>
             <RotateCcw size={13} aria-hidden="true" />
-            Reload Yuzuno
+            {t.reload}
           </button>
         )}
       </p>
@@ -177,7 +174,7 @@ export function ResultUnavailable({
   );
 }
 
-function stateOf(problem: ResultProblem): keyof typeof unavailable {
+function stateOf(problem: ResultProblem): Unavailable {
   if (problem.code === "unfinished") return "unfinished";
   if (problem.code === "multiple_results") return "multiple";
   return "format";
@@ -221,7 +218,7 @@ export function ShownResult(props: ResultProps) {
         )
       }
     >
-      <Suspense fallback={<ResultPlaceholder label="Loading interactive result…" />}>
+      <Suspense fallback={<ResultPlaceholder what="result" />}>
         <LazyResult {...props} />
       </Suspense>
     </ResultBoundary>
@@ -233,7 +230,7 @@ function Segment({ segment, props }: { segment: ReplySegment; props: Omit<Result
     case "text":
       return <Prose text={segment.text} onFile={props.onFile} />;
     case "pending":
-      return <ResultPlaceholder label="Generating interactive result…" />;
+      return <ResultPlaceholder what="generating" />;
     case "invalid":
       return <ResultUnavailable kind={stateOf(segment.problem)} raw={segment.raw} problem={segment.problem} />;
     case "result":
@@ -273,6 +270,7 @@ export function AgentReply({
   // A preview with a result block is read in full first: its cut-off end
   // would look like a broken result. Others stay previews, so a long history
   // never reads replies it has no result in.
+  const t = useStrings(resultText);
   const preview = !!source?.item._yuzunoTruncated?.text && text.includes("yuzuno-ui");
   const full = useFullItem(source?.agentId, source?.turnId, source?.item ?? noItem);
   const expand = full.expand;
@@ -293,15 +291,15 @@ export function AgentReply({
           <div className="result-state result-unavailable" data-result-state="payload">
             <p role="status">
               <TriangleAlert size={15} aria-hidden="true" />
-              <span>The rest of this reply couldn’t be loaded.</span>
+              <span>{t.restFailed}</span>
               <button type="button" className="quiet-button result-retry" onClick={expand}>
                 <RotateCcw size={13} aria-hidden="true" />
-                Try again
+                {t.tryAgain}
               </button>
             </p>
           </div>
         ) : (
-          <ResultPlaceholder label="Loading the full reply…" />
+          <ResultPlaceholder what="reply" />
         )}
       </>
     );

@@ -236,3 +236,42 @@ test("a lost response keeps the request so the next click settles it", async () 
   assert.equal(events.forked.connected, false);
   page.close();
 });
+
+// T-189: the dialog follows the interface language, changed in another
+// window. The folder, model, effort, project, the typed name and Core's
+// message stay as written; nothing is forked by the change and the kept
+// request stays.
+test("the dialog follows a language change; the typed name, the unconfirmed attempt and its request stay", async () => {
+  const page = mount(() => ({ state: "uncertain", requestId: "fork-r1", agent: null, connected: false, message: "Codex did not answer in time.", warnings: [] }));
+  await openDialog(page);
+  const input = page.document.querySelector(".codex-fork-dialog input");
+  Object.getOwnPropertyDescriptor(page.window.HTMLInputElement.prototype, "value").set.call(input, "夜间 fork");
+  input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+  await tick();
+  button(page, "Fork and continue").click();
+  await tick();
+  await tick();
+  assert.equal(forks(page).length, 1);
+  const kept = page.window.localStorage.getItem("yuzuno.codexForkRequests");
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+  page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+  await tick();
+  const text = page.document.body.textContent;
+  for (const words of [
+    "在 Codex 分叉中继续",
+    "复制 12 个 Turn",
+    "之后的 1 个不包含在内",
+    `历史截至并包括最新已完成的 Turn（完成于 ${new page.window.Date(1791856000 * 1000).toLocaleString()}）。`,
+    "gpt-6-astra · 推理 ultra · 替我审批 · Night work",
+    "Agent 名称",
+    "之后的 Turn（运行中、被中断或失败的）留在原会话中。",
+    "分叉结果尚未确认。Codex did not answer in time.",
+  ]) assert.ok(text.includes(words), words);
+  assert.ok(text.includes("/home/me/yuzuno-next"), "the folder as it is");
+  assert.equal(page.document.querySelector(".codex-fork-dialog input").value, "夜间 fork", "the typed name stays");
+  assert.ok(button(page, "仍然再次分叉"));
+  assert.ok(button(page, "取消"));
+  assert.equal(forks(page).length, 1, "nothing is forked by the change");
+  assert.equal(page.window.localStorage.getItem("yuzuno.codexForkRequests"), kept, "the kept request stays");
+  page.close();
+});

@@ -64,7 +64,11 @@ async function mount({ turns = [] } = {}) {
   w.EventSource = class { addEventListener() {} close() {} };
   w.HTMLElement.prototype.scrollIntoView = () => {};
   w.HTMLElement.prototype.scrollTo = () => {};
-  w.localStorage.setItem("yuzuno.composer.v1:b", JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "Hana's own note." }] }));
+  // Saved under the Workspace and Agent it was written in (T-195).
+  w.localStorage.setItem(
+    `yuzuno.composer.v1:${JSON.stringify(["fixture", "b"])}`,
+    JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text: "Hana's own note." }] }),
+  );
   const project = { id: "p", name: "App", defaultDirs: {}, createdAt: "", updatedAt: "" };
   const response = (body) => ({ ok: true, status: 200, json: async () => structuredClone(body), text: async () => JSON.stringify(body) });
   w.fetch = async (url, init = {}) => {
@@ -210,6 +214,46 @@ test("Send to Agent follows a language change: its open menu, a refusal on the r
     fire(page, page.doc.body, "dragend", drag);
     await pause();
     assert.equal(page.w.localStorage.getItem("yuzuno.composer.v1:b"), hanaDraft, "Hana's draft is as it was");
+    assert.deepEqual(writes(page), []);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("in Chinese, App's notice says what was added and where, or why not; the draft gets the message as it is (T-189)", async () => {
+  const reply = { id: "turn-1", status: "completed", items: [{ id: "reply-1", type: "agentMessage", text: "The rail is quieter now." }] };
+  const page = await mount({ turns: [reply] });
+  try {
+    await waitFor(() => page.doc.querySelector(".reply-actions .send-to-agent-button"), "Mori's reply offers Send to Agent");
+    speak(page, "zh-Hans");
+    await pause();
+    // Mori's own reply dropped on Mori: refused, said in Chinese.
+    const own = dragData();
+    fire(page, page.doc.querySelector(".reply-actions .send-to-agent-button"), "dragstart", own);
+    await pause();
+    fire(page, page.doc.querySelector('.agent-row[data-agent-id="a"]'), "drop", own);
+    await waitFor(() => page.doc.querySelector(".toast"), "a notice");
+    assert.equal(page.doc.querySelector(".toast").textContent, "这本来就来自 Mori 的会话。");
+    fire(page, page.doc.body, "dragend", own);
+    await pause();
+    // A task card dropped on Hana: added, said in Chinese; the draft is the English reference.
+    await waitFor(() => page.button("任务与消息") && !page.button("任务与消息").disabled, "the board can open");
+    page.button("任务与消息").click();
+    const card = await waitFor(() => page.doc.querySelector('.collab-task-card[data-task-id="T-7"]'), "the task is listed");
+    const drag = dragData();
+    fire(page, card, "dragstart", drag);
+    await waitFor(() => chip(page, "b"), "the strip offers Hana");
+    fire(page, chip(page, "b"), "dragover", drag);
+    await pause();
+    fire(page, chip(page, "b"), "drop", drag);
+    await waitFor(() => page.doc.querySelector(".toast")?.textContent.startsWith("已加入"), "the added notice");
+    assert.equal(page.doc.querySelector(".toast").textContent, "已加入 Hana 的草稿：任务 T-7。修改后再发送。");
+    const composer = await waitFor(() => {
+      const box = page.doc.querySelector("[data-composer-input]");
+      return box && composerText(box).includes("For reference: task T-7") ? box : null;
+    }, "Hana's draft has the reference");
+    assert.ok(composerText(composer).startsWith("Hana's own note.\n\nFor reference: task T-7 “Tidy the rail”"));
+    fire(page, page.doc.body, "dragend", drag);
+    await pause();
     assert.deepEqual(writes(page), []);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
