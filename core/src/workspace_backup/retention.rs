@@ -166,7 +166,7 @@ pub fn preview(folder: &Path, rule: impl Into<Rule>, workspace: &str, operations
 }
 
 pub(crate) fn preview_within(folder: &Path, rule: impl Into<Rule>, workspace: &str, operations: &[Operation], limit: usize) -> Result<Preview> {
-    let rule = rule.into();
+    let rule: Rule = rule.into();
     let keep = rule.keep;
     ensure!((1..=MAX_KEEP).contains(&keep), "Keep at least 1 and at most {MAX_KEEP} backups");
     ensure!(rule.budget_bytes.is_none_or(|bytes| (1..=MAX_BUDGET).contains(&bytes)), "A space budget must be more than 0 and at most 1 PiB");
@@ -371,7 +371,7 @@ pub(crate) fn judge(folder: &Path, rule: impl Into<Rule>, name: &str, manifest_s
 /// again, after another backup of this Workspace there was read back whole.
 /// Stop works until the removal itself begins.
 pub(crate) fn remove(folder: &Path, rule: impl Into<Rule>, name: &str, manifest_sha256: &str, workspace: &str, operations: impl Fn() -> Vec<Operation>, ctl: &Control, limit: usize) -> Result<Value> {
-    let rule = rule.into();
+    let rule: Rule = rule.into();
     ctl.at("preview")?;
     let (preview, target) = judge(folder, rule, name, manifest_sha256, workspace, &operations(), limit)?;
     let mut failures = Vec::new();
