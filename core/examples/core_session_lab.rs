@@ -138,9 +138,18 @@ lock = threading.Lock()
 history = {}
 answers = {}
 active = {}
+asked = {}
+sent = [0]
+# Beside the run's report, not in its temporary directory, which goes with the run.
+requests = open(os.path.join(os.path.dirname(root), 'requests-%d.jsonl' % os.getpid()), 'a', buffering=1)
 def emit(v):
+    line = json.dumps(v) + '\n'
     with lock:
-        sys.stdout.write(json.dumps(v) + '\n'); sys.stdout.flush()
+        sys.stdout.write(line); sys.stdout.flush()
+        sent[0] += len(line)
+        if 'id' in v and 'method' not in v:
+            m, view = asked.pop(v['id'], (None, None))
+            requests.write(json.dumps({'m': m, 'view': view, 'b': len(line), 'total': sent[0]}) + '\n')
 def note(method, **p): emit({'method':method,'params':p})
 def turns_of(thread):
     if thread not in history:
@@ -186,6 +195,7 @@ def run(thread, tid, n):
     turns_of(thread).append(done)
     active.pop(thread, None)
     note('turn/completed', threadId=thread, turn={'id':tid,'status':'completed','error':None,'items':[]})
+    with lock: requests.write(json.dumps({'m': '#turn', 'total': sent[0]}) + '\n')
 count = [0]
 for line in sys.stdin:
     r = json.loads(line)
@@ -195,6 +205,7 @@ for line in sys.stdin:
         continue
     if 'id' not in r: continue
     m, p = r.get('method'), r.get('params', {})
+    with lock: asked[r['id']] = (m, p.get('itemsView'))
     thread = p.get('threadId', 'thread')
     status = {'type':'active' if thread in active else 'idle'}
     if m == 'thread/resume':
@@ -225,6 +236,62 @@ for line in sys.stdin:
         result = {'config':{}}
     emit({'id':r['id'],'result':result})
 "#;
+
+    /// What differs by run, as the window comparison leaves it out: times,
+    /// revs, journal sequence numbers.
+    const VOLATILE: [&str; 17] = ["rev", "lastSeq", "reviewedSeq", "updatedAt", "createdAt", "at", "startedAt", "completedAt",
+        "_yuzunoTime", "connectedAt", "lastEventAt", "lastActivityAt", "checkedAt", "durationMs", "_yuzunoStartedAt",
+        "_yuzunoCompletedAt", "_yuzunoCompactionStartedAt"];
+
+    /// `text` with the app-server's pid in live Turn IDs (`live-<pid>-`) left out.
+    fn without_pid(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(at) = rest.find("live-") {
+            out.push_str(&rest[..at + 5]);
+            rest = &rest[at + 5..];
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            if digits > 0 && rest[digits..].starts_with('-') {
+                out.push_str("PID");
+                rest = &rest[digits..];
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn normal(value: &Value) -> Value {
+        match value {
+            Value::Object(fields) => Value::Object(fields.iter().filter(|(k, _)| !VOLATILE.contains(&k.as_str()))
+                .map(|(k, v)| (without_pid(k), normal(v))).collect()),
+            Value::Array(values) => Value::Array(values.iter().map(normal).collect()),
+            Value::String(text) => Value::String(without_pid(text)),
+            other => other.clone(),
+        }
+    }
+
+    fn hash(value: &Value) -> String {
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(serde_json::to_vec(&normal(value)).unwrap_or_default());
+        digest.iter().take(12).map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// A Turn's fields but its Items (`_turn`), and each Item's fields, each
+    /// as a hash of its normal form.
+    fn field_hashes(turn: &Value) -> Value {
+        let mut shell = turn.clone();
+        let items = shell.as_object_mut().and_then(|t| t.remove("items")).unwrap_or(Value::Null);
+        let mut out = serde_json::Map::new();
+        out.insert("_turn".into(), Value::String(hash(&shell)));
+        for item in items.as_array().into_iter().flatten() {
+            let id = without_pid(item["id"].as_str().unwrap_or_default());
+            let fields: serde_json::Map<String, Value> = item.as_object().into_iter().flatten()
+                .filter(|(k, _)| !VOLATILE.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), Value::String(hash(v)))).collect();
+            out.insert(id, Value::Object(fields));
+        }
+        Value::Object(out)
+    }
 
     fn percentile(values: &mut [f64], p: f64) -> f64 {
         if values.is_empty() { return 0.0; }
@@ -304,6 +371,7 @@ for line in sys.stdin:
         let seeded_rss = status_kib(&proc, "VmRSS:");
 
         let start = Instant::now();
+        let start_epoch_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64;
         let samples = Arc::new(Mutex::new(Vec::with_capacity(200_000)));
         let sampling = sampler(start, samples.clone());
         let mut phases = vec![];
@@ -360,6 +428,7 @@ for line in sys.stdin:
         mark("busy", cpu_seconds(), Instant::now());
         let (mut send_ms, mut turn_ms, mut respond_ms, mut window_ms) = (vec![], vec![], vec![], vec![]);
         let mut turn_detail = vec![];
+        let mut busy_turns: std::collections::BTreeMap<String, Vec<String>> = Default::default();
         let busy: Vec<String> = ids.iter().take(BUSY.min(agents)).cloned().collect();
         let window_bytes = Arc::new(AtomicUsize::new(0));
         for round in 0..rounds {
@@ -387,8 +456,9 @@ for line in sys.stdin:
                 let (ws, id) = (ws.clone(), id.clone());
                 tokio::spawn(async move {
                     let at = Instant::now();
-                    ws.send(&id, "synthetic turn".into()).await?;
+                    let reply = ws.send(&id, "synthetic turn".into()).await?;
                     let sent = at.elapsed().as_secs_f64() * 1000.0;
+                    let turn = reply["turnId"].as_str().unwrap_or_default().to_owned();
                     let mut respond = None;
                     // The first Agent's Turn asks an approval: answered once it shows.
                     if id.ends_with("-0") {
@@ -407,12 +477,13 @@ for line in sys.stdin:
                         }
                     }
                     wait_idle(&ws, &id, Duration::from_secs(180)).await?;
-                    Ok::<_, anyhow::Error>((id, sent, at.elapsed().as_secs_f64() * 1000.0, respond))
+                    Ok::<_, anyhow::Error>((id, turn, sent, at.elapsed().as_secs_f64() * 1000.0, respond))
                 })
             }).collect();
             for done in futures_util::future::join_all(sends).await {
-                let (id, sent, whole, respond) = done??;
+                let (id, turn, sent, whole, respond) = done??;
                 turn_detail.push(json!({"agent":id,"round":round,"sendMs":sent,"turnMs":whole}));
+                busy_turns.entry(id.clone()).or_default().push(turn);
                 send_ms.push(sent);
                 turn_ms.push(whole);
                 respond_ms.extend(respond);
@@ -462,7 +533,7 @@ for line in sys.stdin:
         let quiet: Vec<u64> = samples.iter().filter(|s| s.2 == 4).map(|s| s.1).collect();
         let before_trim = quiet.iter().take((55_000 / SAMPLE) as usize).copied().collect::<Vec<_>>();
         let report = json!({
-            "synthetic":true,"agents":agents,"turnsPerAgent":turns,"itemsPerTurn":ITEMS,"payloadKiB":kib,"rounds":rounds,"busyAgents":busy.len(),
+            "synthetic":true,"startEpochMs":start_epoch_ms,"agents":agents,"turnsPerAgent":turns,"itemsPerTurn":ITEMS,"payloadKiB":kib,"rounds":rounds,"busyAgents":busy.len(),
             "seededRssMiB":seeded_rss as f64 / 1024.0,
             "vmHwmMiB":status_kib(&proc, "VmHWM:") as f64 / 1024.0,"finalRssMiB":status_kib(&proc, "VmRSS:") as f64 / 1024.0,
             "cpuSeconds":cpu_seconds(),"phases":phases,"rss":summary,
@@ -483,6 +554,24 @@ for line in sys.stdin:
                 "heldMaxBytes: the most each Agent's record in memory held (a walk of its strings by length, every 250 ms)",
                 "VmRSS sampled every 50 ms by a thread that allocates nothing while it runs","quietBeforeTrimMeanMiB: the first 55 s of the quiet tail, before Core's 60 s idle trim"]});
         std::fs::write(out.join("report.json"), serde_json::to_vec_pretty(&report)?)?;
+        // Every Turn read whole with its payloads, after the last sample
+        // (outside every measured phase), one at a time: a hash of each
+        // Item's every field, as both sides compare them.
+        let mut payloads = serde_json::Map::new();
+        for (n, id) in ids.iter().enumerate() {
+            let mut names: Vec<String> = (0..if n < 2 { 1 } else { turns }).map(|t| format!("turn-{t}")).collect();
+            names.extend(busy_turns.get(id).cloned().unwrap_or_default());
+            let mut of = serde_json::Map::new();
+            for tid in names {
+                let read = ws.store.payload_view(id, Some(&tid), None, |d| d.turns.iter().find(|t| t["id"] == tid.as_str()).cloned())?;
+                of.insert(without_pid(&tid), match read.flatten() {
+                    Some(turn) => field_hashes(&turn),
+                    None => json!({"missing": true}),
+                });
+            }
+            payloads.insert(id.clone(), Value::Object(of));
+        }
+        std::fs::write(out.join("payloads.json"), serde_json::to_vec(&Value::Object(payloads))?)?;
         drop(ws);
         Ok(())
     }
