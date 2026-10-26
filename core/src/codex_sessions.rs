@@ -317,6 +317,11 @@ pub(crate) async fn recovery_page(rpc: &Rpc, id: &str, cached: &AgentDetail, hel
     -> Result<HistoryPage> {
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
         let mut page = newest_page(rpc, id, held).await?;
+        // A record with no Turn yet merges the newest page only: the native
+        // Turns before it are paged in on demand.
+        if back && held.is_empty() && page.has_more {
+            page.unreached = true;
+        }
         let mut missing: HashSet<String> = cached.turns.iter()
             .filter(|turn| turn["status"] == "inProgress")
             .filter_map(|turn| turn["id"].as_str())

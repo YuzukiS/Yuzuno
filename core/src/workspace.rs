@@ -949,7 +949,11 @@ impl Workspace {
                     // Yuzuno now owns the writer; an earlier conflict is resolved,
                     // and a check that found every Turn has nothing missing.
                     if let Some(handoff) = &mut d.codex_handoff { handoff.writer_conflict_at = None; handoff.missing_turns = None; }
-                    if imported_history.is_some() || !imported { d.history = imported_history; }
+                    // A reconnect that reached the record's newest Turn keeps the
+                    // window an earlier one left: the Turns before that one's
+                    // newest page are still not in the record. A new thread
+                    // has none of them.
+                    if imported_history.is_some() || (!imported && new_empty_thread) { d.history = imported_history; }
                     let held = d.turns.len();
                     apply_snapshot_turns(d, thread, Some(incoming), &changes);
                     if let Some(history) = &mut d.history { history.loaded_count = total + d.turns.len() - held; }
@@ -1137,7 +1141,8 @@ impl Workspace {
                 sel,
                 |current| {
                     current.agent.connection_state = "connected".into();
-                    if imported_history.is_some() || !imported { current.history = imported_history; }
+                    // As on attach: a window an earlier reconnect left stays.
+                    if imported_history.is_some() { current.history = imported_history; }
                     if let Some(handoff) = &mut current.codex_handoff { handoff.missing_turns = None; }
                     let held = current.turns.len();
                     apply_snapshot_turns(current, &result["thread"], Some(turns), &changes);

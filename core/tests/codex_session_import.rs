@@ -539,5 +539,43 @@ async fn a_reconnect_that_cannot_read_back_far_enough_leaves_the_rest_pageable()
     assert!(history.has_more);
     let page = lab.ws.codex_session_history(&agent.id, history.next_cursor.as_deref()).await.unwrap();
     assert_eq!(page.turns.iter().map(|t| t["id"].as_str().unwrap()).collect::<Vec<_>>(), ["t-406", "t-407", "t-408"]);
+    // A later reconnect reaches the record's newest Turn (t-411), not the
+    // Turns the first one left out: they stay pageable, whether it recovers
+    // the connection it has or attaches anew (closed, then reopened).
+    for attach in [false, true] {
+        if attach {
+            lab.ws.close_agent(&agent.id).await.unwrap();
+            lab.ws.reopen_agent(&agent.id).await.unwrap();
+        } else {
+            lab.ws.reconnect(&agent.id).await.unwrap();
+        }
+        let detail = lab.ws.store.detail(&agent.id).unwrap();
+        assert_eq!(detail.turns.iter().map(|t| t["id"].as_str().unwrap()).collect::<Vec<_>>(), ids, "attach {attach}");
+        let history = detail.history.clone().expect("still pageable");
+        assert!(history.has_more, "attach {attach}");
+        let page = lab.ws.codex_session_history(&agent.id, history.next_cursor.as_deref()).await.unwrap();
+        assert_eq!(page.turns.iter().map(|t| t["id"].as_str().unwrap()).collect::<Vec<_>>(), ["t-406", "t-407", "t-408"],
+            "attach {attach}");
+    }
+    lab.ws.close_agent(&agent.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_reconnect_to_a_record_with_no_turn_leaves_the_earlier_native_turns_pageable() {
+    let lab = Lab::new();
+    lab.mark("empty");
+    let agent = lab.ws.import_codex_session(lab.input()).await.unwrap();
+    assert!(lab.ws.store.detail(&agent.id).unwrap().turns.is_empty());
+    let db = rusqlite::Connection::open(lab.root.path().join("data/workspace.sqlite")).unwrap();
+    db.execute("DELETE FROM codex_imports", []).unwrap();
+    // Another client ran t-0..t-11 before the record held any of them.
+    std::fs::remove_file(lab.root.path().join("empty")).unwrap();
+    lab.ws.reconnect(&agent.id).await.unwrap();
+    let detail = lab.ws.store.detail(&agent.id).unwrap();
+    assert_eq!(detail.turns.iter().map(|t| t["id"].as_str().unwrap()).collect::<Vec<_>>(), ["t-9", "t-10", "t-11"]);
+    let history = detail.history.clone().expect("the earlier Turns can be paged");
+    assert!(history.has_more);
+    let page = lab.ws.codex_session_history(&agent.id, history.next_cursor.as_deref()).await.unwrap();
+    assert_eq!(page.turns.iter().map(|t| t["id"].as_str().unwrap()).collect::<Vec<_>>(), ["t-6", "t-7", "t-8"]);
     lab.ws.close_agent(&agent.id).await.unwrap();
 }
