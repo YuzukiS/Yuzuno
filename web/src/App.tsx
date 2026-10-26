@@ -254,6 +254,14 @@ function writeStorage(key: string, value: unknown) {
 }
 // A stable empty list, so the sub-agent dock's memo holds without a detail.
 const EMPTY_TURNS: never[] = [];
+/** Where a held message is read: its text, below its minute mark. A run of
+ * messages in one minute shows only its first time, so loading earlier ones
+ * can take that line away; holding the message's box would move its text by
+ * the line (T-161). */
+function readingTop(element: HTMLElement) {
+  const text = Array.from(element.children).find(child => !child.classList.contains("message-time"));
+  return (text ?? element).getBoundingClientRect().top;
+}
 
 export function App() {
   const [workspace, setWorkspace] = useState<Workspace | null>(
@@ -712,6 +720,8 @@ export function App() {
   const nativeHistoryHere = !currentDetail?.conversation?.hasBefore;
   const [pageTarget, setPageTarget] = useState<{agentId:string; turnId:string; itemId?:string; top:number; start:string|null; end:string|null; hold:true} | null>(null);
   const [pageSpace, setPageSpace] = useState<"before" | "after" | null>(null);
+  // Puts the page target's place back, while it holds (ConversationRows calls it).
+  const heldPlace = useRef<(() => void) | null>(null);
   useEffect(() => { setPageTarget(null); setPageSpace(null); }, [selected]);
   useEffect(() => { if (sourceJump || jumpToTurn) setPageSpace(null); }, [sourceJump, jumpToTurn]);
   // An earlier window that could not be read moves nothing to hold in place.
@@ -719,18 +729,19 @@ export function App() {
   /** What the reader sees at the top of the conversation: the first item
    * whose top is in view, as ReadingAnchor picks it. Earlier messages are put
    * in front of everything shown, so it stays mounted and can be held in
-   * place; an item still hidden in a closed group never is (T-161). */
-  function readerAnchor() {
+   * place; an item still hidden in a closed group never is (T-161). `last`:
+   * the last item in view instead. */
+  function readerAnchor(last = false) {
     const pane = scroll.current;
     if (!pane) return null;
     const box = pane.getBoundingClientRect();
     const visible = Array.from(pane.querySelectorAll<HTMLElement>("[data-item-id]"))
       .map(element => ({element, rect:element.getBoundingClientRect()}))
       .filter(({rect}) => rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom);
-    const first = visible.find(({rect}) => rect.top >= box.top) || visible[0];
-    const turnId = first?.element.closest<HTMLElement>("[id^='turn-']")?.id.slice("turn-".length);
-    return first && turnId && first.element.dataset.itemId
-      ? {turnId, itemId:first.element.dataset.itemId, top:first.rect.top} : null;
+    const found = last ? visible.at(-1) : visible.find(({rect}) => rect.top >= box.top) || visible[0];
+    const turnId = found?.element.closest<HTMLElement>("[id^='turn-']")?.id.slice("turn-".length);
+    return found && turnId && found.element.dataset.itemId
+      ? {turnId, itemId:found.element.dataset.itemId, top:readingTop(found.element)} : null;
   }
   function pageAnchor(turnId: string, itemId?: string) {
     const turn = document.getElementById(`turn-${turnId}`);
@@ -747,14 +758,25 @@ export function App() {
     // target in an estimated gap can disappear before its position is stable.
     const restore = () => {
       const item = pageAnchor(pageTarget.turnId, pageTarget.itemId);
-      if (item && scroll.current) scroll.current.scrollTop += item.getBoundingClientRect().top - pageTarget.top;
+      const moved = item && scroll.current ? readingTop(item) - pageTarget.top : 0;
+      if (moved) scroll.current!.scrollTop += moved;
+      return Math.abs(moved) >= 0.5;
+    };
+    // Rows in front are measured over the next frames, and once this holds
+    // they leave the correcting to it (ConversationRows); both would count
+    // the same change twice (T-161). They call it after each measure, so no
+    // frame is drawn with the item moved. Hold until it has stayed put for
+    // two frames, at most a second.
+    let frame = 0, still = 0, frames = 0;
+    const settle = () => {
+      still = restore() ? 0 : still + 1;
+      if (still >= 2 || ++frames >= 60) setPageTarget(null);
+      else frame = requestAnimationFrame(settle);
     };
     restore();
-    let frame = requestAnimationFrame(() => {
-      restore();
-      frame = requestAnimationFrame(() => { restore(); setPageTarget(null); });
-    });
-    return () => cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(settle);
+    heldPlace.current = () => { if (restore()) still = 0; };
+    return () => { cancelAnimationFrame(frame); heldPlace.current = null; };
   }, [currentDetail, live.windowLoading, pageTarget, selected]);
   const questionPanel = useRef<PendingQuestionsHandle>(null);
   const [questionIndex] = useState(() => new QuestionIndex());
@@ -1742,7 +1764,7 @@ export function App() {
     const item = pageAnchor(turnId, itemId || undefined);
     // A page target holds the reader's place; it opens nothing (T-161).
     const target = {agentId:selected, turnId, itemId:itemId || undefined,
-      top:item?.getBoundingClientRect().top ?? (scroll.current?.getBoundingClientRect().top ?? 0) + 32,
+      top:item ? readingTop(item) : (scroll.current?.getBoundingClientRect().top ?? 0) + 32,
       start:window.start, end:window.end, hold:true as const};
     stickToBottom.current = false;
     setHistoryReading(true);
@@ -1756,6 +1778,18 @@ export function App() {
       if (savedPages.loadEarlier(cursor)) {
         setPageSpace(null);
         setPageTarget(reading ? {...target, ...reading} : target);
+        return;
+      }
+      // Past the bound the windows are replaced. The new one ends at the
+      // last saved message in view, not at the first Item shown (in a long
+      // Turn, often a command in a closed group, below which everything in
+      // view went): what is in view stays, and the message being read is
+      // held in place (T-161).
+      const last = readerAnchor(true);
+      if (reading && last && savedPages.detail?.turns.some(turn => turn.id === last.turnId && turn.items.some(item => item.id === last.itemId))) {
+        setPageSpace("after");
+        setPageTarget({...target, ...reading});
+        void live.navigate({before:JSON.stringify([last.turnId, last.itemId])}, true);
         return;
       }
     }
@@ -2736,7 +2770,7 @@ export function App() {
                 }}
               >
                 <div className="conversation-inner" ref={followGrowth}>
-                  <ConversationWindow key={selected} scroll={scroll} follow={stickToBottom}
+                  <ConversationWindow key={selected} scroll={scroll} follow={stickToBottom} hold={heldPlace}
                     target={sourceJump && catchupSource?.turnId ? { turnId: catchupSource.turnId, itemId: catchupSource.itemId }
                       : jumpToTurn ? { turnId: jumpToTurn } : pageTarget}>
                   {currentDetail?.conversation && <div className="conversation-history-window">

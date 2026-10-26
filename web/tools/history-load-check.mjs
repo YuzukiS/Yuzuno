@@ -1,7 +1,8 @@
 // T-161: "Load earlier messages" in a real browser layout. The reader is at
 // the top of a long saved conversation (T-77 windows); the earlier window is
 // put in front of what is being read, and the message at the top of the view
-// must stay where it was on screen. jsdom has no layout, so ui.test.mjs
+// must stay where it was on screen. The third load is past SAVED_WINDOWS and
+// replaces the windows; the same holds, and what was in view stays shown. jsdom has no layout, so ui.test.mjs
 // cannot show this. Production bundle in an isolated browser with an
 // explicit API fixture; no Core, daily window or writes.
 import assert from "node:assert/strict";
@@ -15,7 +16,7 @@ const dist = resolve(process.env.YUZUNO_UI_DIST);
 assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../acceptance/history-load");
 await mkdir(output, { recursive: true });
-const report = { checks: [], errors: [], unexpected: [], loads: [] };
+const report = { checks: [], errors: [], unexpected: [], loads: [], earlier: [] };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -28,7 +29,9 @@ const agent = {
 // T161_FIXTURE=small: forty short Turns of uneven length, so measured
 // heights differ from estimates. big: fourteen long agentic Turns (commands
 // with output between commentary), so a window starts inside a Turn and that
-// Turn's own rows are windowed too.
+// Turn's own rows are windowed too. timed: big, with each Item's time as
+// Core records it (15 s apart) and windows cut where the message read first
+// loses its minute mark when the messages before it load.
 const FIXTURE = process.env.T161_FIXTURE || "small";
 const paragraph = (n, p) => `第 ${n} 轮的第 ${p + 1} 段：把检查结果逐条整理，写到足以换行好几次，让每条回复的高度都不一样。`;
 const bigTurns = () => Array.from({ length: 14 }, (_, i) => {
@@ -47,7 +50,7 @@ const bigTurns = () => Array.from({ length: 14 }, (_, i) => {
     ],
   };
 });
-const turns = FIXTURE === "big" ? bigTurns() : Array.from({ length: 40 }, (_, i) => {
+const turns = FIXTURE === "big" || FIXTURE === "timed" ? bigTurns() : Array.from({ length: 40 }, (_, i) => {
   const n = i + 1;
   const paragraphs = 1 + ((n * 7) % 6);
   const code = n % 4 === 0 ? `\n\n\`\`\`\n${Array.from({ length: 4 + (n % 5) }, (_, l) => `line ${l} of turn ${n}`).join("\n")}\n\`\`\`` : "";
@@ -61,7 +64,15 @@ const turns = FIXTURE === "big" ? bigTurns() : Array.from({ length: 40 }, (_, i)
   };
 });
 const all = turns.flatMap((turn) => turn.items.map((item) => JSON.stringify([turn.id, item.id])));
-const SIZE = FIXTURE === "big" ? 40 : 16;
+// The nearest message before the Item at `index`: a command has no row of
+// its own, it is in its group's.
+const messages = new Set(turns.flatMap((turn) => turn.items).filter((item) => ["userMessage", "agentMessage"].includes(item.type)).map((item) => item.id));
+const messageBefore = (index) => all.slice(0, Math.max(0, index)).map((key) => JSON.parse(key)[1]).findLast((id) => messages.has(id)) ?? null;
+if (FIXTURE === "timed") turns.forEach((turn, t) => turn.items.forEach((item, k) => {
+  item._yuzunoTime = { at: Date.UTC(2026, 9, 20, 1 + t) + k * 15_000, source: "core" };
+}));
+// T161_SIZE: another window size, to cut the conversation at another Item.
+const SIZE = Number(process.env.T161_SIZE) || ({ big: 40, timed: 41 }[FIXTURE] ?? 16);
 // A window before an Item ends at it; a window from an Item starts at it.
 const windowAt = (first) => {
   const from = Math.max(0, Math.min(first, all.length - SIZE));
@@ -100,7 +111,10 @@ try {
     assert.equal(request.method(), "GET", `No writes: ${request.method()} ${url.pathname}`);
     if (url.pathname === "/api/agents/a") {
       // Earlier windows answer a little later, as a read from Core does.
-      if (url.searchParams.has("before")) await new Promise((done) => setTimeout(done, 150));
+      if (url.searchParams.has("before")) {
+        report.earlier.push(url.searchParams.get("before"));
+        await new Promise((done) => setTimeout(done, 150));
+      }
       return route.fulfill({ json: detailFor(url.searchParams) });
     }
     const json = {
@@ -140,15 +154,21 @@ try {
   }
   assert.ok(await button.isVisible(), "the button is reached at the top");
 
+  // Where a message's text is: below its minute mark, which can go when the
+  // messages before it load. And a frame as it was drawn: a task posted from
+  // the frame's callback runs once the frame is drawn, after the page's own
+  // callbacks and layout in it.
+  await page.addScriptTag({ content: `window.textTop = (item) => ([...item.children].find((child) => !child.classList.contains("message-time")) || item).getBoundingClientRect().top;
+window.drawn = (look) => requestAnimationFrame(() => { const channel = new MessageChannel(); channel.port1.onmessage = look; channel.port2.postMessage(null); });` });
   // The message at the top of the view, as ReadingAnchor picks it, and where
-  // it is relative to the pane.
+  // its text is relative to the pane.
   const reading = () => pane.evaluate((el) => {
     const box = el.getBoundingClientRect();
     const visible = [...el.querySelectorAll("[data-item-id]")]
-      .map((item) => ({ id: item.dataset.itemId, rect: item.getBoundingClientRect() }))
+      .map((item) => ({ id: item.dataset.itemId, item, rect: item.getBoundingClientRect() }))
       .filter(({ rect }) => rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom);
     const first = visible.find(({ rect }) => rect.top >= box.top) || visible[0];
-    return first ? { id: first.id, top: Math.round(first.rect.top - box.top) } : null;
+    return first ? { id: first.id, top: Math.round(window.textTop(first.item) - box.top) } : null;
   });
   // Every frame for `ms`: where the anchor is, and what is in front of it.
   const follow = (id, ms) => pane.evaluate((el, [id, ms]) => new Promise((done) => {
@@ -159,14 +179,14 @@ try {
       const item = el.querySelector(`[data-item-id="${id}"]`);
       trace.push({
         t: Math.round(performance.now() - began),
-        top: item ? Math.round(item.getBoundingClientRect().top - box.top) : null,
+        top: item ? Math.round(window.textTop(item) - box.top) : null,
         scrollTop: Math.round(el.scrollTop),
         loading: [...el.querySelectorAll("button")].some((b) => b.textContent === "Loading history…"),
       });
-      if (performance.now() - began < ms) requestAnimationFrame(look);
+      if (performance.now() - began < ms) window.drawn(look);
       else done(trace);
     };
-    requestAnimationFrame(look);
+    window.drawn(look);
   }), [id, ms]);
 
   // What lies above the anchor: each element on the path from the pane to it
@@ -196,17 +216,24 @@ try {
           if (r.height > 0) parts.push(`${sibling.tagName.toLowerCase()}.${String(sibling.className).split(" ")[0]}[${sibling.dataset.windowKey || sibling.dataset.itemId || ""}]=${Math.round(r.height)}`);
         }
       const loading = [...el.querySelectorAll("button")].some((b) => b.textContent === "Loading history…");
-      shots.push({ top: target ? Math.round(target.getBoundingClientRect().top - box.top) : null, loading, parts });
+      shots.push({ top: target ? Math.round(window.textTop(target) - box.top) : null, loading, parts });
       // The last frame before the click, then `frames` frames from it.
       const since = shots.findIndex((shot) => shot.loading);
       if (since >= 0 && shots.length - since >= frames) done(shots.slice(Math.max(0, since - 1)));
       else if (shots.length > 600) done(shots.slice(-frames - 1));
-      else requestAnimationFrame(look);
+      else window.drawn(look);
     };
     look();
   }), [id, frames]);
 
-  for (const round of [1, 2]) {
+  // Every message in view, as the reader sees them.
+  const inView = () => pane.evaluate((el) => {
+    const box = el.getBoundingClientRect();
+    return [...el.querySelectorAll("[data-item-id]")]
+      .filter((item) => { const rect = item.getBoundingClientRect(); return rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom; })
+      .map((item) => item.dataset.itemId);
+  });
+  for (const round of [1, 2, 3]) {
     const before = await reading();
     report.loads.push({ round, aboveBefore: await above(before.id) });
     // The closed groups in view, by their row: holding the place must not
@@ -217,21 +244,31 @@ try {
     const probing = probe(before.id, 4);
     assert.ok(before, `a message is in view before load ${round}`);
     const earlierThan = all.indexOf(JSON.stringify([before.id.split("-")[0], before.id]));
+    const shown = await inView();
+    const reads = report.earlier.length;
     await button.click();
     report.loads.at(-1).firstFrames = await probing;
     const trace = await follow(before.id, 2500);
     const after = trace.at(-1);
-    const moved = trace.filter((p) => p.top !== null).map((p) => p.top - before.top);
+    // Every frame from the click: a frame drawn out of place is a jump too.
+    const moved = [...report.loads.at(-1).firstFrames, ...trace].filter((p) => p.top !== null).map((p) => p.top - before.top);
     const load = Object.assign(report.loads.at(-1), { anchor: before.id, before: before.top, after: after.top, maxMove: Math.max(...moved.map(Math.abs)), trace, aboveAfter: await above(before.id) });
     await page.screenshot({ path: resolve(output, `load-${round}.png`) });
-    const shownEarlier = await page.locator(`[data-item-id="${JSON.parse(all[Math.max(0, earlierThan - 2)])[1]}"]`).count();
-    assert.ok(shownEarlier > 0 || earlierThan < 2, `load ${round}: earlier messages are in front`);
-    assert.ok(after.top !== null && Math.abs(after.top - before.top) <= 2,
+    const front = messageBefore(earlierThan);
+    assert.ok(!front || await page.locator(`[data-item-id="${front}"]`).count() > 0, `load ${round}: earlier messages are in front: ${front}`);
+    assert.ok(after.top !== null && Math.abs(after.top - before.top) <= 2 && load.maxMove <= 2,
       `load ${round}: the message being read stays in place: ${JSON.stringify({ anchor: before.id, before: before.top, after: after.top, maxMove: load.maxMove })}`);
     const opened = await pane.evaluate((el, keys) => keys.filter((key) =>
       el.querySelector(`[data-window-key="${key}"] details.execution[open]`)), closedBefore);
     load.closedGroups = { before: closedBefore.length, opened };
     assert.deepEqual(opened, [], `load ${round}: no group that was closed opens`);
+    const gone = await pane.evaluate((el, ids) => ids.filter((id) => !el.querySelector(`[data-item-id="${id}"]`)), shown);
+    load.inView = { before: shown, gone };
+    assert.deepEqual(gone, [], `load ${round}: what was in view stays shown`);
+    // The third replaces the windows: the new one ends at the last message
+    // in view, not at the first Item shown.
+    if (round === 3) assert.equal(JSON.parse(report.earlier.at(-1))[1], shown.at(-1), "load 3: the windows are replaced by the one ending at the last message in view");
+    assert.ok(report.earlier.length > reads, `load ${round}: an earlier window is read`);
     check(`load ${round}: earlier messages go in front and ${before.id} stays where it was`, { before: before.top, after: after.top, maxMove: load.maxMove });
     // Back to the top for the next load.
     for (let step = 0; step < 40; step++) {
