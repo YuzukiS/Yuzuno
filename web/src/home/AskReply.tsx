@@ -358,7 +358,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
       {(freeText || form === undefined || (!reply.options?.length && !reply.choice && !form)) && (
         <>
           {otherVersion && draft ? (
-            <p className="home-note" role="status">
+            <p className="home-note home-ask-draft-note" role="status">
               {t.askDraftOtherVersion(draft.version, section.version)}{" "}
               <button type="button" className="inline-link" disabled={busy} onClick={() => write({ version: section.version })}>
                 {t.referTo(section.version)}

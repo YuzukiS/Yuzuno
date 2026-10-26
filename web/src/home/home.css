@@ -952,6 +952,14 @@ ul.home-widget {
   flex-direction: column;
   gap: 8px;
 }
+/* An Ask's reply begun on another version (T-182): one paragraph, its two
+   choices inline at its end, each on one line. */
+.home-ask-draft-note {
+  display: block;
+}
+.home-ask-draft-note .inline-link {
+  white-space: nowrap;
+}
 /* A reply to a report or status card (T-174), under its card, also when the
    card is collapsed. */
 .home-card-reply {
