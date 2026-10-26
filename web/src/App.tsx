@@ -762,11 +762,11 @@ export function App() {
       if (moved) scroll.current!.scrollTop += moved;
       return Math.abs(moved) >= 0.5;
     };
-    // Rows in front are measured over the next frames, and while the target
-    // holds they leave the correcting to this (ConversationRows); both would
-    // count the same change twice (T-161). They call it after each measure,
-    // so no frame is drawn with the item moved. Hold until it has stayed put
-    // for two frames, at most a second.
+    // Rows in front are measured over the next frames, and once this holds
+    // they leave the correcting to it (ConversationRows); both would count
+    // the same change twice (T-161). They call it after each measure, so no
+    // frame is drawn with the item moved. Hold until it has stayed put for
+    // two frames, at most a second.
     let frame = 0, still = 0, frames = 0;
     const settle = () => {
       still = restore() ? 0 : still + 1;

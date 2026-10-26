@@ -247,16 +247,19 @@ export function ConversationRows<T>({ id, items, itemKey, estimate, targetKey, c
           if (ownsCorrection && box.bottom <= paneTop) correction += box.height - oldHeight;
         }
       }
+      // A held place is App's to restore once App holds it (T-161): it
+      // measures the item itself, so correcting here too would count the
+      // change twice. Until then (the window still being read, or a read
+      // that failed) rows correct as always.
+      const held = context.target?.hold ? context.hold?.current : null;
       if (changed) {
-        // A held place is App's to restore: it measures the item itself, so
-        // correcting here too would count the change twice (T-161).
-        if (!context.follow.current && !context.target?.hold && correction) pane.scrollTop += correction;
+        if (!context.follow.current && !held && correction) pane.scrollTop += correction;
         measureAgain(value => value + 1);
       }
       // Rows measured, or laid out again from what was measured, can move a
       // held place without the conversation's size changing: it is put back
       // here, before this commit or frame is drawn.
-      if (context.target?.hold) context.hold?.current?.();
+      held?.();
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
     measure();
