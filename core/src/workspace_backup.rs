@@ -74,6 +74,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("opencode", "OpenCode's own session databases: native session data, like Codex and Claude histories"),
     (online::JOURNAL, "This Core's record of its backups and restores"),
     (schedule::FILE, "This Core's daily backup schedule; a restored Workspace starts with none"),
+    (crate::web_push::FILE, "This Core's push key and the devices it notifies; each device turns push on again"),
 ];
 const OTHER: &str = "Not made by this Core version; not copied";
 const SPECIAL: &str = "A link or special file; a backup holds regular files only";

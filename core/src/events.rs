@@ -143,14 +143,14 @@ impl Subscription {
         self.queue.overflowed.load(Ordering::Acquire)
     }
 
-    /// The next queued message, if any (tests; the stream uses `recv`).
+    /// The next queued message, if any, without waiting.
     pub fn try_next(&mut self) -> Option<Arc<Entry>> {
         let entry = self.rx.try_recv().ok()?;
         self.queue.bytes.fetch_sub(entry.data.len(), Ordering::AcqRel);
         Some(entry)
     }
 
-    async fn recv(&mut self) -> Option<Arc<Entry>> {
+    pub(crate) async fn recv(&mut self) -> Option<Arc<Entry>> {
         let entry = self.rx.recv().await?;
         self.queue.bytes.fetch_sub(entry.data.len(), Ordering::AcqRel);
         Some(entry)

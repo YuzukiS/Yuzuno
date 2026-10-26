@@ -132,6 +132,8 @@ pub struct Workspace {
     pub(crate) backup_schedule: Arc<crate::workspace_backup::schedule::Planner>,
     /// The phone entry's listener and its last check (T-185); see `remote_access`.
     pub(crate) remote_access: crate::remote_access::State,
+    /// Push notifications to Home Screen web apps (T-200); see `web_push`.
+    pub(crate) web_push: crate::web_push::State,
 }
 
 impl Workspace {
@@ -195,6 +197,7 @@ impl Workspace {
             machine_load: Default::default(),
             services: Default::default(),
             remote_access: Default::default(),
+            web_push: Default::default(),
         }))
     }
 
