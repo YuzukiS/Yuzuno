@@ -76,6 +76,10 @@ const LOOK: Duration = Duration::from_secs(60);
 /// Look for a first subscription this often, besides being woken.
 const IDLE: Duration = Duration::from_secs(300);
 
+/// A stand-in push service (tests).
+#[cfg(test)]
+type TestPost = Arc<dyn Fn(&Outgoing) -> Answer + Send + Sync>;
+
 #[derive(Default)]
 pub(crate) struct State {
     /// One writer of push.json at a time.
@@ -87,7 +91,7 @@ pub(crate) struct State {
     client: Mutex<Option<send::Https>>,
     tokens: Mutex<HashMap<(String, String), (String, i64)>>,
     #[cfg(test)]
-    test_post: OnceLock<Arc<dyn Fn(&Outgoing) -> Answer + Send + Sync>>,
+    test_post: OnceLock<TestPost>,
     /// Reads compared so far (tests wait for the first).
     #[cfg(test)]
     reads: std::sync::atomic::AtomicUsize,
