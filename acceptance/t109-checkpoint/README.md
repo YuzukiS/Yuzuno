@@ -64,7 +64,7 @@ What it does not show:
   construction: one CPU thread, no dropout, and each step's batch drawn
   from the global step. Another training is exactly as resumable as the
   state it saves (RNG, data loader positions, environment).
-- **GPU memory beyond the card's total.** The GPU check samples the whole
+- **Per-process GPU memory.** The GPU check samples the whole
   card; it shows the attempt's block freed, not a per-process figure.
 - **Core's own handling.** Core's records, mail, grace period and resume
   are covered by `core/src/jobs/checkpoint_tests.rs`. The wrapper's corner
