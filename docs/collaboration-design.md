@@ -17,6 +17,11 @@
 - `task_get({taskId, dispatchId})` 直接按任务与原派工 ID 查询，仅返回 `dispatchMaterials` 和 `latestTask.taskId` 入口，不展开最新任务、活动或执行历史。
 - `task_get({taskId, view: "full"})` 读取最新任务、登记资料及原有活动/执行信息。常规活动页只返回派工材料引用；读取决定活动可用 `afterSeq: activitySeq - 1, limit: 1`。GUI 不带 `view`，仍读这份完整记录。
 - Agent 经 MCP 不带 `view` 时读 `current`（T-153）：状态、版本、负责人、派工、短结果、最新活动及当前交付（各 PR 的固定 head/base、该 head 最后观察到的 CI、最新评审、最新 CI 订阅及其最新 run，均带观察时间）。它按索引读取，不扫描历史；超过 1500 字符的文本截断并注明。未观察、其他提交或过期的状态写作 unknown，不当作通过，也不据此合并或完成任何事。带 `afterSeq`/`limit` 时默认 `view: "activity"`，按 seq 光标分页，期间新写入的活动只出现在后续页。
+- 当前视图的每个观察带来源与时刻（T-203）：
+  - **PR**：`observedAt` 是 Core 读取 GitHub 的时刻，不是对象的 updated_at。`lastAttemptAt`/`error` 是最近一次刷新尝试及其失败；刷新失败时保留上次成功的读数和时刻。
+  - **`ci`**：该 head 全部检查的状态。`watchedRuns` 是本任务 CI 订阅在同一 head 上看到的单个 workflow 运行，与全部检查并列显示，不代表全部检查通过。
+  - **最近的 result**：保持提交时的原样，附 `statusAtReport`、`taskVersionAtReport`、`editsSinceReport` 和 `notificationNow`（结果邮件现在的投递状态）。视图上方的 status、progress、blocker 才是任务现在的状态。
+  - **读取**：不访问网络，重新读取仍用 `github_refresh`/`ci_refresh`。
 - Agent 的任务写入（create/update/claim/comment/submit_result/dispatch）返回短回执：完整回答删去字段后的子集，路径与名称不变（`task.id`、`task.version`、`task.result.id`、`message.id` 等）。存储的幂等回执仍是完整对象，重试经同一投影返回同样内容。`review_get` 默认返回摘要（结论、全部发现、覆盖计数和未覆盖路径及原因），`view: "full"` 返回原始报告、上下文读取和逐文件证据。
 - 旧派工没有材料快照时，显式查询返回 `dispatch_materials_not_found`，不会拿最新资料冒充旧快照。
 

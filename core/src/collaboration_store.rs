@@ -972,9 +972,12 @@ fn task_submit_result(
         "invalid_input: result status must be review or done"
     );
     let notification = result_dispatch::notification(store, db, dispatch.as_ref())?;
+    // The version and status this submission leaves the task at, so a later
+    // reader can tell the report from what happened since (T-203).
     task.result = Some(json!({"id":uuid::Uuid::new_v4().to_string(),
         "dispatchId":dispatch.as_ref().map(|d| &d.id),"notification":notification,
-        "summary":summary,"links":links,"reportedAt":now(),"reportedBy":actor,"source":source}));
+        "summary":summary,"links":links,"reportedAt":now(),"reportedBy":actor,"source":source,
+        "taskVersion":task.version + 1,"status":status}));
     task.status = status;
     crate::delivery::store::submitted(db, &task, actor, input)?;
     save_task(db, &mut task, actor)?;

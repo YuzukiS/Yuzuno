@@ -23,6 +23,16 @@ pub(super) const NEWEST_SUBSCRIPTIONS: &str = "SELECT id,watch_id FROM ci_subscr
 pub(super) const SUBSCRIPTION_COUNT: &str = "SELECT COUNT(*) FROM ci_subscriptions WHERE task_id=?1";
 // CROSS JOIN keeps the watch's own runs the outer loop: never every run's.
 pub(super) const LATEST_RUN: &str = "SELECT r.data FROM ci_watch_runs w CROSS JOIN ci_runs r ON r.id=w.run_id WHERE w.watch_id=?1 ORDER BY r.seq DESC LIMIT 1";
+/// The result mail's delivery now, by its unique id (T-203).
+pub(super) const MESSAGE_STATE: &str = "SELECT delivery_state FROM collaboration_messages WHERE id=?1";
+/// A result is a report as it was submitted; what happened to the task after it
+/// is the rest of the view (T-203).
+const RESULT_NOTE: &str = "The latest result as reported at reportedAt, never rewritten: statusAtReport and \
+    taskVersionAtReport are the task's then, editsSinceReport counts the task's field edits since (null when Core did \
+    not record it), notification is the mail's state at report and notificationNow its delivery now. The status, \
+    progress and blocker of this view are the task now";
+/// Where a PR's CI state comes from, beside each observation.
+const CHECKS_SOURCE: &str = "all of this head's checks as GitHub reported them when Core last read the PR (observedAt); github_refresh reads them again";
 const MORE: &str = "task_get view \"activity\" (afterSeq, limit) pages the history; view \"full\" is the whole record with \
     executions and materials; dispatchId reads the fixed materials; review_get reads a review";
 
@@ -59,11 +69,20 @@ pub(super) fn current(db: &Connection, task: &SharedTask) -> Result<Value> {
             "executor": actor(&d["executor"]), "requestedBy": actor(&d["requestedBy"]),
             "invalidatedAt": d["invalidatedAt"], "invalidatedReason": d["invalidatedReason"]})
     });
-    let result = task.result.as_ref().map(|r| {
-        json!({"id": r["id"], "dispatchId": r["dispatchId"], "reportedAt": r["reportedAt"],
-            "reportedBy": actor(&r["reportedBy"]), "summary": short(r["summary"].as_str().unwrap_or_default()),
-            "links": r["links"], "notification": r["notification"]["state"]})
-    });
+    let result = match task.result.as_ref() {
+        None => None,
+        Some(r) => {
+            let delivery: Option<String> = match r["notification"]["messageId"].as_str() {
+                Some(id) => db.query_row(MESSAGE_STATE, [id], |row| row.get(0)).optional()?,
+                None => None,
+            };
+            Some(json!({"id": r["id"], "dispatchId": r["dispatchId"], "reportedAt": r["reportedAt"],
+                "reportedBy": actor(&r["reportedBy"]), "summary": short(r["summary"].as_str().unwrap_or_default()),
+                "links": r["links"], "notification": r["notification"]["state"], "notificationNow": delivery,
+                "statusAtReport": r["status"], "taskVersionAtReport": r["taskVersion"],
+                "editsSinceReport": r["taskVersion"].as_i64().map(|v| task.version - v), "note": RESULT_NOTE}))
+        }
+    };
     let project = crate::projects::task_projects(db, &[task.id.as_str()])?.remove(&task.id);
     Ok(json!({"current": {
         "taskId": task_number(task.seq),
@@ -125,9 +144,10 @@ fn delivery(db: &Connection, task: &str) -> Result<Value> {
             json!({"state": "unknown", "note": "not observed"})
         } else if ci["headSha"] != head {
             json!({"state": "unknown", "note": "last observed for another commit", "headSha": ci["headSha"],
-                "observedAt": ci["observedAt"]})
+                "observedAt": ci["observedAt"], "source": CHECKS_SOURCE})
         } else {
-            json!({"state": ci["state"], "complete": ci["complete"], "headSha": ci["headSha"], "observedAt": ci["observedAt"]})
+            json!({"state": ci["state"], "complete": ci["complete"], "headSha": ci["headSha"], "observedAt": ci["observedAt"],
+                "source": CHECKS_SOURCE})
         };
         // Round numbers count every attempt; reviewerRuns counts those that
         // started a reviewer. When the newest attempt never started one, the
@@ -148,7 +168,10 @@ fn delivery(db: &Connection, task: &str) -> Result<Value> {
         };
         pulls.push(json!({"linkId": link["id"], "repository": link["repository"], "number": link["number"],
             "url": link["url"], "title": snapshot["title"], "state": snapshot["state"], "headSha": head,
-            "baseSha": snapshot["baseSha"], "baseBranch": snapshot["baseBranch"], "syncedAt": link["syncedAt"],
+            "baseSha": snapshot["baseSha"], "baseBranch": snapshot["baseBranch"],
+            // When Core read the PR from GitHub, not the PR's own updated_at; a
+            // failed refresh moves lastAttemptAt and sets error, never observedAt.
+            "observedAt": snapshot["observedAt"], "syncedAt": link["syncedAt"], "lastAttemptAt": link["lastAttemptAt"],
             "stale": link["stale"], "error": link["error"], "ci": ci,
             "reviews": {"attempts": attempts, "reviewerRuns": runs},
             "latestReview": latest.as_ref().map(|r| review(r, &head))}));
@@ -181,10 +204,23 @@ fn delivery(db: &Connection, task: &str) -> Result<Value> {
                 "observedAt": w["observedAt"], "error": w["error"], "url": w["url"]},
             "latestRun": run}));
     }
+    // What this task's CI watches saw on a PR's head, beside its checks and
+    // never in their place: one workflow's run is not every check of the PR.
+    for pull in &mut pulls {
+        let mut runs: Vec<Value> = Vec::new();
+        for run in subscriptions.iter().map(|s| &s["latestRun"]) {
+            if run.is_object() && !pull["headSha"].is_null() && run["headSha"] == pull["headSha"]
+                && !runs.iter().any(|seen| seen["runKey"] == run["runKey"]) {
+                runs.push(json!({"runKey": run["runKey"], "name": run["name"], "status": run["status"],
+                    "conclusion": run["conclusion"], "attempt": run["attempt"], "observedAt": run["observedAt"]}));
+            }
+        }
+        pull["watchedRuns"] = json!(runs);
+    }
     let more: i64 = db.query_row(SUBSCRIPTION_COUNT, [task], |r| r.get(0))?;
     Ok(json!({"pullRequests": pulls, "issues": issues, "ciSubscriptions": subscriptions,
         "ciSubscriptionsShown": format!("{} newest of {more}", subscriptions.len()),
-        "note": "Read from Core's records with the times they were observed; unknown, stale or unobserved is not passing, and nothing here merges, approves or completes anything"}))
+        "note": "Read from Core's records, each with the time Core observed it (observedAt; lastAttemptAt and error are the newest refresh attempt and its failure). Unknown, stale or unobserved is not passing; a PR's watchedRuns are single workflow runs on its head, not all of its checks; nothing here merges, approves or completes anything"}))
 }
 
 /// A review as the delivery summary shows it: what it concluded on which

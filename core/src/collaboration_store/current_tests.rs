@@ -157,6 +157,82 @@ fn the_delivery_is_read_from_records_and_unknown_is_never_green() {
     assert_eq!(ci["agent"], "Dev");
 }
 
+/// T-203: each observation says where it came from and when Core made it, a
+/// failed refresh keeps the last good one, a watched workflow run sits beside
+/// the head's checks without standing for them, and the latest result stays
+/// the report it was while the task moves on.
+#[test]
+fn observations_carry_their_source_and_time_and_a_result_stays_as_reported() {
+    let (_dir, s) = store();
+    s.insert(&serde_json::from_value::<AgentDetail>(json!({"agent":{"id":"lead","name":"Lead","cwd":"/workspace","model":"test",
+        "color":"sage","status":"idle","createdAt":"now","updatedAt":"now","unreadCount":0,"pendingCount":0,"lastSeq":0,
+        "reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap()).unwrap();
+    let repo = Repository { id: 7, full_name: "owner/repo".into() };
+    let (base, head) = ("a".repeat(40), "b".repeat(40));
+    s.github_link_object("T-1", &repo, "pull", 1, json!({"title":"Ship","state":"open","baseSha":base,"headSha":head,
+        "baseBranch":"main","observedAt":"t0","ci":{"state":"pending","headSha":head,"complete":false,"observedAt":"t0"}})).unwrap();
+    let current = |s: &Store| get(s, json!({"taskId":"T-1","view":"current"})).unwrap()["current"].clone();
+    let pr = current(&s)["delivery"]["pullRequests"][0].clone();
+    assert_eq!((pr["state"].clone(), pr["observedAt"].clone(), pr["error"].clone()), (json!("open"), json!("t0"), Value::Null));
+    assert!(pr["ci"]["source"].as_str().unwrap().contains("all of this head's checks"), "{pr}");
+    assert_eq!(pr["watchedRuns"], json!([]));
+
+    // A failed refresh is kept as it happened: the last good read stays, with
+    // its time, and the attempt and its error are shown beside it.
+    s.github_refresh_object(pr["linkId"].as_str().unwrap(), Err("rate_limited: try later".into())).unwrap();
+    let failed = current(&s)["delivery"]["pullRequests"][0].clone();
+    assert_eq!((failed["state"].clone(), failed["observedAt"].clone(), failed["ci"]["state"].clone()), (json!("open"), json!("t0"), json!("pending")));
+    assert_eq!((failed["error"].clone(), failed["stale"].clone()), (json!("rate_limited: try later"), json!(true)));
+    assert!(failed["lastAttemptAt"].as_str().unwrap() >= failed["syncedAt"].as_str().unwrap(), "{failed}");
+
+    // One workflow passing on the head is shown as that run, and the head's
+    // checks stay as GitHub last reported them.
+    let subscribe = serde_json::from_value(json!({"requestId":"ci","taskId":"T-1","agentId":null,
+        "url":"https://github.com/owner/repo/pull/1","expectedSha":head})).unwrap();
+    let sub = s.ci_subscribe(Some("a"), subscribe, repo, "pull", 1).unwrap();
+    let observed = json!({"id":"github:7:42:2","source":"github_actions","repositoryId":7,"repository":"owner/repo","runId":"42",
+        "attempt":"2","headSha":head,"name":"CI","status":"passed","rawStatus":"completed","conclusion":"success",
+        "event":"pull_request","branch":"feature","observedAt":"t1","url":"https://github.com/owner/repo/actions/runs/42/attempts/2"});
+    s.ci_observe(sub["watchId"].as_str().unwrap(), Ok(crate::ci_monitor::Observed { runs: vec![observed], head: Some(head.clone()),
+        pr: None, truncated: false, checked: chrono::Utc::now().timestamp(), wait: 0, excluded: 0 })).unwrap();
+    let pr = current(&s)["delivery"]["pullRequests"][0].clone();
+    assert_eq!(pr["watchedRuns"], json!([{"runKey":"github:7:42:2","name":"CI","status":"passed","conclusion":"success",
+        "attempt":"2","observedAt":"t1"}]));
+    assert_eq!((pr["ci"]["state"].clone(), pr["ci"]["observedAt"].clone()), (json!("pending"), json!("t0")), "{pr}");
+    assert!(current(&s)["delivery"]["note"].as_str().unwrap().contains("not all of its checks"));
+
+    // The result is the report it was. Status, version and the mail's delivery
+    // move on in their own fields; the report and its state then do not.
+    let version = current(&s)["version"].clone();
+    let dispatched = s.collaboration_call(Some("lead"), "task_dispatch", json!({"requestId":"d","taskId":"T-1",
+        "expectedVersion":version,"toAgentId":"a"})).unwrap();
+    let submitted = s.collaboration_call(Some("a"), "task_submit_result", json!({"requestId":"r","taskId":"T-1",
+        "expectedVersion":current(&s)["version"],"dispatchId":dispatched["message"]["dispatchId"],"summary":"Ready"})).unwrap();
+    let reported = current(&s)["version"].as_i64().unwrap();
+    let result = current(&s)["result"].clone();
+    assert_eq!((result["taskVersionAtReport"].clone(), result["statusAtReport"].clone(), result["editsSinceReport"].clone()),
+        (json!(reported), json!("review"), json!(0)));
+    assert_eq!((result["notification"].clone(), result["notificationNow"].clone()), (json!("pending"), json!("pending")));
+    assert!(result["note"].as_str().unwrap().contains("never rewritten"));
+    let seq = submitted["message"]["seq"].as_i64().unwrap();
+    s.set_peer_delivery("lead", seq, "sending", json!({})).unwrap();
+    s.set_peer_delivery("lead", seq, "delivered", json!({})).unwrap();
+    s.collaboration_call(Some("lead"), "task_update", json!({"requestId":"done","taskId":"T-1","expectedVersion":reported,
+        "patch":{"status":"done","progress":"Accepted after review"}})).unwrap();
+    let now = current(&s);
+    assert_eq!((now["status"].clone(), now["progress"].clone()), (json!("done"), json!("Accepted after review")));
+    let result = &now["result"];
+    assert_eq!((result["statusAtReport"].clone(), result["editsSinceReport"].clone(), result["summary"].clone()),
+        (json!("review"), json!(1), json!("Ready")));
+    assert_eq!((result["notification"].clone(), result["notificationNow"].clone()), (json!("pending"), json!("delivered")));
+
+    // A result reported before Core recorded its version says it does not know.
+    s.db.write().unwrap().execute("UPDATE collaboration_tasks SET data=json_remove(data,'$.result.taskVersion','$.result.status')", []).unwrap();
+    let result = current(&s)["result"].clone();
+    assert_eq!((result["taskVersionAtReport"].clone(), result["statusAtReport"].clone(), result["editsSinceReport"].clone()),
+        (Value::Null, Value::Null, Value::Null));
+}
+
 /// Each query of the current view, and of loading a dispatched task (every
 /// task read and write does), reads through the index named for it: the plan
 /// never walks the task's history or the Workspace's reviews, subscriptions
@@ -170,7 +246,7 @@ fn the_current_path_reads_through_its_indexes() {
         (DISPATCH_ENDS, "collaboration_activity_dispatch_end"), (super::LATEST_REVIEW, "pr_reviews_task"),
         (super::NEWEST_SUBSCRIPTIONS, "ci_subscriptions_task"), (super::SUBSCRIPTION_COUNT, "ci_subscriptions_task"),
         (super::LATEST_REVIEWER_RUN, "pr_reviews_task"), (super::REVIEW_COUNTS, "pr_reviews_task"),
-        (super::LATEST_RUN, "(watch_id=?)")] {
+        (super::LATEST_RUN, "(watch_id=?)"), (super::MESSAGE_STATE, "(id=?)")] {
         let mut plan = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
         let unbound = vec![rusqlite::types::Null; plan.parameter_count()];
         let steps: Vec<String> = plan.query_map(rusqlite::params_from_iter(unbound), |r| r.get(3)).unwrap()
