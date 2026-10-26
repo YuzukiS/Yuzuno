@@ -3,7 +3,7 @@
 // Agent link (T-184) names only its Workspace and Agent.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { agentLinkHref, messageLinkHref, parseAgentLink, parseAppLink, parseMessageLink } from "../src/deep-link.ts";
+import { agentLinkHref, homeLinkHref, messageLinkHref, parseAgentLink, parseAppLink, parseHomeLink, parseMessageLink } from "../src/deep-link.ts";
 import { localReadingPositions } from "../src/reading-position.ts";
 
 const link = { workspaceId: "ws-1", agentId: "agent-a", turnId: "019a-turn", itemId: "msg_7", threadId: "thread-9" };
@@ -65,6 +65,17 @@ function memoryStorage() {
   const values = new Map();
   return { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), values };
 }
+
+test("a Home link names its Workspace only, as a push notification opens it (T-200)", () => {
+  const href = homeLinkHref("https://phone.example.ts.net/", { workspaceId: "ws-1" });
+  assert.equal(href, "https://phone.example.ts.net/#/home?w=ws-1");
+  assert.deepEqual(parseHomeLink(href), { workspaceId: "ws-1" });
+  assert.deepEqual(parseAppLink(href), { kind: "home", workspaceId: "ws-1" });
+  for (const text of ["#/home?", "#/home?w=", "#/home?w=ws-1&a=agent-a", "#/home?w=ws 1", "#/homeland?w=ws-1"])
+    assert.equal(parseHomeLink(text), null, text);
+  // A message or Agent link is still read as one, not as a Home.
+  assert.equal(parseAppLink("#/agent?w=ws-1&a=agent-a").kind, "agent");
+});
 
 test("reading positions are kept per Workspace and Agent, and the oldest are forgotten past the bound", () => {
   const storage = memoryStorage();
