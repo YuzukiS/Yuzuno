@@ -19,16 +19,27 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+/// The native message bytes one connection's queue holds at most (KiB): a
+/// message larger than all of it waits for an empty queue (T-140).
+const QUEUE_KIB: u32 = 16 << 10;
+
 /// One connection's events in flight, oldest first. The consumer applies them
-/// in arrival order, so the oldest one is the next to finish.
-#[derive(Default)]
+/// in arrival order, so the oldest one is the next to finish. Each holds its
+/// share of the queue's bytes until applied.
 pub(crate) struct Backlog {
-    arrivals: Mutex<VecDeque<Instant>>,
+    arrivals: Mutex<VecDeque<(Instant, Option<tokio::sync::OwnedSemaphorePermit>)>>,
+    bytes: Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for Backlog {
+    fn default() -> Self {
+        Self { arrivals: Mutex::default(), bytes: Arc::new(tokio::sync::Semaphore::new(QUEUE_KIB as usize)) }
+    }
 }
 
 impl Backlog {
-    fn received(&self) {
-        self.arrivals.lock().unwrap().push_back(Instant::now());
+    fn received(&self, bytes: Option<tokio::sync::OwnedSemaphorePermit>) {
+        self.arrivals.lock().unwrap().push_back((Instant::now(), bytes));
     }
 
     /// The newest event never entered the queue.
@@ -46,7 +57,7 @@ impl Backlog {
         let arrivals = self.arrivals.lock().unwrap();
         let oldest = arrivals
             .front()
-            .map_or(Duration::ZERO, |at| now.saturating_duration_since(*at));
+            .map_or(Duration::ZERO, |(at, _)| now.saturating_duration_since(*at));
         (arrivals.len(), oldest)
     }
 }
@@ -69,10 +80,21 @@ impl EventSender {
 
     /// Counts the event as received, then waits for room in the queue as before.
     pub async fn send(&self, message: Value) -> Result<(), mpsc::error::SendError<Value>> {
+        self.send_sized(message, 0).await
+    }
+
+    /// `send` of a message read as `bytes`: it waits until the queue holds
+    /// room for them too (QUEUE_KIB), which it holds until applied.
+    pub async fn send_sized(&self, message: Value, bytes: usize) -> Result<(), mpsc::error::SendError<Value>> {
         let Some(backlog) = &self.backlog else {
             return self.tx.send(message).await;
         };
-        backlog.received();
+        let kib = u32::try_from(bytes.div_ceil(1024)).unwrap_or(u32::MAX).min(QUEUE_KIB);
+        let room = match kib {
+            0 => None,
+            kib => Some(backlog.bytes.clone().acquire_many_owned(kib).await.expect("the queue's bytes are never closed")),
+        };
+        backlog.received(room);
         // Taken back unless it enters the queue: a closed queue, or this
         // send dropped while it waited for room.
         let mut unsent = Unsent(Some(backlog));
@@ -294,6 +316,8 @@ def watch():
         path = os.path.join(root, 'burst-' + t)
         if os.path.exists(path):
             n = int(open(path).read()); os.remove(path)
+            # The Turn they stream into is in the native history from now on.
+            open(os.path.join(root, 'streamed-' + t), 'w').close()
             for _ in range(n):
                 emit({'method':'item/agentMessage/delta','params':{'threadId':t,'turnId':'t','itemId':'m','delta':'x'}})
         path = os.path.join(root, 'turns-' + t)
@@ -307,14 +331,36 @@ def watch():
                 emit({'method':'turn/completed','params':{'threadId':t,'turn':dict(turn, status='completed')}})
         time.sleep(0.01)
 threading.Thread(target=watch, daemon=True).start()
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
     r = json.loads(line)
     if 'id' not in r: continue
     m, p = r.get('method'), r.get('params') or {}
+    if m=='thread/turns/list': sys.stdout.ids.add(r['id']); m='thread/read'
     result = {}
     if m in ['thread/start', 'thread/resume', 'thread/read']:
         if not thread: thread.append(p.get('threadId', 'thread'))
-        result = {'thread':{'id':thread[0],'status':{'type':'idle'},'turns':[]},'model':'m'}
+        streamed = os.path.exists(os.path.join(root, 'streamed-' + thread[0]))
+        turns = [{'id':'t','status':'interrupted','items':[]}] if streamed else []
+        result = {'thread':{'id':thread[0],'status':{'type':'idle'},'turns':turns},'model':'m'}
     emit({'id':r['id'],'result':result})
 "#;
 

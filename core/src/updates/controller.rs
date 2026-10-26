@@ -146,7 +146,7 @@ impl Controller {
             )
         };
         let current = self.running.as_ref().map(|b| summary(b, None)).unwrap_or_else(|| json!({
-            "releaseId":"development","version":env!("CARGO_PKG_VERSION"),"gitSha":"","builtAt":"","platform":package::platform(),"protocol":package::PROTOCOL,"schema":{"writes":STORAGE,"readsMin":STORAGE,"readsMax":STORAGE},"records":{"writes":1,"readsMin":0,"readsMax":1},"notes":"Development checkout","bytes":0
+            "releaseId":"development","version":env!("CARGO_PKG_VERSION"),"gitSha":"","builtAt":"","platform":package::platform(),"protocol":package::PROTOCOL,"schema":{"writes":STORAGE,"readsMin":STORAGE,"readsMax":STORAGE},"records":{"writes":super::storage::RECORD_LAYOUT,"readsMin":super::storage::RECORD_LAYOUT,"readsMax":super::storage::RECORD_LAYOUT},"notes":"Development checkout","bytes":0
         }));
         let candidates = self
             .candidates

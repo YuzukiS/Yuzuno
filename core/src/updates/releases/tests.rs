@@ -83,7 +83,10 @@ fn archives_never_materialize_links_or_traversal() {
 
 fn fixture() -> (tempfile::TempDir, Arc<Controller>) {
     let dir = tempfile::tempdir().unwrap();
-    let initial = package::fixture(&dir.path().join("initial"), "initial");
+    // Running a release of the signed fixture's record format (an earlier
+    // one, T-140): what is checked here is the download, not the format.
+    let initial = package::fixture_records(&dir.path().join("initial"), "initial",
+        package::Schema { writes: 1, reads_min: 0, reads_max: 1 });
     let root = dir.path().join("managed");
     catalog::register(
         &root,

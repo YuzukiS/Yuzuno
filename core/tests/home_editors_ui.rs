@@ -1,5 +1,7 @@
 //! Opt-in browser acceptance against a real isolated Core and MCP transport.
 //! The native Codex transport is deterministic; no paid model or daily Core.
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, os::unix::fs::PermissionsExt, path::PathBuf};
 use yuzuno_workspace::{collaboration_mcp, model::AgentDetail, server, workspace::Workspace};
@@ -16,10 +18,30 @@ async fn home_editor_permissions_in_real_core_and_browser() {
     let script = lab.path().join("native.py");
     std::fs::write(&script, r#"#!/usr/bin/python3
 import json, sys, os
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
     request = json.loads(line)
     if 'id' not in request or 'method' not in request: continue
     method = request['method']
+    if method=='thread/turns/list': sys.stdout.ids.add(request['id']); method='thread/read'
     result = {}
     if method == 'config/read': result = {'config':{}}
     if method in ['thread/start','thread/resume','thread/read']:

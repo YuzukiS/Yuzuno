@@ -604,7 +604,7 @@ async fn precheck(State(ws): State<Arc<Workspace>>, Json(body): Json<PrecheckReq
         let manifest = super::read_manifest(&from)?;
         ensure!(manifest.database.schema == crate::updates::package::STORAGE,
             "The backup has schema {}; this Core reads schema {}", manifest.database.schema, crate::updates::package::STORAGE);
-        ensure!(manifest.database.record_layouts.iter().all(|layout| *layout <= crate::updates::storage::RECORD_LAYOUT),
+        ensure!(manifest.database.record_layouts.iter().all(|layout| *layout == crate::updates::storage::RECORD_LAYOUT),
             "The backup has record layouts this Core does not read");
         let (parent, target, existing) = super::restore_target(&to)?;
         let from = std::fs::canonicalize(&from)?;

@@ -7,7 +7,7 @@ use crate::{
     store::Store,
     workspace::{Connection, Workspace},
 };
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use axum::{
     extract::{Path, State},
     routing::post,
@@ -265,7 +265,7 @@ impl Workspace {
                 json!({"available":false,"attempt":attempt.outcome(),"reason":"A previous rewind is unconfirmed. Check that attempt; it will not be sent again."}),
             );
         }
-        let d = self.detail(id).await?;
+        let d = self.view(id, crate::store::Sel::Turns(vec![target.to_owned()])).await?;
         idle(&d)?;
         if d.agent.harness != "codex" {
             let uuid = d
@@ -292,7 +292,7 @@ impl Workspace {
         if let Some(events) = &c.events {
             events.drain().await?;
         }
-        let d = self.detail(id).await?;
+        let d = self.view(id, crate::store::Sel::Turns(vec![target.to_owned()])).await?;
         idle(&d)?;
         let thread = d
             .agent
@@ -382,7 +382,7 @@ impl Workspace {
             .filter(|p| p.agent == id && p.owner.ptr_eq(&Arc::downgrade(self)))
             .context("This preview was used or expired; nothing was sent")?;
         ensure!(p.at.elapsed() < TTL, "This preview expired; preview again");
-        let d = self.detail(id).await?;
+        let d = self.send_view(id).await?;
         idle(&d)?;
         ensure!(
             d.agent.thread_id.as_deref() == Some(p.thread.as_str()),
@@ -404,7 +404,7 @@ impl Workspace {
             same_history(&p.baseline, &current),
             "Native history changed after the preview; nothing was rewound"
         );
-        idle(&self.detail(id).await?)?;
+        idle(&self.send_view(id).await?)?;
         let index = current
             .iter()
             .position(|t| t["id"] == p.target)
@@ -419,15 +419,20 @@ impl Workspace {
             state: "sending".into(),
             message: None,
         };
-        let (saved, local, native) = (
-            attempt.clone(),
-            serde_json::to_string(&d)?,
-            serde_json::to_string(&current[index..])?,
-        );
-        ensure!(
-            local.len() + native.len() <= MAX_ARCHIVE,
-            "Rewind archive exceeds the safe size; nothing was sent"
-        );
+        // The local archive: the metadata and the Turns the rewind removes
+        // (every local Turn the kept native prefix lacks), with their
+        // payloads, built a Turn at a time (T-140).
+        let native = serde_json::to_string(&current[index..])?;
+        let (agent, kept) = (id.to_owned(), attempt.kept.clone());
+        let room = MAX_ARCHIVE.saturating_sub(native.len());
+        let local = self.stored(move |s| {
+            let removed: Vec<String> = s.turn_ids(&agent)?.into_iter().filter(|t| !kept.contains(t)).collect();
+            s.archive(&agent, &removed, room)
+        }).await?;
+        let Some(local) = local else {
+            bail!("Rewind archive exceeds the safe size; nothing was sent");
+        };
+        let saved = attempt.clone();
         self.stored(move |s| {
             s.db.write()?.execute("INSERT INTO conversation_rewinds(id,agent_id,state,attempt,native_archive,local_archive,created_at) VALUES(?1,?2,'sending',?3,?4,?5,?6)", params![saved.id,saved.agent,serde_json::to_string(&saved)?,native,local,now()])?;
             Ok(())
@@ -501,17 +506,20 @@ impl Workspace {
             attempt.thread.clone(),
         );
         self.stored_owned(owned, move |s| {
-            let d = s.detail(&agent)?;
             ensure!(
-                d.agent.thread_id.as_deref() == Some(thread.as_str()),
+                s.agent(&agent)?.thread_id.as_deref() == Some(thread.as_str()),
                 "The session changed while confirming rewind"
             );
+            // The Turns it removes (every local Turn the kept native prefix
+            // lacks) and the retained page's, with the open and newest ones.
+            let mut named: Vec<String> = s.turn_ids(&agent)?.into_iter().filter(|t| !kept.contains(t)).collect();
+            named.extend(page.turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)));
             let window = HistoryWindow {
                 loaded_count: page.turns.len(),
                 has_more: page.has_more,
                 next_cursor: page.next_cursor,
             };
-            s.update(
+            s.record_event(
                 &agent,
                 if accept_current {
                     "conversation/rewindResolved"
@@ -519,6 +527,7 @@ impl Workspace {
                     "conversation/rewound"
                 },
                 &json!({"attemptId":operation,"keptTurnIds":kept}),
+                crate::store::Sel::Turns(named),
                 move |d| project(d, &kept, page.turns, window),
             )?;
             Ok(())
@@ -560,7 +569,7 @@ impl Workspace {
         if !matches!(a.state.as_str(), "sending" | "unknown") {
             return Ok(a.outcome());
         }
-        let d = self.detail(id).await?;
+        let d = self.send_view(id).await?;
         idle(&d)?;
         ensure!(
             d.agent.harness == "codex" && d.agent.remote.is_none(),

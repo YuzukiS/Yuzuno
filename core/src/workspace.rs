@@ -1,7 +1,7 @@
 use crate::{
     model::{ensure_agent_open, ensure_not_disconnected, now, Agent, AgentDetail, AgentSettings, MessageInput, MessageReceipt, PendingRequest, RemoteAgent, ReviewTarget, SkillRef},
     rpc::{OutcomeUnknown, Rpc, RpcError},
-    store::Store,
+    store::{Sel, Store},
     remote,
     permissions::{self, Permissions},
 };
@@ -287,14 +287,15 @@ impl Workspace {
         .await
     }
 
-    pub(crate) async fn detail(&self, id: &str) -> Result<AgentDetail> {
+    /// `Store::view` for an async caller: the metadata and the Turns `sel`
+    /// selects, never a whole history (T-140).
+    pub(crate) async fn view(&self, id: &str, sel: Sel) -> Result<AgentDetail> {
         let id = id.to_owned();
-        self.stored(move |store| store.detail(&id)).await
+        self.stored(move |store| store.view(&id, sel)).await
     }
 
-    /// The Agent as listed, with its project as `detail` gives it: what a
-    /// check of its state, or an answer with the Agent only, needs, without
-    /// its history (T-140).
+    /// The Agent as listed, with its project: what a check of its state, or
+    /// an answer with the Agent only, needs, without its history (T-140).
     pub(crate) async fn listed(&self, id: &str) -> Result<crate::model::Agent> {
         let id = id.to_owned();
         self.stored(move |store| {
@@ -304,37 +305,46 @@ impl Workspace {
         }).await
     }
 
-    /// `Store::send_view` for an async caller: what a send checks, without
-    /// copying a large record's Items.
+    /// `Store::send_view` for an async caller: what a send checks (the
+    /// metadata, unsettled receipts, open and newest Turns).
     pub(crate) async fn send_view(&self, id: &str) -> Result<AgentDetail> {
         let id = id.to_owned();
         self.stored(move |store| store.send_view(&id)).await
     }
 
-    /// `Store::update` for an async caller.
-    pub(crate) async fn update_record(
-        &self,
-        id: &str,
-        kind: &str,
-        data: Value,
-        mutate: impl FnOnce(&mut AgentDetail) + Send + 'static,
-    ) -> Result<AgentDetail> {
+    /// The record's newest Turns as a recovery page compares them
+    /// (`codex_sessions::recovery_page`): IDs and statuses, oldest first.
+    async fn newest_turn_states(&self, id: &str) -> Result<Vec<(String, Option<String>)>> {
+        let id = id.to_owned();
+        self.stored(move |store| store.newest_turn_states(&id, crate::codex_sessions::HISTORY_PAGE_SIZE as usize)).await
+    }
+
+    /// The whole record, for a test's assertions only (see `Store::detail`).
+    #[cfg(test)]
+    pub(crate) async fn detail(&self, id: &str) -> Result<AgentDetail> {
+        let id = id.to_owned();
+        self.stored(move |store| store.detail(&id)).await
+    }
+
+    /// A test's change of every Turn, returning the whole record after it.
+    #[cfg(test)]
+    pub(crate) async fn update_record(&self, id: &str, kind: &str, data: Value,
+        mutate: impl FnOnce(&mut AgentDetail) + Send + 'static) -> Result<AgentDetail> {
         let (id, kind) = (id.to_owned(), kind.to_owned());
         self.stored(move |store| store.update(&id, &kind, &data, mutate)).await
     }
 
-    /// `update_record` for a caller that does not use the record: the same
-    /// commit without copying the record back (see `Store::record_event`),
-    /// which for a large one costs about as much as the write.
+    /// `Store::record_event` for an async caller.
     pub(crate) async fn record_update(
         &self,
         id: &str,
         kind: &str,
         data: Value,
+        sel: Sel,
         mutate: impl FnOnce(&mut AgentDetail) + Send + 'static,
     ) -> Result<()> {
         let (id, kind) = (id.to_owned(), kind.to_owned());
-        self.stored(move |store| store.record_event(&id, &kind, &data, mutate).map(drop)).await
+        self.stored(move |store| store.record_event(&id, &kind, &data, sel, mutate).map(drop)).await
     }
 
     /// `record_update` of a Claude send's `turnRequested` or `message/bound`
@@ -360,11 +370,12 @@ impl Workspace {
         id: &str,
         kind: &str,
         data: Value,
+        client: &str,
         shown: impl Fn(&[Value]) -> bool + Send + 'static,
         mutate: impl Fn(&mut AgentDetail) + Send + 'static,
     ) -> Result<()> {
-        let (id, kind) = (id.to_owned(), kind.to_owned());
-        self.stored(move |store| store.record_send_unless(&id, &kind, &data, shown, mutate).map(drop)).await
+        let (id, kind, client) = (id.to_owned(), kind.to_owned(), client.to_owned());
+        self.stored(move |store| store.record_send_unless(&id, &kind, &data, &client, shown, mutate).map(drop)).await
     }
 
     /// `record_update` for a change to the metadata only (`Store::update_meta`):
@@ -378,6 +389,20 @@ impl Workspace {
     ) -> Result<()> {
         let (id, kind) = (id.to_owned(), kind.to_owned());
         self.stored(move |store| store.update_meta(&id, &kind, &data, mutate).map(drop)).await
+    }
+
+    /// `record_meta` of a change to the receipt of message `client`, which
+    /// `mutate` gets settled or not (`Store::update_receipt_picking`).
+    pub(crate) async fn record_receipt(
+        &self,
+        id: &str,
+        kind: &str,
+        data: Value,
+        client: &str,
+        mutate: impl FnOnce(&mut crate::store::Meta<'_>) + Send + 'static,
+    ) -> Result<()> {
+        let (id, kind, client) = (id.to_owned(), kind.to_owned(), client.to_owned());
+        self.stored(move |store| store.update_receipt_picking(&id, &kind, &data, &client, mutate, |_| ())).await
     }
 
     /// This Agent's ownership lock (see the lock order on `Workspace`).
@@ -705,8 +730,8 @@ impl Workspace {
             }
         };
         // Where the record stood when the request went out: its rev and seq,
-        // and for an imported thread the status of each Turn (`recovery_page`).
-        let before_attach = self.send_view(id).await?;
+        // and its open Turns (`recovery_page`), held as the Agent holds them.
+        let before_attach = self.view(id, Sel::Named(Vec::new())).await?;
         let agent = id.to_owned();
         let imported = self.stored(move |store| store.is_codex_import(&agent)).await?;
         let reply = if let Some(thread) = &a.thread_id {
@@ -715,7 +740,9 @@ impl Workspace {
             // new turn reports the running thread's window.
             self.codex_context.awaiting_fresh_usage(id, connection.generation);
             let mut params = resume_params(thread, &a);
-            if imported { params["excludeTurns"] = true.into(); }
+            // The native history stays native: the record is brought up to
+            // date from its recovery page, never from a whole history (T-140).
+            params["excludeTurns"] = true.into();
             for (key, value) in initial_params.as_object().unwrap() {
                 params[key] = value.clone();
             }
@@ -723,7 +750,7 @@ impl Workspace {
         } else {
             // A remote runtime survives this Core. Reserve creation before the
             // wire write so a crash cannot create a second native Thread.
-            self.update_record(id, "thread/createRequested", json!({}), |d| {
+            self.record_update(id, "thread/createRequested", json!({}), Sel::Meta, |d| {
                 d.agent.status = "uncertain".into();
             }).await?;
             connection
@@ -823,16 +850,17 @@ impl Workspace {
                 let writer_conflict = matches!((&a.thread_id, e.downcast_ref::<RpcError>(), &a.remote),
                     (Some(thread), Some(rpc_error), None) if rpc_error.reports_active_writer(thread));
                 if writer_conflict {
-                    self.update_record(id, "codex/writerConflict", json!({"threadId":a.thread_id}), |d| {
+                    self.record_update(id, "codex/writerConflict", json!({"threadId":a.thread_id}), Sel::Meta, |d| {
                         d.codex_handoff.get_or_insert_with(Default::default).writer_conflict_at = Some(crate::model::now());
                     }).await?;
                 }
                 if new_empty_thread && e.downcast_ref::<RpcError>().is_some() {
                     let message = e.to_string();
-                    self.update_record(
+                    self.record_update(
                         id,
                         "thread/createRejected",
                         json!({"message":message}),
+                        Sel::Meta,
                         move |d| {
                             d.agent.status = "error".into();
                             d.agent.error = Some(message);
@@ -853,11 +881,16 @@ impl Workspace {
         if !new_empty_thread {
             anyhow::ensure!(a.thread_id.as_deref() == Some(thread_id.as_str()), "Codex 恢复了不同会话；原会话未确认");
         }
-        // An imported record's Turns are the recovery page's, kept apart
-        // from the reply, which stays as it came.
-        let (imported_history, page_turns) = if imported {
-            anyhow::ensure!(a.thread_id.as_deref() == Some(thread_id.as_str()), "Codex 恢复了不同会话；不会替换导入记录");
-            let page = match crate::codex_sessions::recovery_page(&connection.rpc, &thread_id, &attempt.before).await {
+        // A resumed thread's Turns are its recovery page's (the newest Turns
+        // and any the record holds as unfinished), kept apart from the
+        // reply, which stays as it came. A new thread has none.
+        let (imported_history, page_turns) = if !new_empty_thread {
+            anyhow::ensure!(a.thread_id.as_deref() == Some(thread_id.as_str()), "Codex 恢复了不同会话；原会话未确认");
+            let page = match self.newest_turn_states(id).await {
+                Ok(held) => crate::codex_sessions::recovery_page(&connection.rpc, &thread_id, &attempt.before, &held).await,
+                Err(error) => Err(error),
+            };
+            let page = match page {
                 Ok(page) => page,
                 Err(error) => {
                     // Keeping the finding is secondary: the check's own error
@@ -871,8 +904,8 @@ impl Workspace {
                     return Err(error);
                 }
             };
-            let history = crate::model::HistoryWindow { loaded_count: page.turns.len(), has_more: page.has_more, next_cursor: page.next_cursor };
-            (Some(history), Some(page.turns))
+            let history = imported.then(|| crate::model::HistoryWindow { loaded_count: page.turns.len(), has_more: page.has_more, next_cursor: page.next_cursor });
+            (history, Some(page.turns))
         } else { (None, None) };
         let owned = self.owner(id).await;
         if !same_generation(self.rpcs.lock().unwrap().get(id), connection.generation) {
@@ -891,16 +924,23 @@ impl Workspace {
         let agent = id.to_owned();
         let (request_seq, request_rev) = (attempt.request_seq, attempt.request_rev);
         let preserve_settings = attempt.same_thread_only;
-        self.stored_owned(owned, move |store| {
+        let merged = self.stored_owned(owned, move |store| {
             let id = agent.as_str();
             let changes = store.changed_items_since(id, request_rev)?;
             let has_new_error = store.has_error_since(id, request_seq)?;
             let thread = &result["thread"];
-            store.record_event(
+            // The page's Turns are merged as they came, not copied (T-140).
+            let incoming: Vec<Value> = match page_turns {
+                Some(turns) => turns,
+                None => thread["turns"].as_array().cloned().unwrap_or_default(),
+            };
+            let (sel, total) = snapshot_selection(store, id, &incoming)?;
+            store.update_picking(
                 id,
                 "thread/attached",
                 &json!({"threadId":thread_id,
                     "newEmptyThread":new_empty_thread,"turnRequestJournalVersion":1}),
+                sel,
                 |d| {
                     d.agent.thread_id = Some(thread_id);
                     d.agent.connection_state = "connected".into();
@@ -908,12 +948,9 @@ impl Workspace {
                     // and a check that found every Turn has nothing missing.
                     if let Some(handoff) = &mut d.codex_handoff { handoff.writer_conflict_at = None; handoff.missing_turns = None; }
                     if let Some(history) = imported_history { d.history = Some(history); }
-                    match page_turns {
-                        Some(turns) => apply_snapshot_turns(d, thread, Some(turns), &changes),
-                        // The kept reply's Turns, copied one at a time as
-                        // they merge, not a whole history first (T-140).
-                        None => apply_snapshot_turns(d, thread, thread["turns"].as_array().map(|turns| turns.iter().cloned()), &changes),
-                    }
+                    let held = d.turns.len();
+                    apply_snapshot_turns(d, thread, Some(incoming), &changes);
+                    if let Some(history) = &mut d.history { history.loaded_count = total + d.turns.len() - held; }
                     d.confirm_message_receipts();
                     if !has_new_error { clear_transport_error(d, thread); }
                     if replacing_empty_thread {
@@ -926,6 +963,7 @@ impl Workspace {
                         d.agent.settings.reasoning_effort = result["reasoningEffort"].as_str().map(str::to_owned);
                     }
                 },
+                finished_turns,
             )
         }).await?;
         *slot = None;
@@ -945,7 +983,7 @@ impl Workspace {
         } else {
             self.collaboration_started(id, connection.generation).await;
         }
-        self.record_recovered_completions(id).await?;
+        self.record_recovered_completions(id, merged).await?;
         self.changed(id);
         Ok(connection)
     }
@@ -963,7 +1001,7 @@ impl Workspace {
             native_status: thread["status"]["type"].as_str().unwrap_or("unknown").to_owned(),
             checked_at: crate::model::now(),
         };
-        self.record_update(id, "codex/missingTurns", serde_json::to_value(&found)?, move |d| {
+        self.record_update(id, "codex/missingTurns", serde_json::to_value(&found)?, Sel::Meta, move |d| {
             d.codex_handoff.get_or_insert_with(Default::default).missing_turns = Some(found);
         }).await?;
         self.changed(id);
@@ -982,12 +1020,12 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        let d = self.send_view(id).await?;
-        ensure_agent_open(&d.agent)?;
-        anyhow::ensure!(d.agent.harness == "codex", "只有 Codex Agent 会有原生历史缺失的 Turn");
         let mut wanted = turn_ids.to_vec();
         wanted.sort();
         wanted.dedup();
+        let d = self.view(id, Sel::Turns(wanted.clone())).await?;
+        ensure_agent_open(&d.agent)?;
+        anyhow::ensure!(d.agent.harness == "codex", "只有 Codex Agent 会有原生历史缺失的 Turn");
         anyhow::ensure!(!wanted.is_empty(), "没有指定要结束的 Turn");
         let ended = |tid: &str| d.turns.iter().any(|t| t["id"] == tid && t["status"] == "interrupted" && t["missingNative"]["endedAt"].is_string());
         let Some(found) = d.codex_handoff.as_ref().and_then(|h| h.missing_turns.clone()) else {
@@ -1011,7 +1049,7 @@ impl Workspace {
         let data = json!({"turnIds":wanted,"threadId":found.thread_id,"generation":generation,
             "nativeStatus":found.native_status,"checkedAt":found.checked_at,"endedAt":ended_at});
         let message = crate::codex_sessions::MissingNativeTurns { turn_ids: vec![] }.to_string();
-        self.record_update(id, "codex/missingTurnsEnded", data, move |d| {
+        self.record_update(id, "codex/missingTurnsEnded", data, Sel::Turns(wanted.clone()), move |d| {
             for turn in d.turns.iter_mut() {
                 let mine = turn["id"].as_str().is_some_and(|tid| wanted.iter().any(|w| w == tid));
                 if mine && turn["status"] == "inProgress" {
@@ -1047,78 +1085,78 @@ impl Workspace {
 
     pub(crate) async fn reconcile_connection(self: &Arc<Self>, id: &str, connection: &Connection) -> Result<()> {
         self.recover_rewind(id, connection).await?;
-        let d = self.send_view(id).await?;
+        // Its open Turns as the Agent holds them: only their IDs are read.
+        let d = self.view(id, Sel::Named(Vec::new())).await?;
         let thread = d
             .agent
             .thread_id.clone()
             .context("原任务状态仍未知；没有可恢复的会话 ID，不会重复发送")?;
         let agent = id.to_owned();
         let imported = self.stored(move |store| store.is_codex_import(&agent)).await?;
-        let mut result = connection
+        // The thread's own fields only: its Turns come from the recovery page,
+        // never a whole native history (T-140).
+        let result = connection
             .rpc
             .request_within(
                 "thread/read",
-                json!({"threadId":thread,"includeTurns":!imported}),
+                json!({"threadId":thread,"includeTurns":false}),
                 self.reconnect_timeout(),
             )
             .await?;
         anyhow::ensure!(result["thread"]["id"].as_str() == Some(thread.as_str()), "Codex 核对返回了不同会话；原会话未确认");
-        let imported_history = if imported {
-            let page = match crate::codex_sessions::recovery_page(&connection.rpc, &thread, &d).await {
-                Ok(page) => page,
-                Err(error) => {
-                    if let Err(write) = self.record_missing_turns(id, connection.generation, &thread, &result["thread"], &error).await {
-                        eprintln!("Workspace could not keep the missing-Turn finding for {id}: {write}");
-                    }
-                    return Err(error);
+        let held = self.newest_turn_states(id).await?;
+        let page = match crate::codex_sessions::recovery_page(&connection.rpc, &thread, &d, &held).await {
+            Ok(page) => page,
+            Err(error) => {
+                if let Err(write) = self.record_missing_turns(id, connection.generation, &thread, &result["thread"], &error).await {
+                    eprintln!("Workspace could not keep the missing-Turn finding for {id}: {write}");
                 }
-            };
-            let history = crate::model::HistoryWindow { loaded_count: page.turns.len(), has_more: page.has_more, next_cursor: page.next_cursor };
-            result["thread"]["turns"] = page.turns.into();
-            Some(history)
-        } else { None };
+                return Err(error);
+            }
+        };
+        let imported_history = imported.then(|| crate::model::HistoryWindow { loaded_count: page.turns.len(),
+            has_more: page.has_more, next_cursor: page.next_cursor.clone() });
         let owned = self.owner(id).await;
         if !same_generation(self.rpcs.lock().unwrap().get(id), connection.generation) {
             return Err(OutcomeUnknown("连接在核对期间结束；原任务状态仍未知".into()).into());
         }
         // `d` was read before thread/read was sent.
         let (agent, requested_rev, requested_at) = (id.to_owned(), d.agent.rev, d.agent.last_seq);
-        self.stored_owned(owned, move |store| {
+        let merged = self.stored_owned(owned, move |store| {
             let id = agent.as_str();
             let changes = store.changed_items_since(id, requested_rev)?;
             let has_new_error = store.has_error_since(id, requested_at)?;
-            let turns = take_turns(&mut result["thread"]);
-            store.record_event(
+            let (sel, total) = snapshot_selection(store, id, &page.turns)?;
+            let turns = page.turns;
+            store.update_picking(
                 id,
                 "thread/reconciled",
                 &json!({"threadId":thread}),
+                sel,
                 |current| {
                     current.agent.connection_state = "connected".into();
                     if let Some(history) = imported_history { current.history = Some(history); }
                     if let Some(handoff) = &mut current.codex_handoff { handoff.missing_turns = None; }
-                    apply_snapshot_turns(current, &result["thread"], turns, &changes);
+                    let held = current.turns.len();
+                    apply_snapshot_turns(current, &result["thread"], Some(turns), &changes);
+                    if let Some(history) = &mut current.history { history.loaded_count = total + current.turns.len() - held; }
                     current.confirm_message_receipts();
                     if !has_new_error { clear_transport_error(current, &result["thread"]); }
                 },
+                finished_turns,
             )
         }).await?;
         self.settle_child_requests(id, &connection.rpc, connection.generation).await;
-        self.record_recovered_completions(id).await?;
+        self.record_recovered_completions(id, merged).await?;
         self.changed(id);
         Ok(())
     }
 
-    async fn record_recovered_completions(&self, id: &str) -> Result<()> {
+    /// Journals the completion of each finished Turn a snapshot merged that
+    /// has none (live Turns journal their own).
+    async fn record_recovered_completions(&self, id: &str, turns: Vec<Value>) -> Result<()> {
         let id = id.to_owned();
-        self.stored(move |store| {
-            // Live Turns journal their completion; the whole record is read
-            // only when a finished Turn has none (T-140).
-            if !store.has_unrecorded_completion(&id, &store.send_view(&id)?.turns)? {
-                return Ok(());
-            }
-            let after = store.detail(&id)?;
-            store.record_recovered_completions(&id, &after.turns)
-        }).await
+        self.stored(move |store| store.record_recovered_completions(&id, &turns)).await
     }
 
     /// Attach and reconcile only. This operation never sends a new model Turn.
@@ -1201,7 +1239,15 @@ impl Workspace {
             self.failed(id, &error).await;
             return Err(error);
         }
-        if read { Ok(Some(self.detail(id).await?)) } else { Ok(None) }
+        if read { Ok(Some(self.answer(id).await?)) } else { Ok(None) }
+    }
+
+    /// What an API call that answers with the record gets: the Agent with
+    /// its newest Turns as the client window shows them (`Store::client_detail`),
+    /// never a whole history (T-140).
+    pub(crate) async fn answer(&self, id: &str) -> Result<AgentDetail> {
+        let id = id.to_owned();
+        self.stored(move |store| store.client_detail(&id)).await
     }
 
     /// Close is a reversible Workspace lifecycle action, independent of native
@@ -1217,7 +1263,7 @@ impl Workspace {
         // Its state and each Turn's status, as the send view has them; the
         // whole record only where it is the answer (T-140).
         let mut view = self.send_view(id).await?;
-        if view.agent.closed_at.is_some() { return self.detail(id).await; }
+        if view.agent.closed_at.is_some() { return self.answer(id).await; }
         if view.agent.harness == "claude" {
             self.claude_close_runtime(id).await?;
         } else if view.agent.harness == "opencode" {
@@ -1277,7 +1323,7 @@ impl Workspace {
             }
             shutdown?;
         }
-        let closed = self.update_record(id, "agent/closed", json!({}), |d| {
+        self.record_update(id, "agent/closed", json!({}), Sel::Open, |d| {
             d.agent.closed_at = Some(now());
             d.agent.disconnected_at = None;
             d.agent.disconnect_unconfirmed = false;
@@ -1295,7 +1341,7 @@ impl Workspace {
             }
         }).await?;
         self.changed(id);
-        Ok(closed)
+        self.answer(id).await
     }
 
     pub async fn reopen_agent(self: &Arc<Self>, id: &str) -> Result<AgentDetail> {
@@ -1303,7 +1349,7 @@ impl Workspace {
         {
             let gate = self.gate(id).await;
             let _held = gate.lock().await;
-            if !self.mark_reopened(id).await? { return self.detail(id).await; }
+            if !self.mark_reopened(id).await? { return self.answer(id).await; }
         }
         // Native resume preserves the existing identity and session. A failed
         // reconnection leaves an open, retryable Agent with the original history.
@@ -1343,14 +1389,19 @@ impl Workspace {
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
         self.close_agent_locked(id).await?;
-        let closed = self.detail(id).await?;
-        if closed.agent.remote.is_some() {
+        let closed = self.listed(id).await?;
+        if closed.remote.is_some() {
             let workspace = self.stored(|store| store.workspace_id()).await?;
             // Older image-transfer builds had no dedicated cleanup marker.
             // Even a rejected/uncertain attempt may have installed a partial
             // batch before failing; pure drafts have no message/requested.
-            let image_attempted = closed.message_receipts.iter().any(|r| !r.input.images.is_empty());
-            crate::remote_images::cleanup(&self.data_dir, &workspace, &closed.agent, image_attempted).await?;
+            let agent = id.to_owned();
+            let image_attempted = self.stored(move |store| {
+                let mut any = false;
+                store.each_receipt(&agent, |r| any |= !r.input.images.is_empty())?;
+                Ok(any)
+            }).await?;
+            crate::remote_images::cleanup(&self.data_dir, &workspace, &closed, image_attempted).await?;
         }
         let agent = id.to_owned();
         self.stored(move |store| store.delete_closed_agent(&agent)).await?;
@@ -1360,7 +1411,7 @@ impl Workspace {
         let agent = id.to_owned();
         for source in self.stored(move |store| store.forked_to(&agent)).await? {
             let deleted = id.to_owned();
-            self.update_record(&source, "codex/forkReleased", json!({"agentId":id}), move |d| {
+            self.record_update(&source, "codex/forkReleased", json!({"agentId":id}), Sel::Meta, move |d| {
                 if let Some(handoff) = &mut d.codex_handoff {
                     if handoff.forked_to.as_ref().is_some_and(|link| link.agent_id == deleted) { handoff.forked_to = None; }
                 }
@@ -1433,7 +1484,9 @@ impl Workspace {
 
     async fn send_images_locked(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String], skills: &[SkillRef]) -> Result<Value> {
         self.ensure_rewind_settled(id).await?;
-        let detail = self.send_view(id).await?;
+        // Its checks read the metadata, receipts and Turn statuses: the open
+        // and newest Turns as the Agent holds them (`Sel::Named`).
+        let detail = self.view(id, Sel::Named(Vec::new())).await?;
         ensure_agent_open(&detail.agent)?;
         ensure_not_disconnected(&detail.agent)?;
         if detail.message_receipts.iter().any(|r| matches!(r.status.as_str(), "sending" | "uncertain")
@@ -1446,7 +1499,7 @@ impl Workspace {
         }
         let connection = self.ensure(id).await?;
         self.require_collaboration(id).await?;
-        let detail = self.send_view(id).await?;
+        let detail = self.view(id, Sel::Named(Vec::new())).await?;
         if turn_busy(&detail) {
             bail!("原会话仍在执行或等待回应，未发送新任务");
         }
@@ -1502,10 +1555,11 @@ impl Workspace {
                 let (agent, error) = (id.to_owned(), failure(&e));
                 let recorded = self.stored_owned(owned, move |store| {
                     if rejected {
-                        store.update(
+                        store.record_event(
                             &agent,
                             "turn/rejected",
                             &json!({"message":error.to_string()}),
+                            Sel::Meta,
                             |d| {
                                 if d.agent.status == "uncertain" {
                                     d.agent.status = "error".into();
@@ -1575,11 +1629,18 @@ impl Workspace {
         // looked up first, before anything that depends on the Agent's state.
         // A read failure, or this id with other content, is a plain error:
         // the first send may have gone, and the client keeps its id.
-        let detail = self.send_view(id).await?;
-        if let Some(previous) = detail.message_receipts.iter().find(|r| r.input.client_message_id == input.client_message_id) {
+        let (agent, client) = (id.to_owned(), input.client_message_id.clone());
+        if let Some(previous) = self.stored(move |store| store.receipt(&agent, &client)).await? {
             if previous.input != input || previous.skills != skills { bail!("同一消息编号不能提交不同的内容"); }
-            return Ok(previous.clone());
+            return Ok(previous);
         }
+        // What the checks read: the metadata, the open and newest Turns (as
+        // the Agent holds them: only their statuses are read), and the Turn
+        // of a native question it answers, whole.
+        let detail = match &input.question {
+            Some(source) => self.view(id, Sel::Turns(vec![source.turn_id.clone()])).await?,
+            None => self.view(id, Sel::Named(Vec::new())).await?,
+        };
         // No receipt: nothing is sent before message/requested is recorded,
         // so every refusal up to there says so. The client keeps its draft
         // and shows no delivery to confirm.
@@ -1600,8 +1661,8 @@ impl Workspace {
             if !input.images.is_empty() { crate::input_images::supported(&detail.agent)?; }
             anyhow::ensure!(!claude || input.question.is_none(), "Claude answers in the conversation");
             if let Some(form) = &input.clarification {
-                let previous = detail.message_receipts.iter().any(|r| r.status != "rejected" && r.input.clarification.as_ref()
-                    .is_some_and(|a| a.result_id == form.result_id && a.form_id == form.form_id));
+                let (agent, result, form_id) = (id.to_owned(), form.result_id.clone(), form.form_id.clone());
+                let previous = self.stored(move |store| store.answered(&agent, Some((&result, &form_id)), None)).await?;
                 if previous {
                     bail!("Answers to this form were already submitted. Check delivery; they were not sent again");
                 }
@@ -1618,7 +1679,8 @@ impl Workspace {
                         item["id"].as_str() == Some(&source.item_id) && item["type"] == "agentMessage"
                         && item["delivery"] == "async" && item["questions"].as_array().is_some_and(|q| !q.is_empty())));
                 if !exists { bail!("原问题已不存在，未发送回答"); }
-                if detail.message_receipts.iter().any(|r| r.input.question.as_ref() == Some(source) && r.status != "rejected") {
+                let (agent, turn, item) = (id.to_owned(), source.turn_id.clone(), source.item_id.clone());
+                if self.stored(move |store| store.answered(&agent, None, Some((&turn, &item)))).await? {
                     bail!("这条问题的回答已提交；不会重复发送");
                 }
             }
@@ -1643,7 +1705,7 @@ impl Workspace {
                 crate::codex_skills::verify(&connection.rpc, &detail.agent.cwd, &skills).await?;
             }
             if let Some(form) = &input.clarification {
-                self.validate_clarification(&self.detail(id).await?.agent, form, &input.text).await?;
+                self.validate_clarification(&self.listed(id).await?, form, &input.text).await?;
             }
             Ok::<_, anyhow::Error>(claude)
         }.await;
@@ -1684,7 +1746,8 @@ impl Workspace {
         let (agent, picked) = (id.to_owned(), input.client_message_id.clone());
         // Only this receipt is returned, as this commit left it (bound to its
         // native item if that arrived), without copying the rest of the record.
-        let receipt = self.stored(move |store| store.update_picking_meta(&agent, "message/receipt", &data, move |m| {
+        let named = picked.clone();
+        let receipt = self.stored(move |store| store.update_receipt_picking(&agent, "message/receipt", &data, &named, move |m| {
             let receipt = m.message_receipts.iter_mut().find(|r| r.input.client_message_id == client_message_id).unwrap();
             // A native item can confirm delivery before the RPC times out, and
             // a Claude connection can end (unknown) before its reply is recorded.
@@ -1703,8 +1766,8 @@ impl Workspace {
         // submission instead of trusting the browser's last inProgress snapshot.
         self.reconcile(id).await?;
         let detail = self.send_view(id).await?;
-        if let Some(receipt) = detail.message_receipts.iter().find(|r|
-            r.input.client_message_id == input.client_message_id && r.status == "accepted") {
+        let (agent, client) = (id.to_owned(), input.client_message_id.clone());
+        if let Some(receipt) = self.stored(move |store| store.receipt(&agent, &client)).await?.filter(|r| r.status == "accepted") {
             return Ok(json!({"turnId":receipt.turn_id}));
         }
         let active = detail.turns.iter().rev().find(|t| t["status"] == "inProgress")
@@ -1769,7 +1832,7 @@ impl Workspace {
             let instance = &remote.runtime.as_ref().context("远程运行实例尚未确认，图片未发送")?.instance_id;
             let refs = crate::remote_images::transfer(self.data_dir.clone(), &workspace, agent,
                 connection.generation, instance, images).await?;
-            let current = self.detail(id).await?.agent;
+            let current = self.listed(id).await?;
             anyhow::ensure!(same_generation(self.rpcs.lock().unwrap().get(id), connection.generation)
                 && crate::remote_images::destination(agent) == crate::remote_images::destination(&current),
                 "远程图片目标已变化，消息未发送；草稿保留");
@@ -1830,7 +1893,7 @@ impl Workspace {
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
         self.ensure_rewind_settled(id).await?;
-        let detail = self.detail(id).await?;
+        let detail = self.send_view(id).await?;
         ensure_agent_open(&detail.agent)?;
         anyhow::ensure!(detail.agent.harness == "codex", "仅 Codex 支持上下文配置");
         anyhow::ensure!(crate::codex_context::idle(&detail), "请等待当前轮次、审批和待确认消息结束，再应用上下文设置");
@@ -1842,7 +1905,7 @@ impl Workspace {
         anyhow::ensure!(native["thread"]["id"] == thread && native["thread"]["status"]["type"] == "idle",
             "Codex 尚未确认原会话空闲；设置已保存，未重新加载");
         if let Some(events) = &connection.events { events.drain().await?; }
-        anyhow::ensure!(crate::codex_context::idle(&self.detail(id).await?), "当前轮次或审批尚未结束；未重新加载");
+        anyhow::ensure!(crate::codex_context::idle(&self.send_view(id).await?), "当前轮次或审批尚未结束；未重新加载");
         let next = self.resume_context(id, connection, true).await?;
         self.changed(id);
         Ok(self.context_catalog(id, &next).await)
@@ -1862,7 +1925,7 @@ impl Workspace {
     }
 
     async fn resume_context(self: &Arc<Self>, id: &str, connection: Connection, unsubscribe: bool) -> Result<Connection> {
-        let detail = self.detail(id).await?;
+        let detail = self.send_view(id).await?;
         let thread = detail.agent.thread_id.as_deref().context("原会话 ID 未确认；不会创建新会话")?;
         crate::codex_context::check(&connection.rpc, &detail.agent.cwd, &detail.agent.settings).await?;
         // Native idle-thread resume cold-loads config only after the last
@@ -1875,7 +1938,8 @@ impl Workspace {
         let agent_id = id.to_owned();
         let imported = self.stored(move |store| store.is_codex_import(&agent_id)).await?;
         let mut params = resume_params(thread, &detail.agent);
-        if imported { params["excludeTurns"] = true.into(); }
+        // As every attach: Turns come from the recovery page (T-140).
+        params["excludeTurns"] = true.into();
         for (key, value) in initial_params.as_object().unwrap() { params[key] = value.clone(); }
         if unsubscribe {
             let response = connection.rpc.request("thread/unsubscribe", json!({"threadId":thread})).await?;
@@ -1886,11 +1950,11 @@ impl Workspace {
         // A live transport alone no longer proves the thread is attached.
         self.codex_context.require_resume(id, connection.generation);
         self.codex_context.awaiting_fresh_usage(id, connection.generation);
-        self.update_record(id, "codex/contextReload", json!({"threadId":thread}), |d| {
-            d.context_usage = None;
-            d.agent.connection_state = "unconfirmed".into();
+        self.record_meta(id, "codex/contextReload", json!({"threadId":thread}), |m| {
+            *m.context_usage = None;
+            m.agent.connection_state = "unconfirmed".into();
         }).await?;
-        let before = self.detail(id).await?;
+        let before = self.send_view(id).await?;
         let reply = connection.rpc.begin_request("thread/resume", params).await?;
         *connection.attachment.lock().await = Some(Attachment {
             agent: detail.agent.clone(), request_seq: before.agent.last_seq, request_rev: before.agent.rev,
@@ -1905,7 +1969,7 @@ impl Workspace {
         validate_settings(&settings)?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        let agent = self.detail(id).await?.agent;
+        let agent = self.listed(id).await?;
         ensure_agent_open(&agent)?;
         anyhow::ensure!(agent.harness == "codex", "Claude 当前不支持 Codex 推理强度或权限设置；现有 Session 保持原配置");
         // Clearing only the saved context overrides is an offline recovery
@@ -1918,16 +1982,16 @@ impl Workspace {
             && model == agent.model && settings == automatic {
             let owned = self.owner(id).await;
             let agent = id.to_owned();
-            let detail = self.stored_owned(owned, move |store| store.update(&agent, "agent/settings",
-                &json!({"model":model,"settings":settings}), |d| {
+            self.stored_owned(owned, move |store| store.update_meta(&agent, "agent/settings",
+                &json!({"model":model,"settings":settings}), |m| {
                     // Preserve the latest unrelated fields, including any
                     // effort learned from a concurrent native notification.
-                    d.agent.settings.context_window = None;
-                    d.agent.settings.auto_compact_token_limit = None;
-                    if let Some(usage) = &mut d.context_usage { usage.stale = true; }
+                    m.agent.settings.context_window = None;
+                    m.agent.settings.auto_compact_token_limit = None;
+                    if let Some(usage) = m.context_usage { usage.stale = true; }
                 })).await?;
             self.changed(id);
-            return Ok(detail.agent);
+            return self.listed(id).await;
         }
         let connection = self.settings_connection(id).await?;
         let catalog = model_catalog(&connection).await?;
@@ -1941,7 +2005,7 @@ impl Workspace {
         crate::codex_context::check(&connection.rpc, &agent.cwd, &settings).await?;
 
         if settings.permission_preset.is_some() {
-            let agent = self.detail(id).await?.agent;
+            let agent = self.listed(id).await?;
             let (config, requirements) = permission_config(&connection.rpc, &agent.cwd).await?;
             permissions::resolve(&settings, &config, &agent.cwd)?.check_requirements(&requirements)?;
         }
@@ -1949,15 +2013,15 @@ impl Workspace {
         let owned = self.owner(id).await;
         if !same_generation(self.rpcs.lock().unwrap().get(id), connection.generation) { bail!("连接已变化，设置未保存，请重试"); }
         let agent = id.to_owned();
-        let detail = self.stored_owned(owned, move |store| store.update(&agent, "agent/settings", &json!({"model":model,"settings":settings}), |d| {
-            if d.agent.model != model || crate::codex_context::Overrides::from(&d.agent.settings) != crate::codex_context::Overrides::from(&settings) {
-                if let Some(usage) = &mut d.context_usage { usage.stale = true; }
+        self.stored_owned(owned, move |store| store.update_meta(&agent, "agent/settings", &json!({"model":model,"settings":settings}), |m| {
+            if m.agent.model != model || crate::codex_context::Overrides::from(&m.agent.settings) != crate::codex_context::Overrides::from(&settings) {
+                if let Some(usage) = m.context_usage { usage.stale = true; }
             }
-            d.agent.model = model;
-            d.agent.settings = settings;
+            m.agent.model = model;
+            m.agent.settings = settings;
         })).await?;
         self.changed(id);
-        Ok(detail.agent)
+        self.listed(id).await
     }
 
     /// The user's explicit `/compact` for a Codex Agent: Codex's own context
@@ -2212,8 +2276,8 @@ impl Workspace {
                         "message":"Yuzuno only handles command and file approvals from sub-agents; no action was authorized"}}));
                 }
                 let path = child["path"].as_str().unwrap_or("子 Agent");
-                let _ = self.store.update(id, "runtime/error", &json!({"method":method,"threadId":event_thread}), |d| {
-                    d.agent.error = Some(format!(
+                let _ = self.store.update_meta(id, "runtime/error", &json!({"method":method,"threadId":event_thread}), |m| {
+                    m.agent.error = Some(format!(
                         "子 Agent {path} 发来 {method} 请求，已拒绝：本版只在父 Agent 中处理子 Agent 的命令和文件审批，未授权任何操作。"
                     ));
                 });
@@ -2233,12 +2297,12 @@ impl Workspace {
                     let _=connection.rpc.try_send(json!({"id":message["id"],"error":{"code":-32601,
                         "message":"This client only handles requests for its bound thread; no action was authorized"}}));
                 }
-                let _ = self.store.update(
+                let _ = self.store.update_meta(
                     id,
                     "runtime/error",
                     &json!({"method":method,"threadId":event_thread}),
-                    |d| {
-                        d.agent.error = Some(
+                    |m| {
+                        m.agent.error = Some(
                             "收到其他或未知会话的请求，已拒绝；本版仅支持当前 Agent 绑定的会话。"
                                 .into(),
                         );
@@ -2386,11 +2450,9 @@ impl Workspace {
                         } else {
                             self.store.update_meta(id, method, &scoped, change)
                         }
-                    } else if matches!(method, "thread/status/changed" | "turn/started" | "turn/completed"
-                        | "mcpServer/startupStatus/updated") {
-                        self.store.record_applied(id, method, method, &scoped)
                     } else {
-                        self.store.record_event(id, method, &scoped, |d| d.apply(method, &scoped))
+                        // The Turn it names and the open ones (T-140).
+                        self.store.record_applied(id, method, method, &scoped)
                     };
                 }
                 crate::store::Route::Ignored => return,
@@ -2817,14 +2879,6 @@ fn apply_snapshot(d: &mut AgentDetail, thread: &Value, changes: &crate::store::C
     apply_snapshot_turns(d, thread, thread["turns"].as_array().cloned(), changes);
 }
 
-/// A snapshot's Turns, taken out of it for `apply_snapshot_turns`.
-fn take_turns(thread: &mut Value) -> Option<Vec<Value>> {
-    match thread.get_mut("turns").map(Value::take) {
-        Some(Value::Array(turns)) => Some(turns),
-        _ => None,
-    }
-}
-
 /// A Value's `items`, taken out of it.
 fn take_items(value: &mut Value) -> Option<Vec<Value>> {
     match value.get_mut("items").map(Value::take) {
@@ -2874,7 +2928,10 @@ fn apply_snapshot_turns(d: &mut AgentDetail, thread: &Value, turns: Option<impl 
                         let saved = existing["items"].as_array_mut().unwrap();
                         for item in items {
                             if let Some(old) = saved.iter_mut().find(|i| i["id"] == item["id"]) {
-                                crate::conversation_time::replace_item_owned(old, item);
+                                // An unchanged Item stays as it was read.
+                                if !crate::record_rows::holds(old, &item) {
+                                    crate::conversation_time::replace_item_owned(old, item);
+                                }
                             } else {
                                 saved.push(item);
                             }
@@ -2895,7 +2952,9 @@ fn apply_snapshot_turns(d: &mut AgentDetail, thread: &Value, turns: Option<impl 
                                 let terminal_item = matches!(item["status"].as_str(), Some("completed" | "failed" | "declined" | "interrupted"))
                                     && !matches!(old["status"].as_str(), Some("completed" | "failed" | "declined" | "interrupted"));
                                 let changed = item["id"].as_str().is_some_and(|id| newer_items.contains(id));
-                                if newly_finished || terminal_item || !changed { crate::conversation_time::replace_item_owned(old, item); }
+                                if (newly_finished || terminal_item || !changed) && !crate::record_rows::holds(old, &item) {
+                                    crate::conversation_time::replace_item_owned(old, item);
+                                }
                             } else {
                                 saved.push(item);
                             }
@@ -2943,6 +3002,22 @@ fn apply_snapshot_turns(d: &mut AgentDetail, thread: &Value, turns: Option<impl 
     }
     if let Some(history) = &mut d.history { history.loaded_count = d.turns.len(); }
     d.refresh_snapshot_evidence();
+}
+
+/// The Turns a snapshot merge works on: those the snapshot has, those a
+/// pending request names (a stale one of a Turn that ended is dropped), with
+/// the open and newest ones as the Agent holds them (`Sel::Named`); and how
+/// many Turns the record has.
+fn snapshot_selection(store: &Store, id: &str, incoming: &[Value]) -> Result<(Sel, usize)> {
+    let mut names: Vec<String> = incoming.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
+    names.extend(store.pending(id)?.iter().filter_map(|p| p.params["turnId"].as_str().map(str::to_owned)));
+    Ok((Sel::Named(names), store.turn_count(id)?))
+}
+
+/// The Turns of a committed slice as `Store::record_recovered_completions`
+/// reads them: each one's ID and status.
+fn finished_turns(d: &AgentDetail) -> Vec<Value> {
+    d.turns.iter().map(|t| json!({"id":t["id"],"status":t["status"]})).collect()
 }
 
 /// Items of a running Turn that may still be streaming: not terminal, and

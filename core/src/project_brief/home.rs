@@ -374,10 +374,12 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
     };
     ensure!(!input.text.trim().is_empty() || chosen.is_some(), "Write a reply or choose an option");
     let text = compose(&name, section.as_ref(), chosen.as_ref(), &input.text);
-    let detail = ws.detail(&input.agent_id).await?;
+    let detail = ws.send_view(&input.agent_id).await?;
+    let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
+    let previous = ws.stored(move |store| store.receipt(&agent, &client)).await?;
     // A retry keeps its first input, whatever Turn is running now.
-    let message = match detail.message_receipts.iter().find(|r| r.input.client_message_id == input.client_message_id) {
-        Some(previous) if previous.input.text == text => previous.input.clone(),
+    let message = match previous {
+        Some(previous) if previous.input.text == text => previous.input,
         Some(_) => bail!("This clientMessageId was already used for another message"),
         None => MessageInput {
             client_message_id: input.client_message_id.clone(),
@@ -424,10 +426,11 @@ async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, ver
         Ok((workspace, name.clone(), sections::find(&db, &id, &wanted, Some(version))?))
     }).await?;
     let text = compose_card(&workspace, &name, &project, &key, version, &title, &input.text);
-    let detail = ws.detail(&input.agent_id).await?;
-    if let Some(previous) = detail.message_receipts.iter().find(|r| r.input.client_message_id == input.client_message_id) {
+    let detail = ws.send_view(&input.agent_id).await?;
+    let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
+    if let Some(previous) = ws.stored(move |store| store.receipt(&agent, &client)).await? {
         ensure!(previous.input.text == text, "This clientMessageId was already used for another message");
-        return ws.send_message(&input.agent_id, previous.input.clone()).await;
+        return ws.send_message(&input.agent_id, previous.input).await;
     }
     let refused = |message: String| anyhow::Error::new(crate::collaboration_credentials::MessageNotSubmitted(anyhow::anyhow!(message)));
     let Some(row) = shown else {

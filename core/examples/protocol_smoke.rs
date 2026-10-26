@@ -6,6 +6,8 @@
 //! A successful probe proves native protocol handling and persistence, not a
 //! successful model response (the test deliberately has no credentials).
 
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};

@@ -24,7 +24,7 @@ impl Store {
             {
                 continue;
             }
-            let detail = self.detail(&agent.id)?;
+            let detail = self.send_view(&agent.id)?;
             if let Some(turn) = active_turn(&detail) {
                 if let Some(session) = session(&detail) {
                     targets.push((agent, turn.to_owned(), session.to_owned()));

@@ -367,8 +367,8 @@ impl Workspace {
 
     async fn settle_claude_quota_resume(self: &Arc<Self>, i: &Intent) -> Result<()> {
         let client = format!("quota-resume-{}", i.id);
-        let receipt = self.detail(&i.agent_id).await.ok()
-            .and_then(|d| d.message_receipts.into_iter().find(|r| r.input.client_message_id == client));
+        let agent = i.agent_id.clone();
+        let receipt = self.stored(move |store| store.receipt(&agent, &client)).await.ok().flatten();
         let (id, now) = (i.id.clone(), now());
         let _ = match receipt {
             // Never requested: nothing went, so it waits again.
@@ -391,7 +391,7 @@ impl Workspace {
         let (id, now) = (agent.to_owned(), now());
         let armed = self.stored(move |s| s.arm_quota_resume(&id, &stop, now)).await?;
         if let Some(i) = &armed {
-            self.update_record(agent, "claude/autoContinue", json!({"intent":i}), |_| {}).await?;
+            self.record_meta(agent, "claude/autoContinue", json!({"intent":i}), |_| {}).await?;
             if i.state == "waiting" {
                 schedule(self, i);
             }
@@ -413,7 +413,7 @@ impl Workspace {
             return Ok(i);
         }
         let agent = i.agent_id.clone();
-        let cancel = match self.detail(&agent).await {
+        let cancel = match self.send_view(&agent).await {
             Err(_) => Some("The agent was deleted"),
             Ok(d) => {
                 let (_, _, enabled) = self.stored({ let a = agent.clone(); move |s| s.auto_continue(&a) }).await?;
@@ -434,8 +434,8 @@ impl Workspace {
         }
         let key = i.id.clone();
         let done = self.stored(move |s| s.quota_resume(&key)).await?.context("No such automatic continue")?;
-        if self.detail(&agent).await.is_ok() {
-            self.update_record(&agent, "claude/autoContinue", json!({"intent":done}), |_| {}).await?;
+        if self.listed(&agent).await.is_ok() {
+            self.record_meta(&agent, "claude/autoContinue", json!({"intent":done}), |_| {}).await?;
         }
         self.changed(&agent);
         Ok(done)
@@ -449,7 +449,7 @@ impl Workspace {
             Ok(owned && s.move_quota_resume(&id, "waiting", "cancelled", Some(reason), None, at)?)
         }).await?;
         if moved {
-            self.update_record(agent, "claude/autoContinue", json!({"cancelled":intent_id,"reason":reason}), |_| {}).await?;
+            self.record_meta(agent, "claude/autoContinue", json!({"cancelled":intent_id,"reason":reason}), |_| {}).await?;
             self.changed(agent);
         }
         Ok(())
@@ -458,7 +458,7 @@ impl Workspace {
     /// What the UI shows. A waiting intent that may no longer send is
     /// cancelled here, so it is never shown as waiting.
     pub async fn claude_auto_continue(self: &Arc<Self>, agent: &str) -> Result<View> {
-        let d = self.detail(agent).await?;
+        let d = self.send_view(agent).await?;
         anyhow::ensure!(d.agent.harness == "claude", "Automatic continue is for Claude agents");
         let a = agent.to_owned();
         let ((workspace, own, enabled), latest) = self.stored(move |s| Ok((s.auto_continue(&a)?, s.latest_quota_resume(&a)?))).await?;
@@ -494,7 +494,7 @@ impl Workspace {
                 for i in waiting.iter().filter(|i| i.agent_id == id) {
                     self.cancel_claude_quota_resume(&id, &i.id, "Automatic continue was turned off").await?;
                 }
-            } else if let Some(stop) = self.detail(&id).await.ok().and_then(|d| usage_limit_stop(&d, now)) {
+            } else if let Some(stop) = self.send_view(&id).await.ok().and_then(|d| usage_limit_stop(&d, now)) {
                 self.arm_claude_quota_resume(&id, stop).await?;
             }
         }
@@ -561,7 +561,7 @@ async fn agent_view(ApiState(ws): ApiState<Arc<Workspace>>, Path(id): Path<Strin
 
 async fn set_agent_setting(ApiState(ws): ApiState<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<Setting>) -> Result<Json<View>, ApiError> {
     let _permit = ws.admission.enter_work()?;
-    if ws.detail(&id).await?.agent.harness != "claude" {
+    if ws.listed(&id).await?.harness != "claude" {
         return Err(anyhow::anyhow!("Automatic continue is for Claude agents").into());
     }
     ws.set_claude_auto_continue(Some(&id), input.enabled).await?;

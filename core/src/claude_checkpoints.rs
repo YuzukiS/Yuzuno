@@ -139,7 +139,10 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        let d = self.detail(id).await?;
+        // The Turn of the message, found by its native uuid (T-140).
+        let (agent, uuid) = (id.to_owned(), message.to_owned());
+        let holding = self.stored(move |store| store.keyed_turns(&agent, "uuid", Some(&uuid))).await?;
+        let d = self.view(id, crate::store::Sel::Turns(holding)).await?;
         ensure_agent_open(&d.agent)?;
         if d.agent.harness != "claude" || d.agent.remote.is_some() {
             bail!("File checkpoints are available for Claude Agents on this machine");
@@ -148,7 +151,7 @@ impl Workspace {
         ensure_between_turns(&d)?;
         let c = self.claude_ensure(id).await?;
         let native = c.bridge.request(json!({"op":"rewind_files","userMessageId":message,"dryRun":true})).await?;
-        let session = self.detail(id).await?.agent.claude_session_id;
+        let session = self.listed(id).await?.claude_session_id;
         let mut paths = changed_files(&native);
         let truncated = paths.len() > MAX_FILES;
         paths.truncate(MAX_FILES);
@@ -187,7 +190,7 @@ impl Workspace {
         if preview.at.elapsed() > PREVIEW_FOR {
             return Ok(stale("expired", vec![]));
         }
-        let d = self.detail(id).await?;
+        let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         ensure_between_turns(&d)?;
         let current = self.claudes.lock().unwrap().get(id).cloned();
@@ -230,7 +233,7 @@ impl Workspace {
             "status":status, "userMessageId":preview.message, "files":files, "remaining":remaining,
             "skippedLinks":native["skippedLinks"], "error":native["error"], "checkError":check_error, "restoredAt":now(),
         });
-        self.update_record(id, "claude/filesRestored", result.clone(), |_| {}).await?;
+        self.record_meta(id, "claude/filesRestored", result.clone(), |_| {}).await?;
         self.changed(id);
         Ok(result)
     }

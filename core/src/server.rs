@@ -784,7 +784,7 @@ async fn set_agent_project(State(ws): State<Arc<Workspace>>, Path(id): Path<Stri
     let agent = id.clone();
     ws.stored(move |store| store.set_agent_project(&agent, p.project_id.as_deref())).await?;
     ws.changed(&id);
-    Ok(Json(serde_json::to_value(ws.detail(&id).await?.agent)?))
+    Ok(Json(serde_json::to_value(ws.listed(&id).await?)?))
 }
 async fn machines(State(ws): State<Arc<Workspace>>) -> ApiResult<Json<Value>> {
     let (mut checks, machines) = ws.stored(|store| Ok((store.machine_checks()?, store.machines()?))).await?;
@@ -1122,17 +1122,17 @@ fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<Strin
     Option::<String>::deserialize(d).map(Some)
 }
 async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<SettingsInput>) -> ApiResult<Json<Value>> {
-    let harness = ws.detail(&id).await?.agent.harness;
+    let harness = ws.listed(&id).await?.harness;
     if harness == "opencode" {
         return Err(anyhow::anyhow!("OpenCode Agent 的模型和权限来自 OpenCode 自己的配置，这里不能修改").into());
     }
     let agent = if harness == "claude" {
         if input.settings.is_some() { return Err(anyhow::anyhow!("Claude 模型设置不接受 Codex 权限或推理参数").into()); }
-        let mut detail = ws.claude_update_settings(&id, input.model, input.effort).await?;
+        let mut agent = ws.claude_update_settings(&id, input.model, input.effort).await?;
         if let Some(mode) = input.permission_mode {
-            detail = ws.claude_set_permission_mode(&id, &mode).await?;
+            agent = ws.claude_set_permission_mode(&id, &mode).await?;
         }
-        detail.agent
+        agent
     } else {
         if input.permission_mode.is_some() { return Err(anyhow::anyhow!("Claude 权限模式不适用于 Codex").into()); }
         if input.effort.is_some() { return Err(anyhow::anyhow!("Codex 推理强度通过设置传入").into()); }
@@ -1279,7 +1279,7 @@ async fn artifact(
     State(ws): State<Arc<Workspace>>,
     Query(p): Query<ArtifactQuery>,
 ) -> ApiResult<Response> {
-    let a = ws.detail(&p.agent_id).await?.agent;
+    let a = ws.listed(&p.agent_id).await?;
     let (path, bytes) = if let Some(remote_agent) = &a.remote {
         (PathBuf::from(&p.path), remote::read_artifact(&remote_agent.machine, &a.cwd, &p.path).await?)
     } else {

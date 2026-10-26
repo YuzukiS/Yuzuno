@@ -4,8 +4,8 @@
 //!
 //! For each Agent whose record is held (`Store::held_agents`), it counts the
 //! rows and sums the bytes the database stores for that record: the metadata
-//! row (`agents.data`; with layout 0, the whole record, and no other rows),
-//! its Turns, its Items' own data and its payloads (the full large fields).
+//! row (`agents.data`), its Turns, its Items' own data and its payloads (the
+//! full large fields, with the chunk rows of streamed fields' starts).
 //! These four are disjoint, and are the record. The previews kept for
 //! clients are a shorter copy of payloads, so they are given apart and are
 //! not part of the record. The journal, originals kept from before a
@@ -55,7 +55,8 @@ pub struct Part {
 /// What one held Agent's stored record is made of.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Composition {
-    /// 1: rows; 0: the whole record in its metadata row.
+    /// 1: rows (the only layout of the session store, T-140; 0 was the whole
+    /// record in its metadata row).
     pub layout: i64,
     pub metadata: Part,
     pub turns: Part,
@@ -164,14 +165,17 @@ fn measure(db: &Connection, held: &[HeldAgent], budget: Duration) -> Result<Vec<
 /// large is read only as `octet_length(column)`.
 pub(crate) fn one(db: &Connection, id: &str) -> rusqlite::Result<Option<Composition>> {
     let Some((layout, metadata)) = db.query_row(
-        "SELECT layout, octet_length(data) FROM agents WHERE id=?1", params![id],
+        "SELECT 1, octet_length(data) FROM agents WHERE id=?1", params![id],
         |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
     ).optional()? else {
         return Ok(None);
     };
     let pair = |sql: &str| db.query_row(sql, params![id], |r| Ok(Part { rows: count(r.get(0)?), bytes: count(r.get(1)?) }));
     let turns = pair("SELECT count(*), coalesce(sum(octet_length(data)),0) FROM agent_turns WHERE agent_id=?1")?;
-    let payloads = pair("SELECT count(*), coalesce(sum(octet_length(data)),0) FROM agent_payloads WHERE agent_id=?1")?;
+    let payloads = pair("SELECT (SELECT count(*) FROM agent_payloads WHERE agent_id=?1)
+        + (SELECT count(*) FROM agent_stream_chunks WHERE agent_id=?1),
+        (SELECT coalesce(sum(octet_length(data)),0) FROM agent_payloads WHERE agent_id=?1)
+        + (SELECT coalesce(sum(octet_length(data)),0) FROM agent_stream_chunks WHERE agent_id=?1)")?;
     let (items, items_with_payloads, previews) = db.query_row(
         "SELECT count(*), coalesce(sum(octet_length(data)),0), count(octet_length(previews)),
             coalesce(sum(octet_length(previews)),0), coalesce(sum(payloads > 0),0) FROM agent_items WHERE agent_id=?1",

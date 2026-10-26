@@ -1,5 +1,7 @@
 #![cfg(unix)]
 //! Explicit native fork after another client's writer refuses a resume.
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use serde_json::Value;
 use std::{collections::BTreeMap, os::unix::fs::PermissionsExt, sync::Arc};
 use yuzuno_workspace::{

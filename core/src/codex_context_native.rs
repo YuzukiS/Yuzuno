@@ -13,10 +13,30 @@ import json, sys
 thread = {'id':'thread','status':{'type':'active'},'turns':[{'id':'active','status':'inProgress','items':[]}]}
 def emit(value): print(json.dumps(value), flush=True)
 def usage(turn, tokens): emit({'method':'thread/tokenUsage/updated','params':{'threadId':'thread','turnId':turn,'tokenUsage':{'last':{'totalTokens':tokens},'modelContextWindow':258400}}})
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
     request = json.loads(line)
     if 'id' not in request: continue
     method, result = request.get('method'), {}
+    if method=='thread/turns/list': sys.stdout.ids.add(request['id']); method='thread/read'
     if method == 'thread/resume':
         usage('old', 1000)
         result = {'thread':thread,'model':'test-model'}
@@ -72,10 +92,30 @@ import json, sys
 resumes, pending = 0, None
 thread = {'id':'thread','status':{'type':'idle'},'turns':[{'id':'prior','status':'completed','items':[]}]}
 def emit(value): print(json.dumps(value), flush=True)
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
     request = json.loads(line)
     if 'id' not in request: continue
     method, result = request.get('method'), {}
+    if method=='thread/turns/list': sys.stdout.ids.add(request['id']); method='thread/read'
     if method == 'thread/resume':
         resumes += 1
         if resumes == 2:
@@ -135,10 +175,30 @@ async fn the_codex_model_catalog_reads_the_agent_and_its_send_view_not_its_histo
 import json, sys
 thread = {'id':'thread','status':{'type':'idle'},'turns':[{'id':'prior','status':'completed','items':[]}]}
 def emit(value): print(json.dumps(value), flush=True)
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
     request = json.loads(line)
     if 'id' not in request: continue
     method, result = request.get('method'), {}
+    if method=='thread/turns/list': sys.stdout.ids.add(request['id']); method='thread/read'
     if method == 'thread/resume': result = {'thread':thread,'model':'test-model'}
     elif method == 'thread/read': result = {'thread':thread}
     elif method == 'model/list': result = {'data':[{'id':'test-model','model':'test-model'}],'nextCursor':None}
@@ -190,10 +250,30 @@ import json, sys
 thread = {'id':'thread','status':{'type':'active'},'turns':[{'id':'active','status':'inProgress','items':[]}]}
 interrupts = []
 def emit(value): print(json.dumps(value), flush=True)
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
     request = json.loads(line)
     if 'id' not in request: continue
     method, result = request.get('method'), {}
+    if method=='thread/turns/list': sys.stdout.ids.add(request['id']); method='thread/read'
     if method == 'thread/resume': result = {'thread':thread,'model':'test-model'}
     elif method == 'thread/read': result = {'thread':thread}
     elif method == 'turn/interrupt': interrupts.append(request['params'])

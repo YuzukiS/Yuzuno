@@ -25,6 +25,7 @@ use crate::{
     model::{ensure_agent_open, now, AgentDetail, PendingRequest},
     opencode::{self, Events, Launch, Mcp, MessageId, Reply, Server, Snapshot, Submission},
     rpc::OutcomeUnknown,
+    store::Sel,
     workspace::Workspace,
 };
 use anyhow::{anyhow, bail, ensure, Context, Result};
@@ -136,7 +137,7 @@ impl Workspace {
             let gate = ws.gate(&id).await;
             let _held = gate.lock().await;
             // A close or delete that won the gate first is the user's.
-            if !ws.detail(&id).await.is_ok_and(|d| d.agent.closed_at.is_none()) {
+            if !ws.listed(&id).await.is_ok_and(|agent| agent.closed_at.is_none()) {
                 return;
             }
             if let Err(error) = ws.opencode_ensure(&id).await {
@@ -166,7 +167,7 @@ impl Workspace {
             self.failed(id, &error).await;
             return Err(error);
         }
-        if read { Ok(Some(self.detail(id).await?)) } else { Ok(None) }
+        if read { Ok(Some(self.answer(id).await?)) } else { Ok(None) }
     }
 
     /// Under the Agent gate: the live connection, or a new OpenCode process
@@ -236,7 +237,7 @@ impl Workspace {
         let (agent, data) = (id.to_owned(), json!({"sessionId":session,"generation":generation,"version":opencode::VERSION}));
         // Compared as before, since it changes Turns, without returning a copy
         // of the record nobody reads (T-140).
-        let ready = self.stored_owned(owned, move |store| store.record_event(&agent, "opencode/ready", &data, move |d| {
+        let ready = self.stored_owned(owned, move |store| store.record_event(&agent, "opencode/ready", &data, Sel::Tail(TAIL), move |d| {
             d.agent.connection_state = "connected".into();
             d.agent.status = "idle".into();
             d.agent.error = None;
@@ -317,7 +318,7 @@ impl Workspace {
         let (agent, generation, session) = (id.to_owned(), c.generation, c.session.clone());
         let data = json!({"generation":generation,"messages":snapshot.messages.as_array().map_or(0, Vec::len),
             "status":snapshot.status,"permissions":snapshot.permissions.len(),"questions":snapshot.questions.len()});
-        self.stored_owned(owned, move |store| store.update(&agent, "opencode/resynced", &data, move |d| {
+        self.stored_owned(owned, move |store| store.record_event(&agent, "opencode/resynced", &data, Sel::Tail(TAIL), move |d| {
             apply_snapshot(d, generation, &session, &snapshot);
             refresh_status(d);
         }).map(drop)).await?;
@@ -352,7 +353,7 @@ impl Workspace {
         let written = match kind {
             // Text as it streams: the completed part replaces it.
             "message.part.delta" => return,
-            kind if projected(kind) => self.store.record_event(id, &journal, event, |d| {
+            kind if projected(kind) => self.store.record_event(id, &journal, event, Sel::Turns(event_turns(event)), |d| {
                 project(d, generation, &c.session, event);
                 refresh_status(d);
             }).map(drop),
@@ -375,7 +376,7 @@ impl Workspace {
         let Some(_removed) = removed else { return };
         let message = format!("OpenCode 连接已结束（{reason}）；执行完成情况未获确认，不会重发。重连会从同一 Session 读取它保存的历史。");
         let (agent, data) = (id.to_owned(), json!({"error":message,"generation":generation}));
-        let _ = self.stored_owned(owned, move |store| store.update(&agent, "runtime/error", &data, move |d| {
+        let _ = self.stored_owned(owned, move |store| store.record_event(&agent, "runtime/error", &data, Sel::Open, move |d| {
             let busy = d.turns.iter().any(|t| t["status"] == "inProgress");
             ended(d, &message);
             d.agent.connection_state = "disconnected".into();
@@ -439,7 +440,8 @@ impl Workspace {
             // It was never sent, or OpenCode refused it. Its receipt says so,
             // even if a connection that ended meanwhile settled it as unknown.
             let (client, message) = (client.to_owned(), error.to_string());
-            let recorded = self.record_meta(id, "opencode/notSent", json!({"clientMessageId":client,"error":message}), move |m| {
+            let named = client.clone();
+            let recorded = self.record_receipt(id, "opencode/notSent", json!({"clientMessageId":client,"error":message}), &named, move |m| {
                 if let Some(receipt) = m.message_receipts.iter_mut().find(|r| r.input.client_message_id == client) {
                     if matches!(receipt.status.as_str(), "sending" | "unknown") {
                         receipt.status = "rejected".into();
@@ -468,7 +470,8 @@ impl Workspace {
         // Recorded before it is sent: its ID is the only way to learn what
         // became of it.
         let (requested, client, content) = (turn.clone(), client_id.map(str::to_owned), json!([{"type":"text","text":text}]));
-        self.record_update(id, "opencode/turnRequested", json!({"turnId":turn,"messageId":turn,"clientMessageId":client_id,"text":text}), move |d| {
+        self.record_update(id, "opencode/turnRequested", json!({"turnId":turn,"messageId":turn,"clientMessageId":client_id,"text":text}),
+            Sel::Turns(vec![turn.clone()]), move |d| {
             let entry = d.turn_mut(&requested);
             entry["status"] = "inProgress".into();
             entry["items"] = json!([{"id":format!("{requested}:input"),"type":"userMessage","content":content,"nativeMessageId":requested}]);
@@ -492,7 +495,7 @@ impl Workspace {
         if let Some(message) = refused {
             *sent = false;
             let (failed, error) = (turn.clone(), message.clone());
-            self.record_update(id, "opencode/promptRefused", json!({"turnId":turn,"error":message}), move |d| {
+            self.record_update(id, "opencode/promptRefused", json!({"turnId":turn,"error":message}), Sel::Turns(vec![turn.clone()]), move |d| {
                 let entry = d.turn_mut(&failed);
                 entry["status"] = "failed".into();
                 entry["error"] = json!({"message":error});
@@ -508,7 +511,7 @@ impl Workspace {
         }
         let detail = match &submitted { Ok(Submission::Unknown(reason)) => reason.clone(), _ => "HTTP 204".into() };
         let unconfirmed = turn.clone();
-        self.record_update(id, "opencode/deliveryUnconfirmed", json!({"turnId":turn,"submission":detail}), move |d| {
+        self.record_update(id, "opencode/deliveryUnconfirmed", json!({"turnId":turn,"submission":detail}), Sel::Turns(vec![turn.clone()]), move |d| {
             d.turn_mut(&unconfirmed)["deliveryUnconfirmed"] = true.into();
         }).await?;
         self.changed(id);
@@ -523,7 +526,7 @@ impl Workspace {
             let confirmed = self.send_view(id).await.is_ok_and(|d| d.turns.iter().any(|t| t["id"] == message.as_str() && t["_opencodeConfirmed"] == true));
             if confirmed || c.server.message(&c.session, message).await.is_ok_and(|m| m.is_some()) {
                 let turn = message.as_str().to_owned();
-                let _ = self.record_update(id, "opencode/messageConfirmed", json!({"turnId":turn}), move |d| confirm(d, &turn)).await;
+                let _ = self.record_update(id, "opencode/messageConfirmed", json!({"turnId":turn}), Sel::Turns(vec![turn.clone()]), move |d| confirm(d, &turn)).await;
                 self.changed(id);
                 return true;
             }
@@ -541,7 +544,7 @@ impl Workspace {
             .context("没有正在执行的 OpenCode Turn")?.to_owned();
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode 连接已断开，无法确认中断")?;
         let requested = turn.clone();
-        self.record_update(id, "opencode/interruptRequested", json!({"turnId":turn}), move |d| {
+        self.record_update(id, "opencode/interruptRequested", json!({"turnId":turn}), Sel::Turns(vec![turn.clone()]), move |d| {
             d.turn_mut(&requested)["interruptRequested"] = true.into();
         }).await?;
         self.changed(id);
@@ -557,9 +560,8 @@ impl Workspace {
         let connection = self.opencodes.lock().unwrap().get(id).cloned();
         let (agent, request, reply) = (id.to_owned(), request_id.to_owned(), response.clone());
         let checked = self.stored_owned(owned, move |store| {
-            let d = store.detail(&agent)?;
-            ensure_agent_open(&d.agent)?;
-            let Some(p) = d.pending.iter().find(|p| p.id == request).cloned() else {
+            ensure_agent_open(&store.agent(&agent)?)?;
+            let Some(p) = store.pending(&agent)?.into_iter().find(|p| p.id == request) else {
                 return Ok(None);
             };
             ensure!(!p.stale && p.params["_responseSent"] != true, "这个请求已经回答或已失效；不会再次发送");
@@ -568,8 +570,8 @@ impl Workspace {
             ensure!(p.params["_runtimeGeneration"] == c.generation && p.params["_opencodeSession"] == c.session.as_str(),
                 "这个请求属于已经结束的 OpenCode 连接；不会把回答发给新的进程");
             let answer = answer(&p, &reply)?;
-            store.update(&agent, "request/replied", &json!({"requestId":request}), |d| {
-                if let Some(p) = d.pending.iter_mut().find(|p| p.id == request) {
+            store.update_meta(&agent, "request/replied", &json!({"requestId":request}), |m| {
+                if let Some(p) = m.pending.iter_mut().find(|p| p.id == request) {
                     p.params["_responseSent"] = true.into();
                 }
             })?;
@@ -588,7 +590,7 @@ impl Workspace {
                 let owned = self.owner(id).await;
                 if self.opencode_current(id, c.generation).is_some() {
                     let agent = id.to_owned();
-                    self.stored_owned(owned, move |store| store.update(&agent, "opencode/requestAnswered", &json!({"requestId":request}), |d| {
+                    self.stored_owned(owned, move |store| store.record_event(&agent, "opencode/requestAnswered", &json!({"requestId":request}), Sel::Open, |d| {
                         d.pending.retain(|p| p.id != request);
                         refresh_status(d);
                     }).map(drop)).await?;
@@ -597,7 +599,7 @@ impl Workspace {
             Err(error) => {
                 // A sent answer whose fate is unknown never becomes a button again.
                 let message = error.to_string();
-                self.update_record(id, "opencode/requestAnswerFailed", json!({"requestId":request_id,"error":message}), move |d| {
+                self.record_update(id, "opencode/requestAnswerFailed", json!({"requestId":request_id,"error":message}), Sel::Open, move |d| {
                     if let Some(p) = d.pending.iter_mut().find(|p| p.id == request) {
                         p.stale = true;
                     }
@@ -636,7 +638,7 @@ impl Workspace {
         }
         let generation = c.generation;
         stop(c.server).await?;
-        self.update_record(id, "opencode/closed", json!({"generation":generation}), |d| {
+        self.record_update(id, "opencode/closed", json!({"generation":generation}), Sel::Open, |d| {
             ended(d, "OpenCode 关闭前没有确认这一轮结束；结果未确认，不会重发。原 Session 与历史保留。");
             d.agent.connection_state = "disconnected".into();
         }).await?;
@@ -690,6 +692,19 @@ async fn add_mcp(server: &Server, config: &Value) -> Mcp {
 
 fn busy(d: &AgentDetail) -> bool {
     d.turns.iter().any(|t| t["status"] == "inProgress") || d.pending.iter().any(|p| !p.stale)
+}
+
+/// How many of the newest Turns a connection's snapshot of the session is
+/// applied to (T-140): the snapshot holds the whole native session; a Turn
+/// older than these settled while Core read its events.
+const TAIL: usize = 8;
+
+/// The Turns an event names: a message's own (a prompt's ID is its Turn's)
+/// and the one its answer belongs to (`parentID`). The open and newest ones
+/// come with them (`Sel::Turns`).
+fn event_turns(event: &Value) -> Vec<String> {
+    let info = &event["properties"]["info"];
+    [&info["id"], &info["parentID"]].into_iter().filter_map(Value::as_str).map(str::to_owned).collect()
 }
 
 /// Event types this module applies to the record.

@@ -9,6 +9,8 @@
 //! a scripted SDK (tests/fixtures/claude_quota_bridge.mjs). No model, account,
 //! daily Core or real connection is used.
 #![cfg(target_os = "linux")]
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use serde_json::{json, Value};
 use std::{os::unix::fs::PermissionsExt, path::Path, sync::Arc, time::Duration};
 use yuzuno_workspace::{model::{AgentDetail, MessageInput}, workspace::Workspace};
@@ -29,11 +31,31 @@ def thread():
 def read(name, default):
     path = root / name
     return json.loads(path.read_text()) if path.exists() else default
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
     req = json.loads(line)
     with (root / 'calls.jsonl').open('a') as log: log.write(json.dumps(req)+'\n')
     method, params = req.get('method'), req.get('params', {})
     if 'id' not in req: continue
+    if method=='thread/turns/list': sys.stdout.ids.add(req['id']); method='thread/read'
     result = {}
     if method == 'thread/read' and params.get('threadId') not in (None, 'native-thread'):
         child = params['threadId']
@@ -131,7 +153,12 @@ async fn an_idle_codex_agent_disconnects_stays_open_and_starts_again_only_when_t
     assert!(reconnected.agent.disconnected_at.is_none());
     assert_eq!(reconnected.agent.connection_state, "connected");
     assert_eq!(reconnected.agent.thread_id.as_deref(), Some("native-thread"));
-    assert_eq!(reconnected.turns, before.turns);
+    // The reconnect answers with the window: the whole short history here.
+    let unsliced: Vec<Value> = reconnected.turns.iter().cloned().map(|mut t| {
+        t.as_object_mut().unwrap().remove("_yuzunoSlice");
+        t
+    }).collect();
+    assert_eq!(unsliced, before.turns);
     let after = calls(dir.path());
     assert!(after[seen..].iter().any(|c| c["method"] == "thread/resume" && c["params"]["threadId"] == "native-thread"), "the same thread");
     assert!(!after.iter().any(|c| c["method"] == "thread/start"), "never another session");

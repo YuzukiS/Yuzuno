@@ -5,6 +5,8 @@
 //! the process ends, then a turn the user sent from a terminal resuming the
 //! same session, with a denied tool call and meta, system and local-command
 //! entries. No model is called.
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use serde_json::{json, Value};
 use std::io::Write;
 use std::time::Duration;

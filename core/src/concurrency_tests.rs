@@ -30,6 +30,7 @@ for line in sys.stdin:
  result={}
  if m=='mcpServer/tool/call':result={'isError':True,'content':[{'text':'HTTP 401'}]}
  if m=='thread/read':result={'thread':{'id':'thread-a','status':{'type':'active','activeFlags':[]},'turns':[{'id':'turn-a','status':'inProgress','items':[]}]}}
+ if m=='thread/turns/list':result={'data':[{'id':'turn-a','status':'inProgress','items':[]}],'nextCursor':None}
  print(json.dumps({'id':r['id'],'result':result}),flush=True)
 "#;
     let (tx, _rx) = mpsc::channel(8);
@@ -429,10 +430,30 @@ async fn a_sent_message_reaches_the_runtime_even_if_the_request_is_dropped() {
     std::fs::write(&script, r#"#!/usr/bin/python3
 import json,sys,pathlib
 root=pathlib.Path(__file__).parent
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
  r=json.loads(line)
  if 'id' not in r: continue
  m=r['method']; result={}
+ if m=='thread/turns/list': sys.stdout.ids.add(r['id']); m='thread/read'
  if m in ['thread/start','thread/resume','thread/read']:
   result={'thread':{'id':'native-thread','status':{'type':'idle'},'turns':[]}}
  if m=='turn/start':

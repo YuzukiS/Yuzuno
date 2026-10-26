@@ -76,42 +76,6 @@ fn synthetic(item: &Value) -> bool {
         .is_some_and(|s| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
 }
 
-/// An Item `restore` changed: its Turn, its ID after the change, and whether
-/// that ID is new (a synthetic ID replaced by the bound one).
-pub(crate) type Restored = (String, String, bool);
-
-thread_local! {
-    /// The Items `restore` changes on this thread while `collect_restored` runs.
-    static RESTORED: std::cell::RefCell<Option<Vec<Restored>>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Runs `f` and returns, with its result, every Item `restore` changed on
-/// this thread meanwhile: for a commit that names what it wrote instead of
-/// comparing the whole record (`Store::commit`'s scopes). Not reentrant; an
-/// unwind ends the collection too.
-pub(crate) fn collect_restored<T>(f: impl FnOnce() -> T) -> (T, Vec<Restored>) {
-    struct Collecting;
-    impl Drop for Collecting {
-        fn drop(&mut self) { RESTORED.with(|r| *r.borrow_mut() = None); }
-    }
-    RESTORED.with(|r| {
-        let mut r = r.borrow_mut();
-        assert!(r.is_none(), "collect_restored is not reentrant");
-        *r = Some(Vec::new());
-    });
-    let collecting = Collecting;
-    let value = f();
-    let restored = RESTORED.with(|r| r.borrow_mut().take()).unwrap_or_default();
-    drop(collecting);
-    (value, restored)
-}
-
-fn note_restored(turn: &str, item: &Value, renamed: bool) {
-    RESTORED.with(|r| if let Some(r) = r.borrow_mut().as_mut() {
-        r.push((turn.to_owned(), item["id"].as_str().unwrap_or_default().to_owned(), renamed));
-    });
-}
-
 /// Attach display metadata only through explicit message identity. Full native
 /// history reconstructs item-N IDs; the recorded turn/user position addresses
 /// that occurrence. Exact text is an integrity check, never a body search.
@@ -143,14 +107,11 @@ impl<'a> Restorer<'a> {
             .enumerate()
         {
             let Some(receipt) = shown.receipt(&tid, index, item, full_history) else { continue };
-            let (mut changed, mut renamed) = (false, false);
             if item["clientId"] != receipt.input.client_message_id {
                 item["clientId"] = receipt.input.client_message_id.clone().into();
-                changed = true;
             }
             if renames(item, receipt, &tid) {
                 item["id"] = receipt.binding.as_ref().expect("renames").item_id.clone().into();
-                renamed = true;
             }
             if let Some(blocks) = receipt
                 .input
@@ -164,10 +125,6 @@ impl<'a> Restorer<'a> {
                     item["_yuzunoInputText"] = receipt.input.text.clone().into();
                 }
                 item[BLOCKS] = serde_json::to_value(blocks).expect("text boundaries");
-                changed = true;
-            }
-            if changed || renamed {
-                note_restored(&tid, item, renamed);
             }
         }
     }
@@ -458,22 +415,15 @@ mod tests {
             json!({"id":"t","items":[user("item-1", None)]}),
             json!({"id":"empty"}),
         ];
-        let (together, noted_together) = collect_restored(|| {
-            let mut turns = turns.clone();
-            restore(&mut turns, &d.message_receipts, true);
-            turns
-        });
-        let (each, noted_each) = collect_restored(|| {
-            let mut turns = turns.clone();
-            let restorer = Restorer::new(&d.message_receipts);
-            for turn in &mut turns {
-                restorer.restore(turn, true);
-            }
-            turns
-        });
+        let mut together = turns.clone();
+        restore(&mut together, &d.message_receipts, true);
+        let mut each = turns.clone();
+        let restorer = Restorer::new(&d.message_receipts);
+        for turn in &mut each {
+            restorer.restore(turn, true);
+        }
         assert_ne!(together, turns, "the fixture restores something");
         assert_eq!(each, together);
-        assert_eq!(noted_each, noted_together);
     }
 
     #[test]

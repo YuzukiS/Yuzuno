@@ -182,10 +182,9 @@ impl Rpc {
                 Result::<()>::Ok(())
             };
             let read = async {
-                let mut lines = BufReader::new(stdout).lines();
-                while let Some(line) = lines.next_line().await? {
-                    let message = parse_message(line).await.context("Codex 返回了无法解析的协议消息")?;
-                    dispatch(message, &pending, &events).await?;
+                let mut reader = BufReader::new(stdout);
+                while let Some((message, bytes)) = read_message(&mut reader).await.context("Codex 返回了无法解析的协议消息")? {
+                    dispatch(message, bytes, &pending, &events).await?;
                 }
                 Result::<()>::Ok(())
             };
@@ -241,7 +240,10 @@ impl Rpc {
                             Some(Ok(message))=>{
                                 last_received=Instant::now();
                                 match message {
-                                    Message::Text(text)=>dispatch(parse_message(text.to_string()).await.context("远程 Codex 返回了无法解析的协议消息")?, &pending, &events).await?,
+                                    Message::Text(text)=>{
+                                        let bytes = text.len();
+                                        dispatch(parse_message(text.to_string()).await.context("远程 Codex 返回了无法解析的协议消息")?, bytes, &pending, &events).await?
+                                    },
                                     Message::Ping(data)=>{
                                         timeout(Duration::from_secs(20), socket.send(Message::Pong(data))).await??;
                                     },
@@ -361,6 +363,50 @@ impl Rpc {
 /// Native messages can be megabytes (a resumed Thread's whole history, a large
 /// command output); those are parsed on the blocking pool, not on an async
 /// worker. Small ones, almost all of them, are parsed in place.
+/// A native message longer than this is read and parsed only while holding
+/// LARGE: one at a time in this Core, so their decoding peaks never add up.
+pub(crate) const LARGE_MESSAGE: usize = 1 << 20;
+static LARGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The next line of `reader`, parsed, with its length; None at its end. As
+/// `lines()` read them (a final line without a newline counts), but a long
+/// one goes on only once it holds LARGE.
+pub(crate) async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Result<Option<(Value, usize)>> {
+    let mut line = Vec::new();
+    let mut large = None;
+    loop {
+        let buf = reader.fill_buf().await?;
+        if buf.is_empty() {
+            break;
+        }
+        let (take, end) = match buf.iter().position(|b| *b == b'\n') {
+            Some(at) => (at + 1, true),
+            None => (buf.len(), false),
+        };
+        line.extend_from_slice(&buf[..take]);
+        reader.consume(take);
+        if end {
+            break;
+        }
+        if large.is_none() && line.len() > LARGE_MESSAGE {
+            large = Some(LARGE.lock().await);
+        }
+    }
+    if line.is_empty() {
+        return Ok(None);
+    }
+    if line.last() == Some(&b'\n') {
+        line.pop();
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+    }
+    let bytes = line.len();
+    let message = parse_message(String::from_utf8(line).context("协议消息不是 UTF-8")?).await?;
+    drop(large);
+    Ok(Some((message, bytes)))
+}
+
 pub(crate) async fn parse_message(text: String) -> Result<Value> {
     const LARGE: usize = 64 * 1024;
     if text.len() < LARGE {
@@ -371,11 +417,12 @@ pub(crate) async fn parse_message(text: String) -> Result<Value> {
 
 async fn dispatch(
     mut message: Value,
+    bytes: usize,
     pending: &Mutex<HashMap<u64, Reply>>,
     events: &EventSender,
 ) -> Result<()> {
     if message.get("method").is_some() {
-        events.send(message).await.context("事件接收端已关闭")?;
+        events.send_sized(message, bytes).await.context("事件接收端已关闭")?;
     } else if let Some(id) = message["id"].as_u64() {
         if let Some(reply) = pending.lock().await.remove(&id) {
             let result = if let Some(error) = message.get("error") {

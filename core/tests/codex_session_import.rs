@@ -1,4 +1,6 @@
 #![cfg(unix)]
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use serde_json::{json, Value};
 use std::{os::unix::fs::PermissionsExt, path::Path, sync::Arc};
 use yuzuno_workspace::{codex_sessions::ImportSession, workspace::Workspace};
@@ -465,4 +467,34 @@ async fn a_missing_turn_is_not_ended_while_codex_runs_one_or_when_the_check_fail
     assert!(other.ws.store.detail(&agent.id).unwrap().codex_handoff.and_then(|h| h.missing_turns).is_none());
     assert!(other.ws.end_missing_native_turns(&agent.id, &["lost-turn".into()], 1).await.is_err());
     assert_eq!(other.ws.store.detail(&agent.id).unwrap().turns.iter().find(|t| t["id"] == "lost-turn").unwrap()["status"], "inProgress");
+}
+
+/// A reconnect whose newest native Turns the record holds, each ended as it
+/// ended natively, reads that page without Items and changes nothing; one
+/// with a Turn the record lacks reads the page whole and adds it (T-140).
+#[tokio::test]
+async fn a_reconnect_reads_the_newest_page_whole_only_when_the_record_lacks_it() {
+    let lab = Lab::new();
+    let agent = lab.ws.import_codex_session(lab.input()).await.unwrap();
+    let reads = |from: usize| -> Vec<Value> { lab.calls()[from..].iter().filter(|r| r["method"] == "thread/turns/list")
+        .map(|r| r["params"]["itemsView"].clone()).collect() };
+    let ids = |detail: &yuzuno_workspace::model::AgentDetail| -> Vec<String> {
+        detail.turns.iter().map(|t| t["id"].as_str().unwrap().to_owned()).collect() };
+    let held = lab.ws.store.detail(&agent.id).unwrap();
+    let before = lab.calls().len();
+    lab.ws.reconnect(&agent.id).await.unwrap();
+    let light = reads(before);
+    assert!(!light.is_empty() && light.iter().all(|view| view == "notLoaded"), "{light:?}");
+    let detail = lab.ws.store.detail(&agent.id).unwrap();
+    assert_eq!(ids(&detail), ["t-9", "t-10", "t-11"]);
+    assert_eq!(detail.turns, held.turns);
+    // Another client ran a Turn meanwhile.
+    std::fs::write(lab.root.path().join("extra"), "1").unwrap();
+    let before = lab.calls().len();
+    lab.ws.reconnect(&agent.id).await.unwrap();
+    assert!(reads(before).iter().any(|view| view == "full"));
+    let detail = lab.ws.store.detail(&agent.id).unwrap();
+    assert_eq!(ids(&detail), ["t-9", "t-10", "t-11", "t-12"]);
+    assert_eq!(detail.turns[3]["items"][0]["text"], "Native result 12");
+    lab.ws.close_agent(&agent.id).await.unwrap();
 }

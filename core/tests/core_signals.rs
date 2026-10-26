@@ -7,6 +7,8 @@
 //! process. No OpenCode, Codex, account, model or network service is used.
 #![cfg(target_os = "linux")]
 
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use rustix::process::{kill_process, Pid, Signal};
 use serde_json::{json, Value};
 use std::{

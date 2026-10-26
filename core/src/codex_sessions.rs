@@ -268,13 +268,36 @@ impl std::fmt::Display for MissingNativeTurns {
 }
 impl std::error::Error for MissingNativeTurns {}
 
+/// The newest native page, read first without Items: when the record's
+/// newest Turns (`held`, oldest first) are its Turns, each ended as it ended
+/// natively, the record already has what the page holds and the page is
+/// returned without Turns; otherwise it is read whole (`history_page`). A
+/// reconnect so never decodes a long Turn the record has whole again (T-140).
+async fn newest_page(rpc: &Rpc, id: &str, held: &[(String, Option<String>)]) -> Result<HistoryPage> {
+    let ended = |status: Option<&str>| matches!(status, Some("completed" | "failed" | "interrupted"));
+    if !held.is_empty() && held.iter().all(|(_, status)| ended(status.as_deref())) {
+        let light = rpc.request("thread/turns/list", json!({
+            "threadId":id,"cursor":null,"limit":HISTORY_PAGE_SIZE,"sortDirection":"desc","itemsView":"notLoaded"
+        })).await?;
+        let data = light["data"].as_array().context("Codex 历史分页格式无效")?;
+        let same = data.len() == held.len() && data.iter().rev().zip(held).all(|(turn, (tid, status))|
+            turn["id"].as_str() == Some(tid.as_str()) && turn["status"].as_str() == status.as_deref());
+        if same {
+            let next_cursor = light["nextCursor"].as_str().map(str::to_owned);
+            return Ok(HistoryPage { turns: vec![], has_more: next_cursor.is_some(), next_cursor });
+        }
+    }
+    history_page(rpc, id, None).await
+}
+
 /// Refresh the recent window and any cached unfinished Turn that fell outside
 /// it while another client advanced the session. Metadata pages locate those
 /// specific Turns; only their full pages are loaded. Never infer tool success
-/// merely because the current native thread is idle.
-pub(crate) async fn recovery_page(rpc: &Rpc, id: &str, cached: &AgentDetail) -> Result<HistoryPage> {
+/// merely because the current native thread is idle. `held` is the record's
+/// newest Turns as stored (`newest_page`).
+pub(crate) async fn recovery_page(rpc: &Rpc, id: &str, cached: &AgentDetail, held: &[(String, Option<String>)]) -> Result<HistoryPage> {
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        let mut page = history_page(rpc, id, None).await?;
+        let mut page = newest_page(rpc, id, held).await?;
         let mut missing: HashSet<String> = cached.turns.iter()
             .filter(|turn| turn["status"] == "inProgress")
             .filter_map(|turn| turn["id"].as_str())
@@ -343,7 +366,7 @@ impl Workspace {
         let _permit = self.session_reads.try_acquire().context("正在读取另一份原生历史，请稍后重试")?;
         let thread_key = input.thread_id.clone();
         if let Some(agent) = self.stored(move |store| store.local_codex_agent(&thread_key)?
-            .map(|id| Ok(store.detail(&id)?.agent)).transpose()).await? { return Ok(agent); }
+            .map(|id| store.agent(&id)).transpose()).await? { return Ok(agent); }
         let session = ReadSession::open(&self.program).await?;
         let thread = metadata(&session.0, &input.thread_id).await?;
         let mut baseline = baseline(&session.0, &input.thread_id).await?;
@@ -387,16 +410,19 @@ impl Workspace {
     pub async fn codex_session_history(&self, agent_id: &str, cursor: Option<&str>) -> Result<HistoryPage> {
         let _admission = self.admission.enter_completion()?;
         let id = agent_id.to_owned();
-        let (detail, imported) = self.stored(move |store| Ok((store.detail(&id)?, store.is_codex_import(&id)?))).await?;
-        anyhow::ensure!(detail.agent.harness == "codex" && detail.agent.remote.is_none()
+        // The saved Turns' IDs only, not the Turns (T-140).
+        let (agent, ids, imported) = self.stored(move |store| Ok((store.agent(&id)?, store.turn_ids(&id)?, store.is_codex_import(&id)?))).await?;
+        anyhow::ensure!(agent.harness == "codex" && agent.remote.is_none()
             && imported, "此 Agent 没有可分页的本机导入历史");
         let _permit = self.session_reads.try_acquire().context("正在读取另一份原生历史，请稍后重试")?;
         let session = ReadSession::open(&self.program).await?;
-        let thread = detail.agent.thread_id.as_deref().context("缺少原生会话 ID")?;
-        let saved: HashSet<&str> = detail.turns.iter().filter_map(|turn| turn["id"].as_str()).collect();
+        let thread = agent.thread_id.as_deref().context("缺少原生会话 ID")?;
+        let saved: HashSet<&str> = ids.iter().map(String::as_str).collect();
         let mut result = unsaved_page(&session.0, thread, cursor, &saved).await?;
         session.close().await?;
-        crate::message_content::restore(&mut result.turns, &detail.message_receipts, true);
+        let (agent_id, shown) = (agent_id.to_owned(), result.turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect::<Vec<_>>());
+        let receipts = self.stored(move |store| store.receipts_for(&agent_id, &shown)).await?;
+        crate::message_content::restore(&mut result.turns, &receipts, true);
         Ok(result)
     }
 }
@@ -477,16 +503,10 @@ pub(crate) fn annotate_imported_questions_in(db: &rusqlite::Connection, detail: 
 }
 
 impl Store {
-    /// Client-only provenance for question-bearing Turns already in this read.
-    /// Indexed import evidence, never a timestamp or an inferred answer state.
-    pub(crate) fn annotate_imported_questions(&self, detail: &mut AgentDetail) -> Result<()> {
-        annotate_imported_questions_in(&*self.db.read()?, detail)
-    }
-
     /// Only a local Codex session another client is known to own can fork,
     /// and only while Yuzuno itself is not attached to it.
     fn fork_source(&self, agent_id: &str) -> Result<AgentDetail> {
-        let detail = self.detail(agent_id)?;
+        let detail = self.view(agent_id, crate::store::Sel::Meta)?;
         let agent = &detail.agent;
         ensure_agent_open(agent)?;
         anyhow::ensure!(agent.harness == "codex" && agent.remote.is_none(), "只能 fork 本机 Codex 会话");
@@ -628,7 +648,7 @@ impl Workspace {
     }
 
     async fn send_fork(&self, row: &mut ForkRow, warnings: &mut Vec<String>) -> Result<()> {
-        let source = self.detail(&row.source_agent_id).await?;
+        let source = self.send_view(&row.source_agent_id).await?;
         let agent = &source.agent;
         let session = ReadSession::open(&self.program).await?;
         let thread = metadata(&session.0, &row.source_thread_id).await?;
@@ -707,7 +727,7 @@ impl Workspace {
             row.fork_agent_id = Some(existing);
             return Ok(());
         }
-        let source = self.detail(&row.source_agent_id).await?;
+        let source = self.send_view(&row.source_agent_id).await?;
         let session = ReadSession::open(&self.program).await?;
         let verified = verified_fork_history(&session.0, row, &fork_thread).await;
         let model = metadata(&session.0, &row.source_thread_id).await.and_then(|t| fork_model(&source.agent, &t));
@@ -759,7 +779,7 @@ impl Workspace {
             warnings.push("原 Project 已归档，fork 未加入该 Project。".into());
         }
         let forked_to = ForkLink { agent_id: agent.id.clone(), ..forked_to };
-        self.update_record(&source.agent.id, "codex/forkedTo", json!({"agentId":agent.id,"threadId":fork_thread}), move |d| {
+        self.record_update(&source.agent.id, "codex/forkedTo", json!({"agentId":agent.id,"threadId":fork_thread}), crate::store::Sel::Meta, move |d| {
             d.codex_handoff.get_or_insert_with(Default::default).forked_to = Some(forked_to);
         }).await?;
         self.changed(&source.agent.id);

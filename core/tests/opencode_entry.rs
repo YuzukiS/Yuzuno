@@ -5,6 +5,8 @@
 //! No OpenCode, account, model or network service is used.
 #![cfg(target_os = "linux")]
 
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use axum::{body::{to_bytes, Body}, http::{Request, StatusCode}, Router};
 use serde_json::{json, Value};
 use std::{sync::OnceLock, time::Duration};

@@ -67,7 +67,7 @@ fn workspace(d: &AgentDetail, held: bool) -> (tempfile::TempDir, Arc<Workspace>)
     let ws = Workspace::new(temp.path().join("data"), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
     ws.store.insert(d).unwrap();
     // Held as a streaming Agent's is; the other Workspace journals the same.
-    ws.store.record_event(&d.agent.id, "test/hold", &json!({}), |_| {}).unwrap();
+    ws.store.hold_for_test(&d.agent.id).unwrap();
     if !held {
         ws.store.release_for_test(&d.agent.id);
     }
@@ -140,7 +140,7 @@ async fn requests_and_cancellations_write_what_the_whole_record_commit_wrote() {
     let cancel = json!({"type":"permission_cancelled","requestId":"r"});
     let mut checked = 0;
     for status in ["working", "waiting", "idle", "error", "uncertain"] {
-        for (turns, turn, copies) in setups {
+        for (turns, turn, _copied_before) in setups {
             for pending in pendings() {
                 let d = record(id, status, turns, pending);
                 let case = format!("{status} {turns:?} request for {turn} pending {:?}", d.pending.iter().map(|p| &p.params).collect::<Vec<_>>());
@@ -149,7 +149,9 @@ async fn requests_and_cancellations_write_what_the_whole_record_commit_wrote() {
                 let (_held_bridge, _rows_bridge) = (connect(&held, id), connect(&rows, id));
                 let copy = held.store.held_for_test(id).unwrap();
                 held.claude_event(id, 7, request(turn));
-                assert_eq!(same_copy(&held, id, &copy), !copies, "{case}: request");
+                // The slice is changed in place whatever the request (T-140):
+                // one opening a Turn the record lacks copied it before.
+                assert!(same_copy(&held, id, &copy), "{case}: request");
                 rows.claude_event(id, 7, request(turn));
                 // The cancellation below undoes much of the request: compared
                 // here too, the held copy as it is and the other's record.
@@ -201,7 +203,7 @@ async fn an_answer_reads_and_copies_no_record_and_writes_what_it_did() {
             let (record, journal) = written(&ws, id);
             let kinds: Vec<&str> = journal.iter().map(|(kind, _)| kind.as_str()).collect();
             let last = if refused { "claude/permissionResponseFailed" } else { "claude/permissionResolved" };
-            assert_eq!(kinds, ["test/hold", "request/replied", last]);
+            assert_eq!(kinds, ["request/replied", last]);
             if refused {
                 // Marked sent before it went to Claude, then stale once refused.
                 let request = &record["pending"][0];

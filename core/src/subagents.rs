@@ -204,7 +204,7 @@ impl Workspace {
         let agent = id.to_owned();
         let saved = self
             .stored_owned(owned, move |store| {
-                store.update(&agent, "request/subAgentEnded", &json!({"requests": ended.clone()}), |d| {
+                store.record_event(&agent, "request/subAgentEnded", &json!({"requests": ended.clone()}), crate::store::Sel::Open, |d| {
                     d.pending.retain(|r| !(r.stale && ended.contains(&r.id)));
                     // Re-derives the pending count and waiting status.
                     d.apply("request/subAgentEnded", &json!({}));
@@ -225,17 +225,16 @@ impl Workspace {
             uuid::Uuid::parse_str(child).is_ok(),
             "Not a Codex thread ID"
         );
-        let detail = self.detail(id).await?;
+        let agent = self.listed(id).await?;
         anyhow::ensure!(
-            detail.agent.harness == "codex",
+            agent.harness == "codex",
             "Only Codex sub-agents are shown"
         );
         anyhow::ensure!(
-            detail.agent.remote.is_none(),
+            agent.remote.is_none(),
             "Sub-agents of remote Codex Agents are not shown yet"
         );
-        let parent = detail
-            .agent
+        let parent = agent
             .thread_id
             .clone()
             .context("This Agent has no Codex thread yet")?;
@@ -310,6 +309,8 @@ for line in sys.stdin:
         if c is None:
             print(json.dumps({"id": r["id"], "error": {"code": -32600, "message": "thread not found"}}), flush=True); continue
         result = {"thread": {"id": p["threadId"], "parentThreadId": c["parentThreadId"], "status": c["status"], "source": c["source"], "model": c["model"], "preview": ""}}
+    elif m == "thread/turns/list" and p["threadId"] == P:
+        result = {"data": [], "nextCursor": None}
     elif m == "thread/turns/list":
         turn = dict(children[p["threadId"]]["turn"])
         if p["threadId"] == A and os.path.exists(os.path.join(root, "long")):

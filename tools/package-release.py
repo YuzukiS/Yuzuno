@@ -146,7 +146,7 @@ def assemble(args):
             "gitSha": args.git_sha, "builtAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "notes": notes, "platform": "linux-" + {"x86_64": "x86_64", "aarch64": "aarch64"}[platform.machine()],
             "protocol": 1, "schema": {"writes": 2, "readsMin": 2, "readsMax": 2},
-            "records": {"writes": 1, "readsMin": 0, "readsMax": 1}, "files": files,
+            "records": {"writes": 2, "readsMin": 2, "readsMax": 2}, "files": files,
         }
         manifest_path = staging / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")

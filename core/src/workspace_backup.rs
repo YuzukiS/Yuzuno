@@ -690,8 +690,9 @@ fn facts(db: &Connection, role: Role) -> Result<Facts> {
             "The backup has schema {}, older than this Core reads ({STORAGE}); restore it with the Core release that made it (createdBy in its manifest)",
             storage.schema),
     }
-    ensure!(storage.record_layouts.iter().all(|layout| *layout <= RECORD_LAYOUT),
-        "The database has record layouts {:?}; this Core reads up to {RECORD_LAYOUT}. Use the Core that wrote it",
+    // Only its own layout: the session store converts no earlier record (T-140).
+    ensure!(storage.record_layouts.iter().all(|layout| *layout == RECORD_LAYOUT),
+        "The database has record layouts {:?}; this Core reads only {RECORD_LAYOUT}. Use the Core that wrote it",
         storage.record_layouts);
     let agents = verify_records(db)?;
     let names = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?

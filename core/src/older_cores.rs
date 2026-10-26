@@ -209,6 +209,18 @@ impl Store {
         Ok(KeptOut(held))
     }
 
+    /// Keeps older Cores out from now on, for a write that committed: an
+    /// Agent's session in the session store (T-140). Takes no guard, so a
+    /// caller holding one (`keep_older_cores_out`) may call it.
+    pub(crate) fn keep_older_cores_out_now(&self) {
+        match self.workspace_lock.close() {
+            Ok(Ok(())) => {}
+            Ok(Err(reason)) => eprintln!("Workspace: its Agents' sessions are in the session store, which Core builds before \
+                it would misread, and they cannot be kept out: {reason}"),
+            Err(error) => eprintln!("Workspace: could not keep older Cores out: {error:#}"),
+        }
+    }
+
     /// `keep_older_cores_out` if `why` is Some.
     pub fn keep_older_cores_out_for(&self, why: Option<String>) -> Result<Option<KeptOut<'_>>> {
         why.map(|why| self.keep_older_cores_out(&why)).transpose()
@@ -286,6 +298,14 @@ impl Store {
             if let Some(root) = root.filter(|root| !legacy_root(false, root)) {
                 return Ok(Some(format!("the Job {id} was started in {root} on {machine}")));
             }
+        }
+        // An older Core reads every record as a whole row, or its receipts
+        // from its metadata (T-140): it would show no conversation, or send a
+        // message again. Every Workspace this Core opens is of this store;
+        // one without Agents has no session to misread.
+        if db.query_row("SELECT EXISTS(SELECT 1 FROM workspace_meta WHERE key=?1)
+            AND EXISTS(SELECT 1 FROM agents)", [crate::record_rows::STORE_KEY], |r| r.get::<_, bool>(0))? {
+            return Ok(Some("its Agents' sessions are in the session store of T-140".into()));
         }
         Ok(None)
     }
@@ -505,6 +525,9 @@ mod tests {
         assert!(format!("{error:#}").contains("Cannot let go of the lease"), "{error:#}");
     }
 
+    /// What keeps older Cores out of any Workspace with Agents (T-140).
+    const SESSIONS: &str = "its Agents' sessions are in the session store of T-140";
+
     #[test]
     fn an_open_agent_or_an_unfinished_job_in_a_new_root_keeps_older_cores_out() {
         if as_root() {
@@ -518,10 +541,11 @@ mod tests {
         };
         let agents = tempfile::tempdir().unwrap();
         let store = open(agents.path()).unwrap();
-        // An Agent whose runtime stays in the legacy root: nothing to keep out.
+        // An Agent whose runtime stays in the legacy root: only its session,
+        // in the session store (T-140), keeps them out.
         store.insert(&agent("old", LEGACY_ROOT)).unwrap();
-        assert!(older_core_opens(agents.path()));
-        assert_eq!(store.older_core_hazard().unwrap(), None);
+        assert!(!older_core_opens(agents.path()));
+        assert_eq!(store.older_core_hazard().unwrap().as_deref(), Some(SESSIONS));
         store.insert(&agent("new", "~/.yuzuno")).unwrap();
         assert!(!older_core_opens(agents.path()));
         assert!(store.older_core_hazard().unwrap().unwrap().contains("the Agent new runs in ~/.yuzuno on lab"));
@@ -547,7 +571,7 @@ mod tests {
         store.db.write().unwrap().execute(
             "INSERT INTO local_jobs(id,task_id,agent_id,status,reserved,data) VALUES('local',?1,'old','queued',0,'{\"id\":\"local\"}')",
             [&task]).unwrap();
-        assert_eq!(store.older_core_hazard().unwrap(), None);
+        assert_eq!(store.older_core_hazard().unwrap().as_deref(), Some(SESSIONS));
         for (id, kind, status, reserved, remote, hazard) in [
             ("queued", "ssh", "queued", false, serde_json::json!({}), "has not been started yet"),
             ("unsent", "ssh", "starting", true, serde_json::json!({"hostId":"h"}), "has not been started yet"),

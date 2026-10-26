@@ -2,8 +2,17 @@ use super::tests::{detail, lab, stream};
 use super::*;
 use crate::conversation_window::{self, Query};
 
+/// What clients were sent of the whole record, as the window is checked
+/// against: the record with its payloads in client form (T-140: no client
+/// reads one; only this test builds it).
+fn full_view(store: &Store) -> AgentDetail {
+    let mut d = store.detail("a").unwrap();
+    crate::codex_sessions::annotate_imported_questions_in(&store.db.read().unwrap(), &mut d).unwrap();
+    crate::client_view::detail(d)
+}
+
 fn assert_equivalent(store: &Store, query: &Query) -> ConversationWindow {
-    let mut full = store.client_detail("a").unwrap();
+    let mut full = full_view(store);
     let expected = conversation_window::project(&mut full, query).unwrap();
     let window = store.client_window("a", query).unwrap().unwrap();
     assert_eq!(window.conversation, expected);
@@ -57,7 +66,9 @@ fn windows_keep_full_metadata_while_body_reads_are_bounded_in_rows_and_held() {
         .unwrap();
     let first = assert_equivalent(&store, &Query::default());
     assert_eq!(first.stats.source, "rows");
-    assert_eq!(first.stats.index_build_items, 352);
+    // Only the Items every window lists have index entries (T-140): its
+    // user messages here.
+    assert_eq!(first.stats.index_build_items, 2);
     let page = assert_equivalent(&store, &Query::default());
     assert_eq!(page.stats.index_build_items, 0);
     assert!(page.stats.body_items <= conversation_window::MAX_ITEMS + 3);
@@ -94,9 +105,9 @@ fn windows_keep_full_metadata_while_body_reads_are_bounded_in_rows_and_held() {
         "item/agentMessage/delta",
         &json!({"turnId":"t","itemId":"i349","delta":" live"}),
     );
+    // Streamed output only in memory is written first: read from the rows.
     let held = assert_equivalent(&store, &Query::default());
-    assert_eq!(held.stats.source, "held");
-    assert_eq!(held.stats.body_json_bytes, 0);
+    assert_eq!(held.stats.source, "rows");
 }
 
 /// T-26: the stored index lists a running sub-agent whose call is outside the
@@ -168,8 +179,8 @@ fn window_rows_rebuild_only_changed_entries_and_keep_duplicate_ids_and_pending_p
     store.insert(&d).unwrap();
     let ambiguous = assert_equivalent(&store, &Query::default());
     assert_eq!(
-        ambiguous.stats.source, "fallback",
-        "preserve legacy Pending resolution for repeated IDs"
+        ambiguous.stats.source, "rows",
+        "repeated IDs and the Pending resolution of the client view, from rows"
     );
     // A separate new record exercises Rows without update/restart recovery
     // holding it. Pending compatibility above is an independent fixture.
@@ -192,8 +203,10 @@ fn window_rows_rebuild_only_changed_entries_and_keep_duplicate_ids_and_pending_p
     store.db.write().unwrap().execute("UPDATE agent_items SET data=json_set(data,'$.text','changed') WHERE agent_id='a' AND item_id='~literal'", []).unwrap();
     // The literal native ID itself has a positional row key.
     store.db.write().unwrap().execute("UPDATE agent_items SET data=json_set(data,'$.text','changed') WHERE agent_id='a' AND ord=3", []).unwrap();
+    // No index entry of its own (only the Items every window lists have
+    // one, T-140): its body is read from its row, as edited.
     let changed = assert_equivalent(&store, &Query::default());
-    assert_eq!(changed.stats.index_build_items, 1);
+    assert_eq!(changed.stats.index_build_items, 0);
     assert_eq!(changed.detail.turns[0]["items"][3]["text"], "changed");
     store
         .db
@@ -208,7 +221,7 @@ fn window_rows_rebuild_only_changed_entries_and_keep_duplicate_ids_and_pending_p
         assert_equivalent(&store, &Query::default())
             .stats
             .index_build_items,
-        1
+        0
     );
 }
 
@@ -290,14 +303,15 @@ fn window_reads_retry_racing_rewrites_and_streams_without_publishing_stale_index
 }
 
 #[test]
-fn window_fallback_keeps_replay_and_damage_behavior() {
+fn windows_read_rows_only_and_a_damaged_record_is_shown_with_why() {
     let (_dir, store) = lab();
     store.insert(&detail("a")).unwrap();
+    // The journal is no record (T-140): an event only there is not shown.
     store.db.write().unwrap().execute("INSERT INTO journal(agent_id,kind,data,at) VALUES('a','item/agentMessage/delta',?1,?2)",
         params![json!({"turnId":"t","itemId":"reply","delta":"replayed"}).to_string(), now()]).unwrap();
-    let replay = assert_equivalent(&store, &Query::default());
-    assert_eq!(replay.stats.source, "fallback");
-    assert_eq!(replay.detail.turns[0]["items"][0]["text"], "replayed");
+    let rows = assert_equivalent(&store, &Query::default());
+    assert_eq!(rows.stats.source, "rows");
+    assert!(rows.detail.turns[0]["items"].as_array().unwrap().iter().all(|i| i["text"] != "replayed"));
 
     let (_dir, store) = lab();
     store.insert(&history()).unwrap();
@@ -306,8 +320,9 @@ fn window_fallback_keeps_replay_and_damage_behavior() {
         .db
         .write()
         .unwrap()
+        // Every Item: a window reads only some of them.
         .execute(
-            "UPDATE agent_items SET data='{' WHERE agent_id='a' AND item_id='i1'",
+            "UPDATE agent_items SET data='{' WHERE agent_id='a'",
             [],
         )
         .unwrap();
@@ -315,9 +330,10 @@ fn window_fallback_keeps_replay_and_damage_behavior() {
         .client_window("a", &Query::default())
         .unwrap()
         .unwrap();
-    assert_eq!(damaged.stats.source, "fallback");
+    assert_eq!(damaged.stats.source, "damaged");
     assert!(damaged.detail.agent.error.is_some());
-    assert_equivalent(&store, &Query::default());
+    assert!(damaged.detail.turns.is_empty());
+    assert!(store.detail("a").is_err(), "a whole read finds the damage too");
 }
 
 #[test]
@@ -381,7 +397,7 @@ fn messages() -> AgentDetail {
 fn searches_agree(store: &Store) {
     let long = "n".repeat(257);
     for query in ["needle", "NEEDLE 3", "zephyr", "école", "ÉCOLE 7", "original NEEDLE", "absent", "", "   ", &long] {
-        let expected = conversation_window::search(&store.client_detail("a").unwrap(), query);
+        let expected = conversation_window::search(&full_view(&store), query);
         assert_eq!(store.conversation_search("a", query).unwrap(), expected, "{query:?}");
     }
 }
@@ -394,11 +410,11 @@ fn a_search_finds_what_a_search_of_the_client_detail_finds() {
     // From rows: the window's index built by the first search, then kept.
     searches_agree(&store);
     searches_agree(&store);
-    // A journaled change the rows lack: read as `client_detail` reads it.
+    // A journaled change the rows lack is no part of the record (T-140).
     store.db.write().unwrap().execute("INSERT INTO journal(agent_id,kind,data,at) VALUES('a','item/agentMessage/delta',?1,?2)",
         params![json!({"turnId":"last","itemId":"rare","delta":" replayed needle"}).to_string(), now()]).unwrap();
     searches_agree(&store);
-    assert_eq!(store.conversation_search("a", "replayed").unwrap().len(), 1);
+    assert!(store.conversation_search("a", "replayed").unwrap().is_empty());
     // Held.
     stream(&store, "a", "item/agentMessage/delta", &json!({"turnId":"last","itemId":"rare","delta":" streamed"}));
     assert_eq!(store.streamed_records(), 1);
@@ -408,24 +424,3 @@ fn a_search_finds_what_a_search_of_the_client_detail_finds() {
     assert!(store.conversation_search("missing", "").is_err());
 }
 
-#[test]
-fn a_search_retries_a_rewrite_or_stream_racing_its_read() {
-    for held in [false, true] {
-        let (_dir, store) = lab();
-        store.insert(&messages()).unwrap();
-        let mut once = true;
-        let found = store.conversation_search_racing("a", "zephyr", || {
-            if !std::mem::take(&mut once) {
-                return;
-            }
-            if held {
-                stream(&store, "a", "item/agentMessage/delta", &json!({"turnId":"last","itemId":"rare","delta":" again"}));
-            } else {
-                store.update("a", "test/rewrite", &json!({}), |d| d.turns[40]["items"][0]["text"] = "rewritten zephyr".into()).unwrap();
-            }
-        }).unwrap();
-        assert_eq!(found, conversation_window::search(&store.client_detail("a").unwrap(), "zephyr"));
-        let text = format!("{}{}{}", found[0]["before"].as_str().unwrap(), found[0]["match"].as_str().unwrap(), found[0]["after"].as_str().unwrap());
-        assert_eq!(text, if held { "a unique Zephyr word again" } else { "rewritten zephyr" });
-    }
-}

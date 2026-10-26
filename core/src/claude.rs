@@ -6,6 +6,7 @@ use crate::{
     model::{ensure_agent_open, ensure_not_disconnected, now, Agent, AgentDetail, ContextUsage, PendingRequest, RemoteAgent},
     remote::RemoteMachine,
     rpc::OutcomeUnknown,
+    store::Sel,
     workspace::Workspace,
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -20,7 +21,7 @@ use std::{
     },
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
     process::Command,
     sync::{mpsc, oneshot, watch, Mutex},
     time::{timeout, Duration},
@@ -202,11 +203,11 @@ impl Bridge {
                 Result::<()>::Ok(())
             };
             let read = async {
-                let mut lines = BufReader::new(stdout).lines();
-                while let Some(line) = lines.next_line().await? {
-                    let message = crate::rpc::parse_message(line)
-                        .await
-                        .context("Claude bridge 协议消息无法解析")?;
+                let mut reader = BufReader::new(stdout);
+                while let Some((message, bytes)) = crate::rpc::read_message(&mut reader)
+                    .await
+                    .context("Claude bridge 协议消息无法解析")?
+                {
                     if message["type"] == "response" {
                         if let Some(id) =
                             message["id"].as_str().and_then(|id| id.parse::<u64>().ok())
@@ -231,7 +232,7 @@ impl Bridge {
                         }
                     } else {
                         events
-                            .send(message)
+                            .send_sized(message, bytes)
                             .await
                             .context("Claude 事件接收器已关闭")?;
                     }
@@ -409,7 +410,7 @@ impl Workspace {
         }
     }
 
-    pub async fn claude_update_model(&self, id: &str, model: String) -> Result<AgentDetail> {
+    pub async fn claude_update_model(&self, id: &str, model: String) -> Result<Agent> {
         self.claude_update_settings(id, model, None).await
     }
 
@@ -421,13 +422,13 @@ impl Workspace {
         id: &str,
         model: String,
         effort: Option<Option<String>>,
-    ) -> Result<AgentDetail> {
+    ) -> Result<Agent> {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        let d = self.detail(id).await?;
-        anyhow::ensure!(d.agent.harness == "claude", "Agent 不是 Claude");
-        ensure_agent_open(&d.agent)?;
+        let agent = self.listed(id).await?;
+        anyhow::ensure!(agent.harness == "claude", "Agent 不是 Claude");
+        ensure_agent_open(&agent)?;
         let model = model.trim();
         anyhow::ensure!(
             model.len() <= 200 && !model.contains('\0'),
@@ -435,13 +436,13 @@ impl Workspace {
         );
         let effort = match effort {
             Some(choice) => choice.filter(|level| !level.is_empty()),
-            None => d.agent.settings.reasoning_effort.clone(),
+            None => agent.settings.reasoning_effort.clone(),
         };
         if let Some(level) = &effort {
             anyhow::ensure!(EFFORT_LEVELS.contains(&level.as_str()), "Claude 推理强度无效");
         }
         if !model.is_empty() || effort.is_some() {
-            let catalog = self.claude_catalog_for_agent(&d.agent).await?;
+            let catalog = self.claude_catalog_for_agent(&agent).await?;
             if !model.is_empty() {
                 validate_model(&catalog, model)?;
             }
@@ -453,20 +454,18 @@ impl Workspace {
         // active turn; claude_send applies both before the next send.
         let selected = model.to_owned();
         let event = json!({"model":model,"effort":effort});
-        let result =
-            self
-                .update_record(id, "claude/modelSelected", event, move |d| {
-                    d.agent.model = selected;
-                    d.agent.settings.reasoning_effort = effort;
-                }).await?;
+        self.record_meta(id, "claude/modelSelected", event, move |m| {
+            m.agent.model = selected;
+            m.agent.settings.reasoning_effort = effort;
+        }).await?;
         self.changed(id);
-        Ok(result)
+        self.listed(id).await
     }
 
     /// Unlike the model, a permission mode is applied to the live session at
     /// once, so it also governs later tool calls of a running turn. It is saved
     /// only after Claude accepts it; a stopped runtime receives it on start.
-    pub async fn claude_set_permission_mode(&self, id: &str, mode: &str) -> Result<AgentDetail> {
+    pub async fn claude_set_permission_mode(&self, id: &str, mode: &str) -> Result<Agent> {
         let _permit = self.admission.enter_work()?;
         anyhow::ensure!(
             SELECTABLE_PERMISSION_MODES.contains(&mode),
@@ -474,9 +473,9 @@ impl Workspace {
         );
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        let d = self.detail(id).await?;
-        anyhow::ensure!(d.agent.harness == "claude", "Agent 不是 Claude");
-        ensure_agent_open(&d.agent)?;
+        let agent = self.listed(id).await?;
+        anyhow::ensure!(agent.harness == "claude", "Agent 不是 Claude");
+        ensure_agent_open(&agent)?;
         let live = self.claudes.lock().unwrap().get(id).cloned();
         if let Some(c) = live {
             c.bridge
@@ -484,14 +483,37 @@ impl Workspace {
                 .await?;
         }
         let selected = mode.to_owned();
-        let result = self.update_record(
+        self.record_meta(
             id,
             "claude/permissionModeSelected",
             json!({"permissionMode":mode}),
-            move |d| d.agent.settings.permission_mode = Some(selected),
+            move |m| m.agent.settings.permission_mode = Some(selected),
         ).await?;
         self.changed(id);
-        Ok(result)
+        self.listed(id).await
+    }
+
+    /// The Turns a runtime's end settles (`Store::runtime_end_turns`), and
+    /// `also`.
+    async fn runtime_end_turns_and(&self, id: &str, also: &[String]) -> Result<Sel> {
+        let (id, also) = (id.to_owned(), also.to_vec());
+        self.stored(move |store| match store.runtime_end_turns(&id)? {
+            Sel::Turns(mut turns) => {
+                turns.extend(also);
+                Ok(Sel::Turns(turns))
+            }
+            other => Ok(other),
+        }).await
+    }
+
+    async fn runtime_end_turns(&self, id: &str) -> Result<Sel> {
+        self.runtime_end_turns_and(id, &[]).await
+    }
+
+    /// Whether a Claude sub-agent or background task can still report.
+    async fn running_tasks(&self, id: &str) -> Result<bool> {
+        let id = id.to_owned();
+        self.stored(move |store| Ok(!store.keyed_turns(&id, "running", None)?.is_empty())).await
     }
 
     /// Caller holds the per-Agent lifecycle gate: an explicit Close or delete
@@ -568,7 +590,8 @@ impl Workspace {
             // The process has exited and its generation is fenced: nothing
             // can report this work any more. Nothing is sent again.
             let message = "Claude 未确认停止，关闭时结束了它的连接；这次执行的结果未确认，不会重发。原 Session 与历史保留。";
-            self.update_record(id, "claude/stopUnconfirmed", json!({"generation":generation}), move |d| {
+            let sel = self.runtime_end_turns(id).await?;
+            self.record_update(id, "claude/stopUnconfirmed", json!({"generation":generation}), sel, move |d| {
                 for turn in &mut d.turns {
                     if turn["status"] == "inProgress" {
                         mark_unknown(turn);
@@ -583,10 +606,11 @@ impl Workspace {
                 d.agent.connection_state = "disconnected".into();
             }).await?;
             self.changed(id);
-        } else if self.detail(id).await?.turns.iter().any(running_subagents) {
+        } else if self.running_tasks(id).await? {
             // Its turns ended, but sub-agents and other tasks running in the
             // background cannot report any more either.
-            self.update_record(id, "claude/subAgentsEnded", json!({"generation":generation}), settle_subagents).await?;
+            let sel = self.runtime_end_turns(id).await?;
+            self.record_update(id, "claude/subAgentsEnded", json!({"generation":generation}), sel, settle_subagents).await?;
             self.changed(id);
         }
         Ok(())
@@ -706,11 +730,7 @@ impl Workspace {
             let _held = gate.lock().await;
             // A close/delete may win the gate before this background startup.
             // It is a user action, not a runtime failure to append afterward.
-            if !ws
-                .detail(&id)
-                .await
-                .is_ok_and(|d| d.agent.closed_at.is_none())
-            {
+            if !ws.listed(&id).await.is_ok_and(|agent| agent.closed_at.is_none()) {
                 return;
             }
             if let Err(error) = ws.claude_ensure(&id).await {
@@ -850,14 +870,15 @@ impl Workspace {
         );
         let agent = id.to_owned();
         let session = d.agent.claude_session_id.clone();
-        // It changes Turns, so it is compared as before; only the copy of the
-        // record nobody read is no longer returned (T-140).
+        // The Turns it settles: open ones, those with a task still able to
+        // report, and those showing a message not yet confirmed (T-140).
         self.stored_owned(owned, move |store| store.record_event(
             &agent,
             "claude/ready",
             &json!({"sessionId":session,
                 "account":started["account"],"version":started["version"],
                 "provenance":started["provenance"]}),
+            store.runtime_end_turns(&agent)?,
             |d| {
                 d.agent.connection_state = "connected".into();
                 d.agent.status = "idle".into();
@@ -927,8 +948,11 @@ impl Workspace {
                     _ => break,
                 }
             }
-            let d = self.detail(id).await?;
+            // Matched against the newest Turns, not every Turn (T-140): what
+            // is older was matched by the reconnects since.
+            let d = self.view(id, Sel::Tail(crate::claude_history::TAIL)).await?;
             let plan = crate::claude_history::plan(&d, &entries);
+            drop(d);
             if plan.unmatched {
                 self.record_meta(id, "claude/historyUnmatched", json!({"sessionId":session,"saved":entries.len()}), |_| {}).await?;
                 return Ok(());
@@ -950,7 +974,7 @@ impl Workspace {
                 wanted.retain(|offset| !messages.contains_key(offset));
             }
             let (summary, now) = (json!({"sessionId":session,"saved":entries.len(),"planned":plan.steps.len()}), Utc::now());
-            self.record_update(id, "claude/history", summary, move |d| {
+            self.record_update(id, "claude/history", summary, Sel::Tail(crate::claude_history::TAIL), move |d| {
                 crate::claude_history::apply(d, &plan, &entries, &messages, now);
             }).await?;
             Ok(())
@@ -980,7 +1004,7 @@ impl Workspace {
             self.failed(id, &error).await;
             return Err(error);
         }
-        if read { Ok(Some(self.detail(id).await?)) } else { Ok(None) }
+        if read { Ok(Some(self.answer(id).await?)) } else { Ok(None) }
     }
 
     pub async fn claude_send(self: &Arc<Self>, id: &str, text: String) -> Result<Value> {
@@ -1044,7 +1068,7 @@ impl Workspace {
     }
 
     pub(crate) async fn claude_admit_form(self: &Arc<Self>, id: &str) -> Result<()> {
-        let detail = self.detail(id).await?;
+        let detail = self.send_view(id).await?;
         anyhow::ensure!(detail.agent.status != "uncertain"
             && !(detail.agent.connection_state != "connected" && detail.turns.iter().any(|t| t["status"] == "inProgress")),
             "The previous Claude turn is unconfirmed. Reconnect before submitting the form; your answers are kept");
@@ -1183,10 +1207,12 @@ impl Workspace {
                     }
                 }
                 let (message, rejected) = (error.to_string(), !ambiguous);
-                self.update_record(
+                let sel = self.runtime_end_turns_and(id, std::slice::from_ref(&turn_id)).await?;
+                self.record_update(
                     id,
                     "runtime/error",
                     json!({"message":message,"turnId":turn_id}),
+                    sel,
                     move |d| {
                         let turn = d.turn_mut(&turn_id);
                         if rejected {
@@ -1289,7 +1315,7 @@ impl Workspace {
         // A delivery may have shown it already, in this Turn or the next:
         // every Turn is read for it, in place, and only this Turn copied and
         // changed (T-140); the change may run twice (`Store::record_send_unless`).
-        self.record_send_unless(id, "claude/followUpQueued", json!({"clientMessageId":client_id,"turnId":turn}),
+        self.record_send_unless(id, "claude/followUpQueued", json!({"clientMessageId":client_id,"turnId":turn}), client_id,
             move |turns| turns.iter().any(|t| t["items"].as_array().is_some_and(|items| items.iter().any(|i| i["clientId"] == seen.as_str()))),
             move |d| {
                 let unknown = d.message_receipts.iter().any(|r| r.input.client_message_id == client && r.status == "unknown");
@@ -1325,6 +1351,7 @@ impl Workspace {
             id,
             "claude/interruptRequested",
             json!({"turnId":turn_id}),
+            Sel::Turns(vec![turn_id.to_owned()]),
             move |d| {
                 d.turn_mut(&interrupted)["interruptRequested"] = true.into();
             },
@@ -1344,7 +1371,10 @@ impl Workspace {
     /// still waiting for that end, and nothing is sent again.
     pub async fn claude_stop_task(&self, id: &str, task_id: &str) -> Result<bool> {
         let _permit = self.admission.enter_completion()?;
-        let d = self.detail(id).await?;
+        // The Turns holding this task, found by its key (T-140).
+        let (agent, task) = (id.to_owned(), task_id.to_owned());
+        let holding = self.stored(move |store| store.keyed_turns(&agent, "task", Some(&task))).await?;
+        let d = self.view(id, Sel::Turns(holding)).await?;
         ensure_agent_open(&d.agent)?;
         anyhow::ensure!(d.agent.harness == "claude", "只有 Claude Agent 有可单独停止的后台任务");
         let (turn_id, item_id, key, record) = task_of(&d, task_id).context("这个 Agent 没有这个后台任务")?;
@@ -1364,7 +1394,7 @@ impl Workspace {
         // says which, not the time it wrote, which two requests can share.
         let claimed = Arc::new(AtomicBool::new(false));
         let (turn, item, flag, at) = (turn_id.clone(), item_id.clone(), claimed.clone(), Utc::now().to_rfc3339());
-        self.update_record(id, "claude/taskStopRequested", data(None), move |d| {
+        self.record_update(id, "claude/taskStopRequested", data(None), Sel::Turns(vec![turn_id.clone()]), move |d| {
             if let Some(record) = task_record_mut(d, &turn, &item, key) {
                 flag.store(claim_stop(record, &at), Ordering::SeqCst);
             }
@@ -1375,7 +1405,7 @@ impl Workspace {
         self.changed(id);
         if let Err(error) = c.bridge.request(json!({"op":"stop_task","taskId":task_id})).await {
             let (turn, item, text) = (turn_id.clone(), item_id.clone(), format!("{error:#}"));
-            self.update_record(id, "claude/taskStopFailed", data(Some(&text)), move |d| {
+            self.record_update(id, "claude/taskStopFailed", data(Some(&text)), Sel::Turns(vec![turn_id.clone()]), move |d| {
                 if let Some(record) = task_record_mut(d, &turn, &item, key) {
                     record["stopError"] = text.into();
                 }
@@ -1447,7 +1477,7 @@ impl Workspace {
                                 refresh_meta_status(turns, m.agent, m.pending);
                             })?;
                         if in_place.is_none() {
-                            store.record_event(&agent, "claude/permissionResolved", &data, |d| {
+                            store.record_event(&agent, "claude/permissionResolved", &data, Sel::Open, |d| {
                                 resolve(&mut d.pending);
                                 refresh_status(d);
                             })?;
@@ -1577,14 +1607,14 @@ impl Workspace {
                 if !matches!(status, "injected" | "deferred") {
                     return;
                 }
-                let Ok(detail) = self.store.send_view(id) else {
+                let Ok(agent) = self.store.agent(id) else {
                     return;
                 };
                 if let Err(error) = self.store.record_peer_hook_delivery(
                     id,
                     client_id,
                     turn_id,
-                    detail.agent.claude_session_id.as_deref(),
+                    agent.claude_session_id.as_deref(),
                     status,
                 ) {
                     eprintln!("Workspace Claude mailbox receipt: {error}");
@@ -1640,7 +1670,8 @@ impl Workspace {
                         }
                     }
                     crate::store::Route::Synchronous => {
-                        let _ = self.store.record_event(id, &kind, &message, |d| project_event(d, turn_id, event));
+                        // The Turn it names and the open ones (T-140).
+                        let _ = self.store.record_event_turns(id, &kind, &message, |d| project_event(d, turn_id, event));
                     }
                     route => {
                         // Progress inside the Turn: applied in memory and
@@ -1677,14 +1708,16 @@ impl Workspace {
                             .map_or(native_turn(&tid), |t| t["status"] == "inProgress");
                     open.then_some(tid)
                 };
-                // Read where it is held (a Turn is running), without copying a
-                // long record; otherwise from its rows (T-140).
-                let decided = match self.store.peek(id, decide) {
-                    Some(decided) => decided,
-                    None => match self.store.detail(id) {
-                        Ok(detail) => decide(&detail),
-                        Err(_) => return,
-                    },
+                // Read with the Turns it may belong to: the one it names, and
+                // the one holding the call it asks about (found by its ID), with
+                // the open and newest ones (T-140).
+                let mut named: Vec<String> = message["turnId"].as_str().map(str::to_owned).into_iter().collect();
+                if let Some(call) = message["toolUseId"].as_str() {
+                    named.extend(self.store.item_turn(id, call).ok().flatten());
+                }
+                let decided = match self.store.view(id, Sel::Turns(named)) {
+                    Ok(detail) => decide(&detail),
+                    Err(_) => return,
                 };
                 let Some(tid) = decided else {
                     return;
@@ -1707,29 +1740,17 @@ impl Workspace {
                         && p.params["requestId"] == native_id
                         && p.params["_runtimeGeneration"] == generation
                 });
-                // On a held record that has its Turn, a request changes only
-                // the pending requests and the Agent's status: written as the
-                // metadata, without copying the record (T-140). Otherwise
-                // (not held, or its Turn to open) as before.
-                let in_place = self.store.update_meta_by_turns(id, "request", &message,
-                    |turns| turns.iter().any(|t| t["id"] == tid),
-                    |turns, m| {
-                        if fresh(m.pending) {
-                            m.pending.push(request.clone());
-                        }
-                        refresh_meta_status(turns, m.agent, m.pending);
-                    });
-                if matches!(in_place, Ok(None)) {
-                    let _ = self.store.record_event(id, "request", &message, |d| {
-                        if !d.turns.iter().any(|t| t["id"] == tid) {
-                            open_native_turn(d, tid, Utc::now(), false);
-                        }
-                        if fresh(&d.pending) {
-                            d.pending.push(request);
-                        }
-                        refresh_status(d);
-                    });
-                }
+                // Its Turn with the open ones: a Turn of Claude's own not
+                // shown yet is opened for it (T-140).
+                let _ = self.store.record_event(id, "request", &message, Sel::Turns(vec![tid.to_owned()]), |d| {
+                    if !d.turns.iter().any(|t| t["id"] == tid) {
+                        open_native_turn(d, tid, Utc::now(), false);
+                    }
+                    if fresh(&d.pending) {
+                        d.pending.push(request);
+                    }
+                    refresh_status(d);
+                });
             }
             Some("permission_cancelled") => {
                 let cancel = |pending: &mut Vec<PendingRequest>| pending.retain(|p| {
@@ -1745,7 +1766,7 @@ impl Workspace {
                 if matches!(in_place, Ok(None)) {
                     let _ = self
                         .store
-                        .record_event(id, "claude/permissionCancelled", &message, |d| {
+                        .record_event(id, "claude/permissionCancelled", &message, Sel::Open, |d| {
                             cancel(&mut d.pending);
                             refresh_status(d);
                         });
@@ -1757,7 +1778,8 @@ impl Workspace {
                     c.bridge.close();
                 }
                 let base = message["error"].as_str().unwrap_or("Claude 连接已结束；执行完成情况未获确认，恢复只使用原生 Session 历史").to_owned();
-                let _ = self.store.update(id, "runtime/error", &message, |d| {
+                let sel = self.store.runtime_end_turns(id).unwrap_or(Sel::Open);
+                let _ = self.store.record_event(id, "runtime/error", &message, sel, |d| {
                     d.agent.connection_state = "disconnected".into();
                     let busy = d.turns.iter().any(|t| t["status"] == "inProgress");
                     for turn in &mut d.turns { if turn["status"] == "inProgress" { mark_unknown(turn); } }
@@ -1788,14 +1810,14 @@ impl Workspace {
                         let Some(tail) = c.bridge.settled_diagnostics().await else {
                             return;
                         };
-                        let _ = ws.update_record(&agent_id, "runtime/diagnostics", json!({"stderr":tail}), move |d| {
+                        let _ = ws.record_meta(&agent_id, "runtime/diagnostics", json!({"stderr":tail}), move |m| {
                             // Never during a reconnect, after a close, or over
                             // a newer error.
-                            if d.agent.connection_state == "disconnected"
-                                && d.agent.closed_at.is_none()
-                                && d.agent.error.as_deref() == Some(base.as_str())
+                            if m.agent.connection_state == "disconnected"
+                                && m.agent.closed_at.is_none()
+                                && m.agent.error.as_deref() == Some(base.as_str())
                             {
-                                d.agent.error = Some(diagnostic_message(&base, &tail));
+                                m.agent.error = Some(diagnostic_message(&base, &tail));
                             }
                         }).await;
                         ws.changed(&agent_id);
@@ -2726,10 +2748,6 @@ fn project_agent_result(item: &mut Value, result: &Value, failed: bool, at: Date
     }
 }
 
-fn running_subagents(turn: &Value) -> bool {
-    holds(turn, |item| TASK_RECORDS.iter().any(|key| subagent_running(&item[*key])))
-}
-
 /// The runtime that ran Claude's sub-agents and background tasks is gone:
 /// none still running can report any more. Their outcome is unknown, never
 /// assumed finished.
@@ -3565,13 +3583,13 @@ mod tests {
             commands.try_recv(),
             Err(mpsc::error::TryRecvError::Empty)
         ));
-        assert_eq!(updated.agent.model, "next-native-model");
+        assert_eq!(updated.model, "next-native-model");
         assert_eq!(
-            updated.agent.claude_session_id.as_deref(),
+            updated.claude_session_id.as_deref(),
             Some("same-session")
         );
-        assert_eq!(updated.turns[0]["status"], "inProgress");
-        assert_eq!(updated.agent.status, "working");
+        assert_eq!(ws.store.detail("a").unwrap().turns[0]["status"], "inProgress");
+        assert_eq!(updated.status, "working");
     }
 
     /// As CLI 2.1.280 lists them: `default` and Sonnet take efforts, Haiku none.
@@ -5183,7 +5201,7 @@ mod tests {
         let mut d = detail();
         d.agent.claude_session_id = Some("s".into());
         ws.store.insert(&d).unwrap();
-        ws.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+        ws.store.hold_for_test("a").unwrap();
         let (tx, _commands) = mpsc::channel(8);
         let (shutdown, _shutdown_rx) = watch::channel(false);
         let (_stopped_tx, stopped) = watch::channel(None);
@@ -5202,18 +5220,14 @@ mod tests {
         let rows = |kind: &str| -> i64 {
             ws.store.db.read().unwrap().query_row("SELECT count(*) FROM journal WHERE agent_id='a' AND kind=?1", [kind], |r| r.get(0)).unwrap()
         };
-        let counts = || (crate::store::RESULT_IN_PLACE.with(|n| n.get()), crate::store::META_IN_PLACE.with(|n| n.get()));
-        let before = counts();
-        // On this thread, so the counters see it (dispatch_claude_event runs it on a blocking one).
+        let reads = crate::store::detail_reads_of("a");
         ws.claude_event("a", 7, message.clone());
-        assert_eq!(counts(), (before.0 + 1, before.1 + 1), "the result or its completion copied the record");
+        assert_eq!(crate::store::detail_reads_of("a"), reads, "the result read the record whole");
         let after = ws.store.detail("a").unwrap();
         assert_eq!(after.turns[0]["status"], "completed");
         assert_eq!((after.agent.status.as_str(), after.agent.unread_count), ("idle", 1));
         assert_eq!((rows("claude/result"), rows("turn/completed")), (1, 1));
-        let before = counts();
         ws.claude_event("a", 7, message);
-        assert_eq!(counts().0, before.0 + 1, "the same result again copied the record");
         assert_eq!((rows("claude/result"), rows("turn/completed")), (2, 1));
         assert_eq!(ws.store.detail("a").unwrap().agent.unread_count, 1);
     }
@@ -5785,7 +5799,7 @@ mod tests {
         d.agent.status = "idle".into();
         d.agent.claude_session_id = Some("s".into());
         ws.store.insert(&d).unwrap();
-        ws.store.record_event(ID, "test/hold", &json!({}), |_| {}).unwrap();
+        ws.store.hold_for_test(ID).unwrap();
         let (tx, mut commands) = mpsc::channel::<Value>(8);
         let (shutdown, _shutdown_rx) = watch::channel(false);
         let (_stopped_tx, stopped) = watch::channel(None);
@@ -5807,12 +5821,10 @@ mod tests {
                 answering.pending.lock().await.remove(&id).unwrap().send(Ok(reply)).unwrap();
             }
         });
-        let sent = || crate::store::SENT_IN_PLACE_FOR.lock().unwrap().iter().filter(|id| id.as_str() == ID).count();
-        let (written, read) = (sent(), crate::store::detail_reads_of(ID));
+        let read = crate::store::detail_reads_of(ID);
         let input: crate::model::MessageInput = serde_json::from_value(json!({"clientMessageId":"m1","text":"next task"})).unwrap();
         let receipt = ws.send_message(ID, input).await.unwrap();
         assert_eq!(receipt.status, "accepted", "{:?}", receipt.error);
-        assert_eq!(sent() - written, 2, "turnRequested and message/bound were not both written in place");
         assert_eq!(crate::store::detail_reads_of(ID), read, "the send read a whole copy of the record");
         let turn = receipt.turn_id.clone().unwrap();
         let held = ws.store.send_view(ID).unwrap();
@@ -5848,7 +5860,7 @@ mod tests {
         d.agent.claude_session_id = Some("s".into());
         d.turns.insert(0, json!({"id":"t0","status":"completed","items":[{"id":"t0:input","type":"userMessage","content":[{"type":"text","text":"earlier"}]}]}));
         ws.store.insert(&d).unwrap();
-        ws.store.record_event(ID, "test/hold", &json!({}), |_| {}).unwrap();
+        ws.store.hold_for_test(ID).unwrap();
         let (tx, mut commands) = mpsc::channel::<Value>(8);
         let (shutdown, _shutdown_rx) = watch::channel(false);
         let (_stopped_tx, stopped) = watch::channel(None);
@@ -5871,12 +5883,10 @@ mod tests {
                     .send(Ok(json!({"queued":true,"uuid":"u","turnId":"t"}))).unwrap();
             }
         });
-        let sent = || crate::store::SENT_IN_PLACE_FOR.lock().unwrap().iter().filter(|id| id.as_str() == ID).count();
-        let (written, read) = (sent(), crate::store::detail_reads_of(ID));
+        let read = crate::store::detail_reads_of(ID);
         let input: crate::model::MessageInput = serde_json::from_value(json!({"clientMessageId":"f1","text":"also this","expectedTurnId":"t"})).unwrap();
         let receipt = ws.send_message(ID, input).await.unwrap();
         assert_eq!((receipt.status.as_str(), receipt.turn_id.as_deref()), ("queued", Some("t")), "{:?}", receipt.error);
-        assert_eq!(sent() - written, 1, "followUpQueued was not written in place");
         assert_eq!(crate::store::detail_reads_of(ID), read, "the follow-up read a whole copy of the record");
         let d = ws.store.detail(ID).unwrap();
         let t = d.turns.iter().find(|t| t["id"] == "t").unwrap();
@@ -5912,7 +5922,7 @@ mod tests {
         d.agent.claude_session_id = Some("s".into());
         d.turns.insert(0, json!({"id":"t0","status":"completed","items":[{"id":"t0:input","type":"userMessage","content":[{"type":"text","text":"earlier"}]}]}));
         ws.store.insert(&d).unwrap();
-        ws.store.record_event(ID, "test/hold", &json!({}), |_| {}).unwrap();
+        ws.store.hold_for_test(ID).unwrap();
         let (tx, mut commands) = mpsc::channel::<Value>(8);
         let (shutdown, _shutdown_rx) = watch::channel(false);
         let (_stopped_tx, stopped) = watch::channel(None);
@@ -5941,12 +5951,10 @@ mod tests {
         for client in ["f1", "f2"] {
             assert_eq!(ws.send_message(ID, input(client)).await.unwrap().status, "queued");
         }
-        let delivered = || crate::store::DELIVERED_IN_PLACE_FOR.lock().unwrap().iter().filter(|id| id.as_str() == ID).count();
-        let (written, read) = (delivered(), ws.store.detail_reads(ID));
+        let read = ws.store.detail_reads(ID);
         ws.dispatch_claude_event(ID, 7, json!({"type":"message_delivery","clientMessageId":"f1","status":"accepted","turnId":"t"})).await;
         ws.dispatch_claude_event(ID, 7, json!({"type":"message_delivery","clientMessageId":"f2","status":"next",
             "turnId":"follow-2","previousTurnId":"t"})).await;
-        assert_eq!(delivered() - written, 2, "the deliveries were not written in place");
         assert_eq!(ws.store.detail_reads(ID), read, "a delivery read a whole copy of the record");
         let d = ws.store.detail(ID).unwrap();
         let holding = |client: &str| -> Vec<&str> {

@@ -165,7 +165,7 @@ impl Workspace {
     /// The skills this Codex Agent's own Codex lists for its folder, read on
     /// its current connection only: nothing is started or resumed for this.
     pub async fn codex_skills(self: &Arc<Self>, id: &str) -> Result<View> {
-        let agent = self.detail(id).await?.agent;
+        let agent = self.listed(id).await?;
         if agent.harness != "codex" {
             return Ok(View::not("unsupported", "harness"));
         }

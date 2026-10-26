@@ -656,9 +656,9 @@ async fn home_lists_waiting_requests_without_reading_whole_records() {
             "params":{"command":"rm -rf build","turnId":"t1"},"createdAt":"2026-01-01T00:00:00Z"})).unwrap());
     }).unwrap();
     let listed = |ws: &Workspace| {
-        let reads = crate::store::DETAIL_READS.with(|n| n.get());
+        let reads = crate::store::detail_reads_of("b");
         let view = home::build(&ws.store).unwrap();
-        assert_eq!(crate::store::DETAIL_READS.with(|n| n.get()), reads, "Home read a whole record");
+        assert_eq!(crate::store::detail_reads_of("b"), reads, "Home read a whole record");
         assert_eq!(view["projects"][0]["project"]["id"], project);
         assert_eq!(view["needsYou"][0]["requestId"], "req-1");
         let mut requests = view["projects"][0]["pending"].clone();

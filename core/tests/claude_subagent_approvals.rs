@@ -3,6 +3,8 @@
 //! (runtimes/claude/bridge.mjs) over a scripted SDK
 //! (tests/fixtures/claude_subagent_bridge.mjs), so the whole path from the
 //! bridge's frames to Core's record is exercised without a model.
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use serde_json::{json, Value};
 use std::time::Duration;
 use yuzuno_workspace::{model::AgentDetail, workspace::Workspace};
