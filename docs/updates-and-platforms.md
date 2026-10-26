@@ -1,12 +1,12 @@
 # Updates and platform support
 
-Which part of Yuzuno updates how, what is released, and what to try first when something looks wrong. Status on 2026-10-25, against main `003cf00`, the source of the latest Core and Windows desktop releases. Both are published on the public repository's [Releases page](https://github.com/YuzukiS/Yuzuno/releases) ([install guide](independent-core.md)). The details stay in the pages linked below.
+Which part of Yuzuno updates how, what is released, and what to try first when something looks wrong. Status on 2026-10-26: the latest Core release is built from main `6bd7683`, and the Windows desktop release is `desktop-0.3.0`. Both are published on the public repository's [Releases page](https://github.com/YuzukiS/Yuzuno/releases) ([install guide](independent-core.md)). The details stay in the pages linked below.
 
 ## Two things update separately
 
 | Part | What it contains | How it updates | Latest release |
 |---|---|---|---|
-| **Workspace service** | Core, the web UI and the Claude bridge, on the Linux/WSL Core host | Settings → Updates → Workspace service, in a managed installation ([Managed Workspace updates](workspace-updates.md)). A source checkout updates by building a newer checkout. | `2026.10.25-core.18` (tag `core-20261025-003cf00`) |
+| **Workspace service** | Core, the web UI and the Claude bridge, on the Linux/WSL Core host | Settings → Updates → Workspace service, in a managed installation ([Managed Workspace updates](workspace-updates.md)). A source checkout updates by building a newer checkout. | `2026.10.25-core.19` (tag `core-20261025-6bd7683`) |
 | **Windows desktop app** | The native window and its connection page; it shows the web UI that Core serves | Settings → Updates → Desktop app, for a copy installed by its own installer, through a Core at a loopback address. Otherwise, run the installer by hand ([Desktop updates](../desktop/README.md#desktop-updates)). | `Yuzuno Desktop 0.3.0 for Windows` (tag `desktop-0.3.0`) |
 
 - **What a desktop update changes:** the window draws the web UI from Core, so most of what you see changes with a **Core** update, in the browser and the desktop app alike: Home, Settings, the recovery page. A desktop update changes only the native shell: the window, the connection page, link handling and the desktop's own updater.
@@ -37,7 +37,7 @@ The full matrix is in [Supported platforms](independent-core.md#supported-platfo
   - One trial build was installed on the user's Mac and reached a WSL Core through an SSH tunnel; afterwards the app and the tunnel setup were removed again. The trial does not make it a release.
   - It never updates itself; a newer build is installed by hand ([macOS desktop](../desktop/README.md#macos-desktop-core-on-another-computer)).
 - **Linux desktop app:** none. Use a browser.
-- **Phone:** a phone's browser through the phone entry (**Settings → Phone & remote access**, [Connect from a phone](independent-core.md#connect-from-a-phone-tailscale-serve)); an iPhone opened it on 2026-10-25. The iPhone app is built from source only and has no release ([iPhone app](../ios/README.md)).
+- **Phone:** a phone's browser through the phone entry (**Settings → Phone & remote access**, [Connect from a phone](independent-core.md#connect-from-a-phone-tailscale-serve)); an iPhone opened it on 2026-10-25. On 2026-10-26, with core.19, it was added to the Home Screen and turned on push notifications there: a notice that an Agent had finished arrived with the phone locked and opened that Agent, and a notice for an Ask arrived and opened Home (the user's report). The iPhone app is built from source only and has no release ([iPhone app](../ios/README.md)).
 
 ## Shortest path when something is wrong
 
