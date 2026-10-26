@@ -58,6 +58,7 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
     ws.start_ci_monitor();
     ws.start_delivery();
     ws.start_backup_schedule();
+    ws.start_web_push();
     let mcp = crate::collaboration_mcp::router(ws.clone(), port);
     let router = browser_routes(assets, updates.clone())
         // Only on Core's own port: the desktop app on this computer asks.
@@ -131,6 +132,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::claude_sdk::router())
         .merge(crate::github::router())
         .merge(crate::workspace_backup::online::router())
+        .merge(crate::web_push::router())
         .route("/api/health",get(health))
         .route("/api/workspace",get(workspace))
         .route("/api/backlog",get(backlog))
