@@ -510,15 +510,19 @@ impl crate::store::Store {
             matches!(status, "injected" | "deferred"),
             "Invalid mailbox hook receipt"
         );
-        let db = self.db.write()?;
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
         // Match the exact reservation. A late response from an old bridge/turn
         // cannot complete a newer notice or requeue already injected mail.
-        db.execute("UPDATE collaboration_messages SET delivery_state=?1, delivery_detail=json_set(delivery_detail,'$.agentId',?2,'$.sessionId',?3,'$.hookStatus',?4)
+        tx.execute("UPDATE collaboration_messages SET delivery_state=?1, delivery_detail=json_set(delivery_detail,'$.agentId',?2,'$.sessionId',?3,'$.hookStatus',?4)
             WHERE recipient_id=?2 AND delivery_state IN ('sending','uncertain')
               AND json_extract(delivery_detail,'$.mode')='hook'
               AND json_extract(delivery_detail,'$.clientMessageId')=?5
               AND json_extract(delivery_detail,'$.turnId')=?6",
             params![if status=="injected" {"delivered"} else {"pending"},agent_id,session_id,status,client_id,turn_id])?;
+        // A deferred notice was not sent: an acknowledged result stays quiet.
+        crate::collaboration_store::skip_acknowledged(&tx, agent_id)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -535,9 +539,12 @@ impl crate::store::Store {
         turn_id: &str,
         error: &str,
     ) -> Result<()> {
-        let db = self.db.write()?;
-        db.execute("UPDATE collaboration_messages SET delivery_state='pending',delivery_detail=?1 WHERE recipient_id=?2 AND seq<=?3 AND delivery_state='sending' AND json_extract(delivery_detail,'$.clientMessageId')=?4",
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        tx.execute("UPDATE collaboration_messages SET delivery_state='pending',delivery_detail=?1 WHERE recipient_id=?2 AND seq<=?3 AND delivery_state='sending' AND json_extract(delivery_detail,'$.clientMessageId')=?4",
             params![json!({"agentId":agent_id,"mode":"steer","deferredTurnId":turn_id,"error":error}).to_string(),agent_id,through,client_id])?;
+        crate::collaboration_store::skip_acknowledged(&tx, agent_id)?;
+        tx.commit()?;
         Ok(())
     }
 

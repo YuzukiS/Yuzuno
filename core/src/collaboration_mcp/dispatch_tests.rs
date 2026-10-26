@@ -126,6 +126,19 @@ async fn two_agents_dispatch_submit_and_receive_automatic_result_over_mcp() {
     );
     assert_eq!(inbox["messages"][0]["reportedBy"]["id"], "dev");
     assert_eq!(inbox["messages"][0]["source"]["sessionId"], "session-dev");
+    // The lead acknowledges the handled result with its own requestId. The
+    // JSON-RPC request has an id, but a call without requestId is refused.
+    let ack_input = json!({"taskId":task,"resultId":result["task"]["result"]["id"],"dispatchId":dispatch_id});
+    let missing = clients[0].call_tool(request("task_result_ack", ack_input.clone())).await.unwrap();
+    assert_eq!(missing.is_error, Some(true));
+    assert!(missing.structured_content.unwrap()["error"].as_str().unwrap().starts_with("invalid_input: requestId"));
+    let mut with_key = ack_input.clone();
+    with_key["requestId"] = json!("ack");
+    let acked = clients[0].call_tool(request("task_result_ack", with_key.clone())).await.unwrap().structured_content.unwrap();
+    assert_eq!(acked["wakeUp"]["state"], "skipped");
+    assert_eq!(clients[0].call_tool(request("task_result_ack", with_key.clone())).await.unwrap().structured_content.unwrap(), acked);
+    let refused = clients[1].call_tool(request("task_result_ack", with_key)).await.unwrap();
+    assert!(refused.structured_content.unwrap()["error"].as_str().unwrap().starts_with("result_ack_forbidden:"));
     // An Agent reads the current view by default; the whole record is asked for.
     let detail = clients[0]
         .call_tool(request("task_get", json!({"taskId":task,"view":"full"})))
