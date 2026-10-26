@@ -1554,6 +1554,12 @@ impl Store {
     /// newest first.
     pub fn keyed_turns(&self, id: &str, kind: &str, key: Option<&str>) -> Result<Vec<String>> {
         self.settle_unwritten(id)?;
+        self.keyed_turns_written(id, kind, key)
+    }
+
+    /// `keyed_turns` once the Agent's streamed output is written: for a
+    /// caller that holds the record lock and wrote it.
+    fn keyed_turns_written(&self, id: &str, kind: &str, key: Option<&str>) -> Result<Vec<String>> {
         let db = self.db.read()?;
         Ok(match key {
             Some(key) => {
@@ -2883,10 +2889,13 @@ impl Store {
     /// finds nothing: a Claude follow-up is shown once.
     pub fn record_send_unless(&self, id: &str, kind: &str, data: &Value, client: &str, shown: impl Fn(&[Value]) -> bool,
         mutate: impl Fn(&mut AgentDetail)) -> Result<u64> {
-        let mut named = self.named_turns(id, kind, data)?;
-        named.extend(self.keyed_turns(id, "client", Some(client))?);
         let lock = self.record_lock(id);
         let _record = lock.lock();
+        // Found under the record lock, so no other change moves the
+        // follow-up between finding its Turn and this change.
+        self.write_unwritten(id)?;
+        let mut named = self.named_turns(id, kind, data)?;
+        named.extend(self.keyed_turns_written(id, "client", Some(client))?);
         Ok(self.change_locked(id, kind, data, Sel::Turns(named), false, &[client], |d| if !shown(&d.turns[..]) { mutate(d) },
             |_, _| ())?.0)
     }
@@ -2897,10 +2906,12 @@ impl Store {
     /// Turn, so `change` is told no other Turn is in progress.
     pub fn record_delivery(&self, id: &str, kind: &str, data: &Value, client_id: &str,
         change: impl Fn(&mut AgentDetail, bool)) -> Result<u64> {
-        let mut named = self.named_turns(id, kind, data)?;
-        named.extend(self.keyed_turns(id, "client", Some(client_id))?);
         let lock = self.record_lock(id);
         let _record = lock.lock();
+        // As in `record_send_unless`: found under the record lock.
+        self.write_unwritten(id)?;
+        let mut named = self.named_turns(id, kind, data)?;
+        named.extend(self.keyed_turns_written(id, "client", Some(client_id))?);
         Ok(self.change_locked(id, kind, data, Sel::Turns(named), false, &[client_id], |d| change(d, false), |_, _| ())?.0)
     }
 
