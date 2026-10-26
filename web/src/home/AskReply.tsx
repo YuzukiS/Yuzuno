@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { LoaderCircle, MessageSquareReply, Send } from "lucide-react";
 import { errorText, shortcutModifier } from "../api";
 import { useLanguage, useStrings } from "../i18n";
@@ -13,6 +13,7 @@ import {
 import { relative } from "./format";
 import { outboxKey, pendingReply, sendReply } from "./home-api";
 import { homeText } from "./home-text";
+import { draftStore } from "./reply-drafts";
 import type { Section } from "./types";
 
 /** Its owner changed the section after the user's reply (an edit keeps it replied). */
@@ -86,28 +87,33 @@ export function TargetPicker({
   );
 }
 
+/** A text reply; its owner keeps the text and says what a delivery clears. */
 function TextReply({
   placeholder,
-  initial,
+  text,
+  onText,
   disabled,
+  held = false,
   busy,
   onSend,
   label,
 }: {
   placeholder: string;
-  initial: string;
+  text: string;
+  onText: (text: string) => void;
   disabled: boolean;
+  /** Not sendable as it is, though it can still be written in. */
+  held?: boolean;
   busy: boolean;
   onSend: (text: string) => Promise<unknown>;
   label: string;
 }) {
   const t = useStrings(homeText);
-  const [text, setText] = useState(initial);
   const submit = () => {
     const value = text.trim();
-    if (!value || disabled || busy) return;
+    if (!value || disabled || held || busy) return;
     // The text stays until the reply is delivered.
-    onSend(value).then(() => setText(""), () => {});
+    onSend(value).catch(() => {});
   };
   return (
     <form
@@ -124,7 +130,7 @@ function TextReply({
         maxLength={20_000}
         placeholder={placeholder}
         disabled={disabled}
-        onChange={(event) => setText(event.target.value)}
+        onChange={(event) => onText(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
             event.preventDefault();
@@ -135,7 +141,7 @@ function TextReply({
       <button
         type="submit"
         className="primary-button"
-        disabled={disabled || busy || !text.trim()}
+        disabled={disabled || held || busy || !text.trim()}
         title={t.sendTitle(shortcutModifier)}
       >
         {busy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
@@ -162,6 +168,16 @@ function formText(form: ClarificationProps, values: ClarificationValues) {
 }
 
 /**
+ * An Ask's free-text reply not sent yet (T-182), kept apart from card replies:
+ * its text, recipient and the version of the ask it was begun on. Core answers
+ * the ask as it is when a reply arrives, so the version is never sent: it only
+ * makes this window ask before a reply begun on one version of the question
+ * goes to another.
+ */
+type AskDraft = { key: string; text: string; version: number; agentId: string; at: string };
+const askDrafts = draftStore<AskDraft>("yuzuno.home-ask-drafts.v1");
+
+/**
  * The reply controls an ask section declares. Every one of them sends one
  * user message through Core, to the section's owner unless the user picks
  * another Agent. Nothing here acts on the Agent's behalf.
@@ -174,7 +190,52 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
   const { send, busy, error, receipt, kept } = useReply(context, section.key);
   const ownerOpen =
     section.owner.state === "active" && context.agents.some((a) => a.id === section.owner.agentId);
-  const [target, setTarget] = useState(() => kept?.agentId || (ownerOpen ? section.owner.agentId : ""));
+  // Kept once the Workspace is known: another one may hold the same project
+  // and key (T-195).
+  const slot = outboxKey(context.workspaceId, context.projectId, section.key);
+  const stored = () => (context.workspaceId ? askDrafts.load()[slot] ?? null : null);
+  const [draft, setDraft] = useState<AskDraft | null>(() => {
+    const found = stored();
+    if (found || !kept?.text || kept.choice) return found;
+    // An unconfirmed send's text, for its retry: kept here once changed.
+    return { key: section.key, text: kept.text, version: section.version, agentId: kept.agentId, at: "" };
+  });
+  const latest = useRef(draft);
+  const [restored, setRestored] = useState(() => !!draft?.at && !!draft.text.trim());
+  const [onlyHere, setOnlyHere] = useState(false);
+  // The Workspace arrived after this was drawn: its draft, unless one is being written.
+  const [shownSlot, setShownSlot] = useState(slot);
+  if (shownSlot !== slot) {
+    setShownSlot(slot);
+    if (!latest.current?.text.trim()) {
+      const found = stored();
+      latest.current = found;
+      setDraft(found);
+      setRestored(!!found?.text.trim());
+    }
+  }
+  const [target, setTarget] = useState(
+    () => (draft?.text.trim() && draft.agentId) || kept?.agentId || (ownerOpen ? section.owner.agentId : ""),
+  );
+  function keep(next: AskDraft | null) {
+    latest.current = next;
+    setDraft(next);
+    if (context.workspaceId) setOnlyHere(!askDrafts.save(slot, next?.text.trim() ? next : null));
+  }
+  const write = (patch: Partial<AskDraft>) =>
+    keep({
+      ...(latest.current ?? { key: section.key, text: "", version: section.version, agentId: target }),
+      ...patch,
+      at: new Date().toISOString(),
+    });
+  // Emptied, it begins again at the version on screen.
+  const writeText = (text: string) => write(text.trim() ? { text } : { text, version: section.version });
+  const pickTarget = (agentId: string) => {
+    setTarget(agentId);
+    if (latest.current?.text.trim()) write({ agentId });
+  };
+  // Begun on another version of the ask: sent only once the user says which.
+  const otherVersion = !!draft?.text.trim() && draft.version !== section.version;
   const [again, setAgain] = useState(false);
   // The version this window replied to: a later version from the owner
   // (for example a reopened question) asks again.
@@ -214,6 +275,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
           {ask.state === "replied" && repliedThenUpdated(section) && (
             <p className="home-ask-updated">{t.updatedAfterReply(section.owner.name, relative(section.updatedAt, language))}</p>
           )}
+          {!!draft?.text.trim() && <p className="home-note">{t.askDraftAfterReply}</p>}
         </div>
         {!context.readOnly && (
           <button type="button" className="quiet-button" onClick={() => setAgain(true)}>
@@ -227,7 +289,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
       <TargetPicker
         agents={context.agents}
         value={target}
-        onChange={setTarget}
+        onChange={pickTarget}
         disabled={context.readOnly || busy}
       />
       {!ownerOpen && (
@@ -294,14 +356,37 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
         <p className="home-note">{t.formUnavailable}</p>
       ) : null}
       {(freeText || form === undefined || (!reply.options?.length && !reply.choice && !form)) && (
-        <TextReply
-          label={t.replyField(section.title)}
-          placeholder={prompt}
-          initial={kept?.text && !kept.choice ? kept.text : ""}
-          disabled={disabled}
-          busy={busy}
-          onSend={(text) => deliver(text)}
-        />
+        <>
+          {otherVersion && draft ? (
+            <p className="home-note" role="status">
+              {t.askDraftOtherVersion(draft.version, section.version)}{" "}
+              <button type="button" className="inline-link" disabled={busy} onClick={() => write({ version: section.version })}>
+                {t.referTo(section.version)}
+              </button>{" "}
+              <button type="button" className="inline-link" disabled={busy} onClick={() => keep(null)}>
+                {t.discard}
+              </button>
+            </p>
+          ) : (
+            restored && !!draft?.text.trim() && <p className="home-note">{t.askDraftKept(draft.version)}</p>
+          )}
+          <TextReply
+            label={t.replyField(section.title)}
+            placeholder={prompt}
+            text={draft?.text ?? ""}
+            onText={writeText}
+            disabled={disabled}
+            held={otherVersion}
+            busy={busy}
+            onSend={async (text) => {
+              await deliver(text);
+              // Only what was sent leaves: anything written while it was being sent stays.
+              if (!latest.current || latest.current.text.trim() === text) keep(null);
+              setRestored(false);
+            }}
+          />
+          {onlyHere && <p className="home-note">{t.askDraftOnlyHere}</p>}
+        </>
       )}
       {busy && <p className="home-note" role="status">{t.sending}</p>}
       {error && <p className="inline-error" role="alert">{error}</p>}
@@ -317,6 +402,7 @@ export function ProjectReply(context: ReplyContext & { projectName: string }) {
   const t = useStrings(homeText);
   const { send, busy, error, receipt, kept } = useReply(context);
   const [target, setTarget] = useState(kept?.agentId || "");
+  const [text, setText] = useState(kept?.text || "");
   const [open, setOpen] = useState(!!kept);
   if (!context.agents.length) return null;
   if (!open)
@@ -333,10 +419,11 @@ export function ProjectReply(context: ReplyContext & { projectName: string }) {
       <TextReply
         label={t.replyField(context.projectName)}
         placeholder={t.projectMessage}
-        initial={kept?.text || ""}
+        text={text}
+        onText={setText}
         disabled={context.readOnly || !target}
         busy={busy}
-        onSend={(text) => send(target, text)}
+        onSend={(value) => send(target, value).then(() => setText(""))}
       />
       {receipt && !error && (
         <p className="home-note" role="status">
