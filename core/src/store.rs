@@ -1147,6 +1147,9 @@ impl Store {
         let workspace_lock = lock_workspace(path)?;
         let db = Connection::open(path)?;
         db.busy_timeout(BUSY_TIMEOUT)?;
+        // An earlier Core's Workspace is refused before anything is written
+        // to it (docs/adr/0002-session-store-new-data-directory.md).
+        record_rows::check_store(&db)?;
         // FULL is SQLite's default; stated because the writer's unsynced
         // connection uses NORMAL and this one must never (see `db`).
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;
@@ -1156,7 +1159,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS workspace_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS machines(id TEXT PRIMARY KEY, data TEXT NOT NULL);
             PRAGMA user_version=2;")?;
-        record_rows::check_store(&db)?;
+        record_rows::mark_store(&db)?;
         crate::collaboration_store::migrate(&db)?;
         crate::projects::migrate(&db)?;
         crate::services::migrate(&db)?;

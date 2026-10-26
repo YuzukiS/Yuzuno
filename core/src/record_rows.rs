@@ -213,24 +213,39 @@ pub fn migrate(db: &Connection) -> Result<()> {
 }
 
 /// Opens only a Workspace whose Agents this store wrote, or one with no
-/// Agents yet (which it marks as its own). Agents written by an earlier
-/// Core keep their Turns in another form (a whole row, or receipts in the
-/// metadata); they are not read or changed: no old record is converted.
-/// This is a product constraint, with what the new format must still
-/// guarantee: docs/adr/0002-session-store-new-data-directory.md.
+/// Agents yet (which `mark_store` then marks as its own). Agents written by
+/// an earlier Core keep their Turns in another form (a whole row, or
+/// receipts in the metadata); they are not read or changed: no old record is
+/// converted. Only read, before anything is written to the file, so an
+/// earlier Core's Workspace is refused as it was (its schema, journal mode
+/// and pages untouched). This is a product constraint, with what the new
+/// format must still guarantee: docs/adr/0002-session-store-new-data-directory.md.
 pub fn check_store(db: &Connection) -> Result<()> {
-    let marked: Option<String> = db.query_row("SELECT value FROM workspace_meta WHERE key=?1", [STORE_KEY], |r| r.get(0)).optional()?;
+    let has = |table: &str| -> Result<bool> {
+        Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [table], |r| r.get(0))?)
+    };
+    let marked: Option<String> = if has("workspace_meta")? {
+        db.query_row("SELECT value FROM workspace_meta WHERE key=?1", [STORE_KEY], |r| r.get(0)).optional()?
+    } else {
+        None
+    };
     match marked.as_deref() {
         Some(STORE_VERSION) => Ok(()),
         Some(other) => bail!("此 Workspace 的会话记录由会话存储 {other} 写入，这个 Core 不认识；请使用写入它的 Core"),
         None => {
-            let agents: i64 = db.query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))?;
+            let agents: i64 = if has("agents")? { db.query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0))? } else { 0 };
             ensure!(agents == 0, "此 Workspace 的 {agents} 个 Agent 由旧版会话存储写入；新会话存储不读取、不转换旧记录。\
                 请使用新的数据目录（任务板按切换窗口说明另行迁出），或继续使用旧版 Core");
-            db.execute("INSERT INTO workspace_meta(key,value) VALUES(?1,?2)", params![STORE_KEY, STORE_VERSION])?;
             Ok(())
         }
     }
+}
+
+/// Marks a Workspace `check_store` let open as this store's: one with no
+/// Agents is marked once its schema exists; a marked one is left as it is.
+pub fn mark_store(db: &Connection) -> Result<()> {
+    db.execute("INSERT OR IGNORE INTO workspace_meta(key,value) VALUES(?1,?2)", params![STORE_KEY, STORE_VERSION])?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -255,3 +255,34 @@ fn a_turn_beside_a_long_one_leaves_its_items_as_they_were() {
     assert_eq!(after.turns[1]["items"][0]["text"], "done");
     assert_eq!(after.agent.status, "idle");
 }
+
+/// A Workspace an earlier Core wrote is refused before anything is written
+/// to it: its file, schema version and journal mode stay as they were
+/// (docs/adr/0002-session-store-new-data-directory.md).
+#[test]
+fn an_earlier_cores_workspace_is_refused_as_it_was() {
+    let parent = concat!(env!("CARGO_MANIFEST_DIR"), "/../target");
+    std::fs::create_dir_all(parent).unwrap();
+    let dir = tempfile::tempdir_in(parent).unwrap();
+    // An earlier schema: a rollback journal, version 1, Agents as whole rows.
+    let older = dir.path().join("older.sqlite");
+    Connection::open(&older).unwrap().execute_batch("CREATE TABLE agents(id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        PRAGMA user_version=1; INSERT INTO agents VALUES('a','{}');").unwrap();
+    // The Core before this store's: WAL, version 2, its tables, no store mark.
+    let earlier = dir.path().join("earlier.sqlite");
+    Connection::open(&earlier).unwrap().execute_batch("PRAGMA journal_mode=WAL;
+        CREATE TABLE agents(id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE workspace_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL); PRAGMA user_version=2;
+        INSERT INTO agents VALUES('a','{}'); PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+    for (path, version, mode) in [(&older, 1, "delete"), (&earlier, 2, "wal")] {
+        let before = std::fs::read(path).unwrap();
+        let error = Store::open(path).err().expect("an earlier Core's Workspace is refused");
+        assert!(format!("{error:#}").contains("旧版会话存储"), "{error:#}");
+        assert_eq!(std::fs::read(path).unwrap(), before, "{} unchanged", path.display());
+        let wal = std::path::PathBuf::from(format!("{}-wal", path.display()));
+        assert!(std::fs::metadata(&wal).map_or(true, |m| m.len() == 0), "nothing written to {}", wal.display());
+        let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        assert_eq!(db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), version);
+        assert_eq!(db.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0)).unwrap(), mode);
+    }
+}
