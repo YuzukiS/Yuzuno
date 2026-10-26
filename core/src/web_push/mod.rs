@@ -529,6 +529,18 @@ fn record(ws: &Workspace, to: &Subscription, answer: &Answer) -> Result<bool> {
     })
 }
 
+/// A subscription as push.json holds it now, while it is still the one
+/// `id` names and still active. Read without holding the file across a send.
+fn current(ws: &Workspace, id: &str) -> Option<Subscription> {
+    match load(ws) {
+        Ok(saved) => saved.subscriptions.into_iter().find(|s| s.id == id && s.state == Standing::Active),
+        Err(error) => {
+            eprintln!("Push notifications: {error:#}");
+            None
+        }
+    }
+}
+
 async fn deliver(ws: Arc<Workspace>, found: Vec<Notice>) {
     let saved = match load(&ws) {
         Ok(saved) => saved,
@@ -546,11 +558,19 @@ async fn deliver(ws: Arc<Workspace>, found: Vec<Notice>) {
         Ok(id) => id,
         Err(error) => return eprintln!("Push notifications: {error:#}"),
     };
-    for to in saved.subscriptions.iter().filter(|s| s.state == Standing::Active) {
+    let devices: Vec<String> = saved.subscriptions.iter().filter(|s| s.state == Standing::Active).map(|s| s.id.clone()).collect();
+    for id in devices {
+        let Some(to) = current(&ws, &id) else { continue };
         let wanted = found.iter().filter(|n| to.kinds.contains(&n.kind)).cloned().collect();
         for notice in notices::merged(wanted) {
-            let answer = send_one(&ws, &key, to, &notice, &workspace).await;
-            match record(&ws, to, &answer) {
+            // Read again before each send: a device turned off, choosing
+            // otherwise or stopped while an earlier send waited is not sent to.
+            let Some(to) = current(&ws, &id) else { break };
+            if !notice.covers.iter().all(|kind| to.kinds.contains(kind)) {
+                continue;
+            }
+            let answer = send_one(&ws, &key, &to, &notice, &workspace).await;
+            match record(&ws, &to, &answer) {
                 Ok(false) => {}
                 Ok(true) => break,
                 Err(error) => {

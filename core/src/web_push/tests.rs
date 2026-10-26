@@ -333,6 +333,44 @@ async fn a_gone_subscription_stops_and_unanswered_sends_stop_it_after_five() {
     assert_eq!(service.count(), 1 + UNANSWERED as usize, "one send per Turn's end, none retried");
 }
 
+/// One batch sends to devices one after another (Lead 11655): a device
+/// turned off, no longer choosing the kind, or stopped by another batch while
+/// an earlier device's send waits gets nothing from that batch.
+#[tokio::test]
+async fn a_device_changed_while_another_is_sent_to_is_not_sent_to() {
+    for change in ["removed", "kinds", "stopped"] {
+        let (_dir, ws) = workspace();
+        call(&ws, "POST", "/api/push/key", None).await;
+        for endpoint in [ENDPOINT, OTHER] {
+            let (status, said) = call(&ws, "POST", "/api/push/subscriptions", Some(subscription(&device(), endpoint, json!(["finished"])))).await;
+            assert_eq!(status, StatusCode::OK, "{said}");
+        }
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let (seen, weak) = (sent.clone(), Arc::downgrade(&ws));
+        let _ = ws.web_push.test_post.set(Arc::new(move |out: &Outgoing| {
+            seen.lock().unwrap().push(out.endpoint.clone());
+            // The other device changes while this send waits for its answer.
+            if out.endpoint == ENDPOINT {
+                update(&weak.upgrade().unwrap(), |saved| {
+                    let other = saved.subscriptions.iter().position(|s| s.endpoint == OTHER).unwrap();
+                    match change {
+                        "removed" => { saved.subscriptions.remove(other); }
+                        "kinds" => saved.subscriptions[other].kinds = vec![Kind::NeedsYou],
+                        _ => saved.subscriptions[other].state = Standing::Failed,
+                    }
+                    Ok(())
+                }).unwrap();
+            }
+            Answer::Accepted
+        }));
+        let working = notices::AgentState { id: "a".into(), name: "Builder".into(), status: "working".into(), turn: Some("t1".into()), ..Default::default() };
+        let before = Read { agents: vec![working.clone()], asks: vec![] };
+        let after = Read { agents: vec![notices::AgentState { status: "idle".into(), ..working }], asks: vec![] };
+        deliver(ws.clone(), notices::notices(&before, &after)).await;
+        assert_eq!(*sent.lock().unwrap(), vec![ENDPOINT.to_owned()], "the other device was {change}");
+    }
+}
+
 /// The saved subscription, as push.json holds it.
 fn state_now(ws: &Workspace) -> Value {
     serde_json::to_value(&load(ws).unwrap().subscriptions[0]).unwrap()

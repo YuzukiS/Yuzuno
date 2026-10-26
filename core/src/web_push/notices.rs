@@ -75,6 +75,8 @@ pub struct Notice {
     pub agent: Option<String>,
     /// One notification for a burst.
     pub summary: bool,
+    /// The kinds it tells of: a device must still want each of them.
+    pub covers: Vec<Kind>,
     /// What makes it the same event again (see `Recent`).
     pub event: String,
 }
@@ -103,7 +105,7 @@ fn agent_notice(before: &AgentState, after: &AgentState) -> Option<Notice> {
         return None;
     }
     let notice = |kind: Kind, title: String, body: &str, event: String| Notice {
-        kind, tag: tag(kind, &after.id), title, body: body.into(), agent: Some(after.id.clone()), summary: false, event,
+        kind, tag: tag(kind, &after.id), title, body: body.into(), agent: Some(after.id.clone()), summary: false, covers: vec![kind], event,
     };
     if after.pending > before.pending || (after.status == "waiting" && before.status != "waiting") {
         // A request replayed after a reconnect is the same request again.
@@ -143,6 +145,7 @@ pub fn notices(before: &Read, after: &Read) -> Vec<Notice> {
             body: "An Ask is waiting for your answer on Home.".into(),
             agent: None,
             summary: false,
+            covers: vec![Kind::NeedsYou],
             event: format!("ask:{key}:{}", ask.since),
         });
     }
@@ -156,10 +159,13 @@ pub fn merged(mut notices: Vec<Notice>) -> Vec<Notice> {
     if notices.len() <= BURST {
         return notices;
     }
-    let mut names: Vec<&str> = Vec::new();
+    let (mut names, mut covers): (Vec<&str>, Vec<Kind>) = (Vec::new(), Vec::new());
     for notice in &notices {
         if !names.contains(&notice.title.as_str()) {
             names.push(&notice.title);
+        }
+        if !covers.contains(&notice.kind) {
+            covers.push(notice.kind);
         }
     }
     vec![Notice {
@@ -169,6 +175,7 @@ pub fn merged(mut notices: Vec<Notice>) -> Vec<Notice> {
         body: clip(&names.join(" · "), PREVIEW_CHARS),
         agent: None,
         summary: true,
+        covers,
         event: String::new(),
     }]
 }
@@ -286,6 +293,7 @@ mod tests {
         let one = merged(all);
         assert_eq!(one.len(), 1);
         assert_eq!(one[0].kind, Kind::NeedsYou);
+        assert_eq!(one[0].covers, vec![Kind::NeedsYou, Kind::Finished]);
         assert_eq!(one[0].title, "5 updates in your Workspace");
         assert!(one[0].body.starts_with("Agent 4 needs you · Agent 0 finished"));
         let sent = payload(&one[0], "w1");
