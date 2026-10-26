@@ -35,13 +35,37 @@ Run both as Jobs; check.py starts its own user units, so give its Job
 `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS`. The setup downloads about
 200 MB.
 
+## On a GPU
+
+`setup-gpu.sh ENV_DIR` makes the same Lightning 2.5.0 environment with
+PyTorch 2.7.1 for CUDA 12.8: 2.5.1 has no kernels for compute capability 12.0
+(RTX 50 series). It brings its own CUDA libraries in ENV_DIR and uses the
+host's driver; it installs nothing else. `setup-gpu.sh ENV_DIR --cpu` makes
+the same versions as a CPU build, to check the resume path without a GPU.
+
+```sh
+acceptance/t109-checkpoint/setup-gpu.sh target/t109-gpu/env-cu128
+T109_DEVICE=cuda T109_HOLD_MIB=4096 /usr/bin/python3 acceptance/t109-checkpoint/check.py \
+  target/t109-gpu/env-cu128/bin/python target/t109-gpu/check
+```
+
+Run it as a Job that reserves the GPU (`gpu` with the device's UUID): Core
+sets `CUDA_VISIBLE_DEVICES` to it and check.py passes it to every attempt.
+Each attempt trains with deterministic cuBLAS and holds `T109_HOLD_MIB` of
+written device memory. check.py samples the card's used memory with
+nvidia-smi before, while and after the first attempt trains: the card is
+shared with other programs, so it asks for the hold to appear (at least
+three quarters of it) and to be gone again after the stop, not for an exact
+figure. `report.json` keeps the GPU by UUID prefix.
+
 What it does not show:
 
 - **Exact results elsewhere.** This example makes the result exact by
   construction: one CPU thread, no dropout, and each step's batch drawn
   from the global step. Another training is exactly as resumable as the
   state it saves (RNG, data loader positions, environment).
-- **GPU memory.** Freeing GPU memory has not been measured here.
+- **Per-process GPU memory.** The GPU check samples the whole
+  card; it shows the attempt's block freed, not a per-process figure.
 - **Core's own handling.** Core's records, mail, grace period and resume
   are covered by `core/src/jobs/checkpoint_tests.rs`. The wrapper's corner
   cases (a stop before the command starts, after it exits, a shell that does
