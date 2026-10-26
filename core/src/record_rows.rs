@@ -1564,6 +1564,11 @@ enum Op {
     DeleteTurn { key: String },
     /// Positions 0..n again after Turns were deleted.
     Renumber,
+    /// The Turns of a change, in its order, in the places they hold among
+    /// all of the Agent's Turns (after its new ones were added): for a
+    /// change that adds a Turn before ones stored, as a rewind's earlier
+    /// page does.
+    Order { keys: Vec<String> },
     /// All Item rows of a Turn now stored whole.
     DeleteItems { turn: String },
     Item { turn: String, key: String, ord: usize, payloads: usize, data: String, previews: Option<String>,
@@ -1617,10 +1622,18 @@ pub fn plan(db: &Connection, id: &str, meta: &AgentDetail, turns: &[Value], load
         ops.push(Op::Renumber);
     }
     let mut next = turn_count(db, id)? - deleted;
+    // New Turns go after the newest; one before a Turn already stored needs
+    // the change's order kept (`Op::Order`).
+    let (mut keys, mut new_seen, mut new_before_stored) = (Vec::new(), false, false);
     for turn in turns {
         let key = turn_key(turn)?;
         let items = split_items(turn);
         let old = stored.get(&key).copied();
+        match old {
+            None => new_seen = true,
+            Some(_) => new_before_stored |= new_seen,
+        }
+        keys.push(key.clone());
         let touched = dirty.turns.get(&key);
         let full = dirty.all || old.is_none() || touched.is_some_and(|t| t.all_items);
         let recounted = old.is_some_and(|n| n != items.map(|items| item_count(items)));
@@ -1644,6 +1657,9 @@ pub fn plan(db: &Connection, id: &str, meta: &AgentDetail, turns: &[Value], load
             }
             Some(_) => {}
         }
+    }
+    if new_before_stored {
+        ops.push(Op::Order { keys });
     }
     for receipt in receipts {
         ops.push(Op::Receipt(receipt_row(receipt)?));
@@ -1782,6 +1798,18 @@ pub fn apply(db: &Connection, id: &str, plan: &Plan, agent: &crate::model::Agent
                 for (ord, (key, was)) in keys.iter().enumerate() {
                     if *was != ord as i64 {
                         set.execute(params![id, key, ord as i64])?;
+                    }
+                }
+            }
+            Op::Order { keys } => {
+                let stored: Vec<(String, i64)> = db.prepare_cached("SELECT turn_id, ord FROM agent_turns WHERE agent_id=?1 ORDER BY ord")?
+                    .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+                let at: HashMap<&str, i64> = stored.iter().map(|(key, ord)| (key.as_str(), *ord)).collect();
+                let places: Vec<i64> = stored.iter().filter(|(key, _)| keys.contains(key)).map(|(_, ord)| *ord).collect();
+                let mut set = db.prepare_cached("UPDATE agent_turns SET ord=?3 WHERE agent_id=?1 AND turn_id=?2")?;
+                for (key, place) in keys.iter().filter(|key| at.contains_key(key.as_str())).zip(places) {
+                    if at[key.as_str()] != place {
+                        set.execute(params![id, key, place])?;
                     }
                 }
             }

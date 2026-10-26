@@ -1077,6 +1077,36 @@ mod tests {
         stop(&ws).await;
     }
 
+    /// A record that holds only the newest native Turns (as an imported
+    /// Agent does), rewound by one: the native history's newest page then
+    /// has a Turn before those kept, which the rewind adds. It is stored,
+    /// read and reopened in that order (the fixture pages 2 Turns at a time:
+    /// [5,6] of [1..6], rewound to before 6, gives [4,5]).
+    #[tokio::test]
+    async fn a_rewind_that_adds_an_earlier_turn_stores_the_turns_in_order() {
+        let _serial = SERIAL.lock().await;
+        let (dir, ws) = fixture().await;
+        let native: Vec<Value> = (1..=6).map(|n| turn(&n.to_string())).collect();
+        std::fs::write(dir.path().join("native.json"), serde_json::to_vec(&native).unwrap()).unwrap();
+        ws.update_record("a", "test/window", json!({}), |d| {
+            d.turns = vec![turn("5"), turn("6")];
+        })
+        .await
+        .unwrap();
+        let p = ws.rewind_preview("a", "6").await.unwrap();
+        assert_eq!(ws.rewind_confirm("a", p["previewId"].as_str().unwrap()).await.unwrap()["status"], "completed");
+        assert_eq!(ids(&ws.detail("a").await.unwrap().turns).unwrap(), ["4", "5"]);
+        let stored: Vec<String> = ws.store.db.read().unwrap()
+            .prepare("SELECT turn_id FROM agent_turns WHERE agent_id='a' ORDER BY ord").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(stored, ["4", "5"]);
+        stop(&ws).await;
+        let data = dir.path().join("data");
+        drop(ws);
+        let reopened = Workspace::new(data, dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+        assert_eq!(ids(&reopened.detail("a").await.unwrap().turns).unwrap(), ["4", "5"]);
+    }
+
     /// The history a preview holds, to see when it is freed.
     fn held(key: &str) -> Option<Weak<Vec<Value>>> {
         PREVIEWS.lock().unwrap().get(key).map(|p| Arc::downgrade(&p.baseline))
