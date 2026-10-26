@@ -2767,14 +2767,19 @@ impl Store {
         if self.hot(id).is_none() {
             self.make_room(id, MAX_STREAMS - 1);
             // A change of the metadata alone read no Turn: its slice is read
-            // from the rows it just wrote.
+            // from the rows it just wrote. Nothing after the commit fails the
+            // change: if that read does, the Agent is not held, and is read
+            // again when next needed.
             let read = match sel {
-                Sel::Meta => Some(read_hot(&*self.db.read()?, id)?.0),
-                _ => None,
+                Sel::Meta => self.db.read().ok().and_then(|db| read_hot(&db, id).inspect_err(|e| self.note_damage(id, e)).ok())
+                    .map(|(slice, _)| slice),
+                _ => Some(d.clone_meta()),
             };
-            let mut memory = self.memory.lock().unwrap();
-            if !memory.hot.contains_key(id) {
-                memory.hot.insert(id.into(), Hot::new(read.unwrap_or_else(|| d.clone_meta()), Unsettled::default(), Instant::now()));
+            if let Some(read) = read {
+                let mut memory = self.memory.lock().unwrap();
+                if !memory.hot.contains_key(id) {
+                    memory.hot.insert(id.into(), Hot::new(read, Unsettled::default(), Instant::now()));
+                }
             }
         }
         let hot = self.hot(id);

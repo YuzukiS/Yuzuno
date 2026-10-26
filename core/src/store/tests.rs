@@ -211,6 +211,37 @@ fn a_backfill_confirms_a_message_whose_start_was_written_out() {
     assert_eq!(m["text"], whole);
 }
 
+/// A change is answered as it was saved. A change of the metadata alone on
+/// an Agent not in memory reads its open Turns after its commit, to hold
+/// them; when that read fails (here its rows no longer fit together), the
+/// Agent stays out of memory and the change still succeeds, once.
+#[test]
+fn a_saved_change_is_never_answered_as_failed() {
+    let (dir, store) = lab();
+    store.insert(&long("a", 1, 16, 2)).unwrap();
+    assert!(store.peek("a", |_| ()).is_none(), "not in memory");
+    rusqlite::Connection::open(dir.path().join("workspace.sqlite")).unwrap()
+        .execute("UPDATE agent_items SET data='{' WHERE agent_id='a' AND turn_id='t'", []).unwrap();
+    let rev = store.rev("a");
+    store.update_meta("a", "agent/renamed", &json!({}), |m| m.agent.name = "renamed".into()).unwrap();
+    {
+        let db = store.db.read().unwrap();
+        let journaled: i64 = db.query_row("SELECT COUNT(*) FROM journal WHERE agent_id='a' AND kind='agent/renamed'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(journaled, 1);
+        assert_eq!(record_rows::load_meta(&db, "a").unwrap().unwrap().agent.name, "renamed");
+    }
+    assert!(store.rev("a") > rev);
+    assert!(store.peek("a", |_| ()).is_none(), "left out of memory");
+    // No listing from before the change is kept, and the damage is not
+    // hidden: read again, the Agent is listed in error from its saved
+    // metadata, and nothing more is written to it.
+    assert!(store.listed_agent("a").is_none(), "no listing kept from before");
+    let listed = store.agent("a").unwrap();
+    assert_eq!((listed.name.as_str(), listed.status.as_str()), ("renamed", "error"));
+    assert!(store.update_meta("a", "agent/renamed", &json!({}), |m| m.agent.name = "again".into()).is_err());
+}
+
 /// Two long Claude messages: one cut off (never confirmed), then a reply that
 /// is confirmed and that the result names. Confirming the reply reads back
 /// its text only, not the other's; the reply, its end spilled again since

@@ -78,6 +78,36 @@ for line in sys.stdin:
     assert!(ws.detail("a").await.unwrap().agent.closed_at.is_some());
 }
 
+/// An approval's answer, once saved as sent, reaches the runtime even if the
+/// read after its save fails. Here the Agent is not in memory, its listing is
+/// cached, and its open Turn's rows no longer fit together. Before, the save
+/// was answered as failed and the answer never went out, while its
+/// `_responseSent` mark refused every retry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_saved_approval_answer_reaches_the_runtime_although_a_read_after_it_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = workspace(&dir);
+    let mut d = agent("a", "thread-a");
+    d.agent.connection_state = "connected".into();
+    d.turns[0]["items"] = json!([{"id":"cmd","type":"commandExecution","command":"make","status":"inProgress","aggregatedOutput":""}]);
+    d.pending.push(PendingRequest { id: "approval".into(), agent_id: "a".into(),
+        method: "item/commandExecution/requestApproval".into(),
+        params: json!({"_runtimeGeneration":42,"_rpcId":100,"turnId":"turn-a","itemId":"cmd"}), created_at: now(), stale: false });
+    ws.store.insert(&d).unwrap();
+    let seen = dir.path().join("seen");
+    let code = "import sys\nfor line in sys.stdin:\n with open(sys.argv[1],'a') as f: f.write(line)\n";
+    let (tx, _rx) = mpsc::channel(8);
+    let rpc = Rpc::spawn("python3", &["-c".into(), code.into(), seen.display().to_string()], tx).await.unwrap();
+    ws.rpcs.lock().unwrap().insert("a".into(), Connection { generation: 42, rpc, closing: false, events: None, attachment: Default::default() });
+    ws.store.agent("a").unwrap();
+    assert!(ws.store.peek("a", |_| ()).is_none(), "not in memory");
+    sql(&ws).execute("UPDATE agent_items SET data='{' WHERE agent_id='a'", []).unwrap();
+    ws.respond("approval", json!({"decision":"decline"})).await.unwrap();
+    eventually("the answer reaches the runtime", || std::fs::read_to_string(&seen)
+        .is_ok_and(|lines| lines.lines().any(|l| serde_json::from_str::<Value>(l).is_ok_and(|v| v["id"] == 100 && v["result"]["decision"] == "decline"))))
+        .await;
+}
+
 fn agent(id: &str, thread_id: &str) -> AgentDetail {
     serde_json::from_value(json!({"agent":{"id":id,"name":id,"cwd":"/tmp","model":"m","color":"sage",
         "threadId":thread_id,"status":"working","createdAt":"","updatedAt":"","unreadCount":0,"pendingCount":0,
