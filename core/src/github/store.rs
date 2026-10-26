@@ -138,6 +138,22 @@ pub(crate) fn task_link_counts(db: &Connection, ids: &[&str]) -> Result<std::col
     Ok(result)
 }
 
+/// The most GitHub objects one task links: PRs and Issues, closed and merged
+/// ones too; unlinking one frees its place.
+pub(crate) const TASK_LINK_LIMIT: i64 = 30;
+
+/// How full a task's links are, beside the links themselves in each
+/// github_links answer for a task (T-204), counted as a compact row counts them.
+fn link_capacity(db: &Connection, task: &str) -> Result<Value> {
+    let linked = task_link_counts(db, &[task])?.get(task).copied().unwrap_or(0);
+    Ok(json!({
+        "linkedCount": linked,
+        "limit": TASK_LINK_LIMIT,
+        "remaining": (TASK_LINK_LIMIT - linked).max(0),
+        "note": "Every PR and Issue linked to this task counts, closed and merged ones too; linking one already linked takes no second place. When it is full, unlink one this task no longer needs (action unlink with its linkId) or link the new one to another task. Nothing is unlinked for you.",
+    }))
+}
+
 impl Store {
     /// A saved repository's full name, or None (T-164: where an abbreviated
     /// SHA in task materials is resolved).
@@ -161,13 +177,17 @@ impl Store {
                 repos.push(serde_json::from_str::<Value>(&row?)?);
             }
         }
+        let mut capacity = None;
         if let Some(task) = task {
             let id = crate::collaboration_store::task_key(&db, task)?.0;
             links = task_links(&db, &id)?;
+            capacity = Some(link_capacity(&db, &id)?);
         }
-        Ok(
-            json!({"repositories":repos,"links":links,"source":{"host":"Core host","authentication":"GitHub CLI (gh) on the Core host","provider":"github.com"}}),
-        )
+        let mut page = json!({"repositories":repos,"links":links,"source":{"host":"Core host","authentication":"GitHub CLI (gh) on the Core host","provider":"github.com"}});
+        if let Some(capacity) = capacity {
+            page["capacity"] = capacity;
+        }
+        Ok(page)
     }
     pub(crate) fn github_link_repo(&self, project: &str, repo: &Repository) -> Result<()> {
         let mut db = self.db.write()?;
@@ -318,7 +338,12 @@ pub(crate) fn link_object(
         params![task, id],
         |r| r.get(0),
     )?;
-    ensure!(count < 30, "A task can link up to 30 GitHub objects");
+    ensure!(
+        count < TASK_LINK_LIMIT,
+        "link_limit_reached: this task already links {count} GitHub objects, closed and merged ones too \
+         (linkedCount {count}, limit {TASK_LINK_LIMIT}, remaining 0). Nothing was linked. Unlink one it no longer \
+         needs (github_links action unlink with its linkId), or link this one to another task."
+    );
     save_repository(db, repo)?;
     let data = json!({"snapshot":snapshot,"syncedAt":now(),"lastAttemptAt":now(),"error":null});
     // Re-link is idempotent and must not overwrite a newer refresh snapshot.
