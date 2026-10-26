@@ -188,6 +188,7 @@ export const boardText = strings({
     uncertain: "Reminder unconfirmed",
     error: "Reminder unavailable",
     failed: "Reminder unavailable",
+    skipped: "Not reminded: result already handled",
   } as Record<string, string>,
   savedInMailbox: "Saved in mailbox",
   modes: {
@@ -364,6 +365,7 @@ export const boardText = strings({
     uncertain: "提醒未确认",
     error: "无法提醒",
     failed: "无法提醒",
+    skipped: "结果已处理，未再提醒",
   },
   savedInMailbox: "已保存在邮箱",
   modes: {
