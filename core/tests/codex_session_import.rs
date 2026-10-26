@@ -498,3 +498,23 @@ async fn a_reconnect_reads_the_newest_page_whole_only_when_the_record_lacks_it()
     assert_eq!(detail.turns[3]["items"][0]["text"], "Native result 12");
     lab.ws.close_agent(&agent.id).await.unwrap();
 }
+
+/// A reconnect of an Agent that is not imported, after another client ran
+/// more than two pages of Turns, reads back to its newest stored Turn and
+/// keeps every Turn between, in order (T-140).
+#[tokio::test]
+async fn a_reconnect_reads_back_to_the_newest_stored_turn() {
+    let lab = Lab::new();
+    let agent = lab.ws.import_codex_session(lab.input()).await.unwrap();
+    lab.ws.reconnect(&agent.id).await.unwrap();
+    let db = rusqlite::Connection::open(lab.root.path().join("data/workspace.sqlite")).unwrap();
+    db.execute("DELETE FROM codex_imports", []).unwrap();
+    // t-12..t-18: seven Turns past the record's newest, t-11.
+    std::fs::write(lab.root.path().join("extra"), "7").unwrap();
+    lab.ws.reconnect(&agent.id).await.unwrap();
+    let detail = lab.ws.store.detail(&agent.id).unwrap();
+    let ids: Vec<&str> = detail.turns.iter().map(|t| t["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, (9..19).map(|i| format!("t-{i}")).collect::<Vec<_>>());
+    assert_eq!(detail.turns[3]["items"][0]["text"], "Native result 12");
+    lab.ws.close_agent(&agent.id).await.unwrap();
+}

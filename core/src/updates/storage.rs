@@ -152,6 +152,24 @@ pub(super) mod tests {
         })).unwrap()
     }
 
+    /// Agents an earlier Core wrote (layout 1, no session-store marker)
+    /// are not readable by this release: an update to it is refused before
+    /// it is applied, not left to fail opening the Workspace.
+    #[test]
+    fn an_update_from_records_an_earlier_core_wrote_is_refused_up_front() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("PRAGMA user_version=2;
+            CREATE TABLE workspace_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE agents(id TEXT PRIMARY KEY, layout INTEGER NOT NULL, data TEXT NOT NULL);
+            INSERT INTO agents VALUES('a', 1, '{}');").unwrap();
+        let storage = Storage::read(&db).unwrap();
+        assert_eq!(storage.record_layouts, [1]);
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = crate::updates::package::fixture(&dir.path().join("candidate"), "candidate");
+        let error = storage.readable_by(&bundle.manifest).unwrap_err().to_string();
+        assert!(error.contains("records.layout=1"), "{error}");
+    }
+
     #[test]
     fn same_schema_does_not_make_legacy_record_readers_compatible() {
         let dir = tempfile::tempdir().unwrap();

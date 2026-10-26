@@ -363,17 +363,19 @@ impl Rpc {
 /// Native messages can be megabytes (a resumed Thread's whole history, a large
 /// command output); those are parsed on the blocking pool, not on an async
 /// worker. Small ones, almost all of them, are parsed in place.
-/// A native message longer than this is read and parsed only while holding
-/// LARGE: one at a time in this Core, so their decoding peaks never add up.
+/// A native message longer than this is parsed only while holding LARGE:
+/// one at a time in this Core, so the values they parse into (their largest
+/// part) never add up. Its line is read without LARGE, so a line still
+/// arriving (a slow remote, a process stalled mid-line) never holds up
+/// another connection's.
 pub(crate) const LARGE_MESSAGE: usize = 1 << 20;
 static LARGE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The next line of `reader`, parsed, with its length; None at its end. As
 /// `lines()` read them (a final line without a newline counts), but a long
-/// one goes on only once it holds LARGE.
+/// one is parsed only once it holds LARGE.
 pub(crate) async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Result<Option<(Value, usize)>> {
     let mut line = Vec::new();
-    let mut large = None;
     loop {
         let buf = reader.fill_buf().await?;
         if buf.is_empty() {
@@ -388,9 +390,6 @@ pub(crate) async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(reader: &mu
         if end {
             break;
         }
-        if large.is_none() && line.len() > LARGE_MESSAGE {
-            large = Some(LARGE.lock().await);
-        }
     }
     if line.is_empty() {
         return Ok(None);
@@ -402,6 +401,7 @@ pub(crate) async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(reader: &mu
         }
     }
     let bytes = line.len();
+    let large = if bytes > LARGE_MESSAGE { Some(LARGE.lock().await) } else { None };
     let message = parse_message(String::from_utf8(line).context("协议消息不是 UTF-8")?).await?;
     drop(large);
     Ok(Some((message, bytes)))
@@ -589,6 +589,34 @@ mod transport_tests {
 #[cfg(test)]
 mod reply_tests {
     use super::*;
+
+    /// A long line still arriving on one connection does not hold up a long
+    /// line that has arrived on another (LARGE is taken for the parse only).
+    #[tokio::test]
+    async fn a_long_line_still_arriving_holds_up_no_other_connection() {
+        use tokio::io::AsyncWriteExt;
+        let long = format!("{{\"text\":\"{}\"}}", "x".repeat(LARGE_MESSAGE + 1024));
+        let (mut slow_writer, slow_reader) = tokio::io::duplex(64 << 10);
+        let slow = tokio::spawn(async move {
+            let mut reader = tokio::io::BufReader::new(slow_reader);
+            read_message(&mut reader).await
+        });
+        // More than LARGE_MESSAGE of a line, and no newline yet.
+        slow_writer.write_all(&long.as_bytes()[..LARGE_MESSAGE + 512]).await.unwrap();
+        let (mut writer, reader) = tokio::io::duplex(64 << 10);
+        let whole = format!("{long}\n");
+        let writing = tokio::spawn(async move { writer.write_all(whole.as_bytes()).await.unwrap(); writer });
+        let mut reader = tokio::io::BufReader::new(reader);
+        let (message, bytes) = tokio::time::timeout(Duration::from_secs(10), read_message(&mut reader)).await
+            .expect("not held up by the line still arriving").unwrap().unwrap();
+        assert_eq!(bytes, long.len());
+        assert_eq!(message["text"].as_str().map(str::len), Some(LARGE_MESSAGE + 1024));
+        drop(writing.await.unwrap());
+        slow_writer.write_all(&long.as_bytes()[LARGE_MESSAGE + 512..]).await.unwrap();
+        slow_writer.write_all(b"\n").await.unwrap();
+        let (message, _) = slow.await.unwrap().unwrap().unwrap();
+        assert_eq!(message["text"].as_str().map(str::len), Some(LARGE_MESSAGE + 1024));
+    }
 
     fn pending() -> (Reply, PendingReply) {
         let (tx, rx) = oneshot::channel();

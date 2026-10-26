@@ -887,7 +887,7 @@ impl Workspace {
         let (imported_history, page_turns) = if !new_empty_thread {
             anyhow::ensure!(a.thread_id.as_deref() == Some(thread_id.as_str()), "Codex 恢复了不同会话；原会话未确认");
             let page = match self.newest_turn_states(id).await {
-                Ok(held) => crate::codex_sessions::recovery_page(&connection.rpc, &thread_id, &attempt.before, &held).await,
+                Ok(held) => crate::codex_sessions::recovery_page(&connection.rpc, &thread_id, &attempt.before, &held, !imported).await,
                 Err(error) => Err(error),
             };
             let page = match page {
@@ -1105,7 +1105,7 @@ impl Workspace {
             .await?;
         anyhow::ensure!(result["thread"]["id"].as_str() == Some(thread.as_str()), "Codex 核对返回了不同会话；原会话未确认");
         let held = self.newest_turn_states(id).await?;
-        let page = match crate::codex_sessions::recovery_page(&connection.rpc, &thread, &d, &held).await {
+        let page = match crate::codex_sessions::recovery_page(&connection.rpc, &thread, &d, &held, !imported).await {
             Ok(page) => page,
             Err(error) => {
                 if let Err(write) = self.record_missing_turns(id, connection.generation, &thread, &result["thread"], &error).await {

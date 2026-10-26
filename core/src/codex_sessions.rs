@@ -290,12 +290,23 @@ async fn newest_page(rpc: &Rpc, id: &str, held: &[(String, Option<String>)]) -> 
     history_page(rpc, id, None).await
 }
 
+/// The most earlier pages a recovery page reads back to the record's newest
+/// Turn (`recovery_page`): Turns another client added past that many are
+/// not merged.
+const BACK_PAGES: usize = 100;
+
 /// Refresh the recent window and any cached unfinished Turn that fell outside
 /// it while another client advanced the session. Metadata pages locate those
 /// specific Turns; only their full pages are loaded. Never infer tool success
 /// merely because the current native thread is idle. `held` is the record's
-/// newest Turns as stored (`newest_page`).
-pub(crate) async fn recovery_page(rpc: &Rpc, id: &str, cached: &AgentDetail, held: &[(String, Option<String>)]) -> Result<HistoryPage> {
+/// newest Turns as stored (`newest_page`). With `back`, the Turns another
+/// client added since the record's newest one are read too, page by page back
+/// to it (at most BACK_PAGES), once metadata pages have found it: an Agent
+/// whose record is its whole history gets them all, as a whole native
+/// history once gave it. Without (an imported Agent), the newest page only,
+/// the rest paged in on demand (`history_page`).
+pub(crate) async fn recovery_page(rpc: &Rpc, id: &str, cached: &AgentDetail, held: &[(String, Option<String>)], back: bool)
+    -> Result<HistoryPage> {
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
         let mut page = newest_page(rpc, id, held).await?;
         let mut missing: HashSet<String> = cached.turns.iter()
@@ -303,10 +314,16 @@ pub(crate) async fn recovery_page(rpc: &Rpc, id: &str, cached: &AgentDetail, hel
             .filter_map(|turn| turn["id"].as_str())
             .filter(|tid| !page.turns.iter().any(|turn| turn["id"] == *tid))
             .map(str::to_owned).collect();
+        // The record's newest Turn when the newest page does not reach it,
+        // and the earlier pages, all of Turns after it, passed on the way.
+        let mut newest = held.last().map(|(tid, _)| tid.clone()).filter(|tid| back && page.has_more
+            && !page.turns.is_empty() && !page.turns.iter().any(|turn| turn["id"] == tid.as_str()));
+        let mut between: Vec<String> = Vec::new();
         let mut cursor = page.next_cursor.clone();
         for _ in 0..1700 {
-            if missing.is_empty() { return Ok(page); }
-            let Some(current) = cursor.as_deref() else {
+            if missing.is_empty() && newest.is_none() { return Ok(distinct(page)); }
+            let Some(current) = cursor.clone() else {
+                if missing.is_empty() { return Ok(distinct(page)); }
                 let mut turn_ids: Vec<String> = missing.into_iter().collect();
                 turn_ids.sort();
                 return Err(MissingNativeTurns { turn_ids }.into());
@@ -316,17 +333,47 @@ pub(crate) async fn recovery_page(rpc: &Rpc, id: &str, cached: &AgentDetail, hel
             })).await?;
             let turns = metadata["data"].as_array().context("Codex 历史分页格式无效")?;
             if turns.iter().any(|turn| turn["id"].as_str().is_some_and(|tid| missing.contains(tid))) {
-                let mut recovered = history_page(rpc, id, Some(current)).await?.turns;
+                let mut recovered = history_page(rpc, id, Some(current.as_str())).await?.turns;
                 for turn in &recovered { if let Some(tid) = turn["id"].as_str() { missing.remove(tid); } }
                 recovered.append(&mut page.turns);
                 page.turns = recovered;
             }
+            if let Some(tid) = newest.clone() {
+                if turns.iter().any(|turn| turn["id"] == tid.as_str()) {
+                    // Found: the Turns after it on this page, then the pages
+                    // passed, oldest first, before the newest page.
+                    let mut added = history_page(rpc, id, Some(current.as_str())).await?.turns;
+                    if let Some(at) = added.iter().position(|turn| turn["id"] == tid.as_str()) {
+                        added.drain(..=at);
+                    }
+                    for passed in between.drain(..).rev() {
+                        added.append(&mut history_page(rpc, id, Some(passed.as_str())).await?.turns);
+                    }
+                    added.append(&mut page.turns);
+                    page.turns = added;
+                    newest = None;
+                } else if between.len() < BACK_PAGES {
+                    between.push(current.clone());
+                } else {
+                    newest = None;
+                    between.clear();
+                }
+            }
             let next = metadata["nextCursor"].as_str().map(str::to_owned);
-            anyhow::ensure!(next.is_none() || next != cursor, "Codex 历史分页没有前进");
+            anyhow::ensure!(next.is_none() || next.as_deref() != Some(current.as_str()), "Codex 历史分页没有前进");
             cursor = next;
         }
+        if missing.is_empty() { return Ok(distinct(page)); }
         bail!("未完成 Turn 超出本次历史核对范围；不会猜测执行结果")
     }).await.context("历史核对超时；先前未完成的 Turn 状态仍需确认")?
+}
+
+/// `page` with each Turn once (the first, in order): a page read for an
+/// unfinished Turn and again for the Turns after the record's newest.
+fn distinct(mut page: HistoryPage) -> HistoryPage {
+    let mut seen = HashSet::new();
+    page.turns.retain(|turn| seen.insert(turn["id"].as_str().map(str::to_owned)));
+    page
 }
 
 impl Workspace {
