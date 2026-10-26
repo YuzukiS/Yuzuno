@@ -28,9 +28,9 @@ pub(super) const MESSAGE_STATE: &str = "SELECT delivery_state FROM collaboration
 /// A result is a report as it was submitted; what happened to the task after it
 /// is the rest of the view (T-203).
 const RESULT_NOTE: &str = "The latest result as reported at reportedAt, never rewritten: statusAtReport and \
-    taskVersionAtReport are the task's then, editsSinceReport counts the task's field edits since (null when Core did \
-    not record it), notification is the mail's state at report and notificationNow its delivery now. The status, \
-    progress and blocker of this view are the task now";
+    taskVersionAtReport are the task's then, editsSinceReport counts the saved task version changes since, not \
+    comments (null when Core did not record it), notification is the mail's state at report and notificationNow \
+    its delivery now. The status, progress and blocker of this view are the task now";
 /// Where a PR's CI state comes from, beside each observation.
 const CHECKS_SOURCE: &str = "all of this head's checks as GitHub reported them when Core last read the PR (observedAt); github_refresh reads them again";
 const MORE: &str = "task_get view \"activity\" (afterSeq, limit) pages the history; view \"full\" is the whole record with \
@@ -166,7 +166,7 @@ fn delivery(db: &Connection, task: &str) -> Result<Value> {
             Some(r) if r["actualHarness"].is_null() => Some(None),
             _ => None,
         };
-        pulls.push(json!({"linkId": link["id"], "repository": link["repository"], "number": link["number"],
+        pulls.push(json!({"linkId": link["id"], "repositoryId": link["repositoryId"], "repository": link["repository"], "number": link["number"],
             "url": link["url"], "title": snapshot["title"], "state": snapshot["state"], "headSha": head,
             "baseSha": snapshot["baseSha"], "baseBranch": snapshot["baseBranch"],
             // When Core read the PR from GitHub, not the PR's own updated_at; a
@@ -192,8 +192,8 @@ fn delivery(db: &Connection, task: &str) -> Result<Value> {
             )
             .optional()?;
         let run = run.map(|raw| serde_json::from_str::<Value>(&raw)).transpose()?.map(|r| {
-            json!({"runKey": r["id"], "name": r["name"], "status": r["status"], "conclusion": r["conclusion"],
-                "headSha": r["headSha"], "branch": r["branch"], "event": r["event"], "attempt": r["attempt"],
+            json!({"runKey": r["id"], "repositoryId": r["repositoryId"], "name": r["name"], "status": r["status"],
+                "conclusion": r["conclusion"], "headSha": r["headSha"], "branch": r["branch"], "event": r["event"], "attempt": r["attempt"],
                 "observedAt": r["observedAt"], "url": r["url"]})
         });
         let w = &sub["watch"];
@@ -206,10 +206,14 @@ fn delivery(db: &Connection, task: &str) -> Result<Value> {
     }
     // What this task's CI watches saw on a PR's head, beside its checks and
     // never in their place: one workflow's run is not every check of the PR.
+    // A run belongs to a PR only in the PR's own repository: the same commit
+    // can be the head of an upstream PR and of its fork's (the repository the
+    // run ran in, not a fork's head repository).
     for pull in &mut pulls {
         let mut runs: Vec<Value> = Vec::new();
         for run in subscriptions.iter().map(|s| &s["latestRun"]) {
             if run.is_object() && !pull["headSha"].is_null() && run["headSha"] == pull["headSha"]
+                && !pull["repositoryId"].is_null() && run["repositoryId"] == pull["repositoryId"]
                 && !runs.iter().any(|seen| seen["runKey"] == run["runKey"]) {
                 runs.push(json!({"runKey": run["runKey"], "name": run["name"], "status": run["status"],
                     "conclusion": run["conclusion"], "attempt": run["attempt"], "observedAt": run["observedAt"]}));

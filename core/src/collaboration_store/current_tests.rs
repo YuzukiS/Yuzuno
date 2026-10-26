@@ -201,6 +201,25 @@ fn observations_carry_their_source_and_time_and_a_result_stays_as_reported() {
     assert_eq!((pr["ci"]["state"].clone(), pr["ci"]["observedAt"].clone()), (json!("pending"), json!("t0")), "{pr}");
     assert!(current(&s)["delivery"]["note"].as_str().unwrap().contains("not all of its checks"));
 
+    // The same commit heads a fork's PR too. Each PR lists only the runs of
+    // its own repository: the fork's passing run is not the upstream PR's.
+    let fork = Repository { id: 8, full_name: "fork/repo".into() };
+    s.github_link_object("T-1", &fork, "pull", 2, json!({"title":"Ship (fork)","state":"open","baseSha":base,"headSha":head,
+        "baseBranch":"main","observedAt":"t0","ci":{"state":"pending","headSha":head,"complete":false,"observedAt":"t0"}})).unwrap();
+    let subscribe = serde_json::from_value(json!({"requestId":"ci-fork","taskId":"T-1","agentId":null,
+        "url":"https://github.com/fork/repo/pull/2","expectedSha":head})).unwrap();
+    let sub = s.ci_subscribe(Some("a"), subscribe, fork, "pull", 2).unwrap();
+    let forked = json!({"id":"github:8:77:1","source":"github_actions","repositoryId":8,"repository":"fork/repo","runId":"77",
+        "attempt":"1","headSha":head,"name":"Fork CI","status":"passed","rawStatus":"completed","conclusion":"success",
+        "event":"pull_request","branch":"feature","observedAt":"t2","url":"https://github.com/fork/repo/actions/runs/77/attempts/1"});
+    s.ci_observe(sub["watchId"].as_str().unwrap(), Ok(crate::ci_monitor::Observed { runs: vec![forked], head: Some(head.clone()),
+        pr: None, truncated: false, checked: chrono::Utc::now().timestamp(), wait: 0, excluded: 0 })).unwrap();
+    let pulls = current(&s)["delivery"]["pullRequests"].clone();
+    let runs = |pr: &Value| pr["watchedRuns"].as_array().unwrap().iter().map(|r| r["runKey"].clone()).collect::<Vec<_>>();
+    assert_eq!(runs(&pulls[0]), vec![json!("github:7:42:2")], "the fork's run is not the upstream PR's: {pulls}");
+    assert_eq!(runs(&pulls[1]), vec![json!("github:8:77:1")], "the upstream run is not the fork PR's: {pulls}");
+    assert_eq!((pulls[0]["repositoryId"].clone(), pulls[1]["repositoryId"].clone()), (json!(7), json!(8)));
+
     // The result is the report it was. Status, version and the mail's delivery
     // move on in their own fields; the report and its state then do not.
     let version = current(&s)["version"].clone();
