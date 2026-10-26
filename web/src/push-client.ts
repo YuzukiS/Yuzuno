@@ -62,10 +62,12 @@ export function chosenPushKinds(prefs: NotificationPrefs): PushKind[] {
   return pushKinds.filter((kind) => prefs.categories[kind as NotificationCategory]);
 }
 
-/** What Core says of this device's subscription. */
+/** What Core says of this device's subscription; the times and reasons it
+ * has not recorded come back as null. */
+type PushRecord = { stoppedAt?: string | null; reason?: string | null; deliveredAt?: string | null; lastError?: string | null };
 export type PushState =
-  | { state: "active"; kinds: PushKind[] }
-  | { state: "expired" | "failed"; stoppedAt?: string; reason?: string }
+  | ({ state: "active"; kinds: PushKind[] } & PushRecord)
+  | ({ state: "expired" | "failed"; kinds?: PushKind[] } & PushRecord)
   | { state: "none" };
 
 /** This device's subscription, if its service worker has one. */

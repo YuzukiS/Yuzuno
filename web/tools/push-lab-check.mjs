@@ -57,6 +57,8 @@ try {
   }, [endpoint, keys]);
   page = await context.newPage();
   page.on("pageerror", (error) => report.errors.push(error.message));
+  // What Core says of a subscription, without the times and reasons it adds.
+  const standing = (body) => ({ state: body.state, ...(body.kinds ? { kinds: body.kinds } : {}) });
   const api = (path, body) => page.evaluate(async ([path, body]) => {
     const response = await fetch(`/api${path}`, body === undefined
       ? { headers: { "X-Yuzuno-Client": "desktop" } }
@@ -103,7 +105,7 @@ try {
   assert.equal(Buffer.from(key.body.publicKey, "base64url").length, 65, "Core made its key on the click");
   assert.deepEqual(await page.evaluate(() => window.__push.log), ["subscribe 65"]);
   let state = await api("/push/subscriptions/state", { endpoint });
-  assert.deepEqual(state.body, { state: "active", kinds: ["needsYou", "failed", "finished"] });
+  assert.deepEqual(standing(state.body), { state: "active", kinds: ["needsYou", "failed", "finished"] });
   await page.screenshot({ path: resolve(output, "2-on.png") });
   check("turning it on registers Core's /sw.js at /, makes the key once and subscribes for the chosen kinds", { registration, state: state.body });
 
@@ -114,7 +116,7 @@ try {
     return body.kinds?.length === 2;
   }, endpoint, { timeout: 10_000, polling: 250 });
   state = await api("/push/subscriptions/state", { endpoint });
-  assert.deepEqual(state.body, { state: "active", kinds: ["needsYou", "failed"] });
+  assert.deepEqual(standing(state.body), { state: "active", kinds: ["needsYou", "failed"] });
   check("changing a kind tells Core for the same subscription", state.body);
 
   const google = await api("/push/subscriptions", { endpoint: "https://fcm.googleapis.com/fcm/send/t200-lab", keys, kinds: ["finished"] });
