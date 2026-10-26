@@ -720,6 +720,8 @@ export function App() {
   const nativeHistoryHere = !currentDetail?.conversation?.hasBefore;
   const [pageTarget, setPageTarget] = useState<{agentId:string; turnId:string; itemId?:string; top:number; start:string|null; end:string|null; hold:true} | null>(null);
   const [pageSpace, setPageSpace] = useState<"before" | "after" | null>(null);
+  // Puts the page target's place back, while it holds (ConversationRows calls it).
+  const heldPlace = useRef<(() => void) | null>(null);
   useEffect(() => { setPageTarget(null); setPageSpace(null); }, [selected]);
   useEffect(() => { if (sourceJump || jumpToTurn) setPageSpace(null); }, [sourceJump, jumpToTurn]);
   // An earlier window that could not be read moves nothing to hold in place.
@@ -762,9 +764,9 @@ export function App() {
     };
     // Rows in front are measured over the next frames, and while the target
     // holds they leave the correcting to this (ConversationRows); both would
-    // count the same change twice (T-161). Hold until the item has stayed
-    // put for two frames, at most a second. A height that changes after
-    // layout is put back before that frame is drawn, not a frame later.
+    // count the same change twice (T-161). They call it after each measure,
+    // so no frame is drawn with the item moved. Hold until it has stayed put
+    // for two frames, at most a second.
     let frame = 0, still = 0, frames = 0;
     const settle = () => {
       still = restore() ? 0 : still + 1;
@@ -773,10 +775,8 @@ export function App() {
     };
     restore();
     frame = requestAnimationFrame(settle);
-    const inner = scroll.current.querySelector(".conversation-inner");
-    const resized = inner && typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => { if (restore()) still = 0; }) : null;
-    if (inner) resized?.observe(inner);
-    return () => { cancelAnimationFrame(frame); resized?.disconnect(); };
+    heldPlace.current = () => { if (restore()) still = 0; };
+    return () => { cancelAnimationFrame(frame); heldPlace.current = null; };
   }, [currentDetail, live.windowLoading, pageTarget, selected]);
   const questionPanel = useRef<PendingQuestionsHandle>(null);
   const [questionIndex] = useState(() => new QuestionIndex());
@@ -2770,7 +2770,7 @@ export function App() {
                 }}
               >
                 <div className="conversation-inner" ref={followGrowth}>
-                  <ConversationWindow key={selected} scroll={scroll} follow={stickToBottom}
+                  <ConversationWindow key={selected} scroll={scroll} follow={stickToBottom} hold={heldPlace}
                     target={sourceJump && catchupSource?.turnId ? { turnId: catchupSource.turnId, itemId: catchupSource.itemId }
                       : jumpToTurn ? { turnId: jumpToTurn } : pageTarget}>
                   {currentDetail?.conversation && <div className="conversation-history-window">

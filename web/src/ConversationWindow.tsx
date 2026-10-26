@@ -17,6 +17,8 @@ type WindowContext = Memory & {
    * `hold` keeps the reader's place while history pages (T-161): it keeps the
    * row mounted but opens nothing, since opening moves what is being read. */
   target?: { turnId: string; itemId?: string; hold?: boolean } | null;
+  /** Puts a held place back (App's, T-161), while a `hold` target is set. */
+  hold?: RefObject<(() => void) | null>;
 };
 const Context = createContext<WindowContext | null>(null);
 
@@ -51,10 +53,11 @@ function remember<T>(map: Map<string, T>, key: string, value: T, limit = 2000) {
   while (map.size > limit) map.delete(map.keys().next().value!);
 }
 
-export function ConversationWindow({ scroll, follow, target, children }: {
+export function ConversationWindow({ scroll, follow, target, hold, children }: {
   scroll: RefObject<HTMLDivElement | null>;
   follow: RefObject<boolean>;
   target?: WindowContext["target"];
+  hold?: WindowContext["hold"];
   children: ReactNode;
 }) {
   const [memory] = useState<Memory>(() => ({ heights: new Map(), disclosures: new Map(), seen: new Set() }));
@@ -64,7 +67,7 @@ export function ConversationWindow({ scroll, follow, target, children }: {
   // items and mounted keys never change.
   const [pane, setPane] = useState<HTMLDivElement | null>(null);
   useEffect(() => { setPane(scroll.current); }, [scroll]);
-  const value = useMemo(() => ({ ...memory, scroll, pane, follow, target }), [memory, scroll, pane, follow, target]);
+  const value = useMemo(() => ({ ...memory, scroll, pane, follow, target, hold }), [memory, scroll, pane, follow, target, hold]);
   return <Context.Provider value={value}><ReadingAnchor scroll={scroll} follow={follow} target={target}>{children}</ReadingAnchor></Context.Provider>;
 }
 
@@ -250,6 +253,10 @@ export function ConversationRows<T>({ id, items, itemKey, estimate, targetKey, c
         if (!context.follow.current && !context.target?.hold && correction) pane.scrollTop += correction;
         measureAgain(value => value + 1);
       }
+      // Rows measured, or laid out again from what was measured, can move a
+      // held place without the conversation's size changing: it is put back
+      // here, before this commit or frame is drawn.
+      if (context.target?.hold) context.hold?.current?.();
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
     measure();
