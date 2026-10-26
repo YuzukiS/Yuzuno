@@ -266,6 +266,21 @@ fn window_rows_load_pending_payloads_without_losing_off_page_requests() {
 }
 
 #[test]
+fn the_rail_skips_a_last_message_that_is_blank_in_any_white_space() {
+    let (_dir, store) = lab();
+    let mut d = detail("a");
+    d.turns = vec![json!({"id":"t","status":"completed","items":[
+        {"id":"u","type":"userMessage","content":[{"type":"text","text":"Ask"}]},
+        {"id":"real","type":"agentMessage","text":"The real answer"},
+        {"id":"blank","type":"agentMessage","text":"\u{3000}\u{a0}\u{2003}"}
+    ]})];
+    store.insert(&d).unwrap();
+    let page = assert_equivalent(&store, &Query::default());
+    let summary = page.detail.agent.work_summary.unwrap();
+    assert_eq!((summary.text.as_str(), summary.kind.as_str()), ("The real answer", "result"));
+}
+
+#[test]
 fn window_reads_retry_racing_rewrites_and_streams_without_publishing_stale_indexes() {
     for held in [false, true] {
         let (_dir, store) = lab();

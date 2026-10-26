@@ -330,12 +330,20 @@ pub(crate) fn first_position(db: &Connection, id: &str, turn: &str, item: &str) 
 }
 
 /// The position of a Turn's last assistant message whose `field` holds text
-/// (what the rail reads, as `item_index` marks it present).
+/// (what the rail reads, as `item_index` marks it present): text that is not
+/// blank as Rust trims it, any Unicode white space. SQL's trim, which knows
+/// only the white space it is given, just skips the plainly blank ones.
 pub(crate) fn last_message(db: &Connection, id: &str, turn: &str, field: &str) -> Result<Option<usize>> {
-    Ok(db.prepare_cached("SELECT ord FROM agent_items WHERE agent_id=?1 AND turn_id=?2
+    let mut query = db.prepare_cached("SELECT ord, json_extract(data,?3) FROM agent_items WHERE agent_id=?1 AND turn_id=?2
         AND json_extract(data,'$.type')='agentMessage' AND json_type(data,?3)='text'
-        AND trim(json_extract(data,?3),' '||char(9)||char(10)||char(13))!='' ORDER BY ord DESC LIMIT 1")?
-        .query_row(params![id, turn, format!("$.{field}")], |r| count(r.get(0)?)).optional()?)
+        AND trim(json_extract(data,?3),' '||char(9)||char(10)||char(13))!='' ORDER BY ord DESC")?;
+    let mut rows = query.query(params![id, turn, format!("$.{field}")])?;
+    while let Some(row) = rows.next()? {
+        if !row.get_ref(1)?.as_str()?.trim().is_empty() {
+            return Ok(Some(count(row.get(0)?)?));
+        }
+    }
+    Ok(None)
 }
 
 /// Each message Item (user or assistant) of a Turn in order, read without
