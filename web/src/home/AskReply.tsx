@@ -224,9 +224,12 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
     setDraft(next);
     if (context.workspaceId) setOnlyHere(!askDrafts.save(slot, next?.text.trim() ? next : null));
   }
+  // Always to the recipient on screen: one chosen while the text was empty
+  // goes with what is written next.
   const write = (patch: Partial<AskDraft>) =>
     keep({
-      ...(latest.current ?? { key: section.key, text: "", version: section.version, agentId: target }),
+      ...(latest.current ?? { key: section.key, text: "", version: section.version }),
+      agentId: target,
       ...patch,
       at: new Date().toISOString(),
     });

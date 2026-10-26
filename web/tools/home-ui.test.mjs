@@ -1734,8 +1734,11 @@ test("an Ask's unsent reply is kept across a reload with its recipient and versi
   let stored;
   const p = await mount();
   try {
-    await type(p, askField(p), "Only after the docs land.");
+    // Begun for the owner, emptied, sent to Hana instead, then written: Hana's.
+    await type(p, askField(p), "A first thought for Mori.");
+    await type(p, askField(p), "");
     await choose(p, card(p, "p-app", "release").querySelector(".home-reply-target select"), "b");
+    await type(p, askField(p), "Only after the docs land.");
     const kept = askDrafts(p)[releaseSlot()];
     assert.deepEqual([kept.key, kept.text, kept.version, kept.agentId], ["release", "Only after the docs land.", 3, "b"]);
     assert.equal(p.w.localStorage.getItem("yuzuno.home-card-drafts.v1"), null, "an Ask's draft is not a card reply's");
