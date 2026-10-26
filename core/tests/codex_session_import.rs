@@ -518,3 +518,26 @@ async fn a_reconnect_reads_back_to_the_newest_stored_turn() {
     assert_eq!(detail.turns[3]["items"][0]["text"], "Native result 12");
     lab.ws.close_agent(&agent.id).await.unwrap();
 }
+
+/// One whose newest stored Turn is more than the reconnect reads back to (a
+/// long absence): the reconnect still succeeds with the newest page, and the
+/// native Turns it did not reach are paged in on demand, not dropped (T-140).
+#[tokio::test]
+async fn a_reconnect_that_cannot_read_back_far_enough_leaves_the_rest_pageable() {
+    let lab = Lab::new();
+    let agent = lab.ws.import_codex_session(lab.input()).await.unwrap();
+    lab.ws.reconnect(&agent.id).await.unwrap();
+    let db = rusqlite::Connection::open(lab.root.path().join("data/workspace.sqlite")).unwrap();
+    db.execute("DELETE FROM codex_imports", []).unwrap();
+    // t-12..t-411: 400 Turns, more than the 100 pages read back.
+    std::fs::write(lab.root.path().join("extra"), "400").unwrap();
+    lab.ws.reconnect(&agent.id).await.unwrap();
+    let detail = lab.ws.store.detail(&agent.id).unwrap();
+    let ids: Vec<&str> = detail.turns.iter().map(|t| t["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["t-9", "t-10", "t-11", "t-409", "t-410", "t-411"]);
+    let history = detail.history.clone().expect("the Turns not reached can be paged");
+    assert!(history.has_more);
+    let page = lab.ws.codex_session_history(&agent.id, history.next_cursor.as_deref()).await.unwrap();
+    assert_eq!(page.turns.iter().map(|t| t["id"].as_str().unwrap()).collect::<Vec<_>>(), ["t-406", "t-407", "t-408"]);
+    lab.ws.close_agent(&agent.id).await.unwrap();
+}

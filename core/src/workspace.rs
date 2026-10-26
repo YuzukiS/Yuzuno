@@ -904,7 +904,9 @@ impl Workspace {
                     return Err(error);
                 }
             };
-            let history = imported.then(|| crate::model::HistoryWindow { loaded_count: page.turns.len(), has_more: page.has_more, next_cursor: page.next_cursor });
+            // An imported Agent's native history is paged; so is the rest of
+            // one whose reconnect did not reach its newest Turn.
+            let history = (imported || page.unreached).then(|| crate::model::HistoryWindow { loaded_count: page.turns.len(), has_more: page.has_more, next_cursor: page.next_cursor });
             (history, Some(page.turns))
         } else { (None, None) };
         let owned = self.owner(id).await;
@@ -947,7 +949,7 @@ impl Workspace {
                     // Yuzuno now owns the writer; an earlier conflict is resolved,
                     // and a check that found every Turn has nothing missing.
                     if let Some(handoff) = &mut d.codex_handoff { handoff.writer_conflict_at = None; handoff.missing_turns = None; }
-                    if let Some(history) = imported_history { d.history = Some(history); }
+                    if imported_history.is_some() || !imported { d.history = imported_history; }
                     let held = d.turns.len();
                     apply_snapshot_turns(d, thread, Some(incoming), &changes);
                     if let Some(history) = &mut d.history { history.loaded_count = total + d.turns.len() - held; }
@@ -1114,7 +1116,7 @@ impl Workspace {
                 return Err(error);
             }
         };
-        let imported_history = imported.then(|| crate::model::HistoryWindow { loaded_count: page.turns.len(),
+        let imported_history = (imported || page.unreached).then(|| crate::model::HistoryWindow { loaded_count: page.turns.len(),
             has_more: page.has_more, next_cursor: page.next_cursor.clone() });
         let owned = self.owner(id).await;
         if !same_generation(self.rpcs.lock().unwrap().get(id), connection.generation) {
@@ -1135,7 +1137,7 @@ impl Workspace {
                 sel,
                 |current| {
                     current.agent.connection_state = "connected".into();
-                    if let Some(history) = imported_history { current.history = Some(history); }
+                    if imported_history.is_some() || !imported { current.history = imported_history; }
                     if let Some(handoff) = &mut current.codex_handoff { handoff.missing_turns = None; }
                     let held = current.turns.len();
                     apply_snapshot_turns(current, &result["thread"], Some(turns), &changes);

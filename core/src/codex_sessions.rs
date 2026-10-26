@@ -132,6 +132,10 @@ pub struct HistoryPage {
     pub turns: Vec<Value>,
     pub next_cursor: Option<String>,
     pub has_more: bool,
+    /// A recovery page's (`recovery_page`, reading back) that did not reach
+    /// the record's newest Turn: Turns between it and `turns` are not here.
+    #[serde(skip)]
+    pub unreached: bool,
 }
 
 pub(crate) struct ReadSession(pub(crate) Arc<Rpc>);
@@ -211,7 +215,7 @@ pub(crate) async fn history_page(rpc: &Rpc, id: &str, cursor: Option<&str>) -> R
     turns.reverse();
     let next_cursor = page["nextCursor"].as_str().map(str::to_owned);
     anyhow::ensure!(next_cursor.as_deref().is_none() || next_cursor.as_deref() != cursor, "Codex 历史分页没有前进");
-    Ok(HistoryPage { turns, has_more: next_cursor.is_some(), next_cursor })
+    Ok(HistoryPage { turns, has_more: next_cursor.is_some(), next_cursor, unreached: false })
 }
 
 /// The earlier native page from `cursor`, or, when that page holds only Turns
@@ -227,7 +231,7 @@ async fn unsaved_page(rpc: &Rpc, id: &str, cursor: Option<&str>, saved: &HashSet
     let mut next = page.next_cursor.clone();
     for _ in 0..50 {
         let Some(current) = next else {
-            return Ok(HistoryPage { turns: vec![], next_cursor: None, has_more: false });
+            return Ok(HistoryPage { turns: vec![], next_cursor: None, has_more: false, unreached: false });
         };
         // Codex 0.162 anchors a cursor to a Turn, so a page can start at any
         // Turn. With another form the saved page is returned as before.
@@ -284,16 +288,18 @@ async fn newest_page(rpc: &Rpc, id: &str, held: &[(String, Option<String>)]) -> 
             turn["id"].as_str() == Some(tid.as_str()) && turn["status"].as_str() == status.as_deref());
         if same {
             let next_cursor = light["nextCursor"].as_str().map(str::to_owned);
-            return Ok(HistoryPage { turns: vec![], has_more: next_cursor.is_some(), next_cursor });
+            return Ok(HistoryPage { turns: vec![], has_more: next_cursor.is_some(), next_cursor, unreached: false });
         }
     }
     history_page(rpc, id, None).await
 }
 
-/// The most earlier pages a recovery page reads back to the record's newest
-/// Turn (`recovery_page`): Turns another client added past that many are
-/// not merged.
+/// The most earlier pages, and the longest time, a recovery page spends
+/// reading back to the record's newest Turn (`recovery_page`). Past either it
+/// stops reading back (the reconnect goes on with the newest page), and the
+/// Turns it did not reach are paged in on demand (`unreached`).
 const BACK_PAGES: usize = 100;
+const BACK_TIME: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Refresh the recent window and any cached unfinished Turn that fell outside
 /// it while another client advanced the session. Metadata pages locate those
@@ -301,10 +307,12 @@ const BACK_PAGES: usize = 100;
 /// merely because the current native thread is idle. `held` is the record's
 /// newest Turns as stored (`newest_page`). With `back`, the Turns another
 /// client added since the record's newest one are read too, page by page back
-/// to it (at most BACK_PAGES), once metadata pages have found it: an Agent
-/// whose record is its whole history gets them all, as a whole native
-/// history once gave it. Without (an imported Agent), the newest page only,
-/// the rest paged in on demand (`history_page`).
+/// to it, once metadata pages have found it: an Agent whose record is its
+/// whole history gets them all, as a whole native history once gave it. A
+/// walk that does not find it within BACK_PAGES and BACK_TIME merges none of
+/// them and says so (`unreached`), never failing the reconnect. Without
+/// `back` (an imported Agent), the newest page only, the rest paged in on
+/// demand (`history_page`).
 pub(crate) async fn recovery_page(rpc: &Rpc, id: &str, cached: &AgentDetail, held: &[(String, Option<String>)], back: bool)
     -> Result<HistoryPage> {
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
@@ -319,10 +327,19 @@ pub(crate) async fn recovery_page(rpc: &Rpc, id: &str, cached: &AgentDetail, hel
         let mut newest = held.last().map(|(tid, _)| tid.clone()).filter(|tid| back && page.has_more
             && !page.turns.is_empty() && !page.turns.iter().any(|turn| turn["id"] == tid.as_str()));
         let mut between: Vec<String> = Vec::new();
+        let walk_until = std::time::Instant::now() + BACK_TIME;
         let mut cursor = page.next_cursor.clone();
         for _ in 0..1700 {
+            if newest.is_some() && (between.len() >= BACK_PAGES || std::time::Instant::now() >= walk_until) {
+                newest = None;
+                between.clear();
+                page.unreached = true;
+            }
             if missing.is_empty() && newest.is_none() { return Ok(distinct(page)); }
             let Some(current) = cursor.clone() else {
+                if newest.take().is_some() {
+                    page.unreached = true;
+                }
                 if missing.is_empty() { return Ok(distinct(page)); }
                 let mut turn_ids: Vec<String> = missing.into_iter().collect();
                 turn_ids.sort();
@@ -341,27 +358,37 @@ pub(crate) async fn recovery_page(rpc: &Rpc, id: &str, cached: &AgentDetail, hel
             if let Some(tid) = newest.clone() {
                 if turns.iter().any(|turn| turn["id"] == tid.as_str()) {
                     // Found: the Turns after it on this page, then the pages
-                    // passed, oldest first, before the newest page.
+                    // passed, oldest first, before the newest page; all of
+                    // them within BACK_TIME, or none.
+                    newest = None;
                     let mut added = history_page(rpc, id, Some(current.as_str())).await?.turns;
                     if let Some(at) = added.iter().position(|turn| turn["id"] == tid.as_str()) {
                         added.drain(..=at);
                     }
+                    let mut whole = true;
                     for passed in between.drain(..).rev() {
+                        if std::time::Instant::now() >= walk_until {
+                            whole = false;
+                            break;
+                        }
                         added.append(&mut history_page(rpc, id, Some(passed.as_str())).await?.turns);
                     }
-                    added.append(&mut page.turns);
-                    page.turns = added;
-                    newest = None;
-                } else if between.len() < BACK_PAGES {
-                    between.push(current.clone());
+                    if whole {
+                        added.append(&mut page.turns);
+                        page.turns = added;
+                    } else {
+                        page.unreached = true;
+                    }
                 } else {
-                    newest = None;
-                    between.clear();
+                    between.push(current.clone());
                 }
             }
             let next = metadata["nextCursor"].as_str().map(str::to_owned);
             anyhow::ensure!(next.is_none() || next.as_deref() != Some(current.as_str()), "Codex 历史分页没有前进");
             cursor = next;
+        }
+        if newest.is_some() {
+            page.unreached = true;
         }
         if missing.is_empty() { return Ok(distinct(page)); }
         bail!("未完成 Turn 超出本次历史核对范围；不会猜测执行结果")
@@ -458,9 +485,12 @@ impl Workspace {
         let _admission = self.admission.enter_completion()?;
         let id = agent_id.to_owned();
         // The saved Turns' IDs only, not the Turns (T-140).
-        let (agent, ids, imported) = self.stored(move |store| Ok((store.agent(&id)?, store.turn_ids(&id)?, store.is_codex_import(&id)?))).await?;
+        // An imported Agent's, or one whose reconnect left native Turns it
+        // did not reach (`recovery_page`).
+        let (agent, ids, paged) = self.stored(move |store| Ok((store.agent(&id)?, store.turn_ids(&id)?,
+            store.is_codex_import(&id)? || store.view(&id, crate::store::Sel::Meta)?.history.is_some_and(|h| h.has_more)))).await?;
         anyhow::ensure!(agent.harness == "codex" && agent.remote.is_none()
-            && imported, "此 Agent 没有可分页的本机导入历史");
+            && paged, "此 Agent 没有可分页的本机导入历史");
         let _permit = self.session_reads.try_acquire().context("正在读取另一份原生历史，请稍后重试")?;
         let session = ReadSession::open(&self.program).await?;
         let thread = agent.thread_id.as_deref().context("缺少原生会话 ID")?;
