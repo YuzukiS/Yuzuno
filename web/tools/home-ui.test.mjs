@@ -1820,21 +1820,36 @@ test("an Ask asked again under its key holds a reply begun on the earlier versio
 });
 
 test("an Ask's draft belongs to its Workspace, shows once the Workspace is read, and says so when this browser won't keep it (T-182)", async () => {
-  const draft = (text) => JSON.stringify({ key: "release", text, version: 3, agentId: "a", at: new Date().toISOString() });
+  const draft = (text, agentId = "a") => JSON.stringify({ key: "release", text, version: 3, agentId, at: new Date().toISOString() });
   const other = await mount({ storage: { [ASK_DRAFTS]: JSON.stringify({ [releaseSlot("ws-other")]: JSON.parse(draft("For the other Workspace.")) }) } });
   try {
     assert.equal(askField(other).value, "", "another Workspace's draft is not shown here");
   } finally {
     other.close();
   }
-  const late = await mount({ holdWorkspace: true, storage: { [ASK_DRAFTS]: JSON.stringify({ [releaseSlot()]: JSON.parse(draft("Kept for this Workspace.")) }) } });
+  const late = await mount({ holdWorkspace: true, storage: { [ASK_DRAFTS]: JSON.stringify({ [releaseSlot()]: JSON.parse(draft("Kept for this Workspace.", "b")) }) } });
   try {
     assert.equal(askField(late).value, "", "nothing is shown before the Workspace is known");
     late.releaseWorkspace();
     await waitFor(() => askField(late).value === "Kept for this Workspace.", "its own draft shows once it is read");
     assert.match(card(late, "p-app", "release").textContent, /Kept from before, not sent yet: your reply to version 3/);
+    assert.equal(card(late, "p-app", "release").querySelector(".home-reply-target select").value, "b", "with the recipient the user chose, not the owner");
   } finally {
     late.close();
+  }
+  // Kept for an Agent no longer in the project: the user chooses again; nothing goes elsewhere.
+  const gone = await mount({ storage: { [ASK_DRAFTS]: JSON.stringify({ [releaseSlot()]: JSON.parse(draft("For an Agent who left.", "gone")) }) } });
+  try {
+    const release = card(gone, "p-app", "release");
+    assert.equal(askField(gone).value, "For an Agent who left.");
+    assert.equal(release.querySelector(".home-reply-target select").value, "", "no recipient is chosen for the user");
+    assert.equal(gone.button("Send", release.querySelector(".home-text-reply")).disabled, true);
+    assert.equal(gone.button("Ship today", release).disabled, true, "nor does an option send it anywhere");
+    await choose(gone, release.querySelector(".home-reply-target select"), "a");
+    assert.equal(gone.button("Send", release.querySelector(".home-text-reply")).disabled, false);
+    assert.equal(gone.posts(/\/brief\/reply$/).length, 0);
+  } finally {
+    gone.close();
   }
   const refused = await mount();
   try {

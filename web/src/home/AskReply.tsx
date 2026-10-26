@@ -212,6 +212,8 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
       latest.current = found;
       setDraft(found);
       setRestored(!!found?.text.trim());
+      // And its recipient, as the user chose it.
+      if (found?.text.trim() && found.agentId) setTarget(found.agentId);
     }
   }
   const [target, setTarget] = useState(
@@ -250,7 +252,10 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
   // Core's next read. Only the owner resolves it.
   const replied =
     !again && (ask.state === "replied" || (!!receipt && sentVersion === section.version));
-  const disabled = context.readOnly || !target;
+  // Only one of the project's open Agents takes it: a kept reply's recipient
+  // may have left since.
+  const targetOpen = context.agents.some((a) => a.id === target);
+  const disabled = context.readOnly || !targetOpen;
   const targetName = context.agents.find((a) => a.id === target)?.name || section.owner.name;
   const freeText = reply.freeText;
   const prompt = typeof freeText === "object" && freeText.prompt ? freeText.prompt : t.writeReply;
@@ -346,7 +351,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
           }
           form={form}
           agentName={targetName}
-          blockedReason={!target ? "Choose who should get the reply." : undefined}
+          blockedReason={!targetOpen ? "Choose who should get the reply." : undefined}
           delivery={receipt ? { status: receipt.status, error: receipt.error } : undefined}
           onSubmit={context.readOnly ? undefined : async (values) => {
             await deliver(formText(form, values));
