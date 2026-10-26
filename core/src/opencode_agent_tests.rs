@@ -75,7 +75,7 @@ async fn a_late_part_reaches_the_turn_its_message_answers() {
         }
     }).unwrap();
     ws.store.release_for_test("oc");
-    let held = |turn: &str| ws.store.held_for_test("oc").is_some_and(|d| d.read().unwrap().turns.iter().any(|t| t["id"] == turn));
+    let held = |turn: &str| ws.store.held_for_test("oc").is_some_and(|d| d.read().turns.iter().any(|t| t["id"] == turn));
     assert!(!held("msg_old"), "the ended Turn is read from rows, not memory");
     let part = |id: &str, message: &str, text: &str| json!({"type":"message.part.updated","properties":{"sessionID":c.session,
         "part":{"id":id,"sessionID":c.session,"messageID":message,"type":"text","text":text}}});
