@@ -1597,9 +1597,12 @@ impl Store {
         let db = self.db.read()?;
         let meta = record_rows::load_meta(&db, id)?.context("Agent 不存在")?;
         let mut out = format!("{{\"meta\":{},\"turns\":[", serde_json::to_string(&meta)?);
-        for (n, turn) in turns.iter().enumerate() {
+        let mut first = true;
+        for turn in turns {
+            // A Turn named but not stored adds nothing, not even its comma.
             for (_, value) in record_rows::load_turns(&db, id, std::slice::from_ref(turn), true)? {
-                if n > 0 { out.push(','); }
+                if !first { out.push(','); }
+                first = false;
                 out.push_str(&serde_json::to_string(&value)?);
             }
             if out.len() > max {
@@ -2713,6 +2716,9 @@ impl Store {
             (journaled, project_id)
         };
         drop(plan);
+        // The write moved the rows of a Turn the change held with gaps to
+        // where its array says, as an event's write does (`record_deferred`).
+        settle_gaps(&mut d);
         // What memory keeps: the Agent's new metadata, and its open and
         // newest Turns where the slice has them. A change that read them
         // leaves the Agent active, as an event does.

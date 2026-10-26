@@ -286,3 +286,50 @@ fn an_earlier_cores_workspace_is_refused_as_it_was() {
         assert_eq!(db.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0)).unwrap(), mode);
     }
 }
+
+/// A rewind's archive of Turns of which the first is not stored is still
+/// one JSON document, with the Turns that are.
+#[test]
+fn an_archive_whose_first_turn_is_not_stored_is_valid_json() {
+    let (_dir, store) = lab();
+    let mut d = detail("a");
+    d.turns = vec![json!({"id":"t1","status":"completed","items":[{"id":"m","type":"agentMessage","text":"kept"}]})];
+    store.insert(&d).unwrap();
+    let archive = store.archive("a", &["gone".into(), "t1".into()], 1 << 20).unwrap().unwrap();
+    let parsed: Value = serde_json::from_str(&archive).unwrap();
+    assert_eq!(parsed["turns"].as_array().unwrap().len(), 1);
+    assert_eq!(parsed["turns"][0]["items"][0]["text"], "kept");
+}
+
+/// A change through `Sel::Named` that removes an Item before a gap of a Turn
+/// it holds settles the gap where the write moved its rows: an event that
+/// then reaches an Item in the gap finds that Item, and every Item stays in
+/// its place.
+#[test]
+fn a_change_beside_a_gap_leaves_the_gap_where_its_rows_are() {
+    let (_dir, store) = lab();
+    let mut d = detail("a");
+    let mut items = vec![json!({"id":"u","type":"userMessage","content":[{"type":"text","text":"go"}]})];
+    items.extend((0..4000).map(|n| json!({"id":format!("c{n}"),"type":"commandExecution","status":"completed",
+        "command":"make","aggregatedOutput":"o".repeat(2048)})));
+    d.turns = vec![json!({"id":"t","status":"inProgress","items":items})];
+    store.insert(&d).unwrap();
+    // Active, the long open Turn held with gaps.
+    stream(&store, "a", "item/agentMessage/delta", &json!({"turnId":"t","itemId":"reply","delta":"x"}));
+    assert!(store.peek("a", |d| d.turns[0]["items"].as_array().unwrap().iter().any(|i| record_rows::gap_of(i).is_some())).unwrap());
+    store.record_event("a", "test/removed", &json!({}), Sel::Named(vec![]), |d| {
+        let items = d.turns[0]["items"].as_array_mut().unwrap();
+        assert_eq!(items[0]["id"], "u");
+        items.remove(0);
+    }).unwrap();
+    stream(&store, "a", "item/completed", &json!({"turnId":"t","item":{"id":"c5","type":"commandExecution",
+        "status":"completed","command":"make","aggregatedOutput":"edited"}}));
+    let row = store.detail("a").unwrap();
+    let items = row.turns[0]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 4001, "the 4000 commands and the reply");
+    for (n, item) in items.iter().take(4000).enumerate() {
+        assert_eq!(item["id"], format!("c{n}"));
+    }
+    assert_eq!(items[5]["aggregatedOutput"], "edited");
+    assert_eq!(items[4000]["id"], "reply");
+}
