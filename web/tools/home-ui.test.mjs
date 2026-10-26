@@ -172,8 +172,9 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
         state.failReplies--;
         return respond({ error: "connection lost" }, 503);
       }
-      // [status, body] for this request, or null for the usual receipt.
-      const answer = replyAnswer?.(request.body);
+      // [status, body] for this request, or null for the usual receipt; a
+      // promise of either holds the answer until it settles.
+      const answer = await replyAnswer?.(request.body);
       if (answer) return respond(answer[1], answer[0]);
       return respond({ input: { ...request.body, expectedTurnId: null, question: null }, status: replyStatus, turnId: "t10", error: null });
     }
@@ -1718,5 +1719,153 @@ test("Home's repository details follow a language change; the repository stays a
     assert.equal(reads(), before, "no github_repositories read again");
   } finally {
     p.close();
+  }
+});
+
+// T-182: an Ask's free-text reply not sent yet is kept in this browser, apart
+// from card replies, with the version of the ask it was begun on. Booleans and
+// text only in these assertions (see T-174 above).
+const ASK_DRAFTS = "yuzuno.home-ask-drafts.v1";
+const askDrafts = (p) => JSON.parse(p.w.localStorage.getItem(ASK_DRAFTS) || "{}");
+const releaseSlot = (workspace = "ws-home") => JSON.stringify([workspace, "p-app", "release"]);
+const askField = (p) => card(p, "p-app", "release").querySelector(".home-ask-reply textarea");
+
+test("an Ask's unsent reply is kept across a reload with its recipient and version; a delivery clears only what it sent (T-182)", async () => {
+  let stored;
+  const p = await mount();
+  try {
+    // Begun for the owner, emptied, sent to Hana instead, then written: Hana's.
+    await type(p, askField(p), "A first thought for Mori.");
+    await type(p, askField(p), "");
+    await choose(p, card(p, "p-app", "release").querySelector(".home-reply-target select"), "b");
+    await type(p, askField(p), "Only after the docs land.");
+    const kept = askDrafts(p)[releaseSlot()];
+    assert.deepEqual([kept.key, kept.text, kept.version, kept.agentId], ["release", "Only after the docs land.", 3, "b"]);
+    assert.equal(p.w.localStorage.getItem("yuzuno.home-card-drafts.v1"), null, "an Ask's draft is not a card reply's");
+    assert.equal(p.posts(/\/brief\/reply$/).length, 0, "writing sends nothing");
+    stored = storageOf(p);
+  } finally {
+    p.close();
+  }
+  let answer = () => {};
+  const held = new Promise((resolve) => (answer = resolve));
+  const again = await mount({ storage: stored, replyAnswer: (body) => (body.key === "release" ? held.then(() => null) : null) });
+  try {
+    const release = card(again, "p-app", "release");
+    assert.equal(askField(again).value, "Only after the docs land.", "the text is back after a reload");
+    assert.equal(release.querySelector(".home-reply-target select").value, "b", "and its recipient");
+    assert.match(release.textContent, /Kept from before, not sent yet: your reply to version 3 of this ask\./);
+    again.button("Send", release.querySelector(".home-text-reply")).click();
+    await waitFor(() => again.posts(/\/brief\/reply$/).length === 1, "the reply is being sent");
+    // Written while it is being sent: not what was sent, so it stays.
+    await type(again, askField(again), "Only after the docs land. And the changelog.");
+    answer();
+    await waitFor(() => /Replied · waiting for/.test(card(again, "p-app", "release").textContent), "delivered");
+    const [sent] = again.posts(/\/brief\/reply$/);
+    assert.deepEqual(keys(sent.body), ["agentId", "clientMessageId", "key", "text"], "an Ask's reply names no version or title");
+    assert.deepEqual([sent.body.key, sent.body.agentId, sent.body.text], ["release", "b", "Only after the docs land."]);
+    assert.equal(askDrafts(again)[releaseSlot()].text, "Only after the docs land. And the changelog.");
+    assert.match(card(again, "p-app", "release").textContent, /A reply you wrote here is kept, not sent: Reply again to see it\./);
+    again.button("Reply again", card(again, "p-app", "release")).click();
+    await pause();
+    assert.equal(askField(again).value, "Only after the docs land. And the changelog.");
+    again.button("Send", card(again, "p-app", "release").querySelector(".home-text-reply")).click();
+    await waitFor(() => again.posts(/\/brief\/reply$/).length === 2, "the second reply is sent");
+    await waitFor(() => again.w.localStorage.getItem(ASK_DRAFTS) === null, "a delivered reply leaves no draft");
+    assert.equal(again.posts(/\/brief\/reply$/)[1].body.text, "Only after the docs land. And the changelog.");
+    assert.deepEqual(again.errors, []);
+  } finally {
+    again.close();
+  }
+});
+
+test("an Ask asked again under its key holds a reply begun on the earlier version until the user refers it or discards it (T-182)", async () => {
+  const p = await mount();
+  const reask = async (version, question) => {
+    Object.assign(p.state.home.projects[0].brief.sections[0], { version, ask: { question, state: "open", reply: { freeText: true } } });
+    p.event({ type: "workspace.changed", scope: "brief" });
+    await waitFor(() => card(p, "p-app", "release").dataset.sectionVersion === String(version), `Home read version ${version}`);
+  };
+  try {
+    await type(p, askField(p), "Ship after QA.");
+    await reask(4, "Ship the release on Monday?");
+    const release = () => card(p, "p-app", "release");
+    assert.match(release().textContent, /You began this reply on version 3 of this ask; Home shows version 4\./);
+    assert.equal(askField(p).value, "Ship after QA.", "the text stays");
+    const send = () => p.button("Send", release().querySelector(".home-text-reply"));
+    assert.equal(send().disabled, true, "not sent to the new question as it is");
+    askField(p).dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
+    await pause();
+    assert.equal(p.posts(/\/brief\/reply$/).length, 0, "nor by the keyboard");
+    p.button("Refer it to version 4", release()).click();
+    await pause();
+    assert.equal(askDrafts(p)[releaseSlot()].version, 4);
+    assert.equal(send().disabled, false);
+    send().click();
+    await waitFor(() => p.posts(/\/brief\/reply$/).length === 1, "sent once referred");
+    assert.deepEqual(keys(p.posts(/\/brief\/reply$/)[0].body), ["agentId", "clientMessageId", "key", "text"]);
+    await waitFor(() => p.w.localStorage.getItem(ASK_DRAFTS) === null, "no draft after delivery");
+    // Begun again, then the question changes again: Discard drops it, sending nothing.
+    p.button("Reply again", release()).click();
+    await pause();
+    await type(p, askField(p), "Monday is fine.");
+    await reask(5, "Ship the release on Tuesday?");
+    assert.match(release().textContent, /began this reply on version 4 of this ask; Home shows version 5/);
+    p.button("Discard", release().querySelector(".home-ask-reply")).click();
+    await pause();
+    assert.equal(askField(p).value, "");
+    assert.equal(p.w.localStorage.getItem(ASK_DRAFTS), null);
+    assert.equal(p.posts(/\/brief\/reply$/).length, 1, "discarding sends nothing");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("an Ask's draft belongs to its Workspace, shows once the Workspace is read, and says so when this browser won't keep it (T-182)", async () => {
+  const draft = (text, agentId = "a") => JSON.stringify({ key: "release", text, version: 3, agentId, at: new Date().toISOString() });
+  const other = await mount({ storage: { [ASK_DRAFTS]: JSON.stringify({ [releaseSlot("ws-other")]: JSON.parse(draft("For the other Workspace.")) }) } });
+  try {
+    assert.equal(askField(other).value, "", "another Workspace's draft is not shown here");
+  } finally {
+    other.close();
+  }
+  const late = await mount({ holdWorkspace: true, storage: { [ASK_DRAFTS]: JSON.stringify({ [releaseSlot()]: JSON.parse(draft("Kept for this Workspace.", "b")) }) } });
+  try {
+    assert.equal(askField(late).value, "", "nothing is shown before the Workspace is known");
+    late.releaseWorkspace();
+    await waitFor(() => askField(late).value === "Kept for this Workspace.", "its own draft shows once it is read");
+    assert.match(card(late, "p-app", "release").textContent, /Kept from before, not sent yet: your reply to version 3/);
+    assert.equal(card(late, "p-app", "release").querySelector(".home-reply-target select").value, "b", "with the recipient the user chose, not the owner");
+  } finally {
+    late.close();
+  }
+  // Kept for an Agent no longer in the project: the user chooses again; nothing goes elsewhere.
+  const gone = await mount({ storage: { [ASK_DRAFTS]: JSON.stringify({ [releaseSlot()]: JSON.parse(draft("For an Agent who left.", "gone")) }) } });
+  try {
+    const release = card(gone, "p-app", "release");
+    assert.equal(askField(gone).value, "For an Agent who left.");
+    assert.equal(release.querySelector(".home-reply-target select").value, "", "no recipient is chosen for the user");
+    assert.equal(gone.button("Send", release.querySelector(".home-text-reply")).disabled, true);
+    assert.equal(gone.button("Ship today", release).disabled, true, "nor does an option send it anywhere");
+    await choose(gone, release.querySelector(".home-reply-target select"), "a");
+    assert.equal(gone.button("Send", release.querySelector(".home-text-reply")).disabled, false);
+    assert.equal(gone.posts(/\/brief\/reply$/).length, 0);
+  } finally {
+    gone.close();
+  }
+  const refused = await mount();
+  try {
+    const set = refused.w.Storage.prototype.setItem;
+    refused.w.Storage.prototype.setItem = function (key, value) {
+      if (key === ASK_DRAFTS) throw new refused.w.DOMException("Refused here.", "QuotaExceededError");
+      return set.call(this, key, value);
+    };
+    await type(refused, askField(refused), "Kept only here.");
+    assert.equal(askField(refused).value, "Kept only here.");
+    assert.match(card(refused, "p-app", "release").textContent, /This browser didn't keep the draft: it is only in this window\./);
+    assert.deepEqual(refused.errors, []);
+  } finally {
+    refused.close();
   }
 });

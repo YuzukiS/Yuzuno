@@ -6,6 +6,7 @@ import type { Agent } from "../types";
 import { TargetPicker } from "./AskReply";
 import { dropPendingReply, outboxKey, pendingReply, sendReply } from "./home-api";
 import { homeText } from "./home-text";
+import { draftStore } from "./reply-drafts";
 import type { Section } from "./types";
 
 /**
@@ -24,10 +25,6 @@ import type { Section } from "./types";
  * sent or discarded, also after their card has left Home.
  */
 
-const DRAFTS = "yuzuno.home-card-drafts.v1";
-const MAX_DRAFTS = 50;
-const KEEP_DAYS = 30;
-
 export type CardDraft = {
   key: string;
   text: string;
@@ -38,31 +35,7 @@ export type CardDraft = {
   at: string;
 };
 
-function loadDrafts(): Record<string, CardDraft> {
-  try {
-    const value = JSON.parse(localStorage.getItem(DRAFTS) || "{}");
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveDraft(slot: string, draft: CardDraft | null) {
-  const drafts = loadDrafts();
-  if (draft) drafts[slot] = draft;
-  else delete drafts[slot];
-  const since = Date.now() - KEEP_DAYS * 86_400_000;
-  const kept = Object.entries(drafts)
-    .filter(([, d]) => Date.parse(d.at) >= since)
-    .sort((a, b) => Date.parse(b[1].at) - Date.parse(a[1].at))
-    .slice(0, MAX_DRAFTS);
-  try {
-    if (kept.length) localStorage.setItem(DRAFTS, JSON.stringify(Object.fromEntries(kept)));
-    else localStorage.removeItem(DRAFTS);
-  } catch {
-    /* This window still has the draft. */
-  }
-}
+const drafts = draftStore<CardDraft>("yuzuno.home-card-drafts.v1");
 
 /** `to` is null when the Agent had no name to show: worded when shown. */
 type Sent = { status: string; to: string | null; version: number };
@@ -77,7 +50,7 @@ const listeners = new Map<string, Set<() => void>>();
 function replyState(slot: string): ReplyState {
   let state = replies.get(slot);
   if (!state) {
-    state = { draft: loadDrafts()[slot] ?? null, busy: false, error: "", sent: null };
+    state = { draft: drafts.load()[slot] ?? null, busy: false, error: "", sent: null };
     replies.set(slot, state);
   }
   return state;
@@ -87,7 +60,7 @@ function replyState(slot: string): ReplyState {
 function update(slot: string, change: Partial<ReplyState>) {
   const next = { ...replyState(slot), ...change };
   replies.set(slot, next);
-  if ("draft" in change) saveDraft(slot, next.draft?.text.trim() ? next.draft : null);
+  if ("draft" in change) drafts.save(slot, next.draft?.text.trim() ? next.draft : null);
   listeners.get(slot)?.forEach((listener) => listener());
 }
 
@@ -112,7 +85,7 @@ export const hasCardReply = (slot: string) => !!replyState(slot).draft?.text.tri
 
 /** This project's kept drafts, by slot. */
 export function projectCardDrafts(workspaceId: string, projectId: string): [string, CardDraft][] {
-  return Object.entries(loadDrafts()).filter(([slot, draft]) => slot === cardReplySlot(workspaceId, projectId, draft.key));
+  return Object.entries(drafts.load()).filter(([slot, draft]) => slot === cardReplySlot(workspaceId, projectId, draft.key));
 }
 
 /**
