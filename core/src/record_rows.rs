@@ -216,6 +216,8 @@ pub fn migrate(db: &Connection) -> Result<()> {
 /// Agents yet (which it marks as its own). Agents written by an earlier
 /// Core keep their Turns in another form (a whole row, or receipts in the
 /// metadata); they are not read or changed: no old record is converted.
+/// This is a product constraint, with what the new format must still
+/// guarantee: docs/adr/0002-session-store-new-data-directory.md.
 pub fn check_store(db: &Connection) -> Result<()> {
     let marked: Option<String> = db.query_row("SELECT value FROM workspace_meta WHERE key=?1", [STORE_KEY], |r| r.get(0)).optional()?;
     match marked.as_deref() {
