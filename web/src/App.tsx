@@ -763,7 +763,8 @@ export function App() {
     // Rows in front are measured over the next frames, and while the target
     // holds they leave the correcting to this (ConversationRows); both would
     // count the same change twice (T-161). Hold until the item has stayed
-    // put for two frames, at most a second.
+    // put for two frames, at most a second. A height that changes after
+    // layout is put back before that frame is drawn, not a frame later.
     let frame = 0, still = 0, frames = 0;
     const settle = () => {
       still = restore() ? 0 : still + 1;
@@ -772,7 +773,10 @@ export function App() {
     };
     restore();
     frame = requestAnimationFrame(settle);
-    return () => cancelAnimationFrame(frame);
+    const inner = scroll.current.querySelector(".conversation-inner");
+    const resized = inner && typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => { if (restore()) still = 0; }) : null;
+    if (inner) resized?.observe(inner);
+    return () => { cancelAnimationFrame(frame); resized?.disconnect(); };
   }, [currentDetail, live.windowLoading, pageTarget, selected]);
   const questionPanel = useRef<PendingQuestionsHandle>(null);
   const [questionIndex] = useState(() => new QuestionIndex());

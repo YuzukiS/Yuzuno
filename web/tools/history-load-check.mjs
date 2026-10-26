@@ -155,8 +155,11 @@ try {
   assert.ok(await button.isVisible(), "the button is reached at the top");
 
   // Where a message's text is: below its minute mark, which can go when the
-  // messages before it load.
-  await page.addScriptTag({ content: `window.textTop = (item) => ([...item.children].find((child) => !child.classList.contains("message-time")) || item).getBoundingClientRect().top;` });
+  // messages before it load. And a frame as it was drawn: a task posted from
+  // the frame's callback runs once the frame is drawn, after the page's own
+  // callbacks and layout in it.
+  await page.addScriptTag({ content: `window.textTop = (item) => ([...item.children].find((child) => !child.classList.contains("message-time")) || item).getBoundingClientRect().top;
+window.drawn = (look) => requestAnimationFrame(() => { const channel = new MessageChannel(); channel.port1.onmessage = look; channel.port2.postMessage(null); });` });
   // The message at the top of the view, as ReadingAnchor picks it, and where
   // its text is relative to the pane.
   const reading = () => pane.evaluate((el) => {
@@ -180,10 +183,10 @@ try {
         scrollTop: Math.round(el.scrollTop),
         loading: [...el.querySelectorAll("button")].some((b) => b.textContent === "Loading history…"),
       });
-      if (performance.now() - began < ms) requestAnimationFrame(look);
+      if (performance.now() - began < ms) window.drawn(look);
       else done(trace);
     };
-    requestAnimationFrame(look);
+    window.drawn(look);
   }), [id, ms]);
 
   // What lies above the anchor: each element on the path from the pane to it
@@ -218,7 +221,7 @@ try {
       const since = shots.findIndex((shot) => shot.loading);
       if (since >= 0 && shots.length - since >= frames) done(shots.slice(Math.max(0, since - 1)));
       else if (shots.length > 600) done(shots.slice(-frames - 1));
-      else requestAnimationFrame(look);
+      else window.drawn(look);
     };
     look();
   }), [id, frames]);
