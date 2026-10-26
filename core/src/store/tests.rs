@@ -302,9 +302,10 @@ fn an_archive_whose_first_turn_is_not_stored_is_valid_json() {
 }
 
 /// A change through `Sel::Named` that removes an Item before a gap of a Turn
-/// it holds settles the gap where the write moved its rows: an event that
-/// then reaches an Item in the gap finds that Item, and every Item stays in
-/// its place.
+/// it holds leaves the gap where the write moved its rows (memory keeps the
+/// slice `trim_hot` rebuilt, each gap at its place in the array): an event
+/// that then reaches an Item in the gap finds that Item, and every Item stays
+/// in its place.
 #[test]
 fn a_change_beside_a_gap_leaves_the_gap_where_its_rows_are() {
     let (_dir, store) = lab();

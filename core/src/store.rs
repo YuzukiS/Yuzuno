@@ -2716,9 +2716,6 @@ impl Store {
             (journaled, project_id)
         };
         drop(plan);
-        // The write moved the rows of a Turn the change held with gaps to
-        // where its array says, as an event's write does (`record_deferred`).
-        settle_gaps(&mut d);
         // What memory keeps: the Agent's new metadata, and its open and
         // newest Turns where the slice has them. A change that read them
         // leaves the Agent active, as an event does.
