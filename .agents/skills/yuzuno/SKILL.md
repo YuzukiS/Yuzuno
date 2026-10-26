@@ -16,6 +16,7 @@ Core enforces identity, permissions, idempotency, resource admission and state c
 
 ## Taking a task
 
+- To find work among many tasks, call `task_list` with `compact: true`: short rows without description, result or GitHub snapshots, with the same filters, counts and paging. Read the one you need with `task_get`.
 - A task is an outcome, not a turn. Read it with `task_get`: it answers with the task as it is now and its current delivery; page its history with `view: "activity"` and ask for `view: "full"` only when you need the whole record. When you were dispatched, read the fixed materials with `task_get` and the message's `dispatchId`, and keep that `dispatchId` for the result; never substitute a newer one.
 - Reading files, running commands, tests, retries and native sub-agents are execution of that task, not new tasks. Create a task only for a separate outcome someone else could own.
 - You own the whole delivery, including its evidence. Keep the identifiers you produce (commit, PR, Job, review, CI run) and cite them in progress and in the result.

@@ -121,6 +121,23 @@ pub(crate) fn task_summaries(
     Ok(result)
 }
 
+/// How many GitHub objects each of these tasks links, in one query: what a
+/// compact task row shows of them (T-201).
+pub(crate) fn task_link_counts(db: &Connection, ids: &[&str]) -> Result<std::collections::HashMap<String, i64>> {
+    let mut result = std::collections::HashMap::new();
+    if ids.is_empty() {
+        return Ok(result);
+    }
+    let placeholders = vec!["?"; ids.len()].join(",");
+    let mut q = db.prepare(&format!("SELECT task_id,COUNT(*) FROM github_task_links WHERE task_id IN ({placeholders}) GROUP BY task_id"))?;
+    let rows = q.query_map(rusqlite::params_from_iter(ids), |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+    for row in rows {
+        let (task, count) = row?;
+        result.insert(task, count);
+    }
+    Ok(result)
+}
+
 impl Store {
     /// A saved repository's full name, or None (T-164: where an abbreviated
     /// SHA in task materials is resolved).
