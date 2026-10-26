@@ -431,25 +431,33 @@ for line in sys.stdin:
         let mut busy_turns: std::collections::BTreeMap<String, Vec<String>> = Default::default();
         let busy: Vec<String> = ids.iter().take(BUSY.min(agents)).cloned().collect();
         let window_bytes = Arc::new(AtomicUsize::new(0));
+        let (mut window_attempts, mut window_failures) = (0usize, Vec::<String>::new());
         for round in 0..rounds {
             let running = Arc::new(AtomicBool::new(true));
             // A client reading each busy Agent's window twice a second.
             let readers: Vec<_> = busy.iter().map(|id| {
                 let (store, id, running, bytes) = (ws.store.clone(), id.clone(), running.clone(), window_bytes.clone());
                 tokio::spawn(async move {
-                    let mut times = vec![];
+                    let (mut attempts, mut times, mut failed) = (0usize, vec![], vec![]);
                     while running.load(Relaxed) {
-                        let (store, id) = (store.clone(), id.clone());
+                        let (store, agent) = (store.clone(), id.clone());
                         let at = Instant::now();
                         let read = tokio::task::spawn_blocking(move || -> Result<usize> {
                             let query = yuzuno_workspace::conversation_window::Query { view: Some("window".into()), ..Default::default() };
-                            let window = store.client_window(&id, &query)?.map_err(|_| anyhow::anyhow!("no window"))?;
+                            let window = store.client_window(&agent, &query)?.map_err(|_| anyhow::anyhow!("no window"))?;
                             Ok(serde_json::to_vec(&json!({"detail":window.detail,"conversation":window.conversation}))?.len())
                         }).await;
-                        if let Ok(Ok(n)) = read { bytes.fetch_add(n, Relaxed); times.push(at.elapsed().as_secs_f64() * 1000.0); }
+                        attempts += 1;
+                        // A read that fails is counted, and fails the run
+                        // once its report is written.
+                        match read {
+                            Ok(Ok(n)) => { bytes.fetch_add(n, Relaxed); times.push(at.elapsed().as_secs_f64() * 1000.0); }
+                            Ok(Err(error)) => failed.push(format!("{id}: {error:#}")),
+                            Err(error) => failed.push(format!("{id}: the read's task ended: {error}")),
+                        }
                         tokio::time::sleep(Duration::from_millis(500)).await;
                     }
-                    times
+                    (attempts, times, failed)
                 })
             }).collect();
             let sends: Vec<_> = busy.iter().map(|id| {
@@ -489,7 +497,12 @@ for line in sys.stdin:
                 respond_ms.extend(respond);
             }
             running.store(false, Relaxed);
-            for done in futures_util::future::join_all(readers).await { window_ms.extend(done?); }
+            for done in futures_util::future::join_all(readers).await {
+                let (attempts, times, failed) = done?;
+                window_attempts += attempts;
+                window_ms.extend(times);
+                window_failures.extend(failed);
+            }
         }
 
         PHASE.store(3, Relaxed);
@@ -546,6 +559,8 @@ for line in sys.stdin:
                 "windowP50":percentile(&mut window_ms.clone(), 0.5),"windowP95":percentile(&mut window_ms, 0.95)},
             "turns":turn_detail,
             "windowReadBytes":window_bytes.load(Relaxed),
+            "windowReads":{"attempts":window_attempts,"succeeded":window_attempts - window_failures.len(),"failed":window_failures.len(),
+                "firstFailures":window_failures.iter().take(20).collect::<Vec<_>>()},
             "heldMaxBytes":held_max,"heldMaxTotalBytes":held_total_max,
             "samples":samples.iter().map(|s| [s.0, s.1, s.2 as u64]).collect::<Vec<_>>(),
             "notes":["No user database, Core connection, native Agent or model","glibc arena maximum 2, as Core's main sets",
@@ -573,6 +588,10 @@ for line in sys.stdin:
         }
         std::fs::write(out.join("payloads.json"), serde_json::to_vec(&Value::Object(payloads))?)?;
         drop(ws);
+        // Its timings stand only for the reads that succeeded: a run with
+        // any failed window read fails (its report, written, says which).
+        anyhow::ensure!(window_failures.is_empty(), "{} of {} window reads failed while Agents were busy (report.json windowReads)",
+            window_failures.len(), window_attempts);
         Ok(())
     }
 

@@ -5257,9 +5257,9 @@ mod tests {
         let rows = |kind: &str| -> i64 {
             ws.store.db.read().unwrap().query_row("SELECT count(*) FROM journal WHERE agent_id='a' AND kind=?1", [kind], |r| r.get(0)).unwrap()
         };
-        let reads = crate::store::detail_reads_of("a");
+        let reads = ws.store.detail_reads("a");
         ws.claude_event("a", 7, message.clone());
-        assert_eq!(crate::store::detail_reads_of("a"), reads, "the result read the record whole");
+        assert_eq!(ws.store.detail_reads("a"), reads, "the result read the record whole");
         let after = ws.store.detail("a").unwrap();
         assert_eq!(after.turns[0]["status"], "completed");
         assert_eq!((after.agent.status.as_str(), after.agent.unread_count), ("idle", 1));

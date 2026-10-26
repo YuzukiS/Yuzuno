@@ -28,8 +28,10 @@ evidence, not browser latency, a p95 claim, or a Windows result.
 
 `baseline.sh` belongs to the baseline commit. `candidate.sh <new-run-name>` runs
 the targeted release tests, builds `conversation_read_bench`, and creates a new
-output directory. Submit these scripts through the Workspace Job/heavy-slot
-workflow; preserve existing output. The scripts name the local private fixture
+output directory. Both need a checkout of `586fd06` or earlier:
+`conversation_read_bench` was removed with the session store (T-140).
+Submit these scripts through the Workspace Job/heavy-slot workflow; preserve
+existing output. The scripts name the local private fixture
 path, and the example verifies its hash. No native harness starts. Each shape
 creates a separate Store/Workspace and an ephemeral loopback server using the
 production router. No daily Core database or service is used.

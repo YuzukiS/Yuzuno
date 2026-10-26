@@ -52,7 +52,7 @@ fn events_read_and_hold_only_the_turns_they_name_whatever_the_history() {
     let (_dir, store) = lab();
     // 300 Turns of 256 KiB output each: some 75 MiB of history.
     store.insert(&long("a", 300, 256 << 10, 0)).unwrap();
-    let before = (turns_read(), detail_reads_of("a"));
+    let before = (turns_read(), store.detail_reads("a"));
     for n in 0..50 {
         stream(&store, "a", "item/agentMessage/delta", &json!({"turnId":"t","itemId":"reply","delta":format!("{n} ")}));
     }
@@ -76,7 +76,7 @@ fn events_read_and_hold_only_the_turns_they_name_whatever_the_history() {
     assert_eq!(send.turns.len(), 1);
     store.review("a", i64::MAX).unwrap();
     assert_eq!(turns_read() - before.0, 3);
-    assert_eq!(detail_reads_of("a"), before.1);
+    assert_eq!(store.detail_reads("a"), before.1);
     let mut row = store.payload_view("a", Some("old-7"), Some("cmd-7"), |d| d.turns.clone()).unwrap().unwrap();
     assert_eq!(row.remove(0)["items"][0]["aggregatedOutput"].as_str().unwrap().len(), 256 << 10);
 }
