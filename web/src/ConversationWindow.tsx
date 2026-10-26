@@ -245,7 +245,9 @@ export function ConversationRows<T>({ id, items, itemKey, estimate, targetKey, c
         }
       }
       if (changed) {
-        if (!context.follow.current && correction) pane.scrollTop += correction;
+        // A held place is App's to restore: it measures the item itself, so
+        // correcting here too would count the change twice (T-161).
+        if (!context.follow.current && !context.target?.hold && correction) pane.scrollTop += correction;
         measureAgain(value => value + 1);
       }
     };

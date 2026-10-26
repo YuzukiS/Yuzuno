@@ -254,6 +254,14 @@ function writeStorage(key: string, value: unknown) {
 }
 // A stable empty list, so the sub-agent dock's memo holds without a detail.
 const EMPTY_TURNS: never[] = [];
+/** Where a held message is read: its text, below its minute mark. A run of
+ * messages in one minute shows only its first time, so loading earlier ones
+ * can take that line away; holding the message's box would move its text by
+ * the line (T-161). */
+function readingTop(element: HTMLElement) {
+  const text = Array.from(element.children).find(child => !child.classList.contains("message-time"));
+  return (text ?? element).getBoundingClientRect().top;
+}
 
 export function App() {
   const [workspace, setWorkspace] = useState<Workspace | null>(
@@ -731,7 +739,7 @@ export function App() {
     const found = last ? visible.at(-1) : visible.find(({rect}) => rect.top >= box.top) || visible[0];
     const turnId = found?.element.closest<HTMLElement>("[id^='turn-']")?.id.slice("turn-".length);
     return found && turnId && found.element.dataset.itemId
-      ? {turnId, itemId:found.element.dataset.itemId, top:found.rect.top} : null;
+      ? {turnId, itemId:found.element.dataset.itemId, top:readingTop(found.element)} : null;
   }
   function pageAnchor(turnId: string, itemId?: string) {
     const turn = document.getElementById(`turn-${turnId}`);
@@ -748,13 +756,22 @@ export function App() {
     // target in an estimated gap can disappear before its position is stable.
     const restore = () => {
       const item = pageAnchor(pageTarget.turnId, pageTarget.itemId);
-      if (item && scroll.current) scroll.current.scrollTop += item.getBoundingClientRect().top - pageTarget.top;
+      const moved = item && scroll.current ? readingTop(item) - pageTarget.top : 0;
+      if (moved) scroll.current!.scrollTop += moved;
+      return Math.abs(moved) >= 0.5;
+    };
+    // Rows in front are measured over the next frames, and while the target
+    // holds they leave the correcting to this (ConversationRows); both would
+    // count the same change twice (T-161). Hold until the item has stayed
+    // put for two frames, at most a second.
+    let frame = 0, still = 0, frames = 0;
+    const settle = () => {
+      still = restore() ? 0 : still + 1;
+      if (still >= 2 || ++frames >= 60) setPageTarget(null);
+      else frame = requestAnimationFrame(settle);
     };
     restore();
-    let frame = requestAnimationFrame(() => {
-      restore();
-      frame = requestAnimationFrame(() => { restore(); setPageTarget(null); });
-    });
+    frame = requestAnimationFrame(settle);
     return () => cancelAnimationFrame(frame);
   }, [currentDetail, live.windowLoading, pageTarget, selected]);
   const questionPanel = useRef<PendingQuestionsHandle>(null);
@@ -1743,7 +1760,7 @@ export function App() {
     const item = pageAnchor(turnId, itemId || undefined);
     // A page target holds the reader's place; it opens nothing (T-161).
     const target = {agentId:selected, turnId, itemId:itemId || undefined,
-      top:item?.getBoundingClientRect().top ?? (scroll.current?.getBoundingClientRect().top ?? 0) + 32,
+      top:item ? readingTop(item) : (scroll.current?.getBoundingClientRect().top ?? 0) + 32,
       start:window.start, end:window.end, hold:true as const};
     stickToBottom.current = false;
     setHistoryReading(true);
