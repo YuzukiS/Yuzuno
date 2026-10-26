@@ -124,7 +124,9 @@ export function PushSettings({ prefs, host = browserPushHost() }: { prefs: Notif
   };
 
   const denied = host.Notification?.permission === "denied";
-  const usable = support === "available" && core === true && !denied;
+  // Refused in iOS, it can't be turned on; but a subscription Core still
+  // holds can always be turned off from here (off needs no permission).
+  const usable = support === "available" && core === true && (!denied || !!active);
   const help = support !== "available" ? t.help[support]
     : core === false ? t.help.oldCore
       : denied ? t.help.denied

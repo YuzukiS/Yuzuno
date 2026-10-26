@@ -508,6 +508,18 @@ test("push: a no from iOS registers and subscribes nothing, and says where to al
   page.close();
 });
 
+test("push: refused in iOS after subscribing, the subscription Core still holds can be turned off here", async () => {
+  const endpoint = "https://web.push.apple.com/fixture-held";
+  const page = await mount({ push: { subscription: endpoint }, permission: "denied" });
+  await until(() => page.hasBox(PUSH) && page.box(PUSH).checked, "the switch, on");
+  assert.match(page.text(), /iOS doesn’t allow Yuzuno’s notifications/);
+  page.box(PUSH).click();
+  await until(() => !page.hasBox(PUSH), "off, and nothing to turn on again while iOS refuses");
+  assert.deepEqual(page.pushLog.map(step).slice(-2), [["POST", "/api/push/subscriptions/remove", { endpoint }], ["unsubscribe", endpoint]]);
+  assert.equal(page.asked, 0, "turning it off asks nothing");
+  page.close();
+});
+
 test("push: outside the Home Screen app, or with an older Core, said why, with nothing to switch on", async () => {
   const tab = await mount({ push: { standalone: false } });
   assert.match(tab.text(), /Add to Home Screen/);
