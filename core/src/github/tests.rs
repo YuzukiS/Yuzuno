@@ -188,6 +188,49 @@ fn associations_survive_restart_rename_and_failure_without_completing_tasks() {
         2
     );
 }
+/// T-204: how many of a task's 30 places are used, what the 31st gets, and
+/// that nothing is unlinked for the user.
+#[test]
+fn a_task_says_how_many_of_its_30_links_are_used_and_refuses_the_31st_with_what_to_do() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = Store::open(&dir.path().join("test.sqlite")).unwrap();
+    let p = s.create_project("One", Default::default()).unwrap();
+    let id = create(&s, Some(&p.id))["id"].as_str().unwrap().to_owned();
+    let r = Repository { id: 7, full_name: "owner/repo".into() };
+    s.github_link_repo(&p.id, &r).unwrap();
+    let capacity = |s: &Store| {
+        let page = s.github_list(None, Some(&id)).unwrap();
+        let c = &page["capacity"];
+        (c["linkedCount"].as_i64().unwrap(), c["limit"].as_i64().unwrap(), c["remaining"].as_i64().unwrap(), page["links"].as_array().unwrap().len())
+    };
+    assert_eq!(capacity(&s), (0, 30, 30, 0));
+    // A project's answer has no task capacity.
+    assert!(s.github_list(Some(&p.id), None).unwrap().get("capacity").is_none());
+    // Closed and merged ones count like open ones.
+    for n in 1..=30u64 {
+        let state = ["open", "closed", "merged"][(n % 3) as usize];
+        s.github_link_object(&id, &r, if n % 2 == 0 { "pull" } else { "issue" }, n, json!({"title":format!("Synthetic {n}"),"state":state}))
+            .unwrap();
+    }
+    assert_eq!(capacity(&s), (30, 30, 0, 30));
+    // Linking one already linked takes no second place, also when full.
+    s.github_link_object(&id, &r, "pull", 2, json!({"title":"Synthetic 2","state":"merged"})).unwrap();
+    assert_eq!(capacity(&s), (30, 30, 0, 30));
+    // The 31st is refused with the numbers and what to do; nothing changes.
+    let refused = s
+        .github_link_object(&id, &r, "pull", 31, json!({"title":"Synthetic 31","state":"open"}))
+        .unwrap_err()
+        .to_string();
+    for part in ["link_limit_reached:", "linkedCount 30", "limit 30", "remaining 0", "closed and merged", "Nothing was linked", "action unlink", "linkId", "no longer needs"] {
+        assert!(refused.contains(part), "{part}: {refused}");
+    }
+    assert_eq!(capacity(&s), (30, 30, 0, 30));
+    // The user unlinks one: one place is free, and the 31st fits.
+    s.github_unlink_object(&id, "7:issue:1").unwrap();
+    assert_eq!(capacity(&s), (29, 30, 1, 29));
+    s.github_link_object(&id, &r, "pull", 31, json!({"title":"Synthetic 31","state":"open"})).unwrap();
+    assert_eq!(capacity(&s), (30, 30, 0, 30));
+}
 #[tokio::test]
 async fn missing_gh_is_actionable() {
     let c = client::Client {
@@ -239,6 +282,10 @@ else: raise Exception(endpoint)
         .await
         .unwrap();
     assert_eq!(linked["links"][0]["snapshot"]["ci"]["state"], "none");
+    assert_eq!(
+        [&linked["capacity"]["linkedCount"], &linked["capacity"]["limit"], &linked["capacity"]["remaining"]],
+        [&json!(1), &json!(30), &json!(29)]
+    );
     std::fs::write(script.with_extension("fail"), "404").unwrap();
     let calls = || {
         std::fs::read_to_string(script.with_extension("calls"))
@@ -293,13 +340,13 @@ else: raise Exception(endpoint)
     })
     .await
     .unwrap();
-    assert!(ws
+    let unlinked = ws
         .collaboration_call(None, "github_links", json!({"taskId":id}))
         .await
-        .unwrap()["links"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+        .unwrap();
+    assert!(unlinked["links"].as_array().unwrap().is_empty());
+    assert_eq!(unlinked["capacity"]["linkedCount"], 0);
+    assert_eq!(unlinked["capacity"]["remaining"], 30);
     assert!(ws
         .collaboration_call(None, "github_refresh", json!({"taskId":id,"projectId":"p"}))
         .await
