@@ -13,7 +13,10 @@ type WindowContext = Memory & {
   scroll: RefObject<HTMLDivElement | null>;
   pane: HTMLDivElement | null;
   follow: RefObject<boolean>;
-  target?: { turnId: string; itemId?: string } | null;
+  /** A navigation target keeps its row mounted and opens what hides it. A
+   * `hold` keeps the reader's place while history pages (T-161): it keeps the
+   * row mounted but opens nothing, since opening moves what is being read. */
+  target?: { turnId: string; itemId?: string; hold?: boolean } | null;
 };
 const Context = createContext<WindowContext | null>(null);
 
@@ -68,6 +71,12 @@ export function ConversationWindow({ scroll, follow, target, children }: {
 export function useConversationTarget(turnId: string) {
   const context = useContext(Context);
   return context?.target?.turnId === turnId ? context.target : null;
+}
+/** The target in `turnId` that may open a closed group, card or plan: not a
+ * position hold. */
+export function useConversationReveal(turnId: string) {
+  const target = useConversationTarget(turnId);
+  return target && !target.hold ? target : null;
 }
 export function useConversationWindowed() { return !!useContext(Context); }
 

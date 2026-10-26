@@ -12,7 +12,7 @@ import {
   type SubAgentState,
 } from "./subagents";
 import type { NativeItem } from "./types";
-import { useConversationTarget, useConversationWindowed } from "./ConversationWindow";
+import { useConversationReveal, useConversationWindowed } from "./ConversationWindow";
 import { StatusMark, WorkDockGroup, WorkDockItem, WorkDockMore } from "./WorkDock";
 import { useLanguage, useStrings, type Language } from "./i18n";
 import { cardWords } from "./subagent-text";
@@ -32,7 +32,7 @@ export function SubAgentAnchors({
   turnId: string;
   items: readonly NativeItem[];
 }) {
-  const target = useConversationTarget(turnId);
+  const target = useConversationReveal(turnId);
   const windowed = useConversationWindowed();
   const [lastTarget, setLastTarget] = useState<string>();
   const requested = items.some((item) => item.id === target?.itemId) ? target?.itemId : undefined;
