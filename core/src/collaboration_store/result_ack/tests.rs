@@ -162,7 +162,7 @@ fn an_acknowledgment_never_withdraws_a_wake_up_already_sent_or_uncertain() {
     assert_eq!(store.set_peer_delivery("lead", seq, "sending", json!({})).unwrap(), 1);
     drop(store);
     let store = Store::open(&dir.path().join("workspace.db")).unwrap();
-    let done = ack(&store, Some("lead"), "T-2", &result, &dispatch, "ack").unwrap();
+    let done = ack(&store, Some("lead"), "T-2", &result, &dispatch, "ack-2").unwrap();
     assert_eq!((done["wakeUp"]["state"].as_str(), delivery(&store, &message).0.as_str()), (Some("uncertain"), "uncertain"));
 }
 
