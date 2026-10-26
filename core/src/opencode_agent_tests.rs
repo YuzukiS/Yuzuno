@@ -64,14 +64,19 @@ async fn a_late_part_reaches_the_turn_its_message_answers() {
     program();
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
-    let mut d = agent(&dir.path().to_string_lossy());
-    for (turn, answer) in [("msg_old", "msg_answer_old"), ("msg_new", "msg_answer_new")] {
-        d.turns.push(json!({"id":turn,"status":"completed","_opencodeConfirmed":true,
-            "_opencodeAnswers":{answer:{"completed":1,"error":null,"finish":"stop"}},"items":[]}));
-    }
-    ws.store.insert(&d).unwrap();
+    ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
     ws.reconnect("oc").await.unwrap();
     let c = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
+    // Two Turns that ended, each answered by its own message; neither is in memory.
+    ws.store.update("oc", "test/turns", &json!({}), |d| {
+        for (turn, answer) in [("msg_old", "msg_answer_old"), ("msg_new", "msg_answer_new")] {
+            d.turns.push(json!({"id":turn,"status":"completed","_opencodeConfirmed":true,
+                "_opencodeAnswers":{answer:{"completed":1,"error":null,"finish":"stop"}},"items":[]}));
+        }
+    }).unwrap();
+    ws.store.release_for_test("oc");
+    let held = |turn: &str| ws.store.held_for_test("oc").is_some_and(|d| d.read().unwrap().turns.iter().any(|t| t["id"] == turn));
+    assert!(!held("msg_old"), "the ended Turn is read from rows, not memory");
     let part = |id: &str, message: &str, text: &str| json!({"type":"message.part.updated","properties":{"sessionID":c.session,
         "part":{"id":id,"sessionID":c.session,"messageID":message,"type":"text","text":text}}});
     ws.dispatch_opencode_event("oc", c.generation, part("prt_late", "msg_answer_old", "late")).await;
