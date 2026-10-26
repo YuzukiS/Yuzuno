@@ -51,7 +51,21 @@ async function until(read, what) {
 
 /** The editor in a page whose browser has `permission` (or no API), answering
  * a request with `answer` and showing notifications as `shows`. */
-async function mount({ permission = "default", answer = "granted", shows = "show", api = true, query = "", storage = "works", shell } = {}) {
+/** A 65-byte VAPID public key, as Core answers it (T-200). */
+const PUSH_KEY = Buffer.from(new Uint8Array(65).fill(4)).toString("base64url");
+/** What Core answers the push routes (T-200), unless a test says otherwise. */
+function pushAnswer(push, method, route, body) {
+  if (route === "/api/push") return push.oldCore ? { status: 404, body: { error: "Not found" } } : { body: { publicKey: null } };
+  if (route === "/api/push/key") return { body: { publicKey: PUSH_KEY } };
+  if (route === "/api/push/subscriptions") return push.subscribeError
+    ? { status: 400, body: { error: "Only Apple's push service is accepted", code: "push_service_unsupported" } }
+    : { body: { state: "active", kinds: body.kinds } };
+  if (route === "/api/push/subscriptions/state") return { body: push.state ?? { state: "active", kinds: ["needsYou", "failed", "finished"] } };
+  if (route === "/api/push/subscriptions/remove") return { body: { removed: true } };
+  return { status: 500, body: { error: `unexpected ${method} ${route}` } };
+}
+
+async function mount({ permission = "default", answer = "granted", shows = "show", api = true, query = "", storage = "works", shell, push } = {}) {
   const errors = [];
   const vc = new VirtualConsole();
   vc.on("jsdomError", (e) => errors.push(e.message));
@@ -63,10 +77,66 @@ async function mount({ permission = "default", answer = "granted", shows = "show
   });
   const { window } = dom;
   const page = { dom, window, doc: window.document, errors, requests: [], asked: 0, shown: [], scrolls: 0, invoked: [] };
-  window.fetch = (url) => {
-    page.requests.push(String(url));
-    return Promise.reject(new Error("no request expected"));
+  page.pushLog = [];
+  window.fetch = async (url, init = {}) => {
+    const address = String(url);
+    // The push routes, on an iPhone Home Screen app only (T-200).
+    if (push && address.includes("/api/push")) {
+      const route = address.slice(address.indexOf("/api/push"));
+      const body = init.body ? JSON.parse(init.body) : undefined;
+      page.pushLog.push([init.method || "GET", route, body]);
+      const { status = 200, body: answerBody } = pushAnswer(push, init.method || "GET", route, body);
+      return { ok: status < 400, status, text: async () => JSON.stringify(answerBody), json: async () => answerBody };
+    }
+    page.requests.push(address);
+    throw new Error("no request expected");
   };
+  if (push) {
+    // The Home Screen app on an iPhone (T-200): its service worker, push
+    // subscription and display mode, recorded in `pushLog` in order.
+    Object.defineProperty(window.navigator, "userAgent", {
+      configurable: true,
+      value: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+    });
+    window.matchMedia = (media) => ({ media, matches: push.standalone !== false && media === "(display-mode: standalone)", addEventListener() {}, removeEventListener() {} });
+    window.PushManager = class {};
+    const subscriptionAt = (endpoint) => ({
+      endpoint,
+      toJSON: () => ({ endpoint, expirationTime: null, keys: { p256dh: "fixture-p256dh", auth: "fixture-auth" } }),
+      unsubscribe: async () => {
+        page.pushLog.push(["unsubscribe", endpoint]);
+        if (subscription?.endpoint === endpoint) subscription = null;
+        return true;
+      },
+    });
+    let subscription = push.subscription ? subscriptionAt(push.subscription) : null;
+    let registered = !!push.subscription;
+    const registration = {
+      scope: "https://isolated.test/",
+      pushManager: {
+        getSubscription: async () => subscription,
+        subscribe: async (options) => {
+          page.pushLog.push(["subscribe", options.applicationServerKey.length, options.userVisibleOnly]);
+          subscription = subscriptionAt("https://web.push.apple.com/fixture-new");
+          return subscription;
+        },
+      },
+    };
+    Object.defineProperty(window.navigator, "serviceWorker", {
+      configurable: true,
+      value: {
+        register: async (url, options) => {
+          page.pushLog.push(["register", url, options.scope, options.updateViaCache]);
+          registered = true;
+          return registration;
+        },
+        get ready() { return Promise.resolve(registration); },
+        getRegistration: async () => (registered ? registration : undefined),
+        addEventListener() {},
+        removeEventListener() {},
+      },
+    });
+  }
   if (!window.isSecureContext) Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
   window.HTMLElement.prototype.scrollIntoView = () => {
     page.scrolls += 1;
@@ -75,6 +145,7 @@ async function mount({ permission = "default", answer = "granted", shows = "show
     static permission = permission;
     static requestPermission() {
       page.asked += 1;
+      page.pushLog.push(["ask"]);
       Recorder.permission = answer;
       return Promise.resolve(answer);
     }
@@ -389,4 +460,101 @@ test("on macOS, quiet delivery is said; a state the app couldn't read is not a d
   assert.match(failing.text(), /Not asked yet/, "still not asked");
   assert.equal(failing.window.localStorage.getItem("yuzuno.notifications"), null);
   failing.close();
+});
+
+// Push on the iPhone or iPad Home Screen app (T-200): one switch per device.
+const PUSH = "Push notifications on this device";
+// A recorded step without its empty parts (a GET has no body).
+const step = (entry) => entry.filter((part) => part !== undefined);
+
+test("push: asked from the click first, then registered, keyed and subscribed for the chosen kinds; kinds follow the switches; off removes only this device", async () => {
+  const page = await mount({ push: {} });
+  await until(() => page.hasBox(PUSH), "the push switch");
+  await until(() => page.pushLog.length === 1, "whether Core pushes");
+  assert.equal(page.box(PUSH).checked, false);
+  assert.deepEqual(page.pushLog.map(step), [["GET", "/api/push"]], "opening Settings only asks Core whether it pushes");
+  assert.equal(page.asked, 0, "nothing is asked before the click");
+  assert.equal(page.hasBox("A Turn finished"), true, "the kinds are offered for push");
+  page.box(PUSH).click();
+  await until(() => page.box(PUSH).checked, "on");
+  const endpoint = "https://web.push.apple.com/fixture-new";
+  const keys = { p256dh: "fixture-p256dh", auth: "fixture-auth" };
+  assert.deepEqual(page.pushLog.slice(1).map(step), [
+    ["ask"],
+    ["register", "/sw.js", "/", "none"],
+    ["POST", "/api/push/key", {}],
+    ["subscribe", 65, true],
+    ["POST", "/api/push/subscriptions", { endpoint, expirationTime: null, keys, kinds: ["needsYou", "failed", "finished"] }],
+  ]);
+  assert.match(page.text(), /On for this device, for what you choose below/);
+  const before = page.pushLog.length;
+  page.box("A Turn finished").click();
+  await until(() => page.pushLog.length > before, "the new kinds sent");
+  assert.deepEqual(page.pushLog.slice(before).map(step), [["POST", "/api/push/subscriptions", { endpoint, expirationTime: null, keys, kinds: ["needsYou", "failed"] }]]);
+  const on = page.pushLog.length;
+  page.box(PUSH).click();
+  await until(() => !page.box(PUSH).checked, "off");
+  assert.deepEqual(page.pushLog.slice(on).map(step), [["POST", "/api/push/subscriptions/remove", { endpoint }], ["unsubscribe", endpoint]]);
+  page.close();
+});
+
+test("push: a no from iOS registers and subscribes nothing, and says where to allow it", async () => {
+  const page = await mount({ push: {}, answer: "denied" });
+  await until(() => page.hasBox(PUSH), "the push switch");
+  page.box(PUSH).click();
+  await until(() => /Settings → Notifications → Yuzuno/.test(page.text()), "denied");
+  assert.deepEqual(page.pushLog.map(step), [["GET", "/api/push"], ["ask"]]);
+  assert.equal(page.hasBox(PUSH), false, "no switch while iOS refuses");
+  page.close();
+});
+
+test("push: refused in iOS after subscribing, the subscription Core still holds can be turned off here", async () => {
+  const endpoint = "https://web.push.apple.com/fixture-held";
+  const page = await mount({ push: { subscription: endpoint }, permission: "denied" });
+  await until(() => page.hasBox(PUSH) && page.box(PUSH).checked, "the switch, on");
+  assert.match(page.text(), /iOS doesn’t allow Yuzuno’s notifications/);
+  page.box(PUSH).click();
+  await until(() => !page.hasBox(PUSH), "off, and nothing to turn on again while iOS refuses");
+  assert.deepEqual(page.pushLog.map(step).slice(-2), [["POST", "/api/push/subscriptions/remove", { endpoint }], ["unsubscribe", endpoint]]);
+  assert.equal(page.asked, 0, "turning it off asks nothing");
+  page.close();
+});
+
+test("push: outside the Home Screen app, or with an older Core, said why, with nothing to switch on", async () => {
+  const tab = await mount({ push: { standalone: false } });
+  assert.match(tab.text(), /Add to Home Screen/);
+  assert.equal(tab.hasBox(PUSH), false);
+  assert.deepEqual(tab.pushLog, [], "Core is not asked");
+  tab.close();
+  const desktop = await mount();
+  assert.match(desktop.text(), /Only in the Yuzuno app on an iPhone or iPad Home Screen/);
+  assert.equal(desktop.hasBox(PUSH), false);
+  desktop.close();
+  const old = await mount({ push: { oldCore: true } });
+  await until(() => /This Core can’t send push notifications/.test(old.text()), "an older Core");
+  assert.equal(old.hasBox(PUSH), false);
+  old.close();
+});
+
+test("push: one Core stopped sending to says so; turning it on asks first, then replaces it", async () => {
+  const stale = "https://web.push.apple.com/fixture-old";
+  const page = await mount({ push: { subscription: stale, state: { state: "expired", reason: "The push service no longer knows this device" } } });
+  await until(() => /Stopped: The push service no longer knows this device/.test(page.text()), "stopped");
+  assert.equal(page.box(PUSH).checked, false);
+  assert.deepEqual(page.pushLog.map(step), [["GET", "/api/push"], ["POST", "/api/push/subscriptions/state", { endpoint: stale }]]);
+  page.box(PUSH).click();
+  await until(() => page.box(PUSH).checked, "on again");
+  assert.deepEqual(page.pushLog.slice(2).map(([what, route]) => (route === undefined ? what : `${what} ${route}`)), [
+    "ask", `unsubscribe ${stale}`, "register /sw.js", "POST /api/push/key", "subscribe 65", "POST /api/push/subscriptions",
+  ]);
+  page.close();
+});
+
+test("push: Core refusing this device's push service is said as it is", async () => {
+  const page = await mount({ push: { subscribeError: true } });
+  await until(() => page.hasBox(PUSH), "the push switch");
+  page.box(PUSH).click();
+  await until(() => /only through Apple’s push service/.test(page.text()), "the refusal");
+  assert.equal(page.box(PUSH).checked, false);
+  page.close();
 });

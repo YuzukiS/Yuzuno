@@ -93,13 +93,37 @@ export function parseAgentLink(text: string): AgentLink | null {
   return link as AgentLink;
 }
 
-/** What an address or pasted text links to: a message, or an Agent. */
-export type AppLink = ({ kind: "message" } & MessageLink) | ({ kind: "agent" } & AgentLink);
+/**
+ * A link to a Workspace's Home (T-200): where a push notification about an
+ * Ask, or several updates at once, opens. Only the Workspace, nothing else.
+ */
+export interface HomeLink {
+  workspaceId: string;
+}
+
+const HOME_PATH = "#/home?";
+const HOME_FIELDS = { w: "workspaceId" } as const;
+
+/** The link to a Workspace's Home, on `base` (this client's page, without query or fragment). */
+export function homeLinkHref(base: string, link: HomeLink): string {
+  return `${base}${HOME_PATH}${new URLSearchParams({ w: link.workspaceId })}`;
+}
+
+/** The Home an opened link names, or null when it is not one. */
+export function parseHomeLink(text: string): HomeLink | null {
+  const link = linkFields(text, HOME_PATH, HOME_FIELDS);
+  return link?.workspaceId ? (link as HomeLink) : null;
+}
+
+/** What an address or pasted text links to: a message, an Agent, or a Workspace's Home. */
+export type AppLink = ({ kind: "message" } & MessageLink) | ({ kind: "agent" } & AgentLink) | ({ kind: "home" } & HomeLink);
 export function parseAppLink(text: string): AppLink | null {
   const message = parseMessageLink(text);
   if (message) return { kind: "message", ...message };
   const agent = parseAgentLink(text);
-  return agent ? { kind: "agent", ...agent } : null;
+  if (agent) return { kind: "agent", ...agent };
+  const home = parseHomeLink(text);
+  return home ? { kind: "home", ...home } : null;
 }
 
 /** Copying and opening message links, given by the app to what it shows. */
