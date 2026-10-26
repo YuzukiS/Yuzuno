@@ -2856,6 +2856,13 @@ impl Store {
         record_rows::item_turn(&*self.db.read()?, id, item)
     }
 
+    /// The newest Turn whose object field `field` has this key (see
+    /// `record_rows::turn_holding`).
+    pub fn turn_holding(&self, id: &str, field: &str, key: &str) -> Result<Option<String>> {
+        self.settle_unwritten(id)?;
+        record_rows::turn_holding(&*self.db.read()?, id, field, key)
+    }
+
     /// `change` returning only what `pick` takes from the committed slice.
     pub fn update_picking<T>(&self, id: &str, kind: &str, data: &Value, sel: Sel, mutate: impl FnOnce(&mut AgentDetail),
         pick: impl FnOnce(&AgentDetail) -> T) -> Result<T> {

@@ -1112,6 +1112,15 @@ pub fn item_turn(db: &Connection, agent: &str, item_id: &str) -> Result<Option<S
     Ok(newest_item(db, agent, item_id)?.map(|(turn, _)| turn))
 }
 
+/// The newest Turn whose object field `field` has this key (OpenCode's
+/// answers, by message ID). Turns are read newest first, so it stops at the
+/// Turn found; a key no Turn has reads every Turn's row.
+pub fn turn_holding(db: &Connection, agent: &str, field: &str, key: &str) -> Result<Option<String>> {
+    Ok(db.prepare_cached("SELECT turn_id FROM agent_turns t WHERE agent_id=?1
+        AND EXISTS(SELECT 1 FROM json_each(t.data, ?2) WHERE key=?3) ORDER BY ord DESC LIMIT 1")?
+        .query_row(params![agent, format!("$.{field}"), key], |r| r.get(0)).optional()?)
+}
+
 /// The key of the newest Item with this ID in one Turn's rows.
 fn item_key(db: &Connection, agent: &str, turn: &str, item_id: &str) -> Result<Option<String>> {
     if !positional(item_id) {

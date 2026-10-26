@@ -10,15 +10,27 @@ fn agent(cwd: &str) -> AgentDetail {
     },"turns":[],"pending":[],"artifacts":[]})).unwrap()
 }
 
+/// One `opencode` for the whole test process: YUZUNO_OPENCODE_BIN is the
+/// process's, and every Agent's stand-in keeps its state in its own folder.
+#[cfg(target_os = "linux")]
+fn program() {
+    static PROGRAM: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    PROGRAM.get_or_init(|| {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let program = dir.path().join("opencode");
+        std::fs::write(&program, format!("#!/bin/sh\nexec /usr/bin/python3 {FIXTURE} \"$@\"\n")).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
+        program
+    });
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn events_of_an_older_connection_or_another_session_change_nothing() {
-    use std::os::unix::fs::PermissionsExt;
+    program();
     let dir = tempfile::tempdir().unwrap();
-    let program = dir.path().join("opencode");
-    std::fs::write(&program, format!("#!/bin/sh\nexec /usr/bin/python3 {FIXTURE} \"$@\"\n")).unwrap();
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
     let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
     ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
     ws.reconnect("oc").await.unwrap();
@@ -40,6 +52,35 @@ async fn events_of_an_older_connection_or_another_session_change_nothing() {
     // The same request again, as a snapshot would show it, is not a second one.
     ws.dispatch_opencode_event("oc", c.generation, asked(&c.session)).await;
     assert_eq!(ws.store.detail("oc").unwrap().pending.len(), 1);
+    ws.close_agent("oc").await.unwrap();
+}
+
+/// A part of an answer to a Turn that ended, arriving after a newer Turn
+/// began, is the ended Turn's (T-140): the change reads that Turn, not only
+/// the open and newest ones.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_late_part_reaches_the_turn_its_message_answers() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let mut d = agent(&dir.path().to_string_lossy());
+    for (turn, answer) in [("msg_old", "msg_answer_old"), ("msg_new", "msg_answer_new")] {
+        d.turns.push(json!({"id":turn,"status":"completed","_opencodeConfirmed":true,
+            "_opencodeAnswers":{answer:{"completed":1,"error":null,"finish":"stop"}},"items":[]}));
+    }
+    ws.store.insert(&d).unwrap();
+    ws.reconnect("oc").await.unwrap();
+    let c = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
+    let part = |id: &str, message: &str, text: &str| json!({"type":"message.part.updated","properties":{"sessionID":c.session,
+        "part":{"id":id,"sessionID":c.session,"messageID":message,"type":"text","text":text}}});
+    ws.dispatch_opencode_event("oc", c.generation, part("prt_late", "msg_answer_old", "late")).await;
+    ws.dispatch_opencode_event("oc", c.generation, part("prt_new", "msg_answer_new", "new")).await;
+    let d = ws.store.detail("oc").unwrap();
+    let items = |turn: &str| d.turns.iter().find(|t| t["id"] == turn).unwrap()["items"].as_array().unwrap()
+        .iter().map(|i| (i["id"].as_str().unwrap().to_owned(), i["text"].clone())).collect::<Vec<_>>();
+    assert_eq!(items("msg_old"), [("prt_late".to_owned(), json!("late"))]);
+    assert_eq!(items("msg_new"), [("prt_new".to_owned(), json!("new"))]);
     ws.close_agent("oc").await.unwrap();
 }
 

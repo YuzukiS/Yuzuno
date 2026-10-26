@@ -25,7 +25,7 @@ use crate::{
     model::{ensure_agent_open, now, AgentDetail, PendingRequest},
     opencode::{self, Events, Launch, Mcp, MessageId, Reply, Server, Snapshot, Submission},
     rpc::OutcomeUnknown,
-    store::Sel,
+    store::{Sel, Store},
     workspace::Workspace,
 };
 use anyhow::{anyhow, bail, ensure, Context, Result};
@@ -353,10 +353,12 @@ impl Workspace {
         let written = match kind {
             // Text as it streams: the completed part replaces it.
             "message.part.delta" => return,
-            kind if projected(kind) => self.store.record_event(id, &journal, event, Sel::Turns(event_turns(event)), |d| {
-                project(d, generation, &c.session, event);
-                refresh_status(d);
-            }).map(drop),
+            kind if projected(kind) => event_turns(&self.store, id, event).and_then(|turns| {
+                self.store.record_event(id, &journal, event, Sel::Turns(turns), |d| {
+                    project(d, generation, &c.session, event);
+                    refresh_status(d);
+                }).map(drop)
+            }),
             // Kept as evidence; it changes nothing here.
             _ => self.store.update_meta(id, &journal, event, |_| {}).map(drop),
         };
@@ -700,11 +702,17 @@ fn busy(d: &AgentDetail) -> bool {
 const TAIL: usize = 8;
 
 /// The Turns an event names: a message's own (a prompt's ID is its Turn's)
-/// and the one its answer belongs to (`parentID`). The open and newest ones
+/// and the one its answer belongs to (`parentID`); for a part, the Turn its
+/// message answers, which may have ended before the part arrives (read under
+/// the Agent's ownership, as the change is made). The open and newest ones
 /// come with them (`Sel::Turns`).
-fn event_turns(event: &Value) -> Vec<String> {
+fn event_turns(store: &Store, id: &str, event: &Value) -> Result<Vec<String>> {
     let info = &event["properties"]["info"];
-    [&info["id"], &info["parentID"]].into_iter().filter_map(Value::as_str).map(str::to_owned).collect()
+    let mut turns: Vec<String> = [&info["id"], &info["parentID"]].into_iter().filter_map(Value::as_str).map(str::to_owned).collect();
+    if let Some(message) = event["properties"]["part"]["messageID"].as_str() {
+        turns.extend(store.turn_holding(id, "_opencodeAnswers", message)?);
+    }
+    Ok(turns)
 }
 
 /// Event types this module applies to the record.
