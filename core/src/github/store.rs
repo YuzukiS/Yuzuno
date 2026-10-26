@@ -150,7 +150,7 @@ fn link_capacity(db: &Connection, task: &str) -> Result<Value> {
         "linkedCount": linked,
         "limit": TASK_LINK_LIMIT,
         "remaining": (TASK_LINK_LIMIT - linked).max(0),
-        "note": "Every PR and Issue linked to this task counts, closed and merged ones too; linking one already linked takes no second place. When it is full, unlink one this task no longer needs (action unlink with its linkId) or link the new one to another task. Nothing is unlinked for you.",
+        "note": "Every PR and Issue linked to this task counts, closed and merged ones too; linking one already linked takes no second place. When it is full, unlink one this task no longer needs (action unlink with its linkId). Nothing is unlinked for you.",
     }))
 }
 
@@ -341,8 +341,8 @@ pub(crate) fn link_object(
     ensure!(
         count < TASK_LINK_LIMIT,
         "link_limit_reached: this task already links {count} GitHub objects, closed and merged ones too \
-         (linkedCount {count}, limit {TASK_LINK_LIMIT}, remaining 0). Nothing was linked. Unlink one it no longer \
-         needs (github_links action unlink with its linkId), or link this one to another task."
+         (linkedCount {count}, limit {TASK_LINK_LIMIT}, remaining 0). Nothing was linked. To link this one, \
+         first unlink one this task no longer needs (github_links action unlink with its linkId)."
     );
     save_repository(db, repo)?;
     let data = json!({"snapshot":snapshot,"syncedAt":now(),"lastAttemptAt":now(),"error":null});

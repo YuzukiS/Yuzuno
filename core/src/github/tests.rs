@@ -221,7 +221,7 @@ fn a_task_says_how_many_of_its_30_links_are_used_and_refuses_the_31st_with_what_
         .github_link_object(&id, &r, "pull", 31, json!({"title":"Synthetic 31","state":"open"}))
         .unwrap_err()
         .to_string();
-    for part in ["link_limit_reached:", "linkedCount 30", "limit 30", "remaining 0", "closed and merged", "Nothing was linked", "action unlink", "linkId", "another task"] {
+    for part in ["link_limit_reached:", "linkedCount 30", "limit 30", "remaining 0", "closed and merged", "Nothing was linked", "action unlink", "linkId", "no longer needs"] {
         assert!(refused.contains(part), "{part}: {refused}");
     }
     assert_eq!(capacity(&s), (30, 30, 0, 30));
