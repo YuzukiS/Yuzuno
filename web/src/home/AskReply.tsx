@@ -203,6 +203,9 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
   const latest = useRef(draft);
   const [restored, setRestored] = useState(() => !!draft?.at && !!draft.text.trim());
   const [onlyHere, setOnlyHere] = useState(false);
+  const [target, setTarget] = useState(
+    () => (draft?.text.trim() && draft.agentId) || kept?.agentId || (ownerOpen ? section.owner.agentId : ""),
+  );
   // The Workspace arrived after this was drawn: its draft, unless one is being written.
   const [shownSlot, setShownSlot] = useState(slot);
   if (shownSlot !== slot) {
@@ -216,9 +219,6 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
       if (found?.text.trim() && found.agentId) setTarget(found.agentId);
     }
   }
-  const [target, setTarget] = useState(
-    () => (draft?.text.trim() && draft.agentId) || kept?.agentId || (ownerOpen ? section.owner.agentId : ""),
-  );
   function keep(next: AskDraft | null) {
     latest.current = next;
     setDraft(next);
