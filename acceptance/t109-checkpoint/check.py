@@ -6,7 +6,13 @@ host.rs does (as acceptance/job-pause/host_pause_check.py does for pause), so
 the worker unit, its wrapper's signal forwarding and its checkpoint check are
 the real ones. Unit names are t109-check-<run>-*, so no Core job is touched.
 The command is train.py: Lightning 2.5.0 on CPU, in the environment
-setup.sh made. No Core, no GPU.
+setup.sh made. No Core.
+
+With T109_DEVICE=cuda every attempt trains on the GPU the Job reserved
+(CUDA_VISIBLE_DEVICES, a UUID, as Core sets it), in setup-gpu.sh's
+environment, and holds T109_HOLD_MIB (default 4096) MiB of it while it
+trains. The card's memory is sampled with nvidia-smi before, during and after
+the stop: the hold makes the attempt's share stand out from other programs'.
 
   stop-resume  train, stop at a checkpoint (asked twice), verify it, check
                the attempt's processes and memory are gone, then resume it
@@ -22,6 +28,8 @@ Usage: check.py PYTHON OUT_DIR [scenario...]
   PYTHON   the environment's interpreter (setup.sh ENV_DIR → ENV_DIR/bin/python)
 """
 import json
+import os
+import statistics
 import subprocess
 import sys
 import time
@@ -36,11 +44,29 @@ UNITS = []
 CHECKS = []
 STEPS = 600
 DECLARED = {'signal': 'SIGTERM', 'graceSeconds': 60, 'stoppedExitCode': 75}
+DEVICE = os.environ.get('T109_DEVICE', 'cpu')
+GPU = os.environ.get('CUDA_VISIBLE_DEVICES', '') if DEVICE == 'cuda' else ''
+HOLD = int(os.environ.get('T109_HOLD_MIB', '4096')) if DEVICE == 'cuda' else 0
+NVSMI = '/usr/lib/wsl/lib/nvidia-smi' if Path('/usr/lib/wsl/lib/nvidia-smi').exists() else 'nvidia-smi'
+CARD = []
 
 
 def check(name, ok, detail=None):
     CHECKS.append({'check': name, 'ok': bool(ok), 'detail': detail})
     print(('PASS ' if ok else 'FAIL ') + name + ('' if ok else f'  {json.dumps(detail, default=str)[:800]}'), flush=True)
+
+
+def card(label, samples=5, every=0.5):
+    """The reserved card's used memory in MiB, the median of a few samples.
+    It is the whole card's: other programs' use moves it too."""
+    values = []
+    for _ in range(samples):
+        done = subprocess.run([NVSMI, '--id=' + GPU, '--query-gpu=memory.used', '--format=csv,noheader,nounits'],
+                              capture_output=True, text=True, timeout=30, check=True)
+        values.append(int(done.stdout.strip()))
+        time.sleep(every)
+    CARD.append({'at': label, 'usedMiB': values})
+    return statistics.median(values)
 
 
 def helper(mode, spec_path, timeout=60):
@@ -70,8 +96,9 @@ def launch(out, python, name, work, argv_tail, checkpoint=DECLARED, source=None)
     spec = {'id': job, 'attempt': attempt, 'bootId': boot_id(), 'unit': f't109-check-{RUN}-{name}.service',
             'supervisorUnit': f't109-check-{RUN}-{name}-collector.service',
             'timeoutSeconds': 900, 'cwd': str(work), 'guardGit': False, 'inputs': [],
-            'resources': {'memoryMiB': 2048, 'swapMiB': 0, 'cpuMillis': 1000},
-            'argv': [python, str(TRAIN)] + argv_tail, 'env': {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}}
+            'resources': {'memoryMiB': 4096 if GPU else 2048, 'swapMiB': 0, 'cpuMillis': 1000},
+            'argv': [python, str(TRAIN)] + argv_tail + ['--device', DEVICE, '--hold-mib', str(HOLD)],
+            'env': {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', **({'CUDA_VISIBLE_DEVICES': GPU} if GPU else {})}}
     if checkpoint:
         spec['checkpoint'] = checkpoint
     if source:
@@ -154,8 +181,16 @@ STATE = {}
 
 def stop_resume(out, python):
     work = out / 'project'
+    before = card('before the first attempt') if GPU else None
     spec, path, folder = launch(out, python, 'a', work, [str(out / 'a'), '--max-steps', str(STEPS), '--step-sleep', '0.02'])
     check('the first attempt trains past step 100', wait_for(lambda: steps_done(folder) >= 100, 180), steps_done(folder))
+    if GPU:
+        started = read(out / 'a' / 'start.json') or {}
+        check('it trains on the reserved GPU', started.get('device') == 'cuda' and started.get('visible') == GPU[:12]
+              and started.get('heldMiB') == HOLD, {k: started.get(k) for k in ('device', 'name', 'capability', 'visible', 'heldMiB')})
+        during = card('while the first attempt trains')
+        check("while it trains, the card holds the attempt's memory", during - before >= 0.75 * HOLD,
+              {'beforeMiB': before, 'duringMiB': during, 'holdMiB': HOLD})
     first = helper('checkpoint', path)
     again = helper('checkpoint', path)
     check('the stop reaches the wrapper', first['delivered'] is True, first)
@@ -174,6 +209,10 @@ def stop_resume(out, python):
     check('nothing of the attempt is left: its groups are empty, so its memory is freed',
           final and final['status'] == 'cancelled' and unit.get('MainPID') in ('0', None)
           and unit.get('MemoryCurrent') in ('[not set]', None, ''), {'final': (final or {}).get('status'), 'unit': unit})
+    if GPU:
+        after = card('after the stop, its groups empty')
+        check("and the card's memory the attempt held is free again", during - after >= 0.75 * HOLD,
+              {'beforeMiB': before, 'duringMiB': during, 'afterMiB': after, 'holdMiB': HOLD})
     files = checked.get('files') or []
     check('the checkpoint is the one file the manifest names, with its SHA-256',
           [f['path'] for f in files] == ['on_exception.ckpt'] and len(files[0].get('sha256', '')) == 64, files)
@@ -193,13 +232,17 @@ def stop_resume(out, python):
           start and all(start[k] == held[k] for k in ('globalStep', 'weights', 'optimizer', 'schedulerLastEpoch')),
           {'start': start, 'held': held})
     check('it continues to the last step', end and end['globalStep'] == STEPS, end)
+    if GPU:
+        check('the resumed attempt trains on the reserved GPU too', start and start.get('device') == 'cuda'
+              and start.get('visible') == GPU[:12], start)
     check('its log says it resumed, not that it started from scratch', 'start: resume from' in log_text(folder_b), log_text(folder_b)[-400:])
     check("the first attempt's folder and checkpoint are kept", (folder / 'result.json').exists()
           and (Path(checked['dir']) / 'on_exception.ckpt').exists())
     spec_c, path_c, folder_c = launch(out, python, 'c', out / 'reference', [str(out / 'c'), '--max-steps', str(STEPS)], checkpoint=None)
     result_c = wait_for(lambda: read(folder_c / 'result.json'), 300)
     reference = read(out / 'c' / 'final.json')
-    check('the final weights equal an uninterrupted run of the same steps (this example: CPU, one thread, step-seeded data)',
+    check('the final weights equal an uninterrupted run of the same steps (this example: '
+          + ('one GPU, deterministic cuBLAS' if GPU else 'CPU, one thread') + ', step-seeded data)',
           result_c and result_c['status'] == 'succeeded' and reference and end
           and reference['weights'] == end['weights'] and reference['optimizer'] == end['optimizer'],
           {'resumed': end, 'uninterrupted': reference})
@@ -243,6 +286,8 @@ def cleanup():
 
 def main():
     python = str(Path(sys.argv[1]).absolute())
+    if DEVICE == 'cuda' and not GPU.startswith('GPU-'):
+        sys.exit('T109_DEVICE=cuda needs CUDA_VISIBLE_DEVICES set to the reserved GPU UUID (a Job with gpu)')
     out = Path(sys.argv[2]).resolve() / RUN
     out.mkdir(parents=True)
     scenarios = {'stop-resume': stop_resume, 'tampered': tampered, 'wrong-code': wrong_code}
@@ -255,8 +300,11 @@ def main():
                 check(f'{name} ran to completion', False, repr(error))
     finally:
         cleanup()
-    report = {'run': RUN, 'host': str(HOST), 'checks': CHECKS,
+    report = {'run': RUN, 'host': str(HOST), 'device': DEVICE, 'checks': CHECKS,
               'passed': sum(c['ok'] for c in CHECKS), 'total': len(CHECKS)}
+    if GPU:
+        # The card by UUID prefix only; its samples are the whole card's.
+        report['gpu'] = {'uuidPrefix': GPU[:12], 'holdMiB': HOLD, 'samples': CARD}
     (out / 'report.json').write_text(json.dumps(report, indent=1, default=str))
     print(f"{report['passed']}/{report['total']} passed; {out / 'report.json'}")
     sys.exit(0 if report['passed'] == report['total'] else 1)

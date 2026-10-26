@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""A small Lightning 2.5.0 CPU training that can stop at a checkpoint (T-109).
+"""A small Lightning 2.5.0 training that can stop at a checkpoint (T-109),
+on CPU or, with --device cuda, on the one GPU the Job is given.
 
 The Job declares checkpoint {signal: SIGTERM, stoppedExitCode: 75}. On the
 user's stop the wrapper sends SIGTERM to this process. Lightning's own
@@ -18,11 +19,16 @@ The initial weights come from a fixed seed, and the data cursor is the
 global step: each step's batch is drawn from a generator seeded with (seed,
 global_step), so a resumed run sees exactly the batches an uninterrupted run
 would. There is no dropout and no other random state. That is what makes the final weights comparable here; it is not a
-claim about any other training.
+claim about any other training. On a GPU, cuBLAS is put in its deterministic
+mode (CUBLAS_WORKSPACE_CONFIG) for the same reason.
 
 Usage: train.py OUT_DIR [--max-steps N] [--step-sleep S] [--stop-at STEP]
+                [--device cpu|cuda] [--hold-mib N]
   OUT_DIR       where this attempt writes start.json and final.json
   --stop-at     a test hook: exit 1 at that step without saving anything
+  --hold-mib    keep N MiB of device memory written and held while training,
+                so that freeing it after a stop can be told from other
+                programs' use of the card
 """
 import argparse
 import hashlib
@@ -73,7 +79,9 @@ class Regression(L.LightningModule):
         # The batch from the loader only paces the loop; the data is the step's own.
         g = torch.Generator().manual_seed(SEED * 1_000_003 + self.global_step)
         x = torch.randn(BATCH, FEATURES, generator=g)
-        y = torch.tanh(x @ self.truth) + 0.01 * torch.randn(BATCH, 1, generator=g)
+        noise = 0.01 * torch.randn(BATCH, 1, generator=g)
+        x, noise = x.to(self.device), noise.to(self.device)
+        y = torch.tanh(x @ self.truth) + noise
         loss = torch.nn.functional.mse_loss(self.net(x), y)
         if self.step_sleep:
             time.sleep(self.step_sleep)
@@ -89,8 +97,8 @@ class Report(Callback):
     """What this attempt started from, its progress for the Job panel, and
     where it ended; read by check.py, not by Core."""
 
-    def __init__(self, out, stop_at):
-        self.out, self.stop_at = out, stop_at
+    def __init__(self, out, stop_at, hold_mib):
+        self.out, self.stop_at, self.hold_mib = out, stop_at, hold_mib
         self.progress = os.environ.get('YUZUNO_JOB_PROGRESS_FILE')
 
     def state(self, trainer, module):
@@ -101,7 +109,17 @@ class Report(Callback):
                 'schedulerLastEpoch': scheduler.last_epoch}
 
     def on_train_start(self, trainer, module):
-        atomic(self.out / 'start.json', self.state(trainer, module))
+        device = {'device': module.device.type}
+        if module.device.type == 'cuda':
+            major, minor = torch.cuda.get_device_capability(module.device)
+            # The visible device by UUID prefix only, as the GPU admission check keeps it.
+            device.update(name=torch.cuda.get_device_name(module.device), capability=f'{major}.{minor}',
+                          visible=os.environ.get('CUDA_VISIBLE_DEVICES', '')[:12])
+        if self.hold_mib:
+            # Written, so the memory is in use on the card, not only reserved.
+            self.held = torch.ones(self.hold_mib * 2**20, dtype=torch.uint8, device=module.device)
+            device['heldMiB'] = self.hold_mib
+        atomic(self.out / 'start.json', {**self.state(trainer, module), **device})
         self.trace = (self.out / 'trace.jsonl').open('a')
 
     def on_train_batch_start(self, trainer, module, batch, batch_idx):
@@ -137,7 +155,12 @@ def main():
     args.add_argument('--max-steps', type=int, default=2000)
     args.add_argument('--step-sleep', type=float, default=0.0)
     args.add_argument('--stop-at', type=int, default=0)
+    args.add_argument('--device', choices=['cpu', 'cuda'], default='cpu')
+    args.add_argument('--hold-mib', type=int, default=0)
     opts = args.parse_args()
+    if opts.device == 'cuda':
+        # Required by deterministic algorithms on CUDA; set before CUDA starts.
+        os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
     torch.set_num_threads(1)
     torch.use_deterministic_algorithms(True)
     # The same initial weights in every attempt; a resumed one replaces them.
@@ -146,12 +169,12 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     base = Path(os.environ['YUZUNO_CHECKPOINT_DIR']) if os.environ.get('YUZUNO_CHECKPOINT_DIR') else None
     resume = os.environ.get('YUZUNO_RESUME_FROM')
-    callbacks = [Report(out, opts.stop_at)]
+    callbacks = [Report(out, opts.stop_at, opts.hold_mib)]
     if base:
         callbacks.append(OnExceptionCheckpoint(dirpath=base, filename=Path(CHECKPOINT).stem))
     # OnExceptionCheckpoint is a Checkpoint callback: Lightning refuses it with
     # enable_checkpointing=False, and adds no ModelCheckpoint beside it.
-    trainer = L.Trainer(accelerator='cpu', devices=1, max_steps=opts.max_steps, max_epochs=1, logger=False,
+    trainer = L.Trainer(accelerator='gpu' if opts.device == 'cuda' else 'cpu', devices=1, max_steps=opts.max_steps, max_epochs=1, logger=False,
                         enable_checkpointing=bool(base), enable_progress_bar=False, enable_model_summary=False,
                         callbacks=callbacks, default_root_dir=out)
     loader = torch.utils.data.DataLoader(range(opts.max_steps + 1), batch_size=1)
