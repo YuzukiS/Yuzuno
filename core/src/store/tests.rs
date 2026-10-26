@@ -211,6 +211,134 @@ fn a_backfill_confirms_a_message_whose_start_was_written_out() {
     assert_eq!(m["text"], whole);
 }
 
+/// Two long Claude messages: one cut off (never confirmed), then a reply that
+/// is confirmed and that the result names. Confirming the reply reads back
+/// its text only, not the other's; the reply, its end spilled again since
+/// Claude may still stream into it, is marked as the final answer.
+#[test]
+fn a_long_claude_reply_is_the_final_answer_and_only_it_is_read_back_to_confirm() {
+    let (_dir, store) = lab();
+    let mut c = detail("c");
+    c.agent.harness = "claude".into();
+    store.insert(&c).unwrap();
+    let event = |e: Value| json!({"type":"event","turnId":"t","event":e});
+    let text = |tag: char| -> String { (0..(STREAM_HOLD + (256 << 10)) / 10).map(|n| format!("[{tag}{n:07}]")).collect() };
+    let (cut, reply) = (text('a'), text('b'));
+    for (mid, whole) in [("m0", &cut), ("m1", &reply)] {
+        stream(&store, "c", "claude/stream_event", &event(json!({"type":"stream_event","event":{"type":"message_start","message":{"id":mid}}})));
+        for delta in whole.as_bytes().chunks(64 << 10) {
+            let delta = std::str::from_utf8(delta).unwrap();
+            stream(&store, "c", "claude/stream_event", &event(json!({"type":"stream_event","event":{"type":"content_block_delta",
+                "index":0,"delta":{"type":"text_delta","text":delta}}})));
+        }
+    }
+    let chunks_of = |item: &str| -> i64 {
+        store.db.read().unwrap().query_row("SELECT COUNT(*) FROM agent_stream_chunks WHERE agent_id='c' AND item_id=?1",
+            [item], |r| r.get(0)).unwrap()
+    };
+    let m0_chunks = chunks_of("m0");
+    assert!(m0_chunks > 0 && chunks_of("m1") > 0);
+    stream(&store, "c", "claude/assistant", &event(json!({"type":"assistant","uuid":"a1",
+        "message":{"id":"m1","content":[{"type":"text","text":reply}]}})));
+    assert_eq!(chunks_of("m0"), m0_chunks, "the message cut off is not read back");
+    assert!(store.peek("c", |d| d.turns[0]["items"].as_array().unwrap().iter()
+        .any(|i| i["id"] == "m1" && i[record_rows::SPILLED].is_object())).unwrap(), "the reply's end is spilled again");
+    let result = json!({"type":"result","subtype":"success","is_error":false,"result":reply});
+    store.update_picking_result("c", "claude/result", &event(result.clone()),
+        |d| crate::claude::project_event(d, Some("t"), &result), |_| ()).unwrap();
+    let read = store.detail("c").unwrap();
+    let item = |id: &str| read.turns[0]["items"].as_array().unwrap().iter().find(|i| i["id"] == id).unwrap().clone();
+    assert_eq!((item("m0")["text"].as_str(), item("m0")["phase"].as_str()), (Some(cut.as_str()), None));
+    assert_eq!((item("m1")["text"].as_str(), item("m1")["phase"].as_str()), (Some(reply.as_str()), Some("final_answer")));
+}
+
+/// Output a running command printed: over TRIM_ABOVE (stored apart, read
+/// back without payloads as a preview), under STREAM_HOLD (never spilled).
+fn printed() -> String {
+    (0..2000).map(|n| format!("line {n:05}\n")).collect()
+}
+
+fn running(output: &str) -> Value {
+    json!({"id":"run","type":"commandExecution","command":"make","status":"inProgress","aggregatedOutput":output})
+}
+
+fn delta_to_run(store: &Store, id: &str, text: &str) {
+    stream(store, id, "item/commandExecution/outputDelta", &json!({"turnId":"t","itemId":"run","delta":text}));
+}
+
+fn run_output(store: &Store, id: &str) -> Value {
+    store.payload_view(id, Some("t"), Some("run"), |d| d.turns[0]["items"].as_array().unwrap().iter()
+        .find(|i| i["id"] == "run").unwrap()["aggregatedOutput"].clone()).unwrap().unwrap()
+}
+
+fn status_change(store: &Store, id: &str, sel: Sel) {
+    store.record_event(id, "test/status", &json!({}), sel, |d| d.agent.status = "working".into()).unwrap();
+}
+
+/// A change reads from rows the Turns memory lacks, and memory then keeps
+/// them (`change_locked`). An Item still in progress comes back whole, so
+/// output that streams on extends what it printed, not the preview of it.
+/// Here: an Agent not in memory, by `Sel::Open` and by `Sel::Named`.
+fn change_on_an_agent_not_in_memory(sel: Sel) {
+    let (_dir, store) = lab();
+    let mut d = detail("a");
+    d.turns = vec![json!({"id":"t","status":"inProgress","items":[running(&printed())]})];
+    store.insert(&d).unwrap();
+    assert!(store.peek("a", |_| ()).is_none(), "not in memory");
+    status_change(&store, "a", sel);
+    delta_to_run(&store, "a", "tail\n");
+    assert_eq!(run_output(&store, "a"), format!("{}tail\n", printed()));
+}
+
+#[test]
+fn a_change_on_an_agent_not_in_memory_keeps_running_output_whole() {
+    change_on_an_agent_not_in_memory(Sel::Open);
+}
+
+#[test]
+fn a_named_change_on_an_agent_not_in_memory_keeps_running_output_whole() {
+    change_on_an_agent_not_in_memory(Sel::Named(vec!["t".into()]));
+}
+
+/// The same for a Turn memory holds with gaps, which a change reads whole
+/// from its rows: 4000 ended Items of 2 KiB before the running one.
+#[test]
+fn a_change_beside_gaps_keeps_running_output_whole() {
+    let (_dir, store) = lab();
+    let mut d = detail("a");
+    let mut items: Vec<Value> = (0..4000).map(|n| json!({"id":format!("c{n}"),"type":"commandExecution","status":"completed",
+        "command":"make","aggregatedOutput":"o".repeat(2048)})).collect();
+    items.push(running(&printed()));
+    d.turns = vec![json!({"id":"t","status":"inProgress","items":items})];
+    store.insert(&d).unwrap();
+    delta_to_run(&store, "a", "more\n");
+    assert!(store.peek("a", |d| d.turns[0]["items"].as_array().unwrap().iter().any(|i| record_rows::gap_of(i).is_some())).unwrap());
+    status_change(&store, "a", Sel::Open);
+    delta_to_run(&store, "a", "tail\n");
+    assert_eq!(run_output(&store, "a"), format!("{}more\ntail\n", printed()));
+}
+
+/// The same for output whose start streamed out to chunk rows, read by a
+/// Core reopened on the rows: the start stays noted, in its chunks.
+#[test]
+fn a_change_after_a_reopen_keeps_spilled_running_output_whole() {
+    let (dir, store) = lab();
+    let mut d = detail("a");
+    d.turns = vec![json!({"id":"t","status":"inProgress","items":[running("")]})];
+    store.insert(&d).unwrap();
+    let part = "s".repeat(256 << 10);
+    for _ in 0..5 {
+        delta_to_run(&store, "a", &part);
+    }
+    assert!(store.peek("a", |d| d.turns[0]["items"][0][record_rows::SPILLED].is_object()).unwrap());
+    assert!(store.flush().failed.is_empty());
+    drop(store);
+    let store = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+    status_change(&store, "a", Sel::Open);
+    delta_to_run(&store, "a", "tail\n");
+    assert_eq!(run_output(&store, "a"), format!("{}tail\n", part.repeat(5)));
+}
+
 #[test]
 fn receipts_are_read_when_an_event_needs_them_and_never_held() {
     let (_dir, store) = lab();

@@ -870,17 +870,19 @@ fn user_clients(d: &AgentDetail, dirty: &Dirty) -> Vec<String> {
     clients
 }
 
-/// Reads back whole each Claude message in `slice` whose text streamed out
-/// of memory: its chunk rows, then its `pending` chunks not written yet,
-/// then the end it held. For an event that may confirm its text
-/// (`claude::confirms_text`), which puts a completed block where it is in
-/// that text. The caller writes the message whole, or spilled anew, and
-/// drops its old chunks.
-fn whole_messages(db: &Connection, id: &str, slice: &mut AgentDetail, pending: &[record_rows::Chunk]) -> Result<()> {
+/// Reads back whole the Claude messages in `slice` (`only` the one with that
+/// ID, if given) whose text streamed out of memory: its chunk rows, then its
+/// `pending` chunks not written yet, then the end it held. For an event that
+/// may confirm their text (`claude::confirms_text`), which puts a completed
+/// block where it is in that text. The caller writes each whole, or spilled
+/// anew, and drops its old chunks.
+fn whole_messages(db: &Connection, id: &str, slice: &mut AgentDetail, pending: &[record_rows::Chunk], only: Option<&str>)
+    -> Result<()> {
     for turn in &mut slice.turns {
         let Some(tid) = turn["id"].as_str().map(str::to_owned) else { continue };
         for item in turn.get_mut("items").and_then(Value::as_array_mut).into_iter().flatten() {
-            if item["type"] == "agentMessage" && item[record_rows::SPILLED].is_object() {
+            if item["type"] == "agentMessage" && item[record_rows::SPILLED].is_object()
+                && only.is_none_or(|message| item["id"] == message) {
                 record_rows::unspill_with(db, id, &tid, item, pending)?;
             }
         }
@@ -2306,9 +2308,11 @@ impl Store {
         let turns_before = kind.starts_with("claude/").then(|| staged.turns.clone());
         let spilled = spilled_fields(&staged);
         if crate::claude::confirms_text(kind) && !spilled.is_empty() {
-            // Its chunks not written yet are part of the text too.
+            // Its chunks not written yet are part of the text too. A live
+            // assistant frame confirms its own message only.
             let pending = self.memory.lock().unwrap().hot.get(id).map(|hot| hot.chunks.clone()).unwrap_or_default();
-            whole_messages(&*self.db.read()?, id, &mut staged, &pending)?;
+            let message = data["event"]["message"]["id"].as_str().unwrap_or_default();
+            whole_messages(&*self.db.read()?, id, &mut staged, &pending, Some(message))?;
         }
         let applied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             apply_streamed(&mut staged, None, kind, data, at);
@@ -2668,6 +2672,12 @@ impl Store {
             Some(whole) => read_named(&db, id, &ids, whole),
             None => record_rows::load_turns(&db, id, &ids, false),
         }.inspect_err(|e| self.note_damage(id, e))?;
+        // Memory keeps what a change read (`change_locked`): an Item still in
+        // progress comes whole, as an active Agent holds it, since streamed
+        // output appends to it and a field's preview is not its value.
+        for (_, turn) in &mut turns {
+            whole_in_progress(&db, id, turn).inspect_err(|e| self.note_damage(id, e))?;
+        }
         if !hot_turns.is_empty() {
             let names: Vec<String> = hot_turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
             let ords = record_rows::turn_ords(&db, id, &names)?;
@@ -2710,9 +2720,11 @@ impl Store {
         let loaded: Vec<String> = d.turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
         let turns_before = d.turns.clone();
         if crate::claude::confirms_text(kind) {
-            // Written whole below, their chunks dropped (the unwritten ones
-            // were written above).
-            whole_messages(&*self.db.read()?, id, &mut d, &[])?;
+            // A backfill may confirm any saved message of the Turns it reads:
+            // each is written whole below, its chunks dropped (the unwritten
+            // ones were written above), and memory keeps it whole until it
+            // leaves (an ended Item past HOT_ITEMS) or streams again.
+            whole_messages(&*self.db.read()?, id, &mut d, &[], None)?;
         }
         let receipts_before = d.message_receipts.clone();
         mutate(&mut d);

@@ -3163,12 +3163,14 @@ pub(crate) fn project_event_at(d: &mut AgentDetail, turn_id: Option<&str>, event
             };
             if !failed {
                 if let Some(final_text) = event["result"].as_str() {
+                    // Its completed text, kept whole where the store holds
+                    // only the end of its text (`record_rows::SPILLED`).
                     if let Some(item) = turn["items"].as_array_mut().and_then(|items| {
                         items.iter_mut().rev().find(|item| {
                             item["type"] == "agentMessage"
-                                && item["text"]
-                                    .as_str()
-                                    .is_some_and(|text| text.trim() == final_text.trim())
+                                && [&item["_yuzunoCompletedText"], &item["text"]].into_iter().any(|text| {
+                                    text.as_str().is_some_and(|text| text.trim() == final_text.trim())
+                                })
                         })
                     }) {
                         item["phase"] = "final_answer".into();
