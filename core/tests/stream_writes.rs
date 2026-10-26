@@ -6,7 +6,7 @@
 //! streamed text may be, and nothing is ever repeated or replayed.
 use serde_json::{json, Value};
 use std::time::Duration;
-use yuzuno_workspace::{model::AgentDetail, record_rows, store::{route, whole::WholeRecord, Route, Sel, Store, Streamed, MAX_STREAMS}};
+use yuzuno_workspace::{model::AgentDetail, record_rows, store::{route, whole::WholeRecord, Route, Sel, Store, Streamed, IN_PROGRESS_HOLD, MAX_STREAMS, STREAM_HOLD}};
 
 fn detail() -> AgentDetail {
     serde_json::from_value(json!({"agent":{"id":"a","name":"A","cwd":"/tmp","model":"m","color":"sage",
@@ -243,6 +243,106 @@ fn a_completed_claude_message_replaces_the_partial_text_written_before_it() {
         assert_eq!(items.iter().find(|i| i["id"] == "m").unwrap()["text"], "Hello");
         assert_eq!(items.iter().find(|i| i["id"] == "m:thinking").unwrap()["summary"], json!(["Plan it."]));
     }
+}
+
+/// Claude streams a message's text a delta at a time. Past STREAM_HOLD, or
+/// past a few KiB while other Items in progress hold more than
+/// IN_PROGRESS_HOLD, its start goes to chunk rows, each byte once, and
+/// memory keeps its end only. Every read has the text as it streamed, before
+/// and after the message is confirmed.
+#[test]
+fn a_long_claude_message_reads_as_it_streamed_and_memory_keeps_its_end() {
+    for tight in [false, true] {
+        let lab = Lab::new();
+        let mut c = detail();
+        c.agent.id = "c".into();
+        c.agent.harness = "claude".into();
+        if tight {
+            // A tool call still in progress whose input holds more than
+            // IN_PROGRESS_HOLD: Claude's own stream for it is not recorded.
+            c.turns[0]["items"] = json!([{"id":"tool","type":"claudeToolUse","status":"inProgress","name":"Write",
+                "input":{"content":"i".repeat(IN_PROGRESS_HOLD + 1)}}]);
+        }
+        lab.store().insert(&c).unwrap();
+        let stream = |event: Value| lab.stream("c", "claude/stream_event", &claude(json!({"type":"stream_event","event":event})));
+        stream(json!({"type":"message_start","message":{"id":"m"}}));
+        stream(json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}));
+        // Numbered cells, so each place in the text reads differently.
+        let part = if tight { 1 << 10 } else { 64 << 10 };
+        let whole: String = (0..40 * part / 10).map(|n| format!("[{n:08}]")).collect();
+        for delta in whole.as_bytes().chunks(part) {
+            let delta = std::str::from_utf8(delta).unwrap();
+            stream(json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":delta}}));
+        }
+        assert!(whole.len() > if tight { 8 << 10 } else { STREAM_HOLD });
+        let text = |d: &AgentDetail| d.turns.iter().flat_map(|t| t["items"].as_array().into_iter().flatten())
+            .find(|i| i["id"] == "m").map(|i| i["text"].clone()).unwrap_or(Value::Null);
+        let chunked = || -> i64 {
+            lab.sql().query_row("SELECT COALESCE(SUM(LENGTH(CAST(data AS BLOB))),0) FROM agent_stream_chunks WHERE agent_id='c'",
+                [], |r| r.get(0)).unwrap()
+        };
+        assert!(chunked() > 0, "tight {tight}: nothing went to chunk rows");
+        assert!(chunked() as usize <= whole.len(), "tight {tight}: {} bytes in chunks of a {}-byte text", chunked(), whole.len());
+        // What memory holds of it: the end, and no copy of the whole beside it.
+        let held = lab.store().peek("c", |d| serde_json::to_string(&d.turns).unwrap().len()).unwrap();
+        let hold = if tight { 8 << 10 } else { STREAM_HOLD };
+        assert!(held < hold + if tight { IN_PROGRESS_HOLD + (16 << 10) } else { 16 << 10 }, "tight {tight}: {held} bytes held");
+        assert_eq!(text(&lab.store().detail("c").unwrap()), whole, "tight {tight}: read before it is confirmed");
+        assert_eq!(text(&lab.row_of("c")), whole, "tight {tight}: rows before it is confirmed");
+        // Search reads its whole text too: its first words, and words across
+        // the end of its first chunk row.
+        let first: i64 = lab.sql().query_row("SELECT LENGTH(CAST(data AS BLOB)) FROM agent_stream_chunks WHERE agent_id='c'
+            ORDER BY seq LIMIT 1", [], |r| r.get(0)).unwrap();
+        let across = &whole[first as usize - 6..first as usize + 6];
+        for words in [&whole[..10], across] {
+            assert_eq!(whole.matches(words).count(), 1);
+            let found = lab.store().conversation_search("c", words).unwrap();
+            assert_eq!(found.iter().map(|r| (r["itemId"].as_str(), r["match"].as_str())).collect::<Vec<_>>(), [(Some("m"), Some(words))],
+                "tight {tight}: {words}");
+        }
+        lab.stream("c", "claude/assistant", &claude(json!({"type":"assistant","uuid":"b0",
+            "message":{"id":"m","content":[{"type":"text","text":whole}]}})));
+        let killed = lab.killed();
+        let restored = Store::open(&killed.path().join("workspace.sqlite")).unwrap().detail("c").unwrap();
+        for d in [&lab.store().detail("c").unwrap(), &lab.row_of("c"), &restored] {
+            assert_eq!(text(d), whole, "tight {tight}: read after it is confirmed");
+        }
+    }
+}
+
+/// Streamed output whose write failed waits in memory for the next write. A
+/// completion that replaces it and cannot be written either is not
+/// recorded, so it leaves that output as it was: the next write stores the
+/// output that streamed, whole.
+#[test]
+fn streamed_output_outlasts_two_failed_writes_in_a_row() {
+    let lab = Lab::new();
+    lab.stream("a", "item/started", &json!({"turnId":"t","item":{"id":"run","type":"commandExecution","command":"make",
+        "status":"inProgress","aggregatedOutput":""}}));
+    lab.refuse_items_of("a");
+    let part = "s".repeat(256 << 10);
+    for _ in 0..5 {
+        lab.stream("a", "item/commandExecution/outputDelta", &json!({"turnId":"t","itemId":"run","delta":part}));
+    }
+    let whole = part.repeat(5);
+    let output = |d: &AgentDetail| d.turns.iter().flat_map(|t| t["items"].as_array().into_iter().flatten())
+        .find(|i| i["id"] == "run").map(|i| i["aggregatedOutput"].clone()).unwrap_or(Value::Null);
+    // Its start left memory, but its write failed (logged): its chunks wait
+    // in memory. The completion, with other output, fails to be written too.
+    let chunk_rows = || -> i64 {
+        lab.sql().query_row("SELECT COUNT(*) FROM agent_stream_chunks WHERE agent_id='a'", [], |r| r.get(0)).unwrap()
+    };
+    let held = || lab.store().peek("a", |d| output(d).as_str().unwrap().len()).unwrap();
+    assert!(held() < STREAM_HOLD);
+    assert_eq!(chunk_rows(), 0);
+    let completed = json!({"turnId":"t","item":{"id":"run","type":"commandExecution","command":"make","status":"completed",
+        "aggregatedOutput":"never recorded"}});
+    assert!(lab.store().record_stream("a", Route::Deferred, "item/completed", &completed).is_err());
+    assert_eq!((held() < STREAM_HOLD, chunk_rows()), (true, 0));
+    lab.allow();
+    assert!(lab.store().stream_tick(Duration::ZERO).failed.is_empty());
+    assert_eq!(output(&lab.row()), whole);
+    assert_eq!(output(&lab.store().detail("a").unwrap()), whole);
 }
 
 #[test]

@@ -340,13 +340,18 @@ pub(crate) fn last_message(db: &Connection, id: &str, turn: &str, field: &str) -
 
 /// Each message Item (user or assistant) of a Turn in order, read without
 /// payloads one at a time, until `each` says to stop: what a search reads.
+/// A message whose start streamed out to chunk rows is read with it, whole.
 pub(crate) fn messages(db: &Connection, id: &str, turn: &str, mut each: impl FnMut(Value) -> Result<bool>) -> Result<bool> {
     let mut query = db.prepare_cached("SELECT turn_id,item_id,ord,payloads,data,previews FROM agent_items
         WHERE agent_id=?1 AND turn_id=?2 AND json_extract(data,'$.type') IN ('userMessage','agentMessage') ORDER BY ord")?;
     let mut rows = query.query(params![id, turn])?;
     while let Some(row) = rows.next()? {
         let row = item_from_row(row)?;
-        if !each(decode(db, id, &row, false, None).map_err(|error| damaged(id, error))?)? {
+        let message = decode(db, id, &row, false, None).and_then(|mut value| {
+            super::unspill(db, id, &row.turn, &mut value)?;
+            Ok(value)
+        });
+        if !each(message.map_err(|error| damaged(id, error))?)? {
             return Ok(false);
         }
     }

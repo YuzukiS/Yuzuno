@@ -73,6 +73,25 @@ const GAP_ID: &str = "\u{1}gap:";
 /// field, `{"bytes": .., "lines": ..}` of what the chunks hold.
 pub const SPILLED: &str = "_yuzunoSpilled";
 
+/// Inserts `text` into `item`'s string `field` at byte `at` of the field
+/// as stored whole, which counts its start written out (`SPILLED`). False,
+/// and nothing changed, where `at` is in that start or not a character
+/// boundary of what memory holds.
+pub fn insert_text(item: &mut Value, field: &str, at: usize, text: &str) -> bool {
+    let start = item[SPILLED][field]["bytes"].as_u64().map_or(0, |bytes| bytes as usize);
+    if item[field].is_null() {
+        item[field] = Value::String(String::new());
+    }
+    let Some(Value::String(held)) = item.get_mut(field) else { return false };
+    match at.checked_sub(start).filter(|place| held.is_char_boundary(*place)) {
+        Some(place) => {
+            held.insert_str(place, text);
+            true
+        }
+        None => false,
+    }
+}
+
 /// The gap standing for `count` Items stored from position `from`.
 pub fn gap(from: usize, count: usize) -> Value {
     serde_json::json!({"id": format!("{GAP_ID}{from}"), GAP: {"from": from, "count": count}})
@@ -90,6 +109,7 @@ pub fn item_count(items: &[Value]) -> usize {
 }
 
 /// A streamed field's start, moved out of memory (`SPILLED`).
+#[derive(Clone)]
 pub struct Chunk {
     pub turn: String,
     pub item: String,
@@ -1878,7 +1898,7 @@ pub fn write_receipts(db: &Connection, id: &str, receipts: &[&MessageReceipt]) -
 
 /// Appends streamed fields' starts (`Chunk`) to their Items' chunk rows, in
 /// the caller's transaction, after the Items' rows are written.
-pub fn write_chunks(db: &Connection, agent: &str, chunks: &[Chunk]) -> Result<()> {
+pub fn write_chunks<'a>(db: &Connection, agent: &str, chunks: impl IntoIterator<Item = &'a Chunk>) -> Result<()> {
     let mut insert = db.prepare_cached("INSERT INTO agent_stream_chunks(agent_id,turn_id,item_id,field,seq,data)
         VALUES(?1,?2,?3,?4,(SELECT COALESCE(MAX(seq),-1)+1 FROM agent_stream_chunks
             WHERE agent_id=?1 AND turn_id=?2 AND item_id=?3 AND field=?4),?5)")?;
@@ -1925,6 +1945,13 @@ pub fn drop_chunks(db: &Connection, agent: &str, turn: &str, item: &str, field: 
 /// An Item read with its payloads made whole: each field it notes as
 /// spilled is its chunks followed by its value, and the note goes.
 fn unspill(db: &Connection, agent: &str, turn: &str, item: &mut Value) -> Result<()> {
+    unspill_with(db, agent, turn, item, &[])
+}
+
+/// `unspill` of an Item whose streamed start may still be partly in memory:
+/// each field is its chunk rows, then its `pending` chunks (those not
+/// written yet, in order), then its value.
+pub fn unspill_with(db: &Connection, agent: &str, turn: &str, item: &mut Value, pending: &[Chunk]) -> Result<()> {
     let Some(notes) = item.as_object_mut().and_then(|members| members.remove(SPILLED)) else { return Ok(()) };
     let key = item["id"].as_str().context("a spilled Item has no ID")?.to_owned();
     let mut query = db.prepare_cached("SELECT data FROM agent_stream_chunks WHERE agent_id=?1 AND turn_id=?2 AND item_id=?3
@@ -1933,6 +1960,9 @@ fn unspill(db: &Connection, agent: &str, turn: &str, item: &mut Value) -> Result
         let mut whole = String::with_capacity(note["bytes"].as_u64().unwrap_or(0) as usize);
         for chunk in query.query_map(params![agent, turn, key, field], |r| r.get::<_, String>(0))? {
             whole.push_str(&chunk?);
+        }
+        for chunk in pending.iter().filter(|c| c.turn == turn && c.item == key && c.field == *field) {
+            whole.push_str(&chunk.data);
         }
         ensure!(whole.len() as u64 == note["bytes"].as_u64().unwrap_or(u64::MAX), "Item {key}: chunks of {field} do not add up");
         whole.push_str(item[field.as_str()].as_str().unwrap_or_default());

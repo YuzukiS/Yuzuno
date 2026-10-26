@@ -985,7 +985,7 @@ mod tests {
     fn every_saved_text_block_of_one_message_is_kept() {
         // Core saw the message's first text block live; Claude saved a second.
         let mut d = detail(json!([{"id":"t1","status":"outcomeUnknown","_claudeAssistantSeen":{"a1":true},
-            "_claudeTextBlocks":{"m1":[{"index":"0","text":"First. ","confirmed":true}]},"items":[
+            "_claudeTextBlocks":{"m1":[{"index":"0","bytes":7,"confirmed":true}]},"items":[
             {"id":"t1:input","type":"userMessage","content":[{"type":"text","text":"Go"}],"nativeUuid":"t1"},
             {"id":"m1","type":"agentMessage","text":"First. ","_yuzunoCompletedText":"First. ","nativeMessageId":"m1"}]}]));
         let chain = [prompt("t1", "Go"), said("a1", "m1", "First. ", "end_turn"), said("a2", "m1", "Second.", "end_turn")];

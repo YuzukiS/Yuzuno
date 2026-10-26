@@ -713,9 +713,12 @@ fn pinned(item: &Value, streaming: Option<&str>) -> bool {
         || item["id"].as_str().is_some_and(|id| streaming.is_some_and(|m| id == m || id.starts_with(&format!("{m}:"))))
 }
 
-/// The bytes a slice holds: its metadata and its Items.
+/// The bytes a slice holds: its metadata, its Turns' own fields (Claude's
+/// per-Turn scratch among them) and its Items.
 fn slice_bytes(slice: &AgentDetail) -> usize {
-    serde_json::to_value(slice.clone_meta()).map_or(0, |meta| crate::client_view::size_of(&meta)) + held_items(slice)
+    let shells: usize = slice.turns.iter().flat_map(|t| t.as_object().into_iter().flatten())
+        .filter(|(key, _)| *key != "items").map(|(key, value)| key.len() + 3 + crate::client_view::size_of(value)).sum();
+    serde_json::to_value(slice.clone_meta()).map_or(0, |meta| crate::client_view::size_of(&meta)) + shells + held_items(slice)
 }
 
 /// The bytes of the Items `slice` holds (gaps excepted).
@@ -865,6 +868,24 @@ fn user_clients(d: &AgentDetail, dirty: &Dirty) -> Vec<String> {
         }
     }
     clients
+}
+
+/// Reads back whole each Claude message in `slice` whose text streamed out
+/// of memory: its chunk rows, then its `pending` chunks not written yet,
+/// then the end it held. For an event that may confirm its text
+/// (`claude::confirms_text`), which puts a completed block where it is in
+/// that text. The caller writes the message whole, or spilled anew, and
+/// drops its old chunks.
+fn whole_messages(db: &Connection, id: &str, slice: &mut AgentDetail, pending: &[record_rows::Chunk]) -> Result<()> {
+    for turn in &mut slice.turns {
+        let Some(tid) = turn["id"].as_str().map(str::to_owned) else { continue };
+        for item in turn.get_mut("items").and_then(Value::as_array_mut).into_iter().flatten() {
+            if item["type"] == "agentMessage" && item[record_rows::SPILLED].is_object() {
+                record_rows::unspill_with(db, id, &tid, item, pending)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The spilled fields of a slice (Turn, Item, field, the end it holds, its
@@ -2284,6 +2305,11 @@ impl Store {
         };
         let turns_before = kind.starts_with("claude/").then(|| staged.turns.clone());
         let spilled = spilled_fields(&staged);
+        if crate::claude::confirms_text(kind) && !spilled.is_empty() {
+            // Its chunks not written yet are part of the text too.
+            let pending = self.memory.lock().unwrap().hot.get(id).map(|hot| hot.chunks.clone()).unwrap_or_default();
+            whole_messages(&*self.db.read()?, id, &mut staged, &pending)?;
+        }
         let applied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             apply_streamed(&mut staged, None, kind, data, at);
         }));
@@ -2333,8 +2359,10 @@ impl Store {
             let receipts = changed_receipts(&receipts_before, &staged.message_receipts);
             record_rows::plan(&*self.db.read()?, id, &staged, &staged.turns, &[], &dirty, &receipts)?
         };
-        let mut pending = self.take_chunks(id);
-        pending.retain(|c| !replaced.iter().any(|(t, i, f)| *t == c.turn && *i == c.item && *f == c.field));
+        // Those of a replaced field are not written. The slice still notes
+        // them until this write commits, so a failed one gives all back.
+        let pending = self.take_chunks(id);
+        let kept = |c: &&record_rows::Chunk| !replaced.iter().any(|(t, i, f)| *t == c.turn && *i == c.item && *f == c.field);
         let agent = &mut staged.agent;
         let written = (|| -> Result<(Rewrite<'_>, Unsettled)> {
             let mut db = self.db.write()?;
@@ -2348,7 +2376,7 @@ impl Store {
             for (turn, item, field) in &replaced {
                 record_rows::drop_chunks(&tx, id, turn, item, field)?;
             }
-            record_rows::write_chunks(&tx, id, &pending)?;
+            record_rows::write_chunks(&tx, id, pending.iter().filter(kept))?;
             record_rows::write_chunks(&tx, id, &fresh)?;
             let unsettled = Unsettled::read(&tx, id)?;
             tx.commit()?;
@@ -2681,6 +2709,11 @@ impl Store {
         }
         let loaded: Vec<String> = d.turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
         let turns_before = d.turns.clone();
+        if crate::claude::confirms_text(kind) {
+            // Written whole below, their chunks dropped (the unwritten ones
+            // were written above).
+            whole_messages(&*self.db.read()?, id, &mut d, &[])?;
+        }
         let receipts_before = d.message_receipts.clone();
         mutate(&mut d);
         crate::message_content::bind(&mut d.turns, &mut d.message_receipts);

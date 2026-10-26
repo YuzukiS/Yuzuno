@@ -974,7 +974,7 @@ impl Workspace {
                 wanted.retain(|offset| !messages.contains_key(offset));
             }
             let (summary, now) = (json!({"sessionId":session,"saved":entries.len(),"planned":plan.steps.len()}), Utc::now());
-            self.record_update(id, "claude/history", summary, Sel::Tail(crate::claude_history::TAIL), move |d| {
+            self.record_update(id, HISTORY_KIND, summary, Sel::Tail(crate::claude_history::TAIL), move |d| {
                 crate::claude_history::apply(d, &plan, &entries, &messages, now);
             }).await?;
             Ok(())
@@ -2052,19 +2052,12 @@ fn item_mut<'a>(turn: &'a mut Value, id: &str, initial: Value) -> &'a mut Value 
     &mut items[idx]
 }
 
-fn text_item(turn: &mut Value, message_id: &str, text: &str, append: bool) {
-    let item = item_mut(
+fn text_item<'a>(turn: &'a mut Value, message_id: &str) -> &'a mut Value {
+    item_mut(
         turn,
         message_id,
         json!({"id":message_id,"type":"agentMessage","text":"","nativeMessageId":message_id}),
-    );
-    if append {
-        let mut body = item["text"].as_str().unwrap_or("").to_owned();
-        body.push_str(text);
-        item["text"] = body.into();
-    } else {
-        item["text"] = text.into();
-    }
+    )
 }
 
 fn start_params(agent: &Agent) -> Value {
@@ -2092,44 +2085,59 @@ fn start_params(agent: &Agent) -> Value {
 }
 
 // SDK assistant messages contain one completed block, not necessarily the
-// complete native message. Keep streaming blocks by index and confirm each once.
+// complete native message. Each streaming block is kept by index with its
+// length only, and confirmed once: the message's text, its blocks in order,
+// is held in its Item alone.
 fn stream_text(turn: &mut Value, mid: &str, index: &str, delta: &str) {
+    let (pos, end, last) = {
+        let blocks = text_blocks(turn, mid);
+        let pos = blocks
+            .iter()
+            .position(|b| b["index"] == index)
+            .unwrap_or_else(|| {
+                blocks.push(json!({"index":index,"bytes":0,"confirmed":false}));
+                blocks.len() - 1
+            });
+        (pos, blocks[..=pos].iter().map(block_bytes).sum::<usize>(), pos + 1 == blocks.len())
+    };
+    let item = text_item(turn, mid);
+    // A delta extends the text where its block ends: at the end, but for a
+    // block streamed after a later one started (which Claude does not do).
+    // That place may be in the text's start the store has written out
+    // (`record_rows::SPILLED`); the delta is then left to the completed
+    // block, which replaces what streamed.
+    let placed = if last {
+        match &mut item["text"] {
+            Value::String(text) => text.push_str(delta),
+            other => *other = delta.into(),
+        }
+        true
+    } else {
+        crate::record_rows::insert_text(item, "text", end, delta)
+    };
+    if placed {
+        let block = &mut turn["_claudeTextBlocks"][mid][pos];
+        block["bytes"] = (block_bytes(block) + delta.len()).into();
+    }
+}
+/// The text blocks of message `mid` in `turn`: each one's index, its length
+/// in bytes and whether it is confirmed.
+fn text_blocks<'a>(turn: &'a mut Value, mid: &str) -> &'a mut Vec<Value> {
     if !turn["_claudeTextBlocks"].is_object() {
         turn["_claudeTextBlocks"] = json!({});
     }
     if !turn["_claudeTextBlocks"][mid].is_array() {
         turn["_claudeTextBlocks"][mid] = json!([]);
     }
-    let blocks = turn["_claudeTextBlocks"][mid].as_array_mut().unwrap();
-    let pos = blocks
-        .iter()
-        .position(|b| b["index"] == index)
-        .unwrap_or_else(|| {
-            blocks.push(json!({"index":index,"text":"","confirmed":false}));
-            blocks.len() - 1
-        });
-    let mut text = blocks[pos]["text"].as_str().unwrap_or("").to_owned();
-    text.push_str(delta);
-    blocks[pos]["text"] = text.into();
-    render_text(turn, mid);
+    turn["_claudeTextBlocks"][mid].as_array_mut().unwrap()
 }
-fn render_text(turn: &mut Value, mid: &str) {
-    let text = turn["_claudeTextBlocks"][mid]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|b| b["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("");
-    text_item(turn, mid, &text, false);
+fn block_bytes(block: &Value) -> usize {
+    block["bytes"].as_u64().map_or(0, |bytes| bytes as usize)
 }
+/// The message's text must be whole here: the store reads a start it wrote
+/// out back first (`confirms_text`).
 fn confirm_text(turn: &mut Value, mid: &str, texts: &[&str], uuid: Option<&str>) {
-    if !turn["_claudeTextBlocks"].is_object() {
-        turn["_claudeTextBlocks"] = json!({});
-    }
-    if !turn["_claudeTextBlocks"][mid].is_array() {
-        turn["_claudeTextBlocks"][mid] = json!([]);
-    }
+    text_blocks(turn, mid);
     if let Some(uuid) = uuid {
         if !turn["_claudeAssistantSeen"].is_object() {
             turn["_claudeAssistantSeen"] = json!({});
@@ -2139,30 +2147,57 @@ fn confirm_text(turn: &mut Value, mid: &str, texts: &[&str], uuid: Option<&str>)
         }
         turn["_claudeAssistantSeen"][uuid] = true.into();
     }
-    let blocks = turn["_claudeTextBlocks"][mid].as_array_mut().unwrap();
+    let mut blocks = std::mem::take(text_blocks(turn, mid));
+    let item = text_item(turn, mid);
+    let mut whole = match item["text"].take() {
+        Value::String(text) => text,
+        _ => String::new(),
+    };
+    // Text the blocks do not account for (written before they were kept)
+    // stands as one block that streamed.
+    if blocks.iter().map(block_bytes).sum::<usize>() != whole.len() {
+        blocks = if whole.is_empty() { Vec::new() } else { vec![json!({"bytes":whole.len(),"confirmed":false})] };
+    }
     for text in texts {
         // The completed block replaces what its stream built. Streamed text
         // is never journaled, so after a restart the record may hold only
         // the start of it, written before the rest arrived.
-        let streamed = blocks
-            .iter()
-            .position(|b| b["confirmed"] != true && b["text"] == *text)
+        let place = |blocks: &[Value], k: usize| {
+            let at: usize = blocks[..k].iter().map(block_bytes).sum();
+            at..at + block_bytes(&blocks[k])
+        };
+        let open = |blocks: &[Value], k: usize| blocks[k]["confirmed"] != true;
+        let streamed = (0..blocks.len())
+            .find(|&k| open(&blocks, k) && whole.get(place(&blocks, k)) == Some(*text))
             .or_else(|| {
                 // An empty block (content_block_start before any delta) is
                 // the start of every text, so it never matches by prefix.
-                blocks.iter().position(|b| {
-                    b["confirmed"] != true
-                        && b["text"].as_str().is_some_and(|partial| !partial.is_empty() && text.starts_with(partial))
+                (0..blocks.len()).find(|&k| {
+                    open(&blocks, k)
+                        && whole.get(place(&blocks, k)).is_some_and(|partial| !partial.is_empty() && text.starts_with(partial))
                 })
             });
-        if let Some(index) = streamed {
-            blocks[index]["text"] = (*text).into();
-            blocks[index]["confirmed"] = true.into();
+        if let Some(k) = streamed {
+            whole.replace_range(place(&blocks, k), text);
+            blocks[k]["bytes"] = text.len().into();
+            blocks[k]["confirmed"] = true.into();
         } else {
-            blocks.push(json!({"text":text,"confirmed":true}));
+            whole.push_str(text);
+            blocks.push(json!({"bytes":text.len(),"confirmed":true}));
         }
     }
-    render_text(turn, mid);
+    text_item(turn, mid)["text"] = whole.into();
+    turn["_claudeTextBlocks"][mid] = Value::Array(blocks);
+}
+
+/// The kind of a backfill of Claude's saved history (`claude_history::apply`).
+pub(crate) const HISTORY_KIND: &str = "claude/history";
+
+/// Whether an event of `kind` may confirm a message's text (`confirm_text`):
+/// an `assistant` frame, live or saved (a backfill). It needs that text
+/// whole, so the store reads a spilled start back before applying it.
+pub(crate) fn confirms_text(kind: &str) -> bool {
+    matches!(kind, "claude/assistant") || kind == HISTORY_KIND
 }
 
 /// Thinking shares the existing reasoning-summary item, one per native

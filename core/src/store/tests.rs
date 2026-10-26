@@ -185,6 +185,32 @@ fn a_streamed_field_keeps_its_end_in_memory_and_its_start_in_rows_never_dropped(
     assert_eq!(full(), whole);
 }
 
+/// A backfill of Claude's saved history (`claude::HISTORY_KIND`) confirms a
+/// message whose start streamed out to chunk rows: the message is read back
+/// whole first, so the saved text is stored once.
+#[test]
+fn a_backfill_confirms_a_message_whose_start_was_written_out() {
+    let (_dir, store) = lab();
+    let mut c = detail("c");
+    c.agent.harness = "claude".into();
+    store.insert(&c).unwrap();
+    let event = |e: Value| json!({"type":"event","turnId":"t","event":{"type":"stream_event","event":e}});
+    stream(&store, "c", "claude/stream_event", &event(json!({"type":"message_start","message":{"id":"m"}})));
+    let whole: String = (0..(STREAM_HOLD + (256 << 10)) / 10).map(|n| format!("[{n:08}]")).collect();
+    for delta in whole.as_bytes().chunks(64 << 10) {
+        let delta = std::str::from_utf8(delta).unwrap();
+        stream(&store, "c", "claude/stream_event", &event(json!({"type":"content_block_delta","index":0,
+            "delta":{"type":"text_delta","text":delta}})));
+    }
+    assert!(store.peek("c", |d| d.turns[0]["items"][0][record_rows::SPILLED].is_object()).unwrap());
+    let saved = json!({"type":"assistant","uuid":"saved-1","message":{"id":"m","content":[{"type":"text","text":whole}]}});
+    whole::update(&store, "c", crate::claude::HISTORY_KIND, &json!({}),
+        |d| crate::claude::project_event_at(d, Some("t"), &saved, Utc::now())).unwrap();
+    let read = store.detail("c").unwrap();
+    let m = read.turns[0]["items"].as_array().unwrap().iter().find(|i| i["id"] == "m").unwrap().clone();
+    assert_eq!(m["text"], whole);
+}
+
 #[test]
 fn receipts_are_read_when_an_event_needs_them_and_never_held() {
     let (_dir, store) = lab();

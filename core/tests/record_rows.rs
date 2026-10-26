@@ -64,7 +64,7 @@ fn rich() -> AgentDetail {
                 "result":{"content":[{"type":"text","text":text(800, "mcp")}],"structuredContent":{"rows":text(300, "s")},"isError":false}},
             {"id":"m","type":"agentMessage","text":text(2000, "reply"),"phase":"final_answer","_yuzunoCompletedText":"…"},
         ]}),
-        json!({"id":"t2","status":"inProgress","_claudeTextBlocks":{"msg":[{"index":"0","text":"a","confirmed":false}]},"items":[
+        json!({"id":"t2","status":"inProgress","_claudeTextBlocks":{"msg":[{"index":"0","bytes":1,"confirmed":false}]},"items":[
             {"id":"toolu_1","type":"claudeToolUse","name":"Bash","input":{"command":"make"},"status":"completed","output":text(700, "bash")},
             {"id":"toolu_2","type":"claudeToolUse","name":"Read","input":{"file_path":"/w/b"},"status":"completed",
                 "output":[{"type":"text","text":text(700, "read")}]},
