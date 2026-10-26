@@ -1,7 +1,8 @@
 // T-161: "Load earlier messages" in a real browser layout. The reader is at
 // the top of a long saved conversation (T-77 windows); the earlier window is
 // put in front of what is being read, and the message at the top of the view
-// must stay where it was on screen. jsdom has no layout, so ui.test.mjs
+// must stay where it was on screen. The third load is past SAVED_WINDOWS and
+// replaces the windows; the same holds, and what was in view stays shown. jsdom has no layout, so ui.test.mjs
 // cannot show this. Production bundle in an isolated browser with an
 // explicit API fixture; no Core, daily window or writes.
 import assert from "node:assert/strict";
@@ -15,7 +16,7 @@ const dist = resolve(process.env.YUZUNO_UI_DIST);
 assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../acceptance/history-load");
 await mkdir(output, { recursive: true });
-const report = { checks: [], errors: [], unexpected: [], loads: [] };
+const report = { checks: [], errors: [], unexpected: [], loads: [], earlier: [] };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -100,7 +101,10 @@ try {
     assert.equal(request.method(), "GET", `No writes: ${request.method()} ${url.pathname}`);
     if (url.pathname === "/api/agents/a") {
       // Earlier windows answer a little later, as a read from Core does.
-      if (url.searchParams.has("before")) await new Promise((done) => setTimeout(done, 150));
+      if (url.searchParams.has("before")) {
+        report.earlier.push(url.searchParams.get("before"));
+        await new Promise((done) => setTimeout(done, 150));
+      }
       return route.fulfill({ json: detailFor(url.searchParams) });
     }
     const json = {
@@ -206,7 +210,14 @@ try {
     look();
   }), [id, frames]);
 
-  for (const round of [1, 2]) {
+  // Every message in view, as the reader sees them.
+  const inView = () => pane.evaluate((el) => {
+    const box = el.getBoundingClientRect();
+    return [...el.querySelectorAll("[data-item-id]")]
+      .filter((item) => { const rect = item.getBoundingClientRect(); return rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom; })
+      .map((item) => item.dataset.itemId);
+  });
+  for (const round of [1, 2, 3]) {
     const before = await reading();
     report.loads.push({ round, aboveBefore: await above(before.id) });
     // The closed groups in view, by their row: holding the place must not
@@ -217,6 +228,8 @@ try {
     const probing = probe(before.id, 4);
     assert.ok(before, `a message is in view before load ${round}`);
     const earlierThan = all.indexOf(JSON.stringify([before.id.split("-")[0], before.id]));
+    const shown = await inView();
+    const reads = report.earlier.length;
     await button.click();
     report.loads.at(-1).firstFrames = await probing;
     const trace = await follow(before.id, 2500);
@@ -232,6 +245,13 @@ try {
       el.querySelector(`[data-window-key="${key}"] details.execution[open]`)), closedBefore);
     load.closedGroups = { before: closedBefore.length, opened };
     assert.deepEqual(opened, [], `load ${round}: no group that was closed opens`);
+    const gone = await pane.evaluate((el, ids) => ids.filter((id) => !el.querySelector(`[data-item-id="${id}"]`)), shown);
+    load.inView = { before: shown, gone };
+    assert.deepEqual(gone, [], `load ${round}: what was in view stays shown`);
+    // The third replaces the windows: the new one ends at the last message
+    // in view, not at the first Item shown.
+    if (round === 3) assert.equal(JSON.parse(report.earlier.at(-1))[1], shown.at(-1), "load 3: the windows are replaced by the one ending at the last message in view");
+    assert.ok(report.earlier.length > reads, `load ${round}: an earlier window is read`);
     check(`load ${round}: earlier messages go in front and ${before.id} stays where it was`, { before: before.top, after: after.top, maxMove: load.maxMove });
     // Back to the top for the next load.
     for (let step = 0; step < 40; step++) {

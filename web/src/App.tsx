@@ -719,18 +719,19 @@ export function App() {
   /** What the reader sees at the top of the conversation: the first item
    * whose top is in view, as ReadingAnchor picks it. Earlier messages are put
    * in front of everything shown, so it stays mounted and can be held in
-   * place; an item still hidden in a closed group never is (T-161). */
-  function readerAnchor() {
+   * place; an item still hidden in a closed group never is (T-161). `last`:
+   * the last item in view instead. */
+  function readerAnchor(last = false) {
     const pane = scroll.current;
     if (!pane) return null;
     const box = pane.getBoundingClientRect();
     const visible = Array.from(pane.querySelectorAll<HTMLElement>("[data-item-id]"))
       .map(element => ({element, rect:element.getBoundingClientRect()}))
       .filter(({rect}) => rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom);
-    const first = visible.find(({rect}) => rect.top >= box.top) || visible[0];
-    const turnId = first?.element.closest<HTMLElement>("[id^='turn-']")?.id.slice("turn-".length);
-    return first && turnId && first.element.dataset.itemId
-      ? {turnId, itemId:first.element.dataset.itemId, top:first.rect.top} : null;
+    const found = last ? visible.at(-1) : visible.find(({rect}) => rect.top >= box.top) || visible[0];
+    const turnId = found?.element.closest<HTMLElement>("[id^='turn-']")?.id.slice("turn-".length);
+    return found && turnId && found.element.dataset.itemId
+      ? {turnId, itemId:found.element.dataset.itemId, top:found.rect.top} : null;
   }
   function pageAnchor(turnId: string, itemId?: string) {
     const turn = document.getElementById(`turn-${turnId}`);
@@ -1756,6 +1757,18 @@ export function App() {
       if (savedPages.loadEarlier(cursor)) {
         setPageSpace(null);
         setPageTarget(reading ? {...target, ...reading} : target);
+        return;
+      }
+      // Past the bound the windows are replaced. The new one ends at the
+      // last saved message in view, not at the first Item shown (in a long
+      // Turn, often a command in a closed group, below which everything in
+      // view went): what is in view stays, and the message being read is
+      // held in place (T-161).
+      const last = readerAnchor(true);
+      if (reading && last && savedPages.detail?.turns.some(turn => turn.id === last.turnId && turn.items.some(item => item.id === last.itemId))) {
+        setPageSpace("after");
+        setPageTarget({...target, ...reading});
+        void live.navigate({before:JSON.stringify([last.turnId, last.itemId])}, true);
         return;
       }
     }
