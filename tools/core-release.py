@@ -271,9 +271,14 @@ class Flow:
     def smoke(self):
         self.signed(self.root / 'signed')
         require(digest(Path(self.config['baseline']) / 'manifest.json') == self.config['baselineManifestSha256'], 'Baseline manifest changed')
+        # A release frozen with --new-data-directory gets that smoke and no
+        # other; the receipt says which it ran.
+        mode = self.config.get('upgrade', 'inPlace')
         self.execute([sys.executable, TOOLS / 'core-release-smoke.py', '--baseline', self.config['baseline'],
-                      '--candidate', self.root / 'bundle', '--state', self.root / 'smoke.json'])
+                      '--candidate', self.root / 'bundle', '--state', self.root / 'smoke.json',
+                      *(['--new-data-directory'] if mode == 'newDataDirectory' else [])])
         receipt = read(self.root / 'smoke.json')
+        require(receipt['inputs'].get('mode', 'inPlace') == mode, 'The smoke receipt is of another upgrade mode')
         require(receipt['passed'], 'Short upgrade smoke did not pass; inspect its preserved phases')
         return {'receipt': receipt, 'outputs': self.outputs([self.root / 'smoke.json'])}
 
@@ -419,11 +424,16 @@ class Flow:
         h = values['health']
         require(h['releaseId'] == self.config['releaseId'] and h['workspaceId'] == workspace and h['apiReady'] and h['storageReady'], 'Installed identity/health mismatch')
         operation = values['updates'].get('operation') or {}
-        proof = operation.get('recordsProof') or {}
-        require(operation.get('phase') == 'complete' and values['updates']['acceptingWork'] and
-                proof.get('recordsReady') and proof.get('phase') == 'afterRestore' and
-                proof.get('releaseId') == h['releaseId'] and proof.get('workspaceId') == workspace,
-                'Update recovery proof is not complete for this Workspace/release')
+        if self.config.get('upgrade') == 'newDataDirectory':
+            # Installed into a new directory: no update ran, so there is no
+            # restoration proof, and no operation may claim one.
+            require(not operation and values['updates']['acceptingWork'], 'A new installation has an update operation')
+        else:
+            proof = operation.get('recordsProof') or {}
+            require(operation.get('phase') == 'complete' and values['updates']['acceptingWork'] and
+                    proof.get('recordsReady') and proof.get('phase') == 'afterRestore' and
+                    proof.get('releaseId') == h['releaseId'] and proof.get('workspaceId') == workspace,
+                    'Update recovery proof is not complete for this Workspace/release')
         write(self.root / 'health.json', values)
         return {'receipt': values, 'outputs': self.outputs([self.root / 'health.json'])}
 
@@ -447,6 +457,8 @@ def initialize(args):
               'publicKeySha256': hashlib.sha256(public).hexdigest(), 'notesSha256': hashlib.sha256(notes).hexdigest()}
     if getattr(args, 'inputs_run', None) is not None:
         config['inputsRunId'] = args.inputs_run
+    if getattr(args, 'new_data_directory', False):
+        config['upgrade'] = 'newDataDirectory'
     root.mkdir(parents=True, mode=0o700)
     (root / 'notes.txt').write_bytes(notes)
     (root / 'publisher.pub').write_bytes(public)
@@ -467,6 +479,9 @@ def parser():
                       help='The release-inputs workflow run that built the artifact; --ci-run is then the main CI run that tested the source')
     for name in ('baseline', 'public-key', 'notes'):
         init.add_argument('--' + name, type=Path, required=True)
+    init.add_argument('--new-data-directory', action='store_true',
+                      help='The baseline cannot take this release as an update (docs/adr/0002-session-store-new-data-directory.md): '
+                           'the smoke checks its refusal and a new installation instead of an upgrade')
     for name in ('resume', 'publish', 'verify-download', 'health', 'status'):
         command_parser = sub.add_parser(name)
         command_parser.add_argument('--work-dir', type=Path, required=True)

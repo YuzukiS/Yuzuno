@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""One resumable isolated package upgrade; scripted native protocol, no models."""
+"""One resumable isolated package upgrade; scripted native protocol, no models.
+With --new-data-directory, for a candidate its baseline cannot upgrade to in
+place (docs/adr/0002-session-store-new-data-directory.md): the baseline's
+refusal, and the candidate's own new installation."""
 import argparse
 import datetime as dt
 import importlib.util
@@ -7,6 +10,8 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
+import shutil
 import signal
 import socket
 import sqlite3
@@ -15,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -187,6 +193,51 @@ def conversation_problem(seeded, before, after):
     return None
 
 
+IN_PLACE, NEW_DIRECTORY = 'inPlace', 'newDataDirectory'
+
+
+def upgrades_in_place(before, after):
+    """Whether a Core of release `before` takes `after` as an update: the
+    checks of Core's update admission (`compatible_with`,
+    core/src/updates/package.rs), both ways, as rollback needs the old
+    release to read what the new one writes."""
+    def reads(span, version):
+        return span['readsMin'] <= version <= span['readsMax']
+    return (reads(after['schema'], before['schema']['writes']) and reads(before['schema'], after['schema']['writes'])
+            and reads(after['records'], before['records']['writes']) and reads(before['records'], after['records']['writes']))
+
+
+def data_files(path):
+    """Every regular file of a stopped Core's data directory, with its SHA-256
+    (a socket left behind is not data)."""
+    return {str(p.relative_to(path)): digest(p) for p in sorted(path.rglob('*')) if p.is_file() and not p.is_symlink()}
+
+
+def record_layouts(data_dir, scratch):
+    """The records layouts a stopped Core's database holds, as Core's update
+    admission reads them (`Storage::read`, core/src/updates/storage.rs): the
+    session store's mark, else the Agents' layout column, else whole JSON
+    rows (0). Read from a copy, so that nothing is written beside the original."""
+    copy = Path(tempfile.mkdtemp(prefix='layouts-', dir=scratch))
+    try:
+        for name in ('workspace.sqlite', 'workspace.sqlite-wal'):
+            if (data_dir / name).is_file():
+                shutil.copyfile(data_dir / name, copy / name)
+        db = sqlite3.connect(copy / 'workspace.sqlite')
+        try:
+            marked = db.execute("SELECT value FROM workspace_meta WHERE key='sessionStore'").fetchone()
+            agents = db.execute('SELECT EXISTS(SELECT 1 FROM agents)').fetchone()[0]
+            if marked:
+                return [int(marked[0])] if agents else []
+            if 'layout' in {row[1] for row in db.execute('PRAGMA table_info(agents)')}:
+                return sorted(row[0] for row in db.execute('SELECT DISTINCT layout FROM agents'))
+            return [0]
+        finally:
+            db.close()
+    finally:
+        shutil.rmtree(copy)
+
+
 def reconcile_upgrade(managed, state, observe, timeout=180):
     """Leave an accepted replacement alone until its own helper has finished."""
     journal = managed / 'updates/state.json'
@@ -249,8 +300,16 @@ def smoke(args):
     before_manifest, after_manifest = map(validate_bundle, (baseline, candidate))
     if before_manifest['releaseId'] == after_manifest['releaseId']:
         raise ValueError('Upgrade smoke requires two distinct releases')
+    # Which smoke a candidate gets follows from both packages, as the release
+    # declared it: neither one stands in for the other.
+    mode = NEW_DIRECTORY if args.new_data_directory else IN_PLACE
+    if upgrades_in_place(before_manifest, after_manifest) != (mode == IN_PLACE):
+        raise ValueError('The baseline takes this candidate as an update: use the in-place smoke' if mode == NEW_DIRECTORY else
+                         'The baseline cannot take this candidate as an update (schema or records); a release that needs '
+                         'a new data directory is frozen with --new-data-directory')
     frozen = {'baseline': str(baseline), 'candidate': str(candidate),
-              'baselineSha256': digest(baseline / 'manifest.json'), 'candidateSha256': digest(candidate / 'manifest.json')}
+              'baselineSha256': digest(baseline / 'manifest.json'), 'candidateSha256': digest(candidate / 'manifest.json'),
+              **({'mode': mode} if mode == NEW_DIRECTORY else {})}
     if args.state.exists():
         state = read(args.state)
         if state['inputs'] != frozen:
@@ -267,6 +326,8 @@ def smoke(args):
     if read(root / 'owner.json') != {'nonce': state['nonce'], 'inputs': frozen}:
         raise ValueError('Disposable installation identity mismatch')
     managed, data, work = (root / name for name in ('managed', 'data', 'work'))
+    # The candidate's own installation and data directory (--new-data-directory).
+    fresh, fresh_data = root / 'fresh', root / 'fresh-data'
     work.mkdir(exist_ok=True)
     (root / 'tmp').mkdir(exist_ok=True)
     if len(str(managed / 'updates/control.sock').encode()) >= 104:
@@ -300,16 +361,18 @@ def smoke(args):
                     state['owned'].append(process)
         save()
 
-    def snapshot():
-        detail = api('agents/' + state['agentId'])
+    # `into` is where a seeded Workspace is recorded: `state`, or for the new
+    # installation of --new-data-directory, state['fresh'].
+    def snapshot(into=None):
+        detail = api('agents/' + (into or state)['agentId'])
         agent = detail['agent']
         return {key: agent.get(key) for key in ('id', 'threadId', 'projectId', 'settings', 'reviewedSeq')} | {
             'turnIds': [t['id'] for t in detail['turns']],
             'messages': [(i.get('id'), i.get('text'), i.get('content')) for t in detail['turns']
                          for i in t['items'] if i['type'] in ('userMessage', 'agentMessage')]}
 
-    def idle():
-        detail = api('agents/' + state['agentId'])
+    def idle(into=None):
+        detail = api('agents/' + (into or state)['agentId'])
         if any(not p.get('stale') for p in detail['pending']):
             raise ValueError('Unexpected scripted approval; never approve it')
         return detail['agent']['status'] == 'idle' and detail['agent']['connectionState'] == 'connected' and detail.get('collaboration', {}).get('ready')
@@ -324,7 +387,7 @@ def smoke(args):
         reconcile_upgrade(managed, state, observed)
         capture()
         for process in reversed(state['owned']):
-            if not Path(process['executable']).is_relative_to(managed / 'releases'):
+            if not any(Path(process['executable']).is_relative_to(install / 'releases') for install in (managed, fresh)):
                 raise ValueError('Refusing to signal a process outside this disposable installation')
             if common.identity(process['pid']) == process:
                 os.kill(process['pid'], signal.SIGINT)
@@ -337,11 +400,166 @@ def smoke(args):
                         os.kill(process['pid'], signal.SIGKILL)
                         common.until(lambda: common.identity(process['pid']) != process, 5)
 
+    def launch(install, data_dir, log_name):
+        """Starts the release `install` has as current, on `data_dir`, and
+        returns its health once it serves."""
+        nonlocal child
+        running = read(install / 'current.json')['releaseId']
+        executable = install / 'releases' / running / 'bin/yuzuno-workspace'
+        with (root / log_name).open('wb') as log:
+            child = subprocess.Popen([str(executable), '--install-dir', str(install), '--data-dir', str(data_dir),
+                '--cwd', str(work), '--port', str(state['port']), '--codex', str(fixture)],
+                cwd=work, env=dict(os.environ, TMPDIR=str(root / 'tmp'), T9_TIMELINE=str(root / 'timeline')),
+                stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+        state['owned'].append(common.until(lambda: common.identity(child.pid), 5))
+        save()
+        return common.until(lambda: (h if (h := api('health')).get('releaseId') == running else None))
+
+    def seed(into):
+        """A project, a conversation of one scripted Turn, a task and a saved
+        budget in the running Core, recorded in `into` as each is made."""
+        if 'project' not in into:
+            into['project'] = api('projects', {'name': 'Release smoke retained project'})
+            save()
+        events = Events(origin)
+        try:
+            if 'agentId' not in into:
+                into['agentId'] = api('agents', {'name': 'Release smoke conversation', 'harness': 'codex', 'cwd': str(work)})['id']
+                save()
+            else:
+                # A manually restarted isolated Core restores records;
+                # reconnect only this scripted fixture, never a user Agent.
+                api('agents/' + into['agentId'] + '/reconnect', {})
+            api('agents/' + into['agentId'] + '/project', {'projectId': into['project']['id']})
+            events.until(lambda: idle(into))
+            if not snapshot(into)['turnIds']:
+                api('agents/' + into['agentId'] + '/turns', {'text': 'run:2:0:0:100'})
+            events.until(lambda: idle(into) and len(snapshot(into)['messages']) >= 2)
+            into['conversation'] = snapshot(into)
+        finally:
+            events.close()
+        into['task'] = api('collaboration/task_create', {'requestId': state['nonce'], 'title': 'Release smoke retained task',
+            'projectId': into['project']['id']})['task']
+        into['budgetSeed'] = save_fixture_budget(api)
+        into['budget'] = into['budgetSeed']['saved']
+
+    def kept(into, health, release):
+        """What `into` recorded, as the running Core now has it: its release
+        and Workspace, the seeded conversation unchanged and first (Core may
+        start a Turn by itself), project, task and saved budget."""
+        if not (health['releaseId'] == release and health['workspaceId'] == into['workspaceId']
+                and health['storageReady'] and health['apiReady']):
+            raise ValueError('Release/Workspace/health mismatch')
+        if not holds_seeded(json.loads(json.dumps(into['conversation'])), json.loads(json.dumps(snapshot(into)))):
+            raise ValueError('Conversation identity/history/settings/read cursor changed')
+        if (into['project'] not in api('projects')['projects']
+                or api('collaboration/task_get', {'taskId': into['task']['id']})['task'] != into['task']
+                or api('jobs/budget')['budget'] != into['budget']):
+            raise ValueError('Project, task or budget changed')
+        with opener.open(origin, timeout=15) as response:
+            if f'content="{release}"' not in response.read().decode():
+                raise ValueError('Served UI does not match the running release')
+
+    def stopped():
+        stop_owned()
+        if child:
+            child.wait(timeout=5)
+        free_port(state['port'])
+
+    def refused(path, body):
+        """The running Core's refusal of an update request, as it answered."""
+        try:
+            api(path, body, timeout=90)
+        except urllib.error.HTTPError as error:
+            return {'path': path, 'status': error.code, 'error': error.read().decode(errors='replace')[:2000]}
+        raise ValueError(f'The baseline accepted {path} for a candidate it cannot read')
+
+    def new_directory():
+        """The baseline, with a seeded Workspace, refuses the candidate before
+        anything is applied, and keeps its release, Workspace and records
+        layout; the candidate installs into a new directory of its own, beside
+        the untouched old one, and keeps its own records across a restart."""
+        phases = state['phases']
+        if not phases.get('refused'):
+            if not (managed / 'current.json').exists():
+                subprocess.run([str(baseline / 'bin/yuzuno-update-helper'), 'register', '--install-dir', str(managed),
+                    '--bundle', str(baseline), '--manifest-sha256', frozen['baselineSha256'],
+                    '--reviewed-source', 'isolated fixed-release smoke', '--initialize'], check=True, timeout=90)
+            if read(managed / 'current.json')['releaseId'] != before_manifest['releaseId']:
+                raise ValueError('Unexpected installed release in fixture')
+            if not phases.get('seeded'):
+                health = launch(managed, data, f'core-{len(state["attempts"])}-baseline.log')
+                state.setdefault('workspaceId', health['workspaceId'])
+                seed(state)
+                phases['seeded'] = True
+                save()
+                stopped()
+            if not phases.get('offered'):
+                # Offered as an update would be: to the baseline's own helper,
+                # which registers a release only if its admission accepts it.
+                offered = subprocess.run([str(baseline / 'bin/yuzuno-update-helper'), 'register', '--install-dir', str(managed),
+                    '--bundle', str(candidate), '--manifest-sha256', frozen['candidateSha256'],
+                    '--reviewed-source', 'isolated fixed-release smoke'], capture_output=True, text=True, timeout=90)
+                if offered.returncode == 0:
+                    raise ValueError('The baseline registered a candidate it cannot read')
+                if not re.search(r'record format|records\.layout|schema', offered.stderr):
+                    raise ValueError(f'The baseline refused the candidate for another reason than its storage: {offered.stderr[-500:]}')
+                catalog = managed / 'catalog.json'
+                if ((managed / 'releases' / after_manifest['releaseId']).exists()
+                        or catalog.exists() and after_manifest['releaseId'] in catalog.read_text()):
+                    raise ValueError('The refused candidate was staged or catalogued')
+                state['refusals'] = [{'command': 'update-helper register', 'exit': offered.returncode, 'error': offered.stderr[-2000:]}]
+                phases['offered'] = True
+                save()
+            health = launch(managed, data, f'core-{len(state["attempts"])}-baseline-after.log')
+            state['refusals'][1:] = [refused('updates/prepare', {'releaseId': after_manifest['releaseId']}),
+                refused('updates/apply', {'releaseId': after_manifest['releaseId'], 'requestId': state['requestId']})]
+            status = api('updates')
+            if status.get('operation') or not status['acceptingWork'] or read(managed / 'current.json')['releaseId'] != before_manifest['releaseId']:
+                raise ValueError('The refused candidate started an update or became the current release')
+            kept(state, health, before_manifest['releaseId'])
+            stopped()
+            layouts = record_layouts(data, root / 'tmp')
+            if layouts != [before_manifest['records']['writes']]:
+                raise ValueError(f'The baseline Workspace is not in its own records layout: {layouts}')
+            state['baselineData'] = {'records': layouts, 'files': data_files(data)}
+            phases['refused'] = True
+            save()
+        if not phases.get('installed'):
+            into = state.setdefault('fresh', {})
+            if not (fresh / 'current.json').exists():
+                subprocess.run([str(candidate / 'bin/yuzuno-update-helper'), 'register', '--install-dir', str(fresh),
+                    '--bundle', str(candidate), '--manifest-sha256', frozen['candidateSha256'],
+                    '--reviewed-source', 'isolated fixed-release smoke', '--initialize'], check=True, timeout=90)
+            if read(fresh / 'current.json')['releaseId'] != after_manifest['releaseId']:
+                raise ValueError('Unexpected installed release in the new installation')
+            health = launch(fresh, fresh_data, f'core-{len(state["attempts"])}-candidate.log')
+            into.setdefault('workspaceId', health['workspaceId'])
+            if into['workspaceId'] == state['workspaceId']:
+                raise ValueError('The new installation opened the baseline Workspace')
+            if 'conversation' not in into:
+                seed(into)
+                save()
+            kept(into, health, after_manifest['releaseId'])
+            stopped()
+            kept(into, launch(fresh, fresh_data, f'core-{len(state["attempts"])}-restart.log'), after_manifest['releaseId'])
+            stopped()
+            if data_files(data) != state['baselineData']['files']:
+                raise ValueError('The baseline data directory changed')
+            state['health'] = health
+            phases['installed'] = True
+            save()
+        phases['verified'] = True
+        save()
+
     try:
         # Reconcile any accepted replacement before cleanup or another startup.
         stop_owned()
         free_port(state['port'])
-        if not state['phases'].get('verified'):
+        if mode == NEW_DIRECTORY:
+            if not state['phases'].get('verified'):
+                new_directory()
+        elif not state['phases'].get('verified'):
             helper = baseline / 'bin/yuzuno-update-helper'
             for first, bundle, manifest in ((True, baseline, before_manifest), (False, candidate, after_manifest)):
                 if first and (managed / 'current.json').exists():
@@ -358,43 +576,12 @@ def smoke(args):
             running = read(managed / 'current.json')['releaseId']
             if running not in (before_manifest['releaseId'], after_manifest['releaseId']):
                 raise ValueError('Unexpected installed release in fixture')
-            executable = managed / 'releases' / running / 'bin/yuzuno-workspace'
-            with (root / f'core-{len(state["attempts"])}.log').open('wb') as log:
-                child = subprocess.Popen([str(executable), '--install-dir', str(managed), '--data-dir', str(data),
-                    '--cwd', str(work), '--port', str(state['port']), '--codex', str(fixture)],
-                    cwd=work, env=dict(os.environ, TMPDIR=str(root / 'tmp'), T9_TIMELINE=str(root / 'timeline')),
-                    stdin=subprocess.DEVNULL, stdout=log, stderr=log)
-            state['owned'].append(common.until(lambda: common.identity(child.pid), 5))
-            save()
-            health = common.until(lambda: (h if (h := api('health')).get('releaseId') == running else None))
+            health = launch(managed, data, f'core-{len(state["attempts"])}.log')
             if not state['phases'].get('seeded'):
                 if running != before_manifest['releaseId']:
                     raise ValueError('Missing pre-upgrade record evidence')
                 state['workspaceId'] = health['workspaceId']
-                if 'project' not in state:
-                    state['project'] = api('projects', {'name': 'Release smoke retained project'})
-                    save()
-                events = Events(origin)
-                try:
-                    if 'agentId' not in state:
-                        state['agentId'] = api('agents', {'name': 'Release smoke conversation', 'harness': 'codex', 'cwd': str(work)})['id']
-                        save()
-                    else:
-                        # A manually restarted isolated Core restores records;
-                        # reconnect only this scripted fixture, never a user Agent.
-                        api('agents/' + state['agentId'] + '/reconnect', {})
-                    api('agents/' + state['agentId'] + '/project', {'projectId': state['project']['id']})
-                    events.until(idle)
-                    if not snapshot()['turnIds']:
-                        api('agents/' + state['agentId'] + '/turns', {'text': 'run:2:0:0:100'})
-                    events.until(lambda: idle() and len(snapshot()['messages']) >= 2)
-                    state['conversation'] = snapshot()
-                finally:
-                    events.close()
-                state['task'] = api('collaboration/task_create', {'requestId': state['nonce'], 'title': 'Release smoke retained task',
-                    'projectId': state['project']['id']})['task']
-                state['budgetSeed'] = save_fixture_budget(api)
-                state['budget'] = state['budgetSeed']['saved']
+                seed(state)
                 state['phases']['seeded'] = True
                 save()
             status = api('updates')
@@ -479,4 +666,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('baseline', 'candidate', 'state'):
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--new-data-directory', action='store_true',
+                        help='The candidate needs a new data directory: the baseline must refuse it as an update')
     raise SystemExit(smoke(parser.parse_args()))

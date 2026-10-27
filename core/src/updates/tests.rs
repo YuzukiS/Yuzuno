@@ -296,6 +296,24 @@ async fn api_rejects_unknown_paths_and_unprepared_apply_without_mutation() {
     assert!(f.controller.prepare("../outside").await.is_err());
 }
 
+/// A managed Core starts only from a release packaged with its own storage
+/// (`running_bundle`): what the release packager writes, as the package
+/// fixture does. T-140: the session store's packages were refused at start.
+#[test]
+fn a_release_starts_with_the_storage_it_was_packaged_with_and_no_other() {
+    let dir = tempfile::tempdir().unwrap();
+    let current = package::fixture(&dir.path().join("current"), "current");
+    super::helper::packaged_storage(&current.manifest).unwrap();
+    let layout = super::storage::RECORD_LAYOUT;
+    for (id, records) in [
+        ("earlier", package::Schema { writes: layout - 1, reads_min: 0, reads_max: layout - 1 }),
+        ("wider", package::Schema { writes: layout, reads_min: 0, reads_max: layout }),
+    ] {
+        let other = package::fixture_records(&dir.path().join(id), id, records);
+        assert!(super::helper::packaged_storage(&other.manifest).is_err(), "{id}");
+    }
+}
+
 #[test]
 fn catalog_registration_never_replaces_an_existing_release_identity() {
     let f = fixture();

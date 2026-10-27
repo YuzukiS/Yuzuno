@@ -661,15 +661,24 @@ pub fn running_bundle(layout: &Layout) -> Result<Bundle> {
                 .join("bin/yuzuno-workspace")
         {
             let bundle = layout.release(&release)?;
-            ensure!(
-                bundle.manifest.schema.writes == package::STORAGE
-                    && bundle.manifest.records.writes == super::storage::RECORD_LAYOUT
-                    && bundle.manifest.records.reads_min == 0
-                    && bundle.manifest.records.reads_max == super::storage::RECORD_LAYOUT,
-                "Packaged storage capabilities differ from this executable"
-            );
+            packaged_storage(&bundle.manifest)?;
             return Ok(bundle);
         }
     }
     bail!("Core executable is outside the managed, reviewed release paths")
+}
+
+/// Whether a release's manifest says the storage this executable has: the
+/// schema it writes, and the one records layout it writes and reads (ADR
+/// 0002), as tools/package-release.py packages it.
+pub(crate) fn packaged_storage(manifest: &package::Manifest) -> Result<()> {
+    let layout = super::storage::RECORD_LAYOUT;
+    ensure!(
+        manifest.schema.writes == package::STORAGE
+            && manifest.records.writes == layout
+            && manifest.records.reads_min == layout
+            && manifest.records.reads_max == layout,
+        "Packaged storage capabilities differ from this executable"
+    );
+    Ok(())
 }
