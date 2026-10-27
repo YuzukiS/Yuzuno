@@ -151,6 +151,17 @@ frozen. A file lock prevents concurrent commands for the same release.
 attempts, logs, output hashes and continuation point. The signed files remain in
 `signed/`. A summary receipt is evidence, not an independent review or permission.
 
+**A release the baseline cannot take as an update.** Some releases install only into a new data directory, such as the session store's first release ([ADR 0002](adr/0002-session-store-new-data-directory.md)). For these, the baseline's update admission refuses the release, because of its schema or records span.
+- **Freezing:** freeze such a release with `init … --new-data-directory`. The baseline is still the previous published release.
+- **What the smoke checks instead of an upgrade:**
+  1. The baseline, with a seeded Workspace, refuses the release when its own helper is asked to register it, naming the storage. `prepare` and `apply` are refused, and no update operation starts.
+  2. After that, the baseline still runs its own release on the same Workspace, with that Workspace's records layout.
+  3. The release then installs into a new installation and data directory: `register --initialize`, as in [the install guide](independent-core.md#install). It opens a new Workspace, serves its own UI, and keeps a seeded conversation, project, task and budget across a restart.
+  4. The baseline's data directory is unchanged, file for file.
+- **Which smoke runs:** the smoke refuses a release frozen this way if the baseline would take it as an update, and refuses the in-place smoke for one it would not. Publication still requires a passed smoke.
+- **`health`:** after a new installation, `health` reads the installed identity and requires that no update operation exists, since there is no restoration proof to read.
+- **Existing installations:** once such a release is published, their update check reports it as one they cannot read, and downloads nothing. The release notes must give the new-directory way on.
+
 ```sh
 python3 tools/core-release.py status --work-dir "$release_work"
 # After fixing only the reported problem, use the same workspace:
