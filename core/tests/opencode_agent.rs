@@ -6,6 +6,8 @@
 //! inserts one, as other tests do (tests/opencode_entry.rs creates them).
 #![cfg(target_os = "linux")]
 
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use axum::{body::{to_bytes, Body}, http::Request};
 use serde_json::{json, Value};
 use std::{path::PathBuf, sync::{Arc, OnceLock}, time::Duration};

@@ -1,3 +1,5 @@
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use serde_json::json;
 use yuzuno_workspace::{model::AgentDetail, remote::RemoteMachine, store::Store};
 

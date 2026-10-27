@@ -162,10 +162,30 @@ fn stub_codex(dir: &std::path::Path, models: &Value) -> String {
     std::fs::write(&script, r#"#!/usr/bin/python3
 import json, os, sys, time
 root = os.path.dirname(os.path.abspath(__file__))
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
     r = json.loads(line)
     if 'id' not in r: continue
     m = r.get('method')
+    if m=='thread/turns/list': sys.stdout.ids.add(r['id']); m='thread/read'
     result = {}
     if m == 'model/list':
         # While `hold` exists, the list waits, and says so with `listing`.

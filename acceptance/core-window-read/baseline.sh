@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 umask 077
+# conversation_read_bench was removed with the session store (T-140).
+test -f core/examples/conversation_read_bench.rs || { echo "this needs a checkout of 586fd06 or earlier" >&2; exit 2; }
 export CARGO_BUILD_JOBS=2
 export CARGO_TARGET_DIR="$PWD/target/t81-build"
 mkdir -p target/t81

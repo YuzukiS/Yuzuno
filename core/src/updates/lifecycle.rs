@@ -108,12 +108,11 @@ impl Runtime for WorkspaceRuntime {
             if agent.closed_at.is_some() || agent.connection_state != "connected" {
                 continue;
             }
-            let detail = self.0.store.detail(&agent.id)?;
-            if let Some(id) = native_id(&detail) {
+            if let Some(id) = agent_native_id(&agent).map(str::to_owned) {
                 sessions.push(SessionRef {
                     agent_id: agent.id,
                     harness: agent.harness,
-                    native_id: id.into(),
+                    native_id: id,
                 });
             }
         }
@@ -291,7 +290,7 @@ impl Workspace {
     /// The update detach and Disconnect (T-184) share it.
     pub(crate) async fn detach_idle_codex(self: &Arc<Self>, id: &str, connection: &crate::workspace::Connection) -> Result<()> {
         if id != "_catalog" {
-            let detail = self.detail(id).await?;
+            let detail = self.send_view(id).await?;
             ensure!(
                 blocked(&detail).is_none(),
                 "{} still has work",
@@ -316,7 +315,7 @@ impl Workspace {
                 .drain()
                 .await?;
             ensure!(
-                blocked(&self.detail(id).await?).is_none(),
+                blocked(&self.send_view(id).await?).is_none(),
                 "Native work arrived before detach"
             );
         }
@@ -363,7 +362,7 @@ impl Workspace {
             .context("Native event barrier is missing")?;
         events.drain().await?;
         ensure!(
-            blocked(&self.detail(id).await?).is_none(),
+            blocked(&self.send_view(id).await?).is_none(),
             "Claude work arrived before detach"
         );
         events.mark_closing();
@@ -396,10 +395,10 @@ impl Workspace {
         let agent = id.to_owned();
         let _ = self
             .stored_owned(owned, move |store| {
-                store.update(&agent, "runtime/updateDetached", &json!({}), |d| {
-                    d.agent.connection_state = "disconnected".into();
-                    d.agent.status = "offline".into();
-                    if let Some(usage) = &mut d.context_usage {
+                store.update_meta(&agent, "runtime/updateDetached", &json!({}), |m| {
+                    m.agent.connection_state = "disconnected".into();
+                    m.agent.status = "offline".into();
+                    if let Some(usage) = m.context_usage.as_mut() {
                         usage.stale = true;
                     }
                 })

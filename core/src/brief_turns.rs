@@ -197,11 +197,10 @@ fn reminded_turn(store: &Store, agent: &str, turn: &str) -> Result<Option<String
     if known.is_some() || !unbound {
         return Ok(known);
     }
-    let detail = store.detail(agent)?;
-    let clients: Vec<String> = detail
-        .turns
-        .iter()
-        .find(|t| t["id"] == turn)
+    // That Turn's user messages, without payloads (T-140).
+    let found = store.turn(agent, turn)?;
+    let clients: Vec<String> = found
+        .as_ref()
         .and_then(|t| t["items"].as_array())
         .into_iter()
         .flatten()
@@ -650,10 +649,30 @@ pub(crate) mod tests {
     const NATIVE: &str = r#"#!/usr/bin/python3
 import json,sys,pathlib
 root=pathlib.Path(__file__).parent
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
  r=json.loads(line)
  if 'id' not in r: continue
  m=r['method']; p=r.get('params',{})
+ if m=='thread/turns/list': sys.stdout.ids.add(r['id']); m='thread/read'
  result={}
  if m in ['thread/start','thread/resume']:
   with (root/'attach.jsonl').open('a') as f:f.write(json.dumps({'method':m,'params':p})+'\n')

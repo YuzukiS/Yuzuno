@@ -110,9 +110,13 @@ fn kept_whole(item: &Value, keep: &HashSet<&str>) -> bool {
 }
 
 fn project_item(item: &mut Value, keep: &HashSet<&str>) {
-    if kept_whole(item, keep) {
-        return;
+    if !kept_whole(item, keep) {
+        trim_item(item);
     }
+    note_spilled(item);
+}
+
+fn trim_item(item: &mut Value) {
     let Some(fields) = item.as_object() else { return };
     let trimmed: Vec<(String, Value, Value)> = fields
         .iter()
@@ -129,12 +133,44 @@ fn project_item(item: &mut Value, keep: &HashSet<&str>) {
     item[TRUNCATED] = Value::Object(truncated);
 }
 
+/// A streamed field whose start Core holds in chunk rows (`record_rows::
+/// SPILLED`) is its end, noted as a preview of the whole field: its full size
+/// and lines count the chunks too, and the payload routes send it whole.
+fn note_spilled(item: &mut Value) {
+    let Some(spilled) = item.as_object_mut().and_then(|members| members.remove(crate::record_rows::SPILLED)) else { return };
+    let mut truncated = item[TRUNCATED].as_object().cloned().unwrap_or_default();
+    for (field, note) in spilled.as_object().into_iter().flatten() {
+        let (bytes, lines) = match truncated.get(field) {
+            Some(shown) => (shown["bytes"].as_u64().unwrap_or(0), shown["lines"].as_u64().unwrap_or(0)),
+            None => {
+                let value = &item[field.as_str()];
+                (size(value) as u64, value.as_str().map_or(0, |text| lines(text) as u64))
+            }
+        };
+        truncated.insert(field.clone(), json!({"bytes": bytes + note["bytes"].as_u64().unwrap_or(0),
+            "lines": lines + note["lines"].as_u64().unwrap_or(0), "keep": Keep::Tail.name()}));
+    }
+    item[TRUNCATED] = Value::Object(truncated);
+}
+
 /// The preview of one field and its annotation, when the field is trimmed.
 /// Stored records keep exactly these fields out of their Item rows, with
 /// these previews (`record_rows`), so a record loaded without payloads is
 /// this view.
 pub(crate) fn trim(item: &Value, key: &str, value: &Value) -> Option<(Value, Value)> {
-    if key == TRUNCATED || item[TRUNCATED].get(key).is_some() {
+    if item[TRUNCATED].get(key).is_some() {
+        return None;
+    }
+    trim_field(item, key, value)
+}
+
+/// `trim` of a field whatever the Item's annotation says of it: for a
+/// stored Item whose field replaced the preview it was read with
+/// (`record_rows`). A sub-agent's or background task's record is never
+/// trimmed: it is bounded (`claude::SUBAGENT_RESULT_CHARS`), and the session
+/// store indexes its task from the Item row (T-140).
+pub(crate) fn trim_field(item: &Value, key: &str, value: &Value) -> Option<(Value, Value)> {
+    if key == TRUNCATED || crate::claude::TASK_RECORDS.contains(&key) {
         return None;
     }
     let large = match value {
@@ -443,6 +479,12 @@ fn size(value: &Value) -> usize {
         Value::String(text) => text.len(),
         _ => weight_of(value),
     }
+}
+
+/// `value`'s compact JSON size, strings counted by length: what Core
+/// measures memory budgets with (`store`), without serializing.
+pub(crate) fn size_of(value: &Value) -> usize {
+    weight_of(value)
 }
 
 fn weight_of(value: &Value) -> usize {

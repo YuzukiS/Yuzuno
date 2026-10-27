@@ -12,7 +12,8 @@ fn record(status: &str, running: bool) -> AgentDetail {
         "turns":[{"id":"t1","status":"completed","items":[
                 {"id":"u1","type":"userMessage","clientId":"sent-1","content":[{"type":"text","text":"first"}]}]},
             {"id":"t2","status":if running { "inProgress" } else { "completed" },"items":[]}],
-        "messageReceipts":[{"input":{"clientMessageId":"sent-1","text":"first"},"status":"accepted","turnId":"t1"}],
+        "messageReceipts":[{"input":{"clientMessageId":"sent-1","text":"first"},"status":"accepted","turnId":"t1",
+            "binding":{"turnId":"t1","itemId":"u1","userIndex":0}}],
         "pending":[],"artifacts":[]})).unwrap()
 }
 
@@ -101,8 +102,10 @@ async fn connect(ws: &Workspace, generation: u64) -> Arc<Rpc> {
     rpc
 }
 
+/// Changes committed on this thread (T-140: every change is of its own
+/// Turns; none reads or copies the whole record).
 fn in_place() -> u64 {
-    crate::store::META_IN_PLACE.with(|n| n.get())
+    crate::store::CHANGES.with(|n| n.get())
 }
 
 fn kinds(ws: &Workspace) -> Vec<(String, Value)> {
@@ -122,7 +125,7 @@ async fn a_resolution_and_a_status_change_are_committed_as_metadata_and_accept_r
     d.pending = vec![approval("p", 7, 1), PendingRequest { stale: true, ..approval("old", 7, 0) }];
     ws.store.insert(&d).unwrap();
     // Held, as a streaming Agent's record is.
-    ws.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+    ws.store.hold_for_test("a").unwrap();
     let rpc = connect(&ws, 1).await;
     let resolved = |rpc: u64| json!({"method":"serverRequest/resolved","params":{"threadId":"thread-a","requestId":rpc}});
 
@@ -138,7 +141,7 @@ async fn a_resolution_and_a_status_change_are_committed_as_metadata_and_accept_r
     assert_eq!((kind.as_str(), &data["_runtimeGeneration"]), ("serverRequest/resolved", &json!(1)));
 
     // Without a running Turn, the Agent is idle once nothing blocks.
-    ws.store.record_event("a", "test/finished", &json!({}), |d| {
+    ws.store.record_event("a", "test/finished", &json!({}), crate::store::Sel::Tail(usize::MAX), |d| {
         d.turns[1]["status"] = "completed".into();
         d.pending.push(approval("p", 9, 1));
         d.agent.status = "waiting".into();
@@ -172,7 +175,7 @@ async fn a_resolution_and_a_status_change_are_committed_as_metadata_and_accept_r
 
     // Its user message is in a Turn, not yet accepted: the next status change
     // accepts it by that Turn, as the whole record's apply does, in place.
-    ws.store.record_event("a", "test/message", &json!({}), |d| {
+    ws.store.record_event("a", "test/message", &json!({}), crate::store::Sel::Tail(usize::MAX), |d| {
         d.turns[1]["items"] = json!([{"id":"u2","type":"userMessage","clientId":"next","content":[{"type":"text","text":"next"}]}]);
     }).unwrap();
     assert_eq!(ws.store.detail("a").unwrap().message_receipts[1].status, "sending");
@@ -196,7 +199,7 @@ async fn without_an_unconfirmed_receipt_a_status_change_accepts_no_receipt() {
     d.turns[1]["items"] = json!([{"id":"u2","type":"userMessage","clientId":"later","content":[{"type":"text","text":"later"}]}]);
     d.message_receipts.push(serde_json::from_value(json!({"input":{"clientMessageId":"later","text":"later"},"status":"unknown"})).unwrap());
     ws.store.insert(&d).unwrap();
-    ws.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+    ws.store.hold_for_test("a").unwrap();
     let rpc = connect(&ws, 1).await;
     let before = in_place();
     ws.on_event("a", 1, json!({"method":"thread/status/changed","params":{"threadId":"thread-a","status":{"type":"idle"}}}));
@@ -213,12 +216,12 @@ async fn a_native_turn_started_is_written_without_copying_the_record() {
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
     ws.store.insert(&record("idle", false)).unwrap();
-    ws.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+    ws.store.hold_for_test("a").unwrap();
     let rpc = connect(&ws, 1).await;
-    let before = crate::store::STARTED_IN_PLACE.with(|n| n.get());
+    let before = in_place();
     ws.on_event("a", 1, json!({"method":"turn/started","params":{"threadId":"thread-a",
         "turn":{"id":"t3","status":"inProgress","items":[{"id":"u3","type":"userMessage","content":[{"type":"text","text":"third"}]}]}}}));
-    assert_eq!(crate::store::STARTED_IN_PLACE.with(|n| n.get()), before + 1, "the turn/started copied the record");
+    assert_eq!(in_place(), before + 1, "the turn/started copied the record");
     let after = ws.store.detail("a").unwrap();
     assert_eq!(after.turns.iter().map(|t| t["id"].as_str().unwrap()).collect::<Vec<_>>(), ["t1", "t2", "t3"]);
     assert_eq!(after.agent.status, "working");
@@ -233,12 +236,12 @@ async fn a_native_turn_completed_is_written_without_copying_the_record() {
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
     ws.store.insert(&record("working", true)).unwrap();
-    ws.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+    ws.store.hold_for_test("a").unwrap();
     let rpc = connect(&ws, 1).await;
-    let before = crate::store::COMPLETED_IN_PLACE.with(|n| n.get());
+    let before = in_place();
     ws.on_event("a", 1, json!({"method":"turn/completed","params":{"threadId":"thread-a",
         "turn":{"id":"t2","status":"completed","items":[{"id":"m2","type":"agentMessage","text":"done"}]}}}));
-    assert_eq!(crate::store::COMPLETED_IN_PLACE.with(|n| n.get()), before + 1, "the turn/completed copied the record");
+    assert_eq!(in_place(), before + 1, "the turn/completed copied the record");
     let after = ws.store.detail("a").unwrap();
     assert_eq!(after.turns[1]["status"], "completed");
     assert_eq!(after.turns[1]["items"][0]["text"], "done");
@@ -284,7 +287,7 @@ async fn a_thread_started_is_written_as_metadata_and_writes_what_the_whole_recor
             let other = Workspace::new(other_dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
             for w in [&ws, &other] {
                 w.store.insert(&d).unwrap();
-                w.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+                w.store.hold_for_test("a").unwrap();
                 if !held {
                     w.store.release_for_test("a");
                 }
@@ -366,21 +369,24 @@ async fn a_disconnect_is_written_as_metadata_and_writes_what_the_whole_record_co
         for status in ["working", "uncertain"] {
             // Current, already stale, and none.
             for usage in [Some(usage_of(false)), Some(usage_of(true)), None] {
-                for (held, restore) in [(true, false), (false, false), (true, true), (false, true)] {
+                // A change of the metadata alone reads no Turn, so it repairs
+                // none (T-140): only unrepaired records are compared.
+                for (held, restore) in [(true, false), (false, false)] {
                     let mut d = record(status, true);
                     d.agent.error = (*earlier).map(str::to_owned);
                     d.context_usage = usage.clone();
                     d.pending = vec![approval("p", 7, 1), PendingRequest { stale: true, ..approval("old", 6, 0) }];
                     // A receipt sending whose user message has arrived, and one uncertain.
                     d.turns[1]["items"] = json!([{"id":"u2","type":"userMessage","clientId":"next","content":[{"type":"text","text":"next"}]}]);
-                    d.message_receipts.push(serde_json::from_value(json!({"input":{"clientMessageId":"next","text":"next"},"status":"sending"})).unwrap());
+                    d.message_receipts.push(serde_json::from_value(json!({"input":{"clientMessageId":"next","text":"next"},"status":"sending",
+                        "binding":{"turnId":"t2","itemId":"u2","userIndex":0}})).unwrap());
                     d.message_receipts.push(serde_json::from_value(json!({"input":{"clientMessageId":"maybe","text":"maybe"},"status":"uncertain"})).unwrap());
                     let (dir, other_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
                     let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
                     let other = Workspace::new(other_dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
                     for w in [&ws, &other] {
                         w.store.insert(&d).unwrap();
-                        w.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+                        w.store.hold_for_test("a").unwrap();
                         if !held {
                             w.store.release_for_test("a");
                         }
@@ -397,8 +403,9 @@ async fn a_disconnect_is_written_as_metadata_and_writes_what_the_whole_record_co
                         usage.as_ref().map(|u| u.stale));
                     if let Some(copy) = &copy {
                         let kept = ws.store.held_for_test("a").is_some_and(|now| Arc::ptr_eq(&now, copy));
-                        assert_eq!(kept, !restore, "{case}: copied");
-                        assert_eq!(in_place(), before + u64::from(!restore), "{case}");
+                        // Changed in place whatever restored (T-140; a restore copied it before).
+                        assert!(kept, "{case}: copied");
+                        assert_eq!(in_place(), before + 1, "{case}");
                     }
                     assert!(!ws.rpcs.lock().unwrap().contains_key("a"), "{case}");
                     whole(&other, p, *intentional);
@@ -421,7 +428,7 @@ async fn a_disconnect_is_written_as_metadata_and_writes_what_the_whole_record_co
             }
         }
     }
-    assert_eq!(checked, 4 * 2 * 3 * 4);
+    assert_eq!(checked, 4 * 2 * 3 * 2);
 }
 
 /// A disconnect whose write fails, its journal row or its metadata row
@@ -446,7 +453,7 @@ async fn a_disconnect_whose_write_fails_changes_and_publishes_nothing() {
             d.context_usage = Some(usage_of(false));
             d.pending = vec![approval("p", 7, 1)];
             ws.store.insert(&d).unwrap();
-            ws.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+            ws.store.hold_for_test("a").unwrap();
             if !held {
                 ws.store.release_for_test("a");
             }
@@ -521,7 +528,7 @@ async fn an_mcp_startup_status_is_written_as_metadata_and_writes_what_the_whole_
                     let other = Workspace::new(other_dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
                     for w in [&ws, &other] {
                         w.store.insert(&d).unwrap();
-                        w.store.record_event("a", "test/hold", &json!({}), |_| {}).unwrap();
+                        w.store.hold_for_test("a").unwrap();
                         if !held {
                             w.store.release_for_test("a");
                         }

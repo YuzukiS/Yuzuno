@@ -1,5 +1,7 @@
 //! The detail API ships bounded previews of large tool fields; the payload
 //! routes return the full values, for finished and still-running Items.
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use axum::{body::{to_bytes, Body}, http::{Request, StatusCode}, Router};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -42,7 +44,7 @@ impl Lab {
         (status, serde_json::from_slice(&bytes).unwrap(), bytes.len())
     }
     /// Live command output, routed as runtime deltas are: held in memory,
-    /// not yet written to the Agent row.
+    /// written to the Agent's rows on the cadence or before a read.
     fn stream_output(&self, text: &str) {
         let kind = "item/commandExecution/outputDelta";
         let p = json!({"turnId":"live","itemId":"run","delta":text});
@@ -51,7 +53,9 @@ impl Lab {
     /// The Agent row as written, through a separate connection.
     fn row(&self) -> AgentDetail {
         let db = rusqlite::Connection::open(self.data.join("workspace.sqlite")).unwrap();
-        yuzuno_workspace::record_rows::load(&db, "a", true).unwrap().unwrap()
+        let mut d = yuzuno_workspace::record_rows::load_meta(&db, "a").unwrap().unwrap();
+        yuzuno_workspace::record_rows::scan(&db, "a", true, |turn| { d.turns.push(turn); Ok(true) }).unwrap();
+        d
     }
 }
 
@@ -119,7 +123,7 @@ async fn running_items_are_served_from_the_newest_output() {
     assert_eq!(payload["itemStatus"], "inProgress");
     assert_eq!(payload["turnStatus"], "inProgress");
     assert_eq!(payload["fields"]["aggregatedOutput"], numbered("test", 1000));
-    assert_eq!(lab.row().turns[1]["items"][0]["aggregatedOutput"], "", "the newest output is not written yet");
+    assert_eq!(lab.row().turns[1]["items"][0]["aggregatedOutput"], numbered("test", 1000), "a read writes held output first");
 
     lab.stream_output("test finished\n");
     let (_, payload, _) = lab.get("/api/agents/a/items/run/payload").await;
@@ -160,8 +164,13 @@ async fn an_item_awaiting_approval_arrives_whole() {
         "params":{"turnId":"done","itemId":"edit","reason":"write files"},"createdAt":""});
     lab.ws.store.update("a", "request", &request, |d| d.pending.push(serde_json::from_value(request.clone()).unwrap())).unwrap();
     let full = lab.ws.store.detail("a").unwrap();
+    // The detail is the window (T-140): an Item past the window's Item size
+    // is its preview there, and arrives whole as its original.
     let (_, detail, _) = lab.get("/api/agents/a").await;
-    assert_eq!(find(&detail, "done", "edit"), &full.turns[0]["items"][2]);
+    assert!(find(&detail, "done", "edit")["_yuzunoWindowPreview"].is_object());
+    let (status, edit, _) = lab.get("/api/agents/a/items/edit/original?turnId=done").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(edit["changes"], full.turns[0]["items"][2]["changes"]);
     assert!(find(&detail, "done", "build")["_yuzunoTruncated"].is_object(), "other Items are still trimmed");
     let (_, turn, _) = lab.get("/api/agents/a/turns/done/payload").await;
     assert_eq!(turn["items"].as_object().unwrap().keys().collect::<Vec<_>>(), ["build"]);

@@ -174,7 +174,10 @@ fn a_backup_restores_into_a_new_folder_where_core_reads_every_agent() {
     // Every Agent's whole record reads as it was, before any Core opens either.
     let read = |path: &Path, id: &str| {
         let db = crate::data_dir::read_only(&path.join(DATABASE)).unwrap();
-        serde_json::to_value(crate::record_rows::load(&db, id, true).unwrap().unwrap()).unwrap()
+        let mut whole = crate::record_rows::load_meta(&db, id).unwrap().unwrap();
+        crate::record_rows::scan(&db, id, true, |turn| { whole.turns.push(turn); Ok(true) }).unwrap();
+        crate::record_rows::each_receipt(&db, id, |r| whole.message_receipts.push(r)).unwrap();
+        serde_json::to_value(whole).unwrap()
     };
     for id in ["agent-a", "agent-b"] {
         assert_eq!(read(&target, id), read(&data, id), "{id}");

@@ -5,6 +5,8 @@
 //! however often or concurrently it is imported; and the user's first
 //! message resumes that same session without sending a saved prompt again.
 //! No model is called.
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::time::Duration;

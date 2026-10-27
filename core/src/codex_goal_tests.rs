@@ -29,9 +29,29 @@ impl Lab {
 import json,sys,pathlib
 root=pathlib.Path(__file__).parent
 state=root/'goal.json'
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
  r=json.loads(line); m=r.get('method',''); p=r.get('params',{})
  if 'method' not in r or 'id' not in r:continue
+ if m=='thread/turns/list': sys.stdout.ids.add(r['id']); m='thread/read'
  if m.startswith('thread/goal/') or m.startswith('turn/'):
   with (root/'sent').open('a') as f:f.write(json.dumps({'method':m,'params':p})+'\n')
  mode=(root/'mode').read_text() if (root/'mode').exists() else ''

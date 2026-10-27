@@ -5,6 +5,7 @@ use super::*;
 use crate::conversation_window;
 use rusqlite::types::ValueRef;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 
 pub(super) fn migrate(db: &Connection) -> Result<()> {
@@ -85,6 +86,9 @@ impl Seen {
     }
 }
 
+/// The index of every Item: only tests build it (production reads the
+/// sparse one, `sparse`).
+#[cfg(test)]
 pub(crate) struct Index {
     pub detail: AgentDetail,
     pub keys: Vec<(String, Vec<String>)>,
@@ -96,6 +100,7 @@ pub(crate) struct Index {
 /// caller holds one WAL snapshot through this and all selected-body reads.
 /// Initial construction after an upgrade is deliberately lazy, not an
 /// unbounded startup migration. It does not change the record's revision.
+#[cfg(test)]
 pub(crate) fn index(db: &Connection, id: &str) -> Result<Index> {
     let build = || -> Result<Index> {
         ensure!(rows_fit(db, id)?, "rows do not fit");
@@ -218,6 +223,149 @@ pub(crate) fn index(db: &Connection, id: &str) -> Result<Index> {
     build().map_err(|error| damaged(id, error))
 }
 
+/// A window's index without every Item (T-140): the metadata, each Turn's
+/// row with, as its Items, only the light entries (`item_index`) of those a
+/// window lists whatever it shows (user messages, async questions, running
+/// tasks: found by their keys, never by reading every Item), and for each
+/// Turn its Item count and its key, and each entry's stored position.
+pub(crate) struct Sparse {
+    pub detail: AgentDetail,
+    pub counts: Vec<usize>,
+    pub keys: Vec<String>,
+    pub ords: Vec<Vec<usize>>,
+    pub fills: Vec<Fill>,
+    pub stats: ReadStats,
+}
+
+pub(crate) fn sparse(db: &Connection, id: &str) -> Result<Sparse> {
+    let build = || -> Result<Sparse> {
+        ensure!(rows_fit(db, id)?, "rows do not fit");
+        let meta: String = db.query_row("SELECT data FROM agents WHERE id=?1", [id], |r| r.get(0))?;
+        let mut detail = from_meta(&meta)?;
+        let mut stats = ReadStats { source: "rows", metadata_json_bytes: meta.len(), ..ReadStats::default() };
+        let (mut counts, mut keys) = (Vec::new(), Vec::new());
+        let mut turn_at = HashMap::new();
+        let mut turns = db.prepare_cached("SELECT turn_id, ord, items, data FROM agent_turns WHERE agent_id=?1 ORDER BY ord")?;
+        for row in turns.query_map([id], |r| Ok(TurnRow { key: r.get(0)?, ord: count(r.get(1)?)?,
+            items: r.get::<_, Option<i64>>(2)?.map(count).transpose()?, data: r.get(3)? }))? {
+            let row = row?;
+            ensure!(row.ord == detail.turns.len(), "Turn rows are not in order");
+            stats.metadata_json_bytes += row.data.len();
+            let mut turn: Value = serde_json::from_str(&row.data)?;
+            if let Some(n) = row.items {
+                ensure!(turn.is_object() && turn["items"] == n, "Turn row has another Item count");
+                turn["items"] = json!([]);
+            }
+            counts.push(row.items.unwrap_or(0));
+            turn_at.insert(row.key.clone(), row.ord);
+            keys.push(row.key);
+            detail.turns.push(turn);
+        }
+        let mut listed: Vec<Vec<(usize, Value)>> = vec![Vec::new(); detail.turns.len()];
+        let mut fills = Vec::new();
+        let mut marked = db.prepare_cached("SELECT DISTINCT turn_id, item_id FROM agent_item_keys
+            WHERE agent_id=?1 AND kind IN ('user','question','running')")?;
+        let found: Vec<(String, String)> = marked.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        for (turn, key) in found {
+            let t = *turn_at.get(&turn).context("Item without Turn")?;
+            let (ord, entry) = light(db, id, &turn, &key, &mut fills, &mut stats)?;
+            listed[t].push((ord, entry));
+        }
+        let mut ords = Vec::with_capacity(listed.len());
+        for (t, mut entries) in listed.into_iter().enumerate() {
+            entries.sort_by_key(|(ord, _)| *ord);
+            ords.push(entries.iter().map(|(ord, _)| *ord).collect());
+            detail.turns[t]["items"] = Value::Array(entries.into_iter().map(|(_, entry)| entry).collect());
+        }
+        Ok(Sparse { detail, counts, keys, ords, fills, stats })
+    };
+    build().map_err(|error| damaged(id, error))
+}
+
+/// One Item's light entry (`item_index`) and stored position: its cached
+/// entry, or one built from its row (to cache, `fill`).
+fn light(db: &Connection, id: &str, turn: &str, key: &str, fills: &mut Vec<Fill>, stats: &mut ReadStats) -> Result<(usize, Value)> {
+    let (ord, payloads, cached, data, previews): (usize, usize, Option<String>, Option<String>, Option<String>) = db.prepare_cached(
+        "SELECT i.ord, i.payloads, w.data, CASE WHEN w.data IS NULL THEN i.data END, CASE WHEN w.data IS NULL THEN i.previews END
+        FROM agent_items i LEFT JOIN agent_window_items w ON w.agent_id=i.agent_id AND w.turn_id=i.turn_id AND w.item_id=i.item_id
+        WHERE i.agent_id=?1 AND i.turn_id=?2 AND i.item_id=?3")?
+        .query_row(params![id, turn, key], |r| Ok((count(r.get(0)?)?, count(r.get(1)?)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
+    stats.metadata_json_bytes += cached.as_ref().map_or(0, String::len);
+    if let Some(entry) = cached.as_deref().and_then(|raw| serde_json::from_str::<Entry>(raw).ok())
+        .filter(|entry| entry.version == INDEX_VERSION && entry.item.is_object()) {
+        return Ok((ord, entry.item));
+    }
+    let raw = match data {
+        Some(data) => ItemRow { turn: turn.into(), key: key.into(), ord, payloads, data, previews },
+        None => item_row_at(db, id, turn, key)?,
+    };
+    stats.index_build_json_bytes += raw.data.len() + raw.previews.as_ref().map_or(0, String::len);
+    stats.index_build_items += 1;
+    let value = decode(db, id, &raw, false, None)?;
+    let item = conversation_window::item_index(&value);
+    let entry = serde_json::to_string(&Entry { version: INDEX_VERSION, item: item.clone() })?;
+    fills.push(Fill { data: Seen::of(raw.data.as_bytes()), previews: raw.previews.as_deref().map(|p| Seen::of(p.as_bytes())),
+        turn: raw.turn, key: raw.key, payloads: raw.payloads, entry });
+    Ok((ord, item))
+}
+
+/// The key of the Item at a stored position of a Turn, and its ID (one
+/// keyed by position holds it only in its data).
+pub(crate) fn key_at(db: &Connection, id: &str, turn: &str, ord: usize) -> Result<Option<(String, Option<String>)>> {
+    Ok(db.prepare_cached("SELECT item_id, CASE WHEN item_id>='~' AND item_id<char(127) AND json_type(data,'$.id')='text'
+            THEN json_extract(data,'$.id') WHEN item_id>='~' AND item_id<char(127) THEN NULL ELSE item_id END
+        FROM agent_items WHERE agent_id=?1 AND turn_id=?2 AND ord=?3")?
+        .query_row(params![id, turn, ord as i64], |r| Ok((r.get(0)?, r.get(1)?))).optional()?)
+}
+
+/// The first position of an Item with this ID in a Turn, as a window finds
+/// a cursor or destination (an ID may repeat, its rows then keyed by place).
+pub(crate) fn first_position(db: &Connection, id: &str, turn: &str, item: &str) -> Result<Option<usize>> {
+    let found: Option<i64> = db.prepare_cached("SELECT MIN(ord) FROM (
+            SELECT ord FROM agent_items WHERE agent_id=?1 AND turn_id=?2 AND item_id=?3
+            UNION ALL SELECT ord FROM agent_items WHERE agent_id=?1 AND turn_id=?2 AND item_id>='~' AND item_id<char(127)
+                AND json_extract(data,'$.id')=?3)")?
+        .query_row(params![id, turn, item], |r| r.get(0))?;
+    found.map(count).transpose().map_err(Into::into)
+}
+
+/// The position of a Turn's last assistant message whose `field` holds text
+/// (what the rail reads, as `item_index` marks it present): text that is not
+/// blank as Rust trims it, any Unicode white space. SQL's trim, which knows
+/// only the white space it is given, just skips the plainly blank ones.
+pub(crate) fn last_message(db: &Connection, id: &str, turn: &str, field: &str) -> Result<Option<usize>> {
+    let mut query = db.prepare_cached("SELECT ord, json_extract(data,?3) FROM agent_items WHERE agent_id=?1 AND turn_id=?2
+        AND json_extract(data,'$.type')='agentMessage' AND json_type(data,?3)='text'
+        AND trim(json_extract(data,?3),' '||char(9)||char(10)||char(13))!='' ORDER BY ord DESC")?;
+    let mut rows = query.query(params![id, turn, format!("$.{field}")])?;
+    while let Some(row) = rows.next()? {
+        if !row.get_ref(1)?.as_str()?.trim().is_empty() {
+            return Ok(Some(count(row.get(0)?)?));
+        }
+    }
+    Ok(None)
+}
+
+/// Each message Item (user or assistant) of a Turn in order, read without
+/// payloads one at a time, until `each` says to stop: what a search reads.
+/// A message whose start streamed out to chunk rows is read with it, whole.
+pub(crate) fn messages(db: &Connection, id: &str, turn: &str, mut each: impl FnMut(Value) -> Result<bool>) -> Result<bool> {
+    let mut query = db.prepare_cached("SELECT turn_id,item_id,ord,payloads,data,previews FROM agent_items
+        WHERE agent_id=?1 AND turn_id=?2 AND json_extract(data,'$.type') IN ('userMessage','agentMessage') ORDER BY ord")?;
+    let mut rows = query.query(params![id, turn])?;
+    while let Some(row) = rows.next()? {
+        let row = item_from_row(row)?;
+        let message = decode(db, id, &row, false, None).and_then(|mut value| {
+            super::unspill(db, id, &row.turn, &mut value)?;
+            Ok(value)
+        });
+        if !each(message.map_err(|error| damaged(id, error))?)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Publish a prepared cache only if the source row is still exactly the one
 /// read: in the caller's write transaction, each row is read again and its
 /// data, previews (absent or text) and payload count compared with what the
@@ -293,6 +441,9 @@ fn decode(
         } else {
             preview_fields(&mut value, row.previews.as_deref(), row.payloads)?;
         }
+    }
+    if whole {
+        super::unspill(db, id, &row.turn, &mut value)?;
     }
     Ok(value)
 }

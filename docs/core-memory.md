@@ -1,5 +1,13 @@
 # Core memory after long conversations
 
+> **History.** This document records memory work on the store that came
+> before the session store (T-140, [ADR 0002](adr/0002-session-store-new-data-directory.md)),
+> which keeps an Agent's history only in rows and holds slices of it in memory.
+> The paths it names, such as `commit_locked`, and the examples
+> `core_memory_bench`, `core_memory_paths` and `core_attach_memory` exist up
+> to `586fd06`. Its measurements stand as recorded, at the commits they name;
+> its commands rerun only on such a checkout.
+
 On Linux with glibc, freed copies of large conversation records can remain in
 the allocator's resident pages after the Store's five-second idle cache expires.
 This is separate from live records, native Agent processes, and the database's
@@ -268,7 +276,7 @@ section, and 1.0 MiB on both sides after 1 MiB.
 ## Reproduce the isolated comparison
 
 Use a managed Job with 2 CPU cores, 6 GiB RAM and no swap. Build the release
-example, then run each mode as a fresh process:
+example, then run each mode as a fresh process. These commands need a checkout of `586fd06` or earlier: the example was removed with the session store (T-140).
 
 ```sh
 cargo build --locked --release -p yuzuno-workspace --example core_memory_bench
@@ -334,11 +342,11 @@ copied the whole held record several times:
   that copied, compared and returned the record.
 
 They now use `send_view`, `update_meta` and `update_picking`, which read and
-write the same fields. A committed change to a Turn still copies the record
+write the same fields. A committed change to a Turn still copied the record
 once (`commit_locked`).
 
 `core/examples/core_memory_paths.rs` measures this with a synthetic record, in
-a managed Job as above:
+a managed Job as above. These commands need a checkout of `586fd06` or earlier: the example was removed with the session store (T-140).
 
 ```sh
 cargo build --locked --release -p yuzuno-workspace --example core_memory_paths
@@ -834,9 +842,9 @@ of the record it returns, or copied the record only to read it:
 
 They now use `record_event`, and the request reads the held record in place
 (`peek`). The event that changes nothing uses `update_meta`. The commit itself
-still copies the record once (`commit_locked`), as above.
+still copied the record once (`commit_locked`), as above.
 
-`core_memory_paths` measures each one held, once as before and once as now:
+`core_memory_paths` measures each one held, once as before and once as now. These commands need a checkout of `586fd06` or earlier: the example was removed with the session store (T-140).
 
 ```sh
 target/release/examples/core_memory_paths target/events-128.json 128 events
@@ -1009,7 +1017,7 @@ completion. A committed change to a held record's Turns still copies it once.
 `core/examples/core_attach_memory.rs` measures these phases with synthetic
 Agents (100 Turns of 80 Items, each Item's output the same size, every Turn's
 completion journaled as a live Turn leaves it) and a scripted app-server that
-returns the same history on resume:
+returns the same history on resume. These commands need a checkout of `586fd06` or earlier: the example was removed with the session store (T-140).
 
 ```sh
 cargo build --locked --release -p yuzuno-workspace --example core_attach_memory

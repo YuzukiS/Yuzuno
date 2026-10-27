@@ -35,10 +35,6 @@ struct Options {
     /// Official Codex executable installed and authenticated on the Core host.
     #[arg(long, env = "YUZUNO_CODEX_BIN", default_value = "codex")]
     codex: String,
-    /// Store every Agent record whole again, as Core builds before record
-    /// rows read them, then exit. Core must not be running.
-    #[arg(long)]
-    revert_record_rows: bool,
     /// Move a Workspace that builds before this one kept in the old default
     /// folder (yuzuno-next) to the new one, leaving a link at the old path,
     /// then exit. Core must not be running; see README, Data.
@@ -151,9 +147,6 @@ async fn run(
             chosen.path
         }
     };
-    if options.revert_record_rows {
-        return revert_record_rows(&data.join("workspace.sqlite"));
-    }
     if let Some(out) = &options.backup_to {
         return report(&yuzuno_workspace::workspace_backup::backup(&data, out)?);
     }
@@ -319,20 +312,3 @@ fn move_workspace(options: &Options) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `--revert-record-rows`: for going back to a Core build from before record
-/// rows. Takes the Workspace lock, so it refuses while a Core runs.
-fn revert_record_rows(path: &std::path::Path) -> anyhow::Result<()> {
-    anyhow::ensure!(path.exists(), "No Workspace database at {}", path.display());
-    let done = yuzuno_workspace::record_rows::revert_workspace(path)?;
-    println!("Stored {} Agent records whole again in {}.", done.agents.len() + done.salvaged.len(), path.display());
-    for (id, s) in &done.salvaged {
-        println!("  Agent {id}: its rows did not fit together. Given back: {} Turns, {} Items{}. Marked _yuzunoSalvage: {} Turns, {} Items, {} payloads (preview kept) lost; {} payload rows belonged to no Item. All {} rows it had are kept in agent_salvage.",
-            s.turns, s.items, if s.metadata_from_original { " (metadata from before the conversion)" } else { "" },
-            s.lost_turns, s.lost_items, s.lost_payloads, s.stray_payloads, s.rows_kept);
-    }
-    for (id, error) in &done.failed {
-        println!("  Agent {id}: left as it was: {error}");
-    }
-    anyhow::ensure!(done.failed.is_empty(), "Some records could not be stored whole; an older Core cannot open this Workspace yet.");
-    Ok(())
-}

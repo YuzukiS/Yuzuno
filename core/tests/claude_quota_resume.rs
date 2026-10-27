@@ -7,6 +7,8 @@
 //! nothing; Agents of one account go one after another; a "Continue now"
 //! that Claude refuses before the reset leaves the automatic continue
 //! waiting. No model is called.
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use serde_json::Value;
 use std::time::Duration;
 use yuzuno_workspace::{claude_quota, model::AgentDetail, workspace::Workspace};

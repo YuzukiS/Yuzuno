@@ -2,6 +2,8 @@
 //! (T-170): the browser boundary guards it like any change, the phone's
 //! remote entry admits its own login, it marks nothing read, and it goes
 //! with its Agent.
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use axum::{body::{to_bytes, Body}, http::{Request, StatusCode}, Router};
 use serde_json::{json, Value};
 use tower::ServiceExt;

@@ -2,6 +2,8 @@
 //! reconnect resumes after `Last-Event-ID` without loss or duplicates, or is
 //! told to refetch; streamed Codex and Claude output arrives as appends and
 //! Item upserts carrying the journal position they were applied at.
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::{os::unix::fs::PermissionsExt, sync::Arc, time::Duration};
@@ -224,10 +226,30 @@ def turn():
     note('item/completed', turnId='t1', item={'id':'c1','type':'commandExecution','command':'make','status':'completed','aggregatedOutput':'out1\nout2\n','exitCode':0})
     while not os.path.exists(os.path.join(root, 'release')): time.sleep(0.02)
     note('turn/completed', turn={'id':'t1','status':'completed','items':[]})
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
     r = json.loads(line)
     if 'id' not in r: continue
     m, p = r.get('method'), r.get('params', {})
+    if m=='thread/turns/list': sys.stdout.ids.add(r['id']); m='thread/read'
     result = {}
     if m in ['thread/start','thread/resume','thread/read']:
         result = {'thread':{'id':'thread','status':{'type':'idle'},'turns':[]},'model':'m'}

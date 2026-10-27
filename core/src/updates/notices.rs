@@ -74,7 +74,7 @@ impl Workspace {
                 .is_some_and(|op| message["metadata"]["operationId"] == op.id)
                 && message["recipient"]["id"]
                     .as_str()
-                    .and_then(|id| self.store.detail(id).ok())
+                    .and_then(|id| self.store.send_view(id).ok())
                     .is_some_and(|d| same_turn(message, &d));
             message["updateWait"] =
                 json!({"active":active,"operationId":message["metadata"]["operationId"]});
@@ -90,7 +90,7 @@ impl Workspace {
         let mut rows = vec![];
         for message in self.store.update_pause_messages(&operation.id)? {
             let id = message["recipient"]["id"].as_str().unwrap_or_default();
-            let detail = self.store.detail(id).ok();
+            let detail = self.store.send_view(id).ok();
             let idle = detail.as_ref().is_some_and(|d| {
                 d.agent.closed_at.is_none()
                     && d.agent.status == "idle"
@@ -149,7 +149,7 @@ impl Workspace {
         let Ok(_held) = gate.try_lock() else {
             return Ok(());
         };
-        let detail = match self.detail(id).await {
+        let detail = match self.send_view(id).await {
             Ok(d) => d,
             Err(_) => return Ok(()),
         };

@@ -84,19 +84,13 @@ fn claude_task_running(turn: &Value) -> bool {
     })
 }
 
-/// The Codex sub-agents this Agent's stored Turns name, each once.
-fn codex_children(detail: &AgentDetail) -> Vec<String> {
+/// The Codex sub-agents this Agent's stored Turns name, each once, as the
+/// keys of their Items give them (T-140).
+fn codex_children(keys: Vec<String>) -> Vec<String> {
     let mut children: Vec<String> = Vec::new();
-    for turn in &detail.turns {
-        for item in turn["items"].as_array().into_iter().flatten() {
-            if item["type"] != "subAgentActivity" {
-                continue;
-            }
-            if let Some(child) = item["agentThreadId"].as_str() {
-                if !children.iter().any(|known| known == child) {
-                    children.push(child.to_owned());
-                }
-            }
+    for child in keys {
+        if !children.contains(&child) {
+            children.push(child);
         }
     }
     children
@@ -110,6 +104,14 @@ fn codex_thread_at_rest(status: &Value) -> bool {
 }
 
 impl Workspace {
+    /// What `refusal` reads: the metadata, the open and newest Turns, and
+    /// those with a Claude task still able to report (found by their keys).
+    async fn disconnect_view(&self, id: &str) -> Result<AgentDetail> {
+        let agent = id.to_owned();
+        let running = self.stored(move |store| store.keyed_turns(&agent, "running", None)).await?;
+        self.view(id, crate::store::Sel::Turns(running)).await
+    }
+
     /// Disconnects this Agent as the user asked, or refuses with why. On
     /// success its native session is stopped, it is offline and disconnected,
     /// and `disconnectedAt` records the user's choice. A stop an SSH machine
@@ -118,7 +120,7 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        let detail = self.detail(id).await?;
+        let detail = self.disconnect_view(id).await?;
         if let Some(reason) = refusal(&detail) {
             bail!("Not disconnected: {reason}. Nothing changed.");
         }
@@ -142,7 +144,7 @@ impl Workspace {
                     Some(count) => bail!("Not disconnected: {count} background terminal(s) are still running. Nothing changed."),
                     None => bail!("Not disconnected: Codex didn't say whether background terminals are running. Nothing changed."),
                 }
-                self.codex_children_at_rest(&connection, &detail).await?;
+                self.codex_children_at_rest(&connection, id).await?;
                 match &detail.agent.remote {
                     Some(remote) => self.detach_remote_codex(id, &connection, remote).await?,
                     None => self
@@ -218,7 +220,7 @@ impl Workspace {
         events.drain().await.map_err(kept)?;
         // What this generation reported meanwhile: the record and its
         // background tasks (the bridge's status doesn't count those).
-        if let Some(reason) = refusal(&self.detail(id).await?) {
+        if let Some(reason) = refusal(&self.disconnect_view(id).await?) {
             bail!("Not disconnected: {reason}. Nothing changed.");
         }
         if let Some(count) = self.background_shells.claude_active(id, connection.generation).filter(|count| *count > 0) {
@@ -325,8 +327,9 @@ impl Workspace {
     /// Every sub-agent this Codex Agent started is at rest, read from Codex
     /// now on its own connection; one that is running, or that Codex doesn't
     /// answer for, refuses.
-    async fn codex_children_at_rest(&self, connection: &Connection, detail: &AgentDetail) -> Result<()> {
-        let children = codex_children(detail);
+    async fn codex_children_at_rest(&self, connection: &Connection, id: &str) -> Result<()> {
+        let agent = id.to_owned();
+        let children = codex_children(self.stored(move |store| store.keys_of(&agent, "child")).await?);
         if children.len() > MAX_CHILDREN {
             bail!("Not disconnected: this Agent started {} sub-agents, more than this check reads. Nothing changed.", children.len());
         }
@@ -427,7 +430,9 @@ mod tests {
             {"type": "subAgentActivity", "kind": "started", "agentThreadId": "c2"},
             {"type": "agentMessage", "text": "c3"}
         ]);
-        assert_eq!(codex_children(&d), vec!["c1".to_owned(), "c2".to_owned()]);
+        let keys = d.turns[0]["items"].as_array().unwrap().iter().flat_map(crate::record_rows::index_keys)
+            .filter(|(kind, _)| *kind == "child").map(|(_, key)| key).collect();
+        assert_eq!(codex_children(keys), vec!["c1".to_owned(), "c2".to_owned()]);
         for at_rest in ["idle", "notLoaded", "systemError"] {
             assert!(codex_thread_at_rest(&json!(at_rest)), "{at_rest}");
         }
@@ -599,11 +604,31 @@ process.stdin.on('end', () => process.exit(0));
         const CODEX: &str = r#"#!/usr/bin/python3
 import json, sys, pathlib
 root = pathlib.Path(__file__).parent
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
     req = json.loads(line)
     with (root / 'calls.jsonl').open('a') as log: log.write(json.dumps(req) + '\n')
     if 'id' not in req: continue
     method, params = req.get('method'), req.get('params', {})
+    if method=='thread/turns/list': sys.stdout.ids.add(req['id']); method='thread/read'
     status = 'active' if (root / 'busy').exists() else 'idle'
     result = {}
     if method in ['thread/resume', 'thread/read']:

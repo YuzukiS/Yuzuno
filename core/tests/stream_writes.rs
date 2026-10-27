@@ -1,11 +1,12 @@
 //! Streamed output (deltas) is applied in memory and announced but never
-//! journaled. Completed content and the other frequent events are journaled
-//! at once but rewrite the Agent record only on the stream cadence or with
-//! the next full event. Completed content and synchronous events are never
-//! lost; partial streamed text may be, and nothing is ever repeated.
+//! journaled; its rows are written on the stream cadence, with the next
+//! write, or before a read of the rows. Completed content and the other
+//! frequent events are journaled and written at once, in one transaction.
+//! Completed content and synchronous events are never lost; partial
+//! streamed text may be, and nothing is ever repeated or replayed.
 use serde_json::{json, Value};
 use std::time::Duration;
-use yuzuno_workspace::{model::AgentDetail, record_rows::{self, Dirty}, store::{route, Route, Store, Streamed, MAX_STREAMS}};
+use yuzuno_workspace::{model::AgentDetail, record_rows, store::{route, whole::WholeRecord, Route, Sel, Store, Streamed, IN_PROGRESS_HOLD, MAX_STREAMS, STREAM_HOLD}};
 
 fn detail() -> AgentDetail {
     serde_json::from_value(json!({"agent":{"id":"a","name":"A","cwd":"/tmp","model":"m","color":"sage",
@@ -23,21 +24,26 @@ impl Lab {
         Self { dir, store: Some(store) }
     }
     fn store(&self) -> &Store { self.store.as_ref().unwrap() }
-    fn reopen(&mut self) {
-        drop(self.store.take());
-        self.store = Some(Store::open(&self.dir.path().join("workspace.sqlite")).unwrap());
-    }
     /// The record as written, read through a separate connection.
     fn row(&self) -> AgentDetail { self.row_of("a") }
     fn row_of(&self, id: &str) -> AgentDetail {
-        record_rows::load(&self.sql(), id, true).unwrap().unwrap()
+        let db = self.sql();
+        let mut d = record_rows::load_meta(&db, id).unwrap().unwrap();
+        record_rows::scan(&db, id, true, |turn| { d.turns.push(turn); Ok(true) }).unwrap();
+        record_rows::each_receipt(&db, id, |r| d.message_receipts.push(r)).unwrap();
+        d
     }
-    fn raw_row(&self, id: &str) -> String {
-        serde_json::to_string(&self.row_of(id)).unwrap()
+    /// The reply as the Agent's hot slice in memory has it.
+    fn held(&self, id: &str) -> Value {
+        self.store().peek(id, reply).expect("the Agent is in memory")
     }
-    /// Stores a record as Core would have written it (all of its rows).
-    fn set_row(&self, id: &str, raw: &str) {
-        write_row(&mut self.sql(), id, &serde_json::from_str(raw).unwrap());
+    /// What a Core killed now leaves: the rows as committed, copied while
+    /// this Store stays open, in a directory of their own.
+    fn killed(&self) -> tempfile::TempDir {
+        let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+        let copy = dir.path().join("workspace.sqlite");
+        self.sql().execute("VACUUM INTO ?1", [copy.to_str().unwrap()]).unwrap();
+        dir
     }
     fn journal(&self, kind: &str) -> i64 {
         self.sql().query_row("SELECT COUNT(*) FROM journal WHERE kind=?1", [kind], |r| r.get(0)).unwrap()
@@ -48,6 +54,15 @@ impl Lab {
     /// A second connection, as another process (or a failing disk) sees the file.
     fn sql(&self) -> rusqlite::Connection {
         rusqlite::Connection::open(self.dir.path().join("workspace.sqlite")).unwrap()
+    }
+    /// Item writes of Agent `id` fail (`refuse`), until `allow`.
+    fn refuse_items_of(&self, id: &str) {
+        self.sql().execute_batch(&format!("
+            CREATE TRIGGER refuse_insert BEFORE INSERT ON agent_items WHEN NEW.agent_id='{id}' BEGIN SELECT RAISE(ABORT,'disk full'); END;
+            CREATE TRIGGER refuse_update BEFORE UPDATE ON agent_items WHEN NEW.agent_id='{id}' BEGIN SELECT RAISE(ABORT,'disk full'); END;")).unwrap();
+    }
+    fn allow(&self) {
+        self.sql().execute_batch("DROP TRIGGER refuse_insert; DROP TRIGGER refuse_update;").unwrap();
     }
     /// A native event, routed as Codex and Claude events are.
     fn stream(&self, id: &str, kind: &str, data: &Value) -> Streamed {
@@ -76,15 +91,13 @@ impl Lab {
     }
 }
 
-fn write_row(db: &mut rusqlite::Connection, id: &str, detail: &AgentDetail) {
-    db.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-    let tx = db.transaction().unwrap();
-    record_rows::write(&tx, id, detail, &Dirty::all()).unwrap();
-    tx.commit().unwrap();
+fn reply(d: &AgentDetail) -> Value {
+    d.turns.iter().rev().flat_map(|t| t["items"].as_array().into_iter().flatten()).find(|i| i["id"] == "reply")
+        .map(|i| i["text"].clone()).unwrap_or(Value::Null)
 }
 
-fn reply(d: &AgentDetail) -> Value {
-    d.turns[0]["items"].as_array().unwrap().iter().find(|i| i["id"] == "reply").map(|i| i["text"].clone()).unwrap_or(Value::Null)
+fn turn_ids(d: &AgentDetail) -> Vec<String> {
+    d.turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect()
 }
 
 fn claude(event: Value) -> Value {
@@ -147,63 +160,65 @@ fn kinds_kept_as_evidence_change_nothing_apply_would_keep() {
 }
 
 #[test]
-fn deltas_are_visible_and_announced_at_once_but_never_journaled_or_written_by_themselves() {
+fn deltas_are_visible_and_announced_at_once_and_written_on_the_cadence_never_journaled() {
     let lab = Lab::new();
     for word in ["Hello ", "streamed ", "world"] { lab.delta(word); }
     assert_eq!(lab.journal("item/agentMessage/delta"), 0);
-    // Readers see every delta; the row has not been rewritten for them.
-    assert_eq!(reply(&lab.store().detail("a").unwrap()), "Hello streamed world");
-    assert_eq!(lab.store().detail("a").unwrap().agent.last_seq, 0);
-    let before = lab.raw_row("a");
-    // Announced once for the three deltas, and never due for writing.
+    // In memory at once; the rows wait for the stream cadence.
+    assert_eq!(lab.held("a"), "Hello streamed world");
+    assert_eq!(reply(&lab.row()), Value::Null);
+    // Announced once for the three deltas, and written once due.
     assert_eq!(lab.store().stream_tick(Duration::from_secs(60)).announce, vec!["a".to_string()]);
+    assert_eq!(reply(&lab.row()), Value::Null);
     assert!(lab.store().stream_tick(Duration::ZERO).announce.is_empty());
-    assert_eq!(lab.raw_row("a"), before);
-    // A controlled close may write it along.
-    assert!(lab.store().flush().failed.is_empty());
-    assert_eq!(reply(&lab.row()), "Hello streamed world");
+    let row = lab.row();
+    assert_eq!(reply(&row), "Hello streamed world");
+    assert_eq!(row.agent.last_seq, 0);
+    // A reader of the rows has what is held written first.
+    lab.delta("!");
+    assert_eq!(reply(&lab.store().view("a", Sel::Open).unwrap()), "Hello streamed world!");
+    assert_eq!(reply(&lab.row()), "Hello streamed world!");
+    assert_eq!(lab.journal("item/agentMessage/delta"), 0);
 }
 
 #[test]
-fn completed_content_is_journaled_and_written_on_the_stream_cadence() {
+fn completed_content_is_journaled_and_written_at_once_with_the_text_streamed_before_it() {
     let lab = Lab::new();
     lab.start_reply();
     lab.delta("Hello");
+    assert_eq!(reply(&lab.row()), "");
     lab.complete("Hello world");
     assert_eq!((lab.journal("item/started"), lab.journal("item/completed")), (1, 1));
-    assert_eq!(reply(&lab.store().detail("a").unwrap()), "Hello world");
-    assert_eq!(reply(&lab.row()), Value::Null);
-    assert!(lab.store().stream_tick(Duration::from_secs(60)).failed.is_empty());
-    assert_eq!(reply(&lab.row()), Value::Null);
-    assert!(lab.store().stream_tick(Duration::ZERO).failed.is_empty());
     let row = lab.row();
     assert_eq!(reply(&row), "Hello world");
     assert_eq!(row.agent.last_seq, lab.top());
+    assert_eq!(lab.held("a"), "Hello world");
+    // Nothing waits for the cadence; it is announced on it.
+    assert!(lab.store().held_agents().iter().all(|held| !held.unwritten));
+    assert_eq!(lab.store().stream_tick(Duration::ZERO).announce, vec!["a".to_string()]);
 }
 
 #[test]
-fn a_completed_item_replaces_partial_text_a_mid_stream_write_left() {
-    let mut lab = Lab::new();
+fn a_completed_item_replaces_the_partial_text_written_before_it() {
+    let lab = Lab::new();
     lab.start_reply();
     lab.delta("Hel");
-    // Written on the cadence (for the journaled start) while text streamed.
     assert!(lab.store().stream_tick(Duration::ZERO).failed.is_empty());
-    let partial = lab.raw_row("a");
-    assert_eq!(reply(&serde_json::from_str(&partial).unwrap()), "Hel");
+    assert_eq!(reply(&lab.row()), "Hel");
     lab.delta("lo");
     lab.complete("Hello world");
-    // Killed before the next write: the row still has the partial text and
-    // the journal the completed Item after it.
-    lab.reopen();
-    lab.set_row("a", &partial);
-    lab.reopen();
-    assert_eq!(reply(&lab.store().detail("a").unwrap()), "Hello world");
-    assert_eq!(reply(&lab.row()), "Hello world");
+    // A kill now leaves the completed Item, once.
+    let killed = lab.killed();
+    let restored = Store::open(&killed.path().join("workspace.sqlite")).unwrap().detail("a").unwrap();
+    for d in [&lab.row(), &restored] {
+        assert_eq!(reply(d), "Hello world");
+        assert_eq!(d.turns[0]["items"].as_array().unwrap().iter().filter(|i| i["id"] == "reply").count(), 1);
+    }
 }
 
 #[test]
-fn a_completed_claude_message_replaces_partial_text_a_mid_stream_write_left() {
-    let mut lab = Lab::new();
+fn a_completed_claude_message_replaces_the_partial_text_written_before_it() {
+    let lab = Lab::new();
     let mut c = detail();
     c.agent.id = "c".into();
     c.agent.harness = "claude".into();
@@ -216,21 +231,118 @@ fn a_completed_claude_message_replaces_partial_text_a_mid_stream_write_left() {
         "message":{"id":"m","content":[{"type":"thinking","thinking":"Plan it."}]}})));
     stream(json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hel"}}));
     assert!(lab.store().stream_tick(Duration::ZERO).failed.is_empty());
-    let partial = lab.raw_row("c");
     stream(json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"lo"}}));
     lab.stream("c", "claude/assistant", &claude(json!({"type":"assistant","uuid":"b1",
         "message":{"id":"m","content":[{"type":"text","text":"Hello"}]}})));
     let live = lab.store().detail("c").unwrap();
-    lab.reopen();
-    lab.set_row("c", &partial);
-    lab.reopen();
-    let restored = lab.store().detail("c").unwrap();
-    for d in [&live, &restored] {
+    let killed = lab.killed();
+    let restored = Store::open(&killed.path().join("workspace.sqlite")).unwrap().detail("c").unwrap();
+    for d in [&live, &lab.row_of("c"), &restored] {
         let items = d.turns[0]["items"].as_array().unwrap();
         assert_eq!(items.iter().filter(|i| i["id"] == "m").count(), 1);
         assert_eq!(items.iter().find(|i| i["id"] == "m").unwrap()["text"], "Hello");
         assert_eq!(items.iter().find(|i| i["id"] == "m:thinking").unwrap()["summary"], json!(["Plan it."]));
     }
+}
+
+/// Claude streams a message's text a delta at a time. Past STREAM_HOLD, or
+/// past a few KiB while other Items in progress hold more than
+/// IN_PROGRESS_HOLD, its start goes to chunk rows, each byte once, and
+/// memory keeps its end only. Every read has the text as it streamed, before
+/// and after the message is confirmed.
+#[test]
+fn a_long_claude_message_reads_as_it_streamed_and_memory_keeps_its_end() {
+    for tight in [false, true] {
+        let lab = Lab::new();
+        let mut c = detail();
+        c.agent.id = "c".into();
+        c.agent.harness = "claude".into();
+        if tight {
+            // A tool call still in progress whose input holds more than
+            // IN_PROGRESS_HOLD: Claude's own stream for it is not recorded.
+            c.turns[0]["items"] = json!([{"id":"tool","type":"claudeToolUse","status":"inProgress","name":"Write",
+                "input":{"content":"i".repeat(IN_PROGRESS_HOLD + 1)}}]);
+        }
+        lab.store().insert(&c).unwrap();
+        let stream = |event: Value| lab.stream("c", "claude/stream_event", &claude(json!({"type":"stream_event","event":event})));
+        stream(json!({"type":"message_start","message":{"id":"m"}}));
+        stream(json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}));
+        // Numbered cells, so each place in the text reads differently.
+        let part = if tight { 1 << 10 } else { 64 << 10 };
+        let whole: String = (0..40 * part / 10).map(|n| format!("[{n:08}]")).collect();
+        for delta in whole.as_bytes().chunks(part) {
+            let delta = std::str::from_utf8(delta).unwrap();
+            stream(json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":delta}}));
+        }
+        assert!(whole.len() > if tight { 8 << 10 } else { STREAM_HOLD });
+        let text = |d: &AgentDetail| d.turns.iter().flat_map(|t| t["items"].as_array().into_iter().flatten())
+            .find(|i| i["id"] == "m").map(|i| i["text"].clone()).unwrap_or(Value::Null);
+        let chunked = || -> i64 {
+            lab.sql().query_row("SELECT COALESCE(SUM(LENGTH(CAST(data AS BLOB))),0) FROM agent_stream_chunks WHERE agent_id='c'",
+                [], |r| r.get(0)).unwrap()
+        };
+        assert!(chunked() > 0, "tight {tight}: nothing went to chunk rows");
+        assert!(chunked() as usize <= whole.len(), "tight {tight}: {} bytes in chunks of a {}-byte text", chunked(), whole.len());
+        // What memory holds of it: the end, and no copy of the whole beside it.
+        let held = lab.store().peek("c", |d| serde_json::to_string(&d.turns).unwrap().len()).unwrap();
+        let hold = if tight { 8 << 10 } else { STREAM_HOLD };
+        assert!(held < hold + if tight { IN_PROGRESS_HOLD + (16 << 10) } else { 16 << 10 }, "tight {tight}: {held} bytes held");
+        assert_eq!(text(&lab.store().detail("c").unwrap()), whole, "tight {tight}: read before it is confirmed");
+        assert_eq!(text(&lab.row_of("c")), whole, "tight {tight}: rows before it is confirmed");
+        // Search reads its whole text too: its first words, and words across
+        // the end of its first chunk row.
+        let first: i64 = lab.sql().query_row("SELECT LENGTH(CAST(data AS BLOB)) FROM agent_stream_chunks WHERE agent_id='c'
+            ORDER BY seq LIMIT 1", [], |r| r.get(0)).unwrap();
+        let across = &whole[first as usize - 6..first as usize + 6];
+        for words in [&whole[..10], across] {
+            assert_eq!(whole.matches(words).count(), 1);
+            let found = lab.store().conversation_search("c", words).unwrap();
+            assert_eq!(found.iter().map(|r| (r["itemId"].as_str(), r["match"].as_str())).collect::<Vec<_>>(), [(Some("m"), Some(words))],
+                "tight {tight}: {words}");
+        }
+        lab.stream("c", "claude/assistant", &claude(json!({"type":"assistant","uuid":"b0",
+            "message":{"id":"m","content":[{"type":"text","text":whole}]}})));
+        let killed = lab.killed();
+        let restored = Store::open(&killed.path().join("workspace.sqlite")).unwrap().detail("c").unwrap();
+        for d in [&lab.store().detail("c").unwrap(), &lab.row_of("c"), &restored] {
+            assert_eq!(text(d), whole, "tight {tight}: read after it is confirmed");
+        }
+    }
+}
+
+/// Streamed output whose write failed waits in memory for the next write. A
+/// completion that replaces it and cannot be written either is not
+/// recorded, so it leaves that output as it was: the next write stores the
+/// output that streamed, whole.
+#[test]
+fn streamed_output_outlasts_two_failed_writes_in_a_row() {
+    let lab = Lab::new();
+    lab.stream("a", "item/started", &json!({"turnId":"t","item":{"id":"run","type":"commandExecution","command":"make",
+        "status":"inProgress","aggregatedOutput":""}}));
+    lab.refuse_items_of("a");
+    let part = "s".repeat(256 << 10);
+    for _ in 0..5 {
+        lab.stream("a", "item/commandExecution/outputDelta", &json!({"turnId":"t","itemId":"run","delta":part}));
+    }
+    let whole = part.repeat(5);
+    let output = |d: &AgentDetail| d.turns.iter().flat_map(|t| t["items"].as_array().into_iter().flatten())
+        .find(|i| i["id"] == "run").map(|i| i["aggregatedOutput"].clone()).unwrap_or(Value::Null);
+    // Its start left memory, but its write failed (logged): its chunks wait
+    // in memory. The completion, with other output, fails to be written too.
+    let chunk_rows = || -> i64 {
+        lab.sql().query_row("SELECT COUNT(*) FROM agent_stream_chunks WHERE agent_id='a'", [], |r| r.get(0)).unwrap()
+    };
+    let held = || lab.store().peek("a", |d| output(d).as_str().unwrap().len()).unwrap();
+    assert!(held() < STREAM_HOLD);
+    assert_eq!(chunk_rows(), 0);
+    let completed = json!({"turnId":"t","item":{"id":"run","type":"commandExecution","command":"make","status":"completed",
+        "aggregatedOutput":"never recorded"}});
+    assert!(lab.store().record_stream("a", Route::Deferred, "item/completed", &completed).is_err());
+    assert_eq!((held() < STREAM_HOLD, chunk_rows()), (true, 0));
+    lab.allow();
+    assert!(lab.store().stream_tick(Duration::ZERO).failed.is_empty());
+    assert_eq!(output(&lab.row()), whole);
+    assert_eq!(output(&lab.store().detail("a").unwrap()), whole);
 }
 
 #[test]
@@ -252,10 +364,10 @@ fn evidence_is_journaled_without_loading_or_writing_the_record() {
     assert!(lab.store().stream_tick(Duration::from_secs(60)).announce.is_empty());
     let detail = lab.store().detail("a").unwrap();
     assert_eq!((detail.agent.status.as_str(), detail.pending.len(), detail.agent.unread_count), ("working", 0, 0));
-    // A held record does not become due for writing for evidence either.
+    // Nor does evidence write held output early.
     lab.delta("x");
     lab.stream("a", "hook/completed", &codex);
-    assert!(lab.store().stream_tick(Duration::ZERO).failed.is_empty());
+    assert!(lab.store().stream_tick(Duration::from_secs(60)).failed.is_empty());
     assert_eq!(reply(&lab.row()), Value::Null);
 }
 
@@ -353,12 +465,16 @@ fn the_next_full_event_writes_held_content_with_it() {
 fn a_streaming_record_stays_in_memory_after_a_full_event() {
     let lab = Lab::new();
     lab.delta("before ");
-    lab.store().record_event("a", "thread/status/changed", &json!({"status":{"type":"active"}}), |_| {}).unwrap();
+    lab.store().record_event("a", "thread/status/changed", &json!({"status":{"type":"active"}}), Sel::Meta, |_| {}).unwrap();
     assert_eq!(lab.store().streamed_records(), 1);
-    // Proof the next delta does not read the row: it no longer parses.
-    lab.sql().execute("UPDATE agents SET data='not json' WHERE id='a'", []).unwrap();
+    // A change of the metadata alone writes the held output first.
+    assert_eq!(reply(&lab.row()), "before ");
+    // Proof the next delta reads no row: the reply's no longer parses.
+    let item: String = lab.sql().query_row("SELECT data FROM agent_items WHERE agent_id='a' AND item_id='reply'", [], |r| r.get(0)).unwrap();
+    lab.sql().execute("UPDATE agent_items SET data='not json' WHERE agent_id='a' AND item_id='reply'", []).unwrap();
     lab.delta("after");
-    assert_eq!(reply(&lab.store().detail("a").unwrap()), "before after");
+    assert_eq!(lab.held("a"), "before after");
+    lab.sql().execute("UPDATE agent_items SET data=?1 WHERE agent_id='a' AND item_id='reply'", [&item]).unwrap();
     assert!(lab.store().flush().failed.is_empty());
     assert_eq!(reply(&lab.row()), "before after");
 }
@@ -422,16 +538,18 @@ fn reading_while_text_streams_marks_the_streamed_copy() {
     let lab = Lab::new();
     lab.start_reply();
     lab.delta("one");
-    let seen = lab.store().detail("a").unwrap().agent.last_seq;
+    let seen = lab.top();
     assert!(lab.store().review("a", seen).unwrap());
     assert!(!lab.store().review("a", seen).unwrap());
-    // Reading is recorded at once, the record waits for the stream cadence.
+    // The read mark is written at once, the streamed text on the cadence.
     assert_eq!(lab.journal("workspace/reviewed"), 1);
-    assert_eq!(lab.row().agent.reviewed_seq, 0);
+    let row = lab.row();
+    assert_eq!((row.agent.reviewed_seq, reply(&row)), (seen, Value::from("")));
     assert_eq!(lab.store().agent("a").unwrap().reviewed_seq, seen);
+    assert_eq!(lab.store().peek("a", |d| d.agent.reviewed_seq), Some(seen));
     assert!(lab.store().stream_tick(Duration::ZERO).failed.is_empty());
-    assert_eq!(lab.row().agent.reviewed_seq, seen);
-    assert_eq!(reply(&lab.row()), "one");
+    let row = lab.row();
+    assert_eq!((row.agent.reviewed_seq, reply(&row)), (seen, Value::from("one")));
 }
 
 #[test]
@@ -446,43 +564,32 @@ fn closing_the_store_writes_held_content() {
 }
 
 #[test]
-fn after_a_kill_journaled_content_and_read_marks_survive_and_partial_text_may_not() {
-    let mut lab = Lab::new();
+fn after_a_kill_written_content_and_read_marks_survive_and_partial_text_may_not() {
+    let lab = Lab::new();
     lab.complete("Before");
+    let command = json!({"turnId":"t","item":{"id":"cmd","type":"commandExecution","command":"ls","aggregatedOutput":"a.rs",
+        "status":"completed"}});
+    lab.stream("a", "item/completed", &command);
+    let seen = lab.top();
+    assert!(lab.store().review("a", seen).unwrap());
     lab.delta(" partial");
-    drop(lab.store.take());
-    // As left by a Core killed before it wrote the record: the row as first
-    // inserted, the completed Item only in the journal, the partial text
-    // nowhere.
-    let mut db = lab.sql();
-    write_row(&mut db, "a", &detail());
-    let journal = |kind: &str, data: Value| db.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES('a',?1,?2,'2026-10-13T20:00:01.5+00:00')",
-        [kind, &data.to_string()]).unwrap();
-    let last: i64 = db.query_row("SELECT MAX(seq) FROM journal", [], |r| r.get(0)).unwrap();
-    journal("workspace/reviewed", json!({"throughSeq":last}));
-    journal("claude/assistant", json!({"turnId":"t","event":{"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"Claude says"}]}}}));
-    journal("item/completed", json!({"turnId":"t","item":{"id":"cmd","type":"commandExecution","command":"ls","aggregatedOutput":"a.rs"}}));
-    journal("hook/completed", json!({"turnId":"t","run":{"id":"stop:7"}}));
-    // Rows of streamed output an earlier build journaled are still replayed.
-    journal("item/agentMessage/delta", json!({"turnId":"t","itemId":"old","delta":"legacy"}));
-    let top: i64 = db.query_row("SELECT MAX(seq) FROM journal", [], |r| r.get(0)).unwrap();
-    assert_eq!(db.query_row("SELECT COUNT(*) FROM journal WHERE data LIKE '%partial%'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
-    drop(db);
-    lab.store = Some(Store::open(&lab.dir.path().join("workspace.sqlite")).unwrap());
-    let detail = lab.store().detail("a").unwrap();
+    let top = lab.top();
+    let killed = lab.killed();
+    let path = killed.path().join("workspace.sqlite");
+    // The journal is no record: an event only there is not replayed.
+    rusqlite::Connection::open(&path).unwrap().execute("INSERT INTO journal(agent_id,kind,data,at) VALUES('a','item/completed',?1,'2026-10-13T20:00:01.5+00:00')",
+        [json!({"turnId":"t","item":{"id":"lost","type":"agentMessage","text":"journal only"}}).to_string()]).unwrap();
+    let store = Store::open(&path).unwrap();
+    let detail = store.detail("a").unwrap();
     let items = detail.turns[0]["items"].as_array().unwrap();
     assert_eq!(reply(&detail), "Before");
-    assert_eq!(detail.agent.reviewed_seq, last);
-    assert!(items.iter().any(|i| i["id"] == "m" && i["text"] == "Claude says"));
+    assert_eq!(detail.agent.reviewed_seq, seen);
     assert!(items.iter().any(|i| i["id"] == "cmd" && i["aggregatedOutput"] == "a.rs"));
-    assert!(items.iter().any(|i| i["id"] == "old" && i["text"] == "legacy"));
+    assert!(!items.iter().any(|i| i["id"] == "lost"));
     assert_eq!(items.iter().filter(|i| i["id"] == "reply").count(), 1);
-    // Opening marks the open Agent restarted, which writes the restored record.
-    drop(lab.store.take());
-    let row = lab.row();
-    assert_eq!(reply(&row), "Before");
-    assert_eq!(row.agent.reviewed_seq, last);
-    assert!(row.agent.last_seq > top, "restart is journaled after every replayed event");
+    // Opening marks the open Agent restarted, after every journaled event.
+    assert_eq!(detail.agent.status, "offline");
+    assert!(detail.agent.last_seq > top);
 }
 
 #[test]
@@ -491,15 +598,15 @@ fn a_failed_write_keeps_no_half_applied_copy_and_a_retry_applies_once() {
     lab.complete("kept");
     lab.sql().execute_batch("CREATE TRIGGER refuse BEFORE INSERT ON journal WHEN NEW.data LIKE '%lost%' OR NEW.kind='boom'
         BEGIN SELECT RAISE(ABORT,'disk full'); END;").unwrap();
-    // An event whose journal write fails changes nothing in memory.
+    // An event whose journal write fails changes nothing, in memory or rows.
     let p = json!({"turnId":"t","item":{"id":"reply","type":"agentMessage","text":"kept lost"}});
     assert!(lab.store().record_stream("a", Route::Deferred, "item/completed", &p).is_err());
-    assert_eq!(reply(&lab.store().detail("a").unwrap()), "kept");
-    // A full event that fails takes the held copy with it; the committed
-    // Item is rebuilt from the journal and the failed change is not kept.
+    assert_eq!((lab.held("a"), reply(&lab.row())), (Value::from("kept"), Value::from("kept")));
+    // Nor does a full event that fails.
     assert!(lab.store().update("a", "boom", &json!({}), |d| d.agent.status = "broken".into()).is_err());
     let detail = lab.store().detail("a").unwrap();
     assert_eq!((reply(&detail), detail.agent.status.as_str()), (Value::from("kept"), "working"));
+    assert_eq!(lab.store().peek("a", |d| d.agent.status.clone()).as_deref(), Some("working"));
     lab.sql().execute_batch("DROP TRIGGER refuse;").unwrap();
     lab.complete("kept once");
     lab.store().update("a", "item/started", &json!({}), |_| {}).unwrap();
@@ -507,13 +614,13 @@ fn a_failed_write_keeps_no_half_applied_copy_and_a_retry_applies_once() {
 }
 
 #[test]
-fn a_failed_record_write_keeps_held_content_for_the_next_tick() {
+fn a_failed_write_of_streamed_output_keeps_it_for_the_next_tick() {
     let lab = Lab::new();
-    lab.complete("waiting");
-    lab.sql().execute_batch("CREATE TRIGGER refuse BEFORE UPDATE ON agents BEGIN SELECT RAISE(ABORT,'disk full'); END;").unwrap();
+    lab.delta("waiting");
+    lab.refuse_items_of("a");
     assert_eq!(lab.store().stream_tick(Duration::ZERO).failed.len(), 1);
-    assert_eq!(reply(&lab.store().detail("a").unwrap()), "waiting");
-    lab.sql().execute_batch("DROP TRIGGER refuse;").unwrap();
+    assert_eq!(lab.held("a"), "waiting");
+    lab.allow();
     assert!(lab.store().stream_tick(Duration::ZERO).failed.is_empty());
     assert_eq!(reply(&lab.row()), "waiting");
 }
@@ -522,9 +629,9 @@ fn a_failed_record_write_keeps_held_content_for_the_next_tick() {
 fn one_record_that_cannot_be_written_holds_back_no_other_agent() {
     let lab = Lab::new();
     lab.add("b");
-    lab.complete("stuck");
-    lab.complete_to("b", "flows");
-    lab.sql().execute_batch("CREATE TRIGGER refuse BEFORE UPDATE ON agents WHEN OLD.id='a' BEGIN SELECT RAISE(ABORT,'bad record'); END;").unwrap();
+    lab.delta("stuck");
+    lab.delta_to("b", "flows");
+    lab.refuse_items_of("a");
     let tick = lab.store().stream_tick(Duration::ZERO);
     assert_eq!(tick.failed.len(), 1);
     // The other Agent is written and both are still announced.
@@ -532,10 +639,10 @@ fn one_record_that_cannot_be_written_holds_back_no_other_agent() {
     announced.sort();
     assert_eq!(announced, ["a", "b"]);
     assert_eq!(reply(&lab.row_of("b")), "flows");
-    assert_eq!(reply(&lab.store().detail("a").unwrap()), "stuck");
+    assert_eq!(lab.held("a"), "stuck");
     lab.delta_to("b", " on");
     assert_eq!(lab.store().stream_tick(Duration::ZERO).announce, vec!["b".to_string()]);
-    lab.sql().execute_batch("DROP TRIGGER refuse;").unwrap();
+    lab.allow();
     assert!(lab.store().stream_tick(Duration::ZERO).failed.is_empty());
     assert_eq!(reply(&lab.row()), "stuck");
 }
@@ -570,17 +677,43 @@ fn a_record_that_cannot_be_evicted_holds_back_no_other_agent() {
         lab.add(id);
         lab.delta_to(id, "x");
     }
-    lab.sql().execute_batch("CREATE TRIGGER refuse BEFORE UPDATE ON agents WHEN OLD.id='agent-0' BEGIN SELECT RAISE(ABORT,'bad record'); END;").unwrap();
+    lab.refuse_items_of("agent-0");
     // The least recently streamed record cannot be written to make room:
     // it stays held, and the next Agent's event is still recorded.
     lab.add("late");
     lab.complete_to("late", "recorded");
     assert_eq!(lab.store().streamed_records(), MAX_STREAMS + 1);
-    assert_eq!(reply(&lab.store().detail("late").unwrap()), "recorded");
-    assert_eq!(reply(&lab.store().detail("agent-0").unwrap()), "x");
-    lab.sql().execute_batch("DROP TRIGGER refuse;").unwrap();
+    assert_eq!(reply(&lab.row_of("late")), "recorded");
+    assert_eq!(lab.held("agent-0"), "x");
+    lab.allow();
     assert!(lab.store().flush().failed.is_empty());
     assert_eq!(reply(&lab.row_of("agent-0")), "x");
+}
+
+#[test]
+fn an_active_agent_holds_its_open_and_newest_turns_and_what_it_just_wrote() {
+    let lab = Lab::new();
+    let mut long = detail();
+    long.agent.id = "long".into();
+    long.turns = (0..200).map(|n| json!({"id":format!("old-{n}"),"status":"completed",
+        "items":[{"id":format!("r-{n}"),"type":"agentMessage","text":"x".repeat(1000)}]})).collect();
+    long.turns.push(json!({"id":"t","status":"inProgress","items":[]}));
+    lab.store().insert(&long).unwrap();
+    let held = || lab.store().peek("long", turn_ids).unwrap();
+    lab.delta_to("long", "streamed");
+    assert_eq!(held(), ["t"]);
+    // An event about an older Turn reads that Turn alone, and memory keeps it
+    // only until the next write.
+    let old = json!({"turnId":"old-5","item":{"id":"r-5","type":"agentMessage","text":"edited"}});
+    lab.stream("long", "item/completed", &old);
+    assert_eq!(held(), ["old-5", "t"]);
+    lab.complete_to("long", "done");
+    assert_eq!(held(), ["t"]);
+    let row = lab.row_of("long");
+    assert_eq!(row.turns.len(), 201);
+    assert_eq!(row.turns[5]["items"][0]["text"], "edited");
+    assert_eq!(row.turns[4]["items"][0]["text"], "x".repeat(1000));
+    assert_eq!(reply(&row), "done");
 }
 
 #[test]

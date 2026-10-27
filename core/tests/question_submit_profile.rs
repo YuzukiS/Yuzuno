@@ -1,4 +1,6 @@
 //! Opt-in, bounded, isolated production API/browser timings. Never runs in CI.
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use axum::{extract::Request, middleware::{self, Next}, response::Response};
 use serde_json::{json, Value};
 use std::{os::unix::fs::PermissionsExt, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::{Duration, SystemTime, UNIX_EPOCH}};

@@ -109,7 +109,7 @@ impl GoalChange {
 impl Workspace {
     /// This Codex Agent's goal, read on its current connection only.
     pub async fn codex_goal(self: &Arc<Self>, id: &str) -> Result<View> {
-        let agent = self.detail(id).await?.agent;
+        let agent = self.listed(id).await?;
         if agent.harness != "codex" {
             return Ok(View::not("unsupported", "harness"));
         }

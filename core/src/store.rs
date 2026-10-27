@@ -1,11 +1,23 @@
+//! The session store (T-140): Agents' records, kept as rows
+//! (`record_rows`), and what Core holds of them in memory.
+//!
+//! Rows are the only copy of a history. In memory Core keeps, for each
+//! Agent with activity (at most MAX_STREAMS of them), its metadata and its
+//! open and newest Turns (`Hot`), Items that ended in the form they are read
+//! without payloads (each large field its preview). Every read and change
+//! names the Turns it needs (`Sel`); nothing loads, copies, compares or
+//! serializes a whole history. A native event is applied to the hot Turns
+//! and written, with its journal row, at once; streamed output (deltas) stays
+//! in memory until the stream tick or the next write, and a reader writes it
+//! first, so what readers see is always the rows.
 use crate::model::{now, Agent, AgentDetail, MessageReceipt, PendingRequest};
-use crate::record_rows::{self, Damaged, Dirty, Layout, Recovery};
+use crate::record_rows::{self, Damaged, Dirty};
 use crate::remote::RemoteMachine;
 use anyhow::{bail, ensure, Context, Result};
 use chrono::{DateTime, Utc};
+use parking_lot::RwLock;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use parking_lot::RwLock;
 use std::{
     collections::{HashMap, HashSet},
     fs::{File, OpenOptions},
@@ -14,69 +26,61 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// How long a journaled deferred event may stay only in memory (and in the
-/// journal) before its Agent record is written. Rewriting the whole record
-/// (often megabytes) for every event is what made long Turns fall behind.
-/// Readers use the copy in memory and the journal makes events durable, so
-/// this only bounds how much journal a load replays after a crash. Each
-/// write of a 6 MB record costs ~0.13 s in the debug build (almost all of it
-/// serializing); at 3 s these writes were most of Core's CPU and all of its
-/// disk writes with three Agents streaming at a realistic pace.
+/// How long streamed output (deltas) may stay only in memory before its
+/// Items are written. Every journaled change is written at once; this only
+/// bounds how much partial text a crash may lose (completed content never).
 pub const STREAM_WRITE_AFTER: Duration = Duration::from_secs(10);
-/// A held record nobody has added to for this long is dropped from memory.
+/// An active Agent nothing has reached for this long is dropped from memory.
 const STREAM_IDLE: Duration = Duration::from_secs(5);
-/// At most this many parsed records are held at once.
+/// At most this many Agents are kept in memory at once.
 pub const MAX_STREAMS: usize = 8;
+/// The most of a streamed field an active Agent holds in memory: past it,
+/// all but its last STREAM_KEEP bytes are written at once as chunk rows
+/// (`record_rows::SPILLED`), which every read with payloads puts back. Each
+/// such write moves at least STREAM_HOLD - STREAM_KEEP bytes, so a fast
+/// stream is written about once per MiB.
+pub const STREAM_HOLD: usize = 1 << 20;
+const STREAM_KEEP: usize = 64 << 10;
+/// An active Agent's Items in progress together: past this, each of their
+/// streamed fields is written down to its last STREAM_MIN bytes.
+pub const IN_PROGRESS_HOLD: usize = 2 << 20;
+const STREAM_MIN: usize = 4 << 10;
+/// The ended Items an active Agent holds in memory (`client_view::size_of`):
+/// past this, the oldest are left to their rows (a gap, `record_rows::GAP`)
+/// and an event naming one reads it back.
+pub const HOT_ITEMS: usize = 1 << 20;
+/// The newest entries of each Turn in memory never go to a gap.
+const NEWEST_KEEP: usize = 4;
 
 /// How a native event reaches its Agent's record. Decided once per event by
 /// `route` and passed through.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Route {
-    /// Journaled and written with its record at once, as every event was
-    /// before T-9: Turn boundaries, request resolution, errors, status,
-    /// compaction, the session's start and its reported mode, MCP server
-    /// connection status (`synchronous`).
+    /// Journaled and written with its record at once by its caller (Turn
+    /// boundaries, request resolution, errors, status, compaction, the
+    /// session's start and its reported mode, MCP server connection status).
     Synchronous,
-    /// Journaled at once and applied to the record held in memory, which
-    /// every reader uses; the record is written on the stream cadence or with
-    /// the next synchronous event. Completed content (Codex Items starting
-    /// and finishing, Claude assistant messages, tool results and sub-agent
-    /// task events), plan and token usage, Claude rate limits, and any
-    /// future kind `apply` or `project_event` acts on.
+    /// Journaled and applied to the Agent's hot Turns, and written with its
+    /// journal row at once: completed content (Codex Items starting and
+    /// finishing, Claude assistant messages, tool results and sub-agent task
+    /// events), plan and token usage, Claude rate limits, and any future kind
+    /// `apply` or `project_event` acts on.
     Deferred,
-    /// Streaming output (`streaming`): applied to the record held in memory
-    /// and announced, never journaled and never the reason for a write. The
-    /// completed form of the same content is journaled and replaces it, as
-    /// Codex rollouts, opencode and the OpenHands SDK treat deltas. A record
-    /// may still be written with partial text (with a journaled change, to
-    /// make room, or on close), but nothing depends on it: after a crash an
-    /// Item still streaming may lose its partial text, completed content
-    /// never does.
+    /// Streaming output: applied to the hot Turns and announced, never
+    /// journaled; written by the stream tick, the next write or a reader, and
+    /// a field's start at once past STREAM_HOLD. The completed form of the
+    /// same content is journaled and replaces it. After a crash an Item still
+    /// streaming may lose its last unwritten text, completed content never.
     Ephemeral,
     /// Journaled as native evidence only, because nothing in the record
-    /// changes for it (`AgentDetail::acts_on`, `claude::acts_on`): Codex
-    /// hooks, rate limits, automatic approval reviews and their notice,
-    /// warnings, terminal interaction; Claude status and hook notices, the
-    /// background task list, tool heartbeats, command lifecycle; kinds Core
-    /// does not know yet. A journal row costs a small insert; the raw
-    /// evidence (which hooks ran, what an automatic review decided) stays for
-    /// audit, and the record is neither loaded nor written for it. Journal
-    /// replay skips these too.
+    /// changes for it (`AgentDetail::acts_on`, `claude::acts_on`).
     Evidence,
-    /// Streaming output nothing in the record changes for (Codex
-    /// `turn/diff/updated`, deltas of Item kinds `apply` keeps no text for;
-    /// Claude thinking-token counts and a subagent's partial stream): dropped.
+    /// Streaming output nothing in the record changes for: dropped.
     Ignored,
 }
 
 /// The route of one native event (Codex method and params, or `claude/` and
-/// the SDK event type with the whole bridge message). Only a short list
-/// stays synchronous, so a kind Core does not know yet never makes it
-/// rewrite a whole record. None of the other routes is ever counted as
-/// unread (turn/completed, request, runtime/error). Should a streamed event
-/// still change what other parts of Core act on (a Claude session mismatch,
-/// an Item for a Turn never started), it is journaled, written and announced
-/// at once anyway (see `Watched`). Kinds Core records itself never come here.
+/// the SDK event type with the whole bridge message).
 pub fn route(kind: &str, data: &Value) -> Route {
     if synchronous(kind, data) {
         return Route::Synchronous;
@@ -137,11 +141,8 @@ fn touched_items(kind: &str, data: &Value, mut touch: impl FnMut(&str)) {
     }
 }
 
-/// Where every streamed native event, Codex or Claude, is applied to a
-/// record: live (`Store::record_stream`) and when a record is rebuilt from
-/// its journal (`restore`). `at` is the event's journal time (now, for an
-/// ephemeral one); nothing here reads the clock, so a rebuilt record is the
-/// record readers saw.
+/// Where every streamed native event, Codex or Claude, is applied to the
+/// hot Turns. `at` is the event's journal time (now, for an ephemeral one).
 fn apply_streamed(detail: &mut AgentDetail, seq: Option<i64>, kind: &str, data: &Value, at: DateTime<Utc>) {
     #[cfg(test)]
     if data["_testPanic"] == true {
@@ -160,16 +161,10 @@ fn apply_streamed(detail: &mut AgentDetail, seq: Option<i64>, kind: &str, data: 
     detail.agent.updated_at = at.to_rfc3339();
 }
 
-/// A journal row's time, as written by `record_stream`.
-fn journal_time(at: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(at).map_or_else(|_| Utc::now(), |at| at.with_timezone(&Utc))
-}
-
 /// What other parts of Core act on as soon as it changes: status and error,
 /// requests, Turn boundaries, unconfirmed messages, the connection and the
-/// native identity. Doorbells, Catch-up, collaboration and the rail follow
-/// these. Streamed events normally leave all of it alone; one that does not
-/// is announced at once, and written at once if it is journaled.
+/// native identity. Streamed events normally leave all of it alone; one that
+/// does not is announced and written at once.
 #[derive(PartialEq)]
 struct Watched {
     status: String,
@@ -179,7 +174,7 @@ struct Watched {
     session: Option<String>,
     thread: Option<String>,
     pending: usize,
-    turns: usize,
+    turns: Vec<String>,
     running: usize,
     unconfirmed: usize,
 }
@@ -193,7 +188,7 @@ fn watched(d: &AgentDetail) -> Watched {
         session: d.agent.claude_session_id.clone(),
         thread: d.agent.thread_id.clone(),
         pending: d.pending.len(),
-        turns: d.turns.len(),
+        turns: d.turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect(),
         running: d.turns.iter().filter(|t| t["status"] == "inProgress").count(),
         unconfirmed: d.message_receipts.iter().filter(|r| !matches!(r.status.as_str(), "accepted" | "rejected")).count(),
     }
@@ -217,7 +212,6 @@ pub(crate) struct Brief {
 }
 
 /// The history-independent facts needed to decide whether an Agent is idle.
-/// Kept with the listed view, including streamed changes and journal replay.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Activity {
     pub pending: bool,
@@ -227,61 +221,92 @@ pub(crate) struct Activity {
 }
 
 impl Activity {
+    /// Of a record holding at least its open Turns and unsettled receipts.
     pub(crate) fn of(detail: &AgentDetail) -> Self {
+        Self::with(detail, Unsettled::of(&detail.message_receipts))
+    }
+
+    /// Of a record holding its open Turns, with what its receipts say.
+    fn with(detail: &AgentDetail, receipts: Unsettled) -> Self {
         Self {
             pending: detail.pending.iter().any(|p| !p.stale),
-            sending: detail.message_receipts.iter().any(|r| r.status == "sending"),
-            uncertain: detail.message_receipts.iter().any(|r| r.status == "uncertain"),
+            sending: receipts.sending,
+            uncertain: receipts.uncertain,
             // An in-progress Turn without an ID still blocks an update.
             running: detail.turns.iter().any(|t| t["status"] == "inProgress"),
         }
     }
 }
 
-fn send_view_of(d: &AgentDetail) -> AgentDetail {
-    AgentDetail {
-        agent: d.agent.clone(),
-        turns: d.turns.iter().map(send_turn).collect(),
-        history: d.history.clone(),
-        pending: d.pending.clone(),
-        artifacts: Vec::new(),
-        context_usage: d.context_usage.clone(),
-        message_receipts: d.message_receipts.clone(),
-        claude_runtime: d.claude_runtime.clone(),
-        codex_handoff: d.codex_handoff.clone(),
+/// What an Agent's receipts not settled say: an active Agent keeps this,
+/// not the receipts (`record_rows::unsettled`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Unsettled {
+    count: usize,
+    sending: bool,
+    uncertain: bool,
+}
+
+impl Unsettled {
+    fn of(receipts: &[MessageReceipt]) -> Self {
+        let open: Vec<&MessageReceipt> = receipts.iter().filter(|r| !record_rows::settled(r)).collect();
+        Self { count: open.len(), sending: open.iter().any(|r| r.status == "sending"),
+            uncertain: open.iter().any(|r| r.status == "uncertain") }
+    }
+
+    fn read(db: &Connection, id: &str) -> Result<Self> {
+        let (count, sending, uncertain) = record_rows::unsettled(db, id)?;
+        Ok(Self { count, sending, uncertain })
     }
 }
 
-/// An Item `Store::send_view` keeps: an async question (what an answer to
-/// one is checked against).
-fn send_item(item: &Value) -> bool {
-    item["delivery"] == "async"
+/// Of a record holding its open and newest Turns and its unsettled receipts.
+fn brief(detail: &AgentDetail) -> Brief {
+    brief_with(detail, Unsettled::of(&detail.message_receipts))
 }
 
-/// A Turn for `Store::send_view`: everything but its Items, of which only the
-/// async questions remain.
-fn send_turn(turn: &Value) -> Value {
-    let Some(fields) = turn.as_object() else { return turn.clone() };
-    let mut light: serde_json::Map<String, Value> = fields.iter()
-        .filter(|(key, _)| key.as_str() != "items").map(|(k, v)| (k.clone(), v.clone())).collect();
-    if let Some(items) = fields.get("items").and_then(Value::as_array) {
-        light.insert("items".into(), items.iter().filter(|i| send_item(i)).cloned().collect());
-    }
-    light.into()
+/// `brief` of an active Agent's slice, which holds no receipts.
+fn brief_with(detail: &AgentDetail, receipts: Unsettled) -> Brief {
+    let mut agent = detail.agent.clone();
+    agent.work_summary = crate::rail::project(detail);
+    agent.project_id = None;
+    let active = detail.turns.iter().rev().find(|t| t["status"] == "inProgress");
+    let active_turn = active.and_then(|t| t["id"].as_str()).map(str::to_owned);
+    let active_turn_unmatched = active.is_some_and(|t| t["_yuzunoUnmatched"] == true);
+    let pending_ids = detail.pending.iter().map(|p| p.id.clone()).collect();
+    Brief { agent, active_turn, active_turn_unmatched, pending_ids, activity: Activity::with(detail, receipts) }
 }
 
-/// A finished Turn whose completion is not among `known` (see
-/// `Store::record_recovered_completions`).
-fn unrecorded_completion(turn: &Value, known: &HashSet<String>) -> bool {
-    matches!(turn["status"].as_str(), Some("completed" | "failed" | "interrupted"))
-        && !turn["id"].as_str().is_some_and(|id| known.contains(id))
+/// Which of an Agent's Turns a read or a change works on (T-140). Every
+/// selection but `Meta` also holds the Agent's open Turns and its newest
+/// one, so `turns.last()` is the newest Turn and whether a Turn runs is
+/// known. Turns come in record order, read without payloads (each large
+/// field its preview, noted): a change that keeps such a field keeps its
+/// payload (`record_rows`), and `payload_view` reads one in full.
+#[derive(Clone, Debug)]
+pub enum Sel {
+    /// No Turns: the metadata and the receipts not yet settled.
+    Meta,
+    /// The open Turns and the newest one.
+    Open,
+    /// The newest `n` Turns, and the open ones.
+    Tail(usize),
+    /// These Turns (those the Agent has), and the open and newest ones.
+    Turns(Vec<String>),
+    /// These Turns whole (those the Agent has), and the open and newest ones
+    /// as an active Agent holds them (`held_turns`: their newest Items within
+    /// HOT_ITEMS, Items in progress and what the rail reads, gaps between).
+    /// For a snapshot merge, which reaches Items only in the Turns it names,
+    /// and the checks before one: a long newest Turn is not read whole.
+    Named(Vec<String>),
 }
 
 /// The part of a record outside its Turns that a change through
-/// `Store::update_meta` may make: no Turn can be reached from it, so what such
-/// a change wrote need not be found by comparing the whole record.
+/// `Store::update_meta` may make: no Turn can be reached from it.
 pub struct Meta<'a> {
     pub agent: &'a mut Agent,
+    /// The receipts not yet settled (`record_rows::settled`); one pushed is
+    /// a new receipt.
     pub message_receipts: &'a mut Vec<MessageReceipt>,
     /// Pending native requests are metadata too: a request arriving, its
     /// answer and its replay change them and the Agent's status only.
@@ -299,150 +324,46 @@ impl<'a> Meta<'a> {
     }
 }
 
-/// How `Store::commit` finds what a change wrote.
-enum Scope<'a> {
-    /// By comparing the record before and after (`Dirty::between`).
-    Compare,
-    /// The metadata (the change got a `Meta`).
-    Meta,
-    /// One native event of this kind applied by `AgentDetail::apply`.
-    Applied(&'a str),
-}
-
-/// What `Store::commit_turn` applies to its copies of a Turn and the
-/// metadata.
-#[derive(Clone, Copy)]
-enum TurnChange<'a> {
-    /// A Codex event, as `AgentDetail::apply(applied, data)` takes it.
-    Applied(&'a str),
-    /// A Claude `result`'s projection (`claude::project_event`). It changes
-    /// the Turn it ends and the metadata; of the other Turns it reads and
-    /// changes only those still in progress (`end_native_turns`,
-    /// `refresh_status`), so it is applied to the copy only where none other
-    /// is.
-    Result(&'a dyn Fn(&mut AgentDetail)),
-    /// A Claude send's change of the Turn it names: `turnRequested`
-    /// (`claude::claude_send_input_locked`) finds it, appended as `turn_mut`
-    /// appends it when the record has none, and sets its status and user
-    /// message and the Agent's status and error; `message/bound`
-    /// (`claude_answer_form_locked`) sets that user message's client ID;
-    /// `followUpQueued` (`claude::show_follow_up`) adds a follow-up to it,
-    /// found or appended as `turn_at` finds it, unless `record_send_unless`
-    /// found the follow-up already shown. It reads and changes no other Turn.
-    Sent(&'a dyn Fn(&mut AgentDetail)),
-}
-
-/// What a change in `scope` wrote, named without comparing the whole record:
-/// what the scope names, and the Items `message_content::restore` changed
-/// meanwhile (its own and those of the `bind` after it). None to compare
-/// instead: `Scope::Compare`, or Turns `after` the change that cannot be
-/// told apart by ID (see `Dirty::identified`).
-fn scoped(scope: &Scope<'_>, after: &AgentDetail, data: &Value, restored: Vec<crate::message_content::Restored>) -> Option<Dirty> {
-    let mut dirty = match scope {
-        Scope::Compare => return None,
-        Scope::Meta => Dirty::default(),
-        Scope::Applied(kind) => Dirty::of_applied(after, kind, data),
-    };
-    for (turn, item, renamed) in restored {
-        if renamed {
-            dirty.whole_turn(&turn);
-        } else {
-            dirty.item(&turn, &item);
-        }
-    }
-    dirty.identified(after)
-}
-
-/// The record without its Turns: what `Store::commit_meta` changes.
-fn meta_of(detail: &AgentDetail) -> AgentDetail {
-    let AgentDetail { agent, turns: _, history, pending, artifacts, context_usage, message_receipts, claude_runtime, codex_handoff } = detail;
-    AgentDetail {
-        agent: agent.clone(),
-        turns: Vec::new(),
-        history: history.clone(),
-        pending: pending.clone(),
-        artifacts: artifacts.clone(),
-        context_usage: context_usage.clone(),
-        message_receipts: message_receipts.clone(),
-        claude_runtime: claude_runtime.clone(),
-        codex_handoff: codex_handoff.clone(),
-    }
-}
-
-/// `meta`'s metadata (see `meta_of`) on `detail`, whose Turns are kept.
-fn put_meta(detail: &mut AgentDetail, meta: AgentDetail) {
-    let AgentDetail { agent, turns: _, history, pending, artifacts, context_usage, message_receipts, claude_runtime, codex_handoff } = meta;
-    detail.agent = agent;
-    detail.history = history;
-    detail.pending = pending;
-    detail.artifacts = artifacts;
-    detail.context_usage = context_usage;
-    detail.message_receipts = message_receipts;
-    detail.claude_runtime = claude_runtime;
-    detail.codex_handoff = codex_handoff;
-}
-
-fn brief(detail: &AgentDetail) -> Brief {
-    let mut agent = detail.agent.clone();
-    agent.work_summary = crate::rail::project(detail);
-    agent.project_id = None;
-    let active = detail.turns.iter().rev().find(|t| t["status"] == "inProgress");
-    let active_turn = active.and_then(|t| t["id"].as_str()).map(str::to_owned);
-    let active_turn_unmatched = active.is_some_and(|t| t["_yuzunoUnmatched"] == true);
-    let pending_ids = detail.pending.iter().map(|p| p.id.clone()).collect();
-    Brief { agent, active_turn, active_turn_unmatched, pending_ids, activity: Activity::of(detail) }
-}
-
 /// A held record's Agent, as `Store::held_agents` lists it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HeldAgent {
     pub id: String,
     /// None when its record was being changed at that moment.
     pub name: Option<String>,
-    /// Its record has changes its rows lack: what is stored is behind it.
+    /// It has streamed output its rows lack yet.
     pub unwritten: bool,
+    /// What its slice holds (`client_view::size_of`); None as for `name`.
+    pub bytes: Option<usize>,
 }
 
-/// A parsed record held in memory while its Agent streams, and for a while
-/// after each write, so the next event or update need not load it. The
-/// record has its own lock, so copying it for a reader or serializing it for
-/// a write never holds `Store::memory`, the lock every Agent's events share.
-struct Held {
-    detail: Arc<RwLock<AgentDetail>>,
-    /// What its rows lack (see `record_rows::plan`): changes since it was
-    /// last written, and those replaying its journal made when it was loaded.
+/// What Core keeps in memory of an Agent with activity: its metadata (with
+/// its receipts not yet settled) and its open and newest Turns, Items that
+/// ended in their form without payloads. The slice has its own lock, so a
+/// reader of it never holds `Store::memory`.
+struct Hot {
+    slice: Arc<RwLock<AgentDetail>>,
+    /// Streamed output its rows lack: Items changed since written.
     unwritten: Dirty,
-    /// Since when it has journaled changes its row lacks; None once written.
+    /// Since when; None once written.
     unwritten_since: Option<Instant>,
-    /// It has ephemeral output its row lacks. That alone never makes it due
-    /// for writing, but it is not dropped without being written, so streamed
-    /// text does not vanish from view mid-Item.
-    ephemeral: bool,
-    /// When an event last reached it.
+    /// When an event or change last reached it.
     last: Instant,
     /// Streamed events only mark the brief; it is rebuilt when read.
     brief_stale: bool,
-    /// Counts changes to `detail`: a brief rebuilt from it outside `memory`
+    /// Counts changes to `slice`: a brief rebuilt from it outside `memory`
     /// is kept only if no change came in meanwhile.
     changes: u64,
+    /// Streamed fields' starts cut from `slice` and not yet written (a write
+    /// that failed): written by the next write, before anything else.
+    chunks: Vec<record_rows::Chunk>,
+    /// What the Agent's receipts not settled say, as of the last write.
+    unsettled: Unsettled,
 }
 
-impl Held {
-    fn new(detail: AgentDetail, unwritten: Dirty, now: Instant) -> Self {
-        Self {
-            detail: Arc::new(RwLock::new(detail)),
-            unwritten,
-            unwritten_since: None,
-            ephemeral: false,
-            last: now,
-            brief_stale: false,
-            changes: 0,
-        }
-    }
-
-    /// Its row lacks something it has.
-    fn dirty(&self) -> bool {
-        self.unwritten_since.is_some() || self.ephemeral
+impl Hot {
+    fn new(slice: AgentDetail, unsettled: Unsettled, now: Instant) -> Self {
+        Self { slice: Arc::new(RwLock::new(slice)), unwritten: Dirty::default(), unwritten_since: None, last: now,
+            brief_stale: false, changes: 0, chunks: Vec::new(), unsettled }
     }
 }
 
@@ -452,8 +373,6 @@ const ITEM_EVIDENCE: usize = 256;
 
 /// Which changes reached an Agent's record in this Core process, by rev, so
 /// a native snapshot requested at some rev is not taken for newer than them.
-/// Kept apart from held records, so it survives release, eviction and a
-/// failed write.
 #[derive(Default)]
 struct Evidence {
     /// Rev of the last event (native or Core's own; read marks are not).
@@ -504,36 +423,31 @@ pub struct Streamed {
 }
 
 /// What Store keeps in memory. Its lock (`Store::memory`) is held only for
-/// bookkeeping: never across SQLite, a record's (de)serialization or copy,
-/// or while waiting for another lock.
+/// bookkeeping: never across SQLite, a slice's (de)serialization or copy, or
+/// while waiting for another lock.
 struct Memory {
-    held: HashMap<String, Held>,
+    hot: HashMap<String, Hot>,
     briefs: HashMap<String, Brief>,
-    /// Agents with progress not announced yet. Kept apart from `held`, so an
-    /// evicted record is still announced.
+    /// Agents with progress not announced yet.
     announce: HashSet<String>,
     /// Each Agent's row version, a sequence lock: odd while a write of its
     /// rows is being committed (`Store::rewrite`), even otherwise, and the
     /// rev of a committed change becomes visible with the even bump. A
     /// reader that saw the same even version before and after its snapshot
     /// knows the snapshot holds exactly the changes up to the rev it read
-    /// with it (`Store::current`), and that a brief built from it may be kept
-    /// (`Store::listed`).
+    /// with it, and that a brief built from it may be kept.
     versions: HashMap<String, u64>,
     /// The change counter of this Core process (see `Agent::rev`), and the
     /// last value each Agent's record took.
     last_rev: u64,
     revs: HashMap<String, u64>,
     evidence: HashMap<String, Evidence>,
-    /// Agents whose record was found damaged in this process (shown as a
-    /// stand-in, or a change refused): no change is made to them, read
-    /// marks included (`Store::review`).
+    /// Agents whose rows were found damaged in this process: no change is
+    /// made to them.
     damaged: HashSet<String>,
 }
 
 impl Memory {
-    /// Turns the Agent's version odd (a write is about to commit) or even
-    /// again (it committed or failed); see `versions`.
     fn bump_version(&mut self, id: &str) {
         *self.versions.entry(id.into()).or_default() += 1;
     }
@@ -565,9 +479,8 @@ impl Memory {
 }
 
 /// A write of one Agent's rows, from just before its commit until memory
-/// shows it (see `Memory::versions`). Created under the Agent's record lock.
-/// Dropped without `done` (the write failed and rolled back), it only makes
-/// the version even again.
+/// shows it (see `Memory::versions`). Dropped without `done` (the write
+/// failed and rolled back), it only makes the version even again.
 struct Rewrite<'a> {
     store: &'a Store,
     id: &'a str,
@@ -575,8 +488,6 @@ struct Rewrite<'a> {
 }
 
 impl Rewrite<'_> {
-    /// The write committed: the version turns even, and whatever `show`
-    /// does (the change's rev, its brief) becomes visible with it.
     fn done<T>(mut self, show: impl FnOnce(&mut Memory) -> T) -> T {
         self.done = true;
         let mut memory = self.store.memory.lock().unwrap();
@@ -597,123 +508,41 @@ impl Drop for Rewrite<'_> {
 
 #[cfg(test)]
 thread_local! {
-    /// Runs on this thread right after `commit` commits (tests pause there).
+    /// Runs on this thread right after a change commits (tests pause there).
     static AFTER_COMMIT: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+    /// How many changes (`Store::change` and what calls it) committed on
+    /// this thread.
+    pub(crate) static CHANGES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
-
-#[cfg(test)]
-thread_local! {
-    /// How many changes `Store::commit_meta` got to writing on this thread
-    /// without copying the Turns.
-    pub(super) static META_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-thread_local! {
-    /// How many Codex `turn/started` events `Store::commit_turn` wrote on
-    /// this thread without copying the other Turns.
-    pub(super) static STARTED_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    /// How many Codex `turn/completed` events `Store::commit_turn` wrote on
-    /// this thread without copying the other Turns.
-    pub(super) static COMPLETED_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    /// How many Claude `result`s `Store::commit_turn` wrote on this thread
-    /// without copying the other Turns.
-    pub(super) static RESULT_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    /// How many Claude sends' commits (`turnRequested`, `message/bound`)
-    /// `Store::commit_turn` wrote on this thread without copying the other
-    /// Turns.
-    pub(super) static SENT_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// The Agents, one entry per commit, whose sends' commits `Store::commit_turn`
-/// wrote without copying the other Turns, on any thread: a Workspace commits
-/// on its blocking pool, so a test of a send reads this, by its own Agent ID.
-#[cfg(test)]
-pub(crate) static SENT_IN_PLACE_FOR: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-#[cfg(test)]
-thread_local! {
-    /// How many Claude deliveries `Store::commit_turns` wrote on this thread
-    /// without copying the other Turns.
-    pub(super) static DELIVERED_IN_PLACE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// The Agents, one entry per commit, whose deliveries `Store::commit_turns`
-/// wrote without copying the other Turns, on any thread (see
-/// `SENT_IN_PLACE_FOR`).
-#[cfg(test)]
-pub(crate) static DELIVERED_IN_PLACE_FOR: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-#[cfg(test)]
-thread_local! {
-    /// How many Agents `Store::open` marked restarted on this thread by
-    /// their metadata alone (`Store::restart_meta_only`).
-    pub(super) static RESTARTED_META_ONLY: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-thread_local! {
-    /// How many whole records `Store::detail` read on this thread.
-    pub(crate) static DETAIL_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    /// How many send views `read_send` read from rows on this thread.
-    pub(super) static SEND_ROWS_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// How many whole records `Store::detail` read of each Agent, by the Store
-/// (its address) that read it, on any thread: a Workspace reads on a
-/// blocking thread. Agent IDs keep most tests apart; a test whose Agent ID
-/// tests running beside it use too counts its own Store's reads
-/// (`Store::detail_reads`). Counts are compared before and after.
-#[cfg(test)]
-pub(crate) static DETAIL_READS_OF: std::sync::Mutex<Option<HashMap<(usize, String), u64>>> = std::sync::Mutex::new(None);
-
-/// Every Store's whole reads of `id`.
-#[cfg(test)]
-pub(crate) fn detail_reads_of(id: &str) -> u64 {
-    DETAIL_READS_OF.lock().unwrap().as_ref()
-        .map_or(0, |reads| reads.iter().filter(|((_, of), _)| of == id).map(|(_, n)| n).sum())
-}
-
-/// Signals when `commit` has planned (serialized) the write of the watched
-/// Agent's record, before it takes the writer. A test holds the writer then.
-#[cfg(test)]
-static AFTER_PLAN: std::sync::Mutex<Option<(String, std::sync::mpsc::Sender<()>)>> = std::sync::Mutex::new(None);
 
 /// What one stream tick did.
 pub struct Tick {
     /// Agents with streamed events since the previous tick, to announce once
     /// rather than per event.
     pub announce: Vec<String>,
-    /// Record writes that failed. Those records stay held and pending, and
-    /// are tried again on the next tick.
+    /// Writes of streamed output that failed. Those Agents stay in memory
+    /// and are tried again on the next tick.
     pub failed: Vec<anyhow::Error>,
 }
 
 /// How `Store::listed` may read a record it has to parse.
 #[derive(Clone, Copy)]
 enum Load<'a> {
-    /// A new reader.
     Reader,
-    /// The caller's open transaction.
     Through(&'a Connection),
-    /// It may not: only a listed or held Agent is answered.
     Never,
 }
 
 /// Store's locks, outermost first:
 ///
 /// 1. An Agent's record lock (`records`): held by whatever changes that
-///    Agent's row, journal or held copy, from reading it until memory shows
-///    the commit. Changes to one Agent are serialized by it; nothing else
-///    waits for it (other Agents, readers, the ticker for other records).
-///    `make_room` and idle cleanup only *try* another Agent's.
-/// 2. At most one database connection: the writer (only for the statements
-///    and commit, never for parsing or serializing a record) or a reader.
-/// 3. `memory`, or a held record's own lock, never both at once and never
+///    Agent's rows, journal or hot slice, from reading it until memory shows
+///    the commit. Changes to one Agent are serialized by it.
+/// 2. At most one database connection: the writer or a reader.
+/// 3. `memory`, or a hot slice's own lock, never both at once and never
 ///    while waiting for anything else.
 pub struct Store {
     pub(crate) db: crate::db::Db,
-    /// Held records, briefs, revisions and evidence (see `Memory`).
     memory: Mutex<Memory>,
     records: Mutex<HashMap<String, Arc<parking_lot::Mutex<()>>>>,
     // Keep the OS lock alive until SQLite is closed. A second Core must not mark
@@ -724,21 +553,17 @@ pub struct Store {
 
 impl Drop for Store {
     fn drop(&mut self) {
-        // After a panic while writing, memory may be half-changed: leave the
-        // records to their journals rather than write it (or panic again).
         if self.memory.is_poisoned() {
             return;
         }
-        // Deferred events still only in memory are written before closing,
-        // and ephemeral output with them.
+        // Streamed output still only in memory is written before closing.
         for error in self.flush().failed {
             eprintln!("Workspace streamed output not written on close: {error:#}");
         }
     }
 }
 
-/// Unfinished Jobs that run on a machine: remote Jobs record it as
-/// `executor.machineId` (T-108); local ones have none.
+/// Unfinished Jobs that run on a machine.
 fn machine_jobs(db: &Connection, id: &str) -> Result<i64> {
     Ok(db.query_row(
         "SELECT COUNT(*) FROM local_jobs WHERE (reserved=1 OR status IN ('queued','waiting'))
@@ -751,219 +576,442 @@ fn unread(db: &Connection, id: &str, reviewed: i64) -> Result<u64> {
 }
 
 /// Whether Agent ?1's Turn ?2 has its completion journaled or came from a
-/// Codex import: `completed_before` and `record_recovered_completion`. The
-/// journal half has the terms of the completion index (see
-/// `COMPLETION_INDEX`), which SQLite then uses for it.
+/// Codex import (see `COMPLETION_INDEX`).
 const COMPLETED: &str = "SELECT EXISTS(SELECT 1 FROM journal WHERE agent_id=?1 AND kind='turn/completed' AND json_extract(data,'$.turn.id')=?2)
     OR EXISTS(SELECT 1 FROM codex_import_turns WHERE agent_id=?1 AND turn_id=?2)";
 
 /// Whether a `turn/completed` about to be journaled completes a Turn whose
-/// completion is journaled already, or that came from a Codex import. A live
-/// completion can race history reconciliation. Both may update the evidence,
-/// but only the first creates an unread result: the other is journaled as
-/// `turn/reconfirmed`. Read in the writer's transaction.
+/// completion is journaled already, or that came from a Codex import: then
+/// it is journaled as `turn/reconfirmed`, which creates no unread result.
 fn completed_before(db: &Connection, id: &str, kind: &str, data: &Value) -> Result<bool> {
     Ok(kind == "turn/completed" && db.query_row(COMPLETED, params![id, data["turn"]["id"].as_str()], |r| r.get(0))?)
 }
 
-/// A record to change: with everything its journal says it already
-/// contains, and what replaying that changed (its rows lack it). Read in the
-/// caller's snapshot. A damaged record (see `record_rows::Damaged`) is not
-/// changed: the error says how to recover it.
-fn load(db: &Connection, id: &str) -> Result<(AgentDetail, Dirty)> {
-    match record_rows::load(db, id, true) {
-        Ok(Some(mut detail)) => {
-            let replayed = restore(db, id, &mut detail)?;
-            Ok((detail, replayed))
-        }
-        Ok(None) => bail!("Agent 不存在"),
-        Err(error) => match error.downcast::<Damaged>() {
-            // Still a `Damaged` underneath (see `Store::list_damaged`).
-            Ok(damage) => {
-                let note = damage_note(db, &damage, None);
-                Err(anyhow::Error::new(damage).context(note))
-            }
-            Err(error) => Err(error),
-        },
-    }
-}
-
-/// A record as readers are shown it, and whether it is a damaged record's
-/// stand-in (see `stand_in`).
-struct Shown {
-    detail: AgentDetail,
-    damaged: bool,
-}
-
-/// What `Store::current` reads of a record that is not held.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum View {
-    /// The whole record (`detail`).
-    Payloads,
-    /// The rows without payloads, Items a pending request refers to whole.
-    Rows,
-    /// What `send_view` keeps of `Rows` (see `read_send`).
-    Send,
-}
-
-/// Whether a journal row is replayed onto the record it belongs to (see
-/// `restore`): read marks, and deferred or ephemeral native events.
-fn replayed(kind: &str, data: &Value) -> bool {
-    kind == "workspace/reviewed" || matches!(route(kind, data), Route::Deferred | Route::Ephemeral)
-}
-
-/// A record for readers, in the caller's snapshot: with or without payloads
-/// (`record_rows::load`; Items a pending request refers to always with
-/// theirs), and with what its journal adds. A damaged record is stood in for
-/// (see `stand_in`). None if there is no such Agent.
-fn read_record(db: &Connection, id: &str, payloads: bool) -> Result<Option<Shown>> {
-    match record_rows::read(db, id, payloads)? {
-        None => Ok(None),
-        Some(stored) => finish(db, id, record_rows::assemble_stored(id, stored, payloads), payloads).map(Some),
-    }
-}
-
-/// A damaged record's stand-in, for readers.
-fn shown_damaged(db: &Connection, id: &str, error: anyhow::Error) -> Result<Shown> {
-    let damage = error.downcast::<Damaged>()?;
-    Ok(Shown { detail: stand_in(db, id, &damage)?, damaged: true })
-}
-
-/// What an Agent's listed view is built from (see `record_rows::load_recent`),
-/// with what its journal adds, in the caller's snapshot: cheap enough to
-/// read through the writer's transaction. A damaged record is stood in for.
-fn read_recent(db: &Connection, id: &str) -> Result<Option<Shown>> {
-    match record_rows::load_recent(db, id) {
-        Ok(Some(mut detail)) => {
-            restore(db, id, &mut detail)?;
-            Ok(Some(Shown { detail, damaged: false }))
-        }
-        Ok(None) => Ok(None),
-        Err(error) => shown_damaged(db, id, error).map(Some),
-    }
-}
-
-/// `read_record` from a record assembled in the same snapshot: replays its
-/// journal, and stands in for it if it is damaged (also when an Item a
-/// pending request refers to cannot be read whole).
-fn finish(db: &Connection, id: &str, assembled: Result<AgentDetail>, payloads: bool) -> Result<Shown> {
-    let mut detail = match assembled {
-        Ok(detail) => detail,
-        Err(error) => return shown_damaged(db, id, error),
+/// The IDs `sel` names, in no order (record order comes from the rows).
+fn selected(db: &Connection, id: &str, sel: &Sel) -> Result<Vec<String>> {
+    let mut ids = match sel {
+        Sel::Meta => return Ok(Vec::new()),
+        Sel::Open => Vec::new(),
+        Sel::Tail(n) => record_rows::newest_turns(db, id, *n)?,
+        Sel::Turns(turns) | Sel::Named(turns) => turns.clone(),
     };
-    let replayed = restore(db, id, &mut detail)?;
-    if !payloads {
-        if !replayed.is_meta_only() {
-            // Replayed events may have changed Items only previews are here of.
-            return read_record(db, id, true)?.context("Agent 不存在");
-        }
-        if let Err(error) = whole_referenced(db, id, &mut detail) {
-            return shown_damaged(db, id, error);
-        }
-    }
-    Ok(Shown { detail, damaged: false })
+    ids.extend(record_rows::open_turns(db, id)?);
+    ids.extend(record_rows::newest_turns(db, id, 1)?);
+    Ok(ids)
 }
 
-/// The record `Store::send_view` is made from, for a record stored as rows
-/// (T-140): what `read_record` without payloads gives, but holding only the
-/// Items the send view keeps and those `whole_referenced` makes whole, read
-/// a Turn at a time (`record_rows::load_kept`). None where only
-/// `read_record` gives the same: a record stored whole, journal rows
-/// `restore` would apply to Turns or Items, or anything that fails or does
-/// not assemble, which `read_record` then reports as before. `unlocked` runs
-/// where `current` runs it, before the journal is replayed.
-fn read_send(db: &Connection, id: &str, unlocked: &mut impl FnMut()) -> Option<Shown> {
-    let kept = record_rows::load_kept(db, id, |meta| {
-        if applies(db, id, meta.agent.last_seq)? {
-            return Ok(None);
-        }
-        let wanted: HashSet<String> = crate::client_view::referenced(&meta.pending).into_iter().map(str::to_owned).collect();
-        Ok(Some(move |item: &Value| send_item(item)
-            || (item.get(record_rows::TRUNCATED).is_some() && item["id"].as_str().is_some_and(|id| wanted.contains(id)))))
-    });
-    let Ok(record_rows::Kept::Record(mut detail)) = kept else { return None };
-    unlocked();
-    let replayed = restore(db, id, &mut detail).ok()?;
-    if !replayed.is_meta_only() {
-        return None;
-    }
-    whole_referenced(db, id, &mut detail).ok()?;
-    #[cfg(test)]
-    SEND_ROWS_READS.with(|n| n.set(n.get() + 1));
-    Some(Shown { detail, damaged: false })
+/// The receipts a slice holding these Turns works with: those not settled,
+/// and the settled ones kept with these Turns, in the order they were made.
+fn slice_receipts(db: &Connection, id: &str, turns: &[String]) -> Result<Vec<MessageReceipt>> {
+    record_rows::slice_receipts(db, id, turns)
 }
 
-/// Items a pending request refers to, made whole: clients are sent them
-/// whole (see `client_view::referenced`).
-fn whole_referenced(db: &Connection, id: &str, detail: &mut AgentDetail) -> Result<()> {
-    let wanted: HashSet<String> = crate::client_view::referenced(&detail.pending).into_iter().map(str::to_owned).collect();
-    if wanted.is_empty() {
-        return Ok(());
+/// These Turns as an active Agent holds them (`record_rows::load_turn_held`,
+/// within HOT_ITEMS each), in record order, their Items in progress whole.
+fn held_turns(db: &Connection, id: &str, ids: &[String]) -> Result<Vec<(usize, Value)>> {
+    let mut seen = HashSet::new();
+    let mut turns = Vec::new();
+    for tid in ids {
+        if !seen.insert(tid.as_str()) {
+            continue;
+        }
+        if let Some((ord, mut turn)) = record_rows::load_turn_held(db, id, tid, HOT_ITEMS, NEWEST_KEEP)? {
+            whole_in_progress(db, id, &mut turn)?;
+            turns.push((ord, turn));
+        }
     }
-    for turn in &mut detail.turns {
-        let turn_id = turn["id"].as_str().map(str::to_owned);
+    turns.sort_by_key(|(ord, _)| *ord);
+    Ok(turns)
+}
+
+/// The Turns `ids` in record order (`Sel::Named`): those `whole` names
+/// without payloads, the others as an active Agent holds them.
+fn read_named(db: &Connection, id: &str, ids: &[String], whole: &[String]) -> Result<Vec<(usize, Value)>> {
+    let (named, held): (Vec<String>, Vec<String>) = ids.iter().cloned().partition(|tid| whole.contains(tid));
+    let mut turns = record_rows::load_turns(db, id, &named, false)?;
+    turns.extend(held_turns(db, id, &held)?);
+    turns.sort_by_key(|(ord, _)| *ord);
+    Ok(turns)
+}
+
+/// Puts the Items of `turn` still in progress (read without payloads) in
+/// whole: streamed output appends to them, and a field's preview is not its
+/// value. Each such Item is its own size, bounded in memory by `spill`.
+fn whole_in_progress(db: &Connection, id: &str, turn: &mut Value) -> Result<()> {
+    let Some(tid) = turn["id"].as_str().map(str::to_owned) else { return Ok(()) };
+    for item in turn.get_mut("items").and_then(Value::as_array_mut).into_iter().flatten() {
+        if ended(item) || item.get(record_rows::TRUNCATED).is_none() {
+            continue;
+        }
+        let Some(key) = item["id"].as_str().map(str::to_owned) else { continue };
+        if let Some(whole) = record_rows::load_held_item(db, id, &tid, &key)? {
+            *item = whole;
+        }
+    }
+    Ok(())
+}
+
+/// What `sel` reads of an Agent from its rows, in the caller's snapshot:
+/// its metadata, the Turns selected (without payloads, in record order) and
+/// their receipts. None if there is no such Agent.
+fn read_slice(db: &Connection, id: &str, sel: &Sel) -> Result<Option<AgentDetail>> {
+    let Some(mut detail) = record_rows::load_meta(db, id)? else { return Ok(None) };
+    let ids = selected(db, id, sel)?;
+    detail.turns = match sel {
+        Sel::Named(whole) => read_named(db, id, &ids, whole)?,
+        _ => record_rows::load_turns(db, id, &ids, false)?,
+    }.into_iter().map(|(_, turn)| turn).collect();
+    let turns: Vec<String> = detail.turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
+    detail.message_receipts = slice_receipts(db, id, &turns)?;
+    Ok(Some(detail))
+}
+
+/// What an active Agent keeps in memory, read from its rows: its metadata
+/// and open and newest Turns, with what its receipts say (not the receipts).
+fn read_hot(db: &Connection, id: &str) -> Result<(AgentDetail, Unsettled)> {
+    let Some(mut detail) = record_rows::load_meta(db, id)? else { bail!("Agent 不存在") };
+    let ids = selected(db, id, &Sel::Open)?;
+    detail.turns = held_turns(db, id, &ids)?.into_iter().map(|(_, turn)| turn).collect();
+    Ok((detail, Unsettled::read(db, id)?))
+}
+
+/// Whether an Item ended, so it is kept in memory without its payloads.
+fn ended(item: &Value) -> bool {
+    item["status"] != "inProgress"
+}
+
+/// Turns of `slice` that are neither in progress, the newest nor changed by
+/// this write are dropped from it (the last stay until the next write, for
+/// what announces it), Items that ended in the Turns `written` names lose
+/// their payloads (`record_rows::compact`), past HOT_ITEMS the oldest ended
+/// Items go to gaps (`evict`), and no receipt stays: what an active Agent
+/// keeps. Only after a write: every Item in memory is then as written.
+fn trim_hot(slice: &mut AgentDetail, written: &Dirty) {
+    let newest = slice.turns.last().and_then(|t| t["id"].as_str()).map(str::to_owned);
+    slice.turns.retain(|t| t["status"] == "inProgress" || t["id"].as_str() == newest.as_deref()
+        || t["id"].as_str().is_some_and(|tid| written.turns().contains_key(tid)));
+    for turn in &mut slice.turns {
+        let Some(tid) = turn["id"].as_str().map(str::to_owned) else { continue };
+        let all = written.is_all() || written.all_turn_rows();
+        let Some(touched) = written.turns().get(&tid).cloned().or_else(|| all.then(Default::default)) else { continue };
         for item in turn.get_mut("items").and_then(Value::as_array_mut).into_iter().flatten() {
-            let Some(item_id) = item["id"].as_str().filter(|id| wanted.contains(*id)) else { continue };
-            if item.get(record_rows::TRUNCATED).is_none() {
+            let named = all || touched.all_items || item["id"].as_str().is_some_and(|i| touched.items.contains(i));
+            if named && ended(item) {
+                record_rows::compact(item);
+            }
+        }
+    }
+    evict(slice, HOT_ITEMS);
+    slice.message_receipts.clear();
+}
+
+/// Whether an Item stays in memory whatever its size: in progress, a task
+/// still running, or the message Claude streams into.
+fn pinned(item: &Value, streaming: Option<&str>) -> bool {
+    !ended(item)
+        || crate::claude::TASK_RECORDS.iter().any(|record| crate::claude::subagent_running(&item[*record]))
+        || item["id"].as_str().is_some_and(|id| streaming.is_some_and(|m| id == m || id.starts_with(&format!("{m}:"))))
+}
+
+/// The bytes a slice holds: its metadata, its Turns' own fields (Claude's
+/// per-Turn scratch among them) and its Items.
+fn slice_bytes(slice: &AgentDetail) -> usize {
+    let shells: usize = slice.turns.iter().flat_map(|t| t.as_object().into_iter().flatten())
+        .filter(|(key, _)| *key != "items").map(|(key, value)| key.len() + 3 + crate::client_view::size_of(value)).sum();
+    serde_json::to_value(slice.clone_meta()).map_or(0, |meta| crate::client_view::size_of(&meta)) + shells + held_items(slice)
+}
+
+/// The bytes of the Items `slice` holds (gaps excepted).
+fn held_items(slice: &AgentDetail) -> usize {
+    slice.turns.iter().flat_map(|t| t["items"].as_array().into_iter().flatten())
+        .filter(|item| record_rows::gap_of(item).is_none()).map(crate::client_view::size_of).sum()
+}
+
+/// Leaves the oldest ended Items of `slice` to their rows, as gaps, until
+/// its Items take at most `budget` bytes. Each Turn's newest NEWEST_KEEP
+/// entries and pinned Items stay. Only after a write: an Item's place in
+/// its array (gaps counted) is then its stored position.
+fn evict(slice: &mut AgentDetail, budget: usize) {
+    let mut held = held_items(slice);
+    for turn in &mut slice.turns {
+        let streaming = turn["_claudeMessageId"].as_str().map(str::to_owned);
+        let Some(items) = turn.get_mut("items").and_then(Value::as_array_mut) else { continue };
+        let n = items.len();
+        // What the rail reads stays too (`rail::project`): the user messages
+        // and the last assistant message with text, and with completed text.
+        let mut read: HashSet<usize> = items.iter().enumerate().filter(|(_, i)| i["type"] == "userMessage").map(|(k, _)| k).collect();
+        for field in ["text", "_yuzunoCompletedText"] {
+            read.extend(items.iter().rposition(|i| i["type"] == "agentMessage"
+                && i[field].as_str().is_some_and(|t| !t.trim().is_empty())));
+        }
+        let mut kept = Vec::with_capacity(n);
+        let mut at = 0;
+        for (i, item) in std::mem::take(items).into_iter().enumerate() {
+            if let Some((_, count)) = record_rows::gap_of(&item) {
+                push_gap(&mut kept, at, count);
+                at += count;
                 continue;
             }
-            let found = record_rows::load_item(db, id, turn_id.as_deref(), item_id, true)?;
-            if let Some(whole) = found.and_then(|mut turn| turn["items"].as_array_mut().and_then(|items| items.pop())) {
-                *item = whole;
+            let keyed = item["id"].as_str().is_some_and(|id| !id.is_empty() && !id.starts_with('~'));
+            if held > budget && keyed && i + NEWEST_KEEP < n && !read.contains(&i) && !pinned(&item, streaming.as_deref()) {
+                held -= crate::client_view::size_of(&item);
+                push_gap(&mut kept, at, 1);
+            } else {
+                kept.push(item);
+            }
+            at += 1;
+        }
+        *items = kept;
+    }
+}
+
+/// Adds `count` Items from stored position `from` to the gaps of `items`.
+fn push_gap(items: &mut Vec<Value>, from: usize, count: usize) {
+    if let Some((first, before)) = items.last().and_then(record_rows::gap_of) {
+        if first + before == from {
+            *items.last_mut().unwrap() = record_rows::gap(first, before + count);
+            return;
+        }
+    }
+    items.push(record_rows::gap(from, count));
+}
+
+/// After a write, a gap's rows are where its place in the array says (the
+/// write moved them): its stored position is that place now.
+fn settle_gaps(slice: &mut AgentDetail) {
+    for turn in &mut slice.turns {
+        let Some(items) = turn.get_mut("items").and_then(Value::as_array_mut) else { continue };
+        let mut at = 0;
+        for item in items.iter_mut() {
+            match record_rows::gap_of(item) {
+                Some((from, count)) => {
+                    if from != at {
+                        *item = record_rows::gap(at, count);
+                    }
+                    at += count;
+                }
+                None => at += 1,
+            }
+        }
+    }
+}
+
+/// Moves the start of each large streamed field of the Items `touched` names
+/// in `slice` (and, past IN_PROGRESS_HOLD, of every Item in progress) out of
+/// memory: the chunk rows to write, each field keeping its end and noting
+/// the rest (`record_rows::SPILLED`). Only text fields of Items with an ID.
+fn spill(slice: &mut AgentDetail, touched: &Dirty) -> Vec<record_rows::Chunk> {
+    let mut chunks = Vec::new();
+    let in_progress: usize = slice.turns.iter().flat_map(|t| t["items"].as_array().into_iter().flatten())
+        .filter(|item| record_rows::gap_of(item).is_none() && !ended(item)).map(crate::client_view::size_of).sum();
+    let tight = in_progress > IN_PROGRESS_HOLD;
+    for turn in &mut slice.turns {
+        let Some(tid) = turn["id"].as_str().map(str::to_owned) else { continue };
+        let streaming = turn["_claudeMessageId"].as_str().map(str::to_owned);
+        let named = touched.turns().get(&tid);
+        let all = touched.is_all() || touched.all_turn_rows() || named.is_some_and(|t| t.all_items);
+        for item in turn.get_mut("items").and_then(Value::as_array_mut).into_iter().flatten() {
+            let Some(id) = item["id"].as_str().filter(|id| !id.is_empty() && !id.starts_with('~')).map(str::to_owned) else { continue };
+            // Only what still streams: an ended Item is stored whole.
+            let live = !ended(item) || streaming.as_deref().is_some_and(|m| id == m || id.starts_with(&format!("{m}:")));
+            if !live {
+                continue;
+            }
+            let reached = all || named.is_some_and(|t| t.items.contains(&id));
+            let (hold, keep) = if tight { (STREAM_MIN, STREAM_MIN) } else { (STREAM_HOLD, STREAM_KEEP) };
+            if !reached && !tight {
+                continue;
+            }
+            let Some(members) = item.as_object_mut() else { continue };
+            let long: Vec<String> = members.iter()
+                .filter(|(key, value)| !key.starts_with("_yuzuno") && value.as_str().is_some_and(|text| text.len() > hold))
+                .map(|(key, _)| key.clone()).collect();
+            for field in long {
+                let Some(Value::String(text)) = members.get_mut(&field) else { continue };
+                let mut cut = text.len() - keep;
+                while !text.is_char_boundary(cut) {
+                    cut += 1;
+                }
+                let head: String = text.drain(..cut).collect();
+                // The end alone, not the whole field's buffer, stays held.
+                text.shrink_to_fit();
+                let notes = members.entry(record_rows::SPILLED).or_insert_with(|| json!({}));
+                let note = &mut notes[&field];
+                let bytes = note["bytes"].as_u64().unwrap_or(0) + head.len() as u64;
+                let lines = note["lines"].as_u64().unwrap_or(0) + head.matches('\n').count() as u64;
+                *note = json!({"bytes": bytes, "lines": lines});
+                chunks.push(record_rows::Chunk { turn: tid.clone(), item: id.clone(), field, data: head });
+            }
+        }
+    }
+    chunks
+}
+
+/// The client IDs of the user messages among the Items `dirty` names: the
+/// receipts an event may bind or accept.
+fn user_clients(d: &AgentDetail, dirty: &Dirty) -> Vec<String> {
+    let mut clients: Vec<String> = Vec::new();
+    for turn in &d.turns {
+        let Some(tid) = turn["id"].as_str() else { continue };
+        let touched = dirty.turns().get(tid);
+        let all = dirty.is_all() || touched.is_some_and(|t| t.all_items);
+        if !all && touched.is_none() {
+            continue;
+        }
+        for item in turn["items"].as_array().into_iter().flatten().filter(|i| i["type"] == "userMessage") {
+            let reached = all || item["id"].as_str().is_some_and(|i| touched.is_some_and(|t| t.items.contains(i)));
+            if let (true, Some(client)) = (reached, item["clientId"].as_str()) {
+                if !clients.iter().any(|c| c == client) {
+                    clients.push(client.to_owned());
+                }
+            }
+        }
+    }
+    clients
+}
+
+/// Reads back whole the Claude messages in `slice` (`only` the one with that
+/// ID, if given) whose text streamed out of memory: its chunk rows, then its
+/// `pending` chunks not written yet, then the end it held. For an event that
+/// may confirm their text (`claude::confirms_text`), which puts a completed
+/// block where it is in that text. The caller writes each whole, or spilled
+/// anew, and drops its old chunks.
+fn whole_messages(db: &Connection, id: &str, slice: &mut AgentDetail, pending: &[record_rows::Chunk], only: Option<&str>)
+    -> Result<()> {
+    for turn in &mut slice.turns {
+        let Some(tid) = turn["id"].as_str().map(str::to_owned) else { continue };
+        for item in turn.get_mut("items").and_then(Value::as_array_mut).into_iter().flatten() {
+            if item["type"] == "agentMessage" && item[record_rows::SPILLED].is_object()
+                && only.is_none_or(|message| item["id"] == message) {
+                record_rows::unspill_with(db, id, &tid, item, pending)?;
             }
         }
     }
     Ok(())
 }
 
-/// What a damaged record is shown as, read only: its whole row from before
-/// the conversion with what the journal replays since, else its metadata
-/// without Turns. None if neither can be read.
-pub(crate) fn recover(db: &Connection, id: &str) -> Result<Option<(AgentDetail, Recovery)>> {
-    if let Some((data, converted_at)) = record_rows::original(db, id)? {
-        if let Ok(mut detail) = serde_json::from_str::<AgentDetail>(&data) {
-            restore(db, id, &mut detail)?;
-            return Ok(Some((detail, Recovery::Original { converted_at })));
+/// The spilled fields of a slice (Turn, Item, field, the end it holds, its
+/// note).
+fn spilled_fields(slice: &AgentDetail) -> Vec<(String, String, String, Value, Value)> {
+    let mut found = Vec::new();
+    for turn in &slice.turns {
+        let Some(tid) = turn["id"].as_str() else { continue };
+        for item in turn["items"].as_array().into_iter().flatten() {
+            let (Some(iid), Some(notes)) = (item["id"].as_str(), item[record_rows::SPILLED].as_object()) else { continue };
+            for (field, note) in notes {
+                found.push((tid.to_owned(), iid.to_owned(), field.clone(), item[field.as_str()].clone(), note.clone()));
+            }
         }
     }
-    match record_rows::load_meta(db, id) {
-        Ok(detail) => Ok(detail.map(|detail| (detail, Recovery::WithoutTurns))),
-        Err(error) if error.is::<Damaged>() => Ok(None),
-        Err(error) => Err(error),
+    found
+}
+
+/// The spilled fields an event set anew (no longer the end they held): no
+/// longer noted, their chunks to drop. A field the event left is kept, and
+/// so is one it set to the text that streamed (its start, which `streamed`
+/// compares with the chunks, then the end held): an Item completed with its
+/// output keeps its start in the chunks, not written again.
+fn replaced_fields(slice: &mut AgentDetail, before: Vec<(String, String, String, Value, Value)>,
+    mut streamed: impl FnMut(&str, &str, &str, &str) -> Result<bool>) -> Result<Vec<(String, String, String)>> {
+    let mut replaced = Vec::new();
+    for (tid, iid, field, value, note) in before {
+        let item = slice.turns.iter_mut().find(|t| t["id"] == tid.as_str())
+            .and_then(|t| t.get_mut("items")).and_then(Value::as_array_mut)
+            .and_then(|items| items.iter_mut().find(|i| i["id"] == iid.as_str()));
+        let changed = match item {
+            Some(item) if item[field.as_str()] == value && item[record_rows::SPILLED].get(&field).is_some() => false,
+            Some(item) if continued(item, &field, &value, &note, |start| streamed(&tid, &iid, &field, start))? => {
+                item[field.as_str()] = value;
+                if !item[record_rows::SPILLED].is_object() {
+                    item[record_rows::SPILLED] = json!({});
+                }
+                item[record_rows::SPILLED][field.as_str()] = note;
+                false
+            }
+            Some(item) => {
+                if let Some(notes) = item.get_mut(record_rows::SPILLED).and_then(Value::as_object_mut) {
+                    notes.remove(&field);
+                    if notes.is_empty() {
+                        item.as_object_mut().unwrap().remove(record_rows::SPILLED);
+                    }
+                }
+                true
+            }
+            None => true,
+        };
+        if changed {
+            replaced.push((tid, iid, field));
+        }
     }
+    Ok(replaced)
 }
 
-/// A damaged record as readers see it (see `recover`): marked with what
-/// happened and how to recover; an Agent with nothing but its ID if nothing
-/// of it can be read. Only this Agent is affected.
-fn stand_in(db: &Connection, id: &str, damage: &Damaged) -> Result<AgentDetail> {
-    let recovered = recover(db, id)?;
-    let note = damage_note(db, damage, recovered.as_ref().map(|(_, how)| how));
-    let mut detail = match recovered {
-        Some((detail, _)) => detail,
-        None => serde_json::from_value(json!({"agent":{"id":id,"name":id,"cwd":"","model":"","color":"sage",
-            "status":"error","createdAt":"","updatedAt":"","unreadCount":0,"pendingCount":0,"lastSeq":0,
-            "reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]}))?,
-    };
-    detail.agent.status = "error".into();
-    detail.agent.error = Some(note);
-    Ok(detail)
+/// Whether `item`'s `field` is the text that streamed into it: the start
+/// its `note` counts (compared by `streamed`), then the end it held. Only a
+/// command's output: a message's text is read whole where it is stored
+/// (search, the rail, its completed text), so it is written whole.
+fn continued(item: &Value, field: &str, held: &Value, note: &Value, streamed: impl FnOnce(&str) -> Result<bool>) -> Result<bool> {
+    if item["type"] != "commandExecution" || field != "aggregatedOutput" {
+        return Ok(false);
+    }
+    let (Some(text), Some(end), Some(start)) = (item[field].as_str(), held.as_str(), note["bytes"].as_u64()) else { return Ok(false) };
+    let start = start as usize;
+    if text.len() != start + end.len() || !text.is_char_boundary(start) || &text[start..] != end {
+        return Ok(false);
+    }
+    streamed(&text[..start])
 }
 
-/// What a damaged record's Agent says, and how to recover it.
-fn damage_note(db: &Connection, damage: &Damaged, shown: Option<&Recovery>) -> String {
-    let shown = match shown {
-        Some(Recovery::Original { converted_at }) => format!(
-            "现在显示的是转换时（{converted_at}）的记录加上日志重放，之后的部分变更可能缺失。"),
-        Some(Recovery::WithoutTurns) => "现在只显示它的设置，没有对话记录。".into(),
-        None => String::new(),
-    };
-    let backup = record_rows::recorded_backup(db).ok().flatten()
-        .map(|path| format!("，或停止 Core 后用转换前的备份 {path} 替换 workspace.sqlite（之后的全部变更都会丢失）"))
-        .unwrap_or_default();
-    format!("{damage}。其他 Agent 不受影响；此 Agent 暂不写入。{shown}恢复：停止 Core 后运行 \
-        `yuzuno-workspace --revert-record-rows` 把所有记录存回整行（此 Agent 保留能读出的全部 Turn 和 Item，缺失处会标出，\
-        原有的记录行另存在 agent_salvage 中）{backup}。")
+/// The Turn an event names by ID, if it does.
+fn named_turn(data: &Value) -> Vec<String> {
+    data["turnId"].as_str().or_else(|| data["turn"]["id"].as_str()).map(str::to_owned).into_iter().collect()
+}
+
+/// The Items an event names, by Turn when it says which: what must be in
+/// memory, not in a gap, before it is applied (`load_named`).
+fn event_items(db: &Connection, id: &str, kind: &str, data: &Value) -> Result<Vec<(String, String)>> {
+    let turn = data["turnId"].as_str().or_else(|| data["turn"]["id"].as_str()).map(str::to_owned);
+    let mut ids: Vec<String> = Vec::new();
+    for value in [&data["itemId"], &data["item"]["id"]] {
+        ids.extend(value.as_str().map(str::to_owned));
+    }
+    for item in data["turn"]["items"].as_array().into_iter().flatten() {
+        ids.extend(item["id"].as_str().map(str::to_owned));
+    }
+    let mut found = Vec::new();
+    if kind.starts_with("claude/") {
+        let event = &data["event"];
+        for value in [&event["parent_tool_use_id"], &event["tool_use_id"], &event["message"]["id"]] {
+            ids.extend(value.as_str().map(str::to_owned));
+        }
+        for block in event["message"]["content"].as_array().into_iter().flatten() {
+            for value in [&block["id"], &block["tool_use_id"]] {
+                ids.extend(value.as_str().map(str::to_owned));
+            }
+        }
+        if let Some(task) = event["task_id"].as_str() {
+            found.extend(record_rows::keyed(db, id, "task", task)?);
+        }
+        // Claude's Items are found in whichever Turn holds them.
+        for item in ids {
+            if let Some(turn) = record_rows::item_turn(db, id, &item)? {
+                found.push((turn, item));
+            }
+        }
+        return Ok(found);
+    }
+    if let Some(turn) = turn {
+        found.extend(ids.into_iter().map(|item| (turn.clone(), item)));
+    }
+    Ok(found)
+}
+
+/// The receipts of `after` that differ from `before` (or are new).
+fn changed_receipts<'a>(before: &[MessageReceipt], after: &'a [MessageReceipt]) -> Vec<&'a MessageReceipt> {
+    let old: HashMap<&str, &MessageReceipt> = before.iter().map(|r| (r.input.client_message_id.as_str(), r)).collect();
+    after.iter().filter(|r| old.get(r.input.client_message_id.as_str()).is_none_or(|was| {
+        serde_json::to_value(was).ok() != serde_json::to_value(r).ok()
+    })).collect()
 }
 
 /// What a Core that stopped leaves an Agent's record saying (`Store::open`):
@@ -977,61 +1025,14 @@ fn mark_restarted(d: &mut AgentDetail, newest_in_progress: bool) {
     }
     d.agent.connection_state = "disconnected".into();
     // An unknown RPC outcome stays unknown across service restarts.
-    // In particular, thread/start may have executed before its reply
-    // was lost; silently creating another session would duplicate it.
-    if d.agent.status != "uncertain" {d.agent.status = "offline".into();}
+    if d.agent.status != "uncertain" { d.agent.status = "offline".into(); }
     for r in &mut d.pending { r.stale = true; }
     if newest_in_progress {
         d.agent.error = Some("Workspace 服务已重启；上次执行是否完成尚未确认。发送新消息时将恢复原会话。".into());
     }
 }
 
-/// Whether the journal has rows after `seq` that loading this record would
-/// replay (see `restore`).
-fn replays(db: &Connection, id: &str, seq: i64) -> Result<bool> {
-    let mut query = db.prepare_cached("SELECT kind,data FROM journal WHERE agent_id=?1 AND seq>?2")?;
-    let rows = query.query_map(params![id, seq], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-    for row in rows {
-        let (kind, data) = row?;
-        if replayed(&kind, &serde_json::from_str(&data)?) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// `Store::conversation_search` over a record stored as rows: the window's
-/// index and each message's row, read in order until the search has 50
-/// results. None where the rows do not give what `client_detail` reads:
-/// journaled changes to Turns or Items they lack, or rows that do not
-/// assemble (`Damaged`), which `client_detail` then reports as before.
-fn search_rows(db: &Connection, id: &str, query: &str)
-    -> Result<Option<(Vec<Value>, Vec<record_rows::window::Fill>)>> {
-    use crate::conversation_window::Search;
-    let read = || -> Result<Option<_>> {
-        let record_rows::window::Index { detail, keys, fills, mut stats } = record_rows::window::index(db, id)?;
-        if replays(db, id, detail.agent.last_seq)? { return Ok(None); }
-        let mut search = Search::new(query).expect("searchable");
-        'turns: for (t, turn) in detail.turns.iter().enumerate() {
-            for (i, item) in turn["items"].as_array().into_iter().flatten().enumerate() {
-                if !Search::reads(item) { continue; }
-                let item = record_rows::window::item(db, id, &keys[t].0, &keys[t].1[i], false, &mut stats)?;
-                if !search.item(t, &turn["id"], &item) { break 'turns; }
-            }
-        }
-        Ok(Some((search.results, fills)))
-    };
-    match read() {
-        Err(e) if e.is::<Damaged>() => Ok(None),
-        result => result,
-    }
-}
-
-/// The Workspace's exclusive lock, held as long as the file stays open. A
-/// second Core must not mark the first Core's running Agents offline merely
-/// because it uses another port, and records are not converted (or
-/// reverted) under a running Core. The file is read-only while older Cores
-/// are kept out (older_cores.rs); the lock needs no write access.
+/// The Workspace's exclusive lock, held as long as the file stays open.
 pub(crate) fn lock_workspace(path: &Path) -> Result<File> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1051,95 +1052,6 @@ pub(crate) fn lock_workspace(path: &Path) -> Result<File> {
         "此 Workspace 已被另一个 Core 使用，或无法取得独占锁；请连接现有 Core，或使用另一个数据目录",
     )?;
     Ok(lock)
-}
-
-/// Whether `restore` applies a journal row to the record's Turns or Items: a
-/// replayed row other than a read mark.
-fn applied(kind: &str, data: &Value) -> bool {
-    kind != "workspace/reviewed" && replayed(kind, data)
-}
-
-/// Whether the journal has a row after `seq` that `restore` applies.
-fn applies(db: &Connection, id: &str, seq: i64) -> Result<bool> {
-    let mut query = db.prepare_cached("SELECT kind,data FROM journal WHERE agent_id=?1 AND seq>?2")?;
-    let rows = query.query_map(params![id, seq], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-    for row in rows {
-        let (kind, data) = row?;
-        if applied(&kind, &serde_json::from_str(&data)?) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// Applies what was journaled after the record was last written: deferred
-/// events whose record write had not happened yet (Core was killed, or the
-/// write failed) and read marks. Every other event is written together with
-/// its record, so nothing else can be missing. Each event is applied as of
-/// its journal time, exactly as it was live. Ephemeral kinds are journaled
-/// only when they changed what Core acts on, and then with their record;
-/// rows of them that earlier builds journaled are replayed too, so their
-/// text survives an upgrade after a crash. Evidence is never applied.
-/// Returns what replaying changed: the record's rows lack it.
-///
-/// An event whose replay panics (a bug in applying it) is skipped: replay
-/// starts over from the record as loaded without it, and the Agent shows an
-/// error naming it. The record stays readable and writable; it is not
-/// `Damaged`, whose rows do not assemble.
-fn restore(db: &Connection, id: &str, detail: &mut AgentDetail) -> Result<Dirty> {
-    let rows: Vec<(i64, String, Value, String)> = {
-        let mut query = db.prepare_cached("SELECT seq,kind,data,at FROM journal WHERE agent_id=?1 AND seq>?2 ORDER BY seq")?;
-        let rows = query.query_map(params![id, detail.agent.last_seq], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
-        })?;
-        rows.map(|row| {
-            let (seq, kind, data, at) = row?;
-            Ok((seq, kind, serde_json::from_str(&data)?, at))
-        }).collect::<Result<_>>()?
-    };
-    // Kept only when there is something to apply, to start over from.
-    let loaded = rows.iter().any(|(_, kind, data, _)| applied(kind, data)).then(|| detail.clone());
-    let mut skipped: Vec<(i64, String)> = Vec::new();
-    loop {
-        let mut replayed = Dirty::default();
-        let mut reviewed = false;
-        let mut panicked = None;
-        for (seq, kind, data, at) in &rows {
-            if kind == "workspace/reviewed" {
-                let through = data["throughSeq"].as_i64().unwrap_or(0);
-                if through > detail.agent.reviewed_seq {
-                    detail.agent.reviewed_seq = through;
-                    reviewed = true;
-                }
-            } else if applied(kind, data) && !skipped.iter().any(|(skip, _)| skip == seq) {
-                let replay = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    apply_streamed(detail, Some(*seq), kind, data, journal_time(at));
-                }));
-                if replay.is_err() {
-                    panicked = Some((*seq, kind.clone()));
-                    break;
-                }
-                replayed.merge(Dirty::of_applied(detail, kind, data));
-            }
-        }
-        if let Some(event) = panicked {
-            eprintln!("Workspace skipped event #{} ({}) of Agent {id}: replaying it failed", event.0, event.1);
-            skipped.push(event);
-            *detail = loaded.clone().expect("kept when there are events to apply");
-            continue;
-        }
-        if reviewed { detail.agent.unread_count = unread(db, id, detail.agent.reviewed_seq)?; }
-        if !skipped.is_empty() {
-            let events: Vec<String> = skipped.iter().map(|(seq, kind)| format!("#{seq}（{kind}）")).collect();
-            detail.agent.error = Some(format!("Workspace 无法重放事件 {}，已跳过；此 Agent 的记录可能缺少这些事件的内容。", events.join("、")));
-            // Past them, so the record written next does not replay them
-            // again; what they would have changed was never applied.
-            if let Some(last) = skipped.iter().map(|(seq, _)| *seq).max() {
-                detail.agent.last_seq = detail.agent.last_seq.max(last);
-            }
-        }
-        return Ok(replayed);
-    }
 }
 
 /// A saved-body page and its complete navigation metadata. Read statistics are
@@ -1175,72 +1087,92 @@ fn project_window(
     }))
 }
 
+/// `project_window` of a sparse index (`record_rows::window::sparse`): the
+/// Turns hold only the Items every window lists, at positions `ords`.
+#[allow(clippy::too_many_arguments)]
+fn project_window_marked(
+    db: &Connection, mut index: AgentDetail, ords: &[Vec<usize>], counts: &[usize], query: &crate::conversation_window::Query,
+    position: impl FnMut(usize, &str) -> Result<Option<usize>>, mut read: impl FnMut(usize, usize) -> Result<Value>,
+) -> Result<std::result::Result<(AgentDetail, Value), crate::client_view::Missing>> {
+    crate::mailbox_notice::annotate(db, &mut index)?;
+    crate::codex_sessions::annotate_imported_questions_in(db, &mut index)?;
+    index.agent.project_id = crate::projects::agent_project(db, &index.agent.id)?;
+    let found = crate::conversation_window::project_marked(&index.turns, ords, counts, query, position, |t, i| {
+        let mut item = crate::client_view::item_owned(read(t, i)?, &index.pending);
+        // The index has been annotated from this snapshot: its provenance on
+        // the body too, before sizing it.
+        if let Some(object) = item.as_object_mut() {
+            object.remove("_yuzunoMailbox");
+            let listed = ords[t].iter().position(|ord| *ord == i).map(|k| &index.turns[t]["items"][k]);
+            for key in ["_yuzunoSource", "_yuzunoMailbox"] {
+                if let Some(value) = listed.and_then(|entry| entry.get(key)) { object.insert(key.into(), value.clone()); }
+            }
+        }
+        Ok(item)
+    })?;
+    Ok(found.map(|(turns, metadata)| {
+        index.turns = turns;
+        (crate::client_view::detail(index), metadata)
+    }))
+}
 
 /// The completion check (`completed_before`, `record_recovered_completion`)
-/// looks a Turn's completion up by Agent and Turn ID. Without this index it
-/// reads every turn/completed row of the Agent, each with its whole Turn
-/// (T-140). The index has that query's own terms, so it only speeds it up:
-/// the query and what it finds are the same with or without it.
+/// looks a Turn's completion up by Agent and Turn ID.
 const COMPLETION_INDEX: &str = "CREATE INDEX IF NOT EXISTS journal_turn_completed
     ON journal(agent_id, json_extract(data,'$.turn.id')) WHERE kind='turn/completed'";
-/// The completion index build's time target as the Workspace opens, checked
-/// by its progress handler (see `completion_index`); not a limit on opening.
-const COMPLETION_INDEX_BUDGET: Duration = Duration::from_secs(2);
-/// SQLite virtual-machine steps between two checks of that budget.
-const COMPLETION_INDEX_STEPS: i32 = 1000;
 /// The busy timeout of every Store connection.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// What `completion_index` found or did.
-#[derive(Debug, PartialEq)]
-enum CompletionIndex {
-    /// It was there already: nothing was read or made.
-    Present,
-    /// Made now.
-    Made,
-    /// Not made, and why. Completions are looked up by reading the journal,
-    /// as before.
-    Missing(String),
+/// `conversation_window::Search` over an Agent's rows: the window's index
+/// and each message's row, read in order until the search has 50 results.
+fn search_rows(db: &Connection, id: &str, query: &str) -> Result<(Vec<Value>, Vec<record_rows::window::Fill>)> {
+    use crate::conversation_window::Search;
+    ensure!(record_rows::rows_fit(db, id)?, Damaged { agent: id.into(), cause: "its rows do not fit together".into() });
+    let mut search = Search::new(query).expect("searchable");
+    // Turn by Turn, one message at a time: never every Item at once (T-140).
+    for (t, turn) in record_rows::turn_ids(db, id)?.iter().enumerate() {
+        let tid = Value::from(turn.as_str());
+        if !record_rows::window::messages(db, id, turn, |item| Ok(search.item(t, &tid, &item)))? {
+            break;
+        }
+    }
+    Ok((search.results, Vec::new()))
 }
 
-/// Makes the completion index if it is missing: once, as the Workspace opens
-/// and before any other connection or background work. It is only a
-/// speed-up, so it never keeps the Workspace from opening. The index build
-/// waits for no lock: it runs with no busy timeout. The check whether the
-/// index is there, before it, keeps the connection's busy timeout, as the
-/// rest of opening does. The build stops once `budget` has passed, as SQLite
-/// checks that every COMPLETION_INDEX_STEPS steps of its virtual machine: a
-/// target for the build, not a bound on one step, on I/O, on the rollback or
-/// on opening the Workspace. When it
-/// stops or fails (a row whose data is not JSON, a full disk, a locked
-/// database), SQLite rolls the statement back and no part of the index is
-/// left. The busy timeout is restored and the progress handler removed on
-/// every path; failing to do that is the only error returned.
-fn completion_index(db: &Connection, budget: Duration) -> Result<CompletionIndex> {
-    let present = db.query_row("SELECT 1 FROM sqlite_master WHERE type='index' AND name='journal_turn_completed'", [], |_| Ok(()))
-        .optional();
-    match present {
-        Ok(Some(())) => return Ok(CompletionIndex::Present),
-        Ok(None) => {}
-        Err(error) => return Ok(CompletionIndex::Missing(format!("not checked: {error}"))),
+/// The Turn an event changes, for loading it before it is applied: the one
+/// it names, or, for a Claude sub-agent's frame or task event, the one
+/// holding the call that started it (found by its keys, not by reading every
+/// Turn).
+fn event_turns(db: &Connection, id: &str, kind: &str, data: &Value) -> Result<Vec<String>> {
+    let mut turns = named_turn(data);
+    if kind.starts_with("claude/") {
+        let event = &data["event"];
+        if let Some(call) = event["parent_tool_use_id"].as_str().or_else(|| {
+            crate::claude::subagent_event(event).then(|| event["tool_use_id"].as_str()).flatten()
+        }) {
+            turns.extend(record_rows::item_turn(db, id, call)?);
+        }
+        if let Some(task) = event["task_id"].as_str().filter(|_| crate::claude::subagent_event(event)) {
+            turns.extend(record_rows::keyed(db, id, "task", task)?.into_iter().map(|(turn, _)| turn));
+        }
+        // A tool result names its call, which may be in another Turn.
+        for block in event["message"]["content"].as_array().into_iter().flatten() {
+            if let Some(call) = block["tool_use_id"].as_str() {
+                turns.extend(record_rows::item_turn(db, id, call)?);
+            }
+        }
     }
-    let deadline = Instant::now() + budget;
-    let made = db.busy_timeout(Duration::ZERO)
-        .and_then(|()| db.progress_handler(COMPLETION_INDEX_STEPS, Some(move || Instant::now() >= deadline)))
-        .and_then(|()| db.execute_batch(COMPLETION_INDEX));
-    db.progress_handler(0, None::<fn() -> bool>)?;
-    db.busy_timeout(BUSY_TIMEOUT)?;
-    Ok(match made {
-        Ok(()) => CompletionIndex::Made,
-        Err(error) => CompletionIndex::Missing(error.to_string()),
-    })
+    Ok(turns)
 }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let workspace_lock = lock_workspace(path)?;
-        let mut db = Connection::open(path)?;
+        let db = Connection::open(path)?;
         db.busy_timeout(BUSY_TIMEOUT)?;
+        // An earlier Core's Workspace is refused before anything is written
+        // to it (docs/adr/0002-session-store-new-data-directory.md).
+        record_rows::check_store(&db)?;
         // FULL is SQLite's default; stated because the writer's unsynced
         // connection uses NORMAL and this one must never (see `db`).
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;
@@ -1250,6 +1182,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS workspace_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS machines(id TEXT PRIMARY KEY, data TEXT NOT NULL);
             PRAGMA user_version=2;")?;
+        record_rows::mark_store(&db)?;
         crate::collaboration_store::migrate(&db)?;
         crate::projects::migrate(&db)?;
         crate::services::migrate(&db)?;
@@ -1268,44 +1201,13 @@ impl Store {
         crate::brief_turns::migrate(&db)?;
         crate::task_workspaces::migrate(&db)?;
         record_rows::migrate(&db)?;
-        // Records stored whole (by an older Core) become rows, before any
-        // other connection is open. One that cannot is left whole, and Core
-        // keeps working with it.
-        match record_rows::convert(&mut db, path) {
-            Ok(done) => {
-                if let Some(backup) = &done.backup {
-                    eprintln!("Workspace copied to {} before converting its records", backup.display());
-                }
-                if !done.converted.is_empty() {
-                    eprintln!("Workspace stores {} more Agent records as rows", done.converted.len());
-                }
-                for (id, error) in &done.failed {
-                    eprintln!("Workspace record of Agent {id} stays whole: {error}");
-                }
-            }
-            Err(error) => eprintln!("Workspace records not converted to rows yet: {error:#}"),
-        }
-        if let Err(error) = record_rows::expire_originals(&db) {
-            eprintln!("Workspace could not forget old pre-conversion records: {error:#}");
-        }
+        db.execute_batch(COMPLETION_INDEX)?;
         db.execute("INSERT OR IGNORE INTO workspace_meta(key,value) VALUES('workspaceId',?1)",
             [uuid::Uuid::new_v4().to_string()])?;
-        // Before `Db` opens the other connections (see completion_index).
-        let started = Instant::now();
-        match completion_index(&db, COMPLETION_INDEX_BUDGET)? {
-            CompletionIndex::Present => {}
-            CompletionIndex::Made if started.elapsed() >= Duration::from_millis(100) => {
-                eprintln!("Workspace indexed its Turn completions in {} ms", started.elapsed().as_millis());
-            }
-            CompletionIndex::Made => {}
-            CompletionIndex::Missing(reason) => {
-                eprintln!("Workspace Turn completions stay unindexed ({reason}); they are looked up by reading the journal");
-            }
-        }
         let store = Self {
             db: crate::db::Db::new(path, db)?,
             memory: Mutex::new(Memory {
-                held: HashMap::new(),
+                hot: HashMap::new(),
                 briefs: HashMap::new(),
                 announce: HashSet::new(),
                 versions: HashMap::new(),
@@ -1320,88 +1222,51 @@ impl Store {
         // Disk is historical evidence, never proof a process is still running.
         for a in store.agents()? {
             if a.closed_at.is_some() { continue; }
-            // Usually only the metadata changes: written alone, without
-            // reading the record (see `restart_meta_only`). Otherwise, or if
-            // that fails, the whole record is read and committed, as before.
-            if store.restart_meta_only(&a.id).unwrap_or(false) { continue; }
-            // A damaged record is shown as it is (see `stand_in`) and holds
-            // back no other Agent.
-            let restarted = store.record_meta_change(&a.id, "workspace/restarted", &json!({}), |d| {
-                let newest_in_progress = d.turns.last().is_some_and(|t| t["status"] == "inProgress");
-                mark_restarted(d, newest_in_progress);
-            });
-            if let Err(error) = restarted {
+            if let Err(error) = store.mark_restarted(&a.id) {
                 eprintln!("Workspace could not mark Agent {} restarted: {error:#}", a.id);
             }
-            // Just written and nothing streams yet: released, so opening
-            // holds one record at a time, not every open Agent's (T-140).
-            store.release(&a.id);
         }
         store.settle_older_cores();
         Ok(store)
     }
 
-    /// `Store::open`'s restart marking written as the metadata alone, when
-    /// that is all the whole-record commit would write (T-140): the record is
-    /// stored as rows and fits together, the journal has nothing to replay
-    /// into it, no message is still being sent, and binding and restoring its
-    /// receipts against its user messages (all `message_content::bind` reads)
-    /// would change nothing. Reads the metadata, the user messages and the
-    /// newest Turn's own fields, not the record. The journal row, last_seq,
-    /// unread count and metadata are written in one transaction as that
-    /// commit writes them; the listed view is rebuilt from the rows when next
-    /// read. Returns false, having written nothing, when the record is needed.
-    fn restart_meta_only(&self, id: &str) -> Result<bool> {
+    /// `Store::open`'s restart marking: the metadata, the receipts still
+    /// being sent and the newest Turn's status are all it reads, and it
+    /// changes only the metadata and those receipts.
+    fn mark_restarted(&self, id: &str) -> Result<()> {
         let lock = self.record_lock(id);
         let _record = lock.lock();
-        if self.held(id).is_some() || self.memory.lock().unwrap().damaged.contains(id) {
-            return Ok(false);
-        }
         let (mut d, newest_in_progress) = {
             let db = self.db.read()?;
-            if record_rows::layout(&db, id)? != Some(Layout::Rows) || !record_rows::rows_fit(&db, id)? {
-                return Ok(false);
-            }
-            let Some(meta) = record_rows::load_meta(&db, id)? else { return Ok(false) };
-            // A message being sent when Core stopped is left to the whole
-            // record's commit, as it always was.
-            if meta.message_receipts.iter().any(|r| r.status == "sending") || replays(&db, id, meta.agent.last_seq)? {
-                return Ok(false);
-            }
-            let (users, newest_in_progress) = record_rows::restart_view(&db, id)?;
-            let mut bound = meta.message_receipts.clone();
-            crate::message_content::bind_receipts(&users, &mut bound);
-            if bound.iter().zip(&meta.message_receipts).any(|(after, before)| after.binding != before.binding)
-                || crate::message_content::restoring(&users, &bound, false)
-            {
-                return Ok(false);
-            }
-            (meta, newest_in_progress)
+            let mut d = record_rows::load_meta(&db, id)?.context("Agent 不存在")?;
+            d.message_receipts = record_rows::open_receipts(&db, id)?;
+            let newest = record_rows::newest_turns(&db, id, 1)?;
+            let in_progress = !newest.is_empty() && record_rows::open_turns(&db, id)?.last() == newest.last();
+            (d, in_progress)
         };
+        let before = d.message_receipts.clone();
         mark_restarted(&mut d, newest_in_progress);
         d.agent.pending_count = d.pending.len() as u64;
         d.agent.updated_at = now();
+        let receipts = changed_receipts(&before, &d.message_receipts);
         let body = record_rows::MetaBody::of(&d)?;
-        let data = json!({});
         let rewrite;
         {
             let mut db = self.db.write()?;
             rewrite = self.rewrite(id);
             let tx = db.transaction()?;
-            tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,'workspace/restarted',?2,?3)",
-                params![id, data.to_string(), now()])?;
+            tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,'workspace/restarted','{}',?2)", params![id, now()])?;
             d.agent.last_seq = tx.last_insert_rowid();
             d.agent.unread_count = unread(&tx, id, d.agent.reviewed_seq)?;
             record_rows::write_meta(&tx, id, &body, &d.agent)?;
+            record_rows::write_receipts(&tx, id, &receipts)?;
             tx.commit()?;
         }
-        #[cfg(test)]
-        RESTARTED_META_ONLY.with(|n| n.set(n.get() + 1));
         rewrite.done(|memory| {
-            memory.event(id, "workspace/restarted", &data);
+            memory.event(id, "workspace/restarted", &json!({}));
             memory.briefs.remove(id);
         });
-        Ok(true)
+        Ok(())
     }
 
     /// The Agent's record lock (see the lock order on `Store`).
@@ -1410,46 +1275,29 @@ impl Store {
     }
 
     /// Starts a write of the Agent's rows (see `Rewrite`): call it with the
-    /// record lock and the writer held, right before the transaction, so
-    /// readers of the Agent wait for no more than the write itself.
+    /// record lock and the writer held, right before the transaction.
     fn rewrite<'a>(&'a self, id: &'a str) -> Rewrite<'a> {
         self.memory.lock().unwrap().bump_version(id);
         Rewrite { store: self, id, done: false }
     }
 
-    /// After a change to an Agent was refused because its record is damaged:
-    /// lists it as readers are shown it (see `stand_in`), so the damage is
-    /// seen without opening it. The listed view is otherwise built from the
-    /// newest Turn alone, which may be intact.
-    fn list_damaged(&self, id: &str, error: &anyhow::Error) {
-        if error.downcast_ref::<Damaged>().is_none() || self.held(id).is_some() {
-            return;
-        }
-        self.memory.lock().unwrap().damaged.insert(id.into());
-        // In full: what made the change fail (a payload row, say) may not be
-        // read without payloads.
-        let shown = self.db.read().map_err(anyhow::Error::from)
-            .and_then(|db| read_record(&db, id, true));
-        if let Ok(Some(shown)) = shown {
-            let mut listed = brief(&shown.detail);
-            let mut memory = self.memory.lock().unwrap();
-            listed.agent.rev = memory.rev(id);
-            memory.briefs.insert(id.into(), listed);
-        }
-    }
-
-    /// Remembers what a read found: a damaged record is never changed (see
-    /// `Memory::damaged`).
-    fn seen(&self, id: &str, shown: Shown) -> AgentDetail {
-        if shown.damaged {
+    /// After a read or change found the Agent's rows damaged: no change is
+    /// made to it in this process.
+    fn note_damage(&self, id: &str, error: &anyhow::Error) {
+        if error.downcast_ref::<Damaged>().is_some() {
             self.memory.lock().unwrap().damaged.insert(id.into());
         }
-        shown.detail
     }
 
-    /// The Agent's held record, if it streams.
-    fn held(&self, id: &str) -> Option<Arc<RwLock<AgentDetail>>> {
-        self.memory.lock().unwrap().held.get(id).map(|held| held.detail.clone())
+    fn ensure_undamaged(&self, id: &str) -> Result<()> {
+        ensure!(!self.memory.lock().unwrap().damaged.contains(id),
+            "Agent {id} 的记录无法读取，此 Agent 暂不写入；其他 Agent 不受影响");
+        Ok(())
+    }
+
+    /// The Agent's hot slice, if it is in memory.
+    fn hot(&self, id: &str) -> Option<Arc<RwLock<AgentDetail>>> {
+        self.memory.lock().unwrap().hot.get(id).map(|hot| hot.slice.clone())
     }
 
     /// A requested project is linked in the same transaction, so a new Agent
@@ -1459,9 +1307,7 @@ impl Store {
     }
 
     /// A newly created Agent, refused if its SSH machine is no longer
-    /// registered. Creation reads the machine and then waits on SSH; checked
-    /// in the insert's transaction, a removal in between cannot leave the
-    /// Agent on a machine the workspace no longer lists (see remove_machine).
+    /// registered.
     pub fn insert_created(&self, detail: &AgentDetail) -> Result<()> {
         self.insert_record(detail, true)
     }
@@ -1494,6 +1340,8 @@ impl Store {
             tx.commit()?;
         }
         rewrite.done(|memory| memory.changed(&detail.agent.id));
+        // An Agent's session keeps older Cores out (`older_core_hazard`).
+        self.keep_older_cores_out_now();
         Ok(())
     }
 
@@ -1507,12 +1355,10 @@ impl Store {
             let mut db = self.db.write()?;
             rewrite = self.rewrite(id);
             let tx = db.transaction()?;
-            // Closed or not, read without parsing the record.
             let closed: bool = tx.query_row("SELECT json_extract(data,'$.agent.closedAt') IS NOT NULL FROM agents WHERE id=?1",
                 [id], |r| r.get(0))?;
             anyhow::ensure!(closed, "请先关闭 Agent，再删除 Workspace 记录");
             record_rows::delete_rows(&tx, id)?;
-            tx.execute("DELETE FROM agent_originals WHERE agent_id=?1", [id])?;
             tx.execute("DELETE FROM journal WHERE agent_id=?1", [id])?;
             tx.execute("DELETE FROM agents WHERE id=?1", [id])?;
             crate::results::delete_agent(&tx, id)?;
@@ -1522,14 +1368,13 @@ impl Store {
             tx.commit()?;
         }
         rewrite.done(|memory| {
-            memory.held.remove(id);
+            memory.hot.remove(id);
             memory.briefs.remove(id);
             memory.announce.remove(id);
             memory.evidence.remove(id);
             memory.damaged.remove(id);
             memory.changed(id);
         });
-        // Nothing changes it again; one still waiting keeps its own.
         self.records.lock().unwrap().remove(id);
         Ok(())
     }
@@ -1558,7 +1403,6 @@ impl Store {
         let raw: Option<String> = tx.query_row(
             "SELECT data FROM machines WHERE id=?1", [&machine.id], |r| r.get(0)).optional()?;
         let before: RemoteMachine = serde_json::from_str(&raw.context("远程机器不存在")?)?;
-        // A Job that runs there is bound to the machine that answered it.
         if before.target != machine.target && machine_jobs(&tx, &machine.id)? > 0 {
             bail!("Jobs still run on this machine; change its SSH destination once they finish");
         }
@@ -1574,8 +1418,7 @@ impl Store {
     }
 
     /// Removes a machine and its last check. Refused while an open Agent works
-    /// there or an unfinished Job runs there, checked in the same transaction
-    /// as the delete. Closed Agents keep their own copy of the machine.
+    /// there or an unfinished Job runs there.
     pub fn remove_machine(&self, id: &str) -> Result<()> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
@@ -1612,185 +1455,277 @@ impl Store {
         Ok(serde_json::from_str(&raw.context("远程机器不存在")?)?)
     }
 
-    pub fn detail(&self, id: &str) -> Result<AgentDetail> {
-        #[cfg(test)]
-        {
-            DETAIL_READS.with(|n| n.set(n.get() + 1));
-            *DETAIL_READS_OF.lock().unwrap().get_or_insert_with(HashMap::new)
-                .entry((self as *const Self as usize, id.into())).or_default() += 1;
+    /// Writes an active Agent's streamed output its rows lack, if any, so a
+    /// read of the rows sees it.
+    fn settle_unwritten(&self, id: &str) -> Result<()> {
+        let unwritten = self.memory.lock().unwrap().hot.get(id).is_some_and(|hot| hot.unwritten_since.is_some());
+        if !unwritten {
+            return Ok(());
         }
-        self.detail_racing(id, || {})
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        self.write_unwritten(id)
     }
 
-    /// This Store's whole reads of `id` (see `DETAIL_READS_OF`).
-    #[cfg(test)]
-    pub(crate) fn detail_reads(&self, id: &str) -> u64 {
-        DETAIL_READS_OF.lock().unwrap().as_ref()
-            .and_then(|reads| reads.get(&(self as *const Self as usize, id.to_owned())).copied()).unwrap_or(0)
-    }
-
-    /// What a send checks, without copying the rest of the record: the Agent,
-    /// its receipts, pending requests and other small fields as `detail` has
-    /// them, and each Turn without its Items except the async questions an
-    /// answer names. A held record is read under its read lock (it is held
-    /// after every commit); one that is not, idle for a while, from its rows
-    /// without payloads, which no check reads, a Turn at a time and keeping
-    /// only those Items (`read_send`). Never written back.
-    pub fn send_view(&self, id: &str) -> Result<AgentDetail> {
-        let mut view = match self.held(id) {
-            Some(held) => send_view_of(&held.read()),
-            None => send_view_of(&self.current(id, View::Send, &mut || {})?),
-        };
-        view.agent.project_id = self.agent_project(id)?;
-        Ok(view)
-    }
-
-    /// The Agent's pending native requests, without copying the rest of the
-    /// record: from the held copy under its read lock, else from its rows
-    /// without payloads (pending requests are metadata, as for `send_view`).
-    pub fn pending(&self, id: &str) -> Result<Vec<PendingRequest>> {
-        match self.held(id) {
-            Some(held) => Ok(held.read().pending.clone()),
-            None => Ok(self.current(id, View::Rows, &mut || {})?.pending),
-        }
-    }
-
-    /// The direct sub-agent `thread` of Agent `id` as its own Turns record it
-    /// (`subagents::recorded_child`), without copying the record: from the
-    /// held copy under its read lock, else from its rows without payloads.
-    /// An Item's IDs are never payloads; a path longer than
-    /// `client_view::TRIM_ABOVE` would be its preview, and it is only a label.
-    pub fn recorded_child(&self, id: &str, thread: &str) -> Result<Option<Value>> {
-        match self.held(id) {
-            Some(held) => Ok(crate::subagents::recorded_child(&held.read(), thread)),
-            None => Ok(crate::subagents::recorded_child(&self.current(id, View::Rows, &mut || {})?, thread)),
-        }
-    }
-
-    /// `detail`, running `unlocked` after a record is assembled and before
-    /// its journal is replayed; tests race writes against the read there.
-    fn detail_racing(&self, id: &str, mut unlocked: impl FnMut()) -> Result<AgentDetail> {
-        let mut detail = self.current(id, View::Payloads, &mut unlocked)?;
-        self.annotate_peer_turns(&mut detail)?;
-        detail.agent.work_summary = crate::rail::project(&detail);
-        detail.agent.project_id = self.agent_project(id)?;
-        Ok(detail)
-    }
-
-    /// What the detail API sends (`client_view::detail`): the copy held in
-    /// memory projected, else the rows without payloads, which already are
-    /// that view (Items a pending request refers to with theirs).
-    pub fn client_detail(&self, id: &str) -> Result<AgentDetail> {
-        let mut detail = self.current(id, View::Rows, &mut || {})?;
-        self.annotate_peer_turns(&mut detail)?;
-        detail.agent.work_summary = crate::rail::project(&detail);
-        detail.agent.project_id = self.agent_project(id)?;
-        self.annotate_imported_questions(&mut detail)?;
-        Ok(crate::client_view::detail(detail))
-    }
-
-    /// `conversation_window::search` of what `client_detail` gives, without
-    /// copying the record. A held record's messages, only what the search
-    /// reads of them, are copied under its read lock and searched after it.
-    /// A record stored as rows is searched from the window's index and its
-    /// messages' rows, read one at a time until there are 50 results. One
-    /// these cannot read (damaged, stored whole, or with journaled changes
-    /// to Turns or Items its rows lack), and a query that finds nothing
-    /// (blank or too long), are searched in `client_detail` as before.
-    pub fn conversation_search(&self, id: &str, query: &str) -> Result<Vec<Value>> {
-        self.conversation_search_racing(id, query, || {})
-    }
-
-    /// `conversation_search`, running `unlocked` after the rows are read and
-    /// before the version is checked again; tests race writes there.
-    fn conversation_search_racing(&self, id: &str, query: &str, mut unlocked: impl FnMut()) -> Result<Vec<Value>> {
-        use crate::conversation_window::{self, Search};
-        if Search::new(query).is_none() {
-            return Ok(conversation_window::search(&self.client_detail(id)?, query));
-        }
+    /// `sel` of an Agent as it is now: its metadata, the Turns selected
+    /// (without payloads; see `Sel`) and their receipts, read in one snapshot
+    /// that holds exactly the changes up to the rev it carries. Streamed
+    /// output only in memory is written first.
+    pub fn view(&self, id: &str, sel: Sel) -> Result<AgentDetail> {
+        self.settle_unwritten(id)?;
         let mut attempt = 0;
         loop {
             let lock = (attempt >= 2).then(|| self.record_lock(id));
             let _record = lock.as_ref().map(|lock| lock.lock());
-            let (held, version, damaged) = {
+            let (version, rev) = {
                 let memory = self.memory.lock().unwrap();
-                (memory.held.get(id).map(|held| held.detail.clone()), memory.version(id), memory.damaged.contains(id))
+                (memory.version(id), memory.rev(id))
             };
-            if let Some(held) = held {
-                // A streamed event waits for the copy, not for the search.
-                let messages: Vec<(usize, Value, Vec<Value>)> = held.read().turns.iter().enumerate()
-                    .map(|(number, turn)| (number, turn["id"].clone(), turn["items"].as_array().into_iter().flatten()
-                        .filter(|item| Search::reads(item)).map(conversation_window::searched).collect()))
-                    .collect();
-                let mut search = Search::new(query).expect("searchable");
-                'turns: for (number, turn, items) in &messages {
-                    for item in items {
-                        if !search.item(*number, turn, item) { break 'turns; }
-                    }
-                }
-                return Ok(search.results);
-            }
             if version % 2 == 1 {
                 attempt += 1;
                 std::thread::yield_now();
                 continue;
             }
-            let found = {
+            let read = {
                 let db = self.db.read()?;
-                if damaged || record_rows::layout(&db, id)? != Some(Layout::Rows) { None } else { search_rows(&db, id, query)? }
+                // With the provenance of mailbox notices, as clients see it.
+                read_slice(&db, id, &sel).and_then(|found| match found {
+                    Some(mut detail) => {
+                        crate::mailbox_notice::annotate(&db, &mut detail)?;
+                        Ok(Some(detail))
+                    }
+                    None => Ok(None),
+                })
             };
-            let Some((results, fills)) = found else {
-                return Ok(conversation_window::search(&self.client_detail(id)?, query));
-            };
-            unlocked();
-            {
-                let memory = self.memory.lock().unwrap();
-                if memory.held.contains_key(id) || memory.version(id) != version {
-                    attempt += 1;
-                    continue;
+            let mut detail = match read {
+                Ok(found) => found.context("Agent 不存在")?,
+                Err(error) => {
+                    self.note_damage(id, &error);
+                    return Err(error);
                 }
+            };
+            if self.memory.lock().unwrap().version(id) != version {
+                attempt += 1;
+                continue;
             }
-            // As for a window read: published only over unchanged rows.
-            if !fills.is_empty() {
-                let mut writer = self.db.write()?;
-                let tx = writer.transaction()?;
-                record_rows::window::fill(&tx, id, fills)?;
-                tx.commit()?;
+            detail.agent.rev = rev;
+            detail.agent.project_id = self.agent_project(id)?;
+            if !matches!(sel, Sel::Meta) {
+                detail.agent.work_summary = crate::rail::project(&detail);
             }
-            return Ok(results);
+            return Ok(detail);
         }
     }
 
-    /// Window reads retain the complete light index, questions and receipts,
-    /// but only copy/decode body candidates. The held path borrows its record;
-    /// the Rows path uses a rebuildable index and exact row keys (also for
-    /// duplicate/missing native IDs). Original and full-detail reads are intact.
+    /// What a send checks: the metadata, the receipts not settled and the
+    /// open and newest Turns (`view` of `Sel::Open`).
+    pub fn send_view(&self, id: &str) -> Result<AgentDetail> {
+        self.view(id, Sel::Open)
+    }
+
+    /// The newest `n` Turns' IDs and statuses, oldest first.
+    pub fn newest_turn_states(&self, id: &str, n: usize) -> Result<Vec<(String, Option<String>)>> {
+        record_rows::newest_turn_states(&*self.db.read()?, id, n)
+    }
+
+    /// One Turn as stored now, without payloads; None if there is none.
+    pub fn turn(&self, id: &str, turn: &str) -> Result<Option<Value>> {
+        self.settle_unwritten(id)?;
+        record_rows::load_turn(&*self.db.read()?, id, turn, false)
+    }
+
+    /// The receipt of the message with this client ID, settled or not.
+    pub fn receipt(&self, id: &str, client: &str) -> Result<Option<MessageReceipt>> {
+        record_rows::receipt(&*self.db.read()?, id, client)
+    }
+
+    /// Whether a message not rejected answers this form (result and form
+    /// ID) or this native question (Turn and Item ID), settled or not.
+    pub fn answered(&self, id: &str, form: Option<(&str, &str)>, question: Option<(&str, &str)>) -> Result<bool> {
+        record_rows::answered(&*self.db.read()?, id, form, question)
+    }
+
+    /// Every receipt of the Agent, one at a time (deleting its images).
+    pub fn each_receipt(&self, id: &str, each: impl FnMut(MessageReceipt)) -> Result<()> {
+        record_rows::each_receipt(&*self.db.read()?, id, each)
+    }
+
+    /// The Turns of the Items with this key (`record_rows::index_keys`),
+    /// newest first.
+    pub fn keyed_turns(&self, id: &str, kind: &str, key: Option<&str>) -> Result<Vec<String>> {
+        self.settle_unwritten(id)?;
+        self.keyed_turns_written(id, kind, key)
+    }
+
+    /// `keyed_turns` once the Agent's streamed output is written: for a
+    /// caller that holds the record lock and wrote it.
+    fn keyed_turns_written(&self, id: &str, kind: &str, key: Option<&str>) -> Result<Vec<String>> {
+        let db = self.db.read()?;
+        Ok(match key {
+            Some(key) => {
+                let mut turns: Vec<String> = Vec::new();
+                for (turn, _) in record_rows::keyed(&db, id, kind, key)? {
+                    if !turns.contains(&turn) { turns.push(turn); }
+                }
+                turns
+            }
+            None => record_rows::keyed_turns(&db, id, kind)?,
+        })
+    }
+
+    /// The Turns a Claude runtime's end changes (T-140): those holding a
+    /// task still able to report and those showing a message not yet
+    /// confirmed (found by their keys), with the open and newest ones.
+    pub fn runtime_end_turns(&self, id: &str) -> Result<Sel> {
+        self.settle_unwritten(id)?;
+        let db = self.db.read()?;
+        let mut turns = record_rows::keyed_turns(&db, id, "running")?;
+        for receipt in record_rows::open_receipts(&db, id)? {
+            turns.extend(record_rows::keyed(&db, id, "client", &receipt.input.client_message_id)?.into_iter().map(|(turn, _)| turn));
+        }
+        Ok(Sel::Turns(turns))
+    }
+
+    /// Every key of this kind the Agent's Items have, oldest first.
+    pub fn keys_of(&self, id: &str, kind: &str) -> Result<Vec<String>> {
+        self.settle_unwritten(id)?;
+        record_rows::keys_of(&*self.db.read()?, id, kind)
+    }
+
+    /// The IDs of every Turn the Agent has, oldest first (IDs only).
+    pub fn turn_ids(&self, id: &str) -> Result<Vec<String>> {
+        record_rows::turn_ids(&*self.db.read()?, id)
+    }
+
+    /// The receipts a slice holding these Turns works with: those not
+    /// settled, and the settled ones kept with these Turns.
+    pub fn receipts_for(&self, id: &str, turns: &[String]) -> Result<Vec<MessageReceipt>> {
+        slice_receipts(&*self.db.read()?, id, turns)
+    }
+
+    /// How many Turns the Agent has.
+    pub fn turn_count(&self, id: &str) -> Result<usize> {
+        record_rows::turn_count(&*self.db.read()?, id)
+    }
+
+    /// Every Turn of the Agent, oldest first, read without payloads and
+    /// handed to `each` one at a time until it says to stop: for the few
+    /// reads that need a whole history (rewind's local archive, a Codex
+    /// history page's saved Turns). Nothing keeps what it reads.
+    pub fn scan(&self, id: &str, each: impl FnMut(Value) -> Result<bool>) -> Result<()> {
+        self.settle_unwritten(id)?;
+        record_rows::scan(&*self.db.read()?, id, false, each)
+    }
+
+    /// What a rewind keeps of the local Turns it removes: the metadata and
+    /// these Turns with their payloads, serialized one Turn at a time (only
+    /// one Turn is held). None past `max` bytes.
+    pub fn archive(&self, id: &str, turns: &[String], max: usize) -> Result<Option<String>> {
+        self.settle_unwritten(id)?;
+        // One snapshot: a read connection holds one until dropped.
+        let db = self.db.read()?;
+        let meta = record_rows::load_meta(&db, id)?.context("Agent 不存在")?;
+        let mut out = format!("{{\"meta\":{},\"turns\":[", serde_json::to_string(&meta)?);
+        let mut first = true;
+        for turn in turns {
+            // A Turn named but not stored adds nothing, not even its comma.
+            for (_, value) in record_rows::load_turns(&db, id, std::slice::from_ref(turn), true)? {
+                if !first { out.push(','); }
+                first = false;
+                out.push_str(&serde_json::to_string(&value)?);
+            }
+            if out.len() > max {
+                return Ok(None);
+            }
+        }
+        out.push_str("]}");
+        Ok((out.len() <= max).then_some(out))
+    }
+
+    /// The Agent's pending native requests.
+    pub fn pending(&self, id: &str) -> Result<Vec<PendingRequest>> {
+        if let Some(hot) = self.hot(id) {
+            return Ok(hot.read().pending.clone());
+        }
+        Ok(record_rows::load_meta(&*self.db.read()?, id)?.context("Agent 不存在")?.pending)
+    }
+
+    /// The direct sub-agent `thread` of Agent `id` as its own Turns record it
+    /// (`subagents::recorded_child`), found by its key.
+    pub fn recorded_child(&self, id: &str, thread: &str) -> Result<Option<Value>> {
+        self.settle_unwritten(id)?;
+        let db = self.db.read()?;
+        for (turn, item) in record_rows::keyed(&db, id, "child", thread)? {
+            if let Some(found) = record_rows::load_item(&db, id, Some(&turn), &item, false)? {
+                let mut detail = AgentDetail { turns: vec![found], ..record_rows::load_meta(&db, id)?.context("Agent 不存在")? };
+                detail.turns.truncate(1);
+                if let Some(child) = crate::subagents::recorded_child(&detail, thread) {
+                    return Ok(Some(child));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// What the detail API sends: the client window, newest first (see
+    /// `client_window`): a client never gets a whole history at once.
+    pub fn client_detail(&self, id: &str) -> Result<AgentDetail> {
+        let query = crate::conversation_window::Query::default();
+        match self.client_window(id, &query)? {
+            Ok(window) => Ok(window.detail),
+            Err(missing) => bail!("{missing:?}"),
+        }
+    }
+
+    /// `conversation_window::search` over the Agent's messages: the window's
+    /// index and each message's row, read one at a time until there are 50
+    /// results. A query that finds nothing (blank or too long) finds nothing.
+    pub fn conversation_search(&self, id: &str, query: &str) -> Result<Vec<Value>> {
+        use crate::conversation_window::Search;
+        ensure!(record_rows::exists(&*self.db.read()?, id)?, "Agent 不存在");
+        if Search::new(query).is_none() {
+            return Ok(Vec::new());
+        }
+        self.settle_unwritten(id)?;
+        let (results, fills) = {
+            let db = self.db.read()?;
+            search_rows(&db, id, query).inspect_err(|error| self.note_damage(id, error))?
+        };
+        if !fills.is_empty() {
+            let mut writer = self.db.write()?;
+            let tx = writer.transaction()?;
+            record_rows::window::fill(&tx, id, fills)?;
+            tx.commit()?;
+        }
+        Ok(results)
+    }
+
+    /// The window clients are shown of an Agent's conversation: the light
+    /// index of every Turn and Item (small per Item) and only the bodies the
+    /// window holds, each read from its row.
     pub fn client_window(&self, id: &str, query: &crate::conversation_window::Query)
         -> Result<std::result::Result<ConversationWindow, crate::client_view::Missing>> {
         self.client_window_racing(id, query, || {})
     }
 
+    /// `client_window`, running `unlocked` after the rows are read and before
+    /// the version is checked again; tests race writes there.
     fn client_window_racing(&self, id: &str, query: &crate::conversation_window::Query, mut unlocked: impl FnMut())
         -> Result<std::result::Result<ConversationWindow, crate::client_view::Missing>> {
-        let mut attempt = 0;
+        // An active Agent's window is read under its record lock at once: its
+        // streamed output written first, its rows unchanged until read, and
+        // no retries while it streams. Another's, without, retried on writes.
+        let mut attempt = if self.hot(id).is_some() { 2 } else { 0 };
         loop {
             let lock = (attempt >= 2).then(|| self.record_lock(id));
             let _record = lock.as_ref().map(|lock| lock.lock());
-            let (held, version, rev, damaged) = {
-                let memory = self.memory.lock().unwrap();
-                (memory.held.get(id).map(|held| held.detail.clone()), memory.version(id), memory.rev(id), memory.damaged.contains(id))
-            };
-            if let Some(held) = held {
-                // Connection before held lock: never acquire the DB while a
-                // writer could be waiting for the held record we borrowed.
-                let db = self.db.read()?;
-                let detail = held.read();
-                let mut index = crate::conversation_window::index(&detail);
-                index.agent.work_summary = crate::rail::project(&detail);
-                return Ok(project_window(&db, index, query, |t, i| Ok(detail.turns[t]["items"][i].clone()))?
-                    .map(|(detail, conversation)| ConversationWindow { detail, conversation,
-                        stats:record_rows::window::ReadStats { source:"held", ..Default::default() } }));
+            if _record.is_some() {
+                self.write_unwritten(id)?;
             }
+            let (version, rev) = {
+                let memory = self.memory.lock().unwrap();
+                (memory.version(id), memory.rev(id))
+            };
             if version % 2 == 1 {
                 attempt += 1;
                 std::thread::yield_now();
@@ -1798,18 +1733,36 @@ impl Store {
             }
             let (found, fills) = {
                 let db = self.db.read()?;
-                self.window_rows(&db, id, query, damaged)?
+                match self.window_rows(&db, id, query) {
+                    Ok(read) => read,
+                    Err(error) if error.downcast_ref::<Damaged>().is_some() => {
+                        self.note_damage(id, &error);
+                        return Ok(self.damaged_window(&db, id, query, &error)?.map(|mut window| {
+                            window.detail.agent.rev = rev;
+                            window
+                        }));
+                    }
+                    Err(error) => return Err(error),
+                }
             };
             unlocked();
-            {
-                let memory = self.memory.lock().unwrap();
-                if memory.held.contains_key(id) || memory.version(id) != version {
-                    attempt += 1;
-                    continue;
+            // Streamed output that arrived meanwhile is written before the
+            // next attempt reads the rows: under the record lock this attempt
+            // holds, or taking it.
+            if self.memory.lock().unwrap().hot.get(id).is_some_and(|hot| hot.unwritten_since.is_some()) {
+                drop(found);
+                match &_record {
+                    Some(_) => self.write_unwritten(id)?,
+                    None => self.settle_unwritten(id)?,
                 }
+                attempt += 1;
+                continue;
             }
-            // Cache publication is conditional on unchanged source rows. It
-            // is independent of the record revision and safe after the read.
+            if self.memory.lock().unwrap().version(id) != version {
+                attempt += 1;
+                continue;
+            }
+            // Cache publication is conditional on unchanged source rows.
             if !fills.is_empty() {
                 let mut writer = self.db.write()?;
                 let tx = writer.transaction()?;
@@ -1820,266 +1773,116 @@ impl Store {
         }
     }
 
-    fn window_rows(&self, db: &Connection, id: &str, query: &crate::conversation_window::Query, damaged: bool)
-        -> Result<(std::result::Result<ConversationWindow, crate::client_view::Missing>, Vec<record_rows::window::Fill>)> {
-        let whole = || -> Result<_> {
-            let detail = self.seen(id, read_record(db, id, damaged)?.context("Agent 不存在")?);
-            let mut index = crate::conversation_window::index(&detail);
-            index.agent.work_summary = crate::rail::project(&detail);
-            Ok((project_window(db, index, query, |t, i| Ok(detail.turns[t]["items"][i].clone()))?
-                .map(|(detail, conversation)| ConversationWindow { detail, conversation,
-                    stats:record_rows::window::ReadStats { source:"fallback", ..Default::default() } }), Vec::new()))
-        };
-        if damaged || record_rows::layout(db, id)? != Some(Layout::Rows) { return whole(); }
-        let read = || -> Result<_> {
-            let record_rows::window::Index { mut detail, keys, fills, mut stats } = record_rows::window::index(db, id)?;
-            if replays(db, id, detail.agent.last_seq)? { return whole(); }
-            let wanted = crate::client_view::referenced(&detail.pending);
-            // Legacy Pending hydration resolves ambiguous IDs through
-            // load_item (newest match), not by row position. Preserve that
-            // behavior on this exceptional path instead of changing it here.
-            if detail.turns.iter().enumerate().any(|(t, turn)| {
-                turn["items"].as_array().into_iter().flatten().enumerate().any(|(i, item)| {
-                    item["id"].as_str().is_some_and(|id| wanted.contains(id))
-                        && (keys[t].0.starts_with('~') || keys[t].1[i].starts_with('~'))
-                })
-            }) { return whole(); }
-            let mut bodies: HashMap<(usize, usize), Value> = HashMap::new();
-            let mut body = |t: usize, i: usize| -> Result<Value> {
-                if let Some(item) = bodies.get(&(t,i)) { return Ok(item.clone()); }
-                let full = detail.turns[t]["items"][i]["id"].as_str().is_some_and(|id| wanted.contains(id));
-                let item = record_rows::window::item(db, id, &keys[t].0, &keys[t].1[i], full, &mut stats)?;
-                bodies.insert((t,i), item.clone());
-                Ok(item)
-            };
-            // The rail reads only the first user message and the last two
-            // assistant candidates of the newest Turn. Keep its exact logic
-            // without parsing the rest of a giant latest Turn.
-            let mut rail = crate::conversation_window::header(&detail);
-            if let Some(t) = detail.turns.len().checked_sub(1) {
-                let mut turn = crate::conversation_window::turn_shell(&detail.turns[t]);
-                let items = detail.turns[t]["items"].as_array();
-                let mut positions = Vec::new();
-                if let Some(items) = items {
-                    positions.extend(items.iter().position(|i| i["type"] == "userMessage"));
-                    for key in ["text", "_yuzunoCompletedText"] {
-                        positions.extend(items.iter().rposition(|i| i["type"] == "agentMessage" && i[key].as_str().is_some_and(|s| !s.trim().is_empty())));
-                    }
-                }
-                positions.sort_unstable();
-                positions.dedup();
-                for i in positions { turn["items"].as_array_mut().unwrap().push(body(t,i)?); }
-                rail.turns.push(turn);
-            }
-            let summary = crate::rail::project(&rail);
-            // Release immutable borrows used to decide pending payload reads
-            // before moving the compact record into the projection.
-            drop(body);
-            detail.agent.work_summary = summary;
-            let mut whole_positions = HashSet::new();
-            for (t, turn) in detail.turns.iter().enumerate() {
-                for (i, item) in turn["items"].as_array().into_iter().flatten().enumerate() {
-                    if item["id"].as_str().is_some_and(|id| wanted.contains(id)) { whole_positions.insert((t,i)); }
-                }
-            }
-            let found = project_window(db, detail, query, |t, i| {
-                if let Some(item) = bodies.remove(&(t,i)) { return Ok(item); }
-                // Key lookup is positional, so repeated native IDs retain the
-                // same first-match cursor semantics as the old projection.
-                let full = whole_positions.contains(&(t,i));
-                record_rows::window::item(db, id, &keys[t].0, &keys[t].1[i], full, &mut stats)
-            })?;
-            Ok((found.map(|(detail, conversation)| ConversationWindow { detail, conversation, stats }), fills))
-        };
-        match read() {
-            Err(e) if e.is::<Damaged>() => whole(),
-            result => result,
-        }
+    /// The window of an Agent whose rows do not fit together: its metadata,
+    /// with why, and no Turns, so it is shown rather than its read failing.
+    fn damaged_window(&self, db: &Connection, id: &str, query: &crate::conversation_window::Query, error: &anyhow::Error)
+        -> Result<std::result::Result<ConversationWindow, crate::client_view::Missing>> {
+        let mut meta = record_rows::load_meta(db, id)?.context("Agent 不存在")?;
+        meta.message_receipts = record_rows::open_receipts(db, id)?;
+        meta.agent.status = "error".into();
+        meta.agent.error = Some(format!("{error:#}"));
+        let found = project_window(db, meta, query, |_, _| bail!("a damaged record has no Items to read"))?;
+        Ok(found.map(|(detail, conversation)| ConversationWindow { detail, conversation,
+            stats: record_rows::window::ReadStats { source: "damaged", ..Default::default() } }))
     }
 
-    /// Runs `read` on the Agent's record as far as one payload request needs
-    /// it: the copy held in memory, else (in one snapshot) its metadata and
-    /// one Turn with its payloads, or only one Item of it (`item`, in Turn
-    /// `turn`, or in the newest Turn holding it). With a Turn ID that names a
-    /// Turn without that Item, the Turn holds no Items. A record stored
-    /// whole, with journaled changes its rows lack, or damaged is read as
-    /// `detail` reads it. The snapshot is checked against the Agent's
-    /// version as in `current`, so a record held (or written) meanwhile is
-    /// not answered from older rows. None if there is no such Agent.
+    /// A window from the rows without every Item (`record_rows::window::
+    /// sparse`): the Turns' rows, the Items every window lists, and the
+    /// bodies it shows, read one at a time (T-140).
+    fn window_rows(&self, db: &Connection, id: &str, query: &crate::conversation_window::Query)
+        -> Result<(std::result::Result<ConversationWindow, crate::client_view::Missing>, Vec<record_rows::window::Fill>)> {
+        let record_rows::window::Sparse { mut detail, counts, keys, ords, fills, mut stats } = record_rows::window::sparse(db, id)?;
+        // Its receipts not settled; those of the Turns shown are added below.
+        detail.message_receipts = record_rows::open_receipts(db, id)?;
+        let wanted: HashSet<String> = crate::client_view::referenced(&detail.pending).into_iter().map(str::to_owned).collect();
+        let read = |stats: &mut record_rows::window::ReadStats, t: usize, i: usize| -> Result<Value> {
+            let (key, item) = record_rows::window::key_at(db, id, &keys[t], i)?.context("an Item's position has no row")?;
+            // The Items pending requests name are sent whole, by their ID.
+            let whole = item.as_deref().is_some_and(|item| wanted.contains(item));
+            record_rows::window::item(db, id, &keys[t], &key, whole, stats)
+        };
+        let mut bodies: HashMap<(usize, usize), Value> = HashMap::new();
+        // The rail reads only the first user message and the last two
+        // assistant candidates of the newest Turn.
+        let mut rail = crate::conversation_window::header(&detail);
+        let mut kept = Vec::new();
+        if let Some(t) = detail.turns.len().checked_sub(1) {
+            let mut turn = crate::conversation_window::turn_shell(&detail.turns[t]);
+            let mut positions: Vec<usize> = detail.turns[t]["items"].as_array().into_iter().flatten().zip(&ords[t])
+                .find(|(item, _)| item["type"] == "userMessage").map(|(_, ord)| *ord).into_iter().collect();
+            for field in ["text", "_yuzunoCompletedText"] {
+                positions.extend(record_rows::window::last_message(db, id, &keys[t], field)?);
+            }
+            positions.sort_unstable();
+            positions.dedup();
+            for i in positions {
+                let item = read(&mut stats, t, i)?;
+                turn["items"].as_array_mut().unwrap().push(item.clone());
+                kept.push(((t, i), item));
+            }
+            rail.turns.push(turn);
+        }
+        detail.agent.work_summary = crate::rail::project(&rail);
+        drop(rail);
+        bodies.extend(kept);
+        let mut body = |stats: &mut record_rows::window::ReadStats, t: usize, i: usize| -> Result<Value> {
+            match bodies.remove(&(t, i)) {
+                Some(item) => Ok(item),
+                None => read(stats, t, i),
+            }
+        };
+        let found = {
+            let position = |t: usize, item: &str| record_rows::window::first_position(db, id, &keys[t], item);
+            project_window_marked(db, detail, &ords, &counts, query, position, |t, i| body(&mut stats, t, i))?
+        };
+        let found = match found {
+            Ok((mut detail, conversation)) => {
+                let shown: Vec<String> = detail.turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
+                for receipt in record_rows::turn_receipts(db, id, &shown)? {
+                    if !detail.message_receipts.iter().any(|r| r.input.client_message_id == receipt.input.client_message_id) {
+                        detail.message_receipts.push(receipt);
+                    }
+                }
+                Ok(ConversationWindow { detail, conversation, stats })
+            }
+            Err(missing) => Err(missing),
+        };
+        Ok((found, fills))
+    }
+
+    /// Runs `read` on the Agent's metadata with one Turn with its payloads,
+    /// or only one Item of it (`item`, in Turn `turn`, or in the newest Turn
+    /// holding it), read in one snapshot. With a Turn ID that names a Turn
+    /// without that Item, the Turn holds no Items. None if there is no such
+    /// Agent.
     pub fn payload_view<T>(&self, id: &str, turn: Option<&str>, item: Option<&str>,
         read: impl FnOnce(&AgentDetail) -> T) -> Result<Option<T>> {
-        self.payload_view_racing(id, turn, item, read, || {})
+        self.settle_unwritten(id)?;
+        let found = {
+            // One snapshot: a read connection holds one until dropped.
+            let db = self.db.read()?;
+            let Some(mut meta) = record_rows::load_meta(&db, id)? else { return Ok(None) };
+            let found = match (turn, item) {
+                (_, Some(item)) => record_rows::load_item(&db, id, turn, item, true),
+                (Some(turn), None) => record_rows::load_turn(&db, id, turn, true),
+                (None, None) => Ok(None),
+            }.inspect_err(|error| self.note_damage(id, error))?;
+            meta.turns.extend(found);
+            meta
+        };
+        Ok(Some(read(&found)))
     }
 
-    /// `payload_view`, running `unlocked` after the rows are read and before
-    /// the version is checked again; tests race writes there.
-    fn payload_view_racing<T>(&self, id: &str, turn: Option<&str>, item: Option<&str>,
-        read: impl FnOnce(&AgentDetail) -> T, mut unlocked: impl FnMut()) -> Result<Option<T>> {
-        let mut attempt = 0;
-        let found = loop {
-            let exclusive = attempt >= 2;
-            let lock = exclusive.then(|| self.record_lock(id));
-            let _record = lock.as_ref().map(|lock| lock.lock());
-            let (held, version, damaged) = {
-                let memory = self.memory.lock().unwrap();
-                (memory.held.get(id).map(|held| held.detail.clone()), memory.version(id), memory.damaged.contains(id))
-            };
-            if let Some(held) = held {
-                return Ok(Some(read(&held.read())));
-            }
-            if version % 2 == 1 {
-                attempt += 1;
-                std::thread::yield_now();
-                continue;
-            }
-            let found = {
-                let db = self.db.read()?;
-                if damaged {
-                    // Answered from its stand-in, as its detail is.
-                    read_record(&db, id, true)?.map(|shown| self.seen(id, shown))
-                } else {
-                    self.payload_rows(&db, id, turn, item)?
-                }
-            };
-            unlocked();
-            let held = {
-                let memory = self.memory.lock().unwrap();
-                match memory.held.get(id) {
-                    Some(held) => Some(held.detail.clone()),
-                    None if memory.version(id) == version => None,
-                    None => {
-                        attempt += 1;
-                        continue;
-                    }
-                }
-            };
-            if let Some(held) = held {
-                return Ok(Some(read(&held.read())));
-            }
-            break found;
-        };
-        Ok(found.map(|detail| read(&detail)))
-    }
-
-    /// `payload_view` from rows, in one snapshot.
-    fn payload_rows(&self, db: &Connection, id: &str, turn: Option<&str>, item: Option<&str>) -> Result<Option<AgentDetail>> {
-        let whole = |db: &Connection| -> Result<Option<AgentDetail>> {
-            Ok(read_record(db, id, true)?.map(|shown| self.seen(id, shown)))
-        };
-        // Its layout first: a record stored whole is parsed once.
-        match record_rows::layout(db, id)? {
-            None => return Ok(None),
-            Some(Layout::Whole) => return whole(db),
-            Some(Layout::Rows) => {}
-        }
-        let mut meta = match record_rows::load_meta(db, id) {
-            Ok(Some(meta)) => meta,
-            Ok(None) => return Ok(None),
-            Err(error) if error.is::<Damaged>() => return whole(db),
-            Err(error) => return Err(error),
-        };
-        if replays(db, id, meta.agent.last_seq)? {
-            return whole(db);
-        }
-        let found = match (turn, item) {
-            (_, Some(item)) => record_rows::load_item(db, id, turn, item, true),
-            (Some(turn), None) => record_rows::load_turn(db, id, turn, true),
-            (None, None) => Ok(None),
-        };
-        match found {
-            Ok(found) => {
-                meta.turns.extend(found);
-                Ok(Some(meta))
-            }
-            Err(error) if error.is::<Damaged>() => whole(db),
-            Err(error) => Err(error),
-        }
-    }
-
-    /// The record as it is now: a copy of the one held in memory (whose rev
-    /// changes with its content), else its rows (without payloads: see
-    /// `read_record`) with what its journal adds, all read in one snapshot,
-    /// so a Turn end and the events after it are in the result together or
-    /// not at all. The rows are assembled on a reader, holding nothing anyone
-    /// else waits for. The rev returned is exactly that of the last change
-    /// the snapshot holds: the Agent's version is the same and even before
-    /// and after it (see `Memory::versions`). A write racing the read makes
-    /// it read again; after two such races it is read under the Agent's
-    /// record lock, where no write of it can race.
-    fn current(&self, id: &str, view: View, unlocked: &mut impl FnMut()) -> Result<AgentDetail> {
-        let mut attempt = 0;
-        loop {
-            let exclusive = attempt >= 2;
-            let lock = exclusive.then(|| self.record_lock(id));
-            let _record = lock.as_ref().map(|lock| lock.lock());
-            let (held, version, rev, damaged) = {
-                let memory = self.memory.lock().unwrap();
-                (memory.held.get(id).map(|held| held.detail.clone()), memory.version(id), memory.rev(id),
-                    memory.damaged.contains(id))
-            };
-            if let Some(held) = held {
-                return Ok(held.read().clone());
-            }
-            // A record known to be damaged is shown as its stand-in, which a
-            // read without payloads may not find (a payload row is missing).
-            let payloads = view == View::Payloads || damaged;
-            let send = view == View::Send && !damaged;
-            if version % 2 == 1 {
-                // A write of it is being committed; its writer holds the
-                // record lock, so this is never the case once that is held.
-                attempt += 1;
-                std::thread::yield_now();
-                continue;
-            }
-            // The snapshot begins with its first read, after `version` was
-            // read: it holds every write that version counts, and any newer
-            // one changes the version before it commits.
-            let mut detail = {
-                // One reader, one snapshot (see `db`): the send view's read
-                // and, where it gives way, the read it gives way to.
-                let db = self.db.read()?;
-                let mut ran = false;
-                let mut once = || if !std::mem::replace(&mut ran, true) { unlocked() };
-                let shown = match send.then(|| read_send(&db, id, &mut once)).flatten() {
-                    Some(shown) => shown,
-                    None => {
-                        let stored = record_rows::read(&db, id, payloads)?.context("Agent 不存在")?;
-                        let assembled = record_rows::assemble_stored(id, stored, payloads);
-                        once();
-                        finish(&db, id, assembled, payloads)?
-                    }
-                };
-                self.seen(id, shown)
-            };
-            let held = {
-                let memory = self.memory.lock().unwrap();
-                match memory.held.get(id) {
-                    Some(held) => Some(held.detail.clone()),
-                    None if memory.version(id) == version => None,
-                    None => {
-                        attempt += 1;
-                        continue;
-                    }
-                }
-            };
-            if let Some(held) = held {
-                return Ok(held.read().clone());
-            }
-            detail.agent.rev = rev;
-            return Ok(detail);
-        }
-    }
-
-    /// One Agent as listed. A record is parsed only the first time it is
+    /// One Agent as listed. A record is read only the first time it is
     /// listed after Core starts; every write keeps this view current.
+    /// With its Project, as a whole record had it.
     pub fn agent(&self, id: &str) -> Result<Agent> {
-        Ok(self.listed(id, Load::Reader)?.context("Agent 不存在")?.agent)
+        let mut agent = self.listed(id, Load::Reader)?.context("Agent 不存在")?.agent;
+        agent.project_id = self.agent_project(id)?;
+        Ok(agent)
     }
 
-    /// Update safety checks use the same versioned view as Agent listing,
-    /// without cloning held history or loading old Item/payload rows. As with
-    /// `current`, retry a concurrent committed rewrite instead of accepting a
-    /// cached view built before it. Sealing admission still fences new work.
+    /// Update safety checks use the same versioned view as Agent listing.
     pub(crate) fn update_readiness(&self, id: &str) -> Result<(Agent, Activity)> {
         let mut attempt = 0;
         loop {
@@ -2101,41 +1904,31 @@ impl Store {
         }
     }
 
-    /// `agent` when it needs no record parsed (it is listed, or held):
-    /// cheap enough for any thread, async workers included. None otherwise.
+    /// `agent` when it needs no record read (it is listed, or hot).
     pub fn listed_agent(&self, id: &str) -> Option<Agent> {
         self.listed(id, Load::Never).ok().flatten().map(|listed| listed.agent)
     }
 
     /// `agent` for a caller already in a transaction (the collaboration
-    /// paths): a record it has to parse is read through that transaction.
-    /// None if there is no such Agent.
+    /// paths). None if there is no such Agent.
     pub(crate) fn brief_in(&self, db: &Connection, id: &str) -> Result<Option<Brief>> {
         self.listed(id, Load::Through(db))
     }
 
     /// The Agent's listed view with its current rev: kept with every write,
-    /// rebuilt from the held copy when streamed events left it stale, and
-    /// parsed from the row only the first time after Core starts. Nothing is
-    /// parsed or copied while `memory` is held. A view built from a row is
-    /// kept only if no write to that Agent raced it and the read saw every
-    /// commit before it began (a new reader or the writer does; a caller's
-    /// older read snapshot may not), so a deleted or rewritten Agent's old
-    /// view never comes back.
+    /// rebuilt from the hot slice when streamed events left it stale, and
+    /// read from the rows (metadata, open and newest Turns) only the first
+    /// time after Core starts.
     fn listed(&self, id: &str, load: Load) -> Result<Option<Brief>> {
         enum Source {
             Cached(Brief),
-            Held(Arc<RwLock<AgentDetail>>, u64),
+            Hot(Arc<RwLock<AgentDetail>>, u64, Unsettled),
             Row(u64),
         }
-        // Each view carries the rev of what it was built from: a cached one
-        // its own, one built from the held copy that copy's.
         let (source, rev) = {
             let memory = self.memory.lock().unwrap();
-            let source = match memory.held.get(id) {
-                Some(held) if held.brief_stale || !memory.briefs.contains_key(id) => {
-                    Source::Held(held.detail.clone(), held.changes)
-                }
+            let source = match memory.hot.get(id) {
+                Some(hot) if hot.brief_stale || !memory.briefs.contains_key(id) => Source::Hot(hot.slice.clone(), hot.changes, hot.unsettled),
                 _ => match memory.briefs.get(id) {
                     Some(brief) => Source::Cached(brief.clone()),
                     None => Source::Row(memory.version(id)),
@@ -2145,13 +1938,12 @@ impl Store {
         };
         let listed = match source {
             Source::Cached(brief) => brief,
-            Source::Held(detail, changes) => {
-                let listed = brief(&detail.read());
+            Source::Hot(slice, changes, unsettled) => {
+                let listed = brief_with(&slice.read(), unsettled);
                 let mut guard = self.memory.lock().unwrap();
                 let memory = &mut *guard;
-                if let Some(held) = memory.held.get_mut(id)
-                    .filter(|held| Arc::ptr_eq(&held.detail, &detail) && held.changes == changes) {
-                    held.brief_stale = false;
+                if let Some(hot) = memory.hot.get_mut(id).filter(|hot| Arc::ptr_eq(&hot.slice, &slice) && hot.changes == changes) {
+                    hot.brief_stale = false;
                     memory.briefs.insert(id.into(), listed.clone());
                 }
                 listed
@@ -2159,19 +1951,34 @@ impl Store {
             Source::Row(version) => {
                 let (detail, current_view) = match load {
                     Load::Never => return Ok(None),
-                    // Its metadata, Turn rows and newest Turn only.
-                    Load::Reader => (read_recent(&*self.db.read()?, id)?, true),
-                    Load::Through(db) => (read_recent(db, id)?, !db.is_readonly(rusqlite::MAIN_DB).unwrap_or(true)),
+                    Load::Reader => (read_slice(&*self.db.read()?, id, &Sel::Open), true),
+                    Load::Through(db) => (read_slice(db, id, &Sel::Open), !db.is_readonly(rusqlite::MAIN_DB).unwrap_or(true)),
                 };
-                let Some(shown) = detail else { return Ok(None) };
-                let detail = self.seen(id, shown);
+                let detail = match detail {
+                    Ok(Some(detail)) => detail,
+                    Ok(None) => return Ok(None),
+                    Err(error) if error.downcast_ref::<Damaged>().is_some() => {
+                        // Listed from its metadata, with why; never kept, so
+                        // it is checked again when next listed.
+                        self.note_damage(id, &error);
+                        let meta = match load {
+                            Load::Through(db) => record_rows::load_meta(db, id),
+                            _ => record_rows::load_meta(&*self.db.read()?, id),
+                        };
+                        let Ok(Some(mut meta)) = meta else { return Err(error) };
+                        meta.agent.status = "error".into();
+                        meta.agent.error = Some(format!("{error:#}"));
+                        let mut listed = brief(&meta);
+                        listed.agent.rev = rev;
+                        return Ok(Some(listed));
+                    }
+                    Err(error) => return Err(error),
+                };
                 let mut listed = brief(&detail);
-                // Read with `version`: exactly the rev of what the read holds
-                // if no write raced it, else no newer than it.
                 listed.agent.rev = rev;
                 let mut guard = self.memory.lock().unwrap();
                 let memory = &mut *guard;
-                if current_view && version % 2 == 0 && memory.version(id) == version && !memory.held.contains_key(id) {
+                if current_view && version % 2 == 0 && memory.version(id) == version && !memory.hot.contains_key(id) {
                     memory.briefs.entry(id.into()).or_insert_with(|| listed.clone());
                 }
                 listed
@@ -2180,12 +1987,10 @@ impl Store {
         Ok(Some(listed))
     }
 
-    /// Whether the Agent is closed, and the Codex thread it is bound to:
-    /// what checking an event's owner needs. Deferred events change neither,
-    /// so this neither parses a record nor rebuilds a brief.
+    /// Whether the Agent is closed, and the Codex thread it is bound to.
     pub fn binding(&self, id: &str) -> Result<(bool, Option<String>)> {
-        if let Some(held) = self.held(id) {
-            let d = held.read();
+        if let Some(hot) = self.hot(id) {
+            let d = hot.read();
             return Ok((d.agent.closed_at.is_some(), d.agent.thread_id.clone()));
         }
         let agent = self.listed(id, Load::Reader)?.context("Agent 不存在")?.agent;
@@ -2223,19 +2028,131 @@ impl Store {
         Ok(holders)
     }
 
-    /// The one place a streamed native event, Codex or Claude, reaches the
-    /// record held in memory (see `apply_streamed`); `route` is the event's
-    /// (see `route`). Evidence is journaled only, on the writer's unsynced
+    /// The Agent's hot slice, read from its rows if it is not in memory, with
+    /// room made for it. The caller holds the record lock.
+    fn ensure_hot(&self, id: &str) -> Result<Arc<RwLock<AgentDetail>>> {
+        if let Some(slice) = self.hot(id) {
+            return Ok(slice);
+        }
+        self.ensure_undamaged(id)?;
+        self.make_room(id, MAX_STREAMS - 1);
+        let (mut slice, unsettled) = read_hot(&*self.db.read()?, id).inspect_err(|error| self.note_damage(id, error))?;
+        let slice = {
+            let mut memory = self.memory.lock().unwrap();
+            slice.agent.rev = memory.rev(id);
+            let hot = memory.hot.entry(id.into()).or_insert_with(|| Hot::new(std::mem::take(&mut slice), unsettled, Instant::now()));
+            hot.slice.clone()
+        };
+        // Others streaming at the same moment may have filled the room.
+        self.make_room(id, MAX_STREAMS);
+        Ok(slice)
+    }
+
+    /// Puts into the hot slice the Turns of `turns` the Agent has and the
+    /// slice lacks, each in its place. The caller holds the record lock.
+    fn load_into(&self, id: &str, slice: &RwLock<AgentDetail>, turns: &[String]) -> Result<()> {
+        let missing: Vec<String> = {
+            let d = slice.read();
+            turns.iter().filter(|t| !d.turns.iter().any(|have| have["id"] == t.as_str())).cloned().collect()
+        };
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let (loaded, have) = {
+            let db = self.db.read()?;
+            let loaded = held_turns(&db, id, &missing)?;
+            let ids: Vec<String> = slice.read().turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
+            (loaded, record_rows::turn_ords(&db, id, &ids)?)
+        };
+        let mut d = slice.write();
+        for (ord, turn) in loaded {
+            let at = d.turns.iter().position(|t| t["id"].as_str().and_then(|tid| have.get(tid)).is_none_or(|o| *o > ord));
+            match at {
+                Some(at) => d.turns.insert(at, turn),
+                None => d.turns.push(turn),
+            }
+        }
+        Ok(())
+    }
+
+    /// Puts back into the hot slice, whole, the Items of `named` (Turn,
+    /// Item) a gap of its Turn holds, each in its stored place. The caller
+    /// holds the record lock, and the slice's gaps are as written.
+    fn load_named(&self, id: &str, slice: &RwLock<AgentDetail>, named: &[(String, String)]) -> Result<()> {
+        let wanted: Vec<&(String, String)> = {
+            let d = slice.read();
+            named.iter().filter(|(turn, item)| d.turns.iter().find(|t| t["id"] == turn.as_str()).is_some_and(|t| {
+                let items = t["items"].as_array().map(Vec::as_slice).unwrap_or_default();
+                items.iter().any(|i| record_rows::gap_of(i).is_some()) && !items.iter().any(|i| i["id"] == item.as_str())
+            })).collect()
+        };
+        for (turn, item) in wanted {
+            let found = {
+                let db = self.db.read()?;
+                match record_rows::item_ord(&db, id, turn, item)? {
+                    Some(ord) => record_rows::load_held_item(&db, id, turn, item)?.map(|value| (ord, value)),
+                    None => None,
+                }
+            };
+            let Some((ord, value)) = found else { continue };
+            let mut d = slice.write();
+            let Some(items) = d.turns.iter_mut().find(|t| t["id"] == turn.as_str())
+                .and_then(|t| t.get_mut("items")).and_then(Value::as_array_mut) else { continue };
+            let Some(at) = items.iter().position(|i| record_rows::gap_of(i).is_some_and(|(from, count)| from <= ord && ord < from + count))
+                else { continue };
+            let (from, count) = record_rows::gap_of(&items[at]).unwrap();
+            let mut parts = Vec::new();
+            if ord > from {
+                parts.push(record_rows::gap(from, ord - from));
+            }
+            parts.push(value);
+            if ord + 1 < from + count {
+                parts.push(record_rows::gap(ord + 1, from + count - ord - 1));
+            }
+            items.splice(at..=at, parts);
+        }
+        Ok(())
+    }
+
+    /// Replaces the hot slice's Turns that hold gaps by the Turns read whole
+    /// from their rows (without payloads): after an event its gaps did not
+    /// let through (`record_rows::GapConflict`). The caller holds the record
+    /// lock and has written what streamed.
+    fn fill_gaps(&self, id: &str, slice: &RwLock<AgentDetail>) -> Result<()> {
+        let gapped: Vec<String> = slice.read().turns.iter()
+            .filter(|t| t["items"].as_array().is_some_and(|items| items.iter().any(|i| record_rows::gap_of(i).is_some())))
+            .filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
+        if gapped.is_empty() {
+            return Ok(());
+        }
+        let read = {
+            let db = self.db.read()?;
+            let mut read = record_rows::load_turns(&db, id, &gapped, false)?;
+            for (_, turn) in &mut read {
+                whole_in_progress(&db, id, turn)?;
+            }
+            read
+        };
+        let mut d = slice.write();
+        for (_, turn) in read {
+            if let Some(place) = d.turns.iter_mut().find(|t| t["id"] == turn["id"]) {
+                *place = turn;
+            }
+        }
+        Ok(())
+    }
+
+    /// The one place a streamed native event, Codex or Claude, reaches an
+    /// Agent's hot Turns (see `apply_streamed`); `route` is the event's (see
+    /// `route`). Evidence is journaled only, on the writer's unsynced
     /// connection; Ignored and Synchronous events are not handled here.
     ///
-    /// An ephemeral event is applied in memory; a deferred one is journaled
-    /// (unsynced) and applied, and its record written once STREAM_WRITE_AFTER
-    /// has passed (see `stream_tick`) or by the next update() for this Agent.
-    /// Either is announced by the next tick, unless it changed what other
-    /// parts of Core act on (`Watched`): then it is journaled if it was not
-    /// yet, its record written at once with a synced commit, and `urgent` set
-    /// so the caller announces it now. A record is parsed (the first time it
-    /// streams) and serialized without the writer.
+    /// A deferred event is journaled, applied and written with its journal
+    /// row at once (unsynced). An ephemeral one is applied in memory and
+    /// written by the next tick or write. Either is announced by the next
+    /// tick, unless it changed what other parts of Core act on (`Watched`):
+    /// then it is written at once with a synced commit, journaled if it was
+    /// not yet, and `urgent` set so the caller announces it now.
     pub fn record_stream(&self, id: &str, route: Route, kind: &str, data: &Value) -> Result<Streamed> {
         let at = Utc::now();
         match route {
@@ -2249,1281 +2166,893 @@ impl Store {
         }
         let lock = self.record_lock(id);
         let _record = lock.lock();
-        let journaled = route == Route::Deferred;
-        let loaded = if self.held(id).is_some() {
-            None
+        let slice = self.ensure_hot(id)?;
+        let gapped = slice.read().turns.iter()
+            .any(|t| t["items"].as_array().is_some_and(|items| items.iter().any(|i| record_rows::gap_of(i).is_some())));
+        // A Codex event names its Turn: no row is read to find it unless
+        // the slice has gaps (each delta of a long stream comes here).
+        let (turns, items) = if gapped || kind.starts_with("claude/") {
+            let db = self.db.read()?;
+            let turns = event_turns(&db, id, kind, data)?;
+            (turns, if gapped { event_items(&db, id, kind, data)? } else { Vec::new() })
         } else {
-            self.make_room(id, MAX_STREAMS - 1);
-            let loaded = load(&*self.db.read()?, id);
-            if let Err(error) = &loaded {
-                self.list_damaged(id, error);
-            }
-            Some(loaded?)
+            (named_turn(data), Vec::new())
         };
-        let seq = if journaled {
-            let mut db = self.db.write()?;
-            let unsynced = db.unsynced();
-            unsynced.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
-                params![id, kind, data.to_string(), at.to_rfc3339()])?;
-            Some(unsynced.last_insert_rowid())
-        } else {
-            None
-        };
-        // Memory changes only after the commit, so a failed write leaves no
-        // half-applied copy and a retry never applies an event twice. The
-        // change's rev is taken first (the record lock orders this Agent's
-        // changes) and set with the change, so a copy never has one without
-        // the other; a copy just loaded has the rev of what it holds.
-        let now = Instant::now();
-        let (detail, rev, inserted) = {
-            let mut memory = self.memory.lock().unwrap();
-            let inserted = loaded.is_some();
-            if let Some((mut detail, replayed)) = loaded {
-                detail.agent.rev = memory.rev(id);
-                memory.held.insert(id.into(), Held::new(detail, replayed, now));
-            }
-            let rev = memory.event(id, kind, data);
-            (memory.held[id].detail.clone(), rev, inserted)
-        };
-        if inserted {
-            // Others streaming at the same moment may have filled the room.
-            self.make_room(id, MAX_STREAMS);
+        self.load_into(id, &slice, &turns)?;
+        self.load_named(id, &slice, &items)?;
+        if route == Route::Ephemeral {
+            return self.record_ephemeral(id, &slice, kind, data, at);
         }
-        let applied = {
-            let mut d = detail.write();
-            let before = watched(&d);
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| apply_streamed(&mut d, seq, kind, data, at)))
-                .map(|()| {
-                    d.agent.rev = rev;
-                    (before, watched(&d), Dirty::of_applied(&d, kind, data))
-                })
-        };
-        let Ok((before, after, dirty)) = applied else {
-            // A bug in applying it left the copy half-changed: it is dropped
-            // and rebuilt from the rows and the journal when next needed,
-            // which skips the event and says so (see `restore`).
-            let mut memory = self.memory.lock().unwrap();
-            memory.held.remove(id);
-            memory.briefs.remove(id);
-            bail!("Workspace 无法应用事件（{kind}）；Agent 的记录将从存储重建");
-        };
-        {
-            let mut guard = self.memory.lock().unwrap();
-            let memory = &mut *guard;
-            let held = memory.held.get_mut(id).expect("held above");
-            held.unwritten.merge(dirty);
-            if journaled {
-                held.unwritten_since.get_or_insert(now);
-            } else {
-                held.ephemeral = true;
+        match self.record_deferred(id, &slice, kind, data, at) {
+            Err(error) if error.downcast_ref::<record_rows::GapConflict>().is_some() => {
+                // An Item the event reached was in a gap: applied once more
+                // to its Turns read whole.
+                self.write_unwritten(id)?;
+                self.fill_gaps(id, &slice)?;
+                self.record_deferred(id, &slice, kind, data, at)
             }
-            held.last = now;
-            held.brief_stale = true;
-            held.changes += 1;
-            if before == after {
+            done => done,
+        }
+    }
+
+    /// `record_stream` of streamed output: applied to the hot slice in
+    /// place, written by the next tick or write, unless it moved a field's
+    /// start out of memory (written now) or changed what others act on.
+    fn record_ephemeral(&self, id: &str, slice: &RwLock<AgentDetail>, kind: &str, data: &Value, at: DateTime<Utc>)
+        -> Result<Streamed> {
+        let now_instant = Instant::now();
+        let applied = {
+            let mut d = slice.write();
+            let before = watched(&d);
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                apply_streamed(&mut d, None, kind, data, at);
+                let dirty = Dirty::of_applied(&d, kind, data);
+                let chunks = spill(&mut d, &dirty);
+                (before != watched(&d), dirty, chunks)
+            }))
+        };
+        let Ok((urgent, dirty, chunks)) = applied else {
+            // A bug in applying it left the slice half-changed: it is
+            // dropped and read again from the rows when next needed.
+            let mut memory = self.memory.lock().unwrap();
+            memory.hot.remove(id);
+            memory.briefs.remove(id);
+            bail!("Workspace 无法应用事件（{kind}）；Agent 的记录将从存储重读");
+        };
+        let spilled = !chunks.is_empty();
+        let rev = {
+            let mut memory = self.memory.lock().unwrap();
+            let rev = memory.event(id, kind, data);
+            if !urgent {
                 memory.announce.insert(id.into());
             }
-        }
-        if before == after {
+            if let Some(hot) = memory.hot.get_mut(id) {
+                hot.unwritten.merge(dirty);
+                hot.unwritten_since.get_or_insert(now_instant);
+                hot.chunks.extend(chunks);
+                hot.last = now_instant;
+                hot.brief_stale = true;
+                hot.changes += 1;
+            }
+            rev
+        };
+        slice.write().agent.rev = rev;
+        if !urgent {
+            if spilled {
+                // A field's start left memory: its chunks are written now.
+                if let Err(error) = self.write_unwritten(id) {
+                    eprintln!("Workspace streamed output of Agent {id} not written yet: {error:#}");
+                }
+            }
             return Ok(Streamed { rev: Some(rev), urgent: false });
         }
-        // Other parts of Core act on this at once, so it must survive a
-        // crash like the events that normally change it: journaled (if it
-        // was only streaming output) and written with one synced commit. If
-        // that fails it stays in memory; a journaled event is written by the
-        // ticker.
-        let written = (|| -> Result<Rewrite<'_>> {
-            let (plan, mut agent) = self.plan_held(id, &detail)?;
+        // Others act on it at once, so it must survive a crash like the
+        // events that normally change it: journaled and written with one
+        // synced commit. If that fails it stays in memory, written by the
+        // tick.
+        let pending = self.take_chunks(id);
+        let written = (|| -> Result<(Rewrite<'_>, Unsettled)> {
+            let dirty = self.memory.lock().unwrap().hot.get(id).map(|hot| hot.unwritten.clone()).unwrap_or_default();
+            let (plan, mut agent) = {
+                let d = slice.read();
+                let db = self.db.read()?;
+                (record_rows::plan(&db, id, &d, &d.turns, &[], &dirty, &[])?, d.agent.clone())
+            };
             let mut db = self.db.write()?;
             let rewrite = self.rewrite(id);
             let tx = db.transaction()?;
-            if !journaled {
-                tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
-                    params![id, kind, data.to_string(), at.to_rfc3339()])?;
-                agent.last_seq = tx.last_insert_rowid();
-            }
+            tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
+                params![id, kind, data.to_string(), at.to_rfc3339()])?;
+            agent.last_seq = tx.last_insert_rowid();
             record_rows::apply(&tx, id, &plan, &agent)?;
+            record_rows::write_chunks(&tx, id, &pending)?;
+            let unsettled = Unsettled::read(&tx, id)?;
             tx.commit()?;
-            detail.write().agent.last_seq = agent.last_seq;
-            Ok(rewrite)
+            let mut d = slice.write();
+            d.agent.last_seq = agent.last_seq;
+            settle_gaps(&mut d);
+            Ok((rewrite, unsettled))
         })();
-        let written = match written {
-            Ok(rewrite) => {
-                rewrite.done(|_| ());
-                true
-            }
+        let unsettled = match written {
+            Ok((rewrite, unsettled)) => rewrite.done(|memory| {
+                if let Some(hot) = memory.hot.get_mut(id) {
+                    hot.unwritten = Dirty::default();
+                    hot.unwritten_since = None;
+                    hot.unsettled = unsettled;
+                }
+                unsettled
+            }),
             Err(error) => {
+                self.return_chunks(id, pending);
                 eprintln!("Workspace record of Agent {id} not written yet: {error}");
-                false
+                self.memory.lock().unwrap().hot.get(id).map(|hot| hot.unsettled).unwrap_or_default()
             }
         };
-        let listed = brief(&detail.read());
-        let mut guard = self.memory.lock().unwrap();
-        let memory = &mut *guard;
-        if let Some(held) = memory.held.get_mut(id) {
-            if written {
-                held.unwritten = Dirty::default();
-                held.unwritten_since = None;
-                held.ephemeral = false;
-            }
-            held.brief_stale = false;
-            held.changes += 1;
+        let listed = brief_with(&slice.read(), unsettled);
+        let mut memory = self.memory.lock().unwrap();
+        if let Some(hot) = memory.hot.get_mut(id) {
+            hot.brief_stale = false;
+            hot.changes += 1;
         }
         memory.briefs.insert(id.into(), listed);
         Ok(Streamed { rev: Some(rev), urgent: true })
     }
 
-    /// Prepares writing what a held record's rows lack (see
-    /// `record_rows::plan`) on a reader: the caller holds the Agent's record
-    /// lock, so neither the copy nor its rows change until it is applied.
-    /// Returns the plan and the record's `agent` as it was planned.
-    fn plan_held(&self, id: &str, detail: &RwLock<AgentDetail>) -> Result<(record_rows::Plan, Agent)> {
-        let unwritten = self.memory.lock().unwrap().held.get(id).map(|held| held.unwritten.clone()).unwrap_or_default();
-        let db = self.db.read()?;
-        let d = detail.read();
-        Ok((record_rows::plan(&db, id, &d, &unwritten)?, d.agent.clone()))
+    /// `record_stream` of completed content: applied to a copy of the hot
+    /// slice and written with its journal row at once, so a write that fails
+    /// leaves memory as it was and a retry never applies an event twice. The
+    /// receipts of the user messages it reached are read and confirmed.
+    fn record_deferred(&self, id: &str, slice: &RwLock<AgentDetail>, kind: &str, data: &Value, at: DateTime<Utc>)
+        -> Result<Streamed> {
+        let now_instant = Instant::now();
+        let (mut staged, mut before) = {
+            let d = slice.read();
+            let mut staged = d.clone_meta();
+            staged.turns = d.turns.clone();
+            (staged, watched(&d))
+        };
+        let turns_before = kind.starts_with("claude/").then(|| staged.turns.clone());
+        let spilled = spilled_fields(&staged);
+        if crate::claude::confirms_text(kind) && !spilled.is_empty() {
+            // Its chunks not written yet are part of the text too. A live
+            // assistant frame confirms its own message only.
+            let pending = self.memory.lock().unwrap().hot.get(id).map(|hot| hot.chunks.clone()).unwrap_or_default();
+            let message = data["event"]["message"]["id"].as_str().unwrap_or_default();
+            whole_messages(&*self.db.read()?, id, &mut staged, &pending, Some(message))?;
+        }
+        let applied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            apply_streamed(&mut staged, None, kind, data, at);
+        }));
+        if applied.is_err() {
+            bail!("Workspace 无法应用事件（{kind}）；此事件已跳过");
+        }
+        // A Claude event names its whole Turn: what it changed there is
+        // found by comparing that Turn (one Turn, not the record).
+        let changed = |staged: &AgentDetail| match &turns_before {
+            Some(before) => Dirty::between(before, &staged.turns),
+            None => Dirty::of_applied(staged, kind, data),
+        };
+        let mut dirty = changed(&staged);
+        let clients = user_clients(&staged, &dirty);
+        let mut receipts_before = Vec::new();
+        if !clients.is_empty() {
+            let db = self.db.read()?;
+            for client in &clients {
+                receipts_before.extend(record_rows::receipt(&db, id, client)?);
+            }
+        }
+        if !receipts_before.is_empty() {
+            staged.message_receipts = receipts_before.clone();
+            staged.confirm_message_receipts();
+            before.unconfirmed = receipts_before.iter().filter(|r| !matches!(r.status.as_str(), "accepted" | "rejected")).count();
+            dirty.merge(changed(&staged));
+        }
+        drop(turns_before);
+        let urgent = before != watched(&staged);
+        // A spilled field the event set anew: its chunks are no part of it.
+        let replaced = if spilled.is_empty() { Vec::new() } else {
+            let db = self.db.read()?;
+            let pending = |turn: &str, item: &str, field: &str| -> Vec<String> {
+                self.memory.lock().unwrap().hot.get(id).map(|hot| hot.chunks.iter()
+                    .filter(|c| c.turn == turn && c.item == item && c.field == field).map(|c| c.data.clone()).collect())
+                    .unwrap_or_default()
+            };
+            replaced_fields(&mut staged, spilled, |turn, item, field, start|
+                record_rows::chunks_are(&db, id, turn, item, field, start, &pending(turn, item, field)))?
+        };
+        // With what streamed output its rows still lack.
+        let unwritten = self.memory.lock().unwrap().hot.get(id).map(|hot| hot.unwritten.clone()).unwrap_or_default();
+        dirty.merge(unwritten);
+        let fresh = spill(&mut staged, &dirty);
+        staged.agent.pending_count = staged.pending.len() as u64;
+        let plan = {
+            let receipts = changed_receipts(&receipts_before, &staged.message_receipts);
+            record_rows::plan(&*self.db.read()?, id, &staged, &staged.turns, &[], &dirty, &receipts)?
+        };
+        // Those of a replaced field are not written. The slice still notes
+        // them until this write commits, so a failed one gives all back.
+        let pending = self.take_chunks(id);
+        let kept = |c: &&record_rows::Chunk| !replaced.iter().any(|(t, i, f)| *t == c.turn && *i == c.item && *f == c.field);
+        let agent = &mut staged.agent;
+        let written = (|| -> Result<(Rewrite<'_>, Unsettled)> {
+            let mut db = self.db.write()?;
+            let rewrite = self.rewrite(id);
+            let tx = if urgent { db.transaction()? } else { db.unsynced().transaction()? };
+            tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
+                params![id, kind, data.to_string(), at.to_rfc3339()])?;
+            agent.last_seq = tx.last_insert_rowid();
+            agent.unread_count = unread(&tx, id, agent.reviewed_seq)?;
+            record_rows::apply(&tx, id, &plan, agent)?;
+            for (turn, item, field) in &replaced {
+                record_rows::drop_chunks(&tx, id, turn, item, field)?;
+            }
+            record_rows::write_chunks(&tx, id, pending.iter().filter(kept))?;
+            record_rows::write_chunks(&tx, id, &fresh)?;
+            let unsettled = Unsettled::read(&tx, id)?;
+            tx.commit()?;
+            Ok((rewrite, unsettled))
+        })();
+        drop(plan);
+        let (rewrite, unsettled) = match written {
+            Ok(written) => written,
+            Err(error) => {
+                self.return_chunks(id, pending);
+                return Err(error);
+            }
+        };
+        drop(fresh);
+        drop(pending);
+        settle_gaps(&mut staged);
+        trim_hot(&mut staged, &dirty);
+        let listed = brief_with(&staged, unsettled);
+        let rev = rewrite.done(|memory| {
+            let rev = memory.event(id, kind, data);
+            let mut listed = listed;
+            listed.agent.rev = rev;
+            memory.briefs.insert(id.into(), listed);
+            if !urgent {
+                memory.announce.insert(id.into());
+            }
+            if let Some(hot) = memory.hot.get_mut(id) {
+                hot.unwritten = Dirty::default();
+                hot.unwritten_since = None;
+                hot.unsettled = unsettled;
+                hot.last = now_instant;
+                hot.brief_stale = false;
+                hot.changes += 1;
+            }
+            rev
+        });
+        staged.agent.rev = rev;
+        *slice.write() = staged;
+        Ok(Streamed { rev: Some(rev), urgent })
     }
 
-    /// Writes what a held record's rows lack on the writer's unsynced
-    /// connection: its journaled events are already durable, and its
-    /// ephemeral output need not be. Planned (serialized) before the writer
-    /// is taken; the caller holds the Agent's record lock, so the copy cannot
-    /// change meanwhile.
-    fn write_held(&self, id: &str) -> Result<()> {
-        let detail = self.held(id).context("record not held")?;
-        let (plan, agent) = self.plan_held(id, &detail)?;
-        let rewrite;
-        {
+    /// The streamed fields' starts an Agent's slice lost and its rows still
+    /// lack, taken for a write (`return_chunks` if it fails).
+    fn take_chunks(&self, id: &str) -> Vec<record_rows::Chunk> {
+        self.memory.lock().unwrap().hot.get_mut(id).map(|hot| std::mem::take(&mut hot.chunks)).unwrap_or_default()
+    }
+
+    /// Chunks a failed write took, back before any cut since.
+    fn return_chunks(&self, id: &str, mut chunks: Vec<record_rows::Chunk>) {
+        if chunks.is_empty() {
+            return;
+        }
+        match self.memory.lock().unwrap().hot.get_mut(id) {
+            Some(hot) => {
+                chunks.append(&mut hot.chunks);
+                hot.chunks = chunks;
+            }
+            None => eprintln!("Workspace lost {} streamed chunks of Agent {id}: its slice was dropped", chunks.len()),
+        }
+    }
+
+    /// Writes an active Agent's streamed output its rows lack, on the
+    /// writer's unsynced connection (it need not be durable). The caller
+    /// holds the record lock. A slice whose output cannot be placed in its
+    /// rows (an Item a gap holds came again) is dropped: its rows are as
+    /// last written.
+    fn write_unwritten(&self, id: &str) -> Result<()> {
+        let Some(slice) = self.hot(id) else { return Ok(()) };
+        let dirty = match self.memory.lock().unwrap().hot.get(id) {
+            Some(hot) if hot.unwritten_since.is_some() || !hot.chunks.is_empty() => hot.unwritten.clone(),
+            _ => return Ok(()),
+        };
+        let pending = self.take_chunks(id);
+        let written = (|| -> Result<Rewrite<'_>> {
+            let (plan, agent) = {
+                let d = slice.read();
+                let db = self.db.read()?;
+                (record_rows::plan(&db, id, &d, &d.turns, &[], &dirty, &[])?, d.agent.clone())
+            };
             let mut db = self.db.write()?;
-            rewrite = self.rewrite(id);
+            let rewrite = self.rewrite(id);
             let tx = db.unsynced().transaction()?;
             record_rows::apply(&tx, id, &plan, &agent)?;
+            record_rows::write_chunks(&tx, id, &pending)?;
             tx.commit()?;
-        }
-        rewrite.done(|memory| {
-            if let Some(held) = memory.held.get_mut(id) {
-                held.unwritten = Dirty::default();
-                held.unwritten_since = None;
-                held.ephemeral = false;
+            settle_gaps(&mut slice.write());
+            Ok(rewrite)
+        })();
+        match written {
+            Ok(rewrite) => {
+                rewrite.done(|memory| {
+                    if let Some(hot) = memory.hot.get_mut(id) {
+                        hot.unwritten = Dirty::default();
+                        hot.unwritten_since = None;
+                    }
+                });
+                Ok(())
             }
-        });
-        Ok(())
+            Err(error) => {
+                if error.downcast_ref::<record_rows::GapConflict>().is_some() {
+                    let mut memory = self.memory.lock().unwrap();
+                    memory.hot.remove(id);
+                    memory.briefs.remove(id);
+                }
+                self.return_chunks(id, pending);
+                Err(error)
+            }
+        }
     }
 
-    /// The copy of a record held now, for a test outside this module: a
-    /// commit that copies the record replaces it, one in place keeps it.
-    #[cfg(test)]
-    pub(crate) fn held_for_test(&self, id: &str) -> Option<Arc<RwLock<AgentDetail>>> {
-        self.held(id)
-    }
-
-    /// `release` for a test outside this module, under the record lock;
-    /// whether the record was held.
-    #[cfg(test)]
-    pub(crate) fn release_for_test(&self, id: &str) -> bool {
-        let lock = self.record_lock(id);
-        let _record = lock.lock();
-        let held = self.held(id).is_some();
-        self.release(id);
-        held
-    }
-
-    /// Drops a written held record, keeping its brief current. The caller
-    /// holds the Agent's record lock.
+    /// Drops an Agent's hot slice, keeping its brief current. The caller
+    /// holds the record lock, and its streamed output is written.
     fn release(&self, id: &str) {
-        let held = self.memory.lock().unwrap().held.get(id).map(|held| (held.detail.clone(), held.brief_stale));
-        let Some((detail, stale)) = held else { return };
-        let listed = stale.then(|| brief(&detail.read()));
+        let hot = self.memory.lock().unwrap().hot.get(id).map(|hot| (hot.slice.clone(), hot.brief_stale, hot.unsettled));
+        let Some((slice, stale, unsettled)) = hot else { return };
+        let listed = stale.then(|| brief_with(&slice.read(), unsettled));
         let mut memory = self.memory.lock().unwrap();
-        memory.held.remove(id);
+        memory.hot.remove(id);
         if let Some(listed) = listed {
             memory.briefs.insert(id.into(), listed);
         }
     }
 
-    /// Brings the held records down to `keep` (MAX_STREAMS - 1 to make room
-    /// for one, MAX_STREAMS after one was added, since others may have added
-    /// theirs meanwhile), never dropping `except`: records their rows already
-    /// match go first, then the least recently streamed are written and
-    /// dropped. One whose Agent is being changed right now is passed over
-    /// (the next tick tries again). If a write fails that record stays held
-    /// (memory is over the bound until a write succeeds) rather than holding
-    /// back the event that needs the room.
+    /// Makes the Agent active (its slice held, as an event does), for a test.
+    #[cfg(test)]
+    pub(crate) fn hold_for_test(&self, id: &str) -> Result<()> {
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        self.ensure_hot(id).map(drop)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn release_for_test(&self, id: &str) -> bool {
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        let hot = self.hot(id).is_some();
+        let _ = self.write_unwritten(id);
+        self.release(id);
+        hot
+    }
+
+    /// The hot slice, for a test outside this module.
+    #[cfg(test)]
+    pub(crate) fn held_for_test(&self, id: &str) -> Option<Arc<RwLock<AgentDetail>>> {
+        self.hot(id)
+    }
+
+    /// Brings the Agents in memory down to `keep`, never dropping `except`:
+    /// those written go first, then the least recently active, written and
+    /// dropped. One being changed right now is passed over.
     fn make_room(&self, except: &str, keep: usize) {
         let candidates: Vec<String> = {
             let memory = self.memory.lock().unwrap();
-            if memory.held.len() <= keep {
+            if memory.hot.len() <= keep {
                 return;
             }
-            let mut held: Vec<_> = memory.held.iter()
+            let mut hot: Vec<_> = memory.hot.iter()
                 .filter(|(id, _)| id.as_str() != except)
-                .map(|(id, held)| (held.dirty(), held.last, id.clone()))
+                .map(|(id, hot)| (hot.unwritten_since.is_some(), hot.last, id.clone()))
                 .collect();
-            // Clean ones first, then the least recently streamed.
-            held.sort();
-            held.into_iter().map(|(_, _, id)| id).collect()
+            hot.sort();
+            hot.into_iter().map(|(_, _, id)| id).collect()
         };
         for id in candidates {
-            if self.memory.lock().unwrap().held.len() <= keep {
+            if self.memory.lock().unwrap().hot.len() <= keep {
                 return;
             }
             let lock = self.record_lock(&id);
             let Some(_record) = lock.try_lock() else { continue };
-            let dirty = match self.memory.lock().unwrap().held.get(&id) {
-                Some(held) => held.dirty(),
-                // Dropped meanwhile.
-                None => continue,
-            };
-            if dirty {
-                if let Err(error) = self.write_held(&id) {
-                    eprintln!("Workspace could not write Agent {id} to make room: {error}");
-                    return;
-                }
+            if let Err(error) = self.write_unwritten(&id) {
+                eprintln!("Workspace could not write Agent {id} to make room: {error}");
+                return;
             }
             self.release(&id);
         }
     }
 
-    /// Writes held records whose journaled changes have waited `write_after`
-    /// and forgets idle ones. Ephemeral output alone is never due. Each record
-    /// is written in its own transaction, and announcements and idle cleanup
-    /// happen whatever the writes did, so one record that cannot be written
-    /// holds back no other Agent. The writer is taken only for a due record.
+    /// Writes streamed output that has waited `write_after` and forgets idle
+    /// Agents. Each Agent is written in its own transaction, and
+    /// announcements and idle cleanup happen whatever the writes did.
     pub fn stream_tick(&self, write_after: Duration) -> Tick {
-        self.tick(|h| h.unwritten_since.is_some_and(|since| since.elapsed() >= write_after))
+        self.tick(|hot| hot.unwritten_since.is_some_and(|since| since.elapsed() >= write_after))
     }
 
-    /// Writes every held record its row lacks something of, ephemeral output
-    /// included: on close, and for a controlled restart.
+    /// Writes all streamed output only in memory: on close, and for a
+    /// controlled restart.
     pub fn flush(&self) -> Tick {
-        self.tick(Held::dirty)
+        self.tick(|hot| hot.unwritten_since.is_some())
     }
 
-    fn tick(&self, due: impl Fn(&Held) -> bool) -> Tick {
-        let due_now = |id: &str| self.memory.lock().unwrap().held.get(id).is_some_and(&due);
-        let candidates: Vec<String> = self.memory.lock().unwrap().held.iter()
-            .filter(|(_, held)| due(held))
-            .map(|(id, _)| id.clone()).collect();
+    fn tick(&self, due: impl Fn(&Hot) -> bool) -> Tick {
+        let due_now = |id: &str| self.memory.lock().unwrap().hot.get(id).is_some_and(&due);
+        let candidates: Vec<String> = self.memory.lock().unwrap().hot.iter()
+            .filter(|(_, hot)| due(hot)).map(|(id, _)| id.clone()).collect();
         let mut failed = Vec::new();
         for id in &candidates {
             let lock = self.record_lock(id);
             let _record = lock.lock();
-            // Not if an event wrote it meanwhile.
             if !due_now(id) {
                 continue;
             }
-            if let Err(error) = self.write_held(id) {
+            if let Err(error) = self.write_unwritten(id) {
                 failed.push(error.context(format!("Agent {id} 的记录未写入")));
             }
         }
-        let idle = |held: &Held| !held.dirty() && held.last.elapsed() >= STREAM_IDLE;
-        let candidates: Vec<String> = self.memory.lock().unwrap().held.iter()
-            .filter(|(_, held)| idle(held))
-            .map(|(id, _)| id.clone()).collect();
+        let idle = |hot: &Hot| hot.unwritten_since.is_none() && hot.last.elapsed() >= STREAM_IDLE;
+        let candidates: Vec<String> = self.memory.lock().unwrap().hot.iter()
+            .filter(|(_, hot)| idle(hot)).map(|(id, _)| id.clone()).collect();
         for id in &candidates {
             let lock = self.record_lock(id);
-            // One being changed right now is not idle.
             let Some(_record) = lock.try_lock() else { continue };
-            if self.memory.lock().unwrap().held.get(id.as_str()).is_some_and(idle) {
+            if self.memory.lock().unwrap().hot.get(id.as_str()).is_some_and(idle) {
                 self.release(id);
             }
         }
-        // Over the bound only while records were being changed at once.
         self.make_room("", MAX_STREAMS);
-        // Record locks nobody holds or waits for: one is made again on use.
         self.records.lock().unwrap().retain(|_, lock| Arc::strong_count(lock) > 1);
         Tick { announce: self.memory.lock().unwrap().announce.drain().collect(), failed }
     }
 
-    /// How many parsed records are held (at most MAX_STREAMS while writes
+    /// How many Agents are kept in memory (at most MAX_STREAMS while writes
     /// succeed).
     pub fn streamed_records(&self) -> usize {
-        self.memory.lock().unwrap().held.len()
+        self.memory.lock().unwrap().hot.len()
     }
 
-    /// The held records' Agents (T-140, history composition): each one's ID,
-    /// its name, and whether its record has changes its rows lack yet. Holds
-    /// `memory` only to list them. A record is never waited for or copied:
-    /// one being changed right now gives no name.
+    /// The Agents kept in memory: each one's ID, its name, and whether it has
+    /// streamed output its rows lack yet.
     pub fn held_agents(&self) -> Vec<HeldAgent> {
-        let held: Vec<_> = self.memory.lock().unwrap().held.iter()
-            .map(|(id, held)| (id.clone(), held.detail.clone(), held.unwritten_since.is_some() || held.ephemeral))
+        let hot: Vec<_> = self.memory.lock().unwrap().hot.iter()
+            .map(|(id, hot)| (id.clone(), hot.slice.clone(), hot.unwritten_since.is_some()))
             .collect();
-        held.into_iter()
-            .map(|(id, detail, unwritten)| HeldAgent { name: detail.try_read().map(|d| d.agent.name.clone()), id, unwritten })
+        hot.into_iter()
+            .map(|(id, slice, unwritten)| {
+                let held = slice.try_read();
+                HeldAgent { name: held.as_ref().map(|d| d.agent.name.clone()), bytes: held.as_ref().map(|d| slice_bytes(d)), id, unwritten }
+            })
             .collect()
     }
 
-    pub fn update(
-        &self,
-        id: &str,
-        kind: &str,
-        data: &Value,
-        mutate: impl FnOnce(&mut AgentDetail),
-    ) -> Result<AgentDetail> {
-        Ok(self.commit(id, kind, data, Scope::Compare, mutate, |d, project_id| {
-            let mut copy = d.clone();
-            copy.agent.project_id = project_id;
-            copy.agent.work_summary = crate::rail::project(&copy);
-            copy
-        })?.1)
-    }
-
-    /// `update` returning only what `pick` takes from the committed record,
-    /// as `update` would return it (after `message_content::bind`), without
-    /// copying the rest of the record.
-    pub fn update_picking<T>(
-        &self,
-        id: &str,
-        kind: &str,
-        data: &Value,
-        mutate: impl FnOnce(&mut AgentDetail),
-        pick: impl FnOnce(&AgentDetail) -> T,
-    ) -> Result<T> {
-        Ok(self.commit(id, kind, data, Scope::Compare, mutate, |d, _| pick(d))?.1)
-    }
-
-    /// `update_picking` of a Claude `result` (claude.rs), `project` being its
-    /// projection (`claude::project_event`): written in place on a held
-    /// record whose only Turn in progress is the one it ends, without copying
-    /// the other Turns (`commit_turn`, T-140), and otherwise compared, as
-    /// `update_picking` commits it. `pick` gets the committed record either
-    /// way. `project` runs on the copy, and once more on the record compared
-    /// where writing in place turns out not to show the same write.
-    pub fn update_picking_result<T>(
-        &self,
-        id: &str,
-        kind: &str,
-        data: &Value,
-        project: impl Fn(&mut AgentDetail),
-        pick: impl FnOnce(&AgentDetail) -> T,
-    ) -> Result<T> {
+    /// A change to an Agent, journaled as `kind` with `data`: `mutate` gets
+    /// the Turns `sel` selects (see `Sel`) with the metadata and their
+    /// receipts, and may change, add or remove any of them. Only what it
+    /// changed is written (`Dirty::between` of those Turns), in one
+    /// transaction with the journal row and the unread count. Until the
+    /// commit, readers see the record as it was; if the write fails it stays
+    /// so. `pick` gets the committed slice and its project; what it returns
+    /// is returned with the change's rev.
+    pub fn change<T>(&self, id: &str, kind: &str, data: &Value, sel: Sel, mutate: impl FnOnce(&mut AgentDetail),
+        pick: impl FnOnce(&AgentDetail, Option<String>) -> T) -> Result<(u64, T)> {
         let lock = self.record_lock(id);
         let _record = lock.lock();
-        if let Some((_, held)) = self.commit_turn(id, kind, data, TurnChange::Result(&project))? {
-            return Ok(pick(&held.read()));
-        }
-        Ok(self.commit_locked(id, kind, data, Scope::Compare, project, |d, _| pick(d))?.1)
+        self.change_locked(id, kind, data, sel, false, &[], mutate, pick)
     }
 
-    /// `record_event` of a Claude send's `turnRequested` or `message/bound`
-    /// (claude.rs), which changes the Turn it names (`data.turnId`), appended
-    /// when the record has none, and the Agent's status and error: written in
-    /// place on a held record, without copying the other Turns
-    /// (`commit_turn`, `TurnChange::Sent`, T-140), and otherwise as
-    /// `record_event` writes it. `mutate` runs on the copy, and once more on
-    /// the record compared where writing in place turns out not to show the
-    /// same write. Returns the change's rev.
-    pub fn record_send(&self, id: &str, kind: &str, data: &Value, mutate: impl Fn(&mut AgentDetail)) -> Result<u64> {
-        let lock = self.record_lock(id);
-        let _record = lock.lock();
-        if let Some((rev, _)) = self.commit_turn(id, kind, data, TurnChange::Sent(&mutate))? {
-            return Ok(rev);
-        }
-        Ok(self.commit_locked(id, kind, data, Scope::Compare, mutate, |_, _| ())?.0)
-    }
-
-    /// `record_send` of a change made only where `shown`, reading every Turn
-    /// before it, finds nothing: a Claude follow-up is shown once, in
-    /// whichever Turn a delivery may already have put it (`followUpQueued`,
-    /// claude.rs). The commit is made either way, as `record_event` makes
-    /// one that changes no Turn. On a held record the Turns are read in
-    /// place under the record lock, which every write takes, so none comes
-    /// between that read and the change; otherwise `shown` reads the record
-    /// compared, as the change did when it read every Turn itself.
-    pub fn record_send_unless(&self, id: &str, kind: &str, data: &Value, shown: impl Fn(&[Value]) -> bool,
-        mutate: impl Fn(&mut AgentDetail)) -> Result<u64> {
-        let lock = self.record_lock(id);
-        let _record = lock.lock();
-        if let Some(held) = self.held(id) {
-            let found = shown(&held.read().turns[..]);
-            let change = |d: &mut AgentDetail| if !found { mutate(d) };
-            if let Some((rev, _)) = self.commit_turn(id, kind, data, TurnChange::Sent(&change))? {
-                return Ok(rev);
-            }
-        }
-        let change = |d: &mut AgentDetail| if !shown(&d.turns[..]) { mutate(d) };
-        Ok(self.commit_locked(id, kind, data, Scope::Compare, change, |_, _| ())?.0)
-    }
-
-    /// `record_event` of a Claude `message_delivery` (`claude::deliver_message`),
-    /// which shows the follow-up Claude named in the Turn it names
-    /// (`data.turnId`), moved from the first Turn showing it, and settles the
-    /// Agent's status. On a held record where some Turn shows it, only that
-    /// Turn and the one named are copied and changed (`commit_turns`, T-140);
-    /// `change` is told whether another Turn is in progress, read in place
-    /// under the record lock. Otherwise it is compared as `record_event`
-    /// compares it, and told no other Turn is: so is a follow-up no Turn
-    /// shows, which the change builds, reading its images, only once.
-    /// `change` may run twice where it does not. Returns the change's rev.
-    pub fn record_delivery(&self, id: &str, kind: &str, data: &Value, client_id: &str,
-        change: impl Fn(&mut AgentDetail, bool)) -> Result<u64> {
-        let lock = self.record_lock(id);
-        let _record = lock.lock();
-        if let Some(rev) = self.commit_turns(id, kind, data, client_id, &change)? {
-            return Ok(rev);
-        }
-        Ok(self.commit_locked(id, kind, data, Scope::Compare, |d| change(d, false), |_, _| ())?.0)
-    }
-
-    /// `update` without returning the record, which saves copying a large
-    /// record held in memory. For native events, whose callers only announce
-    /// the change. Returns the change's rev (see `Agent::rev`).
-    pub fn record_event(
-        &self,
-        id: &str,
-        kind: &str,
-        data: &Value,
-        mutate: impl FnOnce(&mut AgentDetail),
-    ) -> Result<u64> {
-        Ok(self.commit(id, kind, data, Scope::Compare, mutate, |_, _| ())?.0)
-    }
-
-    /// `record_event` for Store's own change to the metadata alone (see
-    /// `Meta`) that reads the Turns: written as the metadata, without
-    /// comparing a long record. `mutate` must not change a Turn.
-    fn record_meta_change(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut AgentDetail)) -> Result<u64> {
-        Ok(self.commit(id, kind, data, Scope::Meta, mutate, |_, _| ())?.0)
-    }
-
-    /// `record_event` for a change to the record's metadata only: `mutate`
-    /// gets no Turn (see `Meta`). What it wrote is found without comparing the
-    /// whole record: the metadata, and the Items `message_content::restore`
-    /// changed. Returns the change's rev.
-    pub fn update_meta(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut Meta<'_>)) -> Result<u64> {
-        Ok(self.commit_meta(id, kind, data, false, mutate, |_, _| ())?.0)
-    }
-
-    /// `update_meta` of a native event that `AgentDetail::apply` takes as a
-    /// change to the metadata alone (`serverRequest/resolved`,
-    /// `thread/status/changed`) or as no change at all
-    /// (`mcpServer/startupStatus/updated`), with `apply`'s last step too:
-    /// each receipt not yet accepted or rejected is accepted by the first
-    /// Turn with its user message (`confirm_message_receipts`), after the
-    /// receipts are bound. So a receipt still sending or uncertain is left as
-    /// `apply` leaves it, without a copy of the record (T-140). Returns the
-    /// change's rev.
-    pub fn update_meta_applied(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut Meta<'_>)) -> Result<u64> {
-        Ok(self.commit_meta(id, kind, data, true, mutate, |_, _| ())?.0)
-    }
-
-    /// `update_meta` for a change to the metadata that reads a held record's
-    /// Turns without changing one: a Claude permission request, its
-    /// cancellation and its resolution, after which the Agent's status
-    /// follows whether a Turn runs (T-140). `mutate` gets the held Turns, to
-    /// read only. None, having changed nothing, where the record is not held
-    /// or `applies` refuses its Turns (a request for a Turn the record lacks,
-    /// which opens that Turn): the caller then commits as before. Checked and
-    /// committed under the Agent's record lock, so `mutate` reads the Turns
-    /// `applies` saw. Returns the change's rev.
-    pub fn update_meta_by_turns(
-        &self,
-        id: &str,
-        kind: &str,
-        data: &Value,
-        applies: impl FnOnce(&[Value]) -> bool,
-        mutate: impl FnOnce(&[Value], &mut Meta<'_>),
-    ) -> Result<Option<u64>> {
-        let lock = self.record_lock(id);
-        let _record = lock.lock();
-        let Some(held) = self.held(id) else { return Ok(None) };
-        if !applies(&held.read().turns) {
-            return Ok(None);
-        }
-        Ok(Some(self.commit_meta_locked(id, kind, data, false, Some(held), mutate, |_, _| ())?.0))
-    }
-
-    /// `update_picking` for a change to the metadata only (see `update_meta`).
-    pub fn update_picking_meta<T>(
-        &self,
-        id: &str,
-        kind: &str,
-        data: &Value,
-        mutate: impl FnOnce(&mut Meta<'_>),
-        pick: impl FnOnce(&AgentDetail) -> T,
-    ) -> Result<T> {
-        Ok(self.commit_meta(id, kind, data, false, mutate, |d, _| pick(d))?.1)
-    }
-
-    /// `record_event` for one native event that the record takes as
-    /// `AgentDetail::apply(applied, data)` does, journaled as `kind`
-    /// (`turn/accepted` applies the RPC response as `turn/started`). What it
-    /// wrote is what the event names (`Dirty::of_applied`) and the Items
-    /// `message_content::restore` changed, not found by comparing the whole
-    /// record. A Codex `turn/completed` is the exception: written so only
-    /// in place (`commit_turn`), and otherwise compared, as `record_event`
-    /// commits it. Returns the change's rev.
-    pub fn record_applied(&self, id: &str, kind: &str, applied: &str, data: &Value) -> Result<u64> {
-        // Only the native event and the RPC response applied as it: another
-        // kind applied as turn/started (turn/completed has a journal check
-        // of its own in `commit`) is committed as before.
-        if applied == "turn/started" && matches!(kind, "turn/started" | "turn/accepted") {
-            let lock = self.record_lock(id);
-            let _record = lock.lock();
-            if let Some((rev, _)) = self.commit_turn(id, kind, data, TurnChange::Applied(applied))? {
-                return Ok(rev);
-            }
-            return Ok(self.commit_locked(id, kind, data, Scope::Applied(applied), |d| d.apply(applied, data), |_, _| ())?.0);
-        }
-        if applied == "turn/completed" && kind == "turn/completed" {
-            let lock = self.record_lock(id);
-            let _record = lock.lock();
-            if let Some((rev, _)) = self.commit_turn(id, kind, data, TurnChange::Applied(applied))? {
-                return Ok(rev);
-            }
-            return Ok(self.commit_locked(id, kind, data, Scope::Compare, |d| d.apply(applied, data), |_, _| ())?.0);
-        }
-        Ok(self.commit(id, kind, data, Scope::Applied(applied), |d| d.apply(applied, data), |_, _| ())?.0)
-    }
-
-    /// The record is read (a copy of the held one, else its rows), changed,
-    /// compared and its changed rows serialized under the Agent's record lock
-    /// only; the writer is held just for the journal row, the unread count
-    /// and those rows. Until the commit, readers see the record as it was; if
-    /// the write fails it stays so (nothing half-applied, held output not
-    /// lost). The written record stays held, so the next event or update (a
-    /// Turn start is several) need not load it. `pick` gets the committed
-    /// record and its project; what it returns is returned with the rev.
-    fn commit<T>(
-        &self,
-        id: &str,
-        kind: &str,
-        data: &Value,
-        scope: Scope<'_>,
-        mutate: impl FnOnce(&mut AgentDetail),
-        pick: impl FnOnce(&AgentDetail, Option<String>) -> T,
-    ) -> Result<(u64, T)> {
-        let lock = self.record_lock(id);
-        let _record = lock.lock();
-        self.commit_locked(id, kind, data, scope, mutate, pick)
-    }
-
-    /// `commit`, for a caller holding the Agent's record lock.
-    fn commit_locked<T>(
-        &self,
-        id: &str,
-        kind: &str,
-        data: &Value,
-        scope: Scope<'_>,
-        mutate: impl FnOnce(&mut AgentDetail),
-        pick: impl FnOnce(&AgentDetail, Option<String>) -> T,
-    ) -> Result<(u64, T)> {
-        // The held copy is newer than the row: it has the streamed events.
-        let held = self.held(id);
-        let (mut d, mut unwritten, loaded) = match &held {
-            Some(detail) => {
-                let unwritten = self.memory.lock().unwrap().held.get(id).map(|held| held.unwritten.clone()).unwrap_or_default();
-                (detail.read().clone(), unwritten, None)
-            }
-            None => {
-                let loaded = load(&*self.db.read()?, id);
-                if let Err(error) = &loaded {
-                    self.list_damaged(id, error);
-                }
-                let (detail, replayed) = loaded?;
-                // Kept only to compare with: a scope that names what it
-                // writes needs no second copy of a long history (T-140).
-                let before = matches!(scope, Scope::Compare).then(|| detail.clone());
-                (detail, replayed, before)
-            }
+    /// The slice `sel` selects as it is now, for a change: from the rows,
+    /// with the hot Turns (and metadata) in place of theirs where the Agent
+    /// is in memory (they may hold streamed output the rows lack). The
+    /// caller holds the record lock.
+    fn slice_for_change(&self, id: &str, sel: &Sel) -> Result<AgentDetail> {
+        self.ensure_undamaged(id)?;
+        let hot = self.hot(id);
+        // One snapshot: a read connection holds one until dropped.
+        let db = self.db.read()?;
+        let mut d = match &hot {
+            Some(slice) => slice.read().clone_meta(),
+            None => record_rows::load_meta(&db, id).inspect_err(|e| self.note_damage(id, e))?.context("Agent 不存在")?,
         };
-        let ((), restored) = crate::message_content::collect_restored(|| {
-            mutate(&mut d);
-            crate::message_content::bind(&mut d.turns, &mut d.message_receipts);
-        });
+        // Receipts are never held: those not settled are read for a change.
+        d.message_receipts = record_rows::open_receipts(&db, id)?;
+        if matches!(sel, Sel::Meta) {
+            return Ok(d);
+        }
+        let mut ids = selected(&db, id, sel)?;
+        // Those `Sel::Named` does not name are taken as the Agent holds them.
+        let whole = match sel {
+            Sel::Named(whole) => Some(whole),
+            _ => None,
+        };
+        let held = |tid: &str| whole.is_some_and(|whole| !whole.iter().any(|w| w == tid));
+        // The hot Turns as they are (their output is written), but those with
+        // gaps, which a change gets whole from their rows unless it holds them.
+        let hot_turns: Vec<Value> = hot.as_ref().map(|slice| slice.read().turns.iter()
+            .filter(|t| held(t["id"].as_str().unwrap_or_default())
+                || !t["items"].as_array().is_some_and(|items| items.iter().any(|i| record_rows::gap_of(i).is_some())))
+            .cloned().collect()).unwrap_or_default();
+        ids.retain(|tid| !hot_turns.iter().any(|t| t["id"] == tid.as_str()));
+        let mut turns: Vec<(usize, Value)> = match whole {
+            Some(whole) => read_named(&db, id, &ids, whole),
+            None => record_rows::load_turns(&db, id, &ids, false),
+        }.inspect_err(|e| self.note_damage(id, e))?;
+        // Memory keeps what a change read (`change_locked`): an Item still in
+        // progress comes whole, as an active Agent holds it, since streamed
+        // output appends to it and a field's preview is not its value.
+        for (_, turn) in &mut turns {
+            whole_in_progress(&db, id, turn).inspect_err(|e| self.note_damage(id, e))?;
+        }
+        if !hot_turns.is_empty() {
+            let names: Vec<String> = hot_turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
+            let ords = record_rows::turn_ords(&db, id, &names)?;
+            let mut next = usize::MAX / 2;
+            for turn in hot_turns {
+                // A hot Turn not written yet is the newest.
+                let ord = turn["id"].as_str().and_then(|tid| ords.get(tid).copied()).unwrap_or_else(|| { next += 1; next });
+                turns.push((ord, turn));
+            }
+            turns.sort_by_key(|(ord, _)| *ord);
+        }
+        d.turns = turns.into_iter().map(|(_, turn)| turn).collect();
+        let names: Vec<String> = d.turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
+        for receipt in record_rows::turn_receipts(&db, id, &names)? {
+            if !d.message_receipts.iter().any(|r| r.input.client_message_id == receipt.input.client_message_id) {
+                d.message_receipts.push(receipt);
+            }
+        }
+        Ok(d)
+    }
+
+    /// `change`, for a caller holding the Agent's record lock. With
+    /// `confirms`, receipts are accepted by the slice's user messages after
+    /// the change (`confirm_message_receipts`).
+    #[allow(clippy::too_many_arguments)]
+    fn change_locked<T>(&self, id: &str, kind: &str, data: &Value, sel: Sel, confirms: bool, receipts: &[&str],
+        mutate: impl FnOnce(&mut AgentDetail), pick: impl FnOnce(&AgentDetail, Option<String>) -> T) -> Result<(u64, T)> {
+        // Streamed output its rows lack is written first: a change then
+        // reads (and writes) only rows that hold all of it.
+        self.write_unwritten(id)?;
+        let mut d = self.slice_for_change(id, &sel)?;
+        // The receipts the change names, settled or not.
+        for client in receipts {
+            if !d.message_receipts.iter().any(|r| r.input.client_message_id == *client) {
+                if let Some(receipt) = record_rows::receipt(&*self.db.read()?, id, client)? {
+                    d.message_receipts.push(receipt);
+                }
+            }
+        }
+        let loaded: Vec<String> = d.turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
+        let turns_before = d.turns.clone();
+        if crate::claude::confirms_text(kind) {
+            // A backfill may confirm any saved message of the Turns it reads:
+            // each is written whole below, its chunks dropped (the unwritten
+            // ones were written above), and memory keeps it whole until it
+            // leaves (an ended Item past HOT_ITEMS) or streams again.
+            whole_messages(&*self.db.read()?, id, &mut d, &[], None)?;
+        }
+        let receipts_before = d.message_receipts.clone();
+        mutate(&mut d);
+        crate::message_content::bind(&mut d.turns, &mut d.message_receipts);
+        if confirms {
+            crate::model::accept_receipts(d.turns.iter(), &mut d.message_receipts);
+        }
         d.agent.pending_count = d.pending.len() as u64;
         d.agent.updated_at = now();
-        // What `mutate` changed (it may change anything) is found by
-        // comparing, unless its scope names it; only that is written. A
-        // record just loaded is compared with the copy kept for that.
-        unwritten.merge(match (&held, &loaded) {
-            (Some(detail), _) => scoped(&scope, &d, data, restored).unwrap_or_else(|| Dirty::between(&detail.read(), &d)),
-            (None, Some(before)) => Dirty::between(before, &d),
-            (None, None) => scoped(&scope, &d, data, restored).unwrap_or_else(Dirty::all),
-        });
-        drop(loaded);
-        let plan = record_rows::plan(&*self.db.read()?, id, &d, &unwritten)?;
-        #[cfg(test)]
-        if let Some((watched, planned)) = &*AFTER_PLAN.lock().unwrap() {
-            if watched == id {
-                let _ = planned.send(());
-            }
-        }
-        let rewrite;
-        let (already_completed, project_id) = {
-            let mut db = self.db.write()?;
-            rewrite = self.rewrite(id);
-            let tx = db.transaction()?;
-            let already_completed = completed_before(&tx, id, kind, data)?;
-            tx.execute(
-                "INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
-                params![id, if already_completed { "turn/reconfirmed" } else { kind }, data.to_string(), now()],
-            )?;
-            d.agent.last_seq = tx.last_insert_rowid();
-            d.agent.unread_count = unread(&tx, id, d.agent.reviewed_seq)?;
-            record_rows::apply(&tx, id, &plan, &d.agent)?;
-            // Projected only after the record is written, like work_summary.
-            let project_id = crate::projects::agent_project(&tx, id)?;
-            tx.commit()?;
-            #[cfg(test)]
-            AFTER_COMMIT.with(|hook| if let Some(hook) = hook.borrow_mut().as_mut() { hook() });
-            (already_completed, project_id)
-        };
-        drop(plan);
-        let mut listed = brief(&d);
-        // Visible with the commit (see `Rewrite`): the rows, their rev and
-        // the brief. A held copy still has the previous rev with its
-        // previous content until it is replaced below.
-        let rev = rewrite.done(|memory| {
-            let rev = memory.event(id, if already_completed { "turn/reconfirmed" } else { kind }, data);
-            listed.agent.rev = rev;
-            memory.briefs.insert(id.into(), listed);
-            rev
-        });
-        d.agent.rev = rev;
-        let picked = pick(&d, project_id);
-        if held.is_none() {
-            self.make_room(id, MAX_STREAMS - 1);
-        }
-        self.memory.lock().unwrap().held.insert(id.into(), Held::new(d, Dirty::default(), Instant::now()));
-        if held.is_none() {
-            self.make_room(id, MAX_STREAMS);
-        }
-        Ok((rev, picked))
-    }
-
-    /// `record_applied` of a Codex `turn/started` (or the `turn/accepted`
-    /// applied as one) or `turn/completed`, `update_picking_result` of a
-    /// Claude `result`, or `record_send` of a Claude send's `turnRequested`
-    /// or `message/bound` (or `record_send_unless` of its `followUpQueued`),
-    /// to a record held in memory, without copying its other Turns (T-140). `apply` of a Codex event changes the Turn with the
-    /// event's ID, appended when the record has none, and the Agent's
-    /// metadata: its status and error, and for `turn/completed` the requests
-    /// of that Turn it no longer waits for. It then binds, restores and
-    /// accepts the receipts by the user messages of every Turn
-    /// (`confirm_message_receipts`), unless a `turn/started` finds that Turn
-    /// already ended. A Claude `result` changes the Turn it ends and the
-    /// metadata, and reads or changes no other Turn while none other is in
-    /// progress (see `TurnChange::Result`); it leaves the receipts alone. A
-    /// send's change touches the Turn it names, appended when the record has
-    /// none, and the metadata, and reads no other Turn (see
-    /// `TurnChange::Sent`); it leaves the receipts alone too. And
-    /// `commit` binds them once more. That Turn and the metadata are copied
-    /// and the event's own change applied to the copies; the receipt steps
-    /// run as they would, in order, over the held Turns with the copy in that
-    /// Turn's place (bound by the last match, accepted by the first),
-    /// changing only the copy; the write is planned from those Turns. A
-    /// `turn/completed` of a Turn completed before is journaled as
-    /// `turn/reconfirmed`, as `commit` journals it, checked in the same
-    /// transaction. Once it has committed, the copies replace the held
-    /// metadata and that Turn under the record's write lock, so a reader sees
-    /// the record before or after the event, and a write that fails leaves it
-    /// as it was; the held record is returned with the rev. None, having
-    /// changed nothing, where this cannot show it writes what `commit` would:
-    /// a record not held or kept as one body, an event without a Turn ID,
-    /// Turns not told apart by ID, a `result` for a Turn the record lacks,
-    /// one of a sub-agent or one while another Turn is in progress, a send
-    /// whose change leaves other than the one Turn it names, or receipts
-    /// after which `restore` would change an Item of another Turn.
-    /// The caller holds the record lock.
-    fn commit_turn(&self, id: &str, kind: &str, data: &Value, change: TurnChange<'_>)
-        -> Result<Option<(u64, Arc<RwLock<AgentDetail>>)>> {
-        let Some(held) = self.held(id) else { return Ok(None) };
-        let Some(turn_id) = data["turnId"].as_str().or_else(|| data["turn"]["id"].as_str()) else { return Ok(None) };
-        let mut unwritten = self.memory.lock().unwrap().held.get(id).map(|held| held.unwritten.clone()).unwrap_or_default();
-        // The other Turns before and after the one the event names; it is
-        // appended when the record has none.
-        let around = |turns: &[Value], at: Option<usize>| match at {
-            Some(k) => (turns[..k].len(), k + 1),
-            None => (turns.len(), turns.len()),
-        };
-        let (at, mut staged) = {
-            let d = held.read();
-            if !record_rows::told_apart(&d.turns) {
-                return Ok(None);
-            }
-            let at = d.turns.iter().position(|t| t["id"] == turn_id);
-            // A `result`'s projection reads and changes the Turns still in
-            // progress: only the one it ends may be, and it must be there.
-            // A sub-agent's frame would be projected onto the Turn holding
-            // its call (`claude::event_turn`), which the copy may not be.
-            if matches!(change, TurnChange::Result(_))
-                && (crate::claude::subagent_event(&data["event"]) || at.is_none()
-                    || d.turns.iter().enumerate().any(|(k, t)| Some(k) != at && t["status"] == "inProgress")) {
-                return Ok(None);
-            }
-            let mut staged = meta_of(&d);
-            staged.turns.extend(at.map(|k| d.turns[k].clone()));
-            (at, staged)
-        };
-        let (copied, restored) = crate::message_content::collect_restored(|| {
-            // The event's own change to the copy, with the receipts set
-            // aside: `apply`'s last step (`confirm_message_receipts`) binds,
-            // restores and accepts them by every Turn, so it runs below over
-            // the held Turns with the copy in place, not over the copy alone.
-            // A Turn already ended skips that step on `turn/started`, as
-            // `apply` does. The status either event settles is `working`,
-            // `idle` or `error`, else `waiting` for a blocking request, none
-            // of which asks whether a Turn runs (`model::settle_status`). A
-            // Claude `result` has no such step; the status it settles asks
-            // only whether a Turn runs, which, of the Turns, only the copy
-            // may (`claude::refresh_status`). A send sets the status it
-            // leaves itself, if any, and confirms nothing, as `record_event`
-            // of it does not.
-            let confirms = match change {
-                TurnChange::Applied(applied) => applied != "turn/started" || staged.turns.first().is_none_or(crate::model::starts),
-                TurnChange::Result(_) | TurnChange::Sent(_) => false,
-            };
-            match change {
-                TurnChange::Applied(applied) => {
-                    let receipts = std::mem::take(&mut staged.message_receipts);
-                    staged.apply(applied, data);
-                    staged.message_receipts = receipts;
-                }
-                TurnChange::Result(project) | TurnChange::Sent(project) => project(&mut staged),
-            }
-            let d = held.read();
-            let (end, start) = around(&d.turns, at);
-            let (before, after) = (&d.turns[..end], &d.turns[start..]);
-            // `message_content::bind` over those Turns: bound by the last
-            // match, in order; only the copy may change.
-            let bind = |staged: &mut AgentDetail| {
-                crate::message_content::bind_receipts(before, &mut staged.message_receipts);
-                crate::message_content::bind_receipts(&staged.turns, &mut staged.message_receipts);
-                crate::message_content::bind_receipts(after, &mut staged.message_receipts);
-                if crate::message_content::restoring(before, &staged.message_receipts, false)
-                    || crate::message_content::restoring(after, &staged.message_receipts, false) {
-                    return false;
-                }
-                let restorer = crate::message_content::Restorer::new(&staged.message_receipts);
-                for turn in &mut staged.turns {
-                    restorer.restore(turn, false);
-                }
-                true
-            };
-            if confirms {
-                if !bind(&mut staged) {
-                    return false;
-                }
-                // Accepted by the first match, in order.
-                let turns = before.iter().chain(staged.turns.iter()).chain(after.iter());
-                crate::model::accept_receipts(turns, &mut staged.message_receipts);
-            }
-            // `commit`'s own bind after the change.
-            bind(&mut staged)
-        });
-        if !copied {
-            return Ok(None);
-        }
-        // A send's change leaves the one Turn it names, or is compared: one
-        // that finds no Turn to change appends none.
-        if matches!(change, TurnChange::Sent(_)) && !(staged.turns.len() == 1 && staged.turns[0]["id"] == turn_id) {
-            return Ok(None);
-        }
-        staged.agent.pending_count = staged.pending.len() as u64;
-        staged.agent.updated_at = now();
-        // What a `result` or a send changes is found as comparing finds it,
-        // in its Turn alone (the other Turns stay as they are) and the
-        // metadata (always written): only the Turn's Items that changed are
-        // planned. An unchanged one would not change its row, but naming the
-        // whole Turn would serialize every Item of it. A Turn the send
-        // appends has no row yet, so `record_rows::plan_parts` writes it
-        // whole without its being named.
-        let dirty = match change {
-            TurnChange::Applied(applied) => scoped(&Scope::Applied(applied), &staged, data, restored),
-            TurnChange::Result(_) | TurnChange::Sent(_) => {
-                let mut dirty = Dirty::default();
-                if let (Some(k), Some(copy)) = (at, staged.turns.first()) {
-                    dirty.turn_between(turn_id, &held.read().turns[k], copy);
-                }
-                for (turn, item, renamed) in restored {
-                    if renamed { dirty.whole_turn(&turn) } else { dirty.item(&turn, &item) };
-                }
-                dirty.identified(&staged)
-            }
-        };
-        let Some(dirty) = dirty else { return Ok(None) };
-        unwritten.merge(dirty);
-        let turn = staged.turns.pop().expect("the change keeps the Turn it names");
-        let plan = {
-            let db = self.db.read()?;
-            let d = held.read();
-            let (end, start) = around(&d.turns, at);
-            let turns = d.turns[..end].iter().chain(std::iter::once(&turn)).chain(d.turns[start..].iter());
-            record_rows::plan_parts(&db, id, turns, &staged, &unwritten)?
-        };
-        let Some(plan) = plan else { return Ok(None) };
-        #[cfg(test)]
-        match change {
-            TurnChange::Applied("turn/started") => STARTED_IN_PLACE.with(|n| n.set(n.get() + 1)),
-            TurnChange::Applied(_) => COMPLETED_IN_PLACE.with(|n| n.set(n.get() + 1)),
-            TurnChange::Result(_) => RESULT_IN_PLACE.with(|n| n.set(n.get() + 1)),
-            TurnChange::Sent(_) => {
-                SENT_IN_PLACE.with(|n| n.set(n.get() + 1));
-                SENT_IN_PLACE_FOR.lock().unwrap().push(id.to_owned());
-            }
-        }
-        let rewrite;
-        let journaled = {
-            let mut db = self.db.write()?;
-            rewrite = self.rewrite(id);
-            let tx = db.transaction()?;
-            let journaled = if completed_before(&tx, id, kind, data)? { "turn/reconfirmed" } else { kind };
-            tx.execute(
-                "INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
-                params![id, journaled, data.to_string(), now()],
-            )?;
-            staged.agent.last_seq = tx.last_insert_rowid();
-            staged.agent.unread_count = unread(&tx, id, staged.agent.reviewed_seq)?;
-            record_rows::apply(&tx, id, &plan, &staged.agent)?;
-            tx.commit()?;
-            #[cfg(test)]
-            AFTER_COMMIT.with(|hook| if let Some(hook) = hook.borrow_mut().as_mut() { hook() });
-            journaled
-        };
-        drop(plan);
-        // Nothing after the commit can fail; locks are taken as in
-        // `commit_meta`.
-        let mut d = held.write();
-        put_meta(&mut d, staged);
-        match at {
-            Some(k) => d.turns[k] = turn,
-            None => d.turns.push(turn),
-        }
-        let mut listed = brief(&d);
-        let rev = rewrite.done(|memory| {
-            let rev = memory.event(id, journaled, data);
-            listed.agent.rev = rev;
-            memory.briefs.insert(id.into(), listed);
-            if let Some(entry) = memory.held.get_mut(id).filter(|entry| Arc::ptr_eq(&entry.detail, &held)) {
-                entry.unwritten = Dirty::default();
-                entry.unwritten_since = None;
-                entry.ephemeral = false;
-                entry.last = Instant::now();
-                entry.brief_stale = false;
-                entry.changes += 1;
-            }
-            rev
-        });
-        d.agent.rev = rev;
-        drop(d);
-        Ok(Some((rev, held)))
-    }
-
-    /// `commit_turn` of a Claude delivery (`record_delivery`), which may change
-    /// two Turns: the Turn it names (T), and the first Turn in order showing
-    /// the follow-up (S), unless T shows it. T, where the record has it, and
-    /// S are copied with the metadata, in record order, so the change finds
-    /// the Turns it finds on the whole record: T if and only if the record
-    /// has it, and the follow-up first in S. It is told whether a Turn other
-    /// than those is in progress, the one thing it reads of the others. The
-    /// receipts are bound and Items restored over the held Turns in order,
-    /// the copies in their places and T, appended, last, as `commit` binds
-    /// them; only the copies change. The write is planned from those Turns
-    /// and made in one transaction; only after it commits do the copies
-    /// replace the held metadata and Turns, so a reader sees the record
-    /// before or after the delivery, and a write that fails leaves it as it
-    /// was. None, having changed nothing, where this cannot show it writes
-    /// what `commit` would: a record not held or kept as one body, no Turn
-    /// ID, Turns not told apart by ID, no Turn showing the follow-up, a change
-    /// that leaves other Turns than those copied (and T, appended where the
-    /// record lacked it), or receipts after which `restore` would change an
-    /// Item of another Turn. The caller holds the record lock.
-    fn commit_turns(&self, id: &str, kind: &str, data: &Value, client_id: &str,
-        change: &dyn Fn(&mut AgentDetail, bool)) -> Result<Option<u64>> {
-        let Some(held) = self.held(id) else { return Ok(None) };
-        let Some(turn_id) = data["turnId"].as_str() else { return Ok(None) };
-        let mut unwritten = self.memory.lock().unwrap().held.get(id).map(|held| held.unwritten.clone()).unwrap_or_default();
-        let shows = |turn: &Value| turn["items"].as_array().is_some_and(|items| items.iter().any(|i| i["clientId"] == client_id));
-        // The positions of the Turns copied, in record order, and the IDs
-        // the change must leave: those, then T where it appends it.
-        let (at, expected, running, mut staged) = {
-            let d = held.read();
-            if !record_rows::told_apart(&d.turns) {
-                return Ok(None);
-            }
-            let named = d.turns.iter().position(|t| t["id"] == turn_id);
-            let from = match named {
-                Some(k) if shows(&d.turns[k]) => None,
-                // A follow-up no Turn shows is built from its receipt and its
-                // images, read from disk: compared, before the change runs.
-                _ => Some(match d.turns.iter().position(shows) { Some(k) => k, None => return Ok(None) }),
-            };
-            let mut at: Vec<usize> = named.into_iter().chain(from).collect();
-            at.sort_unstable();
-            let mut expected: Vec<Value> = at.iter().map(|&k| d.turns[k]["id"].clone()).collect();
-            if named.is_none() {
-                expected.push(turn_id.into());
-            }
-            let running = d.turns.iter().enumerate().any(|(k, t)| !at.contains(&k) && t["status"] == "inProgress");
-            let mut staged = meta_of(&d);
-            staged.turns.extend(at.iter().map(|&k| d.turns[k].clone()));
-            (at, expected, running, staged)
-        };
-        let (copied, restored) = crate::message_content::collect_restored(|| {
-            change(&mut staged, running);
-            if staged.turns.len() != expected.len() || staged.turns.iter().zip(&expected).any(|(t, id)| t["id"] != *id) {
-                return false;
-            }
-            // `message_content::bind` over the Turns in order, the copies in
-            // their places: bound by the last match; only the copies may change.
-            // The held Turns before the k-th copy (after the last, for k = at.len()).
-            fn between<'a>(turns: &'a [Value], at: &[usize], k: usize) -> &'a [Value] {
-                let start = if k == 0 { 0 } else { at[k - 1] + 1 };
-                &turns[start..at.get(k).copied().unwrap_or(turns.len())]
-            }
-            let d = held.read();
-            let held_between = |k: usize| between(&d.turns, &at, k);
-            for k in 0..=at.len() {
-                crate::message_content::bind_receipts(held_between(k), &mut staged.message_receipts);
-                if let Some(copy) = staged.turns.get(k).filter(|_| k < at.len()) {
-                    crate::message_content::bind_receipts(std::slice::from_ref(copy), &mut staged.message_receipts);
-                }
-            }
-            crate::message_content::bind_receipts(&staged.turns[at.len()..], &mut staged.message_receipts);
-            if (0..=at.len()).any(|k| crate::message_content::restoring(held_between(k), &staged.message_receipts, false)) {
-                return false;
-            }
-            let restorer = crate::message_content::Restorer::new(&staged.message_receipts);
-            for turn in &mut staged.turns {
-                restorer.restore(turn, false);
-            }
-            true
-        });
-        if !copied {
-            return Ok(None);
-        }
-        staged.agent.pending_count = staged.pending.len() as u64;
-        staged.agent.updated_at = now();
-        // What changed in the copies, found as comparing finds it; T, where
-        // appended, has no row yet, so `record_rows::plan_parts` writes it whole.
-        let mut dirty = Dirty::default();
-        {
-            let d = held.read();
-            for (copy, &k) in staged.turns.iter().zip(&at) {
-                if let Some(turn) = d.turns[k]["id"].as_str() {
-                    dirty.turn_between(turn, &d.turns[k], copy);
-                }
-            }
-        }
-        for (turn, item, renamed) in restored {
-            if renamed { dirty.whole_turn(&turn) } else { dirty.item(&turn, &item) };
-        }
-        let Some(dirty) = dirty.identified(&staged) else { return Ok(None) };
-        unwritten.merge(dirty);
-        let mut copies = std::mem::take(&mut staged.turns);
-        let appended = copies.split_off(at.len());
-        let plan = {
-            let db = self.db.read()?;
-            let d = held.read();
-            let turns = d.turns.iter().enumerate()
-                .map(|(k, turn)| at.iter().position(|&c| c == k).map_or(turn, |i| &copies[i]))
-                .chain(appended.iter());
-            record_rows::plan_parts(&db, id, turns, &staged, &unwritten)?
-        };
-        let Some(plan) = plan else { return Ok(None) };
-        #[cfg(test)]
-        {
-            DELIVERED_IN_PLACE.with(|n| n.set(n.get() + 1));
-            DELIVERED_IN_PLACE_FOR.lock().unwrap().push(id.to_owned());
-        }
-        let rewrite;
-        let journaled = {
-            let mut db = self.db.write()?;
-            rewrite = self.rewrite(id);
-            let tx = db.transaction()?;
-            let journaled = if completed_before(&tx, id, kind, data)? { "turn/reconfirmed" } else { kind };
-            tx.execute(
-                "INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
-                params![id, journaled, data.to_string(), now()],
-            )?;
-            staged.agent.last_seq = tx.last_insert_rowid();
-            staged.agent.unread_count = unread(&tx, id, staged.agent.reviewed_seq)?;
-            record_rows::apply(&tx, id, &plan, &staged.agent)?;
-            tx.commit()?;
-            #[cfg(test)]
-            AFTER_COMMIT.with(|hook| if let Some(hook) = hook.borrow_mut().as_mut() { hook() });
-            journaled
-        };
-        drop(plan);
-        // Nothing after the commit can fail; locks are taken as in
-        // `commit_turn`.
-        let mut d = held.write();
-        put_meta(&mut d, staged);
-        for (copy, &k) in copies.into_iter().zip(&at) {
-            d.turns[k] = copy;
-        }
-        d.turns.extend(appended);
-        let mut listed = brief(&d);
-        let rev = rewrite.done(|memory| {
-            let rev = memory.event(id, journaled, data);
-            listed.agent.rev = rev;
-            memory.briefs.insert(id.into(), listed);
-            if let Some(entry) = memory.held.get_mut(id).filter(|entry| Arc::ptr_eq(&entry.detail, &held)) {
-                entry.unwritten = Dirty::default();
-                entry.unwritten_since = None;
-                entry.ephemeral = false;
-                entry.last = Instant::now();
-                entry.brief_stale = false;
-                entry.changes += 1;
-            }
-            rev
-        });
-        d.agent.rev = rev;
-        drop(d);
-        Ok(Some(rev))
-    }
-
-    /// `commit` of a change to the metadata alone (see `Meta`) of a record
-    /// held in memory, without copying or comparing its Turns, which were
-    /// nearly all of such a commit's time on a large record (T-120). A copy
-    /// of the metadata is changed and bound to the held Turns, which are
-    /// only read; the write is planned from that copy and those Turns; once
-    /// it has committed, the copy replaces the held metadata under the
-    /// record's write lock together with the change's rev and brief, so a
-    /// reader sees the record before or after the change, and a write that
-    /// fails leaves it as it was. A `turn/completed` of a Turn completed or
-    /// imported before is journaled as `turn/reconfirmed`, checked in the
-    /// same transaction, as `commit` journals it. A record not held, one kept
-    /// as one body, and a change after which `message_content::restore`
-    /// would change an Item are committed by `commit` instead, with the
-    /// change already made, under the same lock.
-    /// With `confirms` (`update_meta_applied`), the receipts are then
-    /// accepted by the Turns as `confirm_message_receipts` accepts them: on
-    /// the copy, by the held Turns once nothing is to restore (so they are
-    /// as `bind` leaves them), and otherwise by `commit`, after its `bind`.
-    fn commit_meta<T>(
-        &self,
-        id: &str,
-        kind: &str,
-        data: &Value,
-        confirms: bool,
-        mutate: impl FnOnce(&mut Meta<'_>),
-        pick: impl FnOnce(&AgentDetail, Option<String>) -> T,
-    ) -> Result<(u64, T)> {
-        let lock = self.record_lock(id);
-        let _record = lock.lock();
-        let held = self.held(id);
-        self.commit_meta_locked(id, kind, data, confirms, held, |_, meta| mutate(meta), pick)
-    }
-
-    /// `commit_meta`, for a caller holding the Agent's record lock, with the
-    /// copy it found held then (if any). `mutate` also gets the Turns, to
-    /// read only: the held ones, or those of the record loaded.
-    fn commit_meta_locked<T>(
-        &self,
-        id: &str,
-        kind: &str,
-        data: &Value,
-        confirms: bool,
-        held: Option<Arc<RwLock<AgentDetail>>>,
-        mutate: impl FnOnce(&[Value], &mut Meta<'_>),
-        pick: impl FnOnce(&AgentDetail, Option<String>) -> T,
-    ) -> Result<(u64, T)> {
-        let Some(held) = held else {
-            return self.commit_locked(id, kind, data, Scope::Meta, |d| {
-                let turns = std::mem::take(&mut d.turns);
-                mutate(&turns, &mut Meta::of(d));
-                d.turns = turns;
-                if confirms {
-                    d.confirm_message_receipts();
-                }
-            }, pick);
-        };
-        let unwritten = self.memory.lock().unwrap().held.get(id).map(|held| held.unwritten.clone()).unwrap_or_default();
-        let mut meta = {
-            let d = held.read();
-            let mut meta = meta_of(&d);
-            mutate(&d.turns, &mut Meta::of(&mut meta));
-            meta
-        };
-        let restores = {
-            let d = held.read();
-            crate::message_content::bind_receipts(&d.turns, &mut meta.message_receipts);
-            let restores = crate::message_content::restoring(&d.turns, &meta.message_receipts, false);
-            if confirms && !restores {
-                crate::model::accept_receipts(d.turns.iter(), &mut meta.message_receipts);
-            }
-            restores
-        };
-        meta.agent.pending_count = meta.pending.len() as u64;
-        meta.agent.updated_at = now();
-        let plan = if restores {
-            None
-        } else {
-            let db = self.db.read()?;
-            record_rows::plan_parts(&db, id, held.read().turns.iter(), &meta, &unwritten)?
-        };
-        let Some(plan) = plan else {
-            return self.commit_locked(id, kind, data, Scope::Meta, move |d| {
-                put_meta(d, meta);
-                // Accepting again changes nothing a first acceptance made.
-                if confirms {
-                    d.confirm_message_receipts();
-                }
-            }, pick);
-        };
-        #[cfg(test)]
-        META_IN_PLACE.with(|n| n.set(n.get() + 1));
+        let mut dirty = Dirty::between(&turns_before, &d.turns);
+        drop(turns_before);
+        let unwritten = self.memory.lock().unwrap().hot.get(id).map(|hot| hot.unwritten.clone()).unwrap_or_default();
+        dirty.merge(unwritten);
+        let receipts = changed_receipts(&receipts_before, &d.message_receipts);
+        let plan = record_rows::plan(&*self.db.read()?, id, &d, &d.turns, &loaded, &dirty, &receipts)?;
+        drop(receipts);
         let rewrite;
         let (journaled, project_id) = {
             let mut db = self.db.write()?;
             rewrite = self.rewrite(id);
             let tx = db.transaction()?;
             let journaled = if completed_before(&tx, id, kind, data)? { "turn/reconfirmed" } else { kind };
-            tx.execute(
-                "INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
-                params![id, journaled, data.to_string(), now()],
-            )?;
-            meta.agent.last_seq = tx.last_insert_rowid();
-            meta.agent.unread_count = unread(&tx, id, meta.agent.reviewed_seq)?;
-            record_rows::apply(&tx, id, &plan, &meta.agent)?;
+            tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
+                params![id, journaled, data.to_string(), now()])?;
+            d.agent.last_seq = tx.last_insert_rowid();
+            d.agent.unread_count = unread(&tx, id, d.agent.reviewed_seq)?;
+            record_rows::apply(&tx, id, &plan, &d.agent)?;
             let project_id = crate::projects::agent_project(&tx, id)?;
             tx.commit()?;
             #[cfg(test)]
             AFTER_COMMIT.with(|hook| if let Some(hook) = hook.borrow_mut().as_mut() { hook() });
+            #[cfg(test)]
+            CHANGES.with(|n| n.set(n.get() + 1));
             (journaled, project_id)
         };
         drop(plan);
-        // Nothing after the commit can fail. The held copy's write lock is
-        // taken before `memory` (in `done`); nothing holding `memory` ever
-        // waits for a held copy's lock.
-        let mut d = held.write();
-        put_meta(&mut d, meta);
-        let mut listed = brief(&d);
+        // What memory keeps: the Agent's new metadata, and its open and
+        // newest Turns where the slice has them. A change that read them
+        // leaves the Agent active, as an event does.
+        if self.hot(id).is_none() {
+            self.make_room(id, MAX_STREAMS - 1);
+            // A change of the metadata alone read no Turn: its slice is read
+            // from the rows it just wrote. Nothing after the commit fails the
+            // change: if that read does, the Agent is not held, and is read
+            // again when next needed.
+            let read = match sel {
+                Sel::Meta => self.db.read().ok().and_then(|db| read_hot(&db, id).inspect_err(|e| self.note_damage(id, e)).ok())
+                    .map(|(slice, _)| slice),
+                _ => Some(d.clone_meta()),
+            };
+            if let Some(read) = read {
+                let mut memory = self.memory.lock().unwrap();
+                if !memory.hot.contains_key(id) {
+                    memory.hot.insert(id.into(), Hot::new(read, Unsettled::default(), Instant::now()));
+                }
+            }
+        }
+        let hot = self.hot(id);
+        let mut kept = match &hot {
+            Some(slice) if matches!(sel, Sel::Meta) => {
+                let mut kept = d.clone_meta();
+                kept.turns = slice.read().turns.clone();
+                Some(kept)
+            }
+            Some(_) => Some(d.clone()),
+            None => None,
+        };
+        // The slice read every receipt not settled: what they say now.
+        let unsettled = Unsettled::of(&d.message_receipts);
+        if let Some(kept) = &mut kept {
+            trim_hot(kept, &Dirty::all());
+        }
+        let listed = match &kept {
+            Some(kept) => Some(brief_with(kept, unsettled)),
+            None if !matches!(sel, Sel::Meta) => Some(brief(&d)),
+            None => None,
+        };
         let rev = rewrite.done(|memory| {
             let rev = memory.event(id, journaled, data);
-            listed.agent.rev = rev;
-            memory.briefs.insert(id.into(), listed);
-            if let Some(entry) = memory.held.get_mut(id).filter(|entry| Arc::ptr_eq(&entry.detail, &held)) {
-                // Written, like the copy `commit` holds after its write; a
-                // brief rebuilt from the copy before this change is not kept.
-                entry.unwritten = Dirty::default();
-                entry.unwritten_since = None;
-                entry.ephemeral = false;
-                entry.last = Instant::now();
-                entry.brief_stale = false;
-                entry.changes += 1;
+            match listed {
+                Some(mut listed) => {
+                    listed.agent.rev = rev;
+                    memory.briefs.insert(id.into(), listed);
+                }
+                None => {
+                    memory.briefs.remove(id);
+                }
+            }
+            if let Some(hot) = memory.hot.get_mut(id) {
+                hot.unwritten = Dirty::default();
+                hot.unwritten_since = None;
+                hot.unsettled = unsettled;
+                hot.last = Instant::now();
+                hot.brief_stale = false;
+                hot.changes += 1;
             }
             rev
         });
         d.agent.rev = rev;
-        let d = parking_lot::RwLockWriteGuard::downgrade(d);
-        Ok((rev, pick(&d, project_id)))
+        if let (Some(slice), Some(mut kept)) = (hot, kept) {
+            kept.agent.rev = rev;
+            *slice.write() = kept;
+        }
+        let picked = pick(&d, project_id);
+        Ok((rev, picked))
+    }
+
+    /// `change` returning only the rev.
+    pub fn record_event(&self, id: &str, kind: &str, data: &Value, sel: Sel, mutate: impl FnOnce(&mut AgentDetail)) -> Result<u64> {
+        Ok(self.change(id, kind, data, sel, mutate, |_, _| ())?.0)
+    }
+
+    /// `record_event` of a change of the Turns an event names (see
+    /// `event_turns`) and the open ones.
+    pub fn record_event_turns(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut AgentDetail)) -> Result<u64> {
+        let named = self.named_turns(id, kind, data)?;
+        self.record_event(id, kind, data, Sel::Turns(named), mutate)
+    }
+
+    /// The Turn holding the newest Item with this ID, if any.
+    pub fn item_turn(&self, id: &str, item: &str) -> Result<Option<String>> {
+        self.settle_unwritten(id)?;
+        record_rows::item_turn(&*self.db.read()?, id, item)
+    }
+
+    /// The newest Turn whose object field `field` has this key (see
+    /// `record_rows::turn_holding`).
+    pub fn turn_holding(&self, id: &str, field: &str, key: &str) -> Result<Option<String>> {
+        self.settle_unwritten(id)?;
+        record_rows::turn_holding(&*self.db.read()?, id, field, key)
+    }
+
+    /// `change` returning only what `pick` takes from the committed slice.
+    pub fn update_picking<T>(&self, id: &str, kind: &str, data: &Value, sel: Sel, mutate: impl FnOnce(&mut AgentDetail),
+        pick: impl FnOnce(&AgentDetail) -> T) -> Result<T> {
+        Ok(self.change(id, kind, data, sel, mutate, |d, _| pick(d))?.1)
+    }
+
+    /// A Claude `result` (claude.rs), `project` being its projection
+    /// (`claude::project_event`): a change of the Turn it ends (with the
+    /// open ones). `pick` gets the committed slice.
+    pub fn update_picking_result<T>(&self, id: &str, kind: &str, data: &Value, project: impl Fn(&mut AgentDetail),
+        pick: impl FnOnce(&AgentDetail) -> T) -> Result<T> {
+        let named = self.named_turns(id, kind, data)?;
+        Ok(self.change(id, kind, data, Sel::Turns(named), |d| project(d), |d, _| pick(d))?.1)
+    }
+
+    /// The Turns an event or a send names (see `event_turns`).
+    fn named_turns(&self, id: &str, kind: &str, data: &Value) -> Result<Vec<String>> {
+        event_turns(&*self.db.read()?, id, kind, data)
+    }
+
+    /// A Claude send's `turnRequested` or `message/bound` (claude.rs), which
+    /// changes the Turn it names (`data.turnId`), appended when the record
+    /// has none. Returns the change's rev.
+    pub fn record_send(&self, id: &str, kind: &str, data: &Value, mutate: impl Fn(&mut AgentDetail)) -> Result<u64> {
+        let named = self.named_turns(id, kind, data)?;
+        self.record_event(id, kind, data, Sel::Turns(named), mutate)
+    }
+
+    /// `record_send` of a change made only where `shown`, reading the Turns
+    /// that show the follow-up `client` (found by its key) and the one named,
+    /// finds nothing: a Claude follow-up is shown once.
+    pub fn record_send_unless(&self, id: &str, kind: &str, data: &Value, client: &str, shown: impl Fn(&[Value]) -> bool,
+        mutate: impl Fn(&mut AgentDetail)) -> Result<u64> {
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        // Found under the record lock, so no other change moves the
+        // follow-up between finding its Turn and this change.
+        self.write_unwritten(id)?;
+        let mut named = self.named_turns(id, kind, data)?;
+        named.extend(self.keyed_turns_written(id, "client", Some(client))?);
+        Ok(self.change_locked(id, kind, data, Sel::Turns(named), false, &[client], |d| if !shown(&d.turns[..]) { mutate(d) },
+            |_, _| ())?.0)
+    }
+
+    /// A Claude `message_delivery` (`claude::deliver_message`), which shows
+    /// the follow-up Claude named in the Turn it names (`data.turnId`), moved
+    /// from the Turn showing it (found by its key). The slice has every open
+    /// Turn, so `change` is told no other Turn is in progress.
+    pub fn record_delivery(&self, id: &str, kind: &str, data: &Value, client_id: &str,
+        change: impl Fn(&mut AgentDetail, bool)) -> Result<u64> {
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        // As in `record_send_unless`: found under the record lock.
+        self.write_unwritten(id)?;
+        let mut named = self.named_turns(id, kind, data)?;
+        named.extend(self.keyed_turns_written(id, "client", Some(client_id))?);
+        Ok(self.change_locked(id, kind, data, Sel::Turns(named), false, &[client_id], |d| change(d, false), |_, _| ())?.0)
+    }
+
+    /// A change to the record's metadata only: `mutate` gets no Turn (see
+    /// `Meta`). Returns the change's rev.
+    pub fn update_meta(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut Meta<'_>)) -> Result<u64> {
+        Ok(self.change(id, kind, data, Sel::Meta, |d| mutate(&mut Meta::of(d)), |_, _| ())?.0)
+    }
+
+    /// `update_meta` of a native event that `AgentDetail::apply` takes as a
+    /// change to the metadata alone (`serverRequest/resolved`,
+    /// `thread/status/changed`) or as no change at all, with `apply`'s last
+    /// step too: each receipt not yet accepted or rejected is accepted by the
+    /// first open or newest Turn with its user message.
+    pub fn update_meta_applied(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut Meta<'_>)) -> Result<u64> {
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        Ok(self.change_locked(id, kind, data, Sel::Open, true, &[], |d| mutate(&mut Meta::of(d)), |_, _| ())?.0)
+    }
+
+    /// `update_meta` for a change to the metadata that reads the open Turns
+    /// without changing one: a Claude permission request, its cancellation
+    /// and its resolution. `applies` decides from the open Turns whether this
+    /// form fits (None: the caller commits otherwise).
+    pub fn update_meta_by_turns(&self, id: &str, kind: &str, data: &Value, applies: impl FnOnce(&[Value]) -> bool,
+        mutate: impl FnOnce(&[Value], &mut Meta<'_>)) -> Result<Option<u64>> {
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        let open = self.slice_for_change(id, &Sel::Open)?;
+        if !applies(&open.turns) {
+            return Ok(None);
+        }
+        Ok(Some(self.change_locked(id, kind, data, Sel::Open, false, &[], |d| {
+            let turns = std::mem::take(&mut d.turns);
+            mutate(&turns, &mut Meta::of(d));
+            d.turns = turns;
+        }, |_, _| ())?.0))
+    }
+
+    /// `update_picking` for a change to the metadata only.
+    pub fn update_picking_meta<T>(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut Meta<'_>),
+        pick: impl FnOnce(&AgentDetail) -> T) -> Result<T> {
+        Ok(self.change(id, kind, data, Sel::Meta, |d| mutate(&mut Meta::of(d)), |d, _| pick(d))?.1)
+    }
+
+    /// `update_picking_meta` of a change to the receipt of message `client`
+    /// (and the metadata): the receipt is given to `mutate` settled or not.
+    pub fn update_receipt_picking<T>(&self, id: &str, kind: &str, data: &Value, client: &str,
+        mutate: impl FnOnce(&mut Meta<'_>), pick: impl FnOnce(&AgentDetail) -> T) -> Result<T> {
+        let lock = self.record_lock(id);
+        let _record = lock.lock();
+        Ok(self.change_locked(id, kind, data, Sel::Meta, false, &[client], |d| mutate(&mut Meta::of(d)), |d, _| pick(d))?.1)
+    }
+
+    /// One native event that the record takes as `AgentDetail::apply(applied,
+    /// data)` does, journaled as `kind` (`turn/accepted` applies the RPC
+    /// response as `turn/started`): a change of the Turn it names and the
+    /// open ones. Returns the change's rev.
+    pub fn record_applied(&self, id: &str, kind: &str, applied: &str, data: &Value) -> Result<u64> {
+        let named = self.named_turns(id, kind, data)?;
+        // An event naming its Turn changes that Turn (and the Agent's fields):
+        // the open and newest others are read as the Agent holds them, so a
+        // Turn's start next to a long one does not read it whole. One naming
+        // none gets them whole, as it may reach their Items.
+        let sel = if named.is_empty() { Sel::Turns(named) } else { Sel::Named(named) };
+        self.record_event(id, kind, data, sel, |d| d.apply(applied, data))
     }
 
     pub fn review(&self, id: &str, through: i64) -> Result<bool> {
         let lock = self.record_lock(id);
         let _record = lock.lock();
-        // While text streams, an open conversation is marked read after every
-        // refresh. Mark the held copy; it is written with its deltas.
-        if let Some(detail) = self.held(id) {
-            let (last_seq, reviewed_seq) = {
-                let d = detail.read();
-                (d.agent.last_seq, d.agent.reviewed_seq)
-            };
-            let reviewed = through.min(last_seq).max(reviewed_seq);
-            if reviewed == reviewed_seq { return Ok(false); }
-            let unread = {
-                let mut db = self.db.write()?;
-                let tx = db.unsynced().transaction()?;
-                let unread = unread(&tx, id, reviewed)?;
-                tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,'workspace/reviewed',?2,?3)",
-                    params![id,json!({"throughSeq":reviewed}).to_string(),now()])?;
-                tx.commit()?;
-                unread
-            };
-            // Its rev first, then set with the change (see `record_stream`).
-            let rev = self.memory.lock().unwrap().changed(id);
-            {
-                let mut d = detail.write();
-                d.agent.reviewed_seq = reviewed;
-                d.agent.unread_count = unread;
-                d.agent.rev = rev;
-            }
-            let mut memory = self.memory.lock().unwrap();
-            if let Some(held) = memory.held.get_mut(id) {
-                held.unwritten_since.get_or_insert_with(Instant::now);
-                held.brief_stale = true;
-                held.changes += 1;
-            }
-            return Ok(true);
-        }
         // Already read (the usual case for an open conversation): decided from
-        // the listed view, which every write keeps current, without the record.
+        // the listed view, which every write keeps current.
         if let Some(listed) = self.memory.lock().unwrap().briefs.get(id) {
             if through.min(listed.agent.last_seq).max(listed.agent.reviewed_seq) == listed.agent.reviewed_seq {
                 return Ok(false);
             }
         }
-        // A read mark changes the metadata only: the Turns are not loaded
-        // unless the journal has something for them the rows lack. A damaged
-        // record is not marked either: one found so in this process, or
-        // whose rows do not fit together (checked without parsing them).
-        let (meta, alone) = {
-            let db = self.db.read()?;
-            let known = self.memory.lock().unwrap().damaged.contains(id);
-            if known || !record_rows::rows_fit(&db, id)? {
-                let error = anyhow::Error::new(Damaged { agent: id.into(), cause: "its rows do not fit together".into() });
-                let note = damage_note(&db, error.downcast_ref::<Damaged>().expect("just made"), None);
-                drop(db);
-                self.list_damaged(id, &error);
-                return Err(error.context(note));
-            }
-            let meta = record_rows::load_meta(&db, id)?.context("Agent 不存在")?;
-            let alone = record_rows::layout(&db, id)? == Some(Layout::Rows) && !replays(&db, id, meta.agent.last_seq)?;
-            (meta, alone)
-        };
-        if alone {
-            let mut d = meta;
-            let reviewed = through.min(d.agent.last_seq).max(d.agent.reviewed_seq);
-            if reviewed == d.agent.reviewed_seq { return Ok(false); }
-            d.agent.reviewed_seq = reviewed;
-            let body = record_rows::MetaBody::of(&d)?;
-            let rewrite;
-            {
-                let mut db = self.db.write()?;
-                rewrite = self.rewrite(id);
-                let tx = db.transaction()?;
-                d.agent.unread_count = unread(&tx, id, reviewed)?;
-                tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,'workspace/reviewed',?2,?3)",
-                    params![id,json!({"throughSeq":reviewed}).to_string(),now()])?;
-                record_rows::write_meta(&tx, id, &body, &d.agent)?;
-                tx.commit()?;
-            }
-            rewrite.done(|memory| {
-                let rev = memory.changed(id);
-                if let Some(listed) = memory.briefs.get_mut(id) {
-                    listed.agent.reviewed_seq = reviewed;
-                    listed.agent.unread_count = d.agent.unread_count;
-                    listed.agent.rev = rev;
+        self.ensure_undamaged(id)?;
+        let hot = self.hot(id);
+        let mut d = match &hot {
+            Some(slice) => slice.read().clone_meta(),
+            None => {
+                let db = self.db.read()?;
+                // A damaged record is not marked read: its rows are checked
+                // (without parsing them) and its open Turns read first.
+                let found = record_rows::rows_fit(&db, id).and_then(|fit| {
+                    ensure!(fit, Damaged { agent: id.into(), cause: "its rows do not fit together".into() });
+                    read_slice(&db, id, &Sel::Open)
+                });
+                match found {
+                    Ok(found) => found.context("Agent 不存在")?.clone_meta(),
+                    Err(error) => {
+                        self.note_damage(id, &error);
+                        return Err(error);
+                    }
                 }
-            });
-            return Ok(true);
-        }
-        let (mut d, replayed) = load(&*self.db.read()?, id)?;
+            }
+        };
         let reviewed = through.min(d.agent.last_seq).max(d.agent.reviewed_seq);
         if reviewed == d.agent.reviewed_seq { return Ok(false); }
         d.agent.reviewed_seq = reviewed;
-        let plan = record_rows::plan(&*self.db.read()?, id, &d, &replayed)?;
+        let body = record_rows::MetaBody::of(&d)?;
         let rewrite;
         {
             let mut db = self.db.write()?;
             rewrite = self.rewrite(id);
             let tx = db.transaction()?;
             d.agent.unread_count = unread(&tx, id, reviewed)?;
+            // Reading is not new conversation content: last_seq stays.
             tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,'workspace/reviewed',?2,?3)",
                 params![id,json!({"throughSeq":reviewed}).to_string(),now()])?;
-            // Reading is not new conversation content. Advancing last_seq here
-            // would make automatic review repeatedly create its own next target.
-            record_rows::apply(&tx, id, &plan, &d.agent)?;
+            record_rows::write_meta(&tx, id, &body, &d.agent)?;
             tx.commit()?;
         }
-        let mut listed = brief(&d);
-        rewrite.done(|memory| {
-            listed.agent.rev = memory.changed(id);
-            memory.briefs.insert(id.into(), listed);
+        let unread_count = d.agent.unread_count;
+        let rev = rewrite.done(|memory| {
+            let rev = memory.changed(id);
+            if let Some(listed) = memory.briefs.get_mut(id) {
+                listed.agent.reviewed_seq = reviewed;
+                listed.agent.unread_count = unread_count;
+                listed.agent.rev = rev;
+            }
+            if let Some(hot) = memory.hot.get_mut(id) {
+                hot.changes += 1;
+            }
+            rev
         });
+        if let Some(slice) = hot {
+            let mut s = slice.write();
+            s.agent.reviewed_seq = reviewed;
+            s.agent.unread_count = unread_count;
+            s.agent.rev = rev;
+        }
         Ok(true)
     }
 
@@ -3538,20 +3067,18 @@ impl Store {
     }
 
     /// Whether `record_recovered_completions` would find a Turn to record.
-    /// Reads only each Turn's id and status, so `turns` need no Items.
+    /// Reads only each Turn's id and status.
     pub fn has_unrecorded_completion(&self, id: &str, turns: &[Value]) -> Result<bool> {
         let known = self.recorded_completions(id)?;
         Ok(turns.iter().any(|turn| unrecorded_completion(turn, &known)))
     }
 
-    /// Reconciliation checks a whole history. Read completion IDs once, instead
-    /// of parsing the same journal bodies again for each historical Turn.
+    /// The finished Turns among `turns` whose completion is not journaled,
+    /// each journaled once (a reconnect found them finished).
     pub fn record_recovered_completions(&self, id: &str, turns: &[Value]) -> Result<()> {
         let known = self.recorded_completions(id)?;
         for turn in turns {
             if unrecorded_completion(turn, &known) {
-                // Keep the existing check and atomic write: a live completion
-                // may have arrived since the set above was read.
                 self.record_recovered_completion(id, turn)?;
             }
         }
@@ -3559,14 +3086,12 @@ impl Store {
     }
 
     /// A reconnect can discover a completion without receiving its event.
-    /// Journal it exactly once so unread/Catch-up work across disconnects too.
+    /// Journal it exactly once so unread/Catch-up work across disconnects
+    /// too: its Turn's ID and status (all the journal's readers take).
     pub fn record_recovered_completion(&self, id: &str, turn: &Value) -> Result<()> {
         let exists: bool = self.db.read()?.query_row(COMPLETED, params![id, turn["id"].as_str()], |r| r.get(0))?;
         if exists { return Ok(()); }
-        // It changes no Turn: written as the metadata (`commit_meta`), without
-        // copying or comparing a held record, which still deduplicates
-        // atomically if a native event races this check (T-140).
-        self.update_meta(id, "turn/completed", &json!({"turn":turn,"recovered":true}), |_| {})?;
+        self.update_meta(id, "turn/completed", &json!({"turn":{"id":turn["id"],"status":turn["status"]},"recovered":true}), |_| {})?;
         Ok(())
     }
 
@@ -3576,26 +3101,21 @@ impl Store {
             params![id, seq], |r| r.get(0))?)
     }
 
-    /// perf-sse: reads the Agent's record as held in memory (see `Held`),
-    /// without copying it; None when it is not held. Under the record's own
-    /// read lock only, never `memory`.
+    /// Reads the Agent's hot slice (metadata, open and newest Turns) without
+    /// copying it; None when it is not in memory. Under the slice's own read
+    /// lock only, never `memory`.
     pub fn peek<T>(&self, id: &str, read: impl FnOnce(&AgentDetail) -> T) -> Option<T> {
-        let held = self.held(id)?;
-        let detail = held.read();
+        let slice = self.hot(id)?;
+        let detail = slice.read();
         Some(read(&detail))
     }
 
-    /// The Agent's current rev (see `Agent::rev`). Capture it when sending a
-    /// native snapshot request, for `changed_items_since`.
+    /// The Agent's current rev (see `Agent::rev`).
     pub fn rev(&self, id: &str) -> u64 {
         self.memory.lock().unwrap().rev(id)
     }
 
-    /// What changed in the Agent's record after change `rev`: a native
-    /// snapshot requested at that rev is older than these and must not
-    /// replace them. Covers every event, streamed output included (it has
-    /// no journal seq). Item evidence is bounded; when it no longer reaches
-    /// back to `rev`, `complete` is false.
+    /// What changed in the Agent's record after change `rev`.
     pub fn changed_items_since(&self, id: &str, rev: u64) -> Result<Changes> {
         let memory = self.memory.lock().unwrap();
         let Some(evidence) = memory.evidence.get(id) else {
@@ -3615,56 +3135,39 @@ impl Store {
     pub fn begin_empty_thread_replacement(&self, id: &str, thread_id: &str) -> Result<bool> {
         let lock = self.record_lock(id);
         let _record = lock.lock();
-        // Decided on a reader: under the record lock nothing else changes
-        // this Agent's row or journal meanwhile.
-        let detail = {
+        {
             let db = self.db.read()?;
             if db.query_row("SELECT EXISTS(SELECT 1 FROM codex_imports WHERE agent_id=?1)", [id], |r| r.get::<_,bool>(0))? {
                 return Ok(false);
             }
-            // The record as it is now: a held copy can have streamed output its
-            // row lacks. Holding it proves nothing; what it contains does.
-            let (detail, unwritten) = match self.held(id) {
-                Some(held) => {
-                    let unwritten = self.memory.lock().unwrap().held.get(id).map(|held| held.unwritten.clone()).unwrap_or_default();
-                    (held.read().clone(), unwritten)
-                }
-                None => load(&db, id)?,
-            };
+            let detail = record_rows::load_meta(&db, id)?.context("Agent 不存在")?;
             if detail.agent.thread_id.as_deref() != Some(thread_id)
                 || detail.agent.status == "uncertain"
-                || !detail.turns.is_empty()
+                || record_rows::turn_count(&db, id)? > 0
+                // A Turn whose write failed is only in memory.
+                || self.peek(id, |held| !held.turns.is_empty()).unwrap_or(false)
                 || !detail.pending.is_empty()
                 || !detail.artifacts.is_empty()
                 || detail.agent.last_message.is_some()
             {
                 return Ok(false);
             }
-            let mut query =
-                db.prepare("SELECT kind,data FROM journal WHERE agent_id=?1 ORDER BY seq")?;
-            let rows = query.query_map([id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?;
+            let mut query = db.prepare("SELECT kind,data FROM journal WHERE agent_id=?1 ORDER BY seq")?;
+            let rows = query.query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
             let mut protected_birth = false;
             let mut unsafe_operation = false;
             for row in rows {
                 let (kind, data) = row?;
                 let data: Value = serde_json::from_str(&data)?;
-                if kind == "thread/attached"
-                    && data["threadId"] == thread_id
-                    && data["newEmptyThread"] == true
-                    && data["turnRequestJournalVersion"] == 1
-                {
+                if kind == "thread/attached" && data["threadId"] == thread_id && data["newEmptyThread"] == true
+                    && data["turnRequestJournalVersion"] == 1 {
                     protected_birth = true;
                     unsafe_operation = false;
                     continue;
                 }
                 if protected_birth
-                    && (kind.starts_with("turn/")
-                        || kind.starts_with("item/")
-                        || kind.starts_with("request")
-                        || kind == "thread/replacementRequested"
-                        || kind == "codex/contextReload"
+                    && (kind.starts_with("turn/") || kind.starts_with("item/") || kind.starts_with("request")
+                        || kind == "thread/replacementRequested" || kind == "codex/contextReload"
                         || data["outcomeUnknown"] == true)
                 {
                     unsafe_operation = true;
@@ -3675,41 +3178,11 @@ impl Store {
             if !protected_birth || unsafe_operation {
                 return Ok(false);
             }
-            (detail, unwritten)
-        };
-        let (mut detail, unwritten) = detail;
-        // The record has no Turns, Items or requests, so it is small enough
-        // to plan and serialize under the writer; what a held copy had that
-        // its rows lack goes along.
-        let rewrite;
-        {
-            let mut db = self.db.write()?;
-            rewrite = self.rewrite(id);
-            let tx = db.transaction()?;
-            tx.execute(
-                "INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
-                params![
-                    id,
-                    "thread/replacementRequested",
-                    json!({"oldThreadId":thread_id}).to_string(),
-                    now()
-                ],
-            )?;
-            detail.agent.last_seq = tx.last_insert_rowid();
-            detail.agent.updated_at = now();
-            detail.agent.status = "uncertain".into();
-            detail.agent.error =
-                Some("正在为未使用的 Agent 重建未落盘空会话；结果确认前不会重试。".into());
-            record_rows::write(&tx, id, &detail, &unwritten)?;
-            tx.commit()?;
         }
-        let mut listed = brief(&detail);
-        rewrite.done(|memory| {
-            // The row now has everything the held copy had.
-            memory.held.remove(id);
-            listed.agent.rev = memory.event(id, "thread/replacementRequested", &Value::Null);
-            memory.briefs.insert(id.into(), listed);
-        });
+        self.change_locked(id, "thread/replacementRequested", &json!({"oldThreadId":thread_id}), Sel::Meta, false, &[], |d| {
+            d.agent.status = "uncertain".into();
+            d.agent.error = Some("正在为未使用的 Agent 重建未落盘空会话；结果确认前不会重试。".into());
+        }, |_, _| ())?;
         Ok(true)
     }
 
@@ -3721,8 +3194,7 @@ impl Store {
             if a.closed_at.is_some() { continue; }
             from = from.min(a.reviewed_seq);
             to = to.max(a.last_seq);
-            let detail = self.detail(&a.id)?;
-            for p in &detail.pending {
+            for p in &self.pending(&a.id)? {
                 items.push(json!({"id":p.id,"agentId":a.id,"agentName":a.name,"kind":"pending","title":if p.stale {"上次请求需重新连接确认"} else {"需要你的回应"},"body":p.params["reason"].as_str().or_else(|| p.params["command"].as_str()).unwrap_or("打开对话查看完整请求"),"turnId":p.params["turnId"],"seq":a.last_seq}));
             }
             if let Some(error) = &a.error {
@@ -3732,17 +3204,14 @@ impl Store {
             // approvals or errors. A historical final is not a new result.
             for (seq, event) in self.unread_completions(&a.id, a.reviewed_seq)? {
                 let id = &event["turn"]["id"];
-                let Some(turn) = detail.turns.iter().find(|t| t["id"] == *id) else {
+                let Some(turn) = id.as_str().map(|tid| self.turn(&a.id, tid)).transpose()?.flatten() else {
                     continue;
                 };
                 let result = turn["items"].as_array().and_then(|items| {
-                    items
-                        .iter()
-                        .rev()
-                        .find(|i| i["type"] == "agentMessage" && i["phase"] == "final_answer")
+                    items.iter().rev().find(|i| i["type"] == "agentMessage" && i["phase"] == "final_answer")
                 });
                 if let Some(item) = result {
-                    let title = crate::rail::task(turn).map_or_else(|| "本轮回复".into(), |s| s.text);
+                    let title = crate::rail::task(&turn).map_or_else(|| "本轮回复".into(), |s| s.text);
                     items.push(json!({"id":format!("{}:{}",a.id,item["id"]),"agentId":a.id,"agentName":a.name,"kind":"result","title":title,"body":item["text"],"turnId":turn["id"],"itemId":item["id"],"seq":seq}));
                 } else {
                     items.push(json!({"id":format!("{}:{}",a.id,id),"agentId":a.id,"agentName":a.name,"kind":"progress","title":"Turn 已结束","body":"原生记录没有标注最终回复，请打开此 Turn 查看。","turnId":id,"seq":seq}));
@@ -3754,721 +3223,137 @@ impl Store {
                 }
             }
         }
-        Ok(
-            json!({"generatedAt":now(),"items":items,"source":"records","coverage":{"fromSeq":if from==i64::MAX {0}else{from},"toSeq":to}}),
-        )
+        Ok(json!({"generatedAt":now(),"items":items,"source":"records","coverage":{"fromSeq":if from==i64::MAX {0}else{from},"toSeq":to}}))
     }
 
     fn unread_completions(&self, id: &str, reviewed: i64) -> Result<Vec<(i64, Value)>> {
         let db = self.db.read()?;
-        let mut q=db.prepare("SELECT seq,data FROM journal WHERE agent_id=?1 AND seq>?2 AND kind='turn/completed' ORDER BY seq")?;
-        let rows = q.query_map(params![id, reviewed], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-        })?;
+        let mut q = db.prepare("SELECT seq,data FROM journal WHERE agent_id=?1 AND seq>?2 AND kind='turn/completed' ORDER BY seq")?;
+        let rows = q.query_map(params![id, reviewed], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
         rows.map(|r| {
             let (seq, text) = r?;
             Ok((seq, serde_json::from_str(&text)?))
-        })
-        .collect()
+        }).collect()
     }
 }
 
-#[cfg(test)]
-mod tests {
+/// Whole-record access for tests and synthetic labs only (T-140): Core
+/// itself never reads or changes a whole history, and nothing outside tests
+/// and examples calls these.
+#[doc(hidden)]
+pub mod whole {
     use super::*;
-    use crate::model::ClaudeRuntime;
 
-    pub(super) fn lab() -> (tempfile::TempDir, Store) {
-        // On disk, next to the build: /tmp is memory here. The folder may
-        // not exist when CARGO_TARGET_DIR points elsewhere.
-        let parent = concat!(env!("CARGO_MANIFEST_DIR"), "/../target");
-        std::fs::create_dir_all(parent).unwrap();
-        let dir = tempfile::tempdir_in(parent).unwrap();
-        let store = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
-        (dir, store)
+    /// The whole record, with its payloads and every receipt.
+    pub fn detail(store: &Store, id: &str) -> Result<AgentDetail> {
+        store.settle_unwritten(id)?;
+        let db = store.db.read()?;
+        let mut d = record_rows::load_meta(&db, id)?.context("Agent 不存在")?;
+        record_rows::scan(&db, id, true, |turn| { d.turns.push(turn); Ok(true) })?;
+        record_rows::each_receipt(&db, id, |r| d.message_receipts.push(r))?;
+        d.agent.rev = store.rev(id);
+        d.agent.project_id = store.agent_project(id)?;
+        crate::mailbox_notice::annotate(&db, &mut d)?;
+        d.agent.work_summary = crate::rail::project(&d);
+        Ok(d)
     }
 
-    pub(super) fn detail(id: &str) -> AgentDetail {
-        serde_json::from_value(json!({"agent":{"id":id,"name":id,"cwd":"/tmp","model":"m","color":"sage",
-            "threadId":"thread","status":"working","createdAt":"","updatedAt":"","unreadCount":0,"pendingCount":0,
-            "lastSeq":0,"reviewedSeq":0},"turns":[{"id":"t","status":"inProgress","items":[]}],"pending":[],"artifacts":[]})).unwrap()
+    /// A change of every Turn (`Store::change` of `Sel::Tail` of all),
+    /// returning the whole record after it.
+    pub fn update(store: &Store, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut AgentDetail)) -> Result<AgentDetail> {
+        store.record_event(id, kind, data, Sel::Tail(usize::MAX), mutate)?;
+        detail(store, id)
     }
 
-    pub(super) fn stream(store: &Store, id: &str, kind: &str, data: &Value) -> Streamed {
-        store.record_stream(id, route(kind, data), kind, data).unwrap()
+    /// `detail` and `update` as methods, for a test that imports this.
+    pub trait WholeRecord {
+        fn detail(&self, id: &str) -> Result<AgentDetail>;
+        fn update(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut AgentDetail)) -> Result<AgentDetail>;
     }
 
-    fn delta(store: &Store, id: &str, text: &str) {
-        stream(store, id, "item/agentMessage/delta", &json!({"turnId":"t","itemId":"reply","delta":text}));
-    }
-
-    #[test]
-    fn update_probe_activity_tracks_same_size_metadata_changes_and_cold_turns() {
-        let (_dir, store) = lab();
-        let mut d = detail("a");
-        d.agent.status = "idle".into();
-        d.turns = vec![json!({"status":"inProgress","items":[]}), json!({"id":"latest","status":"completed","items":[]})];
-        d.pending.push(serde_json::from_value(json!({"id":"p","agentId":"a","method":"approval","params":{},"createdAt":"","stale":true})).unwrap());
-        d.message_receipts.push(serde_json::from_value(json!({"input":{"clientMessageId":"m","text":""},"status":"accepted"})).unwrap());
-        store.insert(&d).unwrap();
-        assert_eq!(store.update_readiness("a").unwrap().1, Activity { running: true, ..Activity::default() });
-        store.record_event("a", "test/pending", &json!({}), |d| {
-            d.pending[0].stale = false;
-            d.message_receipts[0].status = "sending".into();
-        }).unwrap();
-        let active = Activity { pending: true, sending: true, running: true, uncertain: false };
-        assert_eq!(store.update_readiness("a").unwrap().1, active);
-        // A cold listed view has every Turn's status, including an older Turn
-        // with no ID. It does not infer idleness from active_turn: Option<id>.
-        {
-            let mut memory = store.memory.lock().unwrap();
-            memory.held.clear();
-            memory.briefs.clear();
+    impl WholeRecord for Store {
+        fn detail(&self, id: &str) -> Result<AgentDetail> {
+            detail(self, id)
         }
-        assert_eq!(store.update_readiness("a").unwrap().1, active);
-        store.record_event("a", "test/uncertain", &json!({}), |d| {
-            d.pending[0].stale = true;
-            d.message_receipts[0].status = "uncertain".into();
-            d.turns[0]["status"] = json!("completed");
-        }).unwrap();
-        assert_eq!(store.update_readiness("a").unwrap().1, Activity { uncertain: true, ..Activity::default() });
-        store.record_event("a", "test/settled", &json!({}), |d| d.message_receipts[0].status = "accepted".into()).unwrap();
-        // Deferred native output invalidates and rebuilds the held brief.
-        stream(&store, "a", "item/agentMessage/delta", &json!({"turnId":"latest","itemId":"reply","delta":"output"}));
-        assert_eq!(store.update_readiness("a").unwrap().1, Activity::default());
-    }
-
-    #[test]
-    fn update_probe_skips_old_payloads_but_keeps_records_verification_and_known_damage_guard() {
-        let (dir, store) = lab();
-        let mut d = detail("a");
-        d.agent.status = "idle".into();
-        d.turns[0]["status"] = json!("completed");
-        d.turns[0]["items"] = json!([{"id":"command","type":"commandExecution","status":"completed","aggregatedOutput":"payload\n".repeat(2000)}]);
-        d.turns.push(json!({"id":"latest","status":"completed","items":[]}));
-        store.insert(&d).unwrap();
-        store.memory.lock().unwrap().briefs.clear();
-        assert!(store.db.write().unwrap().execute("UPDATE agent_payloads SET data='not json' WHERE agent_id='a'", []).unwrap() > 0);
-        // Cold readiness does not load old payloads. This is only an idle
-        // check; the mandatory boundary verifier still rejects the damage.
-        assert_eq!(store.update_readiness("a").unwrap().1, Activity::default());
-        let identity = store.workspace_id().unwrap();
-        assert!(crate::updates::storage::verify_at(dir.path(), &identity).is_err());
-        assert_eq!(store.detail("a").unwrap().agent.status, "error");
-        assert!(store.update_readiness("a").unwrap_err().to_string().contains("damaged records"));
-    }
-
-    #[test]
-    fn update_probe_does_not_accept_cached_idle_after_a_commit() {
-        let (_dir, store) = shared();
-        let mut d = detail("a");
-        d.agent.status = "idle".into();
-        d.turns.clear();
-        store.insert(&d).unwrap();
-        assert_eq!(store.update_readiness("a").unwrap().1, Activity::default());
-        let (committed_tx, committed) = std::sync::mpsc::channel();
-        let (go_tx, go) = std::sync::mpsc::channel();
-        let writer = std::thread::spawn({
-            let store = store.clone();
-            move || {
-                AFTER_COMMIT.with(|hook| *hook.borrow_mut() = Some(Box::new(move || {
-                    committed_tx.send(()).unwrap();
-                    go.recv_timeout(Duration::from_secs(10)).unwrap();
-                })));
-                store.record_event("a", "test/started", &json!({}), |d| {
-                    d.turns.push(json!({"id":"new","status":"inProgress","items":[]}));
-                }).unwrap()
-            }
-        });
-        committed.recv_timeout(Duration::from_secs(10)).unwrap();
-        let (read_tx, read_rx) = std::sync::mpsc::channel();
-        let reader = std::thread::spawn({
-            let store = store.clone();
-            move || { read_tx.send(store.update_readiness("a")).unwrap(); }
-        });
-        let premature = read_rx.recv_timeout(Duration::from_millis(50));
-        go_tx.send(()).unwrap();
-        let rev = writer.join().unwrap();
-        reader.join().unwrap();
-        assert!(matches!(premature, Err(std::sync::mpsc::RecvTimeoutError::Timeout)), "a committed turn must not be reported idle from the previous cache");
-        let (agent, activity) = read_rx.recv().unwrap().unwrap();
-        assert_eq!(agent.rev, rev);
-        assert!(activity.running);
-    }
-
-    #[test]
-    fn request_holders_follow_live_changes_and_cold_metadata() {
-        let (dir, store) = lab();
-        for (id, request) in [("a", "shared"), ("b", "shared"), ("c", "other")] {
-            let mut d = detail(id);
-            d.pending.push(serde_json::from_value(json!({"id":request,"agentId":id,
-                "method":"item/tool/requestUserInput","params":{},"createdAt":""})).unwrap());
-            store.insert(&d).unwrap();
-        }
-        let owners = || store.request_holders("shared").unwrap().into_iter().map(|a|a.id).collect::<Vec<_>>();
-        assert_eq!(owners(), ["a", "b"]);
-        delta(&store, "a", "streaming rebuilds the brief");
-        assert_eq!(owners(), ["a", "b"]);
-        store.update("a", "test/resolved", &json!({}), |d| d.pending.clear()).unwrap();
-        assert_eq!(owners(), ["b"]);
-        store.update("b", "agent/closed", &json!({}), |d| d.agent.closed_at = Some(now())).unwrap();
-        assert!(owners().is_empty());
-        store.delete_closed_agent("b").unwrap();
-        drop(store);
-        let store = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
-        assert!(store.request_holders("shared").unwrap().is_empty());
-        assert_eq!(store.request_holders("other").unwrap()[0].id, "c");
-        // Reopening makes Pending stale. It must still be located so the
-        // responder's connection validation, rather than the index, decides.
-        assert!(store.detail("c").unwrap().pending[0].stale);
-    }
-
-    #[test]
-    fn recovered_completion_batch_preserves_imports_read_marks_and_agent_scope() {
-        let (dir, store) = lab();
-        let turns = vec![
-            json!({"id":"known","status":"completed","items":[]}),
-            json!({"id":"imported","status":"completed","items":[]}),
-            json!({"id":"failed","status":"failed","items":[]}),
-            json!({"id":"interrupted","status":"interrupted","items":[]}),
-            json!({"id":"running","status":"inProgress","items":[]}),
-        ];
-        let mut d = detail("a"); d.turns = turns.clone(); store.insert(&d).unwrap();
-        store.insert(&detail("b")).unwrap();
-        store.record_recovered_completion("b", &turns[2]).unwrap();
-        store.record_recovered_completion("a", &turns[0]).unwrap();
-        store.db.write().unwrap().execute("INSERT INTO codex_imports(agent_id,thread_id,awaiting_handoff) VALUES('a','thread',0)", []).unwrap();
-        store.db.write().unwrap().execute("INSERT INTO codex_import_turns(agent_id,turn_id) VALUES('a','imported')", []).unwrap();
-        store.record_recovered_completions("a", &turns).unwrap();
-        let first = store.agent("a").unwrap();
-        assert_eq!(first.unread_count, 3);
-        store.record_recovered_completions("a", &turns).unwrap();
-        assert_eq!(store.agent("a").unwrap().last_seq, first.last_seq);
-        let event = json!({"turn":turns[2]});
-        store.record_event("a", "turn/completed", &event, |d| d.apply("turn/completed", &event)).unwrap();
-        assert_eq!(store.agent("a").unwrap().unread_count, 3);
-        store.review("a", store.agent("a").unwrap().last_seq).unwrap();
-        drop(store);
-        let store = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
-        let before = store.agent("a").unwrap();
-        store.record_recovered_completions("a", &turns).unwrap();
-        let after = store.agent("a").unwrap();
-        assert_eq!((after.last_seq, after.unread_count), (before.last_seq, 0));
-    }
-
-    #[test]
-    fn concurrent_recovered_batches_still_record_a_completion_once() {
-        let (_dir, store) = shared();
-        let turn = json!({"id":"t","status":"completed","items":[]});
-        let mut d = detail("a"); d.turns = vec![turn.clone()]; store.insert(&d).unwrap();
-        let barrier = Arc::new(std::sync::Barrier::new(2));
-        let threads = (0..2).map(|_| {
-            let (store, barrier, turn) = (store.clone(), barrier.clone(), turn.clone());
-            std::thread::spawn(move || {
-                barrier.wait();
-                store.record_recovered_completions("a", &[turn]).unwrap();
-            })
-        }).collect::<Vec<_>>();
-        for thread in threads { thread.join().unwrap(); }
-        assert_eq!(store.agent("a").unwrap().unread_count, 1);
-        let count: i64 = store.db.read().unwrap().query_row(
-            "SELECT COUNT(*) FROM journal WHERE agent_id='a' AND kind='turn/completed'", [], |r|r.get(0)).unwrap();
-        assert_eq!(count, 1);
-    }
-
-    /// A Turn end written while `detail` parsed the old row must be in what it
-    /// returns, or the GUI's read receipt marks the result read unseen.
-    fn assert_consistent(store: &Store, seen: &AgentDetail) {
-        let top: i64 = store.db.read().unwrap()
-            .query_row("SELECT MAX(seq) FROM journal WHERE agent_id='a' AND kind!='workspace/reviewed'", [], |r| r.get(0)).unwrap();
-        assert_eq!(seen.agent.last_seq, top);
-        assert_eq!(seen.turns[0]["status"], "completed");
-        assert_eq!(seen.agent.status, "idle");
-        assert_eq!(seen.agent.unread_count, 1);
-    }
-
-    fn end_turn(store: &Store) {
-        let completed = json!({"turn":{"id":"t","status":"completed","items":[]}});
-        store.update("a", "turn/completed", &completed, |d| d.apply("turn/completed", &completed)).unwrap();
-    }
-
-    #[test]
-    fn a_turn_end_written_while_the_row_is_parsed_is_not_skipped() {
-        let (_dir, store) = lab();
-        store.insert(&detail("a")).unwrap();
-        let mut once = true;
-        let seen = store.detail_racing("a", || {
-            if std::mem::take(&mut once) {
-                end_turn(&store);
-                // Codex reports usage after the Turn ends: a deferred event.
-                stream(&store, "a", "thread/tokenUsage/updated", &json!({"turnId":"t","tokenUsage":{}}));
-            }
-        }).unwrap();
-        assert_consistent(&store, &seen);
-    }
-
-    #[test]
-    fn a_row_rewritten_while_it_is_parsed_is_read_again() {
-        let (_dir, store) = lab();
-        store.insert(&detail("a")).unwrap();
-        for n in 0..MAX_STREAMS {
-            store.insert(&detail(&format!("other-{n}"))).unwrap();
-        }
-        let mut once = true;
-        let seen = store.detail_racing("a", || {
-            if std::mem::take(&mut once) {
-                end_turn(&store);
-                delta(&store, "a", "late text");
-                // Other Agents stream, so "a" is written and leaves memory:
-                // only the row and its journal remain.
-                for n in 0..MAX_STREAMS {
-                    delta(&store, &format!("other-{n}"), "x");
-                }
-                assert!(!store.memory.lock().unwrap().held.contains_key("a"));
-            }
-        }).unwrap();
-        assert_consistent(&store, &seen);
-        assert!(seen.turns[0]["items"].as_array().unwrap().iter().any(|i| i["text"] == "late text"));
-    }
-
-    #[test]
-    fn replaying_the_journal_rebuilds_exactly_the_record_readers_saw() {
-        let (_dir, store) = lab();
-        store.insert(&detail("a")).unwrap();
-        let mut c = detail("c");
-        c.agent.harness = "claude".into();
-        c.claude_runtime = Some(ClaudeRuntime { context_window: Some(200_000), ..Default::default() });
-        store.insert(&c).unwrap();
-        // Journaled events whose effect includes a time: a compaction
-        // starting, token usage, a Turn first seen through its Item.
-        let codex = [
-            ("item/started", json!({"turnId":"t","item":{"id":"compact","type":"contextCompaction"}})),
-            ("thread/tokenUsage/updated", json!({"turnId":"t","tokenUsage":{"last":{"totalTokens":1000},"modelContextWindow":200_000}})),
-            ("item/started", json!({"turnId":"t2","item":{"id":"reply","type":"agentMessage","text":""}})),
-            ("item/completed", json!({"turnId":"t2","item":{"id":"reply","type":"agentMessage","text":"xy"}})),
-            ("hook/completed", json!({"turnId":"t","run":{"id":"stop:7"}})),
-        ];
-        for (kind, p) in codex {
-            stream(&store, "a", kind, &p);
-            std::thread::sleep(Duration::from_millis(3));
-        }
-        let claude = [
-            json!({"type":"assistant","uuid":"b-0","message":{"id":"m","content":[{"type":"thinking","thinking":"Plan."}]}}),
-            json!({"type":"assistant","uuid":"b-1","message":{"id":"m","content":[{"type":"tool_use","id":"tool","name":"Bash","input":{"command":"ls"}}]}}),
-            json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool","content":"a.rs"}]}}),
-            json!({"type":"system","subtype":"status","status":"requesting"}),
-            json!({"type":"tool_progress","tool_use_id":"tool","elapsed_time_seconds":30}),
-        ];
-        for event in claude {
-            stream(&store, "c", &format!("claude/{}", event["type"].as_str().unwrap()), &json!({"type":"event","turnId":"t","event":event}));
-            std::thread::sleep(Duration::from_millis(3));
-        }
-        std::thread::sleep(Duration::from_millis(3));
-        let db = store.db.read().unwrap();
-        let memory = store.memory.lock().unwrap();
-        assert!(memory.held["a"].detail.read().turns[0]["_yuzunoCompactionStartedAt"].is_i64());
-        for id in ["a", "c"] {
-            assert!(memory.held[id].unwritten_since.is_some(), "{id} still only in the journal");
-            let (mut rebuilt, _) = load(&db, id).unwrap();
-            // The rev belongs to this process and is never read back.
-            assert_eq!(rebuilt.agent.rev, 0);
-            let held = memory.held[id].detail.read();
-            rebuilt.agent.rev = held.agent.rev;
-            assert_eq!(serde_json::to_value(rebuilt).unwrap(), serde_json::to_value(&*held).unwrap(), "{id}");
+        fn update(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut AgentDetail)) -> Result<AgentDetail> {
+            update(self, id, kind, data, mutate)
         }
     }
+}
 
-    /// A background sub-agent of Claude reports after its Turn ended, in no
-    /// Turn or inside another one: replaying the journal rebuilds it, and the
-    /// Turn of its call is the one written with it.
-    #[test]
-    fn a_late_subagent_event_is_written_with_the_turn_of_its_call() {
-        let (_dir, store) = lab();
-        let mut c = detail("c");
-        c.agent.harness = "claude".into();
-        c.turns = vec![
-            json!({"id":"t","status":"completed","items":[{"id":"agent-1","type":"claudeToolUse","name":"Agent","status":"completed",
-                "input":{"description":"Read c.txt"},"subAgent":{"taskId":"task-1","status":"running","background":true}}]}),
-            json!({"id":"t2","status":"inProgress","items":[]}),
-        ];
-        store.insert(&c).unwrap();
-        let late = [
-            (json!("t2"), json!({"type":"assistant","uuid":"s-1","parent_tool_use_id":"agent-1","message":{"id":"m-s","content":[
-                {"type":"tool_use","id":"c-read","name":"Read","input":{"file_path":"c.txt"}}]}})),
-            (Value::Null, json!({"type":"user","parent_tool_use_id":"agent-1","message":{"content":[{"type":"tool_result","tool_use_id":"c-read","content":"charlie"}]}})),
-            (Value::Null, json!({"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"completed","end_time":1}})),
-            (Value::Null, json!({"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"agent-1","status":"completed",
-                "summary":"charlie","output_file":"/o"})),
-        ];
-        for (turn, event) in late {
-            stream(&store, "c", &format!("claude/{}", event["type"].as_str().unwrap()), &json!({"type":"event","turnId":turn,"event":event}));
-            std::thread::sleep(Duration::from_millis(3));
-        }
-        let held = store.memory.lock().unwrap().held["c"].detail.read().clone();
-        assert_eq!(held.turns[0]["items"][0]["subAgent"]["status"], "completed");
-        assert_eq!((held.turns[0]["items"][1]["parentToolUseId"].clone(), held.turns[0]["items"][1]["status"].clone()),
-            (json!("agent-1"), json!("completed")));
-        assert_eq!(held.turns[1]["items"], json!([]));
-        let rebuilt = |store: &Store| {
-            let (mut rebuilt, _) = load(&store.db.read().unwrap(), "c").unwrap();
-            rebuilt.agent.rev = held.agent.rev;
-            serde_json::to_value(rebuilt).unwrap()
-        };
-        assert_eq!(rebuilt(&store), serde_json::to_value(&held).unwrap(), "replayed from the journal");
-        assert!(store.stream_tick(Duration::ZERO).failed.is_empty());
-        assert_eq!(rebuilt(&store), serde_json::to_value(&held).unwrap(), "written to its rows");
+/// How many whole records tests read of each Agent (`whole::detail`), by
+/// the Store that read it. No production path reads one (T-140), so an
+/// operation between two counts adds none of its own.
+#[cfg(test)]
+pub(crate) static DETAIL_READS_OF: std::sync::Mutex<Option<HashMap<(usize, String), u64>>> = std::sync::Mutex::new(None);
+
+/// Every Store's whole reads of `id` in tests.
+#[cfg(test)]
+pub(crate) fn detail_reads_of(id: &str) -> u64 {
+    DETAIL_READS_OF.lock().unwrap().as_ref()
+        .map_or(0, |reads| reads.iter().filter(|((_, of), _)| of == id).map(|(_, n)| n).sum())
+}
+
+#[cfg(test)]
+impl Store {
+    /// `whole::detail`, for a test.
+    pub(crate) fn detail(&self, id: &str) -> Result<AgentDetail> {
+        *DETAIL_READS_OF.lock().unwrap().get_or_insert_with(HashMap::new)
+            .entry((self as *const Self as usize, id.into())).or_default() += 1;
+        whole::detail(self, id)
     }
 
-    #[test]
-    fn only_the_unsynced_connection_skips_the_sync_on_commit() {
-        let (_dir, store) = lab();
-        store.insert(&detail("a")).unwrap();
-        stream(&store, "a", "item/started", &json!({"turnId":"t","item":{"id":"reply","type":"agentMessage","text":""}}));
-        assert!(store.review("a", 1).unwrap());
-        assert!(store.stream_tick(Duration::ZERO).failed.is_empty());
-        assert_eq!((store.db.writer_synchronous(), store.db.unsynced_synchronous()), (2, 1), "FULL and NORMAL");
+    /// This Store's whole reads of `id` in tests (see `DETAIL_READS_OF`).
+    pub(crate) fn detail_reads(&self, id: &str) -> u64 {
+        DETAIL_READS_OF.lock().unwrap().as_ref()
+            .and_then(|reads| reads.get(&(self as *const Self as usize, id.to_owned())).copied()).unwrap_or(0)
     }
 
-    /// Runs `f` on another thread; true if it finished within `limit`.
-    fn finishes_within(limit: Duration, f: impl FnOnce() + Send + 'static) -> bool {
-        let (done, finished) = std::sync::mpsc::channel();
-        std::thread::spawn(move || { f(); let _ = done.send(()); });
-        finished.recv_timeout(limit).is_ok()
+    /// `whole::update`, for a test.
+    pub(crate) fn update(&self, id: &str, kind: &str, data: &Value, mutate: impl FnOnce(&mut AgentDetail)) -> Result<AgentDetail> {
+        whole::update(self, id, kind, data, mutate)
     }
+}
 
-    /// Holds the writer on another thread until the returned sender is used.
-    fn hold_writer(store: &Arc<Store>) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
-        let (held_tx, held) = std::sync::mpsc::channel();
-        let (release, released) = std::sync::mpsc::channel::<()>();
-        let store = store.clone();
-        let writer = std::thread::spawn(move || {
-            let _db = store.db.write().unwrap();
-            held_tx.send(()).unwrap();
-            let _ = released.recv();
-        });
-        held.recv().unwrap();
-        (release, writer)
-    }
+/// A finished Turn whose completion is not among `known`.
+fn unrecorded_completion(turn: &Value, known: &HashSet<String>) -> bool {
+    matches!(turn["status"].as_str(), Some("completed" | "failed" | "interrupted"))
+        && !turn["id"].as_str().is_some_and(|id| known.contains(id))
+}
 
-    fn shared() -> (tempfile::TempDir, Arc<Store>) {
-        let (dir, store) = lab();
-        (dir, Arc::new(store))
-    }
-
-    /// Rows are planned (serialized) before the writer; the `agent` the
-    /// writer decides goes in when they are applied.
-    #[test]
-    fn a_record_is_written_from_rows_planned_before_the_writer() {
-        let (_dir, store) = lab();
-        store.insert(&detail("a")).unwrap();
-        let mut d = detail("a");
-        d.turns[0]["items"] = json!([{"id":"x","type":"agentMessage","text":"quote \" and {braces}"}]);
-        let plan = record_rows::plan(&*store.db.read().unwrap(), "a", &d, &Dirty::all()).unwrap();
-        d.agent.last_seq = 42;
-        d.agent.unread_count = 3;
-        {
-            let mut db = store.db.write().unwrap();
-            let tx = db.transaction().unwrap();
-            record_rows::apply(&tx, "a", &plan, &d.agent).unwrap();
-            tx.commit().unwrap();
-        }
-        let back = record_rows::load(&*store.db.read().unwrap(), "a", true).unwrap().unwrap();
-        assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&d).unwrap());
-    }
-
-    /// A held record waiting for the writer to be written (the ticker holds
-    /// its record lock, nothing else) can still be read, listed and checked,
-    /// and another Agent still streams.
-    #[test]
-    fn a_held_record_is_read_while_it_waits_to_be_written() {
-        let (_dir, store) = shared();
-        store.insert(&detail("a")).unwrap();
-        store.insert(&detail("b")).unwrap();
-        stream(&store, "a", "item/completed", &json!({"turnId":"t","item":{"id":"reply","type":"agentMessage","text":"held"}}));
-        let (release, writer) = hold_writer(&store);
-        let ticking = std::thread::spawn({
-            let store = store.clone();
-            move || store.stream_tick(Duration::ZERO)
-        });
-        std::thread::sleep(Duration::from_millis(50));
-        let reader = store.clone();
-        assert!(finishes_within(Duration::from_secs(5), move || {
-            assert_eq!(reader.detail("a").unwrap().turns[0]["items"][0]["text"], "held");
-            assert_eq!(reader.agent("a").unwrap().id, "a");
-            assert_eq!(reader.agents().unwrap().len(), 2);
-            assert!(!reader.binding("a").unwrap().0);
-            reader.changed_items_since("a", 0).unwrap();
-            stream(&reader, "b", "item/agentMessage/delta", &json!({"turnId":"t","itemId":"reply","delta":"flows"}));
-            assert_eq!(reader.detail("b").unwrap().turns[0]["items"][0]["text"], "flows");
-        }), "reads waited for a held record's write");
-        assert!(!ticking.is_finished());
-        release.send(()).unwrap();
-        writer.join().unwrap();
-        assert!(ticking.join().unwrap().failed.is_empty());
-        let row = record_rows::load(&*store.db.read().unwrap(), "a", true).unwrap().unwrap();
-        assert_eq!(row.turns[0]["items"][0]["text"], "held");
-    }
-
-    /// A record held (with output its rows lack) while a payload request read
-    /// its rows is answered from the held copy, not the older rows.
-    #[test]
-    fn a_payload_read_racing_a_stream_is_answered_from_the_held_copy() {
-        let (_dir, store) = lab();
-        let mut d = detail("a");
-        d.turns[0]["items"] = json!([{"id":"run","type":"commandExecution","aggregatedOutput":"first\n"}]);
-        store.insert(&d).unwrap();
-        assert_eq!(store.streamed_records(), 0);
-        let mut once = true;
-        let output = store.payload_view_racing("a", None, Some("run"), |d| d.turns[0]["items"][0]["aggregatedOutput"].clone(), || {
-            if std::mem::take(&mut once) {
-                stream(&store, "a", "item/commandExecution/outputDelta", &json!({"turnId":"t","itemId":"run","delta":"more\n"}));
-            }
-        }).unwrap().unwrap();
-        assert_eq!(output, "first\nmore\n");
-    }
-
-    /// A view read through a snapshot older than a delete is not kept: the
-    /// deleted Agent never comes back as listed.
-    #[test]
-    fn a_listed_view_from_an_older_snapshot_is_not_kept() {
-        let (_dir, store) = lab();
-        store.insert(&detail("a")).unwrap();
-        let old = store.db.read().unwrap();
-        let _: i64 = old.query_row("SELECT COUNT(*) FROM agents", [], |r| r.get(0)).unwrap();
-        store.update("a", "agent/closed", &json!({}), |d| d.agent.closed_at = Some(now())).unwrap();
-        store.delete_closed_agent("a").unwrap();
-        assert!(store.brief_in(&old, "a").unwrap().is_some(), "the old snapshot still has it");
-        drop(old);
-        assert!(store.agent("a").is_err());
-        assert!(store.agents().unwrap().is_empty());
-    }
-
-    /// With nothing due, a tick needs no writer.
-    #[test]
-    fn the_ticker_takes_the_writer_only_for_a_due_record() {
-        let (_dir, store) = shared();
-        store.insert(&detail("a")).unwrap();
-        stream(&store, "a", "item/completed", &json!({"turnId":"t","item":{"id":"reply","type":"agentMessage","text":"x"}}));
-        delta(&store, "a", " streaming");
-        let (release, writer) = hold_writer(&store);
-        let ticker = store.clone();
-        assert!(finishes_within(Duration::from_secs(5), move || {
-            let tick = ticker.stream_tick(Duration::from_secs(60));
-            assert_eq!(tick.announce, ["a".to_string()]);
-            assert!(tick.failed.is_empty());
-        }), "an idle tick waited for the writer");
-        release.send(()).unwrap();
-        writer.join().unwrap();
-    }
-
-    /// A changed record is serialized (`record_rows::plan`) before its commit
-    /// takes the writer, so a write never holds the writer while it
-    /// serializes a record. Checked with the writer held by this thread: the
-    /// commit must finish planning while it waits for the writer.
-    #[test]
-    fn records_are_serialized_before_the_writer_is_taken() {
-        let (_dir, store) = lab();
-        assert!(store.db.is_wal(), "a plan reads through its own snapshot only in WAL mode");
-        let mut big = detail("big");
-        big.turns[0]["items"] = (0..2_000).map(|n| json!({"id":format!("old-{n}"),"type":"agentMessage",
-            "text":"An earlier line of output that makes this record large"})).collect();
-        store.insert(&big).unwrap();
-        // Once from the row and once held (streamed, not yet written).
-        for held in [false, true] {
-            if held {
-                stream(&store, "big", "item/completed", &json!({"turnId":"t","item":{"id":"reply","type":"agentMessage","text":"x"}}));
-            }
-            let text = format!("changed (held: {held})");
-            let (planned, wait) = std::sync::mpsc::channel();
-            *AFTER_PLAN.lock().unwrap() = Some(("big".into(), planned));
-            std::thread::scope(|s| {
-                let writer = store.db.write().unwrap();
-                let commit = s.spawn(|| {
-                    store.update("big", "thread/status/changed", &json!({}), |d| {
-                        d.turns[0]["items"][0]["text"] = json!(text);
-                    })
-                });
-                let planning = wait.recv_timeout(std::time::Duration::from_secs(20));
-                drop(writer);
-                assert!(planning.is_ok(), "the commit did not finish planning while the writer was held elsewhere (held: {held})");
-                let d = commit.join().unwrap().unwrap();
-                assert_eq!(d.turns[0]["items"][0]["text"], json!(text));
-            });
-            *AFTER_PLAN.lock().unwrap() = None;
+impl AgentDetail {
+    /// The record without its Turns (its metadata and receipts), copied.
+    pub(crate) fn clone_meta(&self) -> AgentDetail {
+        let AgentDetail { agent, turns: _, history, pending, artifacts, context_usage, message_receipts, claude_runtime,
+            codex_handoff } = self;
+        AgentDetail {
+            agent: agent.clone(),
+            turns: Vec::new(),
+            history: history.clone(),
+            pending: pending.clone(),
+            artifacts: artifacts.clone(),
+            context_usage: context_usage.clone(),
+            message_receipts: message_receipts.clone(),
+            claude_runtime: claude_runtime.clone(),
+            codex_handoff: codex_handoff.clone(),
         }
     }
+}
 
-    /// #1: a change and its rev are set together, so a copy read at any
-    /// moment holds exactly the changes up to its rev (or SSE deltas after
-    /// it would be applied twice, or skipped).
-    #[test]
-    fn a_copy_never_has_a_change_without_its_rev_or_the_reverse() {
-        let (_dir, store) = shared();
-        store.insert(&detail("a")).unwrap();
-        stream(&store, "a", "item/started", &json!({"turnId":"t","item":{"id":"reply","type":"agentMessage","text":""}}));
-        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let reader = std::thread::spawn({
-            let (store, done) = (store.clone(), done.clone());
-            move || {
-                let mut seen = Vec::new();
-                while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                    if let Some(copy) = store.peek("a", |d| (d.turns[0]["items"][0]["text"].as_str().unwrap_or("").to_owned(), d.agent.rev)) {
-                        seen.push(copy);
-                    }
-                }
-                seen
-            }
-        });
-        let base = store.rev("a");
-        let mut revs = Vec::new();
-        for n in 0..3000 {
-            revs.push(stream(&store, "a", "item/agentMessage/delta", &json!({"turnId":"t","itemId":"reply","delta":format!("{n},")})).rev.unwrap());
-        }
-        done.store(true, std::sync::atomic::Ordering::Relaxed);
-        let seen = reader.join().unwrap();
-        assert!(seen.len() > 100, "the reader read {} copies", seen.len());
-        for (text, rev) in seen {
-            let deltas = text.matches(',').count();
-            let expected = if rev <= base { 0 } else { revs.iter().filter(|r| **r <= rev).count() };
-            assert_eq!(deltas, expected, "a copy at rev {rev} holds {deltas} deltas");
-        }
-    }
-
-    /// #2: a write committed but not yet shown in memory (its rev and
-    /// version) is never read with the previous rev: the read waits for it.
-    #[test]
-    fn rows_read_while_a_write_is_shown_carry_its_rev() {
-        let (_dir, store) = shared();
-        store.insert(&detail("a")).unwrap();
-        let (committed_tx, committed) = std::sync::mpsc::channel();
-        let (go_tx, go) = std::sync::mpsc::channel::<()>();
-        let writer = std::thread::spawn({
-            let store = store.clone();
-            move || {
-                AFTER_COMMIT.with(|hook| *hook.borrow_mut() = Some(Box::new(move || {
-                    committed_tx.send(()).unwrap();
-                    go.recv().unwrap();
-                })));
-                store.update("a", "agent/renamed", &json!({}), |d| d.agent.name = "renamed".into()).unwrap().agent.rev
-            }
-        });
-        committed.recv().unwrap();
-        let reader = std::thread::spawn({
-            let store = store.clone();
-            move || store.detail("a").unwrap()
-        });
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(!reader.is_finished(), "a read of the committed rows did not wait for their rev");
-        go_tx.send(()).unwrap();
-        let rev = writer.join().unwrap();
-        let read = reader.join().unwrap();
-        assert_eq!((read.agent.name.as_str(), read.agent.rev), ("renamed", rev));
-    }
-
-    /// #3: an event whose application panics leaves no half-applied copy:
-    /// the record is rebuilt from its rows and journal, the event skipped,
-    /// and the Agent says so. It stays readable and writable, not Damaged.
-    #[test]
-    fn an_event_that_cannot_be_applied_is_skipped_and_shown() {
-        let (_dir, store) = lab();
-        store.insert(&detail("a")).unwrap();
-        stream(&store, "a", "item/completed", &json!({"turnId":"t","item":{"id":"reply","type":"agentMessage","text":"kept"}}));
-        let broken = json!({"turnId":"t","_testPanic":true,"item":{"id":"other","type":"agentMessage","text":"never"}});
-        assert!(store.record_stream("a", Route::Deferred, "item/completed", &broken).is_err());
-        let seq: i64 = store.db.read().unwrap().query_row("SELECT MAX(seq) FROM journal WHERE agent_id='a'", [], |r| r.get(0)).unwrap();
-        // Applied after it, and replayed with it from the journal.
-        stream(&store, "a", "item/completed", &json!({"turnId":"t","item":{"id":"late","type":"agentMessage","text":"after"}}));
-        assert!(store.flush().failed.is_empty());
-        store.memory.lock().unwrap().held.clear();
-        // Written as if before both events, so loading replays them.
-        let d = store.detail("a").unwrap();
-        let error = d.agent.error.clone().unwrap_or_default();
-        assert!(error.contains(&format!("#{seq}")) && error.contains("item/completed"), "{error}");
-        assert_eq!(d.agent.name, "a", "no half-applied change");
-        let texts: Vec<&str> = d.turns[0]["items"].as_array().unwrap().iter().filter_map(|i| i["text"].as_str()).collect();
-        assert_eq!(texts, ["kept", "after"]);
-        assert!(record_rows::load(&*store.db.read().unwrap(), "a", true).is_ok(), "its rows still assemble");
-        store.update("a", "agent/noted", &json!({}), |_| {}).unwrap();
-        assert!(store.detail("a").unwrap().agent.error.unwrap_or_default().contains(&format!("#{seq}")));
-    }
-
-    /// #3, replay only: an event the journal holds whose application panics
-    /// (as after a crash) is skipped the same way.
-    #[test]
-    fn a_journaled_event_that_cannot_be_replayed_is_skipped_and_shown() {
-        let (_dir, store) = lab();
-        store.insert(&detail("a")).unwrap();
-        {
-            let mut db = store.db.write().unwrap();
-            let tx = db.transaction().unwrap();
-            for (kind, data) in [
-                ("item/completed", json!({"turnId":"t","item":{"id":"one","type":"agentMessage","text":"one"}})),
-                ("item/completed", json!({"turnId":"t","_testPanic":true,"item":{"id":"bad","type":"agentMessage","text":"x"}})),
-                ("item/completed", json!({"turnId":"t","item":{"id":"two","type":"agentMessage","text":"two"}})),
-            ] {
-                tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES('a',?1,?2,?3)", params![kind, data.to_string(), now()]).unwrap();
-            }
-            tx.commit().unwrap();
-        }
-        let d = store.detail("a").unwrap();
-        assert!(d.agent.error.unwrap_or_default().contains("item/completed"));
-        let texts: Vec<&str> = d.turns[0]["items"].as_array().unwrap().iter().filter_map(|i| i["text"].as_str()).collect();
-        assert_eq!(texts, ["one", "two"]);
-        assert_eq!(d.agent.status, "working", "readable as it is, not a damaged stand-in");
-    }
-
-    /// #4: first events of more Agents than MAX_STREAMS at once: the bound
-    /// holds once they are done (by the next tick at the latest), and every
-    /// record dropped was written first.
-    #[test]
-    fn held_records_stay_bounded_when_many_agents_start_streaming_at_once() {
-        let (_dir, store) = shared();
-        let ids: Vec<String> = (0..MAX_STREAMS + 4).map(|n| format!("agent-{n}")).collect();
-        for id in &ids {
-            store.insert(&detail(id)).unwrap();
-        }
-        let barrier = Arc::new(std::sync::Barrier::new(ids.len()));
-        let threads: Vec<_> = ids.iter().map(|id| {
-            let (store, barrier, id) = (store.clone(), barrier.clone(), id.clone());
-            std::thread::spawn(move || {
-                barrier.wait();
-                delta(&store, &id, &format!("text of {id}"));
-            })
-        }).collect();
-        for thread in threads {
-            thread.join().unwrap();
-        }
-        store.stream_tick(Duration::from_secs(60));
-        assert!(store.streamed_records() <= MAX_STREAMS, "{} held", store.streamed_records());
-        for id in &ids {
-            assert_eq!(store.detail(id).unwrap().turns[0]["items"][0]["text"], format!("text of {id}"));
-        }
-    }
-
-    /// #7: a deleted Agent's record lock is let go, and so are idle ones.
-    #[test]
-    fn record_locks_are_let_go() {
-        let (_dir, store) = lab();
-        store.insert(&detail("a")).unwrap();
-        store.insert(&detail("b")).unwrap();
-        delta(&store, "b", "x");
-        store.update("a", "agent/closed", &json!({}), |d| d.agent.closed_at = Some(now())).unwrap();
-        store.delete_closed_agent("a").unwrap();
-        assert!(!store.records.lock().unwrap().contains_key("a"));
-        store.stream_tick(Duration::from_secs(60));
-        assert!(store.records.lock().unwrap().is_empty());
+impl Default for AgentDetail {
+    fn default() -> Self {
+        serde_json::from_value(json!({"agent":{"id":"","name":"","cwd":"","model":"","color":"","status":"",
+            "createdAt":"","updatedAt":"","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},
+            "turns":[],"pending":[],"artifacts":[]})).expect("an empty record")
     }
 }
 
 #[cfg(test)]
+#[path = "store/tests.rs"]
+mod tests;
+#[cfg(test)]
+#[path = "store/window_tests.rs"]
 mod window_tests;
 #[cfg(test)]
-mod scoped_tests;
-#[cfg(test)]
+#[path = "store/composition_tests.rs"]
 mod composition_tests;
-#[cfg(test)]
-mod restart_tests;
-#[cfg(test)]
-mod send_view_tests;
-#[cfg(test)]
-mod completion_index_tests;

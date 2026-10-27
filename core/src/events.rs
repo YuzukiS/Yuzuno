@@ -552,7 +552,7 @@ fn text_delta(turn: &Value, pending: &[PendingRequest], message: &str, index: &s
     let last = blocks.last()?;
     // The first text of a message is sent whole: the client may not have the
     // Item yet if no block start came before.
-    let first = blocks.len() == 1 && last["text"].as_str().is_some_and(|t| t.len() == delta.len());
+    let first = blocks.len() == 1 && last["bytes"].as_u64() == Some(delta.len() as u64);
     if last["index"] == index && !first {
         return Some(Out::Append { item: message.into(), field: "text", index: None, text: delta.into() });
     }

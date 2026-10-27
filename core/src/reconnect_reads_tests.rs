@@ -10,10 +10,30 @@ use std::os::unix::fs::PermissionsExt;
 const NATIVE: &str = r#"#!/usr/bin/python3
 import json, sys
 def emit(value): print(json.dumps(value), flush=True)
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
     request = json.loads(line)
     if 'id' not in request: continue
     method, params = request.get('method'), request.get('params') or {}
+    if method=='thread/turns/list': sys.stdout.ids.add(request['id']); method='thread/read'
     result = {}
     if method in ('thread/resume', 'thread/read'):
         if params.get('threadId') == 'silent': continue

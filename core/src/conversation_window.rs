@@ -144,16 +144,6 @@ pub(crate) fn header(detail: &AgentDetail) -> AgentDetail {
         message_receipts:message_receipts.clone(), claude_runtime:claude_runtime.clone(), codex_handoff:codex_handoff.clone() }
 }
 
-pub(crate) fn index(detail: &AgentDetail) -> AgentDetail {
-    let mut out = header(detail);
-    out.turns = detail.turns.iter().map(|turn| {
-        let mut shell = turn_shell(turn);
-        shell["items"] = turn["items"].as_array().into_iter().flatten().map(item_index).collect();
-        shell
-    }).collect();
-    out
-}
-
 pub fn project(detail: &mut AgentDetail, query: &Query) -> Result<Value, Missing> {
     let (turns, metadata) = project_from(&detail.turns, query, |t, i| Ok(detail.turns[t]["items"][i].clone()))
         .expect("in-memory body read cannot fail")?;
@@ -270,6 +260,143 @@ pub(crate) fn project_from(
     Ok(Ok((selected, metadata)))
 }
 
+/// `project_from` of a stored conversation without all its Items (T-140):
+/// `turns` hold as Items only those every window lists (user messages,
+/// async questions, running tasks), `ords` their positions and `counts`
+/// each Turn's Items. `id_at` gives the ID of the Item at a position (for a
+/// cursor), `position` that of an Item by ID in a Turn, `read` an Item's
+/// body; only the Items shown and their neighbours are read. The same
+/// window and metadata as `project_from` of the whole conversation.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn project_marked(
+    turns: &[Value], ords: &[Vec<usize>], counts: &[usize], query: &Query,
+    mut position: impl FnMut(usize, &str) -> anyhow::Result<Option<usize>>,
+    mut read: impl FnMut(usize, usize) -> anyhow::Result<Value>,
+) -> anyhow::Result<Result<(Vec<Value>, Value), Missing>> {
+    let listed = |t: usize| turns[t]["items"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let index: Vec<Value> = turns.iter().enumerate().map(|(number, turn)| {
+        let users: Vec<_> = listed(number).iter().filter(|item| item["type"] == "userMessage").collect();
+        let mut previews: Vec<_> = users.first().copied().into_iter().collect();
+        if users.len() > 1 { previews.push(users[users.len()-1]); }
+        json!({"id":turn["id"],"status":turn["status"],"_yuzunoSource":turn["_yuzunoSource"],
+            "number":number + 1,"_yuzunoIndex":true,"_yuzunoRequestCount":users.len(),"itemCount":counts[number],
+            "items":previews.into_iter().map(|item| json!({"id":item["id"],"type":"userMessage","_yuzunoSource":item["_yuzunoSource"],
+                "content":[{"type":"text","text":excerpt(item,256)}]})).collect::<Vec<_>>()})
+    }).collect();
+    let questions: Vec<Value> = turns.iter().enumerate().filter_map(|(t, turn)| {
+        let items: Vec<Value> = listed(t).iter()
+            .filter(|i| i["type"] == "agentMessage" && i["delivery"] == "async" && i["questions"].as_array().is_some_and(|q|!q.is_empty()))
+            .map(|i| json!({"id":i["id"],"type":"agentMessage","delivery":"async","status":i["status"],"questions":i["questions"]})).collect();
+        (!items.is_empty()).then(||json!({"id":turn["id"],"status":turn["status"],"_yuzunoImportedQuestions":turn["_yuzunoImportedQuestions"],"items":items}))
+    }).collect();
+    let native_client_ids: Vec<&str> = (0..turns.len()).flat_map(|t| listed(t).iter())
+        .filter(|i|i["type"] == "userMessage").filter_map(|i|i["clientId"].as_str()).collect();
+    // Positions as `project_from` numbers them, from the Item counts: an
+    // empty Turn takes one.
+    let mut starts = Vec::with_capacity(turns.len());
+    let mut total = 0;
+    for n in counts {
+        starts.push(total);
+        total += (*n).max(1);
+    }
+    let at = |position: usize| -> (usize, Option<usize>) {
+        let t = starts.partition_point(|start| *start <= position) - 1;
+        (t, (counts[t] > 0).then(|| position - starts[t]))
+    };
+    let start_of = |t: usize, i: Option<usize>| starts[t] + i.unwrap_or(0);
+    let mut find_cursor = |value: &str| -> anyhow::Result<Result<usize, Missing>> {
+        let Ok((turn_id, item_id)) = serde_json::from_str::<(String, Option<String>)>(value) else { return Ok(Err(Missing::Item)) };
+        let Some(t) = turns.iter().position(|t| t["id"] == turn_id) else { return Ok(Err(Missing::Item)) };
+        Ok(match item_id {
+            Some(item) => match position(t, &item)? { Some(i) => Ok(start_of(t, Some(i))), None => Err(Missing::Item) },
+            None if counts[t] == 0 => Ok(start_of(t, None)),
+            None => Err(Missing::Item),
+        })
+    };
+    let destination = if let Some(before) = &query.before {
+        // One overlapping item provides a stable reading anchor on page change.
+        find_cursor(before)?.map(|at| (at, true))
+    } else if let Some(after) = &query.after {
+        find_cursor(after)?.map(|at| (at, false))
+    } else if let Some(turn_id) = &query.turn_id {
+        match turns.iter().position(|t| t["id"] == *turn_id) {
+            None => Err(Missing::Turn),
+            Some(t) => match &query.item_id {
+                None => Ok((start_of(t, None), false)),
+                Some(item) => match position(t, item)? { Some(i) => Ok((start_of(t, Some(i)), false)), None => Err(Missing::Item) },
+            },
+        }
+    } else { Ok((total.saturating_sub(1), true)) };
+    let (anchor, reverse) = match destination { Ok(found) => found, Err(missing) => return Ok(Err(missing)) };
+    let mut chosen = Vec::new();
+    let mut ids = std::collections::HashMap::new();
+    let mut bytes = 0;
+    for offset in 0..MAX_ITEMS {
+        let place = if reverse { anchor.checked_sub(offset) } else { anchor.checked_add(offset) };
+        let Some(place) = place.filter(|&place| place < total) else { break };
+        let (t, i) = at(place);
+        let item = match i {
+            Some(i) => {
+                let body = read(t, i)?;
+                ids.insert(place, body["id"].clone());
+                Some(bounded_item(&body))
+            }
+            None => None,
+        };
+        let size = item.as_ref().map_or(0, |i| serde_json::to_vec(i).unwrap().len());
+        if !chosen.is_empty() && bytes + size > MAX_BODY_BYTES { break; }
+        bytes += size;
+        chosen.push((place, item));
+    }
+    chosen.sort_unstable_by_key(|(place, _)| *place);
+    let cursor = |place: usize| {
+        let (t, _) = at(place);
+        serde_json::to_string(&(turns[t]["id"].as_str().unwrap_or_default(), ids.get(&place).and_then(Value::as_str))).unwrap()
+    };
+    let start = chosen.first().map(|(place, _)| *place);
+    let end = chosen.last().map(|(place, _)| *place);
+    // Running sub-agents and background tasks outside the window, newest
+    // first, as `project_from` lists them.
+    let shown: std::collections::HashSet<usize> = chosen.iter().map(|(place, _)| *place).collect();
+    let (mut sub_agents, mut background) = (Vec::new(), Vec::new());
+    'turns: for t in (0..turns.len()).rev() {
+        for (k, entry) in listed(t).iter().enumerate().rev() {
+            if sub_agents.len() == MAX_RUNNING && background.len() == MAX_RUNNING { break 'turns; }
+            let i = ords[t][k];
+            if shown.contains(&start_of(t, Some(i))) { continue; }
+            let list = if crate::claude::subagent_running(&entry["subAgent"]) {
+                &mut sub_agents
+            } else if crate::claude::subagent_running(&entry["backgroundTask"]) {
+                &mut background
+            } else {
+                continue;
+            };
+            if list.len() < MAX_RUNNING {
+                list.push(json!({"turnId":turns[t]["id"],"position":[t, i],"item":preview(&read(t, i)?)}));
+            }
+        }
+    }
+    sub_agents.reverse();
+    background.reverse();
+    let metadata = json!({"index":index,"questions":questions,"runningSubAgents":sub_agents,"runningBackgroundTasks":background,
+        "nativeClientIds":native_client_ids,"start":start.map(&cursor),"end":end.map(&cursor),
+        "hasBefore":start.is_some_and(|i| i > 0),"hasAfter":end.is_some_and(|i| i + 1 < total),
+        "totalItems":counts.iter().sum::<usize>()});
+    let mut selected: Vec<Value> = Vec::new();
+    let mut previous = None;
+    for (place, item) in chosen {
+        let (t, i) = at(place);
+        if previous != Some(t) {
+            let mut turn = turn_shell(&turns[t]);
+            turn["_yuzunoSlice"] = json!({"start":i.unwrap_or(0),"total":counts[t],"index":t});
+            selected.push(turn);
+            previous = Some(t);
+        }
+        if let Some(item) = item { selected.last_mut().unwrap()["items"].as_array_mut().unwrap().push(item); }
+    }
+    Ok(Ok((selected, metadata)))
+}
+
 pub fn original_turn(detail: &AgentDetail, turn_id: &str) -> Result<Value, Missing> {
     detail.turns.iter().find(|t| t["id"] == turn_id).cloned().ok_or(Missing::Turn)
 }
@@ -336,20 +463,6 @@ impl Search {
         }
         self.results.len() < 50
     }
-}
-
-/// What `Search::item` reads of message `item`, copied: its ID, type and
-/// phase and the text `message_parts` takes, without a user message's other
-/// content (attachments) or an assistant message's other fields.
-pub(crate) fn searched(item: &Value) -> Value {
-    let mut out = json!({"id":item["id"], "type":item["type"]});
-    for key in ["phase", "_yuzunoInputText", "text"] {
-        if let Some(value) = item.get(key) { out[key] = value.clone(); }
-    }
-    if let Some(content) = item["content"].as_array() {
-        out["content"] = content.iter().map(|part| json!({"text":part["text"]})).collect();
-    }
-    out
 }
 
 #[cfg(test)]

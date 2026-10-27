@@ -1,3 +1,5 @@
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use axum::{body::{to_bytes, Body}, http::{Request, StatusCode}};
 use serde_json::{json, Value};
 use tower::ServiceExt;

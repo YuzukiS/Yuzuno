@@ -1,4 +1,6 @@
 //! Deterministic native-protocol boundary tests. Every runtime and DB is temporary.
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use serde_json::{json, Value};
 use std::{os::unix::fs::PermissionsExt, sync::Arc};
 use yuzuno_workspace::{model::{AgentDetail, AgentSettings, MessageInput}, store::Store, workspace::Workspace};
@@ -103,11 +105,31 @@ loaded = False
 def emit(value): print(json.dumps(value), flush=True)
 def thread():
     return json.loads(state.read_text()) if state.exists() else {'id':'thread','status':{'type':'idle'},'turns':[]}
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
     request = json.loads(line)
     with (root / 'calls.jsonl').open('a') as log: log.write(json.dumps(request)+'\n')
     method, params = request.get('method'), request.get('params', {})
     if 'id' not in request: continue
+    if method=='thread/turns/list': sys.stdout.ids.add(request['id']); method='thread/read'
     result = {}
     if method in ['thread/start','thread/resume','thread/read']:
         if method == 'thread/resume' and (root/'missing-rollout').exists():

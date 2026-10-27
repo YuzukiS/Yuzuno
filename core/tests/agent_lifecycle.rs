@@ -1,5 +1,7 @@
 //! Agent lifecycle is separate from native session history and project files.
 #![cfg(target_os = "linux")]
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use serde_json::{json, Value};
 use std::{os::unix::fs::PermissionsExt, sync::Arc};
 use yuzuno_workspace::{model::{AgentDetail, AgentSettings, MessageInput}, store::Store, workspace::Workspace};
@@ -95,11 +97,31 @@ with (root / 'pids').open('a') as log: log.write(str(os.getpid())+'\n')
 def emit(value): print(json.dumps(value), flush=True)
 def thread():
     return json.loads(state.read_text()) if state.exists() else {'id':'native-thread','status':{'type':'idle'},'turns':[]}
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
     req = json.loads(line)
     with (root / 'calls.jsonl').open('a') as log: log.write(json.dumps(req)+'\n')
     method, params = req.get('method'), req.get('params', {})
     if 'id' not in req: continue
+    if method=='thread/turns/list': sys.stdout.ids.add(req['id']); method='thread/read'
     result = {}
     if method in ['thread/start','thread/resume','thread/read']: result = {'thread':thread(), 'model':'test'}
     elif method == 'turn/start':
@@ -342,7 +364,10 @@ async fn reopen_over_http_answers_the_agent_as_the_whole_record_has_it() {
     assert!(reopened["closedAt"].is_null());
     assert_eq!(reopened["projectId"], project.id.as_str());
     let d = ws.store.detail("a").unwrap();
-    assert_eq!(d.turns, closed.turns, "the history is kept");
+    // Close answers with the window, which holds this short history whole.
+    let ids = |turns: &[Value]| turns.iter().map(|t| (t["id"].clone(),
+        t["items"].as_array().unwrap().iter().map(|i| i["id"].clone()).collect::<Vec<_>>())).collect::<Vec<_>>();
+    assert_eq!(ids(&d.turns), ids(&closed.turns), "the history is kept");
     let since = &calls()[before..];
     assert!(since.iter().any(|c| matches!(c["method"].as_str(), Some("thread/resume" | "thread/read"))), "it reconnected");
     assert!(since.iter().all(|c| c["method"] != "turn/start" && c["method"] != "thread/start"), "nothing was sent again");

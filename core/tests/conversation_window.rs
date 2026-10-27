@@ -1,5 +1,7 @@
 //! The saved-body window is opt-in and never changes stored history. All
 //! tests use a temporary workspace; no native harness or daily Core runs.
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use axum::{body::{to_bytes, Body}, http::{Request, StatusCode}, Router};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -35,12 +37,16 @@ impl Lab {
 #[tokio::test]
 async fn opt_in_is_bounded_and_original_and_search_are_complete() {
     let lab = Lab::new();
-    let (_,full,full_bytes) = lab.get("/api/agents/a",false).await;
-    assert!(full.get("conversation").is_none());
-    assert_eq!(full["turns"][0]["items"].as_array().unwrap().len(),400);
+    // The whole Turn is its original; the detail is the window either way
+    // (T-140), the conversation metadata only when asked for.
+    let (_,full,full_bytes) = lab.get("/api/agents/a/turns/t/original",false).await;
+    assert_eq!(full["items"].as_array().unwrap().len(),400);
     let (status,page,page_bytes) = lab.get("/api/agents/a",true).await;
     assert_eq!(status,StatusCode::OK);
     assert!(page_bytes * 4 < full_bytes,"{page_bytes} vs {full_bytes}");
+    let (_,plain,_) = lab.get("/api/agents/a",false).await;
+    assert!(plain.get("conversation").is_none());
+    assert_eq!(plain["turns"],page["turns"]);
     assert_eq!(page["conversation"]["totalItems"],400);
     assert_eq!(page["conversation"]["hasBefore"],true);
     assert_eq!(page["turns"][0]["items"].as_array().unwrap().last().unwrap()["id"],"i399");
@@ -48,10 +54,8 @@ async fn opt_in_is_bounded_and_original_and_search_are_complete() {
     assert_eq!(status,StatusCode::OK);
     assert_eq!(located["turns"][0]["items"][0]["id"],"i0");
     assert_eq!(located["conversation"]["hasAfter"],true);
-    let (_,original,_) = lab.get("/api/agents/a/turns/t/original",false).await;
-    assert_eq!(original["items"],full["turns"][0]["items"]);
     let (_,item,_) = lab.get("/api/agents/a/items/i0/original?turnId=t",false).await;
-    assert_eq!(item,full["turns"][0]["items"][0]);
+    assert_eq!(item,full["items"][0]);
     let (_,matches,_) = lab.get("/api/agents/a/conversation/search?q=saved%20message%200",false).await;
     assert_eq!(matches[0]["itemId"],"i0");
     assert_eq!(lab.ws.store.detail("a").unwrap().turns[0]["items"].as_array().unwrap().len(),400);
@@ -93,10 +97,10 @@ async fn full_original_preserves_mailbox_start_and_steer_provenance_outside_the_
         let (_,page,_) = lab.get("/api/agents/a",true).await;
         assert!(page["turns"][0]["_yuzunoSlice"].is_object());
         assert!(page["turns"][0]["items"].as_array().unwrap().iter().all(|item|item["type"] != "userMessage"),"provenance cannot be recovered from only loaded items");
-        let (_,detail,_) = lab.get("/api/agents/a",false).await;
         let (status,original,_) = lab.get("/api/agents/a/turns/t/original",false).await;
         assert_eq!(status,StatusCode::OK);
-        assert_eq!(original,detail["turns"][0]);
+        assert_eq!(original["items"].as_array().unwrap().len(),
+            lab.ws.store.detail("a").unwrap().turns[0]["items"].as_array().unwrap().len());
         let items = original["items"].as_array().unwrap();
         let mail = items.iter().find(|item|item["id"] == "mail").unwrap();
         assert_eq!(mail["_yuzunoSource"],"peer");

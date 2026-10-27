@@ -179,7 +179,7 @@ impl Workspace {
         }
         let key = session.clone();
         if let Some(agent) = self.stored(move |store| store.local_claude_agent(&key)?
-            .map(|id| Ok(store.detail(&id)?.agent)).transpose()).await? {
+            .map(|id| store.agent(&id)).transpose()).await? {
             return Ok(Imported { agent, existing: true, saved: 0, turns: 0, left_out: 0, compacted: false });
         }
         let confirmed = std::fs::canonicalize(&input.cwd).context("工作目录不存在或无法读取")?;

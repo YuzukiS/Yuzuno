@@ -30,6 +30,7 @@ for line in sys.stdin:
  result={}
  if m=='mcpServer/tool/call':result={'isError':True,'content':[{'text':'HTTP 401'}]}
  if m=='thread/read':result={'thread':{'id':'thread-a','status':{'type':'active','activeFlags':[]},'turns':[{'id':'turn-a','status':'inProgress','items':[]}]}}
+ if m=='thread/turns/list':result={'data':[{'id':'turn-a','status':'inProgress','items':[]}],'nextCursor':None}
  print(json.dumps({'id':r['id'],'result':result}),flush=True)
 "#;
     let (tx, _rx) = mpsc::channel(8);
@@ -75,6 +76,36 @@ for line in sys.stdin:
     assert!(!seen.contains("turn/start") && !seen.contains("turn/steer"));
     ws.close_agent("a").await.unwrap();
     assert!(ws.detail("a").await.unwrap().agent.closed_at.is_some());
+}
+
+/// An approval's answer, once saved as sent, reaches the runtime even if the
+/// read after its save fails. Here the Agent is not in memory, its listing is
+/// cached, and its open Turn's rows no longer fit together. Before, the save
+/// was answered as failed and the answer never went out, while its
+/// `_responseSent` mark refused every retry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_saved_approval_answer_reaches_the_runtime_although_a_read_after_it_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = workspace(&dir);
+    let mut d = agent("a", "thread-a");
+    d.agent.connection_state = "connected".into();
+    d.turns[0]["items"] = json!([{"id":"cmd","type":"commandExecution","command":"make","status":"inProgress","aggregatedOutput":""}]);
+    d.pending.push(PendingRequest { id: "approval".into(), agent_id: "a".into(),
+        method: "item/commandExecution/requestApproval".into(),
+        params: json!({"_runtimeGeneration":42,"_rpcId":100,"turnId":"turn-a","itemId":"cmd"}), created_at: now(), stale: false });
+    ws.store.insert(&d).unwrap();
+    let seen = dir.path().join("seen");
+    let code = "import sys\nfor line in sys.stdin:\n with open(sys.argv[1],'a') as f: f.write(line)\n";
+    let (tx, _rx) = mpsc::channel(8);
+    let rpc = Rpc::spawn("python3", &["-c".into(), code.into(), seen.display().to_string()], tx).await.unwrap();
+    ws.rpcs.lock().unwrap().insert("a".into(), Connection { generation: 42, rpc, closing: false, events: None, attachment: Default::default() });
+    ws.store.agent("a").unwrap();
+    assert!(ws.store.peek("a", |_| ()).is_none(), "not in memory");
+    sql(&ws).execute("UPDATE agent_items SET data='{' WHERE agent_id='a'", []).unwrap();
+    ws.respond("approval", json!({"decision":"decline"})).await.unwrap();
+    eventually("the answer reaches the runtime", || std::fs::read_to_string(&seen)
+        .is_ok_and(|lines| lines.lines().any(|l| serde_json::from_str::<Value>(l).is_ok_and(|v| v["id"] == 100 && v["result"]["decision"] == "decline"))))
+        .await;
 }
 
 fn agent(id: &str, thread_id: &str) -> AgentDetail {
@@ -429,10 +460,30 @@ async fn a_sent_message_reaches_the_runtime_even_if_the_request_is_dropped() {
     std::fs::write(&script, r#"#!/usr/bin/python3
 import json,sys,pathlib
 root=pathlib.Path(__file__).parent
+class _TurnsList:
+    """thread/turns/list answered as this fake's thread/read (T-140)."""
+    def __init__(self, raw): self.raw, self.ids, self.buf = raw, set(), ''
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            try:
+                v = json.loads(line)
+                if isinstance(v, dict) and v.get('id') in self.ids and 'result' in v:
+                    self.ids.discard(v['id'])
+                    turns = ((v['result'] or {}).get('thread') or {}).get('turns') or []
+                    v['result'] = {'data': list(reversed(turns)), 'nextCursor': None}
+                    line = json.dumps(v)
+            except ValueError: pass
+            self.raw.write(line + '\n')
+        return len(text)
+    def flush(self): self.raw.flush()
+sys.stdout = _TurnsList(sys.stdout)
 for line in sys.stdin:
  r=json.loads(line)
  if 'id' not in r: continue
  m=r['method']; result={}
+ if m=='thread/turns/list': sys.stdout.ids.add(r['id']); m='thread/read'
  if m in ['thread/start','thread/resume','thread/read']:
   result={'thread':{'id':'native-thread','status':{'type':'idle'},'turns':[]}}
  if m=='turn/start':

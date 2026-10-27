@@ -23,6 +23,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
+/// How many of the newest Turns a backfill matches saved history against
+/// (T-140): a reconnect fills in what Claude saved since the last one.
+pub(crate) const TAIL: usize = 32;
+
 /// One saved message's identity, as the bridge's `history_index` gives it.
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
@@ -697,18 +701,12 @@ mod tests {
         let (entries, messages) = saved(&chain, &[]);
         let plan = plan(&store.detail("a").unwrap(), &entries);
         store.update("a", "claude/history", &json!({}), |d| { apply(d, &plan, &entries, &messages, Utc::now()); }).unwrap();
-        // An update keeps the record held until other Agents' records take
-        // its place; then windows are read from its saved rows again.
-        assert_eq!(read(&store).0, "held");
-        for i in 0..crate::store::MAX_STREAMS {
-            let mut other = detail(json!([]));
-            other.agent.id = format!("b{i}");
-            store.insert(&other).unwrap();
-            store.update(&other.agent.id, "test/touched", &json!({}), |_| {}).unwrap();
-        }
+        // Windows are read from the saved rows (T-140), the update's too.
+        // Only the Items every window lists have index entries (its user
+        // message here, unchanged); the changed ones are bodies read from
+        // their rows, never a stale entry.
         let (source, built, after, turn) = read(&store);
-        assert_eq!(source, "rows");
-        assert!(built > 0, "the changed items' cached index entries were rebuilt, not served stale");
+        assert_eq!((source, built), ("rows", 0));
         assert_eq!(after, before, "nothing doubled");
         assert_eq!((turn["items"][1]["output"].as_str(), turn["items"][2]["text"].as_str()), (Some("a.txt"), Some("The files are a.txt.")));
         // A second backfill finds nothing to add.
@@ -987,7 +985,7 @@ mod tests {
     fn every_saved_text_block_of_one_message_is_kept() {
         // Core saw the message's first text block live; Claude saved a second.
         let mut d = detail(json!([{"id":"t1","status":"outcomeUnknown","_claudeAssistantSeen":{"a1":true},
-            "_claudeTextBlocks":{"m1":[{"index":"0","text":"First. ","confirmed":true}]},"items":[
+            "_claudeTextBlocks":{"m1":[{"index":"0","bytes":7,"confirmed":true}]},"items":[
             {"id":"t1:input","type":"userMessage","content":[{"type":"text","text":"Go"}],"nativeUuid":"t1"},
             {"id":"m1","type":"agentMessage","text":"First. ","_yuzunoCompletedText":"First. ","nativeMessageId":"m1"}]}]));
         let chain = [prompt("t1", "Go"), said("a1", "m1", "First. ", "end_turn"), said("a2", "m1", "Second.", "end_turn")];

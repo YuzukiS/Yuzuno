@@ -631,6 +631,8 @@ impl AgentDetail {
                     // delta cost a long streamed message its whole length on
                     // every delta (T-140). A field that is not a string
                     // becomes the delta, as it did.
+                    // The store moves a long field's start to its rows
+                    // (`store::STREAM_HOLD`); nothing is dropped here.
                     let delta = p["delta"].as_str().unwrap_or_default();
                     match &mut items[idx][key] {
                         Value::String(text) => text.push_str(delta),

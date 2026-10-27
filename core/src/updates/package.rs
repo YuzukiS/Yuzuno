@@ -359,6 +359,13 @@ pub fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 
 #[cfg(test)]
 pub(crate) fn fixture(root: &Path, id: &str) -> Bundle {
+    let layout = super::storage::RECORD_LAYOUT;
+    fixture_records(root, id, Schema { writes: layout, reads_min: layout, reads_max: layout })
+}
+
+/// `fixture` of a release with this record format.
+#[cfg(test)]
+pub(crate) fn fixture_records(root: &Path, id: &str, records: Schema) -> Bundle {
     use std::os::unix::fs::PermissionsExt;
     fs::create_dir_all(root).unwrap();
     let mut assets = BTreeMap::new();
@@ -402,11 +409,7 @@ pub(crate) fn fixture(root: &Path, id: &str) -> Bundle {
         notes: "Reviewed fixture".into(),
         platform: platform(),
         protocol: PROTOCOL,
-        records: Schema {
-            writes: super::storage::RECORD_LAYOUT,
-            reads_min: 0,
-            reads_max: super::storage::RECORD_LAYOUT,
-        },
+        records,
         schema: Schema {
             writes: STORAGE,
             reads_min: STORAGE,

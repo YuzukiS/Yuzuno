@@ -164,6 +164,10 @@ Notes on the numbers:
 
 ## Reproduction
 
+These commands are for the record rows of layout 1 and need a checkout of
+`586fd06` or earlier. The session store (T-140) refuses a Workspace an earlier
+Core wrote, and has no `record_rows_bench`.
+
 ```sh
 # a consolidated copy of the daily database (Core stopped); never open the live file itself
 for s in "" -wal -shm; do cp acceptance/live/core-data/workspace.sqlite$s acceptance/record-rows/data/raw.sqlite$s; done

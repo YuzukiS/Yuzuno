@@ -1,6 +1,8 @@
+#[allow(unused_imports)]
+use yuzuno_workspace::store::whole::WholeRecord;
 use serde_json::{json, Value};
 use std::time::Duration;
-use yuzuno_workspace::{model::AgentDetail, record_rows::{self, Dirty}, store::{route, Store}};
+use yuzuno_workspace::{model::AgentDetail, record_rows, store::{route, Store}};
 
 fn detail() -> AgentDetail {
     serde_json::from_value(json!({
@@ -86,17 +88,20 @@ impl Lab {
     fn sql(&self) -> rusqlite::Connection {
         rusqlite::Connection::open(self.dir.path().join("workspace.sqlite")).unwrap()
     }
-    fn row(&self) -> AgentDetail { record_rows::load(&self.sql(), "a", true).unwrap().unwrap() }
-    /// Reopens with the record row as `row` and the journal as it is.
-    fn crash_to(&mut self, row: &AgentDetail) {
-        drop(self.store.take());
-        let mut db = self.sql();
-        db.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        let tx = db.transaction().unwrap();
-        record_rows::write(&tx, "a", row, &Dirty::all()).unwrap();
-        tx.commit().unwrap();
-        drop(db);
-        self.reopen();
+    /// The record as written, read through a separate connection.
+    fn row(&self) -> AgentDetail {
+        let db = self.sql();
+        let mut d = record_rows::load_meta(&db, "a").unwrap().unwrap();
+        record_rows::scan(&db, "a", true, |turn| { d.turns.push(turn); Ok(true) }).unwrap();
+        d
+    }
+    /// The record a Core killed now leaves (the rows as committed, copied
+    /// while this Store stays open), opened by another Store.
+    fn killed(&self) -> AgentDetail {
+        let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+        let copy = dir.path().join("workspace.sqlite");
+        self.sql().execute("VACUUM INTO ?1", [copy.to_str().unwrap()]).unwrap();
+        Store::open(&copy).unwrap().detail("a").unwrap()
     }
     fn stream(&self, kind: &str, data: &Value) {
         self.store().record_stream("a", route(kind, data), kind, data).unwrap();
@@ -106,8 +111,7 @@ impl Lab {
         self.stream(&kind, &json!({"type":"event","turnId":"t","event":event}));
     }
     fn time(&self, item: &str) -> Value {
-        let d = self.store().detail("a").unwrap();
-        d.turns[0]["items"].as_array().unwrap().iter().find(|i| i["id"] == item).map(|i| i["_yuzunoTime"].clone()).unwrap_or(Value::Null)
+        time_in(&self.store().detail("a").unwrap(), item)
     }
     fn journal_ms(&self, kind: &str) -> i64 {
         let at: String = self.sql().query_row("SELECT at FROM journal WHERE kind=?1 ORDER BY seq DESC LIMIT 1", [kind], |r| r.get(0)).unwrap();
@@ -115,8 +119,12 @@ impl Lab {
     }
 }
 
+fn time_in(d: &AgentDetail, item: &str) -> Value {
+    d.turns[0]["items"].as_array().unwrap().iter().find(|i| i["id"] == item).map(|i| i["_yuzunoTime"].clone()).unwrap_or(Value::Null)
+}
+
 #[test]
-fn a_claude_message_keeps_its_first_streamed_time_through_completion_restart_and_replay() {
+fn a_claude_message_keeps_its_first_streamed_time_through_completion_a_kill_and_restart() {
     let mut lab = Lab::new("claude");
     let delta = |index: u64, delta: Value| json!({"type":"stream_event","event":{"type":"content_block_delta","index":index,"delta":delta}});
     lab.claude(json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"m"}}}));
@@ -124,34 +132,22 @@ fn a_claude_message_keeps_its_first_streamed_time_through_completion_restart_and
     lab.claude(delta(1, json!({"type":"text_delta","text":"Hel"})));
     let first = lab.time("m");
     assert_eq!(first["source"], "core");
-    // Streamed text alone never makes a write due; the journaled thinking
-    // block does, so the stream cadence writes the partial message.
+    // The completed thinking block is written at once, with the partial
+    // message streamed before it.
     lab.claude(json!({"type":"assistant","uuid":"b0","message":{"id":"m","content":[{"type":"thinking","thinking":"Plan it."}]}}));
-    assert!(lab.store().stream_tick(Duration::ZERO).failed.is_empty());
-    let mid_stream = lab.row();
-    assert!(mid_stream.turns[0]["items"].as_array().unwrap().iter().any(|i| i["id"] == "m" && i["_yuzunoTime"] == first));
+    assert_eq!(time_in(&lab.row(), "m"), first);
     std::thread::sleep(Duration::from_millis(20));
     lab.claude(delta(1, json!({"type":"text_delta","text":"lo"})));
     lab.claude(json!({"type":"assistant","uuid":"b1","message":{"id":"m","content":[{"type":"text","text":"Hello"}]}}));
     assert_eq!(lab.time("m"), first, "completion never moves it");
+    assert_eq!(time_in(&lab.killed(), "m"), first, "a kill leaves it as written");
     lab.reopen();
     assert_eq!(lab.time("m"), first, "closing writes it with the record");
-    // Killed after the mid-stream write: the journaled completion replays
-    // onto the written message, which keeps its time.
-    lab.crash_to(&mid_stream);
-    assert_eq!(lab.time("m"), first);
-    // Killed before any write: only journaled blocks are left. The message
-    // is timed by its own completed block's journal row on every replay.
-    lab.crash_to(&Lab::record("claude"));
-    let replayed = lab.time("m");
-    assert_eq!(replayed, json!({"at":lab.journal_ms("claude/assistant"),"source":"core"}));
-    lab.crash_to(&Lab::record("claude"));
-    assert_eq!(lab.time("m"), replayed);
 }
 
 #[test]
-fn a_codex_message_time_replays_from_the_native_time_or_its_journal_row() {
-    let mut lab = Lab::new("codex");
+fn a_codex_message_time_comes_from_the_native_time_or_its_journal_row_and_survives_a_kill() {
+    let lab = Lab::new("codex");
     lab.stream("item/started", &json!({"turnId":"t","startedAtMs":1_700_000_000_100_i64,
         "item":{"id":"native","type":"agentMessage","text":""}}));
     lab.stream("item/started", &json!({"turnId":"t","item":{"id":"local","type":"agentMessage","text":""}}));
@@ -159,6 +155,6 @@ fn a_codex_message_time_replays_from_the_native_time_or_its_journal_row() {
     assert_eq!(live.0, json!({"at":1_700_000_000_100_i64,"source":"codex"}));
     assert_eq!(live.1, json!({"at":lab.journal_ms("item/started"),"source":"core"}));
     std::thread::sleep(Duration::from_millis(20));
-    lab.crash_to(&Lab::record("codex"));
-    assert_eq!((lab.time("native"), lab.time("local")), live);
+    let killed = lab.killed();
+    assert_eq!((time_in(&killed, "native"), time_in(&killed, "local")), live);
 }

@@ -6,7 +6,10 @@ use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub const RECORD_LAYOUT: u32 = 1;
+/// The record format this Core writes and the only one it reads: the
+/// session store of T-140 (rows only, receipts apart from the metadata).
+/// 0 was whole AgentDetail JSON, 1 the rows of earlier Cores.
+pub const RECORD_LAYOUT: u32 = 2;
 
 /// Runs only in the release's disposable verification process. Each invocation
 /// opens a new read-only SQLite snapshot; no result is reused for a later phase,
@@ -33,7 +36,7 @@ pub fn verify_at(data: &Path, workspace_id: &str) -> Result<serde_json::Value> {
         "Verifier schema differs"
     );
     ensure!(
-        storage.record_layouts.iter().all(|n| *n <= RECORD_LAYOUT),
+        storage.record_layouts.iter().all(|n| *n == RECORD_LAYOUT),
         "Unknown record layout"
     );
     let records = verify_records(&db)?;
@@ -60,7 +63,16 @@ impl Storage {
             [],
             |r| r.get(0),
         )?;
-        let record_layouts = if has_layout {
+        // A Workspace of the session store holds its Agents' records in its
+        // layout (none without Agents).
+        let (store, agents): (bool, bool) = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workspace_meta WHERE key=?1 AND value=?2), EXISTS(SELECT 1 FROM agents)",
+            [crate::record_rows::STORE_KEY, crate::record_rows::STORE_VERSION],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap_or((false, true));
+        let record_layouts = if store {
+            if agents { vec![RECORD_LAYOUT] } else { Vec::new() }
+        } else if has_layout {
             db.prepare("SELECT DISTINCT layout FROM agents ORDER BY layout")?
                 .query_map([], |r| r.get(0))?
                 .collect::<rusqlite::Result<Vec<u32>>>()?
@@ -98,8 +110,8 @@ impl Storage {
     }
 }
 
-/// Strictly assemble actual persisted history, Items and full payloads. Store's
-/// Damaged fallback is useful for recovery UI but is not update health proof.
+/// Strictly assemble actual persisted history, Items and full payloads, one
+/// Turn at a time (T-140): only one Turn is held.
 pub fn verify_records(db: &Connection) -> Result<usize> {
     let ids = db
         .prepare("SELECT id FROM agents ORDER BY id")?
@@ -114,9 +126,11 @@ pub fn verify_records(db: &Connection) -> Result<usize> {
             crate::record_rows::rows_fit(db, id)?,
             "Agent {id} history/Item/payload rows are incomplete"
         );
-        crate::record_rows::load(db, id, true)
-            .with_context(|| format!("Agent {id} persisted history/Item/payload cannot be read"))?
+        crate::record_rows::load_meta(db, id)
+            .with_context(|| format!("Agent {id} persisted metadata cannot be read"))?
             .context("Agent disappeared from storage snapshot")?;
+        crate::record_rows::scan(db, id, true, |_| Ok(true))
+            .with_context(|| format!("Agent {id} persisted history/Item/payload cannot be read"))?;
     }
     Ok(ids.len())
 }
@@ -138,6 +152,24 @@ pub(super) mod tests {
         })).unwrap()
     }
 
+    /// Agents an earlier Core wrote (layout 1, no session-store marker)
+    /// are not readable by this release: an update to it is refused before
+    /// it is applied, not left to fail opening the Workspace.
+    #[test]
+    fn an_update_from_records_an_earlier_core_wrote_is_refused_up_front() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("PRAGMA user_version=2;
+            CREATE TABLE workspace_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE agents(id TEXT PRIMARY KEY, layout INTEGER NOT NULL, data TEXT NOT NULL);
+            INSERT INTO agents VALUES('a', 1, '{}');").unwrap();
+        let storage = Storage::read(&db).unwrap();
+        assert_eq!(storage.record_layouts, [1]);
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = crate::updates::package::fixture(&dir.path().join("candidate"), "candidate");
+        let error = storage.readable_by(&bundle.manifest).unwrap_err().to_string();
+        assert!(error.contains("records.layout=1"), "{error}");
+    }
+
     #[test]
     fn same_schema_does_not_make_legacy_record_readers_compatible() {
         let dir = tempfile::tempdir().unwrap();
@@ -145,7 +177,7 @@ pub(super) mod tests {
         store.insert(&record()).unwrap();
         let storage = Storage::read(&store.db.read().unwrap()).unwrap();
         assert_eq!(storage.schema, 2);
-        assert_eq!(storage.record_layouts, [1]);
+        assert_eq!(storage.record_layouts, [RECORD_LAYOUT]);
         let bundle = crate::updates::package::fixture(&dir.path().join("candidate"), "candidate");
         storage.readable_by(&bundle.manifest).unwrap();
         let mut old = bundle.manifest.clone();
@@ -155,7 +187,7 @@ pub(super) mod tests {
             .readable_by(&old)
             .unwrap_err()
             .to_string()
-            .contains("records.layout=1"));
+            .contains(&format!("records.layout={RECORD_LAYOUT}")));
         assert!(
             bundle.compatible_with(&old, 2).is_err(),
             "candidate migration cannot strand fallback"
