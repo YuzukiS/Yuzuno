@@ -1914,6 +1914,25 @@ test("T-9 card density: low by default, high on a click, kept on this device for
   }
 });
 
+test("T-9 card density another window saves while Home is closed here shows when Home opens again", async () => {
+  const p = await mount();
+  try {
+    assert.equal(p.doc.querySelector(".home-view").dataset.density, "low");
+    p.button("Sora", p.panel("p-res").querySelector(".home-error")).click();
+    await waitFor(() => p.doc.querySelector(".conversation-title h1")?.textContent === "Sora", "Sora's conversation is open");
+    assert.ok(!p.doc.querySelector(".home-view"), "Home is closed");
+    // Another window of this device chooses high density for this Workspace.
+    p.w.localStorage.setItem("yuzuno.homeDensity.ws-home", '"high"');
+    p.w.dispatchEvent(new p.w.StorageEvent("storage", { key: "yuzuno.homeDensity.ws-home" }));
+    p.button("Back to Home").click();
+    await waitFor(() => p.doc.querySelector(".home-view [data-home-project]"), "back on Home");
+    assert.equal(p.doc.querySelector(".home-view").dataset.density, "high", "the choice made meanwhile, not the one read before");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 test("T-9 card density a device refuses to keep still applies in this window and says it was not kept", async () => {
   const p = await mount();
   try {

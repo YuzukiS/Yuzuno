@@ -30,7 +30,6 @@ const read = (workspaceId: string): Density => {
 const listeners = new Set<() => void>();
 const current = new Map<string, Density>();
 const refusals = new Map<string, SaveOutcome>();
-let stopWatching: (() => void) | undefined;
 const notify = () => listeners.forEach((listener) => listener());
 const onStorage = (event: StorageEvent) => {
   if (event.key !== null && !event.key.startsWith(storageKey(""))) return;
@@ -39,19 +38,25 @@ const onStorage = (event: StorageEvent) => {
   refusals.clear();
   notify();
 };
+// What is read is kept for this window's life, so another window's choice
+// is watched for as long: Home closed here (a conversation open) must not
+// miss it and show the old one when it opens again.
+let watching = false;
+function watch() {
+  if (watching) return;
+  watching = true;
+  window.addEventListener("storage", onStorage);
+}
 function subscribe(listener: () => void) {
-  if (!listeners.size) {
-    window.addEventListener("storage", onStorage);
-    stopWatching = () => window.removeEventListener("storage", onStorage);
-  }
+  watch();
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
-    if (!listeners.size) stopWatching?.();
   };
 }
 
 const inEffect = (workspaceId: string) => {
+  watch();
   let density = current.get(workspaceId);
   if (!density) current.set(workspaceId, (density = read(workspaceId)));
   return density;
@@ -70,6 +75,7 @@ export function useHomeDensityRefusal(workspaceId: string): SaveOutcome | null {
 /** Applies the choice now and keeps it on this device for `workspaceId`;
  * with no Workspace ("") it holds for this window only. */
 export function chooseHomeDensity(workspaceId: string, density: Density): SaveOutcome | null {
+  watch();
   const outcome = workspaceId ? saveDeviceValue(storageKey(workspaceId), density) : null;
   current.set(workspaceId, density);
   if (outcome && !outcome.saved) refusals.set(workspaceId, outcome);
