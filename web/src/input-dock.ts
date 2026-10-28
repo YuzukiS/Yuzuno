@@ -50,7 +50,8 @@ export function readingEntry(entries: NativeTurn[], turns: NativeTurn[], reading
     const turn = at.get(of.turnId) ?? of.turn - 1;
     if (turn > reading) break;
     if (turn === reading && line !== null && found) {
-      const drawn = document.querySelector<HTMLElement>(`#turn-${CSS.escape(of.turnId)} [data-item-id="${CSS.escape(of.itemId)}"]`);
+      const drawn = Array.from(document.getElementById(`turn-${of.turnId}`)?.querySelectorAll<HTMLElement>("[data-item-id]") ?? [])
+        .find(element => element.dataset.itemId === of.itemId);
       if (drawn && drawn.getBoundingClientRect().top > line) break;
     }
     found = entry.id;
