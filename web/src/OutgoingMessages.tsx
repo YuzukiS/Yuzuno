@@ -7,6 +7,7 @@ import { memo } from "react";
 import type { AgentDetail } from "./types";
 import type { OutgoingMessage } from "./useConversationSend";
 import { langTag, strings, useLanguage } from "./i18n";
+import { formAnswer, SentFormAnswer } from "./intelligent-ui/SentFormAnswer";
 
 // The previews' own words (T-189); the message and the harness's name as they are.
 const text = strings({
@@ -89,6 +90,9 @@ export const OutgoingMessages = memo(function OutgoingMessages({
       const receipt = saved && saved.status !== "sending" ? saved : local;
       const steer = steered(receipt, shown);
       const status = deliveryNote(receipt.status, harness, steer, !steer && compacting(receipt, shown), language);
+      const content = <MessageContent text={receipt.input.text} blocks={receipt.input.textBlocks} />;
+      // Answers to a published form, as the form's questions and labels (T-9).
+      const answer = formAnswer(receipt.input.text, receipt);
       return (
         <div
           className="user-message outgoing-message"
@@ -109,7 +113,11 @@ export const OutgoingMessages = memo(function OutgoingMessages({
               </button>
             )}
           </div>
-          <div className="user-text"><MessageContent text={receipt.input.text} blocks={receipt.input.textBlocks} /></div>
+          <div className={answer ? "user-text user-form-answer" : "user-text"}>
+            {answer ? (
+              <SentFormAnswer agentId={agentId} answer={answer} text={receipt.input.text}>{content}</SentFormAnswer>
+            ) : content}
+          </div>
           <ImageAttachments images={(receipt.input.images || []).map(id => ({ id, agentId }))} />
         </div>
       );

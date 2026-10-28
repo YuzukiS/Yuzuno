@@ -132,3 +132,106 @@
     flex: 1 1 auto;
   }
 }
+
+/* A message that answered a form (SentFormAnswer, T-9): the form's title,
+   each question with the labels chosen or the text written. It sits where
+   the message's text would, with the same indent and reading size. */
+.user-form-answer {
+  white-space: normal;
+}
+.clarification-answer {
+  box-sizing: border-box;
+  max-width: 44rem;
+  min-width: 0;
+  padding: 0.75rem 0.95rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  line-height: 1.55;
+}
+.clarification-answer header {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.45rem;
+  margin-bottom: 0.65rem;
+  color: var(--muted);
+  font-size: 0.82em;
+}
+.clarification-answer header svg {
+  align-self: center;
+  color: var(--green);
+}
+.clarification-answer header h4 {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--ink);
+  font-size: 1.08em;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.clarification-answer dl {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin: 0;
+}
+.clarification-answer dt {
+  color: var(--muted);
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+}
+.clarification-answer dd {
+  margin: 0.15rem 0 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.clarification-answer dd[data-empty] {
+  color: var(--muted);
+}
+.clarification-answer dd p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+.clarification-answer dd ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.clarification-answer dd li {
+  min-width: 0;
+  padding: 0.05rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--green) 45%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 7%, var(--paper));
+}
+.clarification-answer-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85em;
+}
+.clarification-answer-note .text-button {
+  margin-left: 0.5rem;
+}
+.clarification-answer-text {
+  margin-top: 0.5rem;
+  white-space: pre-wrap;
+}
+.clarification-answer-sent {
+  margin-top: 0.75rem;
+  color: var(--muted);
+  font-size: 0.8em;
+}
+.clarification-answer-sent summary {
+  cursor: pointer;
+}
+.clarification-answer-sent pre {
+  margin: 0.4rem 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.95em;
+}

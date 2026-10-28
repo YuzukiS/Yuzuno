@@ -58,6 +58,7 @@ import type { TimeDisplay } from "./time-preferences";
 import { MessageTime, TurnFooter } from "./ConversationTime";
 import { AgentReply } from "./intelligent-ui/AgentReply";
 import { TurnResults } from "./intelligent-ui/TurnResults";
+import { formAnswer, SentFormAnswer } from "./intelligent-ui/SentFormAnswer";
 import { formatBytes, fullTurn, isTruncated, useFullItem, type FullItemView } from "./item-payload";
 import { useStreamReveal } from "./stream-reveal";
 import { useToolMotion } from "./tool-motion";
@@ -785,6 +786,22 @@ export function Turn({
       )}
     </div>
   );
+  // The receipt a message was sent with, by the client ID Core restores on
+  // it (or a new Claude Turn names before it is confirmed).
+  const receiptOf = (item: NativeItem) => {
+    const id = typeof item.clientId === "string" ? item.clientId : item._yuzunoClientMessageId;
+    return id ? receipts?.find((r) => r.input.clientMessageId === id) : undefined;
+  };
+  const userBody = (item: NativeItem) => {
+    const text = userText(item);
+    const content = <MessageContent text={text} blocks={item._yuzunoTextBlocks} />;
+    const answer = formAnswer(text, receiptOf(item));
+    return (
+      <div className={answer ? "user-text user-form-answer" : "user-text"}>
+        {answer ? <SentFormAnswer agentId={agent.id} answer={answer} text={text}>{content}</SentFormAnswer> : content}
+      </div>
+    );
+  };
   const userMessage = (item: NativeItem) => (
     <div
       className={`user-message${sourceItemId === item.id ? " source-highlight" : ""}`}
@@ -822,7 +839,7 @@ export function Turn({
             <SendToAgentButton source={() => messageHandoff(agent, turn, item)} />
             <CopyLinkButton agent={agent} turnId={turn.id} itemId={item.id} />
           </div>
-          <div className="user-text"><MessageContent text={userText(item)} blocks={item._yuzunoTextBlocks} /></div>
+          {userBody(item)}
           <SkillChips skills={messageSkills(item.content)} />
           <ImageAttachments images={messageImages(item.content)} onAnnotate={!pointFix ? undefined : ((image) => pointFix({
             name: image.name || "Image",
