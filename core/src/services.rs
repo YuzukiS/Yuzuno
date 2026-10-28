@@ -254,38 +254,47 @@ pub enum State {
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum Framing {
-    /// Neither X-Frame-Options nor a CSP frame-ancestors, or frame-ancestors *.
+    /// Neither X-Frame-Options nor a CSP frame-ancestors, or frame-ancestors * in every policy that has one.
     Allowed,
-    /// X-Frame-Options, or frame-ancestors 'none' or 'self' only.
+    /// X-Frame-Options, or a policy whose frame-ancestors is 'none' or 'self' only.
     Blocked,
-    /// frame-ancestors names origins: the page's own may or may not be one.
+    /// A frame-ancestors names origins: the page's own may or may not be one.
     Restricted,
     /// The answer's headers did not arrive whole in time.
     Unknown,
 }
 
-/// `Framing` from a response head. A CSP frame-ancestors decides when there
-/// is one (browsers then ignore X-Frame-Options); a report-only one does not.
+/// `Framing` from a response head, as browsers enforce it. Every CSP policy
+/// (each header, and each comma-separated policy within one) is enforced on
+/// its own, so a page may be framed only where every policy with a
+/// frame-ancestors allows it: one that blocks blocks, one naming origins
+/// restricts, `*` alone allows. Within a policy the first frame-ancestors
+/// counts. A frame-ancestors anywhere makes browsers ignore
+/// X-Frame-Options; a report-only policy decides nothing.
 fn framing(head: &str) -> Framing {
     let headers = || head.split("\r\n").skip(1).filter_map(|line| line.split_once(':')).map(|(n, v)| (n.trim(), v.trim()));
-    let ancestors: Vec<String> = headers()
+    let mut seen = false;
+    let mut restricted = false;
+    for policy in headers()
         .filter(|(name, _)| name.eq_ignore_ascii_case("content-security-policy"))
-        .flat_map(|(_, value)| value.split(';').map(str::trim).map(str::to_owned).collect::<Vec<_>>())
-        .filter_map(|directive| {
+        .flat_map(|(_, value)| value.split(',').collect::<Vec<_>>())
+    {
+        let Some(sources) = policy.split(';').find_map(|directive| {
             let mut words = directive.split_whitespace();
             words.next().filter(|n| n.eq_ignore_ascii_case("frame-ancestors"))?;
-            Some(words.map(str::to_ascii_lowercase).collect::<Vec<_>>().join(" "))
-        })
-        .collect();
-    if !ancestors.is_empty() {
-        let sources: Vec<&str> = ancestors.iter().flat_map(|a| a.split_whitespace()).collect();
-        return if sources.contains(&"*") {
-            Framing::Allowed
-        } else if sources.iter().all(|s| *s == "'none'" || *s == "'self'") {
-            Framing::Blocked
-        } else {
-            Framing::Restricted
-        };
+            Some(words.map(str::to_ascii_lowercase).collect::<Vec<_>>())
+        }) else { continue };
+        seen = true;
+        if sources.iter().any(|s| s == "*") {
+            continue;
+        }
+        if sources.iter().all(|s| s == "'none'" || s == "'self'") {
+            return Framing::Blocked;
+        }
+        restricted = true;
+    }
+    if seen {
+        return if restricted { Framing::Restricted } else { Framing::Allowed };
     }
     if headers().any(|(name, _)| name.eq_ignore_ascii_case("x-frame-options")) {
         Framing::Blocked

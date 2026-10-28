@@ -8,9 +8,17 @@
 //! them at http://127.0.0.1:P/v/<token>, and nothing else but the page's
 //! one-time proof that its client reaches P (as a service's way is proven).
 //! Every snapshot response puts the page in a sandbox of its own (an opaque
-//! origin, scripts only) with no network, forms, plugins, frames or workers,
-//! framed only by the page that asked for it; opened in a browser, the same
-//! headers keep it there. The download endpoints still send HTML as text.
+//! origin, scripts only) that refuses its fetches, sockets and
+//! subresources, forms, plugins, frames and workers, framed only by the page
+//! that asked for it; opened in a browser, the same headers keep it there.
+//! The download endpoints still send HTML as text.
+//!
+//! That is not a page cut off from the network. Neither a sandbox flag nor a
+//! CSP directive stops a page navigating itself, so a script can still go to
+//! any address and carry there what the file holds, as the file opened
+//! directly in a browser could. It cannot read Core, Yuzuno's storage or the
+//! user's sessions, so the file is all it has to carry. The Portal says so,
+//! and stops showing a frame once it sees it load something else.
 use crate::{server::artifact_path, workspace::Workspace};
 use anyhow::{bail, ensure, Context, Result};
 use serde::Deserialize;
@@ -46,7 +54,8 @@ const PAGE_PATH: &str = "/v/";
 
 /// The page's whole policy. Scripts and styles only from the file itself;
 /// images, fonts and media only from data: or blob:; no request of any other
-/// kind, and only the asking page may frame it.
+/// kind, and only the asking page may frame it. Navigating itself is not a
+/// request this can refuse (see the module's note).
 fn page_policy(ancestor: Option<&str>) -> String {
     format!(
         "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; \

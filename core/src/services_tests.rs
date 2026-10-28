@@ -566,6 +566,14 @@ fn framing_is_read_from_the_answer_as_a_browser_would() {
     // A CSP frame-ancestors decides over X-Frame-Options; a report-only one decides nothing.
     assert_eq!(framing(&head("X-Frame-Options: DENY\r\nContent-Security-Policy: frame-ancestors *\r\n")), Framing::Allowed);
     assert_eq!(framing(&head("Content-Security-Policy-Report-Only: frame-ancestors 'none'\r\n")), Framing::Allowed);
+    // Each policy is enforced on its own: a wildcard in one never lifts another's limit.
+    assert_eq!(framing(&head("Content-Security-Policy: frame-ancestors *\r\nContent-Security-Policy: frame-ancestors 'none'\r\n")), Framing::Blocked);
+    assert_eq!(framing(&head("Content-Security-Policy: frame-ancestors *, frame-ancestors 'self'\r\n")), Framing::Blocked);
+    assert_eq!(framing(&head("Content-Security-Policy: frame-ancestors *\r\nContent-Security-Policy: frame-ancestors https://a.test\r\n")), Framing::Restricted);
+    assert_eq!(framing(&head("Content-Security-Policy: frame-ancestors *\r\nContent-Security-Policy: default-src 'self'\r\n")), Framing::Allowed);
+    // Within one policy the first frame-ancestors counts; an empty one allows no one.
+    assert_eq!(framing(&head("Content-Security-Policy: frame-ancestors *; frame-ancestors 'none'\r\n")), Framing::Allowed);
+    assert_eq!(framing(&head("Content-Security-Policy: frame-ancestors\r\n")), Framing::Blocked);
 }
 
 /// An HTTP service on this host's loopback answering every request with 200
