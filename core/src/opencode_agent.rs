@@ -207,9 +207,12 @@ impl Workspace {
 
     /// Chooses the model for an Agent's next messages: "" for OpenCode's own
     /// default, else one its OpenCode lists now. Saved only; a running Turn
-    /// keeps the model it was sent with.
+    /// keeps the model it was sent with. Under the Agent gate, as the other
+    /// harnesses' settings: a close or reconnect waits for it, and it for them.
     pub async fn opencode_set_model(self: &Arc<Self>, id: &str, model: String) -> Result<crate::model::Agent> {
         let _permit = self.admission.enter_work()?;
+        let gate = self.gate(id).await;
+        let _held = gate.lock().await;
         let agent = self.listed(id).await?;
         ensure!(agent.harness == "opencode", "Agent 不是 OpenCode");
         ensure_agent_open(&agent)?;
