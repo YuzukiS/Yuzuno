@@ -4,6 +4,7 @@ use super::*;
 use crate::remote::RemoteMachine;
 use crate::service_jobs::Link;
 use crate::services::NewService;
+use crate::store::Store;
 
 struct Lab {
     _dir: tempfile::TempDir,
