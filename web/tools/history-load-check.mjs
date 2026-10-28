@@ -2,7 +2,8 @@
 // the top of a long saved conversation (T-77 windows); the earlier window is
 // put in front of what is being read, and the message at the top of the view
 // must stay where it was on screen. The third load is past SAVED_WINDOWS and
-// replaces the windows; the same holds, and what was in view stays shown. jsdom has no layout, so ui.test.mjs
+// replaces the windows; the same holds, and what was in view stays shown.
+// Then Back to latest shows the newest message at the end (T-6). jsdom has no layout, so ui.test.mjs
 // cannot show this. Production bundle in an isolated browser with an
 // explicit API fixture; no Core, daily window or writes.
 import assert from "node:assert/strict";
@@ -97,6 +98,7 @@ const detailFor = (query) => {
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 let page;
+let latestAsked = false;
 try {
   page = await browser.newPage({ viewport: { width: 1280, height: 860 }, reducedMotion: "reduce" });
   await page.addInitScript(() => {
@@ -110,11 +112,13 @@ try {
     assert.equal(url.hostname, "yuzuno-history-load.test");
     assert.equal(request.method(), "GET", `No writes: ${request.method()} ${url.pathname}`);
     if (url.pathname === "/api/agents/a") {
-      // Earlier windows answer a little later, as a read from Core does.
+      // Earlier windows answer a little later, as a read from Core does; so
+      // does the newest after Back to latest, which arrives after the next
+      // frame then (T-6).
       if (url.searchParams.has("before")) {
         report.earlier.push(url.searchParams.get("before"));
         await new Promise((done) => setTimeout(done, 150));
-      }
+      } else if (latestAsked) await new Promise((done) => setTimeout(done, 150));
       return route.fulfill({ json: detailFor(url.searchParams) });
     }
     const json = {
@@ -277,6 +281,28 @@ window.drawn = (look) => requestAnimationFrame(() => { const channel = new Messa
       if (await pane.evaluate((el) => el.scrollTop === 0) && await button.isVisible()) break;
     }
   }
+  // Back to latest from the replaced windows (they have newer messages after
+  // them): the newest window, shown to its end, and followed again (T-6).
+  latestAsked = true;
+  await page.locator("button.jump-latest").click();
+  const newest = JSON.parse(all.at(-1))[1];
+  await page.waitForFunction((id) => {
+    const el = document.querySelector(".conversation-scroll");
+    const item = el?.querySelector(`[data-item-id="${id}"]`);
+    if (!item) return false;
+    const box = el.getBoundingClientRect(), r = item.getBoundingClientRect();
+    return r.bottom > box.top && r.top < box.bottom;
+  }, newest, { timeout: 5000 }).catch(() => {});
+  await page.waitForTimeout(500);
+  const latest = await pane.evaluate((el, id) => {
+    const box = el.getBoundingClientRect(), item = el.querySelector(`[data-item-id="${id}"]`)?.getBoundingClientRect();
+    return { shown: !!item && item.bottom > box.top && item.top < box.bottom, fromEnd: Math.round(el.scrollHeight - el.scrollTop - el.clientHeight),
+      pill: !!document.querySelector("button.jump-latest") };
+  }, newest);
+  report.latest = latest;
+  await page.screenshot({ path: resolve(output, "latest.png") });
+  assert.ok(latest.shown && latest.fromEnd < 72 && !latest.pill, `Back to latest shows the newest message at the end: ${JSON.stringify(latest)}`);
+  check("Back to latest from the replaced windows shows the newest message at the end", latest);
   assert.deepEqual(report.errors, []);
   report.status = "passed";
 } catch (error) {
