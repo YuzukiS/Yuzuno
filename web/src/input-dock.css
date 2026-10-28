@@ -55,6 +55,12 @@
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+/* Above the dock's own hit area (.turn-dock::before), as its stops are. */
+.turn-dock-by,
+.turn-dock-earlier,
+.input-list ol {
+  position: relative;
+}
 .turn-dock-chip[data-unconfirmed] {
   border: 1.5px dashed var(--line);
   color: var(--text-quiet);
