@@ -794,12 +794,11 @@ export function Turn({
   };
   const userBody = (item: NativeItem) => {
     const text = userText(item);
-    const content = <MessageContent text={text} blocks={item._yuzunoTextBlocks} />;
     const answer = formAnswer(text, receiptOf(item));
-    return (
-      <div className={answer ? "user-text user-form-answer" : "user-text"}>
-        {answer ? <SentFormAnswer agentId={agent.id} answer={answer} text={text}>{content}</SentFormAnswer> : content}
-      </div>
+    return answer ? (
+      <div className="user-text user-form-answer"><SentFormAnswer agentId={agent.id} answer={answer} text={text} /></div>
+    ) : (
+      <div className="user-text"><MessageContent text={text} blocks={item._yuzunoTextBlocks} /></div>
     );
   };
   const userMessage = (item: NativeItem) => (

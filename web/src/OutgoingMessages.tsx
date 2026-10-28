@@ -90,7 +90,6 @@ export const OutgoingMessages = memo(function OutgoingMessages({
       const receipt = saved && saved.status !== "sending" ? saved : local;
       const steer = steered(receipt, shown);
       const status = deliveryNote(receipt.status, harness, steer, !steer && compacting(receipt, shown), language);
-      const content = <MessageContent text={receipt.input.text} blocks={receipt.input.textBlocks} />;
       // Answers to a published form, as the form's questions and labels (T-9).
       const answer = formAnswer(receipt.input.text, receipt);
       return (
@@ -113,11 +112,11 @@ export const OutgoingMessages = memo(function OutgoingMessages({
               </button>
             )}
           </div>
-          <div className={answer ? "user-text user-form-answer" : "user-text"}>
-            {answer ? (
-              <SentFormAnswer agentId={agentId} answer={answer} text={receipt.input.text}>{content}</SentFormAnswer>
-            ) : content}
-          </div>
+          {answer ? (
+            <div className="user-text user-form-answer"><SentFormAnswer agentId={agentId} answer={answer} text={receipt.input.text} /></div>
+          ) : (
+            <div className="user-text"><MessageContent text={receipt.input.text} blocks={receipt.input.textBlocks} /></div>
+          )}
           <ImageAttachments images={(receipt.input.images || []).map(id => ({ id, agentId }))} />
         </div>
       );

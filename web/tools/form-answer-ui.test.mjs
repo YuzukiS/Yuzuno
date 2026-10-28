@@ -140,7 +140,7 @@ test("a form's answers show as its questions and labels, with the text sent fold
   const sent = card.querySelector("details.clarification-answer-sent:not([open])");
   assert.equal(sent.querySelector("summary").textContent, "Text sent to the Agent");
   assert.equal(sent.querySelector("pre").textContent, text, "the exact text sent, one click away");
-  assert.deepEqual(page.requests.map((r) => [r.method, new URL(r.url).pathname]), [["GET", "/api/agents/a/results/r1"]]);
+  assert.deepEqual(page.requests.map((r) => [r.method, r.url]), [["GET", "/api/agents/a/results/r1"]]);
   assert.deepEqual(page.errors, []);
 });
 
@@ -162,7 +162,8 @@ test("a message is never taken for a form's answers by how it looks", async (t) 
   const plain = (item, receipts, why) => {
     page.window.renderTurn(turn(item), agent, receipts);
     assert.equal(page.document.querySelector(".clarification-answer"), null, why);
-    assert.ok(page.document.querySelector('[data-item-id="u"] .user-text').textContent.includes('"formId": "weekly-check"'), `${why}: shown as written`);
+    // The usual message content: this one is long, so it is folded into its chip.
+    assert.ok(page.document.querySelector('[data-item-id="u"] .user-text > .message-content .pasted-text-chip'), `${why}: shown as written`);
   };
   plain({}, [receipt()], "no client ID");
   plain({ clientId: "c1" }, undefined, "no receipts");
@@ -179,8 +180,9 @@ test("a form that can't be shown says so and leaves the text as sent", async (t)
     t.after(page.close);
     page.window.renderTurn(turn({ clientId: "c1" }), agent, [receipt()]);
     const card = await until(() => page.document.querySelector('.clarification-answer[data-state="unavailable"]'), why);
-    assert.match(card.textContent, /The original form can't be shown, so this is the text that was sent\./, why);
-    assert.ok(card.querySelector(".clarification-answer-text").textContent.includes('"formId": "weekly-check"'), `${why}: the text as sent`);
+    assert.match(card.textContent, /The original form can't be shown\. The text sent is below\./, why);
+    assert.equal(card.querySelector("details.clarification-answer-sent:not([open]) pre").textContent, text, `${why}: the text as sent, folded`);
+    assert.ok(!page.visible().includes("resultId"), `${why}: no JSON until opened`);
     return { page, card };
   };
   const gone = await unavailable(() => ({ status: 404, body: { error: "gone" } }), "a result that is gone");

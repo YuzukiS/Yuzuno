@@ -217,10 +217,6 @@
 .clarification-answer-note .text-button {
   margin-left: 0.5rem;
 }
-.clarification-answer-text {
-  margin-top: 0.5rem;
-  white-space: pre-wrap;
-}
 .clarification-answer-sent {
   margin-top: 0.75rem;
   color: var(--muted);

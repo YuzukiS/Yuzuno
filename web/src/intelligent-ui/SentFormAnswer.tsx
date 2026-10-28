@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { ListChecks } from "lucide-react";
 import { HttpError } from "../api";
 import { strings, useStrings } from "../i18n";
@@ -19,7 +19,7 @@ const answerText = strings({
   reading: "Reading the form…",
   notAnswered: "Not answered",
   sent: "Text sent to the Agent",
-  unavailable: "The original form can't be shown, so this is the text that was sent.",
+  unavailable: "The original form can't be shown. The text sent is below.",
   retry: "Try again",
 }, {
   answersTo: "表单回答",
@@ -27,7 +27,7 @@ const answerText = strings({
   reading: "正在读取表单…",
   notAnswered: "未填写",
   sent: "发给 Agent 的原文",
-  unavailable: "原表单无法显示，下面是当时发送的原文。",
+  unavailable: "原表单无法显示，可展开下方查看当时发送的原文。",
   retry: "重试",
 });
 
@@ -67,19 +67,16 @@ type View =
 /**
  * A message that answered a published form, shown as its answers: each
  * question with the chosen labels or the text written (T-9). The text sent
- * stays one click away; when the form can't be read it is what is shown.
+ * stays one click away, also when the form can't be read.
  */
 export function SentFormAnswer({
   agentId,
   answer,
   text,
-  children,
 }: {
   agentId: string;
   answer: ClarificationAnswer;
   text: string;
-  /** The message as text, shown when the form can't be. */
-  children: ReactNode;
 }) {
   const t = useStrings(answerText);
   const [view, setView] = useState<View>({ kind: "reading" });
@@ -103,6 +100,12 @@ export function SentFormAnswer({
     // The answer by value: a receipt read again is the same answer.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId, identity, reads]);
+  const sent = (
+    <details className="clarification-answer-sent">
+      <summary>{t.sent}</summary>
+      <pre>{text}</pre>
+    </details>
+  );
   if (view.kind !== "ready")
     return (
       <section className="clarification-answer" data-state={view.kind} aria-label={t.answersTo}>
@@ -122,7 +125,7 @@ export function SentFormAnswer({
                 </button>
               )}
             </p>
-            <div className="clarification-answer-text">{children}</div>
+            {sent}
           </>
         )}
       </section>
@@ -165,10 +168,7 @@ export function SentFormAnswer({
           );
         })}
       </dl>
-      <details className="clarification-answer-sent">
-        <summary>{t.sent}</summary>
-        <pre>{text}</pre>
-      </details>
+      {sent}
     </section>
   );
 }
