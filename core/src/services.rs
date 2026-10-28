@@ -215,6 +215,9 @@ pub struct Access {
     /// The HTTP status the last check got.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_status: Option<u16>,
+    /// Whether that answer lets another origin frame the page (T-5's Portal).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub framing: Option<Framing>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub since: String,
@@ -244,9 +247,56 @@ pub enum State {
     Disconnected,
 }
 
+/// Whether a service's page may be framed by another origin, from the
+/// headers of the answer its check got. Read only: the relay passes every
+/// header on unchanged, and the Portal opens a page that refuses framing in
+/// the browser instead.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Framing {
+    /// Neither X-Frame-Options nor a CSP frame-ancestors, or frame-ancestors *.
+    Allowed,
+    /// X-Frame-Options, or frame-ancestors 'none' or 'self' only.
+    Blocked,
+    /// frame-ancestors names origins: the page's own may or may not be one.
+    Restricted,
+    /// The answer's headers did not arrive whole in time.
+    Unknown,
+}
+
+/// `Framing` from a response head. A CSP frame-ancestors decides when there
+/// is one (browsers then ignore X-Frame-Options); a report-only one does not.
+fn framing(head: &str) -> Framing {
+    let headers = || head.split("\r\n").skip(1).filter_map(|line| line.split_once(':')).map(|(n, v)| (n.trim(), v.trim()));
+    let ancestors: Vec<String> = headers()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("content-security-policy"))
+        .flat_map(|(_, value)| value.split(';').map(str::trim).map(str::to_owned).collect::<Vec<_>>())
+        .filter_map(|directive| {
+            let mut words = directive.split_whitespace();
+            words.next().filter(|n| n.eq_ignore_ascii_case("frame-ancestors"))?;
+            Some(words.map(str::to_ascii_lowercase).collect::<Vec<_>>().join(" "))
+        })
+        .collect();
+    if !ancestors.is_empty() {
+        let sources: Vec<&str> = ancestors.iter().flat_map(|a| a.split_whitespace()).collect();
+        return if sources.contains(&"*") {
+            Framing::Allowed
+        } else if sources.iter().all(|s| *s == "'none'" || *s == "'self'") {
+            Framing::Blocked
+        } else {
+            Framing::Restricted
+        };
+    }
+    if headers().any(|(name, _)| name.eq_ignore_ascii_case("x-frame-options")) {
+        Framing::Blocked
+    } else {
+        Framing::Allowed
+    }
+}
+
 impl Access {
     fn new(state: State, local_port: Option<u16>, reason: Option<String>) -> Self {
-        Self { state, local_port, http_status: None, reason, since: now() }
+        Self { state, local_port, http_status: None, framing: None, reason, since: now() }
     }
 }
 
@@ -375,7 +425,7 @@ impl Runtime {
     /// A port of the range for this service: the one it had last if it is
     /// free, else the first free one. Never the service's own port (a service
     /// on this host whose port is in the range would be relayed to itself).
-    async fn listen(&self, id: &str, service_port: u16) -> std::result::Result<TcpListener, String> {
+    pub(crate) async fn listen(&self, id: &str, service_port: u16) -> std::result::Result<TcpListener, String> {
         let range = self.ports.lock().unwrap().clone();
         let last = self.assigned.lock().unwrap().get(id).copied();
         for port in last.into_iter().chain(range.clone()) {
@@ -393,7 +443,7 @@ impl Runtime {
 
 /// What one HTTP request on the way found.
 enum Probe {
-    Http(u16),
+    Http(u16, Framing),
     Refused(String),
     Silent(String),
 }
@@ -420,24 +470,36 @@ async fn probe(port: u16, path: &str) -> Probe {
     if let Err(error) = stream.write_all(request.as_bytes()).await {
         return closed(error);
     }
-    let mut head = [0u8; 64];
-    match timeout(PROBE_TIMEOUT, stream.read(&mut head)).await {
-        Err(_) => Probe::Silent(format!("no HTTP response within {} s", PROBE_TIMEOUT.as_secs())),
-        Ok(Err(error)) => closed(error),
-        Ok(Ok(0)) => Probe::Silent(CLOSED.into()),
-        Ok(Ok(n)) => {
-            let text = String::from_utf8_lossy(&head[..n]);
-            match text.strip_prefix("HTTP/").and_then(|rest| rest.split(' ').nth(1)).and_then(|code| code.parse().ok()) {
-                Some(code) => Probe::Http(code),
-                None => Probe::Silent("it answered, but not with HTTP".into()),
+    // The status from the first bytes; the headers (for `framing`) as far as
+    // they come whole, within the same time and at most 16 KiB.
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let mut head = Vec::with_capacity(1024);
+    let mut buffer = [0u8; 1024];
+    loop {
+        match tokio::time::timeout_at(deadline, stream.read(&mut buffer)).await {
+            Err(_) if head.is_empty() => return Probe::Silent(format!("no HTTP response within {} s", PROBE_TIMEOUT.as_secs())),
+            Ok(Err(error)) if head.is_empty() => return closed(error),
+            Ok(Ok(0)) if head.is_empty() => return Probe::Silent(CLOSED.into()),
+            Ok(Ok(n)) if n > 0 => {
+                head.extend_from_slice(&buffer[..n]);
+                if head.windows(4).any(|w| w == b"\r\n\r\n") || head.len() >= 16 * 1024 {
+                    break;
+                }
             }
+            _ => break,
         }
+    }
+    let text = String::from_utf8_lossy(&head);
+    let whole = text.find("\r\n\r\n").map(|end| &text[..end]);
+    match text.strip_prefix("HTTP/").and_then(|rest| rest.split(' ').nth(1)).and_then(|code| code.parse().ok()) {
+        Some(code) => Probe::Http(code, whole.map_or(Framing::Unknown, framing)),
+        None => Probe::Silent("it answered, but not with HTTP".into()),
     }
 }
 
 fn judged(probe: Probe, local_port: u16) -> Access {
     match probe {
-        Probe::Http(code) => Access { http_status: Some(code), ..Access::new(State::Available, Some(local_port), None) },
+        Probe::Http(code, framing) => Access { http_status: Some(code), framing: Some(framing), ..Access::new(State::Available, Some(local_port), None) },
         Probe::Refused(reason) => Access::new(State::NotRunning, Some(local_port), Some(reason)),
         Probe::Silent(reason) => Access::new(State::NotReady, Some(local_port), Some(reason)),
     }

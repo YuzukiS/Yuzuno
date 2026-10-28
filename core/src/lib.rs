@@ -57,6 +57,7 @@ pub mod record_rows;
 pub mod remote;
 pub mod remote_access;
 pub mod services;
+pub mod previews;
 mod remote_images;
 pub mod results;
 mod runtime_paths;

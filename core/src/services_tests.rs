@@ -151,7 +151,7 @@ async fn open(lab: &Lab, id: &str) -> Value {
 }
 
 async fn answers(port: u16) -> bool {
-    matches!(probe(port, "/").await, Probe::Http(200))
+    matches!(probe(port, "/").await, Probe::Http(200, _))
 }
 
 /// Whether nothing listens on `port` (one of this lab's) within 5 seconds:
@@ -552,4 +552,53 @@ async fn deleting_a_project_ends_what_is_open_for_its_services_and_only_then() {
     assert!(lab.ws.services.open.lock().unwrap().is_empty() && lab.ws.services.assigned.lock().unwrap().is_empty());
     assert!(answers(port).await, "the service itself keeps running");
     running.abort();
+}
+
+#[test]
+fn framing_is_read_from_the_answer_as_a_browser_would() {
+    let head = |headers: &str| format!("HTTP/1.1 200 OK\r\n{headers}Content-Length: 0");
+    assert_eq!(framing(&head("")), Framing::Allowed);
+    assert_eq!(framing(&head("X-Frame-Options: DENY\r\n")), Framing::Blocked);
+    assert_eq!(framing(&head("x-frame-options: SAMEORIGIN\r\n")), Framing::Blocked);
+    assert_eq!(framing(&head("Content-Security-Policy: default-src 'self'; frame-ancestors 'self'\r\n")), Framing::Blocked);
+    assert_eq!(framing(&head("Content-Security-Policy: frame-ancestors 'none'\r\n")), Framing::Blocked);
+    assert_eq!(framing(&head("Content-Security-Policy: frame-ancestors http://localhost:4317\r\n")), Framing::Restricted);
+    // A CSP frame-ancestors decides over X-Frame-Options; a report-only one decides nothing.
+    assert_eq!(framing(&head("X-Frame-Options: DENY\r\nContent-Security-Policy: frame-ancestors *\r\n")), Framing::Allowed);
+    assert_eq!(framing(&head("Content-Security-Policy-Report-Only: frame-ancestors 'none'\r\n")), Framing::Allowed);
+}
+
+/// An HTTP service on this host's loopback answering every request with 200
+/// and the given header lines.
+async fn service_with(headers: &'static str) -> (u16, JoinHandle<()>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let task = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else { return };
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 1024];
+                let _ = stream.read(&mut buffer).await;
+                let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\n{headers}Content-Length: 2\r\nConnection: close\r\n\r\nok").as_bytes()).await;
+            });
+        }
+    });
+    (port, task)
+}
+
+#[tokio::test]
+async fn an_open_service_says_whether_its_page_may_be_framed_and_passes_its_headers_on() {
+    let lab = lab();
+    let (plain, _a) = service_with("").await;
+    let (denies, _b) = service_with("X-Frame-Options: DENY\r\n").await;
+    let plain = register(&lab, LOCAL, plain).await;
+    let denies = register(&lab, LOCAL, denies).await;
+    assert_eq!(open(&lab, &plain).await["framing"], "allowed");
+    let connection = open(&lab, &denies).await;
+    assert_eq!((connection["state"].as_str(), connection["framing"].as_str()), (Some("available"), Some("blocked")));
+    // The relay leaves the header as the service sent it.
+    let port = connection["localPort"].as_u64().unwrap() as u16;
+    let (status, _, head) = exchange(port, "/", None).await;
+    assert_eq!(status, 200);
+    assert!(head.contains("X-Frame-Options: DENY"), "{head}");
 }
