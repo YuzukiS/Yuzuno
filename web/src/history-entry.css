@@ -1,0 +1,105 @@
+/* The way to earlier messages (T-6): one compact line above the
+   conversation, wrapping on a narrow screen; what history covers opens
+   beside it, below it on a phone. Colours are the palette's own. */
+.history-entry {
+  margin: 4px 0 16px;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+.history-entry-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 14px;
+}
+.history-entry-load {
+  min-height: 40px;
+}
+.history-entry-load:disabled {
+  cursor: wait;
+  opacity: 0.75;
+}
+.history-entry-about {
+  flex: 1;
+  min-width: 120px;
+  padding-top: 9px;
+}
+.history-entry-about summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  width: max-content;
+  color: var(--text-quiet);
+  list-style: none;
+  cursor: pointer;
+}
+.history-entry-about summary::-webkit-details-marker {
+  display: none;
+}
+.history-entry-about summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 0.15s ease;
+}
+.history-entry-about[open] summary::before {
+  transform: translateY(1px) rotate(-135deg);
+}
+.history-entry-about summary:hover {
+  color: var(--text-secondary);
+}
+.history-entry-about p {
+  max-width: 60ch;
+  margin: 6px 0 0;
+}
+.history-entry-load:focus-visible,
+.history-entry-about summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+.history-entry-beginning {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 40px;
+  color: var(--text-quiet);
+}
+.history-entry-beginning::before,
+.history-entry-beginning::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.history-entry-note {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+}
+.history-entry-error {
+  margin: 8px 0 0;
+  color: var(--coral);
+}
+.history-entry-reason {
+  color: var(--text-quiet);
+}
+.history-entry-result {
+  margin: 6px 0 0;
+}
+.history-entry-result:empty {
+  display: none;
+}
+@media (max-width: 520px) {
+  .history-entry-row {
+    gap: 6px 10px;
+  }
+  .history-entry-about[open] {
+    flex-basis: 100%;
+    padding-top: 0;
+  }
+}

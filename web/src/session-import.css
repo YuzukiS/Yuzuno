@@ -114,20 +114,6 @@
   line-height: 1.65;
   color: var(--text-secondary);
 }
-.session-history-loader {
-  margin: 4px 0 22px;
-  padding: 15px;
-  text-align: center;
-  color: var(--text-secondary);
-  background: var(--surface-soft);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  font-size: calc(10px + var(--font-adjust, 3px));
-  line-height: 1.7;
-}
-.session-history-loader button {
-  margin-top: 10px;
-}
 @media (max-width: 520px) {
   .session-preview {
     padding: 12px;
