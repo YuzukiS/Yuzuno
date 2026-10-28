@@ -3668,15 +3668,15 @@ test("a Turn reads in parts by your inputs; mail and tools fold, a failure stays
     // The mail and the tools around it: one row, closed, counted.
     const fold = work.querySelector(".collaboration-fold");
     assert.ok(fold && !fold.open);
-    assert.match(fold.querySelector("summary").textContent, /Collaboration and execution · 1 message from Agents · 1 tool step/);
-    assert.ok(!work.textContent.includes("Mail from Dev 9"), "the mail is folded");
+    assert.match(fold.querySelector("summary").textContent, /Collaboration and execution\s*· 1 message from Agents · 1 tool step/);
+    assert.ok(!work.querySelector(".mailbox-notice"), "the mail is folded");
     // The failure stays in view, and opens the fold.
     const failure = work.querySelector(".collaboration-failure");
     assert.match(failure.textContent, /Failed · npm run typecheck · 2/);
     [...failure.querySelectorAll("button")].find((b) => b.textContent === "View").click();
     await pause();
     assert.ok(work.querySelector(".collaboration-fold").open);
-    assert.ok(work.textContent.includes("Mail from Dev 9"));
+    assert.ok(work.querySelector(".collaboration-fold .mailbox-notice"), "the mail, inside the fold");
     // Replies and your inputs are never folded.
     assert.ok(work.querySelector('[data-item-id="r2"]') && work.querySelector('[data-item-id="u2"]'));
     // No record of who wrote it: not yours.
