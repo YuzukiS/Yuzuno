@@ -1072,7 +1072,9 @@ test("tool counts distinguish native kinds, named MCP tools and Claude tools", a
   ] };
   const page = await mount({ extraTurns: [turn] });
   try {
-    const labels = () => [...page.document.querySelectorAll('[data-turn-id="counts"] .tool-count')].map(el => el.textContent);
+    // The name and the number; what the calls reported is tool-capsules-ui's.
+    const labels = () => [...page.document.querySelectorAll('[data-turn-id="counts"] .tool-count')]
+      .map(el => el.querySelector(".tool-count-name").textContent + el.querySelector(".tool-count-number").textContent);
     assert.deepEqual(labels(), ["Shell×2", "Edit×1", "docs/search×2", "docs/fetch×1", "other/search×1", "Bash×1", "Read×2"]);
     turn.items[0].status = "completed";
     turn.items[0].aggregatedOutput = "New output must not count as a new call";
