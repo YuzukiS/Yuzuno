@@ -456,6 +456,12 @@ fn inputs_list_the_persons_own_by_page_from_the_light_index() {
     let mut d = detail("a");
     d.turns = vec![
         json!({"id":"old","status":"completed","items":[user("u0", None, "before receipts"), reply("a0")]}),
+        // Claude Turns no Yuzuno client started: a prompt typed in a terminal,
+        // and one Claude says it started itself.
+        json!({"id":"term","status":"completed","_yuzunoSource":"native","_yuzunoOrigin":"outside",
+            "items":[user("t1", None, "typed in a terminal")]}),
+        json!({"id":"note","status":"completed","_yuzunoSource":"native","_yuzunoOrigin":"task-notification",
+            "items":[user("n1", None, "a background task finished")]}),
         json!({"id":"work","status":"inProgress","items":[
             user("u1", Some("c1"), "first of mine"), reply("a1"),
             {"id":"p1","type":"userMessage","clientId":"mail-1","_yuzunoSource":"peer","content":[{"type":"text","text":"mail"}]},
@@ -470,7 +476,7 @@ fn inputs_list_the_persons_own_by_page_from_the_light_index() {
             user("u3", Some("c3"), "third of mine"),
         ]}),
     ];
-    d.turns[1]["items"].as_array_mut().unwrap().extend((0..150).map(|i| reply(&format!("b{i}"))));
+    d.turns[3]["items"].as_array_mut().unwrap().extend((0..150).map(|i| reply(&format!("b{i}"))));
     let receipt = |client: &str, origin: Value| {
         let mut r = json!({"input":{"clientMessageId":client,"text":"t"},"status":"accepted","turnId":"work","error":null});
         if !origin.is_null() { r["origin"] = origin; }
@@ -488,19 +494,21 @@ fn inputs_list_the_persons_own_by_page_from_the_light_index() {
         due_at,state,created_at,updated_at) VALUES('q0','a','old','s',0,'acct',1,0,'sent',0,0)", []).unwrap();
     let input = |turn: &str, item: &str, at: [usize; 2], by: &str, text: &str|
         json!({"turnId":turn,"itemId":item,"position":at,"by":by,"preview":text});
-    let all = vec![input("old", "u0", [0, 0], "unconfirmed", "before receipts"), input("work", "u1", [1, 0], "you", "first of mine"),
-        input("work", "u2", [1, 3], "you", "second of mine"), input("work", "h1", [1, 6], "home", "Reply from the user on Home"),
-        input("work", "f1", [1, 7], "form", "form answers"), input("work", "o1", [1, 8], "unconfirmed", "sent before origins"),
-        input("work", "u3", [1, 10], "you", "third of mine")];
+    let all = vec![input("old", "u0", [0, 0], "unconfirmed", "before receipts"),
+        input("term", "t1", [1, 0], "unconfirmed", "typed in a terminal"), input("work", "u1", [3, 0], "you", "first of mine"),
+        input("work", "u2", [3, 3], "you", "second of mine"), input("work", "h1", [3, 6], "home", "Reply from the user on Home"),
+        input("work", "f1", [3, 7], "form", "form answers"), input("work", "o1", [3, 8], "unconfirmed", "sent before origins"),
+        input("work", "u3", [3, 10], "you", "third of mine")];
     let page = |store: &Store, before: Option<&str>, limit: Option<usize>| store.conversation_inputs("a",
         &conversation_window::InputsQuery { before: before.map(str::to_owned), limit }).unwrap();
     let pages = |store: &Store| {
-        assert_eq!(page(store, None, None).unwrap(), json!({"inputs":all,"hasBefore":false,"total":7}));
-        assert_eq!(page(store, None, Some(3)).unwrap(), json!({"inputs":all[4..],"hasBefore":true,"total":7}));
-        assert_eq!(page(store, Some(r#"["work","f1"]"#), Some(3)).unwrap(), json!({"inputs":all[1..4],"hasBefore":true,"total":7}));
-        assert_eq!(page(store, Some(r#"["work","u1"]"#), Some(3)).unwrap(), json!({"inputs":all[..1],"hasBefore":false,"total":7}));
-        // Not an input of this list: mail, or no such Item.
+        assert_eq!(page(store, None, None).unwrap(), json!({"inputs":all,"hasBefore":false,"total":8}));
+        assert_eq!(page(store, None, Some(3)).unwrap(), json!({"inputs":all[5..],"hasBefore":true,"total":8}));
+        assert_eq!(page(store, Some(r#"["work","f1"]"#), Some(3)).unwrap(), json!({"inputs":all[2..5],"hasBefore":true,"total":8}));
+        assert_eq!(page(store, Some(r#"["work","u1"]"#), Some(3)).unwrap(), json!({"inputs":all[..2],"hasBefore":false,"total":8}));
+        // Not an input of this list: mail, Claude's own, or no such Item.
         assert!(page(store, Some(r#"["work","p1"]"#), None).is_err());
+        assert!(page(store, Some(r#"["note","n1"]"#), None).is_err());
         assert!(page(store, Some(r#"["work","nope"]"#), None).is_err());
     };
     pages(&store);
@@ -513,6 +521,9 @@ fn inputs_list_the_persons_own_by_page_from_the_light_index() {
     for window in [&tail, &shown] {
         assert_eq!(window.conversation["questions"][0]["items"][0]["id"], "q");
     }
+    let native = assert_equivalent(&store, &Query { turn_id: Some("term".into()), ..Default::default() });
+    let first_input = |turn: &str| native.detail.turns.iter().find(|t| t["id"] == turn).unwrap()["items"][0]["_yuzunoInput"].clone();
+    assert_eq!((first_input("term"), first_input("note")), (json!("unconfirmed"), json!("native")));
     let by: Vec<_> = shown.detail.turns.iter().flat_map(|turn| turn["items"].as_array().unwrap())
         .filter(|item| item["type"] == "userMessage").map(|item| (item["id"].as_str().unwrap(), item["_yuzunoInput"].as_str().unwrap())).collect();
     assert_eq!(by, [("u1", "you"), ("p1", "peer"), ("u2", "you"), ("r1", "resume"), ("r0", "resume"), ("h1", "home"),

@@ -25,7 +25,8 @@ pub(crate) fn navigable(by: &str) -> bool {
 ///   as `form` with answers to a form, `answer` to a native question; `home`,
 ///   a reply from Home; `resume`, a Claude automatic continue;
 /// - `resume`, too: an automatic continue's client ID with its own row;
-/// - `native`: without a receipt, in a Claude Turn no prompt of yours started;
+/// - `native`: without a receipt, in a Claude Turn Claude says it started
+///   itself (its origin neither `human` nor `outside`, a terminal's prompt);
 /// - `unconfirmed`: anything else.
 pub(crate) fn annotate(db: &Connection, agent: &str, conversation: &mut [Value]) -> Result<()> {
     let clients: Vec<&str> = conversation.iter().flat_map(|turn| turn["items"].as_array().into_iter().flatten())
@@ -52,6 +53,8 @@ pub(crate) fn annotate(db: &Connection, agent: &str, conversation: &mut [Value])
     }
     for turn in conversation.iter_mut() {
         let source = turn["_yuzunoSource"].as_str().map(str::to_owned);
+        let claude_started = source.as_deref() == Some("native")
+            && turn["_yuzunoOrigin"].as_str().is_some_and(|kind| !matches!(kind, "human" | "outside"));
         let mut first = true;
         for item in turn["items"].as_array_mut().into_iter().flatten().filter(|item| item["type"] == "userMessage") {
             let marked = item["_yuzunoSource"].as_str().or(source.as_deref().filter(|_| first));
@@ -69,7 +72,7 @@ pub(crate) fn annotate(db: &Connection, agent: &str, conversation: &mut [Value])
                     _ => "unconfirmed",
                 },
                 _ if client.is_some_and(|id| resumes.contains(id)) => "resume",
-                (_, None) if source.as_deref() == Some("native") => "native",
+                (_, None) if claude_started => "native",
                 _ => "unconfirmed",
             };
             item["_yuzunoInput"] = by.into();
