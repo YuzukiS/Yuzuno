@@ -48,7 +48,9 @@ export function OpenChoice({
   /** What to open: built when chosen, so it carries what is shown then. */
   target: () => PortalTarget;
   onSource?: () => void;
-  /** Called once the page is opened (in the Portal or outside), e.g. to close a dialog. */
+  /** Called once the page is opened and nothing more is needed here, e.g. to
+   * close a dialog: in the Portal, or a service outside. Not after a file
+   * opened in the browser, whose fallback link has to stay. */
   onOpened?: () => void;
 }) {
   const t = useStrings(text);
@@ -87,12 +89,13 @@ export function OpenChoice({
       const at = await mintPreview(chosen.source);
       if (!(await reaches(at.proof.url, at.proof.answer))) {
         openInPortal(chosen, from);
+        onOpened?.();
       } else {
         openOutside(at.url);
-        // A browser may block a tab opened after a wait; the link opens it with a click.
+        // A browser may block a tab opened after a wait, and doesn't say so;
+        // the link opens it with a click, so whatever holds it stays open.
         setFallback(at.url);
       }
-      onOpened?.();
     } catch (e) {
       setError(errorText(e));
     } finally {

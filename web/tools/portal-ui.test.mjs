@@ -32,7 +32,7 @@ import {closePortal, openInPortal} from ${src("portal/index.ts")};
 import {saveOpenWith} from ${src("portal/portal-preference.ts")};
 const root=createRoot(document.getElementById('root'));
 const shell=(child)=><div className="app"><aside className="rail"/><main className="main-panel"><button id="before">before</button>{child}</main><aside className="inspector"/></div>;
-window.renderChoice=(target,onSource)=>flushSync(()=>root.render(shell(<OpenChoice target={()=>target} onSource={onSource}/>)));
+window.renderChoice=(target,onSource,onOpened)=>flushSync(()=>root.render(shell(<OpenChoice target={()=>target} onSource={onSource} onOpened={onOpened}/>)));
 window.renderSettings=()=>flushSync(()=>root.render(<PortalPreferencesSection/>));
 window.renderTurn=(turn,agent,onFile)=>flushSync(()=>root.render(shell(<Turn turn={turn} index={0} agent={agent} onFile={onFile}/>)));
 window.portal={open:openInPortal,close:closePortal,saveOpenWith};`,
@@ -172,7 +172,8 @@ test("the device's default is the main button and the other way is there for thi
   const page = mount();
   t.after(page.close);
   page.window.portal.saveOpenWith("browser");
-  page.window.renderChoice(snapshot, () => page.window.__source = true);
+  let closed = 0;
+  page.window.renderChoice(snapshot, () => page.window.__source = true, () => closed++);
   const main = page.document.querySelector(".open-choice-split .primary-button");
   assert.match(main.textContent, /Open in browser/);
   page.click(main);
@@ -180,6 +181,7 @@ test("the device's default is the main button and the other way is there for thi
   assert.deepEqual(page.opened[0], [PREVIEW, "_blank", "noopener,noreferrer"], "the proven snapshot, with no handle on this window");
   assert.equal(page.panel(), null, "nothing inside");
   assert.ok(page.document.querySelector('.open-choice-note a[href="' + PREVIEW + '"]'), "a link if the tab was blocked");
+  assert.equal(closed, 0, "what holds the link (a dialog) stays open");
   // Once, inside: the default stays the browser.
   page.click(page.button("Other ways to open"));
   await until(() => page.document.querySelector(".open-choice-menu"), "the menu");
@@ -187,6 +189,7 @@ test("the device's default is the main button and the other way is there for thi
   assert.deepEqual(items, ["Open in browserThis device's default", "Preview besideThis time only", "View sourceShown as text, not run"]);
   page.click([...page.document.querySelectorAll('.open-choice-menu [role="menuitem"]')][1]);
   await until(page.frame, "the frame, this once");
+  assert.equal(closed, 1, "opened inside: nothing more is needed there");
   assert.match(page.document.querySelector(".open-choice-split .primary-button").textContent, /Open in browser/, "default unchanged");
   assert.equal(page.window.localStorage.getItem("yuzuno.portal-open"), JSON.stringify({ open: "browser" }));
   page.click(page.button("Other ways to open"));
