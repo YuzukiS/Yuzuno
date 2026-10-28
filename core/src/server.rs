@@ -158,6 +158,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/agents/{id}/items/{item_id}/original",get(item_original))
         .route("/api/agents/{id}/turns/{turn_id}/original",get(turn_original))
         .route("/api/agents/{id}/conversation/search",get(conversation_search))
+        .route("/api/agents/{id}/conversation/inputs",get(conversation_inputs))
         .route("/api/agents/{id}/turns/{turn_id}/payload",get(turn_payload))
         .route("/api/agents/{id}/results/{result_id}",get(interactive_result))
         .route("/api/agents/{id}/close",post(close_agent))
@@ -1017,6 +1018,16 @@ async fn conversation_search(State(ws): State<Arc<Workspace>>, Path(id): Path<St
     if query.q.len() > 256 { return Ok((StatusCode::BAD_REQUEST, Json(json!({"error":"Search is limited to 256 bytes"}))).into_response()); }
     stored_json(&ws, move |store| store.conversation_search(&id, &query.q)).await
 }
+/// A page of the inputs a person wrote or may have, from the light index
+/// (T-6); an unknown `before` is a 404.
+async fn conversation_inputs(State(ws): State<Arc<Workspace>>, Path(id): Path<String>,
+    Query(query): Query<crate::conversation_window::InputsQuery>) -> ApiResult<Response> {
+    let found = ws.stored(move |store| store.conversation_inputs(&id, &query)).await?;
+    Ok(match found {
+        Ok(page) => Json(page).into_response(),
+        Err(missing) => (StatusCode::NOT_FOUND, Json(json!({"error":missing.message(),"code":missing.code()}))).into_response(),
+    })
+}
 /// Full values of an Item's trimmed fields, or of one named field. Reads
 /// that Item's rows only, unless its record is held in memory.
 async fn item_payload(State(ws): State<Arc<Workspace>>, Path((id, item_id)): Path<(String, String)>, Query(q): Query<PayloadQuery>) -> Response {
@@ -1104,7 +1115,8 @@ async fn send_message(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, 
         Ok((serde_json::from_value(body).map_err(|e| anyhow::anyhow!("Invalid message: {e}"))?, skills))
     })();
     let (input, skills) = parsed.map_err(crate::collaboration_credentials::MessageNotSubmitted)?;
-    Ok(Json(serde_json::to_value(ws.send_message_with_skills(&id, input, skills).await?)?))
+    // Typed by the person in a client (T-6).
+    Ok(Json(serde_json::to_value(ws.send_message_from(&id, input, skills, Some(json!({"kind":"client"}))).await?)?))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -224,6 +224,13 @@ pub struct MessageReceipt {
     /// writes the receipt again).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillRef>,
+    /// Where Core took the message from (T-6), set by Core only: `{"kind":
+    /// "client"}` from a client's composer, `{"kind":"home","projectId",
+    /// "key","version"}` a reply from Home, `{"kind":"resume"}` a Claude
+    /// automatic continue; none on receipts written before. Beside `input`
+    /// for the same reason as `skills`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Value>,
     pub status: String,
     pub turn_id: Option<String>,
     pub error: Option<String>,

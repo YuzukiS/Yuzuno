@@ -779,7 +779,7 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
     assert_eq!(message, format!("Reply from the user on Home, to version 1 of the Project Brief section `news` (\"About news\") \
         of Code (Workspace {workspace}, Project {project}):\n\nLooks good"));
     // A message already sent under this id: its retry returns it, though the card changed since.
-    let sent = crate::model::MessageReceipt { binding: None, skills: vec![], status: "accepted".into(), turn_id: Some("t1".into()), error: None,
+    let sent = crate::model::MessageReceipt { binding: None, skills: vec![], origin: None, status: "accepted".into(), turn_id: Some("t1".into()), error: None,
         input: crate::model::MessageInput { client_message_id: "r1".into(), text: message.clone(), text_blocks: None, images: vec![],
             expected_turn_id: Some("t1".into()), question: None, clarification: None } };
     let kept = sent.clone();
@@ -817,6 +817,14 @@ async fn a_card_reply_names_the_version_on_screen_and_never_another() {
     let seen_marks = sections::seen(&ws.store.db.read().unwrap(), &project).unwrap();
     assert_eq!(seen_marks.get("news").map(|(version, _)| *version), Some(2));
     assert_eq!(seen_marks.len(), 1);
+    // A reply's receipt says it came from Home, from which section and
+    // version (T-6), a card's and an ask's alike, delivered or not.
+    let origin = |id: &str| ws.store.receipt("b", id).unwrap().expect("a receipt").origin;
+    assert_eq!(origin("r5"), Some(json!({"kind":"home","projectId":project,"key":"news","version":2})));
+    let answer = home::ReplyInput { key: Some("decide".into()), agent_id: "b".into(), text: String::new(),
+        client_message_id: "r7".into(), choice: Some("left".into()), version: None, title: None };
+    let _ = home::reply(&ws, project.clone(), answer).await;
+    assert_eq!(origin("r7"), Some(json!({"kind":"home","projectId":project,"key":"decide","version":1})));
 }
 
 #[test]

@@ -374,6 +374,7 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
     };
     ensure!(!input.text.trim().is_empty() || chosen.is_some(), "Write a reply or choose an option");
     let text = compose(&name, section.as_ref(), chosen.as_ref(), &input.text);
+    let origin = json!({"kind":"home","projectId":project,"key":section.as_ref().map(|row| &row.key),"version":section.as_ref().map(|row| row.version)});
     let detail = ws.send_view(&input.agent_id).await?;
     let (agent, client) = (input.agent_id.clone(), input.client_message_id.clone());
     let previous = ws.stored(move |store| store.receipt(&agent, &client)).await?;
@@ -391,7 +392,7 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
             clarification: None,
         },
     };
-    let receipt = ws.send_message(&input.agent_id, message).await?;
+    let receipt = ws.send_message_from(&input.agent_id, message, Vec::new(), Some(origin)).await?;
     if let Some(row) = section.filter(|row| row.live && row.unresolved_ask() && delivered(&receipt)) {
         let reply = match (&chosen, extra_text(chosen.as_ref(), &input.text)) {
             (Some((_, label)), None) => label.clone(),
@@ -454,5 +455,6 @@ async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, ver
         question: None,
         clarification: None,
     };
-    ws.send_message(&input.agent_id, message).await
+    let origin = json!({"kind":"home","projectId":project,"key":key,"version":version});
+    ws.send_message_from(&input.agent_id, message, Vec::new(), Some(origin)).await
 }
