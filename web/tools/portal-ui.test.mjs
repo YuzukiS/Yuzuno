@@ -124,6 +124,19 @@ test("a prototype opens beside the chat only once this browser proves it reaches
   assert.equal(frame.getAttribute("sandbox"), "allow-scripts", "scripts only: no same-origin, forms, popups or top navigation");
   assert.equal(frame.getAttribute("referrerpolicy"), "no-referrer");
   assert.match(page.panel().textContent, /Isolated preview/);
+  assert.match(page.panel().textContent, /isn't cut off from the network/, "says what isolation doesn't stop");
+  // Its first load is the snapshot; a later one is somewhere it went, which isn't shown.
+  frame.dispatchEvent(new page.window.Event("load"));
+  frame.dispatchEvent(new page.window.Event("load"));
+  await until(() => !page.frame(), "the frame removed after the page moved on");
+  assert.match(page.panel().textContent, /loaded something else, so it is no longer shown here/);
+  page.click(page.button("Back to the snapshot"));
+  const again = await until(page.frame, "the snapshot framed again");
+  assert.notEqual(again, frame, "a new frame");
+  assert.equal(again.getAttribute("src"), PREVIEW);
+  again.dispatchEvent(new page.window.Event("load"));
+  await new Promise((done) => setTimeout(done, 50));
+  assert.equal(page.frame(), again, "its own first load stays shown");
   // Beside the chat: the app's grid gives the Portal two thirds of the content area.
   const html = page.document.documentElement;
   assert.equal(html.dataset.portal, "side");
@@ -226,6 +239,11 @@ test("a service opens in its own frame that can't move this window; one that ref
   const sandbox = frame.getAttribute("sandbox").split(" ");
   assert.ok(sandbox.includes("allow-scripts") && sandbox.includes("allow-same-origin"));
   assert.ok(!sandbox.some((flag) => flag.startsWith("allow-top-navigation")), "never navigates this window");
+  // A service moves between its own pages: it stays shown.
+  frame.dispatchEvent(new page.window.Event("load"));
+  frame.dispatchEvent(new page.window.Event("load"));
+  await new Promise((done) => setTimeout(done, 50));
+  assert.equal(page.frame(), frame);
   page.window.portal.open(serviceTarget(service({ framing: "blocked" })));
   await until(() => !page.frame() && page.panel()?.querySelector(".portal-blocked"), "the blocked state");
   assert.match(page.panel().textContent, /doesn't allow being shown inside Yuzuno/);

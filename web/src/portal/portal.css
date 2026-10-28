@@ -119,9 +119,6 @@
   flex: none;
   color: var(--success-ink, var(--green));
 }
-.portal-note.is-moved {
-  color: var(--ink);
-}
 .portal-stage {
   flex: 1;
   min-height: 0;
@@ -159,7 +156,8 @@
   color: var(--ink);
   margin-bottom: 6px;
 }
-.portal-blocked p {
+.portal-blocked p,
+.portal-moved p {
   margin: 0 0 14px;
 }
 

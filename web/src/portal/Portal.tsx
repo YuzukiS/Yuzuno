@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
-import { ArrowUpRight, ChevronLeft, FileCode2, Globe, LoaderCircle, RotateCw, ShieldCheck, X } from "lucide-react";
+import { ArrowUpRight, ChevronLeft, FileCode2, Globe, LoaderCircle, RotateCw, Shield, X } from "lucide-react";
 import { api, errorText, post } from "../api";
 import { langTag, strings, useLanguage } from "../i18n";
 import { openJobs } from "../Jobs";
@@ -26,13 +26,13 @@ const text = strings({
   inBrowser: "Open in browser",
   reload: "Reload",
   resize: "Drag to resize",
-  isolated: "Isolated preview: only this file's own scripts run; no network, no access to Yuzuno.",
+  isolated: "Isolated preview: this file's scripts can't read Yuzuno or its data. It isn't cut off from the network: like any web page, it can still go to another address.",
   snapshotAt: (from: string, at: string) => `${from} · snapshot ${at}`,
   preparing: "Preparing the preview…",
   unreachableHere: "This computer doesn't reach Core's preview port. It opens on the Core host itself, or on a computer whose tunnel to Core forwards Core's service ports too.",
   unreachableRemote: "Isolated previews don't open through this connection: Core's preview port isn't reachable from here. They open on the Core host, or on a computer with a tunnel to Core.",
   failed: (reason: string) => `This file can't be previewed: ${reason}`,
-  movedOn: "The page loaded something else.",
+  movedOn: "The page loaded something else, so it is no longer shown here.",
   backToSnapshot: "Back to the snapshot",
   blocked: "This service doesn't allow being shown inside Yuzuno",
   blockedNote: "It asks to be opened only as its own page; Yuzuno doesn't remove that.",
@@ -70,13 +70,13 @@ const text = strings({
   inBrowser: "在浏览器打开",
   reload: "重新载入",
   resize: "拖动调整宽度",
-  isolated: "隔离预览：只运行这个文件里的脚本，不连网络，碰不到 Yuzuno。",
+  isolated: "隔离预览：文件里的脚本读不到 Yuzuno 及其数据。但它没有断网：和普通网页一样，仍可以跳到别的地址。",
   snapshotAt: (from, at) => `${from} · 快照 ${at}`,
   preparing: "正在准备预览…",
   unreachableHere: "这台电脑访问不到 Core 的预览端口。在 Core 主机上可以直接打开；从另一台电脑打开时，它通往 Core 的隧道也要转发 Core 的服务端口。",
   unreachableRemote: "通过此连接无法打开隔离预览：从这里访问不到 Core 的预览端口。请在 Core 主机上，或在有通往 Core 隧道的电脑上打开。",
   failed: (reason) => `这个文件无法预览：${reason}`,
-  movedOn: "页面加载了别的内容。",
+  movedOn: "页面加载了别的内容，这里不再显示。",
   backToSnapshot: "回到快照",
   blocked: "这个服务不允许在 Yuzuno 内显示",
   blockedNote: "它要求只在自己的页面里打开，Yuzuno 不会去掉这个限制。",
@@ -360,21 +360,23 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
       </header>
       {target.kind === "snapshot" && (
         <p className="portal-note">
-          <ShieldCheck size={14} aria-hidden="true" />
+          <Shield size={14} aria-hidden="true" />
           {t.isolated}
-        </p>
-      )}
-      {loads > 1 && (
-        <p className="portal-note is-moved" role="status">
-          {t.movedOn}
-          <button type="button" className="inline-link" onClick={() => { setLoads(0); setReloads((n) => n + 1); }}>
-            {target.kind === "snapshot" ? t.backToSnapshot : t.reload}
-          </button>
         </p>
       )}
       <div className="portal-stage">
         {target.kind === "snapshot" ? (
-          minted.state === "ready" ? (
+          minted.state === "ready" && loads > 1 ? (
+            // Its first load is the snapshot; any later one is a page it went
+            // to (or reloaded), which this frame no longer shows. A page can
+            // leave before its first load ends, so this is not a guarantee.
+            <div className="portal-state portal-moved" role="status">
+              <p>{t.movedOn}</p>
+              <button type="button" className="secondary-button" onClick={() => { setLoads(0); setReloads((n) => n + 1); }}>
+                {t.backToSnapshot}
+              </button>
+            </div>
+          ) : minted.state === "ready" ? (
             <iframe
               key={frameKey}
               className="portal-frame"
@@ -414,7 +416,6 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
               // Its own origin keeps its storage and sockets; it never moves this window.
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads"
               referrerPolicy="no-referrer"
-              onLoad={() => setLoads((n) => n + 1)}
             />
           </>
         )}
