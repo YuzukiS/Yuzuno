@@ -8,8 +8,8 @@ import "./portal.css";
 
 // The entry's own words (T-189).
 const text = strings({
-  beside: (service: boolean) => (service ? "Open beside" : "Preview beside"),
-  full: (service: boolean) => (service ? "Open full screen" : "Preview full screen"),
+  beside: (service: boolean): string => (service ? "Open beside" : "Preview beside"),
+  full: (service: boolean): string => (service ? "Open full screen" : "Preview full screen"),
   browser: "Open in browser",
   once: "This time only",
   isDefault: "This device's default",
