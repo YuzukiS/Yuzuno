@@ -145,6 +145,23 @@ def control(name, body):
             questions.append(request)
         publish('question.asked', request)
         return request
+    if name == 'child':
+        # As OpenCode 1.19.3's task tool starts a sub-agent: a session of its
+        # own under the one that called it (`parentID`), announced as created.
+        session = {'id': new_id('ses'), 'parentID': body['parentID'], 'title': body.get('title', ''),
+                   'agent': body.get('agent'), 'directory': ''}
+        with lock:
+            sessions[session['id']] = session
+        save()
+        if body.get('announce', True):
+            publish('session.created', {'sessionID': session['id'], 'info': session})
+        return session
+    if name == 'close':
+        # A session's run ending: its pending requests go, and nothing says so.
+        with lock:
+            without(permissions, [r for r in permissions if r['sessionID'] == body['sessionID']])
+            without(questions, [r for r in questions if r['sessionID'] == body['sessionID']])
+        return True
     if name == 'busy':
         statuses[body['sessionID']] = {'type': 'busy'}
         publish('session.status', {'sessionID': body['sessionID'], 'status': {'type': 'busy'}})
@@ -284,6 +301,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.missing(f'Session {session}')
         if (method, *rest) == ('GET',):
             return self.reply(200, sessions[session])
+        if (method, *rest) == ('GET', 'children'):
+            return self.reply(200, [s for s in sessions.values() if s.get('parentID') == session])
         if (method, *rest) == ('POST', 'prompt_async'):
             return self.prompt(session, body)
         if (method, *rest) == ('GET', 'message'):

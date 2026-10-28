@@ -81,6 +81,9 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource, d
       setError(errorText(e));
     } finally { setSending(false); }
   }
+  // Which of its sub-agents asks (T-10), on the line Codex's sub-agents use: OpenCode's title for it, else its agent.
+  const child = request.params._opencodeChild as { title?: unknown; agent?: unknown } | undefined;
+  const subAgent = child ? (typeof child.title === "string" && child.title) || (typeof child.agent === "string" && child.agent ? `@${child.agent}` : "") : "";
   const patterns = Array.isArray(request.params.patterns) ? request.params.patterns.map(String) : [];
   const metadata = request.params.metadata && Object.keys(request.params.metadata).length ? request.params.metadata : null;
   return <section className={`pending-card opencode-request${highlightSource ? " source-highlight" : ""}`} id={`request-${request.id}`} tabIndex={-1} lang={langTag(language)}>
@@ -89,6 +92,7 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource, d
       <strong>{question ? t.openQuestion : t.openPermission}</strong>
       <span className="pending-tag">{t.needsYou}</span>
     </div>
+    {child && <p className="pending-source">{t.fromSubAgent}<strong lang="">{subAgent || t.ofThisAgent}</strong>{t.onlySubAgent}</p>}
     {request.stale && <p className="inline-error">{t.staleOpen}</p>}
     {request.params._responseSent && <p className="field-hint">{t.sentOpen}</p>}
     {question ? <form onSubmit={e => { e.preventDefault(); void respond({ answers: questions.map(answer) }); }}>
