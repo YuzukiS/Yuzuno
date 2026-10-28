@@ -111,7 +111,8 @@ try {
       const pane = document.querySelector(".conversation-scroll");
       return { page: document.documentElement.scrollWidth - document.documentElement.clientWidth, pane: pane ? pane.scrollWidth - pane.clientWidth : null };
     });
-    const background = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    // The page's own background is transparent; the tool group carries the theme.
+    const background = await page.evaluate(() => getComputedStyle(document.querySelector(".tool-activity")).backgroundColor);
     report.shots.push({ name, rows, counts, overflow, background });
 
     assert.equal(rows.m1.text, "yuzuno/task_get");
@@ -140,9 +141,9 @@ try {
   }
   for (const width of [1360, 393]) {
     const [light, dark] = ["light", "dark"].map((theme) => report.shots.find((shot) => shot.name === `${theme}-${width}`).background);
-    assert.notEqual(light, dark, `${width}: light and dark look different`);
+    assert.notEqual(light, dark, `${width}: the tool group looks different in light and dark`);
   }
-  check("light and dark render with different backgrounds");
+  check("the tool group renders with different backgrounds in light and dark");
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpected.filter((path) => !/^\/api\/agents\/a\//.test(path)), []);
   check("no page errors, and no API read outside the fixture but the Agent's own");
