@@ -98,6 +98,7 @@ const activityNames: Record<string, string> = {
   contextCompaction: "Compaction",
   enteredReviewMode: "Review",
   plan: "Proposed plan",
+  mcpToolCall: "MCP tool",
 };
 // In Chinese (T-189); a tool's own name stays as the harness gives it.
 const activityNamesZh: Record<string, string> = {
@@ -110,11 +111,35 @@ const activityNamesZh: Record<string, string> = {
   contextCompaction: "压缩",
   enteredReviewMode: "审查",
   plan: "提议的计划",
+  mcpToolCall: "MCP 工具",
 };
+
+/**
+ * The tool a call names, as its harness names it: an MCP call's server and
+ * tool ("yuzuno/task_get"), or a tool's own name. Empty when it names none.
+ */
+function toolName(item: NativeItem): { namespace: string; name: string } {
+  const name = typeof item.tool === "string" ? item.tool : typeof item.name === "string" ? item.name : "";
+  const namespace = typeof item.server === "string" ? item.server : typeof item.namespace === "string" ? item.namespace : "";
+  return { namespace, name };
+}
+
+/**
+ * What a tool call is called, in a row of its own and in its group's
+ * summary alike: the tool it names, else the kind of call.
+ */
+export function toolLabel(item: NativeItem, language: Language = "en"): { label: string; named: boolean } {
+  const { namespace, name } = toolName(item);
+  if (name) return { label: [namespace, name].filter(Boolean).join("/"), named: true };
+  const names = language === "zh-Hans" ? activityNamesZh : activityNames;
+  return {
+    label: names[item.type] || item.type.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase()),
+    named: false,
+  };
+}
 
 /** Count native calls, not output chunks or files touched by a single edit. */
 export function toolActivityCounts(items: readonly NativeItem[], language: Language = "en") {
-  const names = language === "zh-Hans" ? activityNamesZh : activityNames;
   const counts = new Map<
     string,
     { key: string; label: string; count: number }
@@ -127,24 +152,8 @@ export function toolActivityCounts(items: readonly NativeItem[], language: Langu
     )
       continue;
     seen.add(item.id);
-    const name =
-      typeof item.tool === "string"
-        ? item.tool
-        : typeof item.name === "string"
-          ? item.name
-          : "";
-    const namespace =
-      typeof item.server === "string"
-        ? item.server
-        : typeof item.namespace === "string"
-          ? item.namespace
-          : "";
-    const label = name
-      ? [namespace, name].filter(Boolean).join("/")
-      : names[item.type] ||
-        item.type
-          .replace(/([A-Z])/g, " $1")
-          .replace(/^./, (c) => c.toUpperCase());
+    const { namespace, name } = toolName(item);
+    const { label } = toolLabel(item, language);
     const key = JSON.stringify([item.type, namespace, name]);
     const previous = counts.get(key);
     if (previous) previous.count++;
