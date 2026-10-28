@@ -208,8 +208,12 @@ test("the panel's width follows the grip and is kept on this device", async (t) 
   await until(() => page.document.documentElement.style.getPropertyValue("--portal-width") === "992px", "wider by a step");
   assert.equal(page.window.localStorage.getItem("yuzuno.portal-width"), JSON.stringify({ px: 992 }));
   // The chat keeps its minimum: the Portal never takes more than the content less 320 px.
+  // Held keys (no render between them), and the chat keeps its minimum: content less 320 px.
   for (let i = 0; i < 10; i++) grip.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
   await until(() => page.document.documentElement.style.getPropertyValue("--portal-width") === "1120px", "capped");
+  assert.equal(page.window.localStorage.getItem("yuzuno.portal-width"), JSON.stringify({ px: 1120 }), "kept within the cap");
+  grip.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  await until(() => page.document.documentElement.style.getPropertyValue("--portal-width") === "1088px", "narrower at once");
   page.window.portal.close();
 });
 

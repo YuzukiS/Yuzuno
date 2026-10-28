@@ -160,6 +160,9 @@ function PortalHost() {
   const language = useLanguage();
   const t = text(language);
   const [dragged, setDragged] = useState<number | null>(() => savedPortalWidth());
+  // The width keys last set, before React draws it: held keys repeat faster than that.
+  const latest = useRef<number | null>(dragged);
+  latest.current = dragged;
   const [shape, setShape] = useState<Layout | null>(null);
   const panel = useRef<HTMLElement>(null);
   const relayout = useCallback(() => setShape(shown ? layout(dragged) : null), [shown, dragged]);
@@ -241,7 +244,10 @@ function PortalHost() {
           onKeyDown={(event) => {
             if (shape.mode !== "side" || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
             event.preventDefault();
-            const width = shape.width + (event.key === "ArrowLeft" ? 32 : -32);
+            // Within what the window allows: the chat keeps its minimum.
+            const most = window.innerWidth - shape.rail - MIN_CHAT;
+            const width = Math.min(most, Math.max(MIN_PORTAL, Math.min(latest.current ?? shape.width, most) + (event.key === "ArrowLeft" ? 32 : -32)));
+            latest.current = width;
             setDragged(width);
             savePortalWidth(width);
           }}
