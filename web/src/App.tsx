@@ -722,7 +722,9 @@ export function App() {
   const [pageSpace, setPageSpace] = useState<"before" | "after" | null>(null);
   // Puts the page target's place back, while it holds (ConversationRows calls it).
   const heldPlace = useRef<(() => void) | null>(null);
-  useEffect(() => { setPageTarget(null); setPageSpace(null); }, [selected]);
+  // Back to latest from a window that is not the newest waits for it (T-6).
+  const toLatest = useRef(false);
+  useEffect(() => { setPageTarget(null); setPageSpace(null); toLatest.current = false; }, [selected]);
   useEffect(() => { if (sourceJump || jumpToTurn) setPageSpace(null); }, [sourceJump, jumpToTurn]);
   // An earlier window that could not be read moves nothing to hold in place.
   useEffect(() => { if (savedPages.error) setPageTarget(null); }, [savedPages.error]);
@@ -778,6 +780,19 @@ export function App() {
     heldPlace.current = () => { if (restore()) still = 0; };
     return () => { cancelAnimationFrame(frame); heldPlace.current = null; };
   }, [currentDetail, live.windowLoading, pageTarget, selected]);
+  // Back to latest from a window that is not the newest (the windows were
+  // replaced, or a jump into history) shows the newest window's end once it
+  // is in (T-6). Scrolled before, the end was the old window's, which has
+  // newer messages after it: no latest place, so following stopped there.
+  useLayoutEffect(() => {
+    const el = scroll.current;
+    const window = currentDetail?.conversation;
+    if (!toLatest.current || !el || live.windowLoading || !window || window.hasAfter) return;
+    toLatest.current = false;
+    stickToBottom.current = true;
+    setAtBottom(true);
+    el.scrollTop = el.scrollHeight;
+  }, [currentDetail, live.windowLoading]);
   const questionPanel = useRef<PendingQuestionsHandle>(null);
   const [questionIndex] = useState(() => new QuestionIndex());
   const coreQuestions = useMemo(() => questionIndex.read(detail?.agent.id === selected ? detail.conversation?.questions || detail.turns : []), [questionIndex, detail?.turns, detail?.conversation?.questions, detail?.agent.id, selected]);
@@ -1723,6 +1738,7 @@ export function App() {
     setPageTarget(null);
     setPageSpace(null);
     savedPages.drop();
+    toLatest.current = !!currentDetail?.conversation?.hasAfter;
     if (currentDetail?.conversation) void live.navigate({});
     setHistoryReading(false);
     searchReading.current = false;
@@ -1741,6 +1757,7 @@ export function App() {
     );
   }
   function changeHistoryPage(direction: "before" | "after") {
+    toLatest.current = false;
     const window = currentDetail?.conversation;
     let cursor = direction === "before" ? window?.start : window?.end;
     if (!window || !cursor || live.windowLoading || savedPages.loading) return;
