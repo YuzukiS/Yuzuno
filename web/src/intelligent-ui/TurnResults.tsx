@@ -29,6 +29,8 @@ function load(agentId: string, id: string) {
   while (published.size > KEEP) published.delete(published.keys().next().value!);
   return read;
 }
+/** One published version, read through the same kept reads (T-9). */
+export { load as readPublished };
 
 function view(result: Published): View {
   const raw = JSON.stringify(result.spec, null, 2);
