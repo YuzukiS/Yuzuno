@@ -273,7 +273,7 @@ function Fixture(){const [open,setOpen]=React.useState(true);return <><button on
       .locator("#turn-c")
       .evaluate((el) => el.getBoundingClientRect().top);
     await page
-      .getByRole("button", { name: "Load earlier turns", exact: true })
+      .getByRole("button", { name: "Load earlier messages", exact: true })
       .click();
     await page.locator("#turn-a").waitFor();
     const after = await page

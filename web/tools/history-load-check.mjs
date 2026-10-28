@@ -185,7 +185,7 @@ window.drawn = (look) => requestAnimationFrame(() => { const channel = new Messa
         t: Math.round(performance.now() - began),
         top: item ? Math.round(window.textTop(item) - box.top) : null,
         scrollTop: Math.round(el.scrollTop),
-        loading: [...el.querySelectorAll("button")].some((b) => b.textContent === "Loading history…"),
+        loading: [...el.querySelectorAll("button")].some((b) => b.textContent === "Loading earlier messages…"),
       });
       if (performance.now() - began < ms) window.drawn(look);
       else done(trace);
@@ -219,7 +219,7 @@ window.drawn = (look) => requestAnimationFrame(() => { const channel = new Messa
           const r = sibling.getBoundingClientRect();
           if (r.height > 0) parts.push(`${sibling.tagName.toLowerCase()}.${String(sibling.className).split(" ")[0]}[${sibling.dataset.windowKey || sibling.dataset.itemId || ""}]=${Math.round(r.height)}`);
         }
-      const loading = [...el.querySelectorAll("button")].some((b) => b.textContent === "Loading history…");
+      const loading = [...el.querySelectorAll("button")].some((b) => b.textContent === "Loading earlier messages…");
       shots.push({ top: target ? Math.round(window.textTop(target) - box.top) : null, loading, parts });
       // The last frame before the click, then `frames` frames from it.
       const since = shots.findIndex((shot) => shot.loading);
