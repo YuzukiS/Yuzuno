@@ -351,6 +351,12 @@ impl Submit {
                 !self.exclusive,
                 "a service Job cannot be exclusive: it serves until it is stopped, and an exclusive Job holds every other Job back"
             );
+            // A resume is a new Job of the stopped one's submission, which
+            // has no service link: a served service is restarted instead.
+            ensure!(
+                self.checkpoint.is_none(),
+                "a service Job has no stop at a checkpoint: to restart it, cancel it and serve its serviceId again"
+            );
             service.validate()?;
         }
         self.validate_command()
@@ -1422,7 +1428,8 @@ const SERVICE: &str = "The web service this command serves on this Core's host, 
     serve an existing one anew, which is how a service is restarted: once its earlier Job has ended (cancel it first; one whose \
     outcome is unknown still counts as serving). healthPath: a path whose HTTP 2xx answer means the app is healthy; without it no \
     health is shown. An ordinary Job otherwise: the same budget, slot and timeoutSeconds, stopped by its own cancel, never \
-    restarted automatically. Not with machineId, not exclusive (an exclusive Job would wait for it to end), not in a run's stages.";
+    restarted automatically. Not with machineId, not exclusive (an exclusive Job would wait for it to end), not with checkpoint, \
+    not in a run's stages.";
 
 /// checkpoint in short; the guide's jobs topic has the whole protocol.
 const CHECKPOINT: &str = "For a command that can save and exit at a safe point when the user asks (Stop at checkpoint), on this \

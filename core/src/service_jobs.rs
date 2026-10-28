@@ -260,23 +260,53 @@ pub(crate) async fn with_jobs(ws: &Workspace, services: &[Service], mut views: V
     Ok(views)
 }
 
-/// One health result per Job and path, at most this often.
+/// One health check per Job and path, at most this often.
 const HEALTH_TTL: Duration = Duration::from_secs(10);
 /// A health path that answers later than this is failing.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
 
-fn health_cache() -> &'static Mutex<HashMap<String, (Instant, Value)>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, (Instant, Value)>>> = OnceLock::new();
+/// The last result of each Job's health path, when it was checked, and
+/// whether a check is under way.
+#[derive(Default)]
+struct Checked {
+    at: Option<Instant>,
+    value: Option<Value>,
+    checking: bool,
+}
+
+fn health_cache() -> &'static Mutex<HashMap<String, Checked>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Checked>>> = OnceLock::new();
     CACHE.get_or_init(Default::default)
 }
 
+/// The list never waits for a health path: it gets the last result (with
+/// its checkedAt), or `checking` before the first, while a check older than
+/// HEALTH_TTL runs again in the background, one at a time per Job and path.
 async fn health(job: &str, port: u16, path: &str) -> Value {
     let key = format!("{job} {path}");
-    if let Some((at, value)) = health_cache().lock().unwrap().get(&key) {
-        if at.elapsed() < HEALTH_TTL {
-            return value.clone();
-        }
+    let (last, start) = {
+        let mut cache = health_cache().lock().unwrap();
+        cache.retain(|k, c| c.checking || c.at.is_some_and(|at| at.elapsed() < HEALTH_TTL * 6) || *k == key);
+        let entry = cache.entry(key.clone()).or_default();
+        let fresh = entry.at.is_some_and(|at| at.elapsed() < HEALTH_TTL);
+        let start = !fresh && !entry.checking;
+        entry.checking |= start;
+        (entry.value.clone(), start)
+    };
+    if start {
+        let path = path.to_owned();
+        tokio::spawn(async move {
+            let value = check_health(port, &path).await;
+            let mut cache = health_cache().lock().unwrap();
+            let entry = cache.entry(key).or_default();
+            *entry = Checked { at: Some(Instant::now()), value: Some(value), checking: false };
+        });
     }
+    last.unwrap_or_else(|| json!({"declared": true, "path": path, "state": "unknown", "reason": "checking"}))
+}
+
+/// One check of a health path, at most HEALTH_TIMEOUT long.
+async fn check_health(port: u16, path: &str) -> Value {
     let mut value = match tokio::time::timeout(HEALTH_TIMEOUT, crate::services::probe(port, path)).await {
         Ok(crate::services::Probe::Http(code, ..)) => json!({
             "state": if (200..300).contains(&code) { "ok" } else { "failing" }, "httpStatus": code}),
@@ -288,9 +318,6 @@ async fn health(job: &str, port: u16, path: &str) -> Value {
     value["declared"] = json!(true);
     value["path"] = json!(path);
     value["checkedAt"] = json!(crate::model::now());
-    let mut cache = health_cache().lock().unwrap();
-    cache.retain(|_, (at, _)| at.elapsed() < HEALTH_TTL);
-    cache.insert(key, (Instant::now(), value.clone()));
     value
 }
 

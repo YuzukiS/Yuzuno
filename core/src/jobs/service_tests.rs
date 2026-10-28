@@ -178,6 +178,9 @@ fn a_service_is_declared_for_a_job_on_this_host_that_is_not_exclusive() {
     assert!(check(json!({"service": new, "machineId": "local"})).is_ok());
     assert!(check(json!({"service": new, "machineId": "m1"})).unwrap_err().contains("this Core's host only"));
     assert!(check(json!({"service": new, "exclusive": true})).unwrap_err().contains("cannot be exclusive"));
+    assert!(check(json!({"service": new, "checkpoint": {"graceSeconds": 30, "stoppedExitCode": 75}}))
+        .unwrap_err()
+        .contains("no stop at a checkpoint"));
     assert!(check(json!({"service": {"serviceId":"s","port":5173}})).unwrap_err().contains("not both"));
     assert!(check(json!({"service": {"name":"Vite"}})).unwrap_err().contains("name and port"));
     assert!(check(json!({"service": {"name":"Vite","port":5173,"healthPath":"health"}})).unwrap_err().contains("healthPath"));
