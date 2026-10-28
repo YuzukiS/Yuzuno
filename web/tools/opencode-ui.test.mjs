@@ -159,6 +159,30 @@ test("a permission is allowed once or rejected, and nothing lasting is offered",
   } finally { stale.close(); }
 });
 
+test("a sub-agent's request names the sub-agent that asks, and is answered as any other (T-10)", async () => {
+  const child = { ...permission, id: "req-2", params: { ...permission.params, id: "per_2", sessionID: "ses_child",
+    _opencodeSession: "ses_child", _opencodeChild: { title: "Find the files (@explore subagent)", agent: "explore" } } };
+  const page = mount();
+  try {
+    page.window.renderPending({ request: child, refresh() {}, disabled: false }); await tick();
+    assert.equal(page.document.querySelector(".opencode-sub-agent").textContent, "Asked by a sub-agent: Find the files (@explore subagent)");
+    button(page, "Allow once").click(); await tick();
+    assert.match(page.calls[0].url, /requests\/req-2\/respond$/);
+    assert.deepEqual(page.calls[0].body, { response: { decision: "once" } });
+  } finally { page.close(); }
+  // Without a title, its agent; the Agent's own requests name none.
+  const untitled = mount();
+  try {
+    untitled.window.renderPending({ request: { ...child, params: { ...child.params, _opencodeChild: { agent: "explore" } } }, refresh() {}, disabled: false }); await tick();
+    assert.equal(untitled.document.querySelector(".opencode-sub-agent").textContent, "Asked by a sub-agent: @explore");
+  } finally { untitled.close(); }
+  const own = mount();
+  try {
+    own.window.renderPending({ request: permission, refresh() {}, disabled: false }); await tick();
+    assert.ok(own.document.querySelector(".opencode-sub-agent") === null, "the Agent's own request names no sub-agent");
+  } finally { own.close(); }
+});
+
 test("questions are answered with one list of labels per question, in order", async () => {
   const request = { id: "req-2", agentId: "oc", method: "opencode/question", createdAt: "now",
     params: { id: "que_1", sessionID: "ses_1", _runtimeGeneration: 1, _opencodeSession: "ses_1", questions: [

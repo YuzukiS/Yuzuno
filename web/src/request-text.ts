@@ -86,6 +86,8 @@ export const requestWords = strings({
   openPermission: "OpenCode needs your permission",
   staleOpen: "This request belongs to a closed connection. Reconnect to continue.",
   sentOpen: "Response sent. Waiting for OpenCode.",
+  // T-10: a request one of its sub-agents made, by the name OpenCode gives it.
+  fromSubAgent: (name: string) => `Asked by a sub-agent: ${name}`,
   asksUse: "OpenCode asks to use ",
   aTool: "a tool",
   forColon: " for:",
@@ -165,6 +167,7 @@ export const requestWords = strings({
   openPermission: "OpenCode 需要你的许可",
   staleOpen: "此请求属于一个已关闭的连接。重新连接后即可继续。",
   sentOpen: "回答已发送。正在等待 OpenCode。",
+  fromSubAgent: (name) => `由子代理提出：${name}`,
   asksUse: "OpenCode 请求使用 ",
   aTool: "一个工具",
   forColon: "，用于：",
