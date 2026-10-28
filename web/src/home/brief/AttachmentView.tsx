@@ -19,6 +19,8 @@ import { briefText } from "./brief-text";
 import type { SectionAttachment } from "../types";
 import { useBrief } from "./BriefContext";
 import { attachmentUrl, formatTime, type AttachmentsProps } from "./brief-catalog";
+import { OpenChoice } from "../../portal/OpenChoice";
+import { htmlFile } from "../../portal/html-file";
 
 /** Rows of a data file shown inline; the file itself opens in full. */
 export const PREVIEW_ROWS = 20;
@@ -335,6 +337,8 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
   // A kept image opens whole in the app, as a conversation's images do,
   // rather than in a browser tab (T-177).
   const image = kept && attachment.kind === "image";
+  // A kept HTML page opens working (T-5): its source only when asked for.
+  const page = kept && attachment.kind !== "image" && htmlFile(attachment.name);
   const preview = () =>
     setShown({ url, version: section.version, takenAt: attachment.takenAt, title: section.title, ownerId: section.owner.agentId });
   // Point & Fix on the image as shown, its source named for the Agent told.
@@ -367,6 +371,16 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
           <button type="button" className="brief-attachment-open" onClick={preview}>
             {t.openFile}
           </button>
+        ) : page ? (
+          <OpenChoice
+            target={() => ({
+              kind: "snapshot",
+              source: { kind: "briefAttachment", projectId, section: section.key, name: attachment.name, version: section.version },
+              name: attachment.name,
+              from: `Home · ${section.title}`,
+            })}
+            onSource={() => window.open(url, "_blank", "noopener,noreferrer")}
+          />
         ) : (
           kept && (
             <a className="brief-attachment-open" href={url} target="_blank" rel="noopener noreferrer">
@@ -400,7 +414,7 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
         </button>
       ) : attachment.kind === "data" ? (
         <DataPreview url={url} attachment={attachment} />
-      ) : attachment.kind === "text" ? (
+      ) : attachment.kind === "text" && !page ? (
         <TextTail url={url} attachment={attachment} />
       ) : null}
       {image && (
