@@ -157,17 +157,20 @@
   gap: 0.2rem 0.45rem;
   margin-bottom: 0.65rem;
   color: var(--muted);
+}
+.clarification-answer header > span {
   font-size: 0.82em;
 }
 .clarification-answer header svg {
   align-self: center;
   color: var(--green);
 }
+/* The form's title as large as the answers, and bold. */
 .clarification-answer header h4 {
   flex-basis: 100%;
   margin: 0;
   color: var(--ink);
-  font-size: 1.08em;
+  font-size: 1em;
   font-weight: 600;
   overflow-wrap: anywhere;
 }

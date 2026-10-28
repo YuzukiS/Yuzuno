@@ -100,7 +100,7 @@ const form = {
 const spec = (props = form) => ({
   root: "result",
   elements: {
-    result: { type: "Result", props: { title: "Check-in" }, children: ["form"] },
+    result: { type: "Result", props: { title: "Check-in", summary: "A few questions." }, children: ["form"] },
     form: { type: "Clarification", props },
   },
 });
