@@ -3668,7 +3668,7 @@ test("a Turn reads in parts by your inputs; mail and tools fold, a failure stays
     // The mail and the tools around it: one row, closed, counted.
     const fold = work.querySelector(".collaboration-fold");
     assert.ok(fold && !fold.open);
-    assert.match(fold.querySelector("summary").textContent, /Collaboration and execution\s*· 1 message from Agents · 1 tool step/);
+    assert.match(fold.querySelector("summary").textContent, /Collaboration and execution\s*1 message from Agents · 1 tool step/);
     assert.ok(!work.querySelector(".mailbox-notice"), "the mail is folded");
     // The failure stays in view, and opens the fold.
     const failure = work.querySelector(".collaboration-failure");

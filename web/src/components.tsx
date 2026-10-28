@@ -640,7 +640,7 @@ function CollaborationFold({ id, members, open, children }: {
         <summary>
           <ChevronRight size={13} />
           <span>{t.collaboration}</span>
-          {counts && <span className="execution-count">· {counts}</span>}
+          {counts && <span className="execution-count">{counts}</span>}
         </summary>
         {shown && <div className="execution-items collaboration-items">{children}</div>}
       </details>
