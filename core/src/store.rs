@@ -1186,6 +1186,7 @@ impl Store {
         crate::collaboration_store::migrate(&db)?;
         crate::projects::migrate(&db)?;
         crate::services::migrate(&db)?;
+        crate::service_jobs::migrate(&db)?;
         crate::github::store::migrate(&db)?;
         crate::pr_review::store::migrate(&db)?;
         crate::pr_operations::store::migrate(&db)?;

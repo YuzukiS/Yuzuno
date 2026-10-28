@@ -392,7 +392,7 @@ impl Runtime {
 }
 
 /// What one HTTP request on the way found.
-enum Probe {
+pub(crate) enum Probe {
     Http(u16),
     Refused(String),
     Silent(String),
@@ -401,7 +401,7 @@ enum Probe {
 /// One `GET path` on 127.0.0.1:port, judged by the first bytes of its answer.
 /// Through an SSH forward a refused connection there arrives as a connection
 /// closed before any byte (`forward_probe` tells that from a silent service).
-async fn probe(port: u16, path: &str) -> Probe {
+pub(crate) async fn probe(port: u16, path: &str) -> Probe {
     let mut stream = match timeout(PROBE_TIMEOUT, TcpStream::connect(("127.0.0.1", port))).await {
         Err(_) => return Probe::Silent(format!("no TCP connection within {} s", PROBE_TIMEOUT.as_secs())),
         Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionRefused =>
@@ -540,7 +540,7 @@ impl Workspace {
     pub async fn project_services(&self, project: &str) -> Result<Value> {
         let project = project.to_owned();
         let services = self.stored(move |s| s.services(&project)).await?;
-        Ok(json!({"services": services.iter().map(|s| self.service_view(s)).collect::<Vec<_>>()}))
+        Ok(json!({"services": crate::service_jobs::with_jobs(self, &services, services.iter().map(|s| self.service_view(s)).collect()).await?}))
     }
 
     fn service_view(&self, service: &Service) -> Value {

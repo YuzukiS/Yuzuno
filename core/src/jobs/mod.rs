@@ -35,6 +35,8 @@ mod checkpoint_tests;
 #[cfg(test)]
 mod run_tests;
 #[cfg(test)]
+mod service_tests;
+#[cfg(test)]
 mod tests;
 
 use crate::{server::ApiError, workspace::Workspace};
@@ -172,6 +174,15 @@ pub(crate) struct Submit {
     /// user's resume (checkpoint.rs), never accepted in a submission.
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     checkpoint_from: Option<Value>,
+    /// The web service this command serves, on this host (T-5): a new
+    /// Project service, or an existing one served anew. Not with machineId,
+    /// not exclusive, not in a run's stages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    service: Option<crate::service_jobs::Declared>,
+    /// The service it is linked to once Core has registered or named it:
+    /// set at submit, never part of the request (as `requested_machine`).
+    #[serde(skip)]
+    service_link: Option<crate::service_jobs::Link>,
 }
 
 /// A command's own stop protocol: on the user's stop its wrapper sends it
@@ -251,6 +262,12 @@ pub(super) const CORE_HOST: &str = "local";
 /// Core from that Agent's own record at submit, never from the request.
 pub(super) const AGENT_MACHINE: &str = "agent";
 
+/// The start record of a local Job's attempt (started.json), if it has one.
+pub(crate) fn started_record(data: &std::path::Path, job: &Value) -> Option<Value> {
+    let folder = host::folder(data, job).ok()?;
+    serde_json::from_slice(&std::fs::read(folder.join("started.json")).ok()?).ok()
+}
+
 impl Submit {
     /// The submission as it was sent: what its idempotency record keeps and
     /// a retry is compared with, whatever an alias resolved to.
@@ -323,6 +340,18 @@ impl Submit {
                 machine != remote::WINDOWS || self.artifacts.iter().all(|a| windows_relative(&a.path)),
                 "artifacts on Windows are paths relative to cwd, such as out\\result.json, never through .. and without a drive or :"
             );
+        }
+        if let Some(service) = &self.service {
+            // An alias is checked again once resolved (job_submit).
+            ensure!(
+                self.machine_id.is_none() || self.alias(),
+                "service applies to Jobs on this Core's host only in this version; omit machineId"
+            );
+            ensure!(
+                !self.exclusive,
+                "a service Job cannot be exclusive: it serves until it is stopped, and an exclusive Job holds every other Job back"
+            );
+            service.validate()?;
         }
         self.validate_command()
     }
@@ -920,6 +949,13 @@ pub async fn call(
                 Some(serde_json::to_value(&input)?),
             )
             .await?;
+            // Last before the insert, so that little is refused after a new
+            // service was registered for it (service_jobs::prepare).
+            if let Some(declared) = input.service.clone() {
+                input.service_link = Some(
+                    crate::service_jobs::prepare(&ws, actor.as_deref(), &input.task_id, &input.request_id, &declared).await?,
+                );
+            }
             let author = actor.clone();
             let job = ws
                 .stored(move |s| {
@@ -1374,10 +1410,19 @@ const MACHINE: &str = "Run on a registered machine from the Machines list instea
     is this Core's host. The receipt's target names the machine. cwd and every path are on that machine; pass the \
     environment the command needs in env. That machine's own admission (its maxJobs and budget) decides when it starts, and its limit \
     mode whether the declared CPU, RAM and swap are held there or only recorded. Not available with machineId: gpu, exclusive, outputs \
-    (declare artifacts), runs of stages, and guardGit (set it to false); pause only where the job's capabilities.pause allows it, never \
+    (declare artifacts), service, runs of stages, and guardGit (set it to false); pause only where the job's capabilities.pause allows it, never \
     on windows. Cancel and timeouts stop the attempt's process group (on windows its Job Object), not processes that leave it. A lost \
     connection leaves the job unknown with its slot held: Core checks the same attempt again and never starts it twice, so do not \
     resubmit it. How each machine runs, limits and checks a job: yuzuno_guide topic jobs.";
+
+/// service in short (T-5): what the services list then says about it is
+/// service_jobs.rs.
+const SERVICE: &str = "The web service this command serves on this Core's host, so that it is the Project's service and the \
+    Portal shows whether it is served: name and port (and path, default /) for a new service of the task's Project, or serviceId to \
+    serve an existing one anew, which is how a service is restarted: once its earlier Job has ended (cancel it first; one whose \
+    outcome is unknown still counts as serving). healthPath: a path whose HTTP 2xx answer means the app is healthy; without it no \
+    health is shown. An ordinary Job otherwise: the same budget, slot and timeoutSeconds, stopped by its own cancel, never \
+    restarted automatically. Not with machineId, not exclusive (an exclusive Job would wait for it to end), not in a run's stages.";
 
 /// checkpoint in short; the guide's jobs topic has the whole protocol.
 const CHECKPOINT: &str = "For a command that can save and exit at a safe point when the user asks (Stop at checkpoint), on this \
@@ -1406,6 +1451,10 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     properties["gpu"] = json!({"type":"object","description":"Local NVIDIA GPUs the command needs, admitted with its CPU and RAM: devices by UUID (any device when omitted), the GPU memory it needs in MiB, and mode exclusive (default: the only managed GPU job on the device) or shared (only on a device the user opened for sharing). The job gets CUDA_VISIBLE_DEVICES set to the reserved UUIDs. It waits, with the device and the shortfall named, while the device is busy, closed to new jobs, short of memory or not freshly sampled. Free memory is the whole card's, other programs included; this is admission, not memory isolation or a compute share.",
         "properties":{"count":{"type":"integer","minimum":1,"maximum":8,"default":1},"devices":{"type":"array","items":{"type":"string"},"maxItems":8},"memoryMiB":{"type":"integer","minimum":64},"mode":{"type":"string","enum":["exclusive","shared"],"default":"exclusive"}},
         "required":["memoryMiB"],"additionalProperties":false});
+    properties["service"] = json!({"type":"object","description":SERVICE,
+        "properties":{"serviceId":string,"name":{"type":"string","maxLength":80},"port":{"type":"integer","minimum":1,"maximum":65535},
+            "path":{"type":"string","default":"/"},"healthPath":string},
+        "additionalProperties":false});
     properties["checkpoint"] = json!({"type":"object","description":CHECKPOINT,
         "properties":{"signal":{"type":"string","enum":["SIGTERM","SIGINT","SIGUSR1"],"default":"SIGTERM"},
             "graceSeconds":{"type":"integer","minimum":10,"maximum":900},"stoppedExitCode":{"type":"integer","minimum":1,"maximum":125}},
