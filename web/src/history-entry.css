@@ -1,0 +1,83 @@
+/* The way to earlier messages (T-6): one quiet line above the conversation,
+   wrapping on a narrow screen; what history covers opens below it. */
+.history-entry {
+  margin: 2px 0 14px;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.history-entry-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  min-height: 32px;
+}
+.history-entry-load {
+  min-height: 32px;
+  gap: 6px;
+}
+.history-entry-load:disabled {
+  cursor: default;
+  color: var(--text-quiet);
+  text-decoration: none;
+}
+.history-entry-beginning {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-quiet);
+}
+.history-entry-beginning::before {
+  content: "";
+  width: 18px;
+  border-top: 1px solid var(--line);
+}
+.history-entry-result:empty {
+  display: none;
+}
+.history-entry-about-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 32px;
+  padding: 0;
+  font: inherit;
+  color: var(--text-quiet);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.history-entry-about-toggle:hover {
+  color: var(--text-secondary);
+}
+.history-entry-about-toggle svg {
+  transition: transform 0.15s ease;
+}
+.history-entry-about-toggle[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+.history-entry-load:focus-visible,
+.history-entry-about-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.history-entry-error {
+  margin: 4px 0 0;
+}
+.history-entry-about {
+  margin-top: 6px;
+  padding: 10px 14px;
+  max-width: 62ch;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.history-entry-about ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.history-entry-about li + li {
+  margin-top: 4px;
+}
