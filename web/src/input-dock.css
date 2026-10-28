@@ -1,0 +1,132 @@
+/* Reading by your inputs (T-6, TurnNavigator.tsx): the dock's two ways to
+   read, an input no record attributes to you, earlier inputs, and on a
+   phone the list of inputs. Colours are the palette's own. */
+.turn-dock-by {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  gap: 2px;
+  margin-bottom: 6px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.turn-dock-by button {
+  min-width: 42px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-quiet);
+  font: inherit;
+  font-size: calc(7px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.turn-dock-by button[aria-pressed="true"] {
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-weight: 600;
+}
+.turn-dock-earlier {
+  display: grid;
+  flex: none;
+  place-items: center;
+  min-width: 28px;
+  min-height: 22px;
+  margin-bottom: 4px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-quiet);
+  font: inherit;
+  cursor: pointer;
+}
+.turn-dock-earlier:hover {
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+.turn-dock-earlier:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+.turn-dock-by button:focus-visible,
+.turn-dock-earlier:focus-visible,
+.input-list-row:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.turn-dock-chip[data-unconfirmed] {
+  border: 1.5px dashed var(--line);
+  color: var(--text-quiet);
+}
+
+/* A phone: the open panel is a list across the conversation. */
+.app.phone .conversation-body[data-phone-dock="turns"] > .turn-dock.input-list {
+  left: 8px;
+  right: calc(var(--conversation-scrollbar) + 6px);
+  width: auto;
+  align-items: stretch;
+  padding: 10px;
+}
+.input-list ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.input-list .turn-dock-by {
+  flex-direction: row;
+  margin-bottom: 8px;
+}
+.input-list .turn-dock-by button {
+  flex: 1;
+  min-height: 36px;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.input-list-row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 2px 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 6px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.input-list-row[data-active="true"] {
+  border-radius: 8px;
+  background: var(--accent-wash);
+}
+.input-list-number {
+  grid-row: span 2;
+  color: var(--accent-ink);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  text-align: right;
+}
+.input-list-row[data-unconfirmed] .input-list-number {
+  color: var(--text-quiet);
+}
+.input-list-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.input-list-row small {
+  grid-column: 2;
+  color: var(--text-quiet);
+}
+.input-list .turn-dock-earlier {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  align-items: center;
+  min-height: 44px;
+  margin: 10px 0 0;
+  border: 1px solid var(--line);
+}

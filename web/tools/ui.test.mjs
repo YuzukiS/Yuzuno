@@ -118,6 +118,8 @@ async function mount({
   reconnectResponse,
   otherAgentFields,
   codexHandoff,
+  // The conversation's inputs (T-6): url -> page.
+  inputs,
 } = {}) {
   const calls = [];
   const core = { noWorkspaceId };
@@ -172,7 +174,8 @@ async function mount({
     if (url.includes("/api/artifact?") && artifactResponse)
       return artifactResponse(url, init);
     let body;
-    if (url.includes("/history?") && historyPage) body = historyPage;
+    if (url.includes("/conversation/inputs") && inputs) body = inputs(url);
+    else if (url.includes("/history?") && historyPage) body = historyPage;
     else if (url.endsWith("/api/workspace"))
       body = {
         // A real Core always says which Workspace this is, and the page keeps
@@ -3582,6 +3585,60 @@ test("the dock follows the reading marker; the wheel walks it while the pointer 
     assert.equal(dock.querySelector('[aria-current="location"]').dataset.turnChoice, 'scroll-68');
     assert.deepEqual(numbers(), ['scroll-66', 'scroll-67', 'scroll-68', 'scroll-69', 'scroll-70']);
     assert.equal(page.calls.filter((r) => r.init.method === 'POST').length, 0);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("the dock reads by your inputs: numbered among all, an unknown source apart, earlier ones on demand (T-6)", async () => {
+  const user = (id, text, extra = {}) => ({ id, type: "userMessage", content: [{ type: "text", text }], ...extra });
+  const extraTurns = [
+    { id: "t-old", status: "completed", items: [user("u0", "Tidy the release list")] },
+    { id: "t-a", status: "completed", items: [user("u1", "Make history easier to read"),
+      user("p1", "Mail from Dev 9", { _yuzunoSource: "peer" }), user("u2", "Keep Back to latest as it is")] },
+    { id: "t-b", status: "completed", items: [user("u3", "Ship it after CI")] },
+  ];
+  const input = (turnId, itemId, at, by, preview) => ({ turnId, itemId, position: at, by, preview });
+  const all = [input("t-old", "u0", [1, 0], "unconfirmed", "Tidy the release list"),
+    input("t-a", "u1", [2, 0], "you", "Make history easier to read"),
+    input("t-a", "u2", [2, 2], "you", "Keep Back to latest as it is"),
+    input("t-b", "u3", [3, 0], "you", "Ship it after CI")];
+  const page = await mount({ extraTurns, inputs: (url) => new URL(url, "http://x").searchParams.get("before")
+    ? { inputs: all.slice(0, 1), hasBefore: false, total: 4 }
+    : { inputs: all.slice(1), hasBefore: true, total: 4 } });
+  try {
+    await pause(); await pause();
+    const dock = page.document.querySelector(".turn-dock");
+    const chips = () => [...dock.querySelectorAll(".turn-dock-chip")].map((chip) => chip.textContent);
+    const by = dock.querySelector(".turn-dock-by");
+    assert.ok(by, "the switch shows once there are inputs");
+    assert.equal(by.querySelector('[aria-pressed="true"]').textContent, "Inputs");
+    // The newest page: numbered among all four.
+    assert.deepEqual(chips(), ["2", "3", "4"]);
+    assert.match(dock.querySelector(".turn-dock-position").textContent, /^4\s*\/ 4$/);
+    const reads = () => page.calls.filter((call) => call.url.includes("/conversation/inputs")).map((call) => call.url);
+    assert.deepEqual(reads(), ["/api/agents/a/conversation/inputs?limit=100"]);
+    // An earlier page on demand, before the first input shown.
+    dock.querySelector(".turn-dock-earlier").click();
+    await pause(); await pause();
+    assert.equal(reads()[1], `/api/agents/a/conversation/inputs?limit=100&before=${encodeURIComponent(JSON.stringify(["t-a", "u1"]))}`);
+    assert.deepEqual(chips(), ["·", "2", "3", "4"]);
+    assert.ok(!dock.querySelector(".turn-dock-earlier"), "nothing earlier now");
+    const choice = (turnId, itemId) => [...page.document.querySelectorAll("[data-turn-choice]")]
+      .find((b) => b.dataset.turnChoice === JSON.stringify([turnId, itemId]));
+    const unknown = choice("t-old", "u0");
+    assert.match(unknown.getAttribute("aria-label"), /^Earlier input · source not recorded/);
+    assert.ok(unknown.querySelector('.turn-dock-chip[data-unconfirmed]'));
+    // An input in the middle of a Turn: read from that input itself.
+    choice("t-a", "u2").click();
+    await pause(); await pause();
+    assert.equal(page.document.activeElement?.dataset.itemId, "u2");
+    // Back to Turns: the dock as it always was.
+    [...by.querySelectorAll("button")].find((b) => b.textContent === "Turns").click();
+    await pause();
+    const turns = page.document.querySelector(".turn-dock");
+    assert.equal(turns.querySelector('.turn-dock-by [aria-pressed="true"]').textContent, "Turns");
+    assert.ok(turns.querySelector('[data-turn-choice="t-b"]'));
+    assert.equal(page.calls.filter((call) => call.init.method === "POST").length, 0);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

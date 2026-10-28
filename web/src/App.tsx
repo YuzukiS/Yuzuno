@@ -176,6 +176,8 @@ import { ConversationBackgroundTaskDock } from "./ClaudeBackgroundTasks";
 import { refreshLiveJobs } from "./live-jobs";
 import { clearLiveCI, refreshLiveCI } from "./live-ci";
 import { TurnNavigator } from "./TurnNavigator";
+import { useConversationInputs } from "./useConversationInputs";
+import { entryInput, inputEntries, readingEntry, type ReadBy } from "./input-dock";
 import { ConversationWindow, ConversationRows } from "./ConversationWindow";
 import { HistoryEntry } from "./HistoryEntry";
 import { ConversationMetadata } from "./ConversationMetadata";
@@ -426,6 +428,10 @@ export function App() {
   );
   const [atBottom, setAtBottom] = useState(true);
   const [jumpToTurn, setJumpToTurn] = useState<string | null>(null);
+  // The input a jump to `jumpToTurn` reads from, when it is one (T-6).
+  const jumpItem = useRef<string | null>(null);
+  // The turn dock reads by the person's inputs unless switched to Turns.
+  const [readBy, setReadBy] = useState<ReadBy>("inputs");
   const [readingTurn, setReadingTurn] = useState<string>();
   // A message link (T-166) or a saved reading position opens like a source.
   // `progress`: a place shared from another browser (T-170), restored by how
@@ -854,6 +860,22 @@ export function App() {
   // The Turn being read, counted from 1: the latest while none is.
   const readingIndex = readingTurn ? logicalTurns.findIndex((turn) => turn.id === readingTurn) : -1;
   const readingTurnNumber = readingIndex >= 0 ? readingIndex + 1 : logicalTurns.length;
+  // Reading by your inputs (T-6): read while the dock shows them, the newest
+  // page first, again when the newest Turn or its messages change.
+  const lastTurn = logicalTurns.at(-1);
+  const conversationInputs = useConversationInputs(selected, readBy === "inputs" && !!agent && !previewMode,
+    `${logicalTurns.length}:${lastTurn?.id}:${lastTurn?._yuzunoRequestCount ?? lastTurn?.items.length}`);
+  // With no inputs to read by (none recorded yet), the dock reads by Turn and
+  // offers no switch.
+  const readingBy: ReadBy = readBy === "inputs" && conversationInputs.total > 0 ? "inputs" : "turns";
+  const canReadByInputs = conversationInputs.total > 0;
+  const inputDockEntries = useMemo(() => inputEntries(conversationInputs.inputs, logicalTurns),
+    [conversationInputs.inputs, logicalTurns]);
+  const readingInputId = readingBy === "inputs"
+    ? readingEntry(inputDockEntries, logicalTurns, readingTurn, scroll.current ? scroll.current.getBoundingClientRect().top + 32 : null)
+    : undefined;
+  const readingInputNumber = conversationInputs.total - inputDockEntries.length
+    + (readingInputId ? inputDockEntries.findIndex(entry => entry.id === readingInputId) + 1 : inputDockEntries.length);
   // Claude takes a follow-up to your running turn, not to a turn of its own.
   const claudeFollowUpTurnId = isClaude && busy
     ? logicalTurns
@@ -1178,21 +1200,30 @@ export function App() {
   }, [sourceJump, artifact]);
   useEffect(() => {
     if (sourceJump || artifact) return;
-    if (jumpToTurn && currentDetail?.conversation && !currentDetail.turns.some(t => t.id === jumpToTurn && !t._yuzunoSlice?.start)) {
-      void live.navigate({turnId:jumpToTurn});
+    // An input no longer in the conversation: its Turn instead.
+    if (jumpToTurn && jumpItem.current && live.missing === JSON.stringify({turnId:jumpToTurn, itemId:jumpItem.current}))
+      jumpItem.current = null;
+    const wanted = jumpItem.current;
+    if (jumpToTurn && currentDetail?.conversation && !currentDetail.turns.some(t => t.id === jumpToTurn
+      && (wanted ? t.items.some(item => item.id === wanted) : !t._yuzunoSlice?.start))) {
+      void live.navigate(wanted ? {turnId:jumpToTurn, itemId:wanted} : {turnId:jumpToTurn});
       return;
     }
     if (jumpToTurn && currentDetail?.turns.some((t) => t.id === jumpToTurn)) {
-      const target = document.getElementById(`turn-${jumpToTurn}`);
+      const turn = document.getElementById(`turn-${jumpToTurn}`);
+      const input = wanted ? Array.from(turn?.querySelectorAll<HTMLElement>("[data-item-id]") || [])
+        .find(element => element.dataset.itemId === wanted) : undefined;
+      const target = input || turn;
       target?.scrollIntoView({ behavior: "instant", block: "start" });
       target?.focus({ preventScroll: true });
       stickToBottom.current = false;
+      jumpItem.current = null;
       setJumpToTurn(null);
       return;
     }
     if (stickToBottom.current && scroll.current)
       scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [currentDetail, jumpToTurn, homeOpen, sourceJump, artifact, outgoing, scroller]);
+  }, [currentDetail, jumpToTurn, homeOpen, sourceJump, artifact, outgoing, scroller, live.missing]);
   // A phone's conversation shown again from the Agent list (the same one
   // too, which keeps its place): Back to latest if it is not at its end.
   useEffect(() => {
@@ -1703,6 +1734,7 @@ export function App() {
   // From a dock or a sub-agent's card, which on a phone is a panel over the
   // conversation (PhoneDocks.tsx): the panel closes on the Turn it goes to.
   function navigateToTurn(turnId: string) {
+    jumpItem.current = null;
     setPhoneDock(null);
     setHistoryReading(true);
     searchReading.current = true;
@@ -1710,6 +1742,12 @@ export function App() {
     setSourceJump(false);
     setJumpToTurn(turnId);
     stickToBottom.current = false;
+  }
+  /** Reads from one of the person's inputs (T-6): its Turn, at the input. */
+  function navigateToInput(entry: string) {
+    const { turnId, itemId } = entryInput(entry);
+    navigateToTurn(turnId);
+    jumpItem.current = itemId;
   }
   function openRailSource(a: Agent, summary: WorkSummary) {
     openCatchupSource(
@@ -2808,7 +2846,7 @@ export function App() {
                 <div className="conversation-inner" ref={followGrowth}>
                   <ConversationWindow key={selected} scroll={scroll} follow={stickToBottom} hold={heldPlace}
                     target={sourceJump && catchupSource?.turnId ? { turnId: catchupSource.turnId, itemId: catchupSource.itemId }
-                      : jumpToTurn ? { turnId: jumpToTurn } : pageTarget}>
+                      : jumpToTurn ? { turnId: jumpToTurn, itemId: jumpItem.current ?? undefined } : pageTarget}>
                   {(currentDetail?.conversation || currentDetail?.history) && (() => {
                     // One way to earlier messages (T-6): the saved window
                     // before the shown one while there is one, then the
@@ -2953,13 +2991,17 @@ export function App() {
                   running={currentDetail?.conversation?.runningBackgroundTasks} onNavigate={navigateToTurn} />
               </ConversationJobs>
               <TurnNavigator
-                key={selected}
-                turns={logicalTurns}
+                key={`${selected}:${readingBy}`}
+                turns={readingBy === "inputs" ? inputDockEntries : logicalTurns}
                 loadedNumbering={!!currentDetail?.history}
                 scrollRef={scroll}
-                readingTurnId={readingTurn}
+                readingTurnId={readingBy === "inputs" ? readingInputId : readingTurn}
                 onInteractionChange={setTurnDockEngaged}
-                onNavigate={navigateToTurn}
+                onNavigate={readingBy === "inputs" ? navigateToInput : navigateToTurn}
+                by={canReadByInputs ? { value: readingBy, onChange: setReadBy } : undefined}
+                inputs={readingBy === "inputs" ? { offset: conversationInputs.total - inputDockEntries.length,
+                  total: conversationInputs.total, hasBefore: conversationInputs.hasBefore,
+                  loading: conversationInputs.loading, onEarlier: conversationInputs.loadEarlier } : undefined}
                 atLatest={atBottom && !historyReading}
                 onLatest={backToLatest}
                 touch={phone}
@@ -2968,8 +3010,9 @@ export function App() {
                 <PhoneDockButtons
                   open={phoneDock}
                   onOpen={setPhoneDock}
-                  turn={readingTurnNumber}
-                  turns={logicalTurns.length}
+                  turn={readingBy === "inputs" ? readingInputNumber : readingTurnNumber}
+                  turns={readingBy === "inputs" ? conversationInputs.total : logicalTurns.length}
+                  inputs={readingBy === "inputs"}
                 />
               )}
               {(!atBottom || historyReading) && (

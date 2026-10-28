@@ -14,10 +14,12 @@ import { nativeTurnLabel } from "./components";
 import { userRequests } from "./CurrentTurnPrompt";
 import { isCompacting } from "./conversation-blocks";
 import type { NativeTurn } from "./types";
+import type { InputDock, ReadBy } from "./input-dock";
 import { useAppearance } from "./appearance";
 import { strings, useLanguage } from "./i18n";
 import { turnWords } from "./turn-text";
 import "./turn-dock.css";
+import "./input-dock.css";
 
 /** By default this many Turns show their number; the rest of the nearby
  * Turns are short rounded bars, up to BARS on each side, shorter and fainter
@@ -58,6 +60,18 @@ const text = strings({
   collaboration: "Workspace collaboration",
   noMessage: "No user message",
   click: "Click to read this turn",
+  // Reading by your inputs (T-6).
+  input: "Input",
+  inputsNav: "Your inputs",
+  readingInput: (at: number, of: number) => `Reading input ${at} of ${of}`,
+  unconfirmed: "Earlier input · source not recorded",
+  readBy: "Read by",
+  byInputs: "Inputs",
+  byTurns: "Turns",
+  earlierInputs: "Load earlier inputs",
+  inTurn: (turn: number) => `Turn ${turn}`,
+  readingNow: "reading",
+  clickInput: "Click to read from this input",
 }, {
   compacting: "正在压缩",
   working: "工作中",
@@ -71,6 +85,17 @@ const text = strings({
   collaboration: "工作区协作",
   noMessage: "没有用户消息",
   click: "点击阅读这个 Turn",
+  input: "输入",
+  inputsNav: "你的输入",
+  readingInput: (at, of) => `正在阅读第 ${at} 条输入，共 ${of} 条`,
+  unconfirmed: "较早的输入 · 来源未记录",
+  readBy: "阅读方式",
+  byInputs: "输入",
+  byTurns: "Turn",
+  earlierInputs: "载入更早的输入",
+  inTurn: (turn) => `Turn ${turn}`,
+  readingNow: "正在阅读",
+  clickInput: "点击从这条输入读起",
 });
 type DockWords = ReturnType<typeof text>;
 
@@ -123,7 +148,10 @@ export function TurnNavigator({
   loadedNumbering = false,
   readingTurnId,
   touch = false,
+  by,
+  inputs,
 }: {
+  /** Turns, or in `inputs` the person's inputs as entries (input-dock.ts). */
   turns: NativeTurn[];
   /** Logical turn selected by the virtual conversation's position model. */
   readingTurnId?: string;
@@ -137,6 +165,10 @@ export function TurnNavigator({
   onLatest?: () => void;
   /** Chosen by touch (a phone, PhoneDocks.tsx): numbered Turns are 44 px rows. */
   touch?: boolean;
+  /** How the conversation is read, and the switch between the two (T-6). */
+  by?: { value: ReadBy; onChange: (value: ReadBy) => void };
+  /** Reading by inputs: where the entries are in all of them, and earlier ones. */
+  inputs?: InputDock;
 }) {
   const [reading, setReading] = useState(turns.at(-1)?.id);
   // Where the reader moved the dock's window by wheel or keyboard; null
@@ -354,14 +386,65 @@ export function TurnNavigator({
 
   const language = useLanguage();
   const t = text(language);
-  const label = t.label(!!loadedNumbering);
-  // No numbered Turns: the reader hid the dock in Settings.
-  if (!turns.length || turnDock.numbers === 0) return null;
+  const label = inputs ? t.input : t.label(!!loadedNumbering);
+  const navLabel = inputs ? t.inputsNav : t.nav(!!loadedNumbering);
+  // Inputs are numbered among all of them; one no record attributes to the
+  // person shows a dot instead of a number (T-6).
+  const unconfirmed = (entry: NativeTurn | undefined) => entry?._yuzunoInputOf?.by === "unconfirmed";
+  const number = (at: number) => (inputs ? inputs.offset : 0) + at + 1;
+  const total = inputs ? inputs.total : turns.length;
+  // No numbered Turns: the reader hid the dock in Settings. With nothing to
+  // number, the switch still shows.
+  if ((!turns.length && !by) || turnDock.numbers === 0) return null;
+  const switcher = by && (
+    <div className="turn-dock-by" role="group" aria-label={t.readBy}>
+      {(["inputs", "turns"] as const).map((value) => (
+        <button key={value} type="button" aria-pressed={by.value === value} onClick={() => by.onChange(value)}>
+          {value === "inputs" ? t.byInputs : t.byTurns}
+        </button>
+      ))}
+    </div>
+  );
+  const earlier = inputs?.hasBefore && (
+    <button type="button" className="turn-dock-earlier" disabled={inputs.loading}
+      aria-label={t.earlierInputs} title={t.earlierInputs} onClick={inputs.onEarlier}>
+      <History size={touch ? 14 : 12} aria-hidden="true" />
+      {touch && <span>{t.earlierInputs}</span>}
+    </button>
+  );
+  // On a phone the inputs are a list to read, each with its words.
+  if (touch && inputs) {
+    return (
+      <nav ref={nav} className="turn-dock input-list" aria-label={navLabel}>
+        {switcher}
+        <ol>
+          {turns.map((entry, at) => {
+            const of = entry._yuzunoInputOf!;
+            return (
+              <li key={entry.id} ref={at === index ? (row) => row?.scrollIntoView({ block: "nearest" }) : undefined}>
+                <button type="button" className="input-list-row" data-active={at === index}
+                  data-unconfirmed={unconfirmed(entry) || undefined}
+                  aria-current={at === index ? "location" : undefined} onClick={() => onNavigate(entry.id)}>
+                  <span className="input-list-number">{unconfirmed(entry) ? "·" : number(at)}</span>
+                  <span className="input-list-text">{userRequests(entry)[0]?.text ?? t.noMessage}</span>
+                  <small>
+                    {[t.inTurn(of.turn), unconfirmed(entry) ? t.unconfirmed : "", at === index ? t.readingNow : ""]
+                      .filter(Boolean).join(" · ")}
+                  </small>
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+        {earlier}
+      </nav>
+    );
+  }
   return (
     <nav
       ref={nav}
       className="turn-dock"
-      aria-label={t.nav(!!loadedNumbering)}
+      aria-label={navLabel}
       data-engaged={engaged}
       onPointerEnter={() => {
         pointerInside.current = true;
@@ -426,15 +509,18 @@ export function TurnNavigator({
         focusAfterRender.current = next;
       }}
     >
-      <span
-        className="turn-dock-heading"
-        title={t.nav(!!loadedNumbering)}
-      >
-        <History size={12} aria-hidden="true" />
-        <span className="sr-only">
-          {t.heading(!!loadedNumbering)}
+      {switcher || (
+        <span
+          className="turn-dock-heading"
+          title={t.nav(!!loadedNumbering)}
+        >
+          <History size={12} aria-hidden="true" />
+          <span className="sr-only">
+            {t.heading(!!loadedNumbering)}
+          </span>
         </span>
-      </span>
+      )}
+      {earlier}
       <ol
         ref={list}
         className="turn-dock-list"
@@ -457,7 +543,8 @@ export function TurnNavigator({
                 data-turn-index={turnIndex}
                 data-active={turnIndex === index}
                 data-highlighted={turnIndex === highlighted}
-                aria-label={`${label} ${turnIndex + 1} · ${turnStatus(turn, t)}`}
+                aria-label={unconfirmed(turn) ? `${t.unconfirmed} · ${turnStatus(turn, t)}`
+                  : `${label} ${number(turnIndex)} · ${turnStatus(turn, t)}`}
                 aria-current={turnIndex === index ? "location" : undefined}
                 aria-describedby={
                   turnIndex === highlighted ? tooltipId : undefined
@@ -491,8 +578,9 @@ export function TurnNavigator({
                   <span
                     className="turn-dock-chip"
                     data-running={/inProgress|running/.test(turn.status)}
+                    data-unconfirmed={unconfirmed(turn) || undefined}
                   >
-                    {turnIndex + 1}
+                    {unconfirmed(turn) ? "·" : number(turnIndex)}
                   </span>
                 )}
               </button>
@@ -500,13 +588,15 @@ export function TurnNavigator({
           );
         })}
       </ol>
-      <span
-        className="turn-dock-position"
-        aria-label={t.reading(!!loadedNumbering, index + 1, turns.length)}
-      >
-        {index + 1}
-        <span>/ {turns.length}</span>
-      </span>
+      {turns.length > 0 && (
+        <span
+          className="turn-dock-position"
+          aria-label={inputs ? t.readingInput(number(index), total) : t.reading(!!loadedNumbering, index + 1, turns.length)}
+        >
+          {number(index)}
+          <span>/ {total}</span>
+        </span>
+      )}
       {/* Shown while the pointer or focus is at the dock, and only away
           from the latest content. */}
       {!atLatest && onLatest && (
@@ -534,7 +624,7 @@ export function TurnNavigator({
         >
           <div>
             <strong>
-              {label} {highlighted! + 1}
+              {unconfirmed(previewTurn) ? t.unconfirmed : `${label} ${number(highlighted!)}`}
             </strong>
             <span>{turnStatus(previewTurn, t)}</span>
           </div>
@@ -546,7 +636,7 @@ export function TurnNavigator({
                   ? nativeTurnLabel(previewTurn, turnWords(language))
                   : t.noMessage)}
           </p>
-          <small>{t.click}</small>
+          <small>{inputs ? t.clickInput : t.click}</small>
         </div>
       )}
     </nav>
