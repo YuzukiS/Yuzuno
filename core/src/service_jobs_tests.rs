@@ -63,17 +63,20 @@ fn a_listener_is_the_jobs_only_if_a_process_of_its_control_group_holds_it() {
 }
 
 /// An HTTP server that answers every request with `status`, once per
-/// connection, in one write: `write!` would send the status line in pieces,
-/// and a probe reading the first bytes could get "HTTP/1.1 " alone.
+/// connection, its status line in two pieces a moment apart: TCP keeps no
+/// write boundaries, and a check must read the whole line.
 fn answering(status: &'static str) -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
+            let _ = stream.set_nodelay(true);
             let mut buf = [0u8; 1024];
             let _ = stream.read(&mut buf);
-            let answer = format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-            let _ = stream.write_all(answer.as_bytes());
+            let _ = stream.write_all(b"HTTP/1.1 ");
+            std::thread::sleep(Duration::from_millis(50));
+            let rest = format!("{status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = stream.write_all(rest.as_bytes());
         }
     });
     port
@@ -91,6 +94,20 @@ async fn health_is_an_http_2xx_on_the_declared_path_and_anything_else_is_failing
     let refused = check_health(free, "/health").await;
     assert_eq!(refused["state"], "failing");
     assert!(refused["reason"].is_string(), "{refused}");
+    // A status line begun and never ended is not an answer.
+    let stalled = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = stalled.local_addr().unwrap().port();
+    let held = std::thread::spawn(move || {
+        let (mut stream, _) = stalled.accept().unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf);
+        let _ = stream.write_all(b"HTTP/1.1 20");
+        std::thread::sleep(Duration::from_secs(3));
+    });
+    let partial = check_health(port, "/health").await;
+    assert_eq!(partial["state"], "failing", "{partial}");
+    assert!(partial["reason"].as_str().unwrap().contains("no complete HTTP status line"), "{partial}");
+    held.join().unwrap();
 }
 
 #[tokio::test]
