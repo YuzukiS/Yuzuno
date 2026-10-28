@@ -3643,6 +3643,51 @@ test("the dock reads by your inputs: numbered among all, an unknown source apart
   } finally { page.close(); }
 });
 
+test("a Turn reads in parts by your inputs; mail and tools fold, a failure stays in view (T-6)", async () => {
+  const user = (id, text, by, extra = {}) => ({ id, type: "userMessage", content: [{ type: "text", text }], _yuzunoInput: by, ...extra });
+  const reply = (id, text) => ({ id, type: "agentMessage", phase: "final_answer", text });
+  const extraTurns = [
+    { id: "t-old", status: "completed", items: [user("u0", "Tidy the release list", "unconfirmed"), reply("r0", "Tidied.")] },
+    { id: "t-work", status: "completed", items: [
+      user("u1", "Make history easier to read", "you"), reply("r1", "Merged the two blocks."),
+      user("p1", "Mail from Dev 9: rerun CI on the new main", "peer", { _yuzunoSource: "peer" }),
+      { id: "c1", type: "commandExecution", command: "npm run typecheck", status: "failed", exitCode: 2, aggregatedOutput: "error" },
+      reply("r2", "Typecheck failed; looking."),
+      user("u2", "Keep Back to latest as it is", "you"), reply("r3", "Kept."),
+    ] },
+  ];
+  const input = (turnId, itemId, by, preview) => ({ turnId, itemId, position: [0, 0], by, preview });
+  const page = await mount({ extraTurns, inputs: () => ({ inputs: [input("t-old", "u0", "unconfirmed", "Tidy"),
+    input("t-work", "u1", "you", "Make"), input("t-work", "u2", "you", "Keep")], hasBefore: false, total: 3 }) });
+  try {
+    await pause(); await pause();
+    const work = page.document.getElementById("turn-t-work");
+    const dividers = [...work.querySelectorAll(".turn-divider > span")].map((span) => span.textContent.replace(/\s+/g, " ").trim());
+    assert.match(dividers[0], /^YOUR INPUT 2 · TURN \d+$/);
+    assert.match(dividers[1], /^YOUR INPUT 3 · TURN \d+ MID-TURN$/);
+    // The mail and the tools around it: one row, closed, counted.
+    const fold = work.querySelector(".collaboration-fold");
+    assert.ok(fold && !fold.open);
+    assert.match(fold.querySelector("summary").textContent, /Collaboration and execution · 1 message from Agents · 1 tool step/);
+    assert.ok(!work.textContent.includes("Mail from Dev 9"), "the mail is folded");
+    // The failure stays in view, and opens the fold.
+    const failure = work.querySelector(".collaboration-failure");
+    assert.match(failure.textContent, /Failed · npm run typecheck · 2/);
+    [...failure.querySelectorAll("button")].find((b) => b.textContent === "View").click();
+    await pause();
+    assert.ok(work.querySelector(".collaboration-fold").open);
+    assert.ok(work.textContent.includes("Mail from Dev 9"));
+    // Replies and your inputs are never folded.
+    assert.ok(work.querySelector('[data-item-id="r2"]') && work.querySelector('[data-item-id="u2"]'));
+    // No record of who wrote it: not yours.
+    const old = page.document.getElementById("turn-t-old");
+    assert.match(old.querySelector(".turn-divider > span").textContent, /^EARLIER INPUT · SOURCE NOT RECORDED · TURN/);
+    assert.ok(old.querySelector(".you-avatar.unconfirmed-avatar"));
+    assert.match(old.querySelector('[data-item-id="u0"]').textContent, /Earlier input.*No record says where this message came from/s);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("design specimen is labelled and never opens a runtime connection", async () => {
   const page = await mount({ preview: true });
   try {

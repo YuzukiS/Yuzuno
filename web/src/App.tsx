@@ -226,6 +226,7 @@ const LiveTurn = memo(Turn, (a: TurnProps, b: TurnProps) =>
   !a.onAnswer === !b.onAnswer &&
   !a.onRewindDraft === !b.onRewindDraft &&
   a.questionSources === b.questionSources &&
+  a.inputNumbers === b.inputNumbers &&
   !a.onOpenQuestion === !b.onOpenQuestion &&
   !a.onResultInteract === !b.onResultInteract,
 );
@@ -874,6 +875,11 @@ export function App() {
   const readingInputId = readingBy === "inputs"
     ? readingEntry(inputDockEntries, logicalTurns, readingTurn, scroll.current ? scroll.current.getBoundingClientRect().top + 32 : null)
     : undefined;
+  // Each of the person's inputs read so far, by its number among all of
+  // them: the Turns label the parts those inputs open.
+  const inputNumbers = useMemo(() => new Map(conversationInputs.inputs.map((input, at) =>
+    [`${input.turnId}\n${input.itemId}`, conversationInputs.total - conversationInputs.inputs.length + at + 1])),
+  [conversationInputs.inputs, conversationInputs.total]);
   const readingInputNumber = conversationInputs.total - inputDockEntries.length
     + (readingInputId ? inputDockEntries.findIndex(entry => entry.id === readingInputId) + 1 : inputDockEntries.length);
   // Claude takes a follow-up to your running turn, not to a turn of its own.
@@ -2892,6 +2898,7 @@ export function App() {
                         timeMarks={timeMarks}
                         time={time}
                         backgroundShells={currentDetail.backgroundShells}
+                        inputNumbers={inputNumbers}
                         agent={agent}
                         pendingToolIds={pendingToolIds}
                         sourceItemId={
