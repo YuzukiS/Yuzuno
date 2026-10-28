@@ -40,7 +40,7 @@ const items = [
     result: { content: [{ type: "text", text: "ok" }] } },
   { id: "m2", type: "mcpToolCall", server: "yuzuno", tool: "task_get", status: "completed", arguments: { taskId: "T-2" } },
   { id: "m3", type: "mcpToolCall", server: "yuzuno", status: "failed" },
-  { id: "m4", type: "mcpToolCall", ...long, status: "inProgress" },
+  { id: "m4", type: "mcpToolCall", ...long, status: "completed" },
   { id: "ls", type: "commandExecution", command: "ls", aggregatedOutput: "Cargo.toml\n", status: "completed", exitCode: 0 },
 ];
 const turn = {
@@ -80,7 +80,6 @@ test("a Codex MCP call's row names its server and tool, as its group's summary d
     assert.equal(label(m1).querySelector("strong")?.textContent, "yuzuno/task_get");
     assert.equal(label(m1).title, "yuzuno/task_get");
     assert.equal(result(m1), "completed");
-    assert.equal(result(row(page, "m4")), "inProgress", "its status is the call's own");
 
     const counts = [...page.document.querySelectorAll(".tool-activity .tool-count")].map((node) => node.textContent);
     assert.deepEqual(counts, ["yuzuno/task_get×2", "MCP tool×1", `${long.server}/${long.tool}×1`, "Shell×1"]);

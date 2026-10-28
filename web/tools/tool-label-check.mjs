@@ -91,6 +91,9 @@ try {
     await page.goto("http://yuzuno-tool-label.test/");
     const group = page.locator(".tool-activity").first();
     await group.waitFor({ state: "attached" });
+    // At a phone's width the list comes first; the reader opens the Agent.
+    if (!(await group.isVisible())) await page.locator('.agent-row[data-agent-id="a"] .agent-select').click();
+    await group.waitFor({ state: "visible" });
     if (!(await group.evaluate((node) => node.open))) await group.locator(":scope > summary").click();
     await page.locator('[id="item-m4"]').waitFor({ state: "visible" });
     assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), theme, `${name}: the ${theme} theme is applied`);
