@@ -655,7 +655,7 @@ function CollaborationFold({ id, members, open, children }: {
   );
 }
 
-function ToolActivity({function ToolActivity({
+function ToolActivity({
   items,
   calls,
   open,
