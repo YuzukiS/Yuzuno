@@ -185,10 +185,28 @@ async fn a_skill_not_listed_or_turned_off_or_malformed_sends_nothing_and_keeps_t
     assert_eq!(lab.lines("sent")[0]["input"], json!([{"type":"text","text":"hello"}]));
 }
 
+// T-6: what a client sends is the person's, on its receipt; a client can't
+// say a message came from anywhere else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_clients_message_says_so_on_its_receipt_and_a_client_cannot_say_otherwise() {
+    let lab = Lab::new(false).await;
+    lab.connect().await;
+    let (status, receipt) = lab.post("/agents/a/messages", &message("typed", "hello", None, Value::Null)).await;
+    assert_eq!((status, receipt["status"].as_str()), (200, Some("accepted")), "{receipt}");
+    assert_eq!(receipt["origin"], json!({"kind":"client"}));
+    let mut forged = message("forged", "hello", None, Value::Null);
+    forged["origin"] = json!({"kind":"home","projectId":"p","key":"k","version":1});
+    let (status, error) = lab.post("/agents/a/messages", &forged).await;
+    assert_eq!((status, error["code"].as_str()), (400, Some("message_not_submitted")), "{error}");
+    assert!(lab.ws.store.receipt("a", "forged").unwrap().is_none(), "never submitted");
+    assert_eq!(lab.lines("sent").len(), 1);
+}
+
 #[test]
 fn a_receipt_with_skills_reads_in_a_core_that_predates_them() {
     let receipt = MessageReceipt { binding: None, input: serde_json::from_value(json!({"clientMessageId":"m","text":"$deploy"})).unwrap(),
-        skills: vec![SkillRef { name: "deploy".into(), path: REPO.into() }], status: "accepted".into(), turn_id: Some("t".into()), error: None };
+        skills: vec![SkillRef { name: "deploy".into(), path: REPO.into() }], origin: Some(json!({"kind":"client"})), status: "accepted".into(),
+        turn_id: Some("t".into()), error: None };
     let saved = serde_json::to_value(&receipt).unwrap();
     // What an older Core reads: the same receipt shape without `skills`,
     // and a strict input.
@@ -197,7 +215,8 @@ fn a_receipt_with_skills_reads_in_a_core_that_predates_them() {
     #[allow(dead_code)]
     struct Older { input: MessageInput, status: String, turn_id: Option<String>, error: Option<String> }
     serde_json::from_value::<Older>(saved.clone()).expect("an older Core reads it");
-    assert_eq!(serde_json::from_value::<MessageReceipt>(saved).unwrap().skills, receipt.skills);
+    let read = serde_json::from_value::<MessageReceipt>(saved).unwrap();
+    assert_eq!((read.skills, read.origin), (receipt.skills, receipt.origin));
     let plain: MessageReceipt = serde_json::from_value(json!({"input":{"clientMessageId":"m","text":"hi"},"status":"accepted","turnId":null,"error":null})).unwrap();
     assert!(serde_json::to_value(&plain).unwrap().get("skills").is_none(), "no skills, the bytes as before");
 }

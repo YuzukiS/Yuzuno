@@ -439,3 +439,85 @@ fn a_search_finds_what_a_search_of_the_client_detail_finds() {
     assert!(store.conversation_search("missing", "").is_err());
 }
 
+
+/// T-6: the inputs a person wrote, or may have, by page from the light
+/// index. Confirmed ones and unconfirmed ones apart; mail and automatic
+/// continues left out; the middle of a Turn kept; an unanswered question
+/// still listed; the same after the store is opened again.
+#[test]
+fn inputs_list_the_persons_own_by_page_from_the_light_index() {
+    let (dir, store) = lab();
+    let user = |id: &str, client: Option<&str>, text: &str| {
+        let mut item = json!({"id":id,"type":"userMessage","content":[{"type":"text","text":text}]});
+        if let Some(client) = client { item["clientId"] = client.into(); }
+        item
+    };
+    let reply = |id: &str| json!({"id":id,"type":"agentMessage","text":format!("reply {id} {}", "x".repeat(4096))});
+    let mut d = detail("a");
+    d.turns = vec![
+        json!({"id":"old","status":"completed","items":[user("u0", None, "before receipts"), reply("a0")]}),
+        json!({"id":"work","status":"inProgress","items":[
+            user("u1", Some("c1"), "first of mine"), reply("a1"),
+            {"id":"p1","type":"userMessage","clientId":"mail-1","_yuzunoSource":"peer","content":[{"type":"text","text":"mail"}]},
+            user("u2", Some("c2"), "second of mine"),
+            user("r1", Some("quota-resume-q1"), "automatic continue"),
+            user("r0", Some("quota-resume-q0"), "an earlier automatic continue"),
+            user("h1", Some("home-1"), "Reply from the user on Home"),
+            user("f1", Some("form-1"), "form answers"),
+            user("o1", Some("older-1"), "sent before origins"),
+            {"id":"q","type":"agentMessage","delivery":"async","status":"completed","text":"Which?",
+                "questions":[{"title":"Choose","options":["A","B"]}]},
+            user("u3", Some("c3"), "third of mine"),
+        ]}),
+    ];
+    d.turns[1]["items"].as_array_mut().unwrap().extend((0..150).map(|i| reply(&format!("b{i}"))));
+    let receipt = |client: &str, origin: Value| {
+        let mut r = json!({"input":{"clientMessageId":client,"text":"t"},"status":"accepted","turnId":"work","error":null});
+        if !origin.is_null() { r["origin"] = origin; }
+        if client.starts_with("form") { r["input"]["clarification"] = json!({"resultId":"r","formId":"f","answers":{}}); }
+        serde_json::from_value(r).unwrap()
+    };
+    let typed = json!({"kind":"client"});
+    d.message_receipts = vec![receipt("c1", typed.clone()), receipt("c2", typed.clone()), receipt("c3", typed.clone()),
+        receipt("quota-resume-q1", json!({"kind":"resume"})), receipt("quota-resume-q0", Value::Null),
+        receipt("home-1", json!({"kind":"home","projectId":"p","key":"decide","version":1})),
+        receipt("form-1", typed), receipt("older-1", Value::Null)];
+    store.insert(&d).unwrap();
+    // An automatic continue from before origins: its own row says so.
+    store.db.write().unwrap().execute("INSERT INTO claude_quota_resumes(id,agent_id,turn_id,session_id,resets_at,account,attempt,
+        due_at,state,created_at,updated_at) VALUES('q0','a','old','s',0,'acct',1,0,'sent',0,0)", []).unwrap();
+    let input = |turn: &str, item: &str, at: [usize; 2], by: &str, text: &str|
+        json!({"turnId":turn,"itemId":item,"position":at,"by":by,"preview":text});
+    let all = vec![input("old", "u0", [0, 0], "unconfirmed", "before receipts"), input("work", "u1", [1, 0], "you", "first of mine"),
+        input("work", "u2", [1, 3], "you", "second of mine"), input("work", "h1", [1, 6], "home", "Reply from the user on Home"),
+        input("work", "f1", [1, 7], "form", "form answers"), input("work", "o1", [1, 8], "unconfirmed", "sent before origins"),
+        input("work", "u3", [1, 10], "you", "third of mine")];
+    let page = |store: &Store, before: Option<&str>, limit: Option<usize>| store.conversation_inputs("a",
+        &conversation_window::InputsQuery { before: before.map(str::to_owned), limit }).unwrap();
+    let pages = |store: &Store| {
+        assert_eq!(page(store, None, None).unwrap(), json!({"inputs":all,"hasBefore":false,"total":7}));
+        assert_eq!(page(store, None, Some(3)).unwrap(), json!({"inputs":all[4..],"hasBefore":true,"total":7}));
+        assert_eq!(page(store, Some(r#"["work","f1"]"#), Some(3)).unwrap(), json!({"inputs":all[1..4],"hasBefore":true,"total":7}));
+        assert_eq!(page(store, Some(r#"["work","u1"]"#), Some(3)).unwrap(), json!({"inputs":all[..1],"hasBefore":false,"total":7}));
+        // Not an input of this list: mail, or no such Item.
+        assert!(page(store, Some(r#"["work","p1"]"#), None).is_err());
+        assert!(page(store, Some(r#"["work","nope"]"#), None).is_err());
+    };
+    pages(&store);
+    // Each body says who it came from, and the question stays listed, on
+    // whichever page shows it.
+    let tail = assert_equivalent(&store, &Query::default());
+    assert!(tail.conversation["hasBefore"] == true, "the inputs are not on the newest page");
+    let start = Query { turn_id: Some("work".into()), item_id: Some("u1".into()), ..Default::default() };
+    let shown = assert_equivalent(&store, &start);
+    for window in [&tail, &shown] {
+        assert_eq!(window.conversation["questions"][0]["items"][0]["id"], "q");
+    }
+    let by: Vec<_> = shown.detail.turns.iter().flat_map(|turn| turn["items"].as_array().unwrap())
+        .filter(|item| item["type"] == "userMessage").map(|item| (item["id"].as_str().unwrap(), item["_yuzunoInput"].as_str().unwrap())).collect();
+    assert_eq!(by, [("u1", "you"), ("p1", "peer"), ("u2", "you"), ("r1", "resume"), ("r0", "resume"), ("h1", "home"),
+        ("f1", "form"), ("o1", "unconfirmed"), ("u3", "you")]);
+    drop(store);
+    let store = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+    pages(&store);
+}
