@@ -377,7 +377,7 @@ export function AgentSettings({
         type="button"
         className="conversation-action agent-settings-button"
         aria-label={t.button}
-        title={t.buttonTitle(agent.harness)}
+        title={t.buttonTitle(agent.harness ?? "codex")}
         aria-haspopup="dialog"
         aria-expanded={open}
         disabled={disabled}
@@ -386,7 +386,7 @@ export function AgentSettings({
         <Settings2 size={16} />
         <span>
           {t.model}
-          <span className="reasoning-label">{t.andWhat(agent.harness)}</span>
+          <span className="reasoning-label">{t.andWhat(agent.harness ?? "codex")}</span>
         </span>
         <ChevronDown size={12} className="settings-chevron" />
       </button>
