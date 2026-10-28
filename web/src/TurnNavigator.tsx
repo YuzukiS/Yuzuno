@@ -412,13 +412,14 @@ export function TurnNavigator({
       {touch && <span>{t.earlierInputs}</span>}
     </button>
   );
-  // On a phone the inputs are a list to read, each with its words.
+  // On a phone the inputs are a list to read, each with its words: the
+  // newest first, earlier ones loaded at its foot.
   if (touch && inputs) {
     return (
       <nav ref={nav} className="turn-dock input-list" aria-label={navLabel}>
         {switcher}
         <ol>
-          {turns.map((entry, at) => {
+          {turns.map((entry, at) => ({ entry, at })).reverse().map(({ entry, at }) => {
             const of = entry._yuzunoInputOf!;
             return (
               <li key={entry.id} ref={at === index ? (row) => row?.scrollIntoView({ block: "nearest" }) : undefined}>
