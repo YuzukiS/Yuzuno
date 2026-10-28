@@ -2339,7 +2339,8 @@ test("earlier saved messages load in front of what is being read, within three w
     const alert = await until(() => page.document.querySelector(".history-entry [role=alert]"), "the failure is shown");
     assert.match(alert.textContent, /could not be read/);
     assert.match(text(), /Answer 4[\s\S]*Answer 5/);
-    assert.equal(button(page, "Load earlier messages").disabled, false);
+    // The same button tries again (T-6).
+    assert.equal(button(page, "Try again").disabled, false);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

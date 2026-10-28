@@ -2823,6 +2823,7 @@ export function App() {
                       error={savedPages.error || sessionHistory.error || ""}
                       added={sessionHistory.added}
                       beginning={!saved && !currentDetail.history?.hasMore}
+                      session={!!currentDetail.history}
                       unchecked={native}
                       onLoad={saved ? () => changeHistoryPage("before") : loadEarlierTurns} />;
                   })()}

@@ -1,5 +1,4 @@
-import { useId, useState } from "react";
-import { ChevronRight, History, LoaderCircle } from "lucide-react";
+import { History, LoaderCircle } from "lucide-react";
 import "./history-entry.css";
 
 /**
@@ -7,10 +6,10 @@ import "./history-entry.css";
  * quiet Load earlier messages, and what history covers behind About history.
  * Which earlier part it reads is App's: the saved window before the shown
  * one while there is one, then the session's own earlier turns where the
- * saved conversation starts. Nothing is said to be all loaded unless both
- * say there is nothing earlier.
+ * saved conversation starts. Beginning of conversation only when both say
+ * nothing comes earlier.
  */
-export function HistoryEntry({ more, loading, busy, error, added, beginning, unchecked, onLoad }: {
+export function HistoryEntry({ more, loading, busy, error, added, beginning, session, unchecked, onLoad }: {
   /** Something earlier can be loaded from here. */
   more: boolean;
   /** Earlier messages are being read. */
@@ -23,42 +22,40 @@ export function HistoryEntry({ more, loading, busy, error, added, beginning, unc
   added: number | null;
   /** Both say nothing comes earlier. */
   beginning: boolean;
-  /** Earlier turns are offered that were not checked for questions. */
+  /** The session keeps its own earlier turns, read past the saved start. */
+  session: boolean;
+  /** The session's earlier turns are offered here, unchecked for questions. */
   unchecked: boolean;
   onLoad: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const about = useId();
   const result = loading || added === null ? ""
     : added ? `Loaded ${added} earlier ${added === 1 ? "turn" : "turns"}.` : "No new earlier messages in that page.";
+  const failed = !!error && !loading;
   return (
-    <div className="history-entry" data-state={loading ? "loading" : error ? "error" : more ? "more" : beginning ? "beginning" : "start"}>
-      <div className="history-entry-row">
-        {more ? (
-          <button type="button" className="inline-link history-entry-load" disabled={busy} onClick={onLoad}>
-            {loading ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : <History size={14} aria-hidden="true" />}
-            {loading ? "Loading earlier messages…" : "Load earlier messages"}
+    <div className="history-entry" data-state={loading ? "loading" : failed ? "error" : more ? "ready" : "beginning"}>
+      {more ? (
+        <div className="history-entry-row">
+          <button type="button" className="secondary-button history-entry-load" disabled={busy} onClick={onLoad}>
+            {loading ? <LoaderCircle size={15} className="spin" aria-hidden="true" /> : <History size={15} aria-hidden="true" />}
+            {loading ? "Loading earlier messages…" : failed ? "Try again" : "Load earlier messages"}
           </button>
-        ) : beginning ? (
-          <span className="history-entry-beginning">Beginning of conversation</span>
-        ) : null}
-        <span role="status" className="history-entry-result">{result}</span>
-        <button type="button" className="history-entry-about-toggle" aria-expanded={open} aria-controls={about}
-          onClick={() => setOpen((value) => !value)}>
-          <ChevronRight size={12} aria-hidden="true" />
-          About history
-        </button>
-      </div>
-      {error && <p role="alert" className="inline-error history-entry-error">{error}</p>}
-      <div id={about} className="history-entry-about" hidden={!open}>
-        <ul>
-          <li>Earlier messages load a page at a time, above the one you are reading. After a few pages the newest
-            make room, and Continue to newer messages brings them back.</li>
-          <li>Search finds every saved message, not only the ones loaded here.</li>
-          <li>Copy turn copies the whole turn; selected text covers only what is shown.</li>
-          {unchecked && <li>Earlier history has not been checked for questions.</li>}
-        </ul>
-      </div>
+          <details className="history-entry-about">
+            <summary>About history</summary>
+            <p>Search finds saved messages. Copy turn includes the full turn. Text selection covers the messages on screen.</p>
+            {session && <p>Earlier turns of this session become available when you reach the start of the saved conversation.</p>}
+          </details>
+        </div>
+      ) : beginning ? (
+        <div className="history-entry-beginning">Beginning of conversation</div>
+      ) : null}
+      {unchecked && more && <p className="history-entry-note">Earlier history has not been checked for questions.</p>}
+      {failed && (
+        <p role="alert" className="history-entry-error">
+          Couldn’t load earlier messages. Your place is kept. <span className="history-entry-reason">{error}</span>
+        </p>
+      )}
+      <p role="status" className="history-entry-result">{result}</p>
+      <span className="sr-only" aria-live="polite">{loading ? "Loading earlier messages." : ""}</span>
     </div>
   );
 }

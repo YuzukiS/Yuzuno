@@ -493,8 +493,7 @@ try {
   await page.keyboard.press("Escape");
   assert.equal(await dock.count(), 0);
   assert.equal(await page.locator(".pending-questions").count(), 0);
-  // What history covers is behind About history (T-6), and says this.
-  await page.locator(".history-entry").getByRole("button", { name: "About history" }).click();
+  // Shown, not only behind About history, where these turns are offered (T-6).
   assert.match(await page.locator(".history-entry").innerText(), /Earlier history has not been checked/);
   check("all accepted plus hasMore leaves no fixed card; history notice stays at the conversation top");
   for (const id of ["dismiss-one", "dismiss-two"]) {
