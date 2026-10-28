@@ -81,8 +81,8 @@ def free_port():
         return s.getsockname()[1]
 
 
-def server(port, name, task, **service):
-    return {'requestId': str(uuid.uuid4()), 'taskId': task, 'agentId': 'lab-a', 'name': name,
+def server(port, job_name, task, service):
+    return {'requestId': str(uuid.uuid4()), 'taskId': task, 'agentId': 'lab-a', 'name': job_name,
             'cwd': str(LAB / 'work'), 'argv': ['/usr/bin/python3', '-u', '-m', 'http.server', str(port), '--bind', '127.0.0.1'],
             'env': {}, 'guardGit': False, 'resources': {'cpuMillis': 300, 'memoryMiB': 128, 'swapMiB': 0},
             'timeoutSeconds': 120, 'service': service}
@@ -125,7 +125,7 @@ def main():
 
         # 1. A served service: process running, then its listener proven to be the Job's, then healthy.
         port = free_port()
-        first = submit(server(port, 'lab-web', task, name='Lab web', port=port, healthPath='/'))
+        first = submit(server(port, 'lab-web', task, {'name': 'Lab web', 'port': port, 'healthPath': '/'}))
         assert first['service'] == {'name': 'Lab web', 'port': port, 'healthPath': '/'}, first['service']
         service = next(s['id'] for s in request('/projects/' + project + '/services')['services'] if s['port'] == port)
         wait_for(lambda: request('/jobs/' + first['id']), lambda j: j['status'] == 'running')
@@ -147,7 +147,7 @@ def main():
         check('A registered external service has job null: Yuzuno offers no stop for it')
 
         # 3. A Job whose declared port another process holds: never shown as its own.
-        squatter = submit({**server(other, 'squatter', task, name='Squatter', port=other, path='/squat'),
+        squatter = submit({**server(other, 'squatter', task, {'name': 'Squatter', 'port': other, 'path': '/squat'}),
                            'argv': ['/usr/bin/python3', '-u', '-c', 'import time; time.sleep(60)']})
         squat = next(s['id'] for s in request('/projects/' + project + '/services')['services'] if s['path'] == '/squat')
         wait_for(lambda: request('/jobs/' + squatter['id']), lambda j: j['status'] == 'running')
@@ -157,14 +157,14 @@ def main():
         check('A running service Job whose port another process answers is otherProcess, not ours')
 
         # 4. A restart while the first Job serves is refused; cancel, then the restart is a new Job of the same service.
-        code, text = refused('/jobs', server(port, 'lab-web-too-early', task, serviceId=service))
+        code, text = refused('/jobs', server(port, 'lab-web-too-early', task, {'serviceId': service}))
         assert code >= 400 and 'still served by Job' in text and first['id'] in text, (code, text)
         request('/jobs/' + first['id'] + '/cancel', {})
         ended(first, 'cancelled')
         view = wait_for(lambda: listed(project, service), lambda v: v['job']['owner'] == 'notListening')
         assert view['job']['status'] == 'cancelled' and view['job']['canStop'] is False, view
         assert view['health']['state'] == 'unknown', view
-        second = submit(server(port, 'lab-web-restart', task, serviceId=service, healthPath='/'))
+        second = submit(server(port, 'lab-web-restart', task, {'serviceId': service, 'healthPath': '/'}))
         wait_for(lambda: request('/jobs/' + second['id']), lambda j: j['status'] == 'running')
         view = wait_for(lambda: listed(project, service), lambda v: v['job']['owner'] == 'verified')
         assert view['job']['jobId'] == second['id'] and view['job']['earlierJobIds'] == [first['id']], view
