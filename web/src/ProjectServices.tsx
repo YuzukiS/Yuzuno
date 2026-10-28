@@ -181,10 +181,13 @@ export function ProjectServices({
   projectId,
   machines,
   disabled,
+  onOpened,
 }: {
   projectId: string;
   machines: WorkspaceMachine[];
   disabled: boolean;
+  /** Once a service is opened (in the Portal or the browser). */
+  onOpened?: () => void;
 }) {
   const t = useStrings(text);
   const [services, setServices] = useState<ProjectService[] | null>(null);
@@ -352,6 +355,7 @@ export function ProjectServices({
                 <div className="services-open">
                   <OpenChoice
                     target={() => ({ kind: "service", service, url: shown.url, where: t.where(machineName(service.machineId), service.port) })}
+                    onOpened={onOpened}
                   />
                   <small>{shown.url.replace(/^http:\/\//, "")}</small>
                 </div>
