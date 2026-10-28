@@ -19,6 +19,7 @@ import { api, errorText } from "../../api";
 import { useStrings } from "../../i18n";
 import { briefText } from "./brief-text";
 import { useBrief } from "./BriefContext";
+import { useBriefDensity } from "../home-density";
 import {
   chartPath,
   formatTime,
@@ -34,6 +35,8 @@ import {
 type Kind = "line" | "bar" | "scatter";
 /** The plot's own height: fixed, so data arriving never moves the blocks around it. */
 export const CHART_HEIGHT = 260;
+/** A trend's height in a short card (low density): the line, its ends, no axis. */
+export const MINI_CHART_HEIGHT = 120;
 /** At most this many bars (categories × series) show their values on the bars. */
 export const LABELLED_BARS = 12;
 /** The longest value a bar label shows: side by side, grouped bars have less room. */
@@ -139,7 +142,7 @@ function mergeRows(series: Series[], numeric: boolean) {
   return { rows: list, gaps };
 }
 
-function Plot({ kind, props, series }: { kind: Kind; props: ChartProps; series: Series[] }) {
+function Plot({ kind, props, series, mini }: { kind: Kind; props: ChartProps; series: Series[]; mini?: boolean }) {
   const numeric = series.every((item) => item.points.every(([x]) => typeof x === "number"));
   const merged = useMemo(() => mergeRows(series, kind === "line" && numeric), [series, kind, numeric]);
   const grid = <CartesianGrid stroke="var(--line)" strokeDasharray="2 4" vertical={false} />;
@@ -238,15 +241,28 @@ function Plot({ kind, props, series }: { kind: Kind; props: ChartProps; series: 
         ))}
       </BarChart>
     );
+  // A short card's trend: the line and its ends only. The y range is the
+  // data's own, not from zero, so a change shows; the values stay in the
+  // tooltip and the data table.
+  const ends = mini ? { interval: "preserveStartEnd" as const, minTickGap: 48 } : {};
+  const last = merged.rows.length - 1;
+  const endDot = (index: number) =>
+    function EndDot(dot: { cx?: number; cy?: number; index?: number }) {
+      return dot.index === last && dot.cx !== undefined && dot.cy !== undefined ? (
+        <circle cx={dot.cx} cy={dot.cy} r={3} fill={color(index)} />
+      ) : (
+        <g />
+      );
+    };
   return (
-    <LineChart data={merged.rows} margin={margin} accessibilityLayer>
+    <LineChart data={merged.rows} margin={mini ? { top: 8, right: 8, bottom: 0, left: 8 } : margin} accessibilityLayer>
       {grid}
       {numeric ? (
-        <XAxis type="number" dataKey="x" domain={["dataMin", "dataMax"]} tickFormatter={tick} tick={xTick} />
+        <XAxis type="number" dataKey="x" domain={["dataMin", "dataMax"]} tickFormatter={tick} tick={xTick} {...ends} />
       ) : (
-        <XAxis type="category" dataKey="x" tick={xTick} />
+        <XAxis type="category" dataKey="x" tick={xTick} {...ends} />
       )}
-      {yAxis}
+      {mini ? <YAxis type="number" hide domain={["auto", "auto"]} /> : yAxis}
       {tooltip}
       {series.map((item, index) => (
         <Line
@@ -257,7 +273,7 @@ function Plot({ kind, props, series }: { kind: Kind; props: ChartProps; series: 
           stroke={color(index)}
           strokeWidth={2}
           strokeDasharray={index >= SLOTS ? "6 4" : undefined}
-          dot={false}
+          dot={mini ? endDot(index) : false}
           activeDot={{ r: 4 }}
           connectNulls={merged.gaps}
           isAnimationActive={false}
@@ -335,6 +351,8 @@ function BriefChart({ kind, props }: { kind: Kind; props: Placed }) {
   const t = useStrings(briefText);
   const { section } = useBrief();
   const { series, data, error, loading } = useSeries(props, props.elementKey);
+  const density = useBriefDensity();
+  const mini = kind === "line" && density === "low";
   // The legend comes from the chart's own declaration, so its height is
   // known before attachment data arrives.
   const names = (props.series ?? props.data?.series ?? []).map((item) => item.name);
@@ -343,7 +361,7 @@ function BriefChart({ kind, props }: { kind: Kind; props: Placed }) {
     : undefined;
   const points = series.reduce((sum, item) => sum + item.points.length, 0);
   return (
-    <section className="brief-chart" aria-label={props.title}>
+    <section className="brief-chart" data-density={mini ? "low" : undefined} aria-label={props.title}>
       <header>
         <h4>{props.title}</h4>
         {names.length > 1 && (
@@ -375,8 +393,8 @@ function BriefChart({ kind, props }: { kind: Kind; props: Placed }) {
         ) : !points ? (
           <p className="brief-chart-state">{t.noPoints}</p>
         ) : (
-          <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
-            <Plot kind={kind} props={props} series={series} />
+          <ResponsiveContainer width="100%" height={mini ? MINI_CHART_HEIGHT : CHART_HEIGHT}>
+            <Plot kind={kind} props={props} series={series} mini={mini} />
           </ResponsiveContainer>
         )}
       </div>

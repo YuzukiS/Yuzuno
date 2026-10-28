@@ -1299,3 +1299,32 @@ ul.home-widget {
   min-width: 36px;
   margin: -7px -4px -7px -10px;
 }
+
+/* Card detail (T-9): this device's choice, two options side by side. */
+.home-density {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.home-density-option {
+  min-height: 30px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.home-density-option[aria-pressed="true"] {
+  background: var(--paper);
+  box-shadow: 0 0 0 1px var(--line);
+  color: var(--ink);
+}
+.home-density-option:focus-visible {
+  outline: 2px solid var(--accent-ink, currentColor);
+  outline-offset: 1px;
+}
