@@ -62,6 +62,7 @@ import { formAnswer, SentFormAnswer } from "./intelligent-ui/SentFormAnswer";
 import { formatBytes, fullTurn, isTruncated, useFullItem, type FullItemView } from "./item-payload";
 import { useStreamReveal } from "./stream-reveal";
 import { useToolMotion } from "./tool-motion";
+import { toolCapsules } from "./tool-capsules";
 import { langTag, useLanguage, useStrings } from "./i18n";
 import { turnWords, type TurnWords } from "./turn-text";
 import { requestWords, shownError } from "./request-text";
@@ -663,10 +664,15 @@ function ToolActivity({
       <summary>
         <ChevronRight size={13} />
         <span className="tool-activity-label">{active ? t.runningTools : t.toolActivity}</span>
+        {/* One capsule per tool, named as the harness named it, with the
+            calls' own state; see tool-capsules.ts for what a state means. */}
         <span className="execution-count tool-counts">
-          {toolActivityCounts(items, language).map(({ key, label, count }) => (
-            <span className="tool-count" key={key} data-count-key={key}>
-              <span>{label}</span><span className="tool-count-number">×{count}</span>
+          {toolCapsules(toolActivityCounts(items, language), executionUnconfirmed).map(({ key, label, count, state, part }) => (
+            <span className="tool-count" key={key} data-count-key={key} data-state={state || undefined}>
+              <span className="tool-count-name">{label}</span><span className="tool-count-number">×{count}</span>
+              {state && state !== "returned" && <span className="tool-count-state">
+                {part < count ? t.toolStatePart(part, t.toolState[state]) : t.toolState[state]}
+              </span>}
             </span>
           ))}
         </span>

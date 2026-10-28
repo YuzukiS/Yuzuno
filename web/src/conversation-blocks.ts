@@ -115,9 +115,11 @@ const activityNamesZh: Record<string, string> = {
 /** Count native calls, not output chunks or files touched by a single edit. */
 export function toolActivityCounts(items: readonly NativeItem[], language: Language = "en") {
   const names = language === "zh-Hans" ? activityNamesZh : activityNames;
+  // `items`: the group's own calls, for a caller that also shows their
+  // state (tool-capsules.ts). How a tool is named and counted stays here.
   const counts = new Map<
     string,
-    { key: string; label: string; count: number }
+    { key: string; label: string; count: number; items: NativeItem[] }
   >();
   const seen = new Set<string>();
   for (const item of items) {
@@ -147,8 +149,10 @@ export function toolActivityCounts(items: readonly NativeItem[], language: Langu
           .replace(/^./, (c) => c.toUpperCase());
     const key = JSON.stringify([item.type, namespace, name]);
     const previous = counts.get(key);
-    if (previous) previous.count++;
-    else counts.set(key, { key, label, count: 1 });
+    if (previous) {
+      previous.count++;
+      previous.items.push(item);
+    } else counts.set(key, { key, label, count: 1, items: [item] });
   }
   return [...counts.values()];
 }
