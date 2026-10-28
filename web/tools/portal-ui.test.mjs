@@ -169,6 +169,7 @@ test("the device's default is the main button and the other way is there for thi
   assert.ok(page.document.querySelector('.open-choice-note a[href="' + PREVIEW + '"]'), "a link if the tab was blocked");
   // Once, inside: the default stays the browser.
   page.click(page.button("Other ways to open"));
+  await until(() => page.document.querySelector(".open-choice-menu"), "the menu");
   const items = [...page.document.querySelectorAll('.open-choice-menu [role="menuitem"]')].map((b) => b.textContent);
   assert.deepEqual(items, ["Open in browserThis device's default", "Preview besideThis time only", "View sourceShown as text, not run"]);
   page.click([...page.document.querySelectorAll('.open-choice-menu [role="menuitem"]')][1]);
@@ -176,6 +177,7 @@ test("the device's default is the main button and the other way is there for thi
   assert.match(page.document.querySelector(".open-choice-split .primary-button").textContent, /Open in browser/, "default unchanged");
   assert.equal(page.window.localStorage.getItem("yuzuno.portal-open"), JSON.stringify({ open: "browser" }));
   page.click(page.button("Other ways to open"));
+  await until(() => page.document.querySelector(".open-choice-menu"), "the menu again");
   page.click([...page.document.querySelectorAll('.open-choice-menu [role="menuitem"]')][2]);
   assert.equal(page.window.__source, true, "the source, when asked for");
 });
@@ -199,6 +201,7 @@ test("on a narrow window the Portal is full screen, as a dialog with a way back"
 test("the panel's width follows the grip and is kept on this device", async (t) => {
   const page = mount();
   t.after(page.close);
+  page.window.renderChoice(snapshot);
   page.window.portal.open(snapshot);
   const grip = await until(() => page.document.querySelector(".portal-grip"), "the grip");
   grip.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
@@ -235,8 +238,9 @@ test("a service's Job: running, reachable and health apart; stop only for its ow
   const facts = [...section.querySelectorAll(".portal-fact")].map((f) => f.textContent);
   assert.deepEqual(facts, ["ProcessRunning", "PageReachableHTTP 200 · Linked to this Job", "Health checkNot set"]);
   page.click(page.button("Stop Job…", section));
+  const confirm = await until(() => page.button("Stop the Job", section), "the confirmation");
   assert.ok(!page.requests.some((r) => r.url.includes("/cancel")), "nothing stopped before the confirmation");
-  page.click(page.button("Stop the Job", section));
+  page.click(confirm);
   await until(() => page.requests.some((r) => r.method === "POST" && r.url === "/api/jobs/j1/cancel"), "the cancel");
   page.click(page.button("Disconnect", section));
   await until(() => page.requests.some((r) => r.method === "POST" && r.url === "/api/services/s1/close"), "the disconnect");
@@ -244,13 +248,13 @@ test("a service's Job: running, reachable and health apart; stop only for its ow
   assert.equal(page.frame(), null);
   // External: no Job to stop.
   page.window.portal.open(serviceTarget(service({}, { job: null })));
-  const external = await until(() => page.panel()?.querySelector(".portal-job"), "the external service");
+  const external = await until(() => [...page.document.querySelectorAll(".portal-job")].find((s) => s.textContent.includes("External service")), "the external service");
   assert.match(external.textContent, /External service.*Not started by Yuzuno/);
   assert.match(external.textContent, /Yuzuno doesn't stop this service/);
   assert.equal(page.button("Stop Job…", external), undefined);
   // Another program on the port is said so, not called ours.
   page.window.portal.open(serviceTarget(service({}, { job: { ...job, owner: "otherProcess" }, health: { declared: true, path: "/health", state: "failing" } })));
-  const other = await until(() => page.panel()?.querySelector(".portal-job"), "the conflict");
+  const other = await until(() => [...page.document.querySelectorAll(".portal-job")].find((s) => s.textContent.includes("Another program")), "the conflict");
   assert.match(other.textContent, /Another program answers on its port/);
   assert.match(other.textContent, /Health checkFailing/);
 });
@@ -271,6 +275,7 @@ test("a finished Turn's HTML files are offered as prototypes; a deleted one or a
   const cards = [...page.document.querySelectorAll(".turn-file")];
   assert.deepEqual(cards.map((c) => c.querySelector("strong").textContent), ["pomodoro.html"]);
   page.click(page.button("Other ways to open", cards[0]));
+  await until(() => cards[0].querySelector('[role="menuitem"]'), "the card's menu");
   page.click([...cards[0].querySelectorAll('[role="menuitem"]')][2]);
   assert.equal(sourced, "/w/pomodoro.html");
   page.window.renderTurn({ id: "t", status: "inProgress", items }, { ...agent, status: "working" }, () => {});
