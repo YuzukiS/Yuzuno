@@ -62,7 +62,9 @@ fn a_listener_is_the_jobs_only_if_a_process_of_its_control_group_holds_it() {
     assert_eq!(owner(data.path(), &ours, free), Owner::NotListening);
 }
 
-/// An HTTP server that answers every request with `status`, once per connection.
+/// An HTTP server that answers every request with `status`, once per
+/// connection, in one write: `write!` would send the status line in pieces,
+/// and a probe reading the first bytes could get "HTTP/1.1 " alone.
 fn answering(status: &'static str) -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -70,7 +72,8 @@ fn answering(status: &'static str) -> u16 {
         for mut stream in listener.incoming().flatten() {
             let mut buf = [0u8; 1024];
             let _ = stream.read(&mut buf);
-            let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let answer = format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = stream.write_all(answer.as_bytes());
         }
     });
     port
