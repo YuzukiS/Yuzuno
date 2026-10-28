@@ -165,7 +165,7 @@ test("a sub-agent's request names the sub-agent that asks, and is answered as an
   const page = mount();
   try {
     page.window.renderPending({ request: child, refresh() {}, disabled: false }); await tick();
-    assert.equal(page.document.querySelector(".opencode-sub-agent").textContent, "Asked by a sub-agent: Find the files (@explore subagent)");
+    assert.equal(page.document.querySelector(".pending-source").textContent, "From sub-agent Find the files (@explore subagent). Your answer goes only to this sub-agent.");
     button(page, "Allow once").click(); await tick();
     assert.match(page.calls[0].url, /requests\/req-2\/respond$/);
     assert.deepEqual(page.calls[0].body, { response: { decision: "once" } });
@@ -174,12 +174,12 @@ test("a sub-agent's request names the sub-agent that asks, and is answered as an
   const untitled = mount();
   try {
     untitled.window.renderPending({ request: { ...child, params: { ...child.params, _opencodeChild: { agent: "explore" } } }, refresh() {}, disabled: false }); await tick();
-    assert.equal(untitled.document.querySelector(".opencode-sub-agent").textContent, "Asked by a sub-agent: @explore");
+    assert.equal(untitled.document.querySelector(".pending-source strong").textContent, "@explore");
   } finally { untitled.close(); }
   const own = mount();
   try {
     own.window.renderPending({ request: permission, refresh() {}, disabled: false }); await tick();
-    assert.ok(own.document.querySelector(".opencode-sub-agent") === null, "the Agent's own request names no sub-agent");
+    assert.ok(own.document.querySelector(".pending-source") === null, "the Agent's own request names no sub-agent");
   } finally { own.close(); }
 });
 
