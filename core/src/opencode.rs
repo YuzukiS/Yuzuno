@@ -132,7 +132,8 @@ pub struct Snapshot {
     /// `{type: busy | retry | idle, …}`. OpenCode lists only sessions that
     /// are not idle (`session/status.ts`), so an unlisted one is idle.
     pub status: Value,
-    /// Requests pending in this session; other sessions' are left out.
+    /// Requests pending in this session and in the sub-agent sessions
+    /// given (`snapshot`), each with its `sessionID`; others' are left out.
     pub permissions: Vec<Value>,
     pub questions: Vec<Value>,
 }
@@ -404,17 +405,27 @@ impl Server {
         Ok(events)
     }
 
-    /// The session's messages, status and pending requests, read now.
-    pub async fn snapshot(&self, session: &str) -> Result<Snapshot> {
+    /// The session's messages and status, read now, with the requests
+    /// pending in it and in the sub-agent sessions `children`.
+    pub async fn snapshot(&self, session: &str, children: &[String]) -> Result<Snapshot> {
         let messages = self.json(Method::GET, &format!("/session/{}/message", segment(session)?), None).await?;
         let statuses = self.json(Method::GET, "/session/status", None).await?;
         let status = statuses.get(session).cloned().unwrap_or_else(|| json!({"type": "idle"}));
+        let sessions: Vec<&str> = std::iter::once(session).chain(children.iter().map(String::as_str)).collect();
         Ok(Snapshot {
             messages,
             status,
-            permissions: self.pending("/permission", session).await?,
-            questions: self.pending("/question", session).await?,
+            permissions: self.pending_in("/permission", &sessions).await?,
+            questions: self.pending_in("/question", &sessions).await?,
         })
+    }
+
+    /// The sessions OpenCode started under `session` (its `task` tool's
+    /// sub-agents, `parentID` = `session`), as `GET /session/:id/children`
+    /// lists them.
+    pub async fn children(&self, session: &str) -> Result<Vec<Value>> {
+        let listed = self.json(Method::GET, &format!("/session/{}/children", segment(session)?), None).await?;
+        Ok(listed.as_array().context("OpenCode's session children is not a list")?.clone())
     }
 
     /// Answers a permission request pending in `session`. A request of
@@ -463,9 +474,13 @@ impl Server {
     }
 
     async fn pending(&self, path: &str, session: &str) -> Result<Vec<Value>> {
+        self.pending_in(path, &[session]).await
+    }
+
+    async fn pending_in(&self, path: &str, sessions: &[&str]) -> Result<Vec<Value>> {
         let all = self.json(Method::GET, path, None).await?;
         let all = all.as_array().with_context(|| format!("OpenCode's {path} is not a list"))?;
-        Ok(all.iter().filter(|r| r["sessionID"] == session).cloned().collect())
+        Ok(all.iter().filter(|r| r["sessionID"].as_str().is_some_and(|s| sessions.contains(&s))).cloned().collect())
     }
 
     async fn ensure_pending(&self, path: &str, session: &str, request: &str) -> Result<()> {

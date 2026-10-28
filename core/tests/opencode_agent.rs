@@ -595,6 +595,86 @@ async fn a_broken_stream_is_reconciled_from_a_snapshot_once() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// A sub-agent OpenCode starts (its `task` tool) asks in a session of its own
+/// (T-10). Its requests are shown with the sub-agent that asks and answered
+/// in that session; nothing else of it ends the Agent's Turn, and another
+/// session's requests are not the Agent's.
+#[tokio::test]
+async fn a_sub_agents_requests_are_shown_with_it_and_answered_in_its_own_session() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let running = lab.send("c1", "work").await.unwrap().turn_id.unwrap();
+    let child = lab.control("child", json!({"parentID":session,"title":"Find the files (@explore subagent)","agent":"explore"})).await;
+    let child = child["id"].as_str().unwrap().to_owned();
+    let other = lab.control("child", json!({"parentID":"ses_elsewhere","title":"another client's"})).await;
+    lab.control("ask", json!({"sessionID":other["id"]})).await;
+    let asked = lab.control("ask", json!({"sessionID":child})).await;
+    let d = lab.until("the sub-agent's request", |d| !d.pending.is_empty()).await;
+    assert_eq!(d.pending.len(), 1, "another session's request is not this Agent's: {:#?}", d.pending);
+    let p = d.pending[0].clone();
+    assert_eq!((p.method.as_str(), &p.params["id"]), ("opencode/permission", &asked["id"]));
+    assert_eq!(p.params["_opencodeSession"], child);
+    assert_eq!(p.params["_opencodeChild"], json!({"title":"Find the files (@explore subagent)","agent":"explore"}));
+    assert_eq!(p.params["turnId"], running, "the Agent's running Turn asked it");
+    assert_eq!(d.agent.status, "waiting");
+
+    // The same event again adds nothing, and the sub-agent's idle ends no Turn.
+    lab.control("event", json!({"type":"permission.asked","properties":asked})).await;
+    lab.control("idle", json!({"sessionID":child})).await;
+    let question = lab.control("question", json!({"sessionID":child})).await;
+    let d = lab.until("the sub-agent's question", |d| d.pending.iter().any(|p| p.params["id"] == question["id"])).await;
+    assert_eq!(d.pending.iter().filter(|p| p.params["id"] == asked["id"]).count(), 1);
+    assert_eq!(turn(&d, &running)["status"], "inProgress");
+
+    // Answered in the session that asked, once.
+    lab.ws.respond(&p.id, json!({"decision":"once"})).await.unwrap();
+    let answered = lab.posts("/permission/");
+    assert_eq!((answered[0]["path"].as_str().unwrap(), &answered[0]["body"]),
+        (format!("/permission/{}/reply", asked["id"].as_str().unwrap()).as_str(), &json!({"reply":"once"})));
+    assert!(lab.ws.respond(&p.id, json!({"decision":"once"})).await.is_err(), "answered already");
+    let q = d.pending.iter().find(|p| p.params["id"] == question["id"]).unwrap();
+    assert_eq!(q.params["_opencodeSession"], child);
+    lab.ws.respond(&q.id, json!({"answers":[["A"]]})).await.unwrap();
+    assert_eq!(lab.posts("/question/").last().unwrap()["path"], format!("/question/{}/reply", question["id"].as_str().unwrap()));
+    lab.until("the answered requests", |d| d.pending.is_empty()).await;
+
+    // A request of a sub-agent whose run ended is not answered.
+    lab.control("ask", json!({"sessionID":child})).await;
+    let gone = lab.until("the next request", |d| !d.pending.is_empty()).await.pending[0].clone();
+    lab.control("close", json!({"sessionID":child})).await;
+    assert!(lab.ws.respond(&gone.id, json!({"decision":"once"})).await.is_err());
+    assert_eq!(lab.posts("/permission/").len(), 1, "only the first permission answer was sent");
+
+    // The Agent's own session ends its Turn.
+    assert_eq!(turn(&lab.detail(), &running)["status"], "inProgress");
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("the Turn's end", |d| turn(d, &running)["status"] == "completed").await;
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A sub-agent that starts and asks while no event stream is open is found
+/// again with the snapshot: OpenCode lists it among the session's children,
+/// and its request comes with it (T-10).
+#[tokio::test]
+async fn a_sub_agent_that_asked_while_no_stream_was_open_is_found_again() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    lab.send("c1", "work").await.unwrap();
+    lab.control("refuseEvents", json!({"seconds":0.4})).await;
+    lab.control("drop", json!({})).await;
+    let child = lab.control("child", json!({"parentID":session,"title":"Check (@general subagent)","agent":"general","announce":false})).await;
+    let asked = lab.control("ask", json!({"sessionID":child["id"]})).await;
+    let d = lab.until("the request read again", |d| !d.pending.is_empty()).await;
+    assert!(journal(&lab).iter().any(|k| k == "opencode/resynced"));
+    let p = &d.pending[0];
+    assert_eq!(p.params["id"], asked["id"]);
+    assert_eq!(p.params["_opencodeSession"], child["id"]);
+    assert_eq!(p.params["_opencodeChild"], json!({"title":"Check (@general subagent)","agent":"general"}));
+    lab.ws.respond(&p.id, json!({"decision":"reject"})).await.unwrap();
+    assert_eq!(lab.posts("/permission/")[0]["body"], json!({"reply":"reject"}));
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 #[tokio::test]
 async fn mcp_must_be_connected_before_a_message_goes_and_writes_name_the_session() {
     // OpenCode reports the Workspace MCP server failed: nothing is sent.

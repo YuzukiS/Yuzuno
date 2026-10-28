@@ -554,12 +554,17 @@ pub(crate) fn reliable_turn(store: &Store, db: &Connection, agent: &str) -> Resu
         return Ok(None);
     }
     let Some(turn) = brief.active_turn else { return Ok(None) };
-    let session = match a.harness.as_str() {
+    Ok(Some(Pinned { agent: agent.into(), session: native_session(a), turn }))
+}
+
+/// The native conversation a result is published in and its form answered
+/// in: the harness's own session or thread.
+pub(crate) fn native_session(a: &crate::model::Agent) -> Option<String> {
+    match a.harness.as_str() {
         "claude" => a.claude_session_id.clone(),
         "opencode" => a.opencode_session_id.clone(),
         _ => a.thread_id.clone(),
-    };
-    Ok(Some(Pinned { agent: agent.into(), session, turn }))
+    }
 }
 
 struct Request {
